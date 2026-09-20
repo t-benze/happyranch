@@ -61,6 +61,7 @@ from runtime.models import (
     AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_CONSUMED,
     AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_EVALUATED,
     AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_TRANSITIONS,
+    AUTHORITY_POLICY_V2_ESCALATION_DECISION_ACTION,
     AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
     AUTHORITY_POLICY_V2_TEAM,
     authority_policy_v2_attempt_id,
@@ -6401,14 +6402,24 @@ class Database:
             require_unfinalized=True,
         )
 
-    def _authenticate_v2_attempt_stage_audit_uncommitted(
-        self, attempt_row: dict, stage: str, *, require_unfinalized: bool = False,
+    def _authenticate_v2_result_stage_audit_uncommitted(
+        self, attempt_row: dict, stage: str, *, candidate_id: str | None = None,
+        require_finalization: bool = False,
     ) -> bool:
-        """Require exactly one authentic closed event for ``stage``.
+        """Require exactly one authentic CLOSED result-stage event for ``stage``.
 
-        Every needed later stage is authenticated independently; a missing,
-        duplicated, mutated or mismatched event for the requested stage
-        refuses.  Events belonging to a different stage are ignored.
+        BOTH halves of every required prior stage are authenticated: this is the
+        ``audit_log``/``authority_policy_v2_result_stage`` half (its sibling
+        candidate-audit half is checked by
+        ``_authenticate_v2_candidate_audit_uncommitted``).  The event must match
+        the immutable attempt identity on every field, carry EXACTLY the closed
+        payload key set for its stage (the later stages additionally carry the
+        candidate identity), and — where the stage persists it — the required
+        ``unfinalized`` finalization marker.  A missing, duplicated, mutated,
+        foreign-candidate or malformed/extra-key event refuses.  Events
+        belonging to a different stage are ignored, so a later legitimate stage
+        never invalidates an earlier one and a not-yet-created stage is never
+        required.
         """
         root_task_id = attempt_row["root_task_id"]
         manager_agent = attempt_row["manager_agent"]
@@ -6429,6 +6440,7 @@ class Database:
         payload = candidates[0]["payload"]
         expected = {
             "stage": stage,
+            "attempt_id": attempt_id,
             "result_id": attempt_row["result_id"],
             "binding_id": attempt_row["binding_id"],
             "contract_id": attempt_row["contract_id"],
@@ -6442,9 +6454,39 @@ class Database:
             "owner_attempt_id": attempt_row["owner_attempt_id"],
             "origin_boot_id": attempt_row["origin_boot_id"],
         }
-        if require_unfinalized:
+        if candidate_id is not None:
+            expected["candidate_id"] = candidate_id
+        if require_finalization:
             expected["finalization_state"] = "unfinalized"
+        if set(payload.keys()) != set(expected.keys()):
+            return False
         return all(payload.get(key) == value for key, value in expected.items())
+
+    def _authenticate_v2_attempt_stage_audit_uncommitted(
+        self, attempt_row: dict, stage: str, *, require_unfinalized: bool = False,
+    ) -> bool:
+        """Wrapper over the closed result-stage authentication for ``stage``.
+
+        Every needed later stage is authenticated independently; a missing,
+        duplicated, mutated, foreign-candidate or closed-key/malformed event for
+        the requested stage refuses.  Events belonging to a different stage are
+        ignored.
+        """
+        return self._authenticate_v2_result_stage_audit_uncommitted(
+            attempt_row, stage, require_finalization=require_unfinalized,
+        )
+
+    def _authenticate_v2_prior_result_stages_uncommitted(
+        self, attempt_row: dict, stages: tuple[str, ...], candidate_id: str,
+    ) -> bool:
+        """Require the result-stage half of every named prior stage."""
+        return all(
+            self._authenticate_v2_result_stage_audit_uncommitted(
+                attempt_row, stage, candidate_id=candidate_id,
+                require_finalization=True,
+            )
+            for stage in stages
+        )
 
     def _insert_authority_policy_v2_attempt_uncommitted(
         self, *, task_id: str, agent: str, session_id: str, result_id: int,
@@ -6688,11 +6730,20 @@ class Database:
     def _authenticate_v2_result_body_uncommitted(
         self, result_row, attempt: AuthorityPolicyV2Attempt,
     ) -> bool:
-        """Authenticate the persisted result's normalized assessment body.
+        """Authenticate the persisted result's normalized assessment body AND
+        the actual persisted manager decision it carries.
 
         CRD is only the row-identity digest; the persisted decision carrier's
         ``_manager_self_evaluation`` value is re-canonicalized here and must
-        hash to the admitted ``assessment_digest``.  A mutated body refuses.
+        hash to the admitted ``assessment_digest``.  SEPARATELY, the persisted
+        manager decision's ``action`` must be the accepted root escalation
+        action: eligible v2 authority evaluation is for the accepted root
+        escalation decision only, so a missing/malformed/non-escalate decision
+        (an ordinary ``delegate``/``supersede``/``done`` etc., or an unchanged
+        assessment whose decision was drifted between stages) can never acquire
+        the v2 continuation path.  This inspects persisted decision DATA only —
+        no prose, clause or sentinel detector is introduced and ordinary manager
+        validation is untouched.
         """
         raw = result_row["decision_json"]
         if not isinstance(raw, str) or not raw:
@@ -6702,6 +6753,8 @@ class Database:
         except Exception:
             return False
         if not isinstance(parsed, dict):
+            return False
+        if parsed.get("action") != AUTHORITY_POLICY_V2_ESCALATION_DECISION_ACTION:
             return False
         carrier = parsed.get("_manager_self_evaluation")
         if not isinstance(carrier, dict):
@@ -6759,9 +6812,39 @@ class Database:
                 raise ValueError("authority v2 pin column/preimage mismatch")
         return pin
 
+    def _retained_v2_mechanical_eligibility_uncommitted(
+        self, task, *, max_revise_rounds: int,
+    ) -> str | None:
+        """Re-derive retained mechanical eligibility from persisted state.
+
+        Used at EVERY v2 stage boundary (claim and all later pre-final
+        boundaries): root-only, revisit/successor lineage, active chain/fanout,
+        blocked job and the CURRENTLY-configured revise ceiling against the
+        persisted ``tasks.revision_count``.  No caller boolean is trusted and no
+        v1 adverse-review/partial-work/raw-DDL clause is a v2 veto.
+        """
+        if task["parent_task_id"] is not None or task["revisit_of_task_id"]:
+            return "claim_failed"
+        if (
+            task["active_chain"]
+            or task["active_fanout"]
+            or task["blocked_on_job_ids"]
+        ):
+            return "claim_failed"
+        successor = self._conn.execute(
+            "SELECT 1 FROM manager_supersessions WHERE successor_task_id=? LIMIT 1",
+            (task["id"],),
+        ).fetchone()
+        if successor is not None:
+            return "claim_failed"
+        if max_revise_rounds > 0 and int(task["revision_count"] or 0) >= max_revise_rounds:
+            return "claim_failed"
+        return None
+
     def _authenticate_v2_claim_evidence_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
+        max_revise_rounds: int = 0,
     ) -> tuple[str | None, dict | None]:
         """Re-read and authenticate the complete claim-stage evidence.
 
@@ -6770,9 +6853,10 @@ class Database:
         immutable launch binding, the authenticated pinned
         release/activation/selector prefix, the single ``a0`` admitted audit and
         the current task ownership/cancellation — rather than trusting the
-        already-persisted K/P row.  Returns ``(refusal_code, None)`` on any
-        mismatch/mutation/deletion, or ``(None, ctx)`` with the authenticated
-        values.
+        already-persisted K/P row.  It also re-derives the retained mechanical
+        eligibility from the persisted task at every boundary.  Returns
+        ``(refusal_code, None)`` on any mismatch/mutation/deletion, or
+        ``(None, ctx)`` with the authenticated values.
         """
         attempt_id = authority_policy_v2_attempt_id(
             manager_agent=manager_agent, manager_session_id=manager_session_id,
@@ -6822,6 +6906,17 @@ class Database:
             or task["current_session_id"] != manager_session_id
         ):
             return "owner_lost", None
+
+        # THR-229 C3c correction: retained current mechanical eligibility is
+        # re-derived from the authenticated task at EVERY stage boundary, not
+        # only at claim.  Valid-at-claim is insufficient: a chain/fanout/blocked
+        # job/revisit/successor/root change or a currently-exhausted configured
+        # revise ceiling refuses here with the exact prior residue retained.
+        eligibility = self._retained_v2_mechanical_eligibility_uncommitted(
+            task, max_revise_rounds=max_revise_rounds,
+        )
+        if eligibility is not None:
+            return eligibility, None
 
         result_row = self._conn.execute(
             "SELECT * FROM task_results WHERE id=?", (result_id,)
@@ -6905,6 +7000,7 @@ class Database:
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+            max_revise_rounds=max_revise_rounds,
         )
         if code is not None:
             return _refused(code)
@@ -6912,7 +7008,6 @@ class Database:
         attempt = ctx["attempt"]
         binding = ctx["binding"]
         release = ctx["release"]
-        task = ctx["task"]
         if attempt.stage != AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED:
             if attempt.stage in (
                 AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
@@ -6920,25 +7015,13 @@ class Database:
             ):
                 return _refused("already_claimed")
             return _refused("identity_mismatch")
-        # Applicable mechanical eligibility predicates, re-derived from the
-        # persisted task row.  No caller boolean and no
+        # The applicable mechanical eligibility predicates (revisit/successor
+        # lineage, root-only, active chain/fanout, blocked job and the current
+        # revise ceiling against the persisted revision_count) are re-derived
+        # inside ``_authenticate_v2_claim_evidence_uncommitted``, which is
+        # shared by every stage boundary.  No caller boolean and no
         # ``_server_fact_clause`` adverse-review/partial-work/raw-DDL clause is a
         # v2 veto or a phrase/clause unlock.
-        if (
-            task["revisit_of_task_id"]
-            or task["active_chain"]
-            or task["active_fanout"]
-            or task["blocked_on_job_ids"]
-        ):
-            return _refused("claim_failed")
-        successor = self._conn.execute(
-            "SELECT 1 FROM manager_supersessions WHERE successor_task_id=? LIMIT 1",
-            (root_task_id,),
-        ).fetchone()
-        if successor is not None:
-            return _refused("claim_failed")
-        if max_revise_rounds > 0 and int(task["revision_count"] or 0) >= max_revise_rounds:
-            return _refused("claim_failed")
 
         # Freeze the read-only permission-surface evidence through the bound
         # server-side reader.  Captured after authentication (so an
@@ -7204,22 +7287,24 @@ class Database:
     def _authenticate_v2_candidate_evidence_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
+        max_revise_rounds: int = 0,
     ) -> tuple[str | None, dict | None]:
         """Re-read and authenticate the complete claim-stage K/P evidence.
 
         Shared by the claim-audit boundary and every C3c evaluation/consumption
         boundary: the causal result row/body, the immutable launch binding, the
         authenticated pinned release/activation/selector prefix, the single a0
-        admitted audit, the current task ownership/cancellation AND the full
-        candidate/pin cross-row joins with the frozen claim-time
-        schema/permission evidence.  A between-stage mutation, deletion or
-        mixed identity refuses; the already-persisted K/P row is never trusted
-        on its own.
+        admitted audit, the current task ownership/cancellation, the retained
+        current mechanical eligibility AND the full candidate/pin cross-row
+        joins with the frozen claim-time schema/permission evidence.  A
+        between-stage mutation, deletion or mixed identity refuses; the
+        already-persisted K/P row is never trusted on its own.
         """
         code, ctx = self._authenticate_v2_claim_evidence_uncommitted(
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+            max_revise_rounds=max_revise_rounds,
         )
         if code is not None:
             return code, None
@@ -7346,23 +7431,27 @@ class Database:
         if len(rows) != 1:
             return False
         row = rows[0]
-        if (
-            row["team"] != candidate.team
-            or row["root_task_id"] != candidate.root_task_id
-            or row["manager_agent"] != candidate.manager_agent
-            or row["manager_session_id"] != candidate.manager_session_id
-            or row["claim_key"] != candidate.claim_key
-            or row["attempt_id"] != candidate.attempt_id
-            or row["result_id"] != candidate.result_id
-            or row["owner_attempt_id"] != candidate.owner_attempt_id
-            or row["origin_boot_id"] != candidate.origin_boot_id
-        ):
-            return False
         try:
             audit = AuthorityPolicyV2CandidateAudit.model_validate_json(
                 row["canonical_payload_json"]
             )
         except Exception:
+            return False
+        # Every closed event field must equal the persisted column (identity,
+        # event, candidate, attempt/result/owner/boot AND the created_at
+        # preimage), the stored payload must be the canonical bytes of exactly
+        # that value, and the event must belong to THIS candidate/event.  A
+        # mutated column, a foreign candidate/identity or a malformed/extra-key
+        # payload refuses.
+        snapshot = audit.model_dump(mode="json")
+        for column, value in snapshot.items():
+            if row[column] != value:
+                return False
+        try:
+            canonical = authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8")
+        except Exception:
+            return False
+        if canonical != row["canonical_payload_json"]:
             return False
         if (
             audit.candidate_id != candidate.candidate_id
@@ -7502,6 +7591,7 @@ class Database:
     def _audit_authority_policy_v2_candidate_claim_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str, now: str,
+        max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
         attempt_id = authority_policy_v2_attempt_id(
             manager_agent=manager_agent, manager_session_id=manager_session_id,
@@ -7527,6 +7617,7 @@ class Database:
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+            max_revise_rounds=max_revise_rounds,
         )
         if code is not None:
             return _refused(code)
@@ -7610,6 +7701,7 @@ class Database:
     def audit_authority_policy_v2_candidate_claim(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
+        max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
         """Second C3b transaction: append the a1 claim event and audited stage.
 
@@ -7644,7 +7736,7 @@ class Database:
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
                 origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
-                now=now,
+                now=now, max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
                 self._conn.rollback()
@@ -7682,6 +7774,7 @@ class Database:
     def _evaluate_authority_policy_v2_candidate_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str, now: str,
+        max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
         from runtime.models import AuthorityPolicyV2ManagerSelfEvaluation
         from runtime.orchestrator.authority_policy import (
@@ -7704,6 +7797,7 @@ class Database:
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+            max_revise_rounds=max_revise_rounds,
         )
         if code is not None:
             return _refused(code)
@@ -7723,8 +7817,18 @@ class Database:
             ):
                 return _refused("already_evaluated", candidate.candidate_id)
             return _refused("claim_audit_missing", candidate.candidate_id)
+        # BOTH halves of the required prior stage: the candidate ``claimed``
+        # event AND its sibling closed ``claim_audited`` result-stage audit.
+        # Neither the audit created by this transaction nor any later/not-yet
+        # created stage is required.
         if not self._authenticate_v2_candidate_audit_uncommitted(
             candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
+        ):
+            return _refused("claim_audit_missing", candidate.candidate_id)
+        if not self._authenticate_v2_prior_result_stages_uncommitted(
+            ctx["row"],
+            (AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,),
+            candidate.candidate_id,
         ):
             return _refused("claim_audit_missing", candidate.candidate_id)
 
@@ -7836,6 +7940,7 @@ class Database:
     def evaluate_authority_policy_v2_candidate(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
+        max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
         """C3c first transaction: persist one V, advance K/J to ``evaluated``.
 
@@ -7863,7 +7968,7 @@ class Database:
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
                 origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
-                now=now,
+                now=now, max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
                 self._conn.rollback()
@@ -7892,6 +7997,7 @@ class Database:
     def _audit_evaluation_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str, now: str,
+        max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
         attempt_id = authority_policy_v2_attempt_id(
             manager_agent=manager_agent, manager_session_id=manager_session_id,
@@ -7909,6 +8015,7 @@ class Database:
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+            max_revise_rounds=max_revise_rounds,
         )
         if code is not None:
             return _refused(code)
@@ -7927,8 +8034,18 @@ class Database:
             return _refused("evaluation_missing", candidate.candidate_id)
         if candidate.lifecycle_stage != AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_EVALUATED:
             return _refused("identity_mismatch", candidate.candidate_id)
+        # BOTH halves of the required prior stage: the candidate ``claimed``
+        # event AND its closed ``claim_audited`` result-stage audit.  The
+        # ``evaluation_audited`` audit created by THIS transaction is not
+        # required.
         if not self._authenticate_v2_candidate_audit_uncommitted(
             candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
+        ):
+            return _refused("claim_audit_missing", candidate.candidate_id)
+        if not self._authenticate_v2_prior_result_stages_uncommitted(
+            ctx["row"],
+            (AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,),
+            candidate.candidate_id,
         ):
             return _refused("claim_audit_missing", candidate.candidate_id)
         code, _ = self._authenticate_v2_evaluation_evidence_uncommitted(
@@ -7981,6 +8098,7 @@ class Database:
     def audit_authority_policy_v2_candidate_evaluation(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
+        max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
         """C3c second transaction: append a2 plus the audited stage.
 
@@ -8008,7 +8126,7 @@ class Database:
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
                 origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
-                now=now,
+                now=now, max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
                 self._conn.rollback()
@@ -8037,6 +8155,7 @@ class Database:
     def _consume_authority_policy_v2_candidate_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
+        max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
         attempt_id = authority_policy_v2_attempt_id(
             manager_agent=manager_agent, manager_session_id=manager_session_id,
@@ -8054,6 +8173,7 @@ class Database:
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+            max_revise_rounds=max_revise_rounds,
         )
         if code is not None:
             return _refused(code)
@@ -8071,12 +8191,24 @@ class Database:
             return _refused("evaluation_audit_missing", candidate.candidate_id)
         if candidate.lifecycle_stage != AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_EVALUATED:
             return _refused("identity_mismatch", candidate.candidate_id)
+        # BOTH halves of every required prior stage: the candidate
+        # ``claimed``/``evaluated`` events AND their closed ``claim_audited`` /
+        # ``evaluation_audited`` result-stage audits.
         if not self._authenticate_v2_candidate_audit_uncommitted(
             candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
         ):
             return _refused("claim_audit_missing", candidate.candidate_id)
         if not self._authenticate_v2_candidate_audit_uncommitted(
             candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_EVALUATED,
+        ):
+            return _refused("evaluation_audit_missing", candidate.candidate_id)
+        if not self._authenticate_v2_prior_result_stages_uncommitted(
+            ctx["row"],
+            (
+                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
+            ),
+            candidate.candidate_id,
         ):
             return _refused("evaluation_audit_missing", candidate.candidate_id)
         code, _ = self._authenticate_v2_evaluation_evidence_uncommitted(
@@ -8100,6 +8232,7 @@ class Database:
     def consume_authority_policy_v2_candidate(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
+        max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
         """C3c third transaction: CAS K/J to ``consumed`` exactly once.
 
@@ -8125,6 +8258,7 @@ class Database:
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
                 origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+                max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
                 self._conn.rollback()
@@ -8153,6 +8287,7 @@ class Database:
     def _audit_consumption_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str, now: str,
+        max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
         attempt_id = authority_policy_v2_attempt_id(
             manager_agent=manager_agent, manager_session_id=manager_session_id,
@@ -8170,6 +8305,7 @@ class Database:
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+            max_revise_rounds=max_revise_rounds,
         )
         if code is not None:
             return _refused(code)
@@ -8184,12 +8320,25 @@ class Database:
             return _refused("consume_failed", candidate.candidate_id)
         if candidate.lifecycle_stage != AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_CONSUMED:
             return _refused("identity_mismatch", candidate.candidate_id)
+        # BOTH halves of every required prior stage: the candidate
+        # ``claimed``/``evaluated`` events AND their closed ``claim_audited`` /
+        # ``evaluation_audited`` result-stage audits.  The ``consumed_audited``
+        # audit created by THIS transaction is not required.
         if not self._authenticate_v2_candidate_audit_uncommitted(
             candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
         ):
             return _refused("claim_audit_missing", candidate.candidate_id)
         if not self._authenticate_v2_candidate_audit_uncommitted(
             candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_EVALUATED,
+        ):
+            return _refused("evaluation_audit_missing", candidate.candidate_id)
+        if not self._authenticate_v2_prior_result_stages_uncommitted(
+            ctx["row"],
+            (
+                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
+            ),
+            candidate.candidate_id,
         ):
             return _refused("evaluation_audit_missing", candidate.candidate_id)
         code, _ = self._authenticate_v2_evaluation_evidence_uncommitted(
@@ -8242,6 +8391,7 @@ class Database:
     def audit_authority_policy_v2_candidate_consumption(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
+        max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
         """C3c fourth transaction: append a3 and advance J to consumed_audited.
 
@@ -8270,7 +8420,7 @@ class Database:
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
                 origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
-                now=now,
+                now=now, max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
                 self._conn.rollback()

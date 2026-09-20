@@ -971,6 +971,13 @@ AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_STATES = frozenset({
     "unfinalized", "continued", "refused", "owner_lost",
 })
 AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION = "authority_policy_v2_result_stage"
+# THR-229 C3c correction: the ONE accepted manager decision action that the v2
+# authority-policy evaluation/continuation path serves (the accepted root
+# escalation decision).  A missing/malformed/non-escalate persisted decision
+# (ordinary ``delegate``/``supersede``/``done`` etc.) can never acquire the v2
+# pre-final continuation path; this is inspected as persisted decision DATA and
+# is not a prose/sentinel/keyword detector.
+AUTHORITY_POLICY_V2_ESCALATION_DECISION_ACTION = "escalate"
 
 # THR-229 checkpoint C3b/C3c: the closed candidate-audit event vocabulary.
 # This checkpoint writes the claim/evaluate/consume stage events; later

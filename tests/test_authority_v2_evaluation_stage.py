@@ -657,3 +657,431 @@ def test_post_claim_schema_drift_refuses_evaluation(tmp_path):
     outcome = _evaluate(store, row, attempt)
     assert outcome.status == "refused" and outcome.refusal_code == "schema_drift"
     assert _counts(store._db)["evaluations"] == 0
+
+
+# ── C3c correction: BOTH halves of every required prior stage audit ──────
+#
+# Regression conversion of the manager probe
+# engineering_manager/output/TASK-8412/step17-c3c-probe.py, plus the
+# missing/duplicate/mutated/foreign/corrupted matrix for every applicable
+# boundary.  The result-stage half lives in ``audit_log`` and the sibling
+# candidate-audit half in ``authority_policy_v2_candidate_audit``; both must be
+# authentic and closed before any advancement.  A refusal writes no V, no
+# audit and no stage advance and never repairs a missing row.
+
+_RESULT_STAGE_ACTION = "authority_policy_v2_result_stage"
+_STAGE = {
+    "evaluate": _evaluate,
+    "audit_evaluation": _audit_evaluation,
+    "consume": _consume,
+    "audit_consumption": _audit_consumption,
+}
+
+
+def _result_stage_row(store, stage):
+    return store._db._conn.execute(
+        "SELECT * FROM audit_log WHERE action=? AND json_extract(payload,'$.stage')=?",
+        (_RESULT_STAGE_ACTION, stage),
+    ).fetchone()
+
+
+def _delete_result_stage(store, stage):
+    store._db._conn.execute(
+        "DELETE FROM audit_log WHERE action=? AND json_extract(payload,'$.stage')=?",
+        (_RESULT_STAGE_ACTION, stage),
+    )
+    store._db._conn.commit()
+
+
+def _duplicate_result_stage(store, stage):
+    row = _result_stage_row(store, stage)
+    store._db.insert_audit_log_uncommitted(
+        row["task_id"], row["agent"], row["action"], json.loads(row["payload"])
+    )
+    store._db._conn.commit()
+
+
+def _replace_result_stage(store, stage, mutate):
+    row = _result_stage_row(store, stage)
+    payload = json.loads(row["payload"])
+    mutate(payload)
+    store._db._conn.execute("DELETE FROM audit_log WHERE id=?", (row["id"],))
+    store._db.insert_audit_log_uncommitted(
+        row["task_id"], row["agent"], row["action"], payload
+    )
+    store._db._conn.commit()
+
+
+def _set_task(store, **columns):
+    sets = ", ".join(f"{key}=?" for key in columns)
+    store._db._conn.execute(
+        f"UPDATE tasks SET {sets} WHERE id=?", (*columns.values(), TASK_ID),
+    )
+    store._db._conn.commit()
+
+
+def _set_decision(store, row, mutate):
+    decision = json.loads(
+        store._db._conn.execute(
+            "SELECT decision_json FROM task_results WHERE id=?", (row["id"],)
+        ).fetchone()[0]
+    )
+    mutate(decision)
+    store._db._conn.execute(
+        "UPDATE task_results SET decision_json=? WHERE id=?",
+        (json.dumps(decision), row["id"]),
+    )
+    store._db._conn.commit()
+
+
+def test_missing_claim_audited_result_stage_refuses_evaluation(tmp_path):
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    _delete_result_stage(store, "claim_audited")
+    assert _stage_audits(store) == ["admitted"]
+    outcome = _evaluate(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "claim_audit_missing"
+    assert _counts(store._db)["evaluations"] == 0
+    assert _lifecycle(store, candidate.candidate_id) == "created"
+    assert _stage(store, row["id"]) == "claim_audited"
+    # No repair-by-reinsert: the missing evidence stays missing.
+    assert _stage_audits(store) == ["admitted"]
+    assert _audit_events(store, candidate.candidate_id) == ["claimed"]
+    task = store._db.get_task(TASK_ID)
+    assert task.status is TaskStatus.IN_PROGRESS
+    assert task.current_session_id == SESSION_ID
+
+
+def test_duplicate_claim_audited_result_stage_refuses_evaluation(tmp_path):
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    _duplicate_result_stage(store, "claim_audited")
+    assert _stage_audits(store).count("claim_audited") == 2
+    outcome = _evaluate(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "claim_audit_missing"
+    assert _counts(store._db)["evaluations"] == 0
+    assert _stage(store, row["id"]) == "claim_audited"
+
+
+def test_foreign_candidate_claim_audited_refuses_evaluation(tmp_path):
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    _replace_result_stage(
+        store, "claim_audited", lambda p: p.update(candidate_id="APV2C-" + "0" * 64)
+    )
+    outcome = _evaluate(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "claim_audit_missing"
+    assert _counts(store._db)["evaluations"] == 0
+
+
+def test_mutated_identity_claim_audited_refuses_evaluation(tmp_path):
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    _replace_result_stage(
+        store, "claim_audited", lambda p: p.update(assessment_digest="f" * 64)
+    )
+    outcome = _evaluate(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "claim_audit_missing"
+    assert _counts(store._db)["evaluations"] == 0
+
+
+def test_claim_audited_missing_finalization_marker_refuses_evaluation(tmp_path):
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    _replace_result_stage(store, "claim_audited", lambda p: p.pop("finalization_state", None))
+    outcome = _evaluate(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "claim_audit_missing"
+    assert _counts(store._db)["evaluations"] == 0
+
+
+def test_claim_audited_extra_closed_key_refuses_evaluation(tmp_path):
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    _replace_result_stage(store, "claim_audited", lambda p: p.update(unexpected="x"))
+    outcome = _evaluate(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "claim_audit_missing"
+    assert _counts(store._db)["evaluations"] == 0
+
+
+def test_missing_claim_audited_refuses_evaluation_audit(tmp_path):
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    assert _evaluate(store, row, attempt).status == "evaluated"
+    _delete_result_stage(store, "claim_audited")
+    before = _counts(store._db)
+    outcome = _audit_evaluation(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "claim_audit_missing"
+    assert _counts(store._db) == before
+    assert _stage(store, row["id"]) == "evaluated"
+    assert _audit_events(store, candidate.candidate_id) == ["claimed"]
+    assert store.get_v2_evaluation(candidate.candidate_id) is not None
+
+
+def test_missing_evaluation_audited_refuses_consumption(tmp_path):
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    assert _evaluate(store, row, attempt).status == "evaluated"
+    assert _audit_evaluation(store, row, attempt).status == "evaluation_audited"
+    _delete_result_stage(store, "evaluation_audited")
+    before = _counts(store._db)
+    outcome = _consume(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "evaluation_audit_missing"
+    assert _counts(store._db) == before
+    assert _lifecycle(store, candidate.candidate_id) == "evaluated"
+    assert _stage(store, row["id"]) == "evaluation_audited"
+    assert _stage_audits(store) == ["admitted", "claim_audited"]
+
+
+def test_duplicate_evaluation_audited_refuses_consumption(tmp_path):
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    assert _evaluate(store, row, attempt).status == "evaluated"
+    assert _audit_evaluation(store, row, attempt).status == "evaluation_audited"
+    _duplicate_result_stage(store, "evaluation_audited")
+    outcome = _consume(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "evaluation_audit_missing"
+    assert _lifecycle(store, candidate.candidate_id) == "evaluated"
+
+
+def test_foreign_candidate_evaluation_audited_refuses_consumption(tmp_path):
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    assert _evaluate(store, row, attempt).status == "evaluated"
+    assert _audit_evaluation(store, row, attempt).status == "evaluation_audited"
+    _replace_result_stage(
+        store, "evaluation_audited",
+        lambda p: p.update(candidate_id="APV2C-" + "1" * 64),
+    )
+    outcome = _consume(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "evaluation_audit_missing"
+    assert _lifecycle(store, candidate.candidate_id) == "evaluated"
+
+
+def test_missing_evaluation_audited_refuses_consumed_audit(tmp_path):
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    assert _evaluate(store, row, attempt).status == "evaluated"
+    assert _audit_evaluation(store, row, attempt).status == "evaluation_audited"
+    assert _consume(store, row, attempt).status == "consumed"
+    _delete_result_stage(store, "evaluation_audited")
+    before = _counts(store._db)
+    outcome = _audit_consumption(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "evaluation_audit_missing"
+    assert _counts(store._db) == before
+    assert _audit_events(store, candidate.candidate_id) == ["claimed", "evaluated"]
+    assert _stage(store, row["id"]) == "consumed"
+
+
+def test_manager_probe_cases_now_refuse(tmp_path):
+    """The five step17 observations must all be bounded refusals now."""
+    # 1. missing claim_audited result-stage -> evaluate refuses.
+    store, _, row, attempt, candidate = _ready(tmp_path / "case1")
+    _delete_result_stage(store, "claim_audited")
+    assert _evaluate(store, row, attempt).refusal_code == "claim_audit_missing"
+
+    # 2. missing evaluation_audited result-stage -> consume refuses.
+    store, _, row, attempt, candidate = _ready(tmp_path / "case2")
+    assert _evaluate(store, row, attempt).status == "evaluated"
+    assert _audit_evaluation(store, row, attempt).status == "evaluation_audited"
+    _delete_result_stage(store, "evaluation_audited")
+    assert _consume(store, row, attempt).refusal_code == "evaluation_audit_missing"
+
+    # 3. duplicate claim_audited result-stage -> evaluate refuses.
+    store, _, row, attempt, candidate = _ready(tmp_path / "case3")
+    _duplicate_result_stage(store, "claim_audited")
+    assert _evaluate(store, row, attempt).refusal_code == "claim_audit_missing"
+
+    # 4. decision changed to delegate -> evaluate refuses.
+    store, _, row, attempt, candidate = _ready(tmp_path / "case4")
+    _set_decision(store, row, lambda d: d.update(
+        action="delegate", agent="dev_agent", prompt="changed persisted decision",
+    ))
+    assert _evaluate(store, row, attempt).refusal_code == "identity_mismatch"
+
+    # 5. active_chain set after claim -> evaluate refuses.
+    store, _, row, attempt, candidate = _ready(tmp_path / "case5")
+    _set_task(store, active_chain="[]")
+    assert _evaluate(store, row, attempt).refusal_code == "claim_failed"
+
+
+# ── C3c correction: the persisted manager decision, not just its carrier ──
+
+
+def test_missing_action_refuses_claim(tmp_path):
+    """A synthetic carrier-only completion is NOT a valid escalation."""
+    store = _store(tmp_path)
+    binding = _seed_bound_task(store)
+    carrier, admission = _carrier_and_admission(binding)
+    assert _admit(
+        store, carrier, admission,
+        decision_json=json.dumps({"_manager_self_evaluation": carrier}),
+    ) is True
+    row = store._db.get_latest_task_result(TASK_ID, MANAGER, SESSION_ID)
+    attempt = store._db.get_authority_policy_v2_attempt_for_result(row["id"])
+    outcome = _claim(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "identity_mismatch"
+    assert _counts(store._db)["candidates"] == 0
+
+
+def test_missing_action_refuses_evaluation(tmp_path):
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    _set_decision(store, row, lambda d: d.pop("action", None))
+    outcome = _evaluate(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "identity_mismatch"
+    assert _counts(store._db)["evaluations"] == 0
+    assert _lifecycle(store, candidate.candidate_id) == "created"
+
+
+def test_ordinary_delegate_decision_refuses_evaluation(tmp_path):
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    _set_decision(store, row, lambda d: d.update(
+        action="delegate", agent="dev_agent", prompt="ordinary work",
+    ))
+    outcome = _evaluate(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "identity_mismatch"
+    assert _counts(store._db)["evaluations"] == 0
+
+
+@pytest.mark.parametrize("action,extra", [
+    ("delegate", {"agent": "dev_agent", "prompt": "x"}),
+    ("supersede", {"successor_brief": "x"}),
+    ("done", {"summary": "x"}),
+    ("escalate", {}),
+])
+def test_decision_action_is_inspected_as_data(tmp_path, action, extra):
+    """Only ``action == 'escalate'`` is eligible; other actions refuse.
+
+    The ``escalate`` row (arbitrary/absent reason) stays eligible because the
+    decision is inspected as DATA, not as prose.
+    """
+    store, _, row, attempt, candidate = _ready(tmp_path)
+
+    def mutate(d, action=action, extra=extra):
+        d["action"] = action
+        d.update(extra)
+
+    _set_decision(store, row, mutate)
+    outcome = _evaluate(store, row, attempt)
+    if action == "escalate":
+        assert outcome.status == "evaluated"
+    else:
+        assert outcome.status == "refused" and outcome.refusal_code == "identity_mismatch"
+        assert _counts(store._db)["evaluations"] == 0
+
+
+def test_arbitrary_escalation_reason_remains_eligible(tmp_path):
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    _set_decision(store, row, lambda d: d.update(
+        action="escalate", reason="arbitrary noncanonical reason \u2731 not a sentinel",
+    ))
+    assert _evaluate(store, row, attempt).status == "evaluated"
+    assert store.get_v2_evaluation(candidate.candidate_id).outcome == "continue_applies"
+
+
+@pytest.mark.parametrize("boundary", [
+    "evaluate", "audit_evaluation", "consume", "audit_consumption",
+])
+def test_decision_drift_refuses_at_every_stage(tmp_path, boundary):
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    if boundary in {"consume", "audit_consumption"}:
+        assert _evaluate(store, row, attempt).status == "evaluated"
+        assert _audit_evaluation(store, row, attempt).status == "evaluation_audited"
+        if boundary == "audit_consumption":
+            assert _consume(store, row, attempt).status == "consumed"
+    elif boundary == "audit_evaluation":
+        assert _evaluate(store, row, attempt).status == "evaluated"
+    before = _counts(store._db)
+    # Decision drifted to an ordinary delegate while the assessment carrier is
+    # unchanged.
+    _set_decision(store, row, lambda d: d.update(
+        action="delegate", agent="dev_agent", prompt="between-stage drift",
+    ))
+    outcome = _STAGE[boundary](store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "identity_mismatch"
+    assert _counts(store._db) == before
+    if boundary == "evaluate":
+        assert store.get_v2_evaluation(candidate.candidate_id) is None
+    else:
+        assert store.get_v2_evaluation(candidate.candidate_id) is not None
+
+
+# ── C3c correction: retained mechanical eligibility at every boundary ────
+
+
+@pytest.mark.parametrize(("column", "value"), [
+    ("active_chain", "[]"),
+    ("active_fanout", '[{"child": "TASK-CHILD"}]'),
+    ("blocked_on_job_ids", "[1]"),
+])
+def test_retained_mechanical_activity_refuses_evaluation(tmp_path, column, value):
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    _set_task(store, **{column: value})
+    outcome = _evaluate(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "claim_failed"
+    assert _counts(store._db)["evaluations"] == 0
+    assert _lifecycle(store, candidate.candidate_id) == "created"
+    assert _stage(store, row["id"]) == "claim_audited"
+
+
+def test_revisit_lineage_refuses_evaluation(tmp_path):
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    _set_task(store, revisit_of_task_id="TASK-OTHER")
+    outcome = _evaluate(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "claim_failed"
+    assert _counts(store._db)["evaluations"] == 0
+
+
+def test_successor_root_refuses_evaluation(tmp_path):
+    from runtime.models import TaskRecord
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    store._db.insert_task(TaskRecord(
+        id="TASK-PRED", status=TaskStatus.COMPLETED, assigned_agent=MANAGER,
+        team=TEAM, brief="predecessor", orchestration_step_count=1,
+    ))
+    store._db._conn.execute(
+        """INSERT INTO manager_supersessions
+           (predecessor_task_id, successor_task_id, original_root_task_id,
+            actor_agent, actor_session_id, rationale, attestation_evidence,
+            predecessor_brief, successor_brief, predecessor_brief_sha256,
+            successor_brief_sha256, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        ("TASK-PRED", TASK_ID, "TASK-PRED", MANAGER, "sess-pred", "supersede",
+         "evidence", "predecessor", "successor", "a" * 64, "b" * 64,
+         "2026-09-20T00:00:00+00:00"),
+    )
+    store._db._conn.commit()
+    outcome = _evaluate(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "claim_failed"
+    assert _counts(store._db)["evaluations"] == 0
+
+
+def test_exhausted_budget_refuses_evaluation_then_under_cap_proceeds(tmp_path):
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    _set_task(store, revision_count=3)
+    outcome = _evaluate(store, row, attempt, max_revise_rounds=3)
+    assert outcome.status == "refused" and outcome.refusal_code == "claim_failed"
+    assert _counts(store._db)["evaluations"] == 0
+    assert _lifecycle(store, candidate.candidate_id) == "created"
+
+    store2, _, row2, attempt2, candidate2 = _ready(tmp_path / "under-cap")
+    _set_task(store2, revision_count=3)
+    assert _evaluate(store2, row2, attempt2, max_revise_rounds=4).status == "evaluated"
+
+
+def test_adverse_review_and_partial_work_do_not_veto_evaluation(tmp_path):
+    from runtime.models import TaskRecord
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    store._db.insert_task(TaskRecord(
+        id="TASK-CHILD", status=TaskStatus.IN_PROGRESS, assigned_agent="dev_agent",
+        team=TEAM, brief="child", orchestration_step_count=1,
+        parent_task_id=TASK_ID,
+    ))
+    store._db._conn.execute(
+        """INSERT INTO task_results (task_id, agent, session_id, output_summary,
+               confidence_score, status, verdict, created_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        ("TASK-CHILD", "dev_agent", "sess-child", "adverse", 80, "completed",
+         "REQUEST_CHANGES", "2026-09-20T00:00:00+00:00"),
+    )
+    _set_task(store, zombie_flagged_at="2026-09-20T00:00:00+00:00")
+    store._db._conn.commit()
+    assert _evaluate(store, row, attempt).status == "evaluated"
+
+
+def test_evaluation_loser_does_not_poison_genuine_owner(tmp_path):
+    store, _, row, attempt, candidate = _ready(tmp_path)
+    loser = _evaluate(store, row, attempt, owner_attempt_id="not-the-owner")
+    assert loser.status == "refused" and loser.refusal_code == "owner_lost"
+    assert _counts(store._db)["evaluations"] == 0
+    # The genuine uninterrupted owner still evaluates exactly once.
+    assert _evaluate(store, row, attempt).status == "evaluated"
+    assert _counts(store._db)["evaluations"] == 1

@@ -826,12 +826,20 @@ def test_shipping_fixture_paths_and_markers_are_owned(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------
 
 
-def _drive_c3b_claim(fixture: _ShippingFixture) -> tuple[str, str]:
+def _drive_c3b_claim(
+    fixture: _ShippingFixture, *, retained_eligibility_negative: bool = False,
+) -> tuple[str, str]:
     """Real launch -> subprocess CLI admission -> callable K/P claim + a1 audit.
 
     Shared by the fresh and the historically migrated venues.  The provider
     launch is held only at the external process boundary, so the durable
     admitted result is genuine and the claim seam runs against it.
+
+    ``retained_eligibility_negative`` stops the run at the minimal red case for
+    the C3c correction: after a genuine claim+claim-audit, a task becoming
+    mechanically ineligible (non-null ``active_chain``) must refuse the next
+    callable stage from the REAL persisted evidence, with the exact prior
+    residue retained.
     """
     fixture.activate_v2_pair()
     fixture.install_launch_hold()
@@ -904,6 +912,38 @@ def _drive_c3b_claim(fixture: _ShippingFixture) -> tuple[str, str]:
         a["payload"]["stage"]
         for a in _admission_counts(fixture, root_id)[2]
     ] == ["admitted", "claim_audited"]
+
+    if retained_eligibility_negative:
+        # C3c callable-stage evidence: retained mechanical eligibility is
+        # re-derived from the REAL persisted task at the next stage boundary.
+        # Valid-at-claim is insufficient: a later non-null active_chain refuses
+        # with no new V/audit/advancement and the exact prior residue retained.
+        db._conn.execute(
+            "UPDATE tasks SET active_chain=? WHERE id=?", ("[]", root_id)
+        )
+        db._conn.commit()
+        ineligible = db.evaluate_authority_policy_v2_candidate(
+            root_task_id=root_id, manager_agent=MANAGER,
+            manager_session_id=session_id, result_id=row_id,
+            origin_boot_id=attempt.origin_boot_id,
+            owner_attempt_id=attempt.owner_attempt_id,
+        )
+        assert ineligible.status == "refused", ineligible
+        assert ineligible.refusal_code == "claim_failed", ineligible
+        assert db.get_authority_policy_v2_candidate(
+            candidate.candidate_id
+        ).lifecycle_stage == "created"
+        assert db.get_authority_policy_v2_evaluation(candidate.candidate_id) is None
+        assert db.get_authority_policy_v2_attempt_for_result(row_id).stage == "claim_audited"
+        assert [
+            a["payload"]["stage"]
+            for a in _admission_counts(fixture, root_id)[2]
+        ] == ["admitted", "claim_audited"]
+        fixture.release_launch()
+        fixture.join_workers()
+        assert db.get_task(root_id).status is TaskStatus.ESCALATED
+        assert db.get_active_authority_continue_envelope(root_id) is None
+        return root_id, candidate.candidate_id
 
     # C3c: the four callable pre-final stage methods against the same genuine
     # persisted transport evidence, still while the external launch is held.
@@ -986,5 +1026,24 @@ def test_shipping_historically_migrated_claim_and_claim_audit(tmp_path, monkeypa
     fixture.start()
     try:
         _drive_c3b_claim(fixture)
+    finally:
+        fixture.stop()
+
+
+def test_shipping_callable_stage_retained_eligibility_negative(shipping):
+    """C3c: the real persisted venue drives a retained-eligibility refusal.
+
+    This is callable-stage evidence: the shipping hook stays fail-closed and no
+    actual same-root continuation is claimed yet.
+    """
+    _drive_c3b_claim(shipping, retained_eligibility_negative=True)
+
+
+def test_shipping_historically_migrated_callable_stage_negative(tmp_path, monkeypatch):
+    """The retained-eligibility callable-stage negative over a migrated DB."""
+    fixture = _ShippingFixture(tmp_path, monkeypatch, seed_historical=True)
+    fixture.start()
+    try:
+        _drive_c3b_claim(fixture, retained_eligibility_negative=True)
     finally:
         fixture.stop()

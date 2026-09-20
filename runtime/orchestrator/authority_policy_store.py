@@ -218,55 +218,68 @@ class AuthorityPolicyStore:
     def audit_v2_candidate_claim(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
+        max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
         return self._db.audit_authority_policy_v2_candidate_claim(
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+            max_revise_rounds=max_revise_rounds,
         )
 
     # -- THR-229 checkpoint C3c: thin forwarders over the DB-owned evaluation,
     # evaluation-audit, consumption and consumed-audit stages plus the
     # authenticated V reads.  The facade never begins, commits or rolls back.
+    # Each forwarder carries the server-owned current revise ceiling so the
+    # retained mechanical eligibility is re-derived at every stage boundary,
+    # never silently lost after claim.
 
     def evaluate_v2_candidate(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
+        max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
         return self._db.evaluate_authority_policy_v2_candidate(
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+            max_revise_rounds=max_revise_rounds,
         )
 
     def audit_v2_candidate_evaluation(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
+        max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
         return self._db.audit_authority_policy_v2_candidate_evaluation(
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+            max_revise_rounds=max_revise_rounds,
         )
 
     def consume_v2_candidate(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
+        max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
         return self._db.consume_authority_policy_v2_candidate(
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+            max_revise_rounds=max_revise_rounds,
         )
 
     def audit_v2_candidate_consumption(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
+        max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
         return self._db.audit_authority_policy_v2_candidate_consumption(
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+            max_revise_rounds=max_revise_rounds,
         )
 
     def get_v2_evaluation(self, candidate_id: str) -> AuthorityPolicyV2Evaluation | None:

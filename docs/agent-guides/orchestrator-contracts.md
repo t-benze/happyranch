@@ -477,6 +477,33 @@ hook remains fail-closed (ESCALATE) until the later THR-229
 refusal/reaper/recovery/finalize/settle/publish/admit/spend consumer and the
 editable-pair editor/browser path land and merge.
 
+The C3c correction tightens the four pre-final boundaries without changing the
+accepted table/identity contract. First, BOTH halves of every required prior
+stage audit are authenticated at every public evaluation, evaluation-audit,
+consume and consumed-audit boundary: exactly one closed
+`authority_policy_v2_result_stage` `audit_log` event for each required stage
+(`admitted`, `claim_audited`, and — from consumption onward — `evaluation_audited`)
+with the exact closed payload key set, the immutable attempt identity, the
+candidate ID for the later stages and the required `unfinalized` finalization
+marker, alongside the sibling `authority_policy_v2_candidate_audit` event. The
+audit created by the transaction currently running is never required, `a0`
+admission replay stays scoped to `admitted`, and a missing, duplicated, mutated,
+foreign-candidate, extra-key or malformed event is a bounded refusal that writes
+no V/audit/advancement and never repairs by reinserting. Second, the persisted
+manager decision is inspected separately from its dual assessment: the
+`decision_json.action` must be the accepted root escalation action `escalate`, so
+a missing/malformed/non-escalate decision (ordinary `delegate`/`supersede`/`done`
+etc.) or a decision drifted between stages refuses the continuation path while
+`_server_fact_clause` prose, clause/candidate preimages and legacy v1 behavior are
+untouched. Third, the retained current mechanical eligibility — root-only, task
+ownership/cancellation, active chain/fanout, blocked job, revisit/successor
+lineage and the current server-owned `max_revise_rounds` ceiling against the
+persisted `tasks.revision_count` — is re-derived from the authenticated persisted
+state at every stage boundary (the scalar ceiling is threaded through the
+existing `authority_policy_v2_claim_eligibility(orch)` seam, never an invented
+allow boolean), not only once at claim; ordinary `REQUEST_CHANGES`/partial-work
+diagnostics and valid historical DDL remain non-vetoes.
+
 The file-backed completion CLI preserves a supplied `manager_self_evaluation`
 member verbatim (including invalid/null values) so the daemon, rather than the
 client, validates it; an omitted member remains omitted. The shipping CLI to

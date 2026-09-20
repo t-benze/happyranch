@@ -145,7 +145,13 @@ def _admit(store: AuthorityPolicyStore, carrier: dict, admission: dict, **overri
     kwargs = dict(
         task_id=TASK_ID, agent=MANAGER, session_id=SESSION_ID,
         output_summary="escalate", confidence_score=90, status="completed",
-        decision_json=json.dumps({"_manager_self_evaluation": carrier}),
+        # THR-229 C3c correction: a genuine v2 pre-escalation callback persists
+        # the accepted root escalation decision (``action=escalate``) ALONGSIDE
+        # the dual assessment.  A synthetic fixture must supply it at setup; it
+        # must not be omitted and then treated as a valid escalation.
+        decision_json=json.dumps(
+            {"action": "escalate", "_manager_self_evaluation": carrier}
+        ),
         v2_admission=admission,
     )
     kwargs.update(overrides)
