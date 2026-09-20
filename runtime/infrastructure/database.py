@@ -12128,17 +12128,33 @@ class Database:
                 or notification.publisher_boot_id != publisher_boot_id
                 or notification.next_session_id is None
                 or dispatch.state != "admitted"
+                or dispatch.generation_id != notification_id
             ):
                 return _pending("stale_claim", **base)
-            retained_boot = self._authenticate_v2_retained_claim_boot_uncommitted(
+            # Complete retained publication evidence for THIS exact generation:
+            # the bounded contiguous ``{1..P}`` claim history, the bound P/boot
+            # and every state-required published/failure/return observation,
+            # each classified before any discriminator filtering.  A missing,
+            # duplicated, foreign, malformed or conflicting claim/observation
+            # refuses with the exact admitted/settled residue preserved.
+            if not self._authenticate_v2_retained_publication_evidence_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
                 result_id=result_id, envelope_id=envelope.envelope_id,
-                notification_id=notification_id, generation_id=generation_id,
-                publication_attempt=publication_attempt,
-                expected_boot=publisher_boot_id,
-            )
-            if retained_boot is None:
+                notification=notification, generation_id=generation_id,
+                allowed_states=("admitted", "settled"),
+            ):
+                return _pending("evidence_drift", **base)
+            # The stage must be GENUINELY settled: real ordinary completion
+            # evidence OR the exact real callback_consumed Q plus both complete
+            # settlement audits.  A deleted/absent/malformed/conflicting
+            # completion or receipt refuses with zero mutation.
+            if not self._authenticate_v2_publication_settlement_proof_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                manager_session_id=manager_session_id, result_id=result_id,
+                attempt=attempt, candidate=candidate, envelope=envelope,
+                notification=notification, result_row=ctx["result_row"],
+            ):
                 return _pending("evidence_drift", **base)
             admission_claim = self._v2_admission_event_payload(
                 stage=AUTHORITY_POLICY_V2_RESULT_STAGE_GENERATION_CLAIMED,
@@ -12166,6 +12182,21 @@ class Database:
                     attempt_id=attempt.attempt_id, expected=admission_settled,
                 ):
                     return _pending("admission_evidence_missing", **base)
+            else:
+                # N admitted requires the PROVABLE ABSENCE of any related
+                # notification_settled settlement evidence: a preexisting,
+                # duplicate, foreign, malformed or opaque related event is a
+                # conflict and is never ignored or repaired by appending the
+                # acknowledgement observation.
+                if not self._v2_related_result_stage_events_absent_uncommitted(
+                    root_task_id=root_task_id, manager_agent=manager_agent,
+                    attempt_id=attempt.attempt_id,
+                    stage=AUTHORITY_POLICY_V2_RESULT_STAGE_NOTIFICATION_SETTLED,
+                    candidate_id=candidate.candidate_id, result_id=result_id,
+                    envelope_id=envelope.envelope_id,
+                    notification_id=notification_id, generation_id=generation_id,
+                ):
+                    return _pending("evidence_drift", **base)
             observed = self._v2_publication_audit_payload(
                 stage=AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_RETURNED,
                 attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
@@ -12174,14 +12205,43 @@ class Database:
                 publication_attempt=publication_attempt,
                 publisher_boot_id=publisher_boot_id,
             )
-            if not self._authenticate_v2_publication_event_uncommitted(
+            # Explicit THREE-WAY classification of every POTENTIALLY related
+            # publish_returned observation, classified BEFORE any attempt/G/P/
+            # boot filtering.  Zero authentic-related observations permits
+            # exactly ONE insert after every prerequisite above authenticated;
+            # exactly one byte/type/closed-shape-correct observation is a
+            # read-only exact replay; any malformed/duplicate/conflicting/
+            # opaque/extra-key/foreign-with-an-exact-reference observation
+            # refuses with the exact prior residue.  A single authenticator's
+            # ``False`` return is NEVER read as permission to append.
+            related_returned = self._v2_related_publication_events_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
-                attempt_id=attempt.attempt_id, expected=observed,
-            ):
+                attempt_id=attempt.attempt_id,
+                stage=AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_RETURNED,
+                candidate_id=candidate.candidate_id, result_id=result_id,
+                envelope_id=envelope.envelope_id,
+                notification_id=notification_id, generation_id=generation_id,
+            )
+            if related_returned is None:
+                return _pending("evidence_drift", **base)
+            if len(related_returned) == 0:
                 self.insert_audit_log_uncommitted(
                     root_task_id, manager_agent,
                     AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION, observed,
                 )
+            elif len(related_returned) == 1:
+                payload = related_returned[0]
+                if (
+                    not isinstance(payload, dict)
+                    or set(payload.keys())
+                    != self._v2_publication_event_identity_keys(
+                        AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_RETURNED
+                    )
+                    or not self._v2_json_type_sensitive_equal(payload, observed)
+                ):
+                    return _pending("evidence_drift", **base)
+            else:
+                return _pending("evidence_drift", **base)
             return AuthorityPolicyV2PublicationAckOutcome(
                 status="publish_returned", state=state,
                 publication_attempt=publication_attempt, **base,

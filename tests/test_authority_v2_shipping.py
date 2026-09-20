@@ -1758,7 +1758,7 @@ def _delete_recovery_settled_audit_rows(db, root_id: str) -> None:
 def _install_admission_negative(
     db, root_id: str, result_id: int, negative: str, done: threading.Event,
     publisher_done: threading.Event,
-) -> str:
+) -> tuple[str, ...]:
     """Corrupt ONE prerequisite at the EXACT real run-step boundary.
 
     The wrapper is installed on the SAME Database instance the real
@@ -1782,7 +1782,7 @@ def _install_admission_negative(
                 done.set()
 
         db.try_claim_v2_continuation_generation = _corrupting_claim
-        return "try_claim_v2_continuation_generation"
+        return ("try_claim_v2_continuation_generation",)
     if negative == "missing_settlement_proof":
         original = db.settle_v2_continuation_generation_admission
 
@@ -1796,13 +1796,96 @@ def _install_admission_negative(
                 done.set()
 
         db.settle_v2_continuation_generation_admission = _corrupting_settle
-        return "settle_v2_continuation_generation_admission"
+        return ("settle_v2_continuation_generation_admission",)
+    if negative == "ack_corruption":
+        # Deterministic admitted/settled acknowledgement corruption: the REAL
+        # publisher's acknowledgement is gated at a synchronization barrier
+        # until the REAL consumer has genuinely admitted the generation; only
+        # then is one conflicting related ``publish_returned`` observation
+        # appended (fixture-level, never a production write) and the real
+        # acknowledgement allowed to run.  The consumer's own settlement is
+        # gated behind that corruption so the ordering cannot race.  No copied
+        # production reader/writer/ack logic and no elapsed sleeps.
+        original_ack = db.acknowledge_authority_policy_v2_notification_publication
+        original_settle = db.settle_v2_continuation_generation_admission
+        corrupted = threading.Event()
+
+        def _await_admitted() -> str:
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                dispatch = db.get_authority_policy_v2_root_dispatch(root_id)
+                if dispatch is not None and dispatch.generation_id:
+                    notification = db.get_authority_policy_v2_recovery_notification(
+                        dispatch.generation_id
+                    )
+                    if (
+                        notification is not None
+                        and notification.state in ("admitted", "settled")
+                    ):
+                        return notification.notification_id
+                time.sleep(0.02)
+            raise AssertionError("the generation was never admitted")
+
+        def _corrupting_ack(**kwargs):
+            try:
+                generation = _await_admitted()
+                _append_conflicting_publish_returned(db, root_id, generation)
+                corrupted.set()
+                return original_ack(**kwargs)
+            finally:
+                done.set()
+
+        def _gated_settle(**kwargs):
+            corrupted.wait(timeout=30.0)
+            return original_settle(**kwargs)
+
+        db.acknowledge_authority_policy_v2_notification_publication = _corrupting_ack
+        db.settle_v2_continuation_generation_admission = _gated_settle
+        return (
+            "acknowledge_authority_policy_v2_notification_publication",
+            "settle_v2_continuation_generation_admission",
+        )
     raise AssertionError(f"unknown negative: {negative}")
+
+
+def _append_conflicting_publish_returned(db, root_id: str, generation: str) -> None:
+    """Fixture-level ONE corrupt related ``publish_returned`` observation.
+
+    Built from the ONE authentic retained ``publish_claimed`` event for this
+    exact generation (so every causal reference is an exact match -- it is
+    RELATED, never unrelated history) but carrying a null publisher boot.  The
+    malformed related observation must make BOTH the settlement retained-evidence
+    reader and the acknowledgement reader refuse, so the scenario is
+    deterministic and no continuation launch ever follows.
+    """
+    import json as _json
+
+    from runtime.models import AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
+
+    claim = None
+    for audit in db.get_audit_logs(root_id):
+        payload = audit.get("payload")
+        if (
+            audit.get("action") == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
+            and isinstance(payload, dict) and payload.get("stage") == "publish_claimed"
+        ):
+            claim = payload
+    assert claim is not None, "no retained publish_claimed event"
+    conflict = dict(claim)
+    conflict["stage"] = "publish_returned"
+    conflict["publisher_boot_id"] = None
+    db._conn.execute(
+        "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+        "VALUES (?,?,?,?,?)",
+        (root_id, MANAGER, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+         _json.dumps(conflict), "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
 
 
 def _assert_admission_negative(
     fixture: _ShippingFixture, db, root_id: str, generation: str, negative: str,
-    attr: str, done: threading.Event, original_session: str,
+    attr, done: threading.Event, original_session: str,
 ) -> str:
     """Assert one corrupted-prerequisite negative through the REAL run-step.
 
@@ -1813,10 +1896,11 @@ def _assert_admission_negative(
     try:
         assert done.wait(timeout=30.0), "the real run-step never reached the boundary"
     finally:
-        try:
-            delattr(db, attr)
-        except AttributeError:
-            pass
+        for name in attr if isinstance(attr, tuple) else (attr,):
+            try:
+                delattr(db, name)
+            except AttributeError:
+                pass
     notification = db.get_authority_policy_v2_recovery_notification(generation)
     assert notification is not None
     task = db.get_task(root_id)
@@ -1845,6 +1929,11 @@ def _assert_admission_negative(
         # carries the ORIGINAL manager session, never the reserved next session.
         assert fixture.captured["session_id"] == original_session
         assert notification.next_session_id != original_session
+        if negative == "ack_corruption":
+            # The real publisher acknowledgement refused: exactly the ONE
+            # fixture-injected conflicting observation remains and no fabricated
+            # acknowledgement observation was appended.
+            assert stages.count("publish_returned") == 1
     # The durable generation count is unchanged: no second admission/allocation.
     assert db._conn.execute(
         "SELECT COUNT(*) FROM authority_policy_v2_continue_envelopes"
@@ -1964,9 +2053,14 @@ def _drive_c3d3b_admission(
     # never regresses state, leaving ``admitted``/``settled``.  The substantive
     # one-admission proof is the deterministic durable assertions below (and in
     # ``_assert_admission_negative``), never this racy intermediate read.
-    assert receipts and receipts[0]["status"] in (
-        "published", "publish_returned",
-    ), receipts
+    # The acknowledgement-corruption negative is deterministic: the barrier
+    # waits for real admission first, so the publisher reports the refused
+    # ``ack_pending`` and never appends an observation.
+    expected_receipt = (
+        ("ack_pending",) if negative == "ack_corruption"
+        else ("published", "publish_returned")
+    )
+    assert receipts and receipts[0]["status"] in expected_receipt, receipts
     notification = db.get_authority_policy_v2_recovery_notification(generation)
     assert notification is not None and notification.state in (
         "published", "admitted", "settled",
@@ -2094,5 +2188,34 @@ def test_shipping_historically_migrated_missing_settlement_proof(
     fixture.start()
     try:
         _drive_c3d3b_admission(fixture, negative="missing_settlement_proof")
+    finally:
+        fixture.stop()
+
+
+# C3d3b correction (TASK-8555): the deterministic admitted/settled
+# acknowledgement-corruption scenario through the SAME real publisher ->
+# TaskQueue -> Dispatcher/run_step -> held external launch venue, fresh AND
+# full historical-migrated.  A barrier establishes actual admission BEFORE the
+# one conflicting related observation is injected and the REAL publisher
+# acknowledgement is allowed to run, so the refusal is deterministic (no
+# elapsed sleeps) and the healthy consumer-outruns-ack positive is retained.
+
+
+def test_shipping_admitted_acknowledgement_corruption_refuses(tmp_path, monkeypatch):
+    fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2)
+    fixture.start()
+    try:
+        _drive_c3d3b_admission(fixture, negative="ack_corruption")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_ack_corruption_refuses(tmp_path, monkeypatch):
+    fixture = _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=True, queue_workers=2,
+    )
+    fixture.start()
+    try:
+        _drive_c3d3b_admission(fixture, negative="ack_corruption")
     finally:
         fixture.stop()

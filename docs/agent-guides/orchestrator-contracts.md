@@ -834,9 +834,19 @@ dispatches or repeats admission. Ordinary `Database.try_claim_for_step` now fenc
 a pending v2 root-dispatch pointer (a root cannot win on status/block_kind alone),
 and `run_step` admits a tagged queue item ONLY through the generation claim: a
 malformed/present-null/empty/stale/mismatched token refuses without any ordinary
-fallback. The consumer-outruns-acknowledgement path now authenticates the exact
-admitted/settled reservation and claim/settlement evidence and appends only the
-exact `publish_returned(P)` observation, never regressing N/D/task. The real
+fallback. The consumer-outruns-acknowledgement path now validates the COMPLETE
+admitted/settled stage pre-state — the bounded contiguous `{1..P}` claim and
+observation history, the exact G/D/next-session reservation and
+`generation_claimed` (the ABSENCE of `notification_settled` while `admitted`,
+and exactly the authentic `notification_settled` once `settled`) and the genuine
+ordinary-or-exact-recovery settlement proof — and classifies every
+possibly-related `publish_returned` observation three ways before any
+attempt/G/P/boot filtering: zero authentic-related observations permits exactly
+ONE insert after every prerequisite authenticates, one byte/type/closed-shape
+-correct observation is a read-only exact replay, and any malformed, duplicate,
+conflicting, opaque, extra-key or foreign-with-an-exact-reference observation
+refuses with the exact prior residue. A false read is never permission to
+append, and N/D/task are never regressed. The real
 publication/admission venue is proven in `tests/test_authority_v2_shipping.py`
 over both fresh and full historical-migrated owned RuntimeDirs through the ACTUAL
 publisher -> real `TaskQueue` -> `Dispatcher`/`run_step` -> reserved-session
@@ -870,7 +880,18 @@ including invalidation's LATER root-dispatch UPDATE and reclaim failures that
 retain the previous P/boot/lease/claim/failure history — and the fresh AND full
 historical-migrated shipping venues add missing-retained-claim and
 missing-settlement-proof negatives that launch nothing, preserve the durable
-residue and take no ordinary fallback.
+residue and take no ordinary fallback. The admitted/settled acknowledgement
+branch is covered by the same complete-pre-state rule (the omitted correction
+closed by TASK-8555): a deleted ordinary completion, a preexisting
+`notification_settled` while `admitted`, a conflicting current-P
+`publish_failed`, and any conflicting/duplicate/malformed/null/wrong-type/
+extra-key/opaque related `publish_returned` observation now refuse with the
+exact admitted/settled residue and never fabricate an observation, while a
+publish_returned audit-insert or commit failure rolls back for one safe exact
+retry; the fresh AND full historical-migrated shipping venues add a
+barrier-established (never elapsed-sleep) admission-before-corruption
+acknowledgement negative that proves the refusal, the unchanged admitted
+reservation/N/D and no continuation launch.
 
 The file-backed completion CLI preserves a supplied `manager_self_evaluation`
 member verbatim (including invalid/null values) so the daemon, rather than the

@@ -51,6 +51,7 @@ from tests.test_authority_v2_publication_bookkeeping import (
     _delete_stage_event,
     _dispatch,
     _dump,
+    _failure,
     _finalized,
     _finalized_recovery,
     _mutate_notification,
@@ -963,3 +964,406 @@ def test_direct_run_step_settlement_failure_holds_launch_and_replay(tmp_path):
         assert _stage_events(store, "notification_settled") == []
     finally:
         del store._db.settle_v2_continuation_generation_admission
+
+
+# ── C3d3b correction: omitted post-admission acknowledgement boundary ────
+#
+# TASK-8555 closes the admitted/settled acknowledgement early-return branch.
+# Every admitted/settled ack (and exact replay) must authenticate its COMPLETE
+# coherent stage pre-state and classify every POTENTIALLY related
+# ``publish_returned`` observation three ways: zero -> exactly one insert,
+# one exact -> read-only replay, anything else -> refuse with the exact prior
+# residue.  The nine manager ack-probe invalids are reproduced here as
+# asserting tests on the immutable 26f06b5c base, plus representative
+# absent/null/wrong-type/distinct-discriminator/extra-key/opaque cases.
+
+
+def _claimed_event(store):
+    events = _stage_events(store, "publish_claimed")
+    assert len(events) == 1, events
+    return dict(events[0])
+
+
+def _returned_payload(store, claimed, **overrides):
+    """The exact closed ``publish_returned(P)`` payload for this generation."""
+    base = _claimed_event(store)
+    observed = {
+        "stage": "publish_returned",
+        "attempt_id": base["attempt_id"],
+        "candidate_id": base["candidate_id"],
+        "result_id": base["result_id"],
+        "envelope_id": base["envelope_id"],
+        "notification_id": base["notification_id"],
+        "generation_id": base["generation_id"],
+        "publication_attempt": claimed.publication_attempt,
+        "publisher_boot_id": claimed.publisher_boot_id,
+    }
+    observed.update(overrides)
+    return observed
+
+
+def _admitted_stage(tmp_path, *, settle: bool = False):
+    store, row, attempt, outcome, claimed = _publishing(tmp_path)
+    assert _admit(store, outcome).status == "claimed"
+    if settle:
+        assert _settle(store, outcome).status == "settled"
+    return store, row, attempt, outcome, claimed
+
+
+def _ack_admitted(store, row, claimed):
+    return _ack(
+        store, row, publication_attempt=claimed.publication_attempt,
+        publisher_boot_id=claimed.publisher_boot_id,
+    )
+
+
+def _insert_extra_related_receipt(store, result_id):
+    """A second POTENTIALLY related recovery receipt (conflict, not absence)."""
+    store._db._conn.execute(
+        """INSERT INTO task_completion_recoveries
+           (task_id, agent, origin_session_id, recovery_session_id,
+            provider_session_id, claimed_at, expires_at, state,
+            accepted_result_id, accepted_result_session_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            TASK_ID, MANAGER, "sess-other-origin", "sess-other-recovery",
+            "prov-2", "2026-01-01T00:00:00+00:00",
+            "2999-01-01T00:00:00+00:00", "callback_accepted",
+            result_id, "sess-other-recovery",
+        ),
+    )
+    store._db._conn.commit()
+
+
+_ACK_CORRUPTION_CASES = [
+    ("admitted", "missing_completion"),
+    ("settled", "missing_completion"),
+    ("admitted", "conflicting_publish_returned"),
+    ("settled", "conflicting_publish_returned"),
+    ("admitted", "duplicate_publish_returned"),
+    ("settled", "duplicate_publish_returned"),
+    ("admitted", "conflicting_publish_failed"),
+    ("settled", "conflicting_publish_failed"),
+    ("admitted", "preexisting_notification_settled"),
+]
+
+
+@pytest.mark.parametrize("state,case", _ACK_CORRUPTION_CASES)
+def test_ack_after_admission_refuses_corrupted_stage_evidence(tmp_path, state, case):
+    """The nine manager ack-probe invalids now refuse with exact prior residue.
+
+    Reproduces manager step5 ack-probe.py cases at the PUBLIC ack method: a
+    deleted ordinary completion, a conflicting/duplicate ``publish_returned``
+    observation, a conflicting current-P ``publish_failed`` and a preexisting
+    ``notification_settled`` while admitted all refuse and never append.
+    """
+    store, row, attempt, outcome, claimed = _admitted_stage(
+        tmp_path, settle=(state == "settled")
+    )
+    if case == "missing_completion":
+        _delete_ordinary_completion(store, row["id"])
+    elif case in ("conflicting_publish_returned", "duplicate_publish_returned"):
+        assert _ack_admitted(store, row, claimed).status == "publish_returned"
+        event = dict(_stage_events(store, "publish_returned")[0])
+        if case == "conflicting_publish_returned":
+            event["publisher_boot_id"] = "different-boot"
+        _append_stage_event(store, event)
+    elif case == "conflicting_publish_failed":
+        event = dict(_stage_events(store, "publish_claimed")[0])
+        event["stage"] = "publish_failed"
+        _append_stage_event(store, event)
+    elif case == "preexisting_notification_settled":
+        event = dict(_stage_events(store, "generation_claimed")[0])
+        event["stage"] = "notification_settled"
+        _append_stage_event(store, event)
+    else:  # pragma: no cover - defensive
+        raise AssertionError(case)
+
+    before = _dump(store)
+    returned_before = len(_stage_events(store, "publish_returned"))
+    refusal = _ack_admitted(store, row, claimed)
+    assert refusal.status == "ack_pending", refusal
+    assert refusal.reason == "evidence_drift", refusal
+    assert _dump(store) == before
+    assert len(_stage_events(store, "publish_returned")) == returned_before
+    # A refused append can never become a later accepted duplicate.
+    again = _ack_admitted(store, row, claimed)
+    assert again.status == "ack_pending", again
+    assert again.reason == "evidence_drift", again
+    assert _dump(store) == before
+    assert len(_stage_events(store, "publish_returned")) == returned_before
+
+
+def _assert_refuses_related_returned(tmp_path, *, settle, observed_overrides):
+    store, row, attempt, outcome, claimed = _admitted_stage(tmp_path, settle=settle)
+    _append_stage_event(store, _returned_payload(store, claimed, **observed_overrides))
+    before = _dump(store)
+    refusal = _ack_admitted(store, row, claimed)
+    assert refusal.status == "ack_pending", refusal
+    assert refusal.reason == "evidence_drift", refusal
+    assert _dump(store) == before
+    assert len(_stage_events(store, "publish_returned")) == 1
+
+
+@pytest.mark.parametrize("settle", [False, True])
+def test_ack_refuses_null_related_publish_returned(tmp_path, settle):
+    _assert_refuses_related_returned(
+        tmp_path, settle=settle, observed_overrides={"publisher_boot_id": None}
+    )
+
+
+@pytest.mark.parametrize("settle", [False, True])
+def test_ack_refuses_wrong_type_related_publish_returned(tmp_path, settle):
+    _assert_refuses_related_returned(
+        tmp_path, settle=settle, observed_overrides={"publication_attempt": "1"}
+    )
+
+
+@pytest.mark.parametrize("settle", [False, True])
+def test_ack_refuses_distinct_discriminator_with_exact_reference(tmp_path, settle):
+    _assert_refuses_related_returned(
+        tmp_path, settle=settle, observed_overrides={"publication_attempt": 2}
+    )
+
+
+@pytest.mark.parametrize("settle", [False, True])
+def test_ack_refuses_extra_key_related_publish_returned(tmp_path, settle):
+    _assert_refuses_related_returned(
+        tmp_path, settle=settle, observed_overrides={"extra_key": True}
+    )
+
+
+@pytest.mark.parametrize("settle", [False, True])
+def test_ack_refuses_opaque_related_publication_evidence(tmp_path, settle):
+    store, row, attempt, outcome, claimed = _admitted_stage(tmp_path, settle=settle)
+    _append_stage_event(store, "opaque-non-object-body")
+    before = _dump(store)
+    refusal = _ack_admitted(store, row, claimed)
+    assert refusal.status == "ack_pending", refusal
+    # The fail-closed post-final reader may refuse an opaque identity-scoped row
+    # before the ack branch itself classifies it; either way zero mutation.
+    assert refusal.reason in ("evidence_drift", "identity_mismatch"), refusal
+    assert _dump(store) == before
+
+
+@pytest.mark.parametrize("settle", [False, True])
+def test_ack_refuses_missing_retained_claim_evidence(tmp_path, settle):
+    store, row, attempt, outcome, claimed = _admitted_stage(tmp_path, settle=settle)
+    _delete_stage_event(store, "publish_claimed")
+    before = _dump(store)
+    refusal = _ack_admitted(store, row, claimed)
+    assert refusal.status == "ack_pending", refusal
+    assert refusal.reason == "evidence_drift", refusal
+    assert _dump(store) == before
+
+
+@pytest.mark.parametrize("settle", [False, True])
+def test_ack_refuses_duplicate_retained_claim_evidence(tmp_path, settle):
+    store, row, attempt, outcome, claimed = _admitted_stage(tmp_path, settle=settle)
+    _append_stage_event(store, _claimed_event(store))
+    before = _dump(store)
+    refusal = _ack_admitted(store, row, claimed)
+    assert refusal.status == "ack_pending", refusal
+    assert refusal.reason == "evidence_drift", refusal
+    assert _dump(store) == before
+
+
+@pytest.mark.parametrize("settle", [False, True])
+def test_ack_refuses_missing_generation_claimed_evidence(tmp_path, settle):
+    store, row, attempt, outcome, claimed = _admitted_stage(tmp_path, settle=settle)
+    _delete_stage_event(store, "generation_claimed")
+    before = _dump(store)
+    refusal = _ack_admitted(store, row, claimed)
+    assert refusal.status == "ack_pending", refusal
+    assert refusal.reason == "admission_evidence_missing", refusal
+    assert _dump(store) == before
+
+
+def test_ack_after_settled_refuses_missing_notification_settled(tmp_path):
+    store, row, attempt, outcome, claimed = _admitted_stage(tmp_path, settle=True)
+    _delete_stage_event(store, "notification_settled")
+    before = _dump(store)
+    refusal = _ack_admitted(store, row, claimed)
+    assert refusal.status == "ack_pending", refusal
+    assert refusal.reason == "admission_evidence_missing", refusal
+    assert _dump(store) == before
+
+
+@pytest.mark.parametrize("settle", [False, True])
+def test_ack_refuses_malformed_settlement_evidence(tmp_path, settle):
+    store, row, attempt, outcome, claimed = _admitted_stage(tmp_path, settle=settle)
+    store._db._conn.execute(
+        "UPDATE audit_log SET payload=json_set(payload,'$._result_row_id',999999) "
+        "WHERE action='completion_report'"
+    )
+    store._db._conn.commit()
+    before = _dump(store)
+    refusal = _ack_admitted(store, row, claimed)
+    assert refusal.status == "ack_pending", refusal
+    assert refusal.reason == "evidence_drift", refusal
+    assert _dump(store) == before
+
+
+@pytest.mark.parametrize("settle", [False, True])
+def test_ack_first_observation_then_exact_replay_is_read_only(tmp_path, settle):
+    """Healthy positive: exactly ONE observation, then a read-only replay."""
+    store, row, attempt, outcome, claimed = _admitted_stage(tmp_path, settle=settle)
+    before = _dump(store)
+    first = _ack_admitted(store, row, claimed)
+    assert first.status == "publish_returned", first
+    assert first.state == ("settled" if settle else "admitted")
+    assert len(_stage_events(store, "publish_returned")) == 1
+    after_first = _dump(store)
+    assert after_first != before
+    replay = _ack_admitted(store, row, claimed)
+    assert replay.status == "publish_returned", replay
+    assert _dump(store) == after_first
+    assert len(_stage_events(store, "publish_returned")) == 1
+
+
+def test_ack_after_settled_exact_replay_survives_reopen(tmp_path):
+    store, row, attempt, outcome, claimed = _admitted_stage(tmp_path, settle=True)
+    assert _ack_admitted(store, row, claimed).status == "publish_returned"
+    after_first = _dump(store)
+    reopened = AuthorityPolicyStore(Database(tmp_path / "c2.db"))
+    reopened.bind_v2_permission_surface_reader(lambda agent: "a" * 64)
+    reopened.bind_v2_process_boot_id(BOOT_A)
+    replay = _ack_admitted(reopened, row, claimed)
+    assert replay.status == "publish_returned", replay
+    assert _dump(store) == after_first
+    assert len(_stage_events(store, "publish_returned")) == 1
+
+
+def test_ack_after_recovery_settled_records_one_publish_returned(tmp_path):
+    """The genuine exact recovery Q is an accepted settlement proof."""
+    store, row, attempt, outcome = _finalized_recovery(tmp_path)
+    claimed = _claim(store, row)
+    assert claimed.status == "claimed"
+    assert _admit(store, outcome).status == "claimed"
+    assert _settle(store, outcome).status == "settled"
+    ack = _ack(
+        store, row, publication_attempt=claimed.publication_attempt,
+        publisher_boot_id=claimed.publisher_boot_id,
+    )
+    assert ack.status == "publish_returned", ack
+    assert ack.state == "settled"
+    assert len(_stage_events(store, "publish_returned")) == 1
+
+
+def test_ack_after_recovery_settled_refuses_related_receipt_conflict(tmp_path):
+    """A second POTENTIALLY related receipt is a conflict, not absence."""
+    store, row, attempt, outcome = _finalized_recovery(tmp_path)
+    claimed = _claim(store, row)
+    assert claimed.status == "claimed"
+    assert _admit(store, outcome).status == "claimed"
+    assert _settle(store, outcome).status == "settled"
+    _insert_extra_related_receipt(store, row["id"])
+    before = _dump(store)
+    refusal = _ack(
+        store, row, publication_attempt=claimed.publication_attempt,
+        publisher_boot_id=claimed.publisher_boot_id,
+    )
+    assert refusal.status == "ack_pending", refusal
+    assert refusal.reason == "evidence_drift", refusal
+    assert _dump(store) == before
+    assert _stage_events(store, "publish_returned") == []
+
+
+def test_ack_after_admitted_p1_p2_reclaim_history(tmp_path):
+    """A legitimate P1 failure -> P2 reclaim remains valid prior history."""
+    store, row, attempt, outcome = _finalized(tmp_path)
+    first = _claim(store, row)
+    assert first.status == "claimed"
+    recorded = _failure(
+        store, row, publication_attempt=first.publication_attempt,
+        publisher_boot_id=BOOT_A,
+    )
+    assert recorded.status == "failure_recorded", recorded
+    store.bind_v2_process_boot_id(BOOT_B)
+    second = _claim(store, row)
+    assert second.status == "claimed", second
+    assert second.publication_attempt == 2
+    assert second.publisher_boot_id == BOOT_B
+    assert _admit(store, outcome).status == "claimed"
+    ack = _ack(
+        store, row, publication_attempt=second.publication_attempt,
+        publisher_boot_id=BOOT_B,
+    )
+    assert ack.status == "publish_returned", ack
+    assert ack.publication_attempt == 2
+    returned = _stage_events(store, "publish_returned")
+    assert len(returned) == 1
+    assert returned[0]["publication_attempt"] == 2
+    assert returned[0]["publisher_boot_id"] == BOOT_B
+
+
+@pytest.mark.parametrize("settle", [False, True])
+def test_ack_after_admission_refuses_caller_transaction_nesting(tmp_path, settle):
+    store, row, attempt, outcome, claimed = _admitted_stage(tmp_path, settle=settle)
+    conn = store._db._conn
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            "UPDATE tasks SET assigned_agent='caller-pending' WHERE id=?", (TASK_ID,)
+        )
+        result = _ack_admitted(store, row, claimed)
+    finally:
+        conn.rollback()
+    assert result.status == "ack_pending", result
+    assert result.reason == "transaction_owned", result
+    assert _stage_events(store, "publish_returned") == []
+
+
+@pytest.mark.parametrize("settle", [False, True])
+def test_ack_admitted_publish_returned_audit_failure_rolls_back(tmp_path, settle):
+    store, row, attempt, outcome, claimed = _admitted_stage(tmp_path, settle=settle)
+    before = _dump(store)
+    real = store._db._conn
+    store._db._conn = _TargetedFailingConn(real, audit_stage="publish_returned")
+    try:
+        result = _ack_admitted(store, row, claimed)
+    finally:
+        store._db._conn = real
+    assert result.status == "ack_pending", result
+    assert result.reason == "ack_failed", result
+    assert _dump(store) == before
+    assert _stage_events(store, "publish_returned") == []
+    # One safe exact retry after the injected failure.
+    retry = _ack_admitted(store, row, claimed)
+    assert retry.status == "publish_returned", retry
+    assert len(_stage_events(store, "publish_returned")) == 1
+
+
+@pytest.mark.parametrize("settle", [False, True])
+def test_ack_admitted_commit_failure_rolls_back(tmp_path, settle):
+    store, row, attempt, outcome, claimed = _admitted_stage(tmp_path, settle=settle)
+    before = _dump(store)
+    real = store._db._conn
+    store._db._conn = _TargetedFailingConn(real, fail_commit=True)
+    try:
+        result = _ack_admitted(store, row, claimed)
+    finally:
+        store._db._conn = real
+    assert result.status == "ack_pending", result
+    assert result.reason == "ack_failed", result
+    assert _dump(store) == before
+    assert _stage_events(store, "publish_returned") == []
+    retry = _ack_admitted(store, row, claimed)
+    assert retry.status == "publish_returned", retry
+    assert len(_stage_events(store, "publish_returned")) == 1
+
+
+def test_ack_after_admitted_two_connections_one_observation(tmp_path):
+    """Two connections acknowledging the same generation: one observation,
+    the loser is a read-only replay with no state regression."""
+    store, row, attempt, outcome, claimed = _admitted_stage(tmp_path)
+    first = _ack_admitted(store, row, claimed)
+    assert first.status == "publish_returned", first
+    after_first = _dump(store)
+    other = AuthorityPolicyStore(Database(tmp_path / "c2.db"))
+    other.bind_v2_permission_surface_reader(lambda agent: "a" * 64)
+    other.bind_v2_process_boot_id(BOOT_A)
+    loser = _ack_admitted(other, row, claimed)
+    assert loser.status == "publish_returned", loser
+    assert len(_stage_events(store, "publish_returned")) == 1
+    assert _dump(store) == after_first
