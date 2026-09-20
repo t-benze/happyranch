@@ -3134,7 +3134,7 @@ class AuthorityPolicyV2DecisionRefusalOutcome(BaseModel):
 
 
 AUTHORITY_POLICY_V2_COMPLETION_DISPATCH_KINDS = frozenset({
-    "no_v2", "receipt", "reserved", "causal", "foreign",
+    "no_v2", "later", "receipt", "reserved", "causal", "foreign",
 })
 
 
@@ -3144,12 +3144,18 @@ class AuthorityPolicyV2CompletionDispatchContext(BaseModel):
     Produced from REAL persisted v2 rows (attempts, envelopes, notifications and
     the root dispatch pointer) -- never from reader absence or a mock's
     ``None``.  ``no_v2`` is the only kind that authorizes the unchanged ordinary
-    path.  ``receipt`` names an already-spent result-keyed receipt whose closed
+    path when the root provably has NO finalized v2 lineage.  ``later`` is a
+    genuine later result on a FULLY TERMINAL lineage whose persisted
+    session/owner provenance matches the root's current durable owner and whose
+    row is genuinely later than every retained terminal evidence row; the common
+    gate additionally requires the supplied report to match that result's
+    persisted material identity before this authorizes the ordinary path.
+    ``receipt`` names an already-spent result-keyed receipt whose closed
     ``decision_state`` is the single-use token.  ``reserved`` is the exact
     active reserved next-result R2 that the common consumer must atomically
     spend before claiming.  ``causal`` is the causal result R of a v2 attempt
     and is continuation bookkeeping only.  ``foreign`` is every unmatched,
-    malformed or conflicting identity on a root with a live v2 lineage: it never
+    malformed or conflicting identity on a root with v2 history: it never
     becomes ordinary permission.
 
     The context carries the CAUSAL manager identity, so the winning caller

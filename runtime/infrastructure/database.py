@@ -14846,6 +14846,52 @@ class Database:
         # No retained envelope at all with a live pointer is never terminal.
         return not envelopes
 
+    def _v2_later_result_provenance_uncommitted(
+        self, *, root_task_id: str, row, envelopes,
+    ) -> bool:
+        """True only for a GENUINE later result on a fully terminal v2 root.
+
+        A result may be ordinary-capable on a terminal lineage only when it was
+        produced by the root's CURRENT durable owner/session -- the same
+        ``(assigned_agent, current_session_id)`` identity the supported callback
+        admission enforces -- and is genuinely LATER than every retained
+        terminal v2 evidence row (causal result and spending result), so an
+        older ordinary row can never be replayed as a fresh ordinary effect.
+
+        A larger/latest row id alone, the same ``task_id``, an arbitrary bare or
+        empty session, a wrong agent or terminal flags are NEVER sufficient.
+        ``row`` is the already-fetched ``task_results`` row for this exact root.
+        """
+        task = self._conn.execute(
+            "SELECT status, cancelled_at, assigned_agent, current_session_id "
+            "FROM tasks WHERE id=?",
+            (root_task_id,),
+        ).fetchone()
+        if task is None or task["cancelled_at"] is not None:
+            return False
+        if task["status"] in ("completed", "failed", "cancelled", "superseded"):
+            return False
+        owner = task["assigned_agent"]
+        session = task["current_session_id"]
+        if not (isinstance(owner, str) and owner):
+            return False
+        if not (isinstance(session, str) and session):
+            return False
+        if row["agent"] != owner or row["session_id"] != session:
+            return False
+        latest_evidence_id = 0
+        for envelope_row in envelopes:
+            try:
+                envelope = self._authority_policy_v2_envelope_from_row(envelope_row)
+            except ValueError:
+                return False
+            for candidate in (envelope.result_id, envelope.spending_result_id):
+                if self._v2_is_int(candidate) and candidate > latest_evidence_id:
+                    latest_evidence_id = candidate
+        if not self._v2_is_int(row["id"]) or row["id"] <= latest_evidence_id:
+            return False
+        return True
+
     @_synchronized
     def authority_policy_v2_completion_dispatch_context(
         self, *, root_task_id: str, result_row_id,
@@ -14854,14 +14900,15 @@ class Database:
 
         Uses REAL persisted provenance (the attempt journal, continuation
         envelopes and the root dispatch pointer) -- never reader absence or a
-        mock ``None``.  ``no_v2`` is returned only when the root has no v2
-        lineage at all, or when a fully terminal generation (its exact spent
-        receipt already ``applied``/``refused``) leaves an unrelated later
-        completion legitimately ordinary.  The causal result R of any attempt is
+        mock ``None``.  ``no_v2`` is returned only when the root has no
+        finalized v2 lineage at all.  A fully terminal generation (its exact
+        spent receipt already ``applied``/``refused``) classifies a GENUINE
+        later result -- one produced by the root's current durable owner/session
+        and genuinely later than the terminal evidence -- as ``later``; every
+        other later/foreign identity is ``foreign`` and never ordinary
+        permission.  The causal result R of any attempt is
         ``causal``; an exact result-keyed receipt is ``receipt``; the active
-        reserved next result of the current generation is ``reserved``; every
-        other unmatched/malformed identity on a live lineage is ``foreign`` and
-        never ordinary permission.
+        reserved next result of the current generation is ``reserved``.
         """
         def _ctx(kind, **kw) -> AuthorityPolicyV2CompletionDispatchContext:
             return AuthorityPolicyV2CompletionDispatchContext(kind=kind, **kw)
@@ -14938,16 +14985,23 @@ class Database:
             return _ctx("foreign")
 
         # 4. Every other identity on a FULLY TERMINAL lineage whose exact
-        # terminal evidence still authenticates is ordinary again: a genuine
-        # later result/session is legitimate ordinary activity.  Terminal flags
-        # or a latest row alone are never accepted -- the retained proof is
-        # authenticated (an older live/corrupt generation behind a terminal
-        # pointer keeps the lineage live).
+        # terminal evidence still authenticates may be ordinary again ONLY when
+        # it is a genuine later result/session/owner with real persisted
+        # provenance (and, at the common gate, a supplied report that matches
+        # its persisted material identity).  A bare arbitrary session, an empty
+        # session, a wrong agent, a larger/latest row id, terminal flags or the
+        # mere absence of an exact receipt are never sufficient; an
+        # older/live/corrupt generation behind a terminal pointer keeps the
+        # lineage live and fail-closed.
         if not self._v2_root_lineage_live_uncommitted(
             root_task_id=root_task_id, dispatch_row=dispatch_row,
             envelopes=envelopes, attempts=attempts,
         ):
-            return _ctx("no_v2")
+            if self._v2_later_result_provenance_uncommitted(
+                root_task_id=root_task_id, row=row, envelopes=envelopes,
+            ):
+                return _ctx("later")
+            return _ctx("foreign")
 
         # 5. The current generation's active reserved next result R2.
         if dispatch_row is not None:

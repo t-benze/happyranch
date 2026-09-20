@@ -903,22 +903,143 @@ def test_gate_lookup_failure_or_absent_reader_is_never_ordinary(tmp_path, monkey
     )
 
 
+def _establish_later_result(store, *, session="sess-later-live", agent=MANAGER):
+    """A GENUINE later result through the supported session + admission seams.
+
+    ``_run_agent`` publishes the durable invocation identity with
+    ``update_task(assigned_agent=..., current_session_id=...)`` immediately
+    before launch; the completion is then admitted through the REAL callback
+    admission ``admit_task_completion_callback``, which itself enforces that
+    the agent/session match the task's current durable owner.  This is the
+    supported later lifecycle -- not a bare row insert or arbitrary owner
+    patching.
+    """
+    store._db.update_task(
+        TASK_ID, assigned_agent=agent, current_session_id=session,
+    )
+    assert store._db.admit_task_completion_callback(
+        task_id=TASK_ID, agent=agent, session_id=session,
+        output_summary="later ordinary completion", confidence_score=80,
+        decision_json=json.dumps({"action": "done"}),
+    ) is True
+    row = store._db.get_latest_task_result(TASK_ID, agent, session)
+    assert row is not None
+    return row["id"]
+
+
 def test_gate_terminal_lineage_returns_later_result_to_ordinary(tmp_path):
     store, row, outcome, r2 = _spent_ready(tmp_path)
     assert _claim(store, row).status == "claimed"
     assert _ack(store, row).status == "applied"
-    cursor = store._db._conn.execute(
-        "INSERT INTO task_results "
-        "(task_id, agent, session_id, status, output_summary, decision_json, "
-        "confidence_score, created_at) VALUES (?,?,?,?,?,?,?,?)",
-        (TASK_ID, MANAGER, "sess-later", "completed", "later",
-         '{"action":"done"}', 70, "2026-09-21T00:00:05+00:00"),
+    later = _establish_later_result(store)
+    context = store._db.authority_policy_v2_completion_dispatch_context(
+        root_task_id=TASK_ID, result_row_id=later,
     )
-    store._db._conn.commit()
-    later = cursor.lastrowid
+    assert context.kind == "later", context
     assert _gate(
         store, _report_for_result(store, later), later,
     ).kind == "ordinary"
+
+
+def test_gate_terminal_invalid_later_provenance_is_foreign(tmp_path):
+    """A bare/empty/wrong-agent session is NEVER ordinary on a terminal root."""
+    for index, (name, agent, session) in enumerate((
+        ("unbound_session", MANAGER, "sess-never-launched"),
+        ("empty_session", MANAGER, ""),
+        ("wrong_agent", "dev_agent", "sess-never-launched"),
+    )):
+        store, row, outcome, r2 = _spent_ready(_fresh_dir(tmp_path, f"prov-{index}"))
+        assert _claim(store, row).status == "claimed"
+        assert _ack(store, row).status == "applied"
+        store._db.insert_task_result(
+            task_id=TASK_ID, agent=agent, session_id=session,
+            output_summary="unbound later", confidence_score=90,
+            decision_json='{"action":"done"}',
+        )
+        row_id = store._db.get_task_results(TASK_ID)[-1]["id"]
+        before = _dump(store)
+        context = store._db.authority_policy_v2_completion_dispatch_context(
+            root_task_id=TASK_ID, result_row_id=row_id,
+        )
+        assert context.kind == "foreign", (name, context)
+        assert _gate(
+            store, _report_for_result(store, row_id), row_id,
+        ).kind == "skip", name
+        assert _dump(store) == before, name
+
+
+def test_gate_terminal_later_report_drift_never_ordinary(tmp_path):
+    """A genuine later result with a drifted supplied report never authorizes."""
+    store, row, outcome, r2 = _spent_ready(tmp_path)
+    assert _claim(store, row).status == "claimed"
+    assert _ack(store, row).status == "applied"
+    later = _establish_later_result(store)
+    # The full decision body drift is caught by the material-identity binding.
+    assert store._db.authority_policy_v2_decision_result_report_binds(
+        root_task_id=TASK_ID, spending_result_id=later,
+        report=_report_for_result(
+            store, later, decision={"action": "delegate", "agent": "dev_agent",
+                                    "prompt": "different effect"},
+        ),
+    ) is False
+    before = _dump(store)
+    assert _gate(
+        store,
+        _report_for_result(
+            store, later, decision={"action": "delegate", "agent": "dev_agent",
+                                    "prompt": "different effect"},
+        ),
+        later,
+    ).kind == "skip"
+    assert _dump(store) == before
+    # The exact persisted material identity is the only ordinary path.
+    assert _gate(
+        store, _report_for_result(store, later), later,
+    ).kind == "ordinary"
+
+
+def test_wrapper_terminal_invalid_later_zero_entries_valid_one(tmp_path):
+    """Invalid later provenance yields ZERO normal-body entries with unchanged
+    residue; the genuine later result yields exactly one."""
+    import runtime.orchestrator.run_step as run_step
+
+    invalid, irow, _ioutcome, _ir2 = _spent_ready(_fresh_dir(tmp_path, "zero"))
+    assert _claim(invalid, irow).status == "claimed"
+    assert _ack(invalid, irow).status == "applied"
+    invalid._db.insert_task_result(
+        task_id=TASK_ID, agent=MANAGER, session_id="sess-never-launched",
+        output_summary="unbound later", confidence_score=90,
+        decision_json='{"action":"done"}',
+    )
+    bad_id = invalid._db.get_task_results(TASK_ID)[-1]["id"]
+    before = _dump(invalid)
+    entries: list[dict] = []
+    with patch.object(
+        run_step, "_consume_completion_report_body",
+        lambda *a, **kw: entries.append(kw),
+    ):
+        run_step._consume_completion_report(
+            types.SimpleNamespace(_db=invalid._db), TASK_ID,
+            _report_for_result(invalid, bad_id), result_row_id=bad_id,
+        )
+    assert entries == []
+    assert _dump(invalid) == before
+
+    valid, vrow, _voutcome, _vr2 = _spent_ready(_fresh_dir(tmp_path, "one"))
+    assert _claim(valid, vrow).status == "claimed"
+    assert _ack(valid, vrow).status == "applied"
+    later = _establish_later_result(valid)
+    entries = []
+    with patch.object(
+        run_step, "_consume_completion_report_body",
+        lambda *a, **kw: entries.append(kw),
+    ):
+        run_step._consume_completion_report(
+            types.SimpleNamespace(_db=valid._db), TASK_ID,
+            _report_for_result(valid, later), result_row_id=later,
+        )
+    assert len(entries) == 1
+    assert entries[0].get("result_row_id") == later
 
 
 # ── common-consumer wrapper identity seam ─────────────────────────────────
@@ -1058,6 +1179,12 @@ def test_accepted_recovery_routes_v2_lineage_before_special_effects(tmp_path):
 
 
 def _insert_later_result(store):
+    """A bare row whose session is NOT the root's durable owner.
+
+    This is deliberately an INVALID later identity: the corrected classifier
+    must treat it as ``foreign`` (never ordinary) because its ``sess-later``
+    session does not match the task's current durable owner/session.
+    """
     cursor = store._db._conn.execute(
         "INSERT INTO task_results "
         "(task_id, agent, session_id, status, output_summary, decision_json, "
@@ -1145,6 +1272,54 @@ def test_none_resolver_maps_to_latest_row_but_direct_invalid_identity_is_foreign
     assert store._db.authority_policy_v2_completion_dispatch_context(
         root_task_id=TASK_ID, result_row_id=None,
     ).kind == "foreign"
+
+
+def test_none_resolver_never_authorizes_latest_row_for_a_different_report(tmp_path):
+    """The None resolver maps to the latest persisted row, but a report built
+    from a DIFFERENT row can never ride that adoption into an ordinary effect."""
+    from runtime.orchestrator.run_step import _resolve_completion_result_row_id
+
+    store, row, outcome, r2 = _spent_ready(tmp_path)
+    assert _claim(store, row).status == "claimed"
+    assert _ack(store, row).status == "applied"
+    later = _establish_later_result(store)
+    stale_report = _report_for_result(store, row["id"])
+    resolved = _resolve_completion_result_row_id(
+        store._db, TASK_ID, stale_report, None,
+    )
+    assert resolved == later
+    before = _dump(store)
+    # The classifier accepts the resolved row as a genuine later result, but the
+    # gate binds the SUPPLIED report to it and refuses the stale body.
+    assert store._db.authority_policy_v2_completion_dispatch_context(
+        root_task_id=TASK_ID, result_row_id=resolved,
+    ).kind == "later"
+    assert _gate(store, stale_report, resolved).kind == "skip"
+    assert _dump(store) == before
+
+
+def test_accepted_recovery_routes_valid_later_result_through_common(tmp_path):
+    """Both entries honor the corrected later classification: the accepted-
+    recovery entry routes a genuine later result (and a drifted one) through the
+    common guarded consumer instead of a special recovery branch."""
+    import runtime.orchestrator.run_step as run_step
+
+    store, row, outcome, r2 = _spent_ready(tmp_path)
+    assert _claim(store, row).status == "claimed"
+    assert _ack(store, row).status == "applied"
+    later = _establish_later_result(store)
+    calls: list[dict] = []
+
+    def fake_consume(orch, task_id, report, **kwargs):
+        calls.append(kwargs)
+
+    with patch.object(run_step, "_consume_completion_report", fake_consume):
+        run_step._consume_accepted_completion_recovery(
+            types.SimpleNamespace(_db=store._db), TASK_ID,
+            _report_for_result(store, later), agent=MANAGER,
+            session_id="sess-later-live", result_row_id=later,
+        )
+    assert calls and calls[0].get("result_row_id") == later
 
 
 # ── PUBLIC ack/refusal transaction matrix ─────────────────────────────────

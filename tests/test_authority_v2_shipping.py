@@ -272,6 +272,11 @@ class _ShippingFixture:
         # Per-session release let a later case resume ONLY the reserved
         # invocation while the earlier causal launch stays held.
         self.released_sessions: set[str] = set()
+        # Deterministic barrier: set when the TAGGED (reserved continuation)
+        # run_step returns and when its queue item reaches task_done, so a
+        # reopen never races that worker's transactions or periodic heartbeat.
+        self.tagged_run_step_returned = threading.Event()
+        self.reserved_invocation_done = threading.Event()
 
     # -- setup ---------------------------------------------------------
     def start(self) -> "_ShippingFixture":
@@ -333,6 +338,11 @@ class _ShippingFixture:
         for module_name, attr in _HELD_LOOPS:
             module = importlib.import_module(module_name)
             self.monkeypatch.setattr(module, attr, _held_loop(self.stop_event))
+
+        # Normal isolated fixture wiring: wrap the real Dispatcher so the test
+        # can await the TAGGED reserved run_step's deterministic return instead
+        # of racing an active worker against reopen/close.
+        self._instrument_reserved_completion()
 
         # Retain a socket bound to 127.0.0.1:0 and keep the real lifespan.
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -445,6 +455,53 @@ class _ShippingFixture:
     def release_session(self, session_id: str) -> None:
         """Resume ONLY one held invocation (later reserved-invocation cases)."""
         self.released_sessions.add(session_id)
+
+    def _instrument_reserved_completion(self) -> None:
+        """Deterministic barrier for the TAGGED reserved invocation.
+
+        Two real signals are required: the tagged ``run_step`` returned, and its
+        queue item reached ``task_done`` (heartbeat cancelled).  Waiting on both
+        means a reopen never races the worker's transactions or its periodic
+        ``last_heartbeat`` write, and never uses elapsed sleep as proof.
+        """
+        from runtime.daemon.dispatcher import Dispatcher
+
+        fixture = self
+        original = Dispatcher.run_step
+
+        def _wrapped(dispatcher_self, slug, task_id, metadata=None):
+            try:
+                return original(dispatcher_self, slug, task_id, metadata)
+            finally:
+                if (
+                    isinstance(metadata, dict)
+                    and metadata.get("authority_v2_generation")
+                ):
+                    fixture.tagged_run_step_returned.set()
+
+        self.monkeypatch.setattr(Dispatcher, "run_step", _wrapped)
+
+        queue = self.state.queue._queue
+        original_done = queue.task_done
+
+        def _task_done():
+            original_done()
+            # Only the tagged reserved item can finish task_done while the
+            # causal launch is still held; require the tagged run_step marker so
+            # an unrelated completion can never satisfy this barrier early.
+            if fixture.tagged_run_step_returned.is_set():
+                fixture.reserved_invocation_done.set()
+
+        self.monkeypatch.setattr(queue, "task_done", _task_done)
+
+    def await_reserved_invocation_done(self, *, timeout: float = 60.0) -> None:
+        """Deterministic old-invocation quiescence barrier (no elapsed sleep)."""
+        assert self.tagged_run_step_returned.wait(timeout=timeout), (
+            "tagged reserved invocation never returned"
+        )
+        assert self.reserved_invocation_done.wait(timeout=timeout), (
+            "tagged reserved queue item never finished"
+        )
 
     def join_workers(self, *, timeout: float = _JOIN_SECONDS) -> None:
         if self.server is None:
@@ -2650,6 +2707,33 @@ def _insert_pending_job(fixture: _ShippingFixture, task_id: str) -> str:
     return job_id
 
 
+def _reopen_owned_db(db, *, origin_boot_id: str, expect_envelope_id: str):
+    """A genuinely NEW Database over the SAME persisted owned-RuntimeDir file.
+
+    Asserts the reopened object/connection are distinct from the fixture's live
+    pair while the persisted path is identical, rebinds the protected
+    process/boot context through normal isolated fixture wiring, and proves the
+    committed durable state reconstructs from the NEW connection.
+    """
+    from runtime.infrastructure.database import Database
+
+    old_conn = db._conn
+    reopened = Database(db.db_path)
+    assert reopened is not db
+    assert reopened.db_path == db.db_path
+    assert reopened._conn is not old_conn
+    assert reopened._conn is not None
+    original = db.get_authority_policy_v2_continue_envelope(expect_envelope_id)
+    reconstructed = reopened.get_authority_policy_v2_continue_envelope(
+        expect_envelope_id,
+    )
+    assert original is not None and reconstructed is not None
+    assert reconstructed.envelope_id == original.envelope_id
+    assert reconstructed.spending_result_id == original.spending_result_id
+    reopened.bind_authority_policy_v2_process_boot_id(f"restart-{origin_boot_id}")
+    return reopened
+
+
 def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="healthy"):
     fixture.activate_v2_pair()
     fixture.install_launch_hold()
@@ -2863,32 +2947,71 @@ def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="he
             # never re-runs the consumer or regresses the committed effect.  The
             # REAL refusal writer runs (the injected boundary only affects the
             # ``decision_applied`` audit, never the interruption audit).
-            from runtime.orchestrator.run_step import _v2_decision_dispatch_gate
-
-            r2_dict = dict(db._conn.execute(
+            # ACTUAL reopen: establish deterministic old-invocation/transaction
+            # quiescence (release every held launch, drain the real queue), then
+            # open a genuinely distinct Database over the SAME persisted owned-
+            # RuntimeDir database and run the REAL rebound common consumer
+            # there.  No active fixture worker races replacement/close and no
+            # elapsed sleep stands in for the barrier.
+            db._conn = real_conn
+            fixture.await_reserved_invocation_done()
+            reopened = _reopen_owned_db(
+                db, origin_boot_id=attempt.origin_boot_id,
+                expect_envelope_id=envelope_id,
+            )
+            rebound = types.SimpleNamespace(_db=reopened)
+            r2_dict = dict(reopened._conn.execute(
                 "SELECT * FROM task_results WHERE id=?", (r2,)
             ).fetchone())
             r2_report = completion_report_from_result_row(
                 root_id, r2_dict, fallback_agent=MANAGER,
             )
-            gate = _v2_decision_dispatch_gate(
-                fixture.org.orchestrator, root_id, r2_report, r2, MANAGER,
+            from unittest.mock import patch as _patch
+            from runtime.orchestrator import run_step as _run_step
+
+            entries: list[dict] = []
+            with _patch.object(
+                _run_step, "_consume_completion_report_body",
+                lambda *a, **kw: entries.append(kw),
+            ):
+                _run_step._consume_completion_report(
+                    rebound, root_id, r2_report, result_row_id=r2,
+                )
+            # ZERO consumer entry: the reopened path performs only the audited
+            # interruption refusal, using the REAL refusal writer.
+            assert entries == []
+            refreshed = reopened.get_authority_policy_v2_continue_envelope(
+                envelope_id
             )
-            assert gate.kind == "skip", gate
-            assert (
-                db.get_authority_policy_v2_continue_envelope(envelope_id).decision_state
-                == "refused"
-            )
-            stages = _stages()
-            assert stages.count("decision_dispatch_interrupted") == 1
-            assert stages.count("decision_applied") == 0
+            assert refreshed.decision_state == "refused"
+            reopened_stages = [
+                a["payload"].get("stage")
+                for a in reopened.list_authority_policy_v2_result_stage_audits(
+                    root_task_id=root_id, manager_agent=MANAGER,
+                )
+            ]
+            assert reopened_stages.count("decision_dispatch_interrupted") == 1
+            assert reopened_stages.count("decision_applied") == 0
             if action == "done":
-                assert db.get_task(root_id).status is TaskStatus.COMPLETED
+                assert reopened.get_task(root_id).status is TaskStatus.COMPLETED
             else:
-                children = [dict(row) for row in db._conn.execute(
+                children = [dict(row) for row in reopened._conn.execute(
                     "SELECT * FROM tasks WHERE parent_task_id=?", (root_id,),
                 ).fetchall()]
                 assert len(children) == 1, children
+            # Exact read-only replay on the SAME reopened connection: no second
+            # consumer entry and byte-identical residue.
+            before_replay = "\n".join(reopened._conn.iterdump())
+            with _patch.object(
+                _run_step, "_consume_completion_report_body",
+                lambda *a, **kw: entries.append(kw),
+            ):
+                _run_step._consume_completion_report(
+                    rebound, root_id, r2_report, result_row_id=r2,
+                )
+            assert entries == []
+            assert "\n".join(reopened._conn.iterdump()) == before_replay
+            reopened.close()
             return root_id
 
         # Healthy: exactly one spend, claim, real normal decision effect and
@@ -2924,22 +3047,40 @@ def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="he
         before = db._conn.execute(
             "SELECT COUNT(*) FROM tasks WHERE parent_task_id=?", (root_id,),
         ).fetchone()[0]
-        from runtime.orchestrator.run_step import _v2_decision_dispatch_gate
-
-        r2_dict = dict(db._conn.execute(
+        # ACTUAL reopen for the healthy exact-R2 replay too: quiesce the old
+        # invocations/transactions, then replay the terminal receipt through a
+        # genuinely distinct Database over the SAME persisted file.
+        db._conn = real_conn
+        fixture.await_reserved_invocation_done()
+        reopened = _reopen_owned_db(
+            db, origin_boot_id=attempt.origin_boot_id,
+            expect_envelope_id=envelope_id,
+        )
+        r2_dict = dict(reopened._conn.execute(
             "SELECT * FROM task_results WHERE id=?", (r2,)
         ).fetchone())
         r2_report = completion_report_from_result_row(
             root_id, r2_dict, fallback_agent=MANAGER,
         )
+        before_replay = "\n".join(reopened._conn.iterdump())
+        from runtime.orchestrator.run_step import _v2_decision_dispatch_gate
+
         gate = _v2_decision_dispatch_gate(
-            fixture.org.orchestrator, root_id, r2_report, r2, MANAGER,
+            types.SimpleNamespace(_db=reopened), root_id, r2_report, r2, MANAGER,
         )
         assert gate.kind == "skip", gate
-        assert db._conn.execute(
+        assert "\n".join(reopened._conn.iterdump()) == before_replay
+        assert reopened._conn.execute(
             "SELECT COUNT(*) FROM tasks WHERE parent_task_id=?", (root_id,),
         ).fetchone()[0] == before
-        assert _stages().count("decision_applied") == 1
+        reopened_stages = [
+            a["payload"].get("stage")
+            for a in reopened.list_authority_policy_v2_result_stage_audits(
+                root_task_id=root_id, manager_agent=MANAGER,
+            )
+        ]
+        assert reopened_stages.count("decision_applied") == 1
+        reopened.close()
         return root_id
     finally:
         if conn_wrapper is not None:

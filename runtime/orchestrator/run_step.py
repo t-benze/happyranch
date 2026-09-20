@@ -902,12 +902,15 @@ def _v2_decision_dispatch_gate(
     """Classify the report against the REAL persisted v2 lineage.
 
     Returns an outcome whose ``kind`` is ``ordinary`` for a provably no-v2/v1
-    path, ``admitted`` only for the uninterrupted winning claim (one consumer
+    path or for a GENUINE later result on a fully terminal v2 lineage (whose
+    supplied report must match that result's persisted material identity),
+    ``admitted`` only for the uninterrupted winning claim (one consumer
     entry), and ``skip`` for every other outcome -- causal continuation replay,
-    a duplicate/restarted/refused receipt, a foreign or malformed identity, or
-    a lookup failure -- after performing the interruption-refusal bookkeeping
-    where required.  This is the production authority rule: reader absence or a
-    mock's ``None`` is never ordinary permission.
+    a duplicate/restarted/refused receipt, a foreign or malformed identity, a
+    drifted later report or a lookup failure -- after performing the
+    interruption-refusal bookkeeping where required.  This is the production
+    authority rule: reader absence or a mock's ``None`` is never ordinary
+    permission.
     """
     db = orch._db
     skip = _V2DecisionDispatchOutcome(_V2_DECISION_DISPATCH_SKIP)
@@ -920,6 +923,16 @@ def _v2_decision_dispatch_gate(
         return skip
     kind = getattr(context, "kind", None)
     if kind == "no_v2":
+        return _V2DecisionDispatchOutcome(_V2_DECISION_DISPATCH_ORDINARY)
+    if kind == "later":
+        # A genuine later result on a FULLY TERMINAL v2 lineage is ordinary ONLY
+        # when the supplied report IS that exact result's persisted material
+        # body.  The classifier already proved the session/owner provenance and
+        # that the row is genuinely later than the terminal evidence; an
+        # unrelated/older row or a drifted report is never ordinary permission.
+        if not _v2_report_binds(db, task_id, result_row_id, report):
+            logger.warning("run_step %s: v2 later report identity conflict", task_id)
+            return skip
         return _V2DecisionDispatchOutcome(_V2_DECISION_DISPATCH_ORDINARY)
     if kind == "causal":
         # The causal result R of a v2 attempt is continuation bookkeeping only:

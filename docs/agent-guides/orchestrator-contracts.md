@@ -1038,11 +1038,18 @@ reserved next result `R2` is atomically SPENT through the EXISTING writer and th
 claimed exactly once; an exact `ready` receipt first requires the supplied report
 to bind to the retained `R2` body before claiming; a restarted `claimed` receipt
 performs audited interruption refusal; `applied`/`refused` are read-only; a fully
-terminal generation returns an unrelated later completion to the ordinary path
-ONLY after every retained consumed envelope's exact terminal decision evidence
+terminal generation classifies a completion as `later` (ordinary-capable) ONLY
+when it is a GENUINE later result — the persisted result's agent/session are the
+root task's current durable owner (`assigned_agent`) and session
+(`current_session_id`), both non-empty, and the row is genuinely later than every
+retained terminal v2 evidence row (causal result and spending result) — and the
+common gate then additionally requires the supplied report to match that exact
+result's persisted material identity before any ordinary effect; a bare/empty/
+wrong-agent session, a wrong owner, a merely larger/latest row id, terminal flags
+or an absent exact receipt are never sufficient and stay a fail-closed `foreign`
+skip, while every retained consumed envelope's exact terminal decision evidence
 (the retained `decision_claimed` plus `decision_applied`/`decision_dispatch_interrupted`
-events and the re-derived `spent` receipt) still authenticates — terminal flags, a
-latest `E` row or an absent exact receipt are never sufficient, and an older
+events and the re-derived `spent` receipt) must still authenticate so an older
 live/corrupt generation behind a terminal pointer keeps the lineage live; an
 identity with no real persisted result row on a root that HAS v2 history
 (including `None`/bool/string/unknown integer) is a fail-closed `foreign` skip,
@@ -1062,7 +1069,8 @@ after the claim triggers the refusal bookkeeping and is re-raised, and an
 acknowledgement/audit failure leaves the receipt `claimed` and never re-runs the
 consumer. The accepted-recovery special branches classify against the same
 persisted lineage before ANY special effect (including a read failure, which is
-routed fail-closed) so they cannot bypass it. The automatic v2 authority
+routed fail-closed) so they cannot bypass it: a `later` result routes through the
+same guarded common entry (never a special branch). The automatic v2 authority
 continuation hook stays fail-closed/DARK: the broader startup/reaper/queue
 producer discovery and the editable-pair editor/browser path remain
 unimplemented. `runtime/orchestrator/authority_policy_store.py` exposes thin
@@ -1073,8 +1081,15 @@ perform no consumer/queue/external-process call.
 `tests/test_authority_v2_decision_dispatch.py` drives the healthy claim/ack/
 replay, interruption refusal, cancellation preservation, caller-nesting,
 boundary-injection, two-connection one-winner and corrupt/malformed-prior-event
-matrix plus the common-consumer gate classification at the real Database/store
-seam.
+matrix, the genuine-later-result positive (real session publication plus real
+callback admission) and its invalid/drift/None-resolver negatives at the real
+Database/store seam; `tests/test_authority_v2_shipping.py` proves the ACTUAL
+reopen over the SAME persisted owned-RuntimeDir database — a distinct `Database`/
+connection object with the protected process context rebound, quiesced by
+deterministic tagged-run_step/task_done barriers (never elapsed sleep) — for the
+post-effect failed-ack interruption refusal, the preserved task/child effect, the
+no-repeat consumer/child/enqueue count and the exact read-only replay over both
+fresh and full historical-migrated venues.
 
 ## Inline Delegation Chains
 
