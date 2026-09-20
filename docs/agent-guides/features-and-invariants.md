@@ -108,8 +108,11 @@ Literal no-follow workspace/parent/root/manifest observations bracket collection
 changed identity, boot mismatch or stale/unordered observations fail closed.
 Supplied coverage is recollected because a relative path alone does not correlate
 its candidate identity. The observer has a 12-second admission deadline, a
-30-second observer-local startup warmup, at most 64 weekly candidates and 256
-inspected discovery entries (including rejected names). Unattributable discovery
+30-second observer-local startup warmup, at most 64 candidates per discovery
+pass (this bound is per discovery pass, not a cadence gate) and 256 inspected
+discovery entries (including rejected names). The legacy report observation labels
+`source="weekly"` and `observation_id="weekly"` are preserved historical identity
+strings; they are not a cadence gate and do not change the daily scheduler cadence. Unattributable discovery
 caps/unavailability produce bounded operational warnings, never fabricated task
 IDs. Candidate failures are isolated. A blocking admitted OS/DB read cannot be
 preempted; these bounds govern further work, not a hard syscall timeout.
