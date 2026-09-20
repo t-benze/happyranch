@@ -21,24 +21,26 @@ included); the rejected Schedule-prompt-seam architecture is not carried
 forward.
 
 Founder-approved product defaults (TASK-6036, resolving the TASK-6029 stop
-analysis): daemon-managed system cleanup independent of user Schedules; weekly
-Sunday 03:30 in each org's timezone; measure per agent; only an available
+analysis): daemon-managed system cleanup independent of user Schedules; daily
+local 03:30 in each org's timezone; measure per agent; only an available
 numeric result below 1 GiB skips, while a bounded timeout, error, or
 cap/truncation result that is unavailable bypasses only numeric threshold
 evaluation and otherwise-due spawning continues with honest unavailable
 advisory context; the first TWO triggered runs per
 agent are strictly report-only; each triggered ordinary task is assigned to
-its owning agent; suppress while that agent has a non-terminal cleanup task
-and apply a seven-day per-agent cooldown; one durable founder-visible report
+its owning agent; suppress while that agent has a non-terminal cleanup task OR
+a marker in the current window; one durable founder-visible report
 thread PER AGENT via the existing participant-authorized thread-send path with
 NO minted report token; one enabled-by-default kill switch (an org config
 ``workspace_cleanup.enabled`` flag).
 
 Persistence uses only existing durable mechanisms (no schema/API/CLI change):
-the per-agent first-two run counter and cooldown are derived from the owning
-agent's daemon-marked cleanup task rows via an authoritative SQL-side
-``brief`` prefix filter (``Database.list_tasks_by_brief_prefix`` — no bounded
-scan of ordinary tasks can hide older cleanup rows, and a lookup failure is
+the per-agent triggered-run ordinal and current-window dedup are derived from
+the owning agent's daemon-marked cleanup task rows via a complete read-only
+marker-history summary (``Database.summarize_workspace_cleanup_marker_history``
+— rowid keyset pages over the SQL-side ``brief`` prefix filter, exact count and
+UTC-maximum with no logical cutoff, so an older unfinished row can never be
+hidden and the ordinal never saturates; a lookup failure is
 represented as indeterminate so triggering fails closed). The per-agent
 durable thread identity is resolved by daemon-cleanup provenance
 (``composed_from_task_id`` → the agent's daemon-marked cleanup task) plus the
@@ -56,15 +58,19 @@ enqueued, and a later retry succeeds exactly once (TASK-6046 finding 1).
 
 Contract-relevant bounds (all documented in the workspace-cleanup behavior tests):
 
-- Cadence: weekly, Sunday 03:30 in the org's effective timezone (TASK-5552
-  §6). A live scheduler evaluates the occurrence once when its scan cursor
-  crosses that boundary, so polling phase and bounded processing drift cannot
-  skip it. Startup evaluates only the current weekly window; there is no
-  earlier historical backfill across daemon lifetimes.
-- Trigger: the weekly occurrence is due AND this window is unserviced for the
-  agent AND no prior cleanup task of that agent is non-terminal (TASK-5552 §3
-  "one run at a time") AND the agent's last cleanup task is older than the
-  seven-day per-agent cooldown. Only an available numeric result below 1 GiB
+- Cadence: daily local 03:30 in the org's effective timezone.  Existing
+  occurrences delimit half-open windows compared as UTC instants; a
+  nonexistent spring-forward wall time is skipped and an ambiguous fall-back
+  wall time takes the first (fold=0) instance. A live scheduler evaluates the
+  boundary once when its UTC scan cursor crosses it, so polling phase and
+  bounded processing drift cannot skip it. Startup performs exactly one
+  current-window catch-up after warm-up, never an earlier historical backfill;
+  a delayed/multi-day scan evaluates only the single latest due window.
+- Trigger: the latest due occurrence is unserviced for the agent (no marker
+  at/after it) AND no prior cleanup task of that agent anywhere in the
+  complete history is non-terminal (TASK-5552 §3 "one run at a time"). There
+  is no rolling 24-hour or seven-day trigger cooldown. Only an available
+  numeric result below 1 GiB
   skips; a bounded timeout, error, or cap/truncation result that is unavailable
   bypasses only numeric threshold evaluation, and otherwise-due spawning
   continues with honest unavailable advisory context.
@@ -106,7 +112,7 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from datetime import time as _dt_time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -127,19 +133,20 @@ logger = logging.getLogger("happyranch.daemon.workspace_cleanup_scheduler")
 # Founder-approved cadence + per-agent policy (TASK-6036 defaults)
 # ---------------------------------------------------------------------------
 
-# Weekly occurrence: Sunday 03:30 in the org's effective timezone.
-# ``datetime.weekday()``: Monday=0 ... Sunday=6.
-_OCCURRENCE_WEEKDAY = 6
+# Daily occurrence: local 03:30 in the org's effective timezone.  The wall
+# time is resolved per civil date (``_local_occurrence_utc``): a nonexistent
+# spring-forward wall time is skipped and an ambiguous fall-back wall time
+# takes the FIRST instance (``fold=0``), mirroring
+# ``schedule_rules._localize_or_skip``.
 _OCCURRENCE_TIME = _dt_time(hour=3, minute=30)
+
+# Inclusive civil-date lookback for the occurrence search: today through
+# today-3.  Exhaustion fails the decision closed (no fabricated occurrence).
+_MAX_OCCURRENCE_LOOKBACK_DAYS = 3
 
 # Per-agent trigger threshold: trigger only when the owning agent's workspace
 # total is >= 1 GiB (founder default).
 _MIN_WORKSPACE_TRIGGER_BYTES = 1024 ** 3
-
-# Seven-day per-agent cooldown: no new trigger while the agent's latest
-# cleanup task is younger than this (rolling window, derived from the tasks
-# table — no new state).
-_COOLDOWN_SECONDS = 7 * 24 * 3600
 
 # First TWO triggered runs per agent are strictly report-only; from the third
 # run onward the daemon composes the approved TASK-5552 §4 cleanup brief.
@@ -151,14 +158,14 @@ _LOOP_INTERVAL_SECONDS = 60
 # Boot warm-up grace before the first trigger scan (mirrors zombie_reaper's
 # ``STALE_HEARTBEAT_SECONDS``-based warm-up). The daemon settles after a
 # restart (dashboard warm, job recovery, producer wiring) before the cleanup
-# loop may enqueue work; a weekly occurrence is unaffected by a 30s delay.
+# loop may enqueue work; a daily occurrence is unaffected by a 30s delay.
 # It also keeps short-lived daemon-lifespan test contexts free of unexpected
 # trigger side effects.
 _WARM_UP_SECONDS = 30.0
 
 # Fixed marker the daemon writes at the top of every cleanup brief (both the
 # report-only and the cleanup variant). Used ONLY to identify daemon-created
-# cleanup tasks for dedup/cooldown/run-count bookkeeping — it is the daemon's
+# cleanup tasks for dedup/run-count bookkeeping — it is the daemon's
 # own content, never a user-content heuristic (TASK-5552 §3 "the fixed
 # cleanup task marker").
 _CLEANUP_BRIEF_MARKER = "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)"
@@ -179,10 +186,13 @@ _REPORT_THREAD_SUBJECT_PREFIX = "HappyRanch system workspace cleanup reports"
 # its subject.
 _REPORT_THREAD_OPENING_PREFIX = "Daemon-managed workspace cleanup reporting thread for"
 
-# Bound for the dedup/cooldown/run-count/provenance query over one agent's
-# daemon-marked cleanup tasks (SQL-side marker filter — never a scan over
-# ordinary tasks, so no exhaustion). Weekly cadence ≈ 52 rows/year; the bound
-# is purely defensive.
+# PROVENANCE-ONLY bound: `_find_report_thread` scans at most this many newest
+# daemon-marked cleanup task rows to resolve the per-agent report thread.  It
+# is NOT the trigger-ordinal/dedup bound any more — the daily trigger
+# decision/ordinal use the complete read-only marker-history summary
+# (`Database.summarize_workspace_cleanup_marker_history`), which has no logical
+# cutoff.  A report thread whose provenance lies beyond this bound is not found
+# (disclosed, unchanged limitation).
 _MAX_CLEANUP_TASK_SCAN = 1000
 
 
@@ -729,16 +739,47 @@ def _measure(
     return snap
 
 
-# ── weekly occurrence + per-agent trigger decision ────────────────────────
+# ── daily occurrence + per-agent trigger decision ─────────────────────────
 
-def _previous_occurrence(now_local: datetime) -> datetime:
-    """Most recent Sunday 03:30 at-or-before ``now_local`` (never future)."""
-    days_since_sunday = (now_local.weekday() + 1) % 7
-    occurrence = now_local.replace(
-        hour=_OCCURRENCE_TIME.hour, minute=_OCCURRENCE_TIME.minute,
-        second=0, microsecond=0,
-    ) - timedelta(days=days_since_sunday)
-    return occurrence
+def _local_occurrence_utc(local_date: date, tz: tzinfo) -> datetime | None:
+    """Return the UTC instant of local 03:30 on ``local_date``.
+
+    ``None`` when that wall time does not exist (a spring-forward gap).  An
+    ambiguous (fall-back) wall time takes the FIRST instance (``fold=0``),
+    mirroring ``schedule_rules._localize_or_skip``.
+    """
+    naive = datetime.combine(local_date, _OCCURRENCE_TIME)
+    candidate = naive.replace(tzinfo=tz, fold=0)
+    back = candidate.astimezone(timezone.utc).astimezone(tz)
+    if back.replace(tzinfo=None) != naive or back.fold != 0:
+        # The wall time does not exist (normalization moved it) or the only
+        # available instance is the second (fold=1) one.
+        return None
+    return candidate.astimezone(timezone.utc)
+
+
+def _latest_due_occurrence_utc(
+    now_utc: datetime,
+    tz: tzinfo,
+    *,
+    lookback_days: int = _MAX_OCCURRENCE_LOOKBACK_DAYS,
+) -> datetime | None:
+    """Latest existing local 03:30 at-or-before ``now_utc``.
+
+    Iterates civil dates today through today-``lookback_days`` inclusive in the
+    effective timezone and returns the first existing occurrence whose UTC
+    instant is not in the future.  Returns ``None`` when no date in the
+    inclusive window has an existing occurrence (the caller fails closed).
+    """
+    now_utc = _as_aware_utc(now_utc)
+    today_local = now_utc.astimezone(tz).date()
+    for delta in range(0, lookback_days + 1):
+        occurrence = _local_occurrence_utc(
+            today_local - timedelta(days=delta), tz,
+        )
+        if occurrence is not None and occurrence <= now_utc:
+            return occurrence
+    return None
 
 
 def _as_aware_utc(value: datetime) -> datetime:
@@ -750,41 +791,44 @@ def _as_aware_utc(value: datetime) -> datetime:
 
 @dataclass
 class _CleanupTaskHistory:
-    """One agent's daemon-marked cleanup-task history (newest first).
+    """One agent's complete daemon-marked cleanup-task summary.
 
-    ``latest`` feeds the weekly-window dedup, the non-terminal suppression,
-    and the seven-day cooldown; ``count`` is the per-agent "triggered runs so
-    far" (first-two report-only bookkeeping). Both derive from the tasks
-    table via the authoritative SQL-side marker filter — no bounded scan of
-    ordinary tasks can hide older cleanup rows (TASK-6043 finding 2).
+    ``newest_utc`` feeds the current-window dedup, ``count`` is the exact
+    per-agent "triggered runs so far" (first-two report-only bookkeeping, with
+    no saturation/reset), and ``has_unfinished`` reports whether ANY marker row
+    in the complete history is non-terminal.  All three derive from the
+    read-only ``Database.summarize_workspace_cleanup_marker_history`` (rowid
+    keyset pages over the tasks table, no logical cutoff).
 
     ``indeterminate`` is set when the history cannot be read authoritatively
-    (lookup error). Lifecycle/identity uncertainty must FAIL CLOSED for
-    triggering: a dedup-blind daemon must never double-fire a run, reset the
-    first-two counter, or bypass the cooldown (TASK-6043 finding 1).
+    (lookup error).  Lifecycle/identity uncertainty must FAIL CLOSED for
+    triggering: a dedup-blind daemon must never double-fire a run or reset the
+    first-two counter (TASK-6043 finding 1).
     """
 
-    latest: "TaskRecord | None" = None
+    newest_utc: datetime | None = None
     count: int = 0
+    has_unfinished: bool = False
     indeterminate: bool = False
 
 
 def _cleanup_task_history(
     db: "Database", agent: str,
 ) -> _CleanupTaskHistory:
-    """Authoritative marker-filtered cleanup-task history for one agent.
+    """Complete marker-filtered cleanup-task summary for one agent.
 
-    SQL-side ``brief LIKE`` filter (``list_tasks_by_brief_prefix``): every
-    daemon-marked cleanup task of the agent is returned newest-first, so a
-    cleanup row can never be hidden behind newer ordinary tasks no matter how
-    many exist. Any lookup error is represented as ``indeterminate`` rather
-    than as a clean "no history" — callers must suppress the trigger.
+    Uses the additive read-only
+    ``Database.summarize_workspace_cleanup_marker_history``: every
+    daemon-marked cleanup task of the agent is counted, so a cleanup row can
+    never be hidden behind newer ordinary tasks no matter how many exist, and
+    an older unfinished row beyond any page remains visible.  Any lookup error
+    is represented as ``indeterminate`` rather than as a clean "no history" —
+    callers must suppress the trigger.
     """
     try:
-        rows = db.list_tasks_by_brief_prefix(
+        summary = db.summarize_workspace_cleanup_marker_history(
             _CLEANUP_BRIEF_MARKER,
             assigned_agent=agent,
-            limit=_MAX_CLEANUP_TASK_SCAN,
         )
     except Exception:
         logger.exception(
@@ -794,8 +838,9 @@ def _cleanup_task_history(
         )
         return _CleanupTaskHistory(indeterminate=True)
     return _CleanupTaskHistory(
-        latest=rows[0] if rows else None,
-        count=len(rows),
+        newest_utc=summary.newest_created_at,
+        count=summary.count,
+        has_unfinished=summary.has_unfinished,
     )
 
 
@@ -812,39 +857,43 @@ def decide_cleanup_trigger(
     now_utc: datetime | None = None,
     previous_scan_utc: datetime | None = None,
     tz: tzinfo | None = None,
+    first_scan: bool = False,
 ) -> CleanupTriggerDecision:
-    """Pure per-agent trigger decision: weekly occurrence due + window
-    unserviced + no non-terminal prior cleanup task (TASK-5552 §3 one-run-at-
-    a-time) + seven-day per-agent cooldown elapsed.
+    """Pure per-agent trigger decision for the daily cadence.
+
+    Order: (1) resolve the latest existing due local 03:30 occurrence; ``None``
+    fails closed as ``occurrence_search_exhausted``; (2) the crossing gate
+    ``previous_scan_utc < occ <= now_utc`` (or the explicit ``first_scan``
+    current-window catch-up); (3) ``history_indeterminate``; (4) any marker
+    at/after the current occurrence suppresses as
+    ``already_triggered_this_window``; (5) any unfinished marker suppresses as
+    ``prior_run_in_flight``; (6) trigger.  No rolling cooldown exists.
 
     The >= 1 GiB size gate is applied by the caller after the fresh
     measurement (it needs the measured bytes, so it lives with the trigger).
     """
     if now_utc is None:
         now_utc = datetime.now(timezone.utc)
+    now_utc = _as_aware_utc(now_utc)
     effective_tz = tz or timezone.utc
-    now_local = now_utc.astimezone(effective_tz)
-    if previous_scan_utc is None:
-        previous_scan_utc = now_utc - timedelta(seconds=_LOOP_INTERVAL_SECONDS)
-    previous_scan_local = previous_scan_utc.astimezone(effective_tz)
-    occurrence = _previous_occurrence(now_local)
-    if not (previous_scan_local < occurrence <= now_local):
-        return CleanupTriggerDecision(False, "not_due")
+    occurrence = _latest_due_occurrence_utc(now_utc, effective_tz)
+    if occurrence is None:
+        return CleanupTriggerDecision(False, "occurrence_search_exhausted")
+    if not first_scan:
+        if previous_scan_utc is None:
+            previous_scan_utc = now_utc - timedelta(seconds=_LOOP_INTERVAL_SECONDS)
+        previous_scan_utc = _as_aware_utc(previous_scan_utc)
+        if not (previous_scan_utc < occurrence <= now_utc):
+            return CleanupTriggerDecision(False, "not_due")
 
     history = _cleanup_task_history(db, agent)
     if history.indeterminate:
         # Lifecycle/identity uncertainty fails closed for triggering.
         return CleanupTriggerDecision(False, "history_indeterminate")
-    latest = history.latest
-    if latest is None:
-        return CleanupTriggerDecision(True, None)
-    latest_utc = _as_aware_utc(latest.created_at)
-    if latest_utc >= occurrence.astimezone(timezone.utc):
+    if history.newest_utc is not None and history.newest_utc >= occurrence:
         return CleanupTriggerDecision(False, "already_triggered_this_window")
-    if latest.status not in _TERMINAL_TASK_STATUSES:
+    if history.has_unfinished:
         return CleanupTriggerDecision(False, "prior_run_in_flight")
-    if now_utc - latest_utc < timedelta(seconds=_COOLDOWN_SECONDS):
-        return CleanupTriggerDecision(False, "cooldown")
     return CleanupTriggerDecision(True, None)
 
 
@@ -1007,7 +1056,7 @@ def compose_cleanup_brief(
 ) -> str:
     """Daemon-composed brief for one triggered cleanup task of ``agent``.
 
-    Always starts with the fixed daemon marker (dedup/cooldown/run-count
+    Always starts with the fixed daemon marker (dedup/run-count
     bookkeeping — TASK-5552 §3). The first ``_REPORT_ONLY_RUN_LIMIT`` runs per
     agent are STRICTLY report-only; later runs carry the approved TASK-5552
     §4 fixed normalized cleanup brief. Both pack the fresh advisory snapshot
@@ -1192,7 +1241,7 @@ async def trigger_cleanup(
             ),
         )
     except Exception:
-        logger.exception("task scratch weekly report failed for %s", agent)
+        logger.exception("task scratch cleanup report failed for %s", agent)
 
     # Bounded, fail-open measurement of THE AGENT'S OWN workspace — the gate
     # for the >= 1 GiB founder threshold and the advisory snapshot packed at
@@ -1229,7 +1278,7 @@ async def trigger_cleanup(
     # derived from the owning agent's daemon-marked cleanup task rows via the
     # authoritative marker-filtered query. An indeterminate history (lookup
     # error) fails closed: a dedup-blind daemon must not double-fire, reset
-    # the first-two counter, or bypass the cooldown (TASK-6043 finding 1).
+    # the first-two counter (TASK-6043 finding 1).
     history = _cleanup_task_history(org.db, agent)
     if history.indeterminate:
         org.db.insert_audit_log(
@@ -1378,6 +1427,7 @@ async def _tick_org(
     state: "DaemonState",
     now_utc: datetime,
     previous_scan_utc: datetime | None = None,
+    first_scan: bool = False,
 ) -> None:
     """One org's per-agent decision+trigger pass. Never raises (loop-level
     isolation).
@@ -1417,6 +1467,7 @@ async def _tick_org(
                 now_utc=now_utc,
                 previous_scan_utc=previous_scan_utc,
                 tz=tz,
+                first_scan=first_scan,
             )
             if not decision.should_trigger:
                 if decision.reason == "history_indeterminate":
@@ -1432,7 +1483,7 @@ async def _tick_org(
                 # Skip reasons are derivable from the tasks table; only the
                 # boundary-level history failure above and the trigger itself
                 # (including fail-closed skips inside trigger_cleanup) carry
-                # audit rows, so the weekly loop never spams the ledger.
+                # audit rows, so the daily loop never spams the ledger.
                 continue
             await trigger_cleanup(
                 org,
@@ -1455,7 +1506,7 @@ async def workspace_cleanup_scheduler_loop(
     interval_seconds: int = _LOOP_INTERVAL_SECONDS,
     warm_up_seconds: float = _WARM_UP_SECONDS,
 ) -> None:
-    """Weekly workspace-cleanup trigger loop (THR-195 seq 129).
+    """Daily workspace-cleanup trigger loop (THR-195 seq 129).
 
     Mirrors ``dream_scheduler_loop`` / ``zombie_reaper_loop``: per-tick
     per-org decision with a boot warm-up grace, exception isolation, and
@@ -1463,11 +1514,12 @@ async def workspace_cleanup_scheduler_loop(
     cancelled in its finally block.
     """
     boot_time = time.monotonic()
-    # Give the first live scan exactly one current-window catch-up opportunity.
-    # Each org derives its own effective-timezone occurrence from ``now``, so
-    # a seven-day cursor reaches that one occurrence without replaying older
-    # daemon-lifetime history.
-    previous_scan_utc = datetime.now(timezone.utc) - timedelta(days=7)
+    # The very first post-warmup scan is an explicit current-window catch-up
+    # (``first_scan=True``) rather than a guessed elapsed cursor; it evaluates
+    # only the single latest due local 03:30 window.  Thereafter the ordinary
+    # UTC crossing gate applies against the real previous scan instant.
+    previous_scan_utc: datetime | None = None
+    first_scan = True
     while True:
         t0 = time.monotonic()
         now_utc = datetime.now(timezone.utc)
@@ -1478,6 +1530,7 @@ async def workspace_cleanup_scheduler_loop(
                     await _tick_org(
                         org, state, now_utc,
                         previous_scan_utc=previous_scan_utc,
+                        first_scan=first_scan,
                     )
                 except Exception:
                     logger.exception(
@@ -1485,6 +1538,7 @@ async def workspace_cleanup_scheduler_loop(
                         org.slug,
                     )
             previous_scan_utc = now_utc
+            first_scan = False
         duration = time.monotonic() - t0
         state.metrics_registry.record_loop_tick(
             "workspace_cleanup_scheduler", interval_seconds, duration,

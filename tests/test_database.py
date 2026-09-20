@@ -4103,3 +4103,576 @@ def test_get_latest_completion_report_scoped_valid_row_round_trips_structured_fi
     assert report.risks_flagged == ["risk one", "risk two"]
     assert report.waiting_on_job_ids == ["JOB-1"]
     assert report.verdict == "APPROVE"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TASK-8479 C12/C14: complete read-only marker-history reader + latest-five
+# ══════════════════════════════════════════════════════════════════════════
+
+class _ConnProxy:
+    """Delegating sqlite3 connection proxy for page-boundary injections."""
+
+    def __init__(self, real, on_execute=None):
+        self._real = real
+        self._on_execute = on_execute
+
+    @property
+    def in_transaction(self):
+        return self._real.in_transaction
+
+    def execute(self, sql, parameters=()):
+        if self._on_execute is not None:
+            self._on_execute(sql, parameters)
+        return self._real.execute(sql, parameters)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def __setattr__(self, name, value):
+        if name in ("_real", "_on_execute"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._real, name, value)
+
+
+class _FetchFailingCursor:
+    """A cursor whose ``fetchall`` raises (page-boundary fetchall injection)."""
+
+    def __init__(self, message: str):
+        self._message = message
+
+    def fetchall(self):
+        raise sqlite3.OperationalError(self._message)
+
+
+class _ControlConnProxy:
+    """Delegating connection recording transaction control and injecting
+    a page-scoped execute/fetchall failure.
+
+    ``controls`` captures reader-issued BEGIN/COMMIT/ROLLBACK (and the
+    explicit ``commit``/``rollback`` methods) so a test can prove the reader
+    owns exactly one transaction — or borrows the caller's untouched.
+    """
+
+    def __init__(self, real, *, fail_execute_page=None, fail_fetch_page=None):
+        object.__setattr__(self, "_real", real)
+        object.__setattr__(self, "_fail_execute_page", fail_execute_page)
+        object.__setattr__(self, "_fail_fetch_page", fail_fetch_page)
+        object.__setattr__(self, "pages", 0)
+        object.__setattr__(self, "executes", 0)
+        object.__setattr__(self, "controls", [])
+
+    @property
+    def in_transaction(self):
+        return self._real.in_transaction
+
+    def execute(self, sql, params=()):
+        self.executes += 1
+        if sql in ("BEGIN", "COMMIT", "ROLLBACK"):
+            self.controls.append(sql)
+        if sql.startswith("SELECT rowid"):
+            self.pages += 1
+            if (
+                self._fail_execute_page is not None
+                and self.pages == self._fail_execute_page
+            ):
+                raise sqlite3.OperationalError("injected page execute failure")
+            cursor = self._real.execute(sql, params)
+            if (
+                self._fail_fetch_page is not None
+                and self.pages == self._fail_fetch_page
+            ):
+                return _FetchFailingCursor("injected page fetchall failure")
+            return cursor
+        return self._real.execute(sql, params)
+
+    def commit(self):
+        self.controls.append("commit")
+        return self._real.commit()
+
+    def rollback(self):
+        self.controls.append("rollback")
+        return self._real.rollback()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def __setattr__(self, name, value):
+        if name in {
+            "_real", "_fail_execute_page", "_fail_fetch_page",
+            "pages", "executes", "controls",
+        }:
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._real, name, value)
+
+
+def _marker_summary(db: Database, **kwargs):
+    return db.summarize_workspace_cleanup_marker_history(
+        _CLEANUP_MARKER, assigned_agent="dev_agent", **kwargs,
+    )
+
+
+def test_c12a_marker_history_value_and_pagination_contract(
+    db, tmp_path, monkeypatch,
+) -> None:
+    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    for i in range(5):
+        _cleanup_task(
+            db, f"TASK-{i}", created_at=now + timedelta(seconds=i),
+            status=TaskStatus.COMPLETED,
+        )
+    _cleanup_task(
+        db, "TASK-U", created_at=now + timedelta(seconds=10),
+        status=TaskStatus.IN_PROGRESS,
+    )
+    db.insert_task(TaskRecord(
+        id="TASK-OTHER", brief=f"{_CLEANUP_MARKER}\nqa",
+        assigned_agent="qa_engineer", status=TaskStatus.COMPLETED,
+        created_at=now, updated_at=now,
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-MID", brief="text " + _CLEANUP_MARKER,
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=now, updated_at=now,
+    ))
+    expected = (6, now + timedelta(seconds=10), True)
+    for page_size in (1, 2, 1000, 1001):
+        summary = _marker_summary(db, page_size=page_size)
+        assert (
+            summary.count, summary.newest_created_at, summary.has_unfinished,
+        ) == expected, page_size
+
+    empty = db.summarize_workspace_cleanup_marker_history(
+        _CLEANUP_MARKER, assigned_agent="nobody",
+    )
+    assert (empty.count, empty.newest_created_at, empty.has_unfinished) == (
+        0, None, False,
+    )
+
+    # Invalid page_size is rejected as a Python integer contract BEFORE any SQL
+    # or transaction change (no page SELECT, no BEGIN, no commit/rollback).
+    real = db._conn
+    invalid_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", invalid_proxy)
+    for bad in (0, -1, True, 1.5, "1"):
+        with pytest.raises(ValueError):
+            _marker_summary(db, page_size=bad)
+    assert invalid_proxy.executes == 0
+    assert invalid_proxy.pages == 0
+    assert invalid_proxy.controls == []
+    assert real.in_transaction is False
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Naive UTC and a non-UTC offset normalize to their true instants.
+    db.insert_task(TaskRecord(
+        id="TASK-NAIVE", brief=f"{_CLEANUP_MARKER}\nnaive",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=(now + timedelta(seconds=20)).replace(tzinfo=None),
+        updated_at=now,
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-OFFSET", brief=f"{_CLEANUP_MARKER}\noffset",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=datetime(2026, 1, 3, 12, 0, tzinfo=timezone(timedelta(hours=9))),
+        updated_at=now,
+    ))
+    summary = _marker_summary(db)
+    assert summary.count == 8
+    assert summary.newest_created_at == datetime(
+        2026, 1, 3, 3, 0, tzinfo=timezone.utc,   # 12:00+09:00
+    )
+    assert summary.has_unfinished is True
+
+    # A prefix containing LIKE wildcards is matched literally, not as a pattern.
+    escaped = Database(tmp_path / "escaped.sqlite")
+    escaped.insert_task(TaskRecord(
+        id="TASK-LITERAL", brief="A%B_C\\D literal suffix",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=now, updated_at=now,
+    ))
+    escaped.insert_task(TaskRecord(
+        id="TASK-DECOY", brief="AxBxC\\D decoy suffix",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=now, updated_at=now,
+    ))
+    literal = escaped.summarize_workspace_cleanup_marker_history(
+        "A%B_C\\D", assigned_agent="dev_agent",
+    )
+    assert literal.count == 1
+
+    # Equal instants written with different UTC offsets tie at the same instant.
+    tie = Database(tmp_path / "tie.sqlite")
+    occ = datetime(2026, 1, 3, 3, 30, tzinfo=timezone.utc)
+    tie.insert_task(TaskRecord(
+        id="TASK-Z", brief=f"{_CLEANUP_MARKER}\nz",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=occ, updated_at=occ,
+    ))
+    tie.insert_task(TaskRecord(
+        id="TASK-PLUS09", brief=f"{_CLEANUP_MARKER}\nplus09",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=datetime(2026, 1, 3, 12, 30, tzinfo=timezone(timedelta(hours=9))),
+        updated_at=occ,
+    ))
+    tie_summary = _marker_summary(tie)
+    assert tie_summary.count == 2
+    assert tie_summary.newest_created_at == occ
+
+
+def test_c12a_missing_timestamp_fails_closed(db) -> None:
+    """C12a: a marker row whose created_at cannot parse never yields an empty
+    or partial history — the reader propagates the parse failure."""
+    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    _cleanup_task(db, "TASK-A", created_at=now, status=TaskStatus.COMPLETED)
+    db._conn.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, status, created_at, "
+        "updated_at) VALUES ('TASK-EMPTY', ?, 'dev_agent', 'completed', '', ?)",
+        (f"{_CLEANUP_MARKER}\nempty", now.isoformat()),
+    )
+    db._conn.commit()
+    with pytest.raises(ValueError):
+        _marker_summary(db)
+    assert db._conn.in_transaction is False
+
+
+def test_c12b_owned_transaction_success_fetchall_and_parse_failures(
+    db, monkeypatch,
+) -> None:
+    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    _cleanup_task(db, "TASK-A", created_at=now, status=TaskStatus.COMPLETED)
+    _cleanup_task(
+        db, "TASK-B", created_at=now + timedelta(seconds=1),
+        status=TaskStatus.IN_PROGRESS,
+    )
+    snapshot_sql = "SELECT id, status, created_at FROM tasks ORDER BY rowid"
+    real = db._conn
+    assert real.in_transaction is False
+
+    def rows():
+        return [tuple(row) for row in real.execute(snapshot_sql).fetchall()]
+
+    # Success: the reader owns exactly one BEGIN and releases it with ROLLBACK.
+    before_success = rows()
+    success_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", success_proxy)
+    summary = _marker_summary(db, page_size=1)
+    assert (summary.count, summary.newest_created_at, summary.has_unfinished) == (
+        2, now + timedelta(seconds=1), True,
+    )
+    assert success_proxy.controls == ["BEGIN", "rollback"]
+    assert real.in_transaction is False
+    assert rows() == before_success
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Actual second-page cursor.fetchall failure AFTER page one accumulated:
+    # no partial summary escapes and the owned transaction is released, with
+    # every fixture row snapshotted immediately before the operation.
+    before_fetch = rows()
+    fetch_proxy = _ControlConnProxy(real, fail_fetch_page=2)
+    monkeypatch.setattr(db, "_conn", fetch_proxy)
+    with pytest.raises(sqlite3.OperationalError):
+        _marker_summary(db, page_size=1)
+    assert fetch_proxy.pages == 2
+    assert fetch_proxy.controls == ["BEGIN", "rollback"]
+    assert real.in_transaction is False
+    assert rows() == before_fetch
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Restoration after the fetch failure is proven by an instrumented OWNED
+    # read BEFORE the separate parse injection.
+    before_restored = rows()
+    restored_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", restored_proxy)
+    restored = _marker_summary(db, page_size=1)
+    assert (restored.count, restored.newest_created_at, restored.has_unfinished) == (
+        2, now + timedelta(seconds=1), True,
+    )
+    assert restored_proxy.controls == ["BEGIN", "rollback"]
+    assert real.in_transaction is False
+    assert rows() == before_restored
+    monkeypatch.setattr(db, "_conn", real)
+
+    # A malformed created_at only on page two fails closed. All fixture rows,
+    # including the deliberately malformed row, are snapshotted immediately
+    # before the operation and compared unchanged after it.
+    real.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, status, created_at, "
+        "updated_at) VALUES ('TASK-BAD', ?, 'dev_agent', 'completed', "
+        "'not-a-timestamp', ?)",
+        (f"{_CLEANUP_MARKER}\nbad", now.isoformat()),
+    )
+    real.commit()
+    before_parse = rows()
+    parse_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", parse_proxy)
+    with pytest.raises(ValueError):
+        _marker_summary(db, page_size=2)
+    assert parse_proxy.pages == 2
+    assert parse_proxy.controls == ["BEGIN", "rollback"]
+    assert real.in_transaction is False
+    assert rows() == before_parse
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Recovery: repairing the disposable fixture yields the exact complete
+    # summary (count, newest UTC instant, unfinished).
+    real.execute(
+        "UPDATE tasks SET created_at = ? WHERE id = 'TASK-BAD'",
+        (now.isoformat(),),
+    )
+    real.commit()
+    recovered = _marker_summary(db)
+    assert (
+        recovered.count, recovered.newest_created_at, recovered.has_unfinished,
+    ) == (3, now + timedelta(seconds=1), True)
+
+
+def test_c12c_borrowed_transaction_success_fetchall_and_parse_failures(
+    db, monkeypatch,
+) -> None:
+    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    _cleanup_task(db, "TASK-A", created_at=now, status=TaskStatus.COMPLETED)
+    _cleanup_task(
+        db, "TASK-B", created_at=now + timedelta(seconds=1),
+        status=TaskStatus.COMPLETED,
+    )
+    real = db._conn
+    snapshot_sql = "SELECT id, status, created_at FROM tasks ORDER BY rowid"
+
+    def rows():
+        return [tuple(row) for row in real.execute(snapshot_sql).fetchall()]
+
+    before = rows()
+    real.execute("BEGIN")
+    real.execute(
+        "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+        "VALUES ('TASK-SENTINEL', 'dev_agent', 'sentinel', '{}', ?)",
+        (now.isoformat(),),
+    )
+    assert real.in_transaction is True
+
+    def assert_borrowed_state(expected_rows):
+        assert real.in_transaction is True
+        assert real.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE task_id='TASK-SENTINEL'",
+        ).fetchone()[0] == 1
+        with sqlite3.connect(str(db.db_path)) as other:
+            assert other.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE task_id='TASK-SENTINEL'",
+            ).fetchone()[0] == 0
+        assert rows() == expected_rows
+
+    # Success: the reader issues no BEGIN/COMMIT/ROLLBACK and leaves the
+    # caller's transaction, local sentinel and rows untouched.
+    success_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", success_proxy)
+    summary = _marker_summary(db, page_size=1)
+    assert (summary.count, summary.newest_created_at, summary.has_unfinished) == (
+        2, now + timedelta(seconds=1), False,
+    )
+    assert success_proxy.controls == []
+    assert_borrowed_state(before)
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Second-page fetchall failure preserves the caller's transaction too.
+    fetch_proxy = _ControlConnProxy(real, fail_fetch_page=2)
+    monkeypatch.setattr(db, "_conn", fetch_proxy)
+    with pytest.raises(sqlite3.OperationalError):
+        _marker_summary(db, page_size=1)
+    assert fetch_proxy.pages == 2
+    assert fetch_proxy.controls == []
+    assert_borrowed_state(before)
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Restoration after the fetch failure, still inside the caller's
+    # transaction and instrumented to prove the reader owns nothing.
+    post_fetch_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", post_fetch_proxy)
+    post_fetch = _marker_summary(db, page_size=1)
+    assert (
+        post_fetch.count, post_fetch.newest_created_at, post_fetch.has_unfinished,
+    ) == (2, now + timedelta(seconds=1), False)
+    assert post_fetch_proxy.controls == []
+    assert_borrowed_state(before)
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Second-page parse failure likewise. The deliberately malformed row is
+    # written by fixture SQL and stays uncommitted inside the caller's
+    # transaction; all rows are snapshotted immediately before the operation.
+    real.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, status, created_at, "
+        "updated_at) VALUES ('TASK-BAD', ?, 'dev_agent', 'completed', "
+        "'not-a-timestamp', ?)",
+        (f"{_CLEANUP_MARKER}\nbad", now.isoformat()),
+    )
+    before_parse = rows()
+    parse_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", parse_proxy)
+    with pytest.raises(ValueError):
+        _marker_summary(db, page_size=2)
+    assert parse_proxy.pages == 2
+    assert parse_proxy.controls == []
+    assert_borrowed_state(before_parse)
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Repair the malformed row inside the caller's transaction (no reader
+    # commit/rollback for restoration), then assert the exact recovered
+    # summary and the caller state/sentinel BEFORE the caller rolls back.
+    real.execute(
+        "UPDATE tasks SET created_at = ? WHERE id = 'TASK-BAD'",
+        (now.isoformat(),),
+    )
+    before_recovered = rows()
+    recovered_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", recovered_proxy)
+    recovered = _marker_summary(db, page_size=2)
+    assert (
+        recovered.count, recovered.newest_created_at, recovered.has_unfinished,
+    ) == (3, now + timedelta(seconds=1), False)
+    assert recovered_proxy.controls == []
+    assert_borrowed_state(before_recovered)
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Caller rollback alone removes its own sentinel and the uncommitted
+    # fixture row; the reader never did.
+    real.rollback()
+    assert real.in_transaction is False
+    assert real.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE task_id='TASK-SENTINEL'",
+    ).fetchone()[0] == 0
+    assert rows() == before
+
+
+def test_c12d_concurrent_append_snapshot_deterministic(db, monkeypatch) -> None:
+    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    _cleanup_task(db, "TASK-A", created_at=now, status=TaskStatus.COMPLETED)
+    _cleanup_task(
+        db, "TASK-B", created_at=now + timedelta(seconds=1),
+        status=TaskStatus.COMPLETED,
+    )
+    real = db._conn
+    state = {"selects": 0, "committed": False}
+
+    def on_execute(sql, params):
+        if sql.startswith("SELECT rowid"):
+            state["selects"] += 1
+            if state["selects"] == 2:  # after page one
+                other = sqlite3.connect(str(db.db_path))
+                try:
+                    stamp = now + timedelta(seconds=100)
+                    other.execute(
+                        "INSERT INTO tasks (id, brief, assigned_agent, status, "
+                        "created_at, updated_at) VALUES ('TASK-NEW', ?, "
+                        "'dev_agent', 'in_progress', ?, ?)",
+                        (f"{_CLEANUP_MARKER}\nnew", stamp.isoformat(), stamp.isoformat()),
+                    )
+                    other.commit()
+                    state["committed"] = True
+                finally:
+                    other.close()
+
+    monkeypatch.setattr(db, "_conn", _ConnProxy(real, on_execute))
+    ongoing = _marker_summary(db, page_size=1)
+    assert ongoing.count == 2  # append invisible in the pinned snapshot
+    assert ongoing.newest_created_at == now + timedelta(seconds=1)
+    assert ongoing.has_unfinished is False
+    assert state["committed"] is True
+    monkeypatch.setattr(db, "_conn", real)
+
+    later = _marker_summary(db, page_size=1)
+    assert later.count == 3
+    assert later.newest_created_at == now + timedelta(seconds=100)
+    assert later.has_unfinished is True
+
+
+def test_c12e_concurrent_update_snapshot_deterministic(db, monkeypatch) -> None:
+    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    for i in range(3):
+        _cleanup_task(
+            db, f"TASK-{i}", created_at=now + timedelta(seconds=i),
+            status=TaskStatus.COMPLETED,
+        )
+    real = db._conn
+    state = {"selects": 0, "committed": False}
+
+    def on_execute(sql, params):
+        if sql.startswith("SELECT rowid"):
+            state["selects"] += 1
+            if state["selects"] == 2:  # page one read; update a later row
+                other = sqlite3.connect(str(db.db_path))
+                try:
+                    stamp = now + timedelta(seconds=500)
+                    other.execute(
+                        "UPDATE tasks SET status='in_progress', created_at=?, "
+                        "updated_at=? WHERE id='TASK-2'",
+                        (stamp.isoformat(), stamp.isoformat()),
+                    )
+                    other.commit()
+                    state["committed"] = True
+                finally:
+                    other.close()
+
+    monkeypatch.setattr(db, "_conn", _ConnProxy(real, on_execute))
+    ongoing = _marker_summary(db, page_size=1)
+    assert ongoing.count == 3
+    assert ongoing.newest_created_at == now + timedelta(seconds=2)
+    assert ongoing.has_unfinished is False
+    assert state["committed"] is True
+    monkeypatch.setattr(db, "_conn", real)
+
+    later = _marker_summary(db, page_size=1)
+    assert later.newest_created_at == now + timedelta(seconds=500)
+    assert later.has_unfinished is True
+
+
+def test_c14_latest_five_exact_ids_and_projection(db) -> None:
+    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    for i in range(6):
+        db.insert_task(TaskRecord(
+            id=f"TASK-{i}", brief=f"{_CLEANUP_MARKER}\nrun {i}",
+            assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+            created_at=now + timedelta(minutes=i),
+            updated_at=now + timedelta(minutes=i),
+        ))
+        db.insert_audit_log(
+            task_id=f"TASK-{i}", agent="dev_agent",
+            action="workspace_cleanup_triggered",
+            payload={"run_number": i + 1, "brief_kind": "cleanup"},
+        )
+    # A duplicate trigger audit for the newest task must not displace another.
+    db.insert_audit_log(
+        task_id="TASK-5", agent="dev_agent",
+        action="workspace_cleanup_triggered",
+        payload={"run_number": 6, "brief_kind": "cleanup"},
+    )
+    # Ordinary non-marker task (no trigger audit) stays excluded.
+    db.insert_task(TaskRecord(
+        id="TASK-ORDINARY", brief="ordinary work",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=now + timedelta(minutes=30),
+        updated_at=now + timedelta(minutes=30),
+    ))
+    # Another agent's triggered task stays excluded.
+    db.insert_task(TaskRecord(
+        id="TASK-FOREIGN", brief=f"{_CLEANUP_MARKER}\nqa",
+        assigned_agent="qa_engineer", status=TaskStatus.COMPLETED,
+        created_at=now + timedelta(minutes=40),
+        updated_at=now + timedelta(minutes=40),
+    ))
+    db.insert_audit_log(
+        task_id="TASK-FOREIGN", agent="qa_engineer",
+        action="workspace_cleanup_triggered", payload={"run_number": 1},
+    )
+    db.insert_task_result(
+        task_id="TASK-5", agent="dev_agent", session_id="sess-5",
+        output_summary="done", confidence_score=90, status="completed",
+    )
+
+    rows = db.list_workspace_cleanup_activity("dev_agent", limit=5)
+    assert [row["task_id"] for row in rows] == [
+        "TASK-5", "TASK-4", "TASK-3", "TASK-2", "TASK-1",
+    ]
+    newest = rows[0]
+    assert newest["status"] == TaskStatus.COMPLETED.value
+    assert newest["result_status"] == "completed"
+    assert newest["output_summary"] == "done"

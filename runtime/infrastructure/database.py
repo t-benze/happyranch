@@ -235,6 +235,29 @@ class WorkspaceCleanupReclamationSelection:
     read_observations: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class WorkspaceCleanupMarkerHistorySummary:
+    """Complete per-agent marker-row summary for the daily trigger decision.
+
+    Read-only planning shape; grants no action authority.  ``count`` is the
+    exact all-history marker-row count (no saturation/cutoff),
+    ``newest_created_at`` is the newest marker instant by UTC comparison with
+    microsecond precision (never the SQL text-sort winner), and
+    ``has_unfinished`` is true when ANY marker row in the complete history is
+    non-terminal.
+    """
+
+    count: int
+    newest_created_at: datetime | None
+    has_unfinished: bool
+
+
+# Bounded PER-PAGE materialization for the complete marker-history reader —
+# explicitly not a logical history cap.  Completeness is independent of this
+# value: the rowid keyset loop ends only on a short/empty page.
+_CLEANUP_HISTORY_PAGE_SIZE = 1000
+
+
 # ── TASK-5966 strict mention-led exchange bounds (founder-ratified) ──────
 # EXCHANGE_GRACE: idle-closure bound — an exchange closes when the cohort has
 # no live covering wake AND no conversational activity for this long
@@ -11310,6 +11333,95 @@ class Database:
             (agent, agent, agent, agent, limit),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    @_synchronized
+    def summarize_workspace_cleanup_marker_history(
+        self,
+        brief_prefix: str,
+        *,
+        assigned_agent: str,
+        page_size: int = _CLEANUP_HISTORY_PAGE_SIZE,
+    ) -> WorkspaceCleanupMarkerHistorySummary:
+        """Complete read-only summary of one agent's daemon-cleanup marker rows.
+
+        Predicate is exactly the existing marker/agent semantics
+        (``assigned_agent = ? AND brief LIKE ? ESCAPE '\\'`` with the same
+        ``\\ % _`` escaping as :meth:`list_tasks_by_brief_prefix`), but this
+        reader scans ALL matching rows in bounded ``rowid`` keyset pages and
+        computes the exact count, the newest UTC instant (microsecond
+        precision, never the SQL text-sort winner) and whether ANY row is
+        non-terminal.  ``page_size`` bounds materialization per page only; it
+        is never a logical history cutoff.
+
+        Snapshot semantics: the complete page loop is one synchronous
+        ``_synchronized`` call with no awaits.  When the connection is not
+        already in a transaction the reader begins its own read transaction,
+        pins the snapshot with its first SELECT, and rolls it back in
+        ``finally`` on success or failure.  When a caller already owns a
+        transaction the reader neither begins, commits nor rolls it back; it
+        preserves the caller's transaction and pending writes.
+
+        Any SQLite/query/fetch failure or timestamp that cannot yield a
+        datetime propagates — a partial or fabricated summary is never
+        returned.
+        """
+        if isinstance(page_size, bool) or not isinstance(page_size, int):
+            raise ValueError("page_size must be a positive integer")
+        if page_size <= 0:
+            raise ValueError("page_size must be a positive integer")
+
+        escaped = (
+            brief_prefix.replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        pattern = escaped + "%"
+        owned = not self._conn.in_transaction
+        if owned:
+            self._conn.execute("BEGIN")
+        try:
+            count = 0
+            newest: datetime | None = None
+            has_unfinished = False
+            last_rowid: int | None = None
+            while True:
+                if last_rowid is None:
+                    cursor = self._conn.execute(
+                        "SELECT rowid, created_at, status FROM tasks "
+                        "WHERE assigned_agent = ? AND brief LIKE ? ESCAPE '\\' "
+                        "ORDER BY rowid ASC LIMIT ?",
+                        (assigned_agent, pattern, page_size),
+                    )
+                else:
+                    cursor = self._conn.execute(
+                        "SELECT rowid, created_at, status FROM tasks "
+                        "WHERE assigned_agent = ? AND brief LIKE ? ESCAPE '\\' "
+                        "AND rowid > ? ORDER BY rowid ASC LIMIT ?",
+                        (assigned_agent, pattern, last_rowid, page_size),
+                    )
+                rows = cursor.fetchall()
+                for row in rows:
+                    count += 1
+                    last_rowid = row["rowid"]
+                    parsed = _parse_dt(row["created_at"])
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    else:
+                        parsed = parsed.astimezone(timezone.utc)
+                    if newest is None or parsed > newest:
+                        newest = parsed
+                    if row["status"] not in _WORKSPACE_CLEANUP_TERMINAL_STATUSES:
+                        has_unfinished = True
+                if len(rows) < page_size:
+                    break
+            return WorkspaceCleanupMarkerHistorySummary(
+                count=count,
+                newest_created_at=newest,
+                has_unfinished=has_unfinished,
+            )
+        finally:
+            if owned:
+                self._conn.rollback()
 
     @_synchronized
     def get_latest_task_result(

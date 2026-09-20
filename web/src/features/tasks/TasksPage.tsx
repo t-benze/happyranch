@@ -92,13 +92,16 @@ function GroupHeading({
   label,
   count,
   dot,
+  id,
 }: {
   label: string;
-  count: number;
+  count?: number;
   dot: GroupDot;
+  /** Optional id so a rows section can name this heading via aria-labelledby. */
+  id?: string;
 }): JSX.Element {
   return (
-    <h2 className="tasks-group-heading mb-2 flex items-center px-0.5">
+    <h2 id={id} className="tasks-group-heading mb-2 flex items-center px-0.5">
       <span
         aria-hidden
         className={`inline-block h-2 w-2 shrink-0 rounded-full bg-current ${DOT_COLOR[dot]}`}
@@ -108,7 +111,9 @@ function GroupHeading({
       >
         {label}
       </span>
-      <span className="text-text-muted text-xs tabular-nums">{count}</span>
+      {count !== undefined && (
+        <span className="text-text-muted text-xs tabular-nums">{count}</span>
+      )}
     </h2>
   );
 }
@@ -347,6 +352,20 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
     ? '50+ waiting on you'
     : `${attentionTasks.length} waiting on you`;
 
+  // Presentation split. The escalated attention traversal is independent of the
+  // ordinary roots page, so its group is decided on its own data: when it has
+  // rows it renders FIRST inside the shared list shell (identical markup to the
+  // ordinary groups); when it is empty/loading/errored it renders no group.
+  // The ordinary initial loading/error/empty states stay truthful even when
+  // the escalated group is present, and never hide the shared list shell.
+  const attentionLoading = attentionQuery.isLoading;
+  const attentionInitialError = attentionQuery.isError && attentionTasks.length === 0;
+  const showEscalatedGroup = attentionTasks.length > 0;
+  const ordinaryLoading = isLoading && !isRetrying;
+  const ordinaryInitialError = (tasksQuery.isError || isRetrying) && !hasUsableTasks;
+  const showOrdinaryGroups = !ordinaryLoading && !ordinaryInitialError && allTasks.length > 0;
+  const showListShell = showEscalatedGroup || showOrdinaryGroups;
+
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
       <main className="min-h-0 flex-1">
@@ -407,76 +426,36 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
           </form>
         )}
         {filters && <p className="text-text-secondary mb-4 text-sm">Applied filters: {filters.status && `status = ${filters.status}`} {filters.assigned_agent && `assigned agent = ${filters.assigned_agent}`}</p>}
-        {attentionQuery.isLoading ? (
+        {/* The attention traversal owns its own loading/error states. Its rows
+            render inside the shared list shell below, as the first group. */}
+        {attentionLoading && (
           <p className="text-text-muted px-6 text-sm">Loading waiting-on-you tasks…</p>
-        ) : attentionQuery.isError && attentionTasks.length === 0 ? (
+        )}
+        {attentionInitialError && (
           <div role="alert" className="border-feedback-danger bg-danger-soft mx-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
             <p className="text-text-primary text-sm font-medium">Could not load waiting-on-you tasks</p>
             <Button size="sm" variant="outline" className="h-auto w-full max-w-full whitespace-normal break-words sm:w-auto" onClick={() => void retryAttention()}>
               <RefreshCw size={14} aria-hidden /> Retry
             </Button>
           </div>
-        ) : attentionTasks.length > 0 ? (
-          <section aria-labelledby="waiting-on-you-heading" data-waiting-on-you-responsive-list className="border-border-default mx-6 mb-6 space-y-2 rounded-xl border p-3">
-            <div className="flex items-center justify-between gap-3">
-              <h2 id="waiting-on-you-heading" className="flex items-center gap-2 text-task-group text-text-primary font-semibold tracking-tight">
-                <span aria-hidden className="inline-block h-2 w-2 rounded-full text-attention-text" />
-                Waiting on you
-              </h2>
-              <span className="text-text-muted text-xs tabular-nums">{attentionCount}</span>
-            </div>
-            <div className="border-border-default bg-surface-page rounded-xl border shadow-sm">
-              <ul>
-                {attentionTasks.map((task) => (
-                  <li key={task.task_id}>
-                    <TaskListRow task={task} to={routes.detail(task.task_id)} taskRoutes={routes} />
-                  </li>
-                ))}
-              </ul>
-            </div>
-            {attentionQuery.isError && (
-              <div role="alert" className="border-feedback-danger bg-danger-soft flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
-                <p className="text-text-primary text-sm font-medium">Could not load waiting-on-you tasks; previously loaded rows are still shown.</p>
-                <Button size="sm" variant="outline" className="h-auto w-full max-w-full whitespace-normal break-words sm:w-auto" onClick={() => void (attentionNextPageError ? loadNextAttentionPage() : retryAttention())}>
-                  <RefreshCw size={14} aria-hidden /> {attentionNextPageError ? 'Retry loading more waiting-on-you tasks' : 'Retry'}
-                </Button>
-              </div>
-            )}
-            {attentionQuery.hasNextPage && !attentionNextPageError && (
-              <Button size="sm" variant="outline" className="h-auto w-full max-w-full whitespace-normal break-words sm:w-auto" onClick={() => void loadNextAttentionPage()} loading={attentionQuery.isFetchingNextPage}>
-                Load more waiting-on-you tasks
-              </Button>
-            )}
-          </section>
-        ) : null}
+        )}
         <style data-testid="tasks-responsive-styles">{`@media (max-width: 767px) {
           [data-tasks-responsive-list] > div:first-child { display: none; }
-          :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a {
+          [data-tasks-responsive-list] section li > div > a {
             display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: .5rem .75rem; align-items: center;
           }
-          :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div { width: auto; min-width: 0; }
-          :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(1) { grid-column: 1; grid-row: 1; }
-          :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(2) { grid-column: 2; grid-row: 1; }
-          :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(3) { grid-column: 1 / -1; grid-row: 2; overflow: visible; }
-          :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(3) > span { white-space: normal; overflow: visible; text-overflow: clip; }
-          :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(4) { grid-column: 1; grid-row: 3; }
-          :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(5) { grid-column: 2; grid-row: 3; }
-          :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(6) { grid-column: 2; grid-row: 4; justify-self: end; }
+          [data-tasks-responsive-list] section li > div > a > div { width: auto; min-width: 0; }
+          [data-tasks-responsive-list] section li > div > a > div:nth-child(1) { grid-column: 1; grid-row: 1; }
+          [data-tasks-responsive-list] section li > div > a > div:nth-child(2) { grid-column: 2; grid-row: 1; }
+          [data-tasks-responsive-list] section li > div > a > div:nth-child(3) { grid-column: 1 / -1; grid-row: 2; overflow: visible; }
+          [data-tasks-responsive-list] section li > div > a > div:nth-child(3) > span { white-space: normal; overflow: visible; text-overflow: clip; }
+          [data-tasks-responsive-list] section li > div > a > div:nth-child(4) { grid-column: 1; grid-row: 3; }
+          [data-tasks-responsive-list] section li > div > a > div:nth-child(5) { grid-column: 2; grid-row: 3; }
+          [data-tasks-responsive-list] section li > div > a > div:nth-child(6) { grid-column: 2; grid-row: 4; justify-self: end; }
         }`}</style>
-        {isLoading && !isRetrying ? (
-          <p className="text-text-muted py-6 text-center text-sm">Loading…</p>
-        ) : (tasksQuery.isError || isRetrying) && !hasUsableTasks ? (
-          <EmptyState
-            icon={<AlertCircle size={32} className="text-feedback-danger" />}
-            title="Could not load tasks"
-            body="The server returned an error. You can try again."
-            cta={{ label: isRetrying ? 'Retrying…' : 'Retry', onClick: retry }}
-          />
-        ) : allTasks.length === 0 ? (
-          <EmptyState title="No tasks" body="No tasks match the current filters." />
-        ) : (
+        {showListShell ? (
           <div className="space-y-6">
-            {tasksQuery.isError && !nextPageError && (
+            {tasksQuery.isError && !nextPageError && hasUsableTasks && (
               <div
                 role="alert"
                 className="border-feedback-danger bg-danger-soft flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4"
@@ -496,7 +475,50 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
             )}
             <div data-testid="tasks-responsive-list" data-tasks-responsive-list>
               <TaskListColumnHeader />
-            {groups.map(([key, tasks]) => {
+              {showEscalatedGroup && (
+                <div className="tasks-group">
+                  {/* Same label/count read as every ordinary group. The truthful
+                      non-exact count text lives in a count note (not inside the
+                      heading) so the accessible heading name stays exactly
+                      'Waiting on you'. */}
+                  <div className="flex items-center justify-between gap-3">
+                    <GroupHeading
+                      id="waiting-on-you-heading"
+                      label="Waiting on you"
+                      dot="escalated"
+                    />
+                    <span className="text-text-muted mb-2 text-xs tabular-nums">
+                      {attentionCount}
+                    </span>
+                  </div>
+                  <section
+                    aria-labelledby="waiting-on-you-heading"
+                    className="border-border-default bg-surface-raised rounded-xl border shadow-sm"
+                  >
+                    <ul>
+                      {attentionTasks.map((task) => (
+                        <li key={task.task_id}>
+                          <TaskListRow task={task} to={routes.detail(task.task_id)} taskRoutes={routes} />
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                  {attentionQuery.isError && (
+                    <div role="alert" className="border-feedback-danger bg-danger-soft mt-2 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
+                      <p className="text-text-primary text-sm font-medium">Could not load waiting-on-you tasks; previously loaded rows are still shown.</p>
+                      <Button size="sm" variant="outline" className="h-auto w-full max-w-full whitespace-normal break-words sm:w-auto" onClick={() => void (attentionNextPageError ? loadNextAttentionPage() : retryAttention())}>
+                        <RefreshCw size={14} aria-hidden /> {attentionNextPageError ? 'Retry loading more waiting-on-you tasks' : 'Retry'}
+                      </Button>
+                    </div>
+                  )}
+                  {attentionQuery.hasNextPage && !attentionNextPageError && (
+                    <Button size="sm" variant="outline" className="mt-2 h-auto w-full max-w-full whitespace-normal break-words sm:w-auto" onClick={() => void loadNextAttentionPage()} loading={attentionQuery.isFetchingNextPage}>
+                      Load more waiting-on-you tasks
+                    </Button>
+                  )}
+                </div>
+              )}
+            {showOrdinaryGroups && groups.map(([key, tasks]) => {
               return (
                 <div key={key} className="tasks-group">
                   <GroupHeading
@@ -521,6 +543,20 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
               );
             })}
             </div>
+            {/* The escalated group can be present while the ordinary traversal
+                is still loading, errored, or empty. Keep those ordinary states
+                truthful and visible WITHOUT hiding the shared list shell. */}
+            {showEscalatedGroup && ordinaryLoading && (
+              <p className="text-text-muted py-6 text-center text-sm">Loading…</p>
+            )}
+            {showEscalatedGroup && ordinaryInitialError && (
+              <EmptyState
+                icon={<AlertCircle size={32} className="text-feedback-danger" />}
+                title="Could not load tasks"
+                body="The server returned an error. You can try again."
+                cta={{ label: isRetrying ? 'Retrying…' : 'Retry', onClick: retry }}
+              />
+            )}
             <div ref={sentinelRef} aria-hidden className="h-1" />
             {isFetchingNextPage && (
               <p className="text-text-muted py-3 text-center text-sm">
@@ -548,6 +584,17 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
               </p>
             )}
           </div>
+        ) : ordinaryLoading ? (
+          <p className="text-text-muted py-6 text-center text-sm">Loading…</p>
+        ) : ordinaryInitialError ? (
+          <EmptyState
+            icon={<AlertCircle size={32} className="text-feedback-danger" />}
+            title="Could not load tasks"
+            body="The server returned an error. You can try again."
+            cta={{ label: isRetrying ? 'Retrying…' : 'Retry', onClick: retry }}
+          />
+        ) : (
+          <EmptyState title="No tasks" body="No tasks match the current filters." />
         )}
         </ContentWrap>
       </main>

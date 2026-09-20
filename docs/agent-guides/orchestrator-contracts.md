@@ -16,7 +16,12 @@ When starting a feature, read the relevant design doc first and follow existing 
 ## Workspace Cleanup Configuration
 
 `OrgConfig` parses `workspace_cleanup.enabled` as the existing scheduler switch:
-it is boolean and defaults to `true`. Its separate
+it is boolean and defaults to `true`. The enabled scheduler evaluates the daily
+local 03:30 occurrence in the org timezone (existing occurrences delimit half-open
+windows compared as UTC instants; a nonexistent spring-forward wall time is skipped
+and an ambiguous fall-back wall time takes the first `fold=0` instance). It suppresses
+when any marker exists at/after the current boundary (including legacy weekly rows) or
+any prior marker is unfinished, and it applies no rolling cooldown. Its separate
 `workspace_cleanup.reclamation_actions_enabled` key is also strictly boolean,
 defaults to `false`, and gates the bounded pre-agent reclamation hook. A true
 value does not bypass the hook's registered-owner guard, fresh owner, provenance,
