@@ -363,15 +363,23 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 	// observation can be in flight when the child exits, so the outer-loop
 	// priority check cannot observe that exit until the observation returns; a
 	// stale completed healthy result must therefore never publish READY or
-	// WATCHDOG.  The fence re-reads the one owned Wait result and returns the
-	// terminal classification when the child has exited.
+	// WATCHDOG.  The fence first re-reads the one owned Wait result; because the
+	// kernel can reap the exited child before the Wait goroutine has delivered
+	// that result on ``waited``, it also probes the authoritative reaped state
+	// so a positive boundary can never follow an already-reaped child.  Once the
+	// process is gone the owned Wait result is imminent, so the fence blocks on
+	// it to recover the terminal exit classification.
 	fenceChildExit := func() (int, bool) {
 		select {
 		case err := <-waited:
 			return finishChildExit(err), true
 		default:
-			return 0, false
 		}
+		if err := cmd.Process.Signal(syscall.Signal(0)); err != nil &&
+			(errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH)) {
+			return finishChildExit(<-waited), true
+		}
+		return 0, false
 	}
 	for {
 		// A completed child Wait is the terminal event for this supervisor.
