@@ -44,7 +44,10 @@ from tests.test_authority_v2_publication_bookkeeping import (
     BOOT_B,
     _TargetedFailingConn,
     _ack,
+    _append_stage_event,
+    _cancel_task,
     _claim,
+    _delete_ordinary_completion,
     _delete_stage_event,
     _dispatch,
     _dump,
@@ -52,6 +55,8 @@ from tests.test_authority_v2_publication_bookkeeping import (
     _finalized_recovery,
     _mutate_notification,
     _notification,
+    _point_dispatch_at_replacement,
+    _replace_owner_session,
     _stage_events,
     _write_dispatch,
 )
@@ -631,3 +636,330 @@ def test_direct_run_step_tagged_item_with_absent_unknown_generation_refuses(tmp_
 
 def test_direct_run_step_tagged_item_with_null_generation_refuses(tmp_path):
     _direct_run_step_negatives(tmp_path, {"authority_v2_generation": None})
+
+
+# ── TASK-8552 correction: complete row/evidence pre-state ────────────────
+
+
+def _preexisting_event(store, outcome, attempt, stage, *, session=RESERVED):
+    return store._db._v2_admission_event_payload(
+        stage=stage, attempt_id=attempt.attempt_id,
+        candidate_id=outcome.candidate_id, result_id=_reserved_result_id(store, outcome),
+        envelope_id=outcome.envelope_id, notification_id=outcome.notification_id,
+        generation_id=outcome.notification_id, next_session_id=session,
+    )
+
+
+def test_generation_claim_healthy_publishing_control(tmp_path):
+    """Positive control: genuine publishing-before-ack state still admits."""
+    store, row, attempt, outcome, claimed = _publishing(tmp_path)
+    before = _dump(store)
+    result = _admit(store, outcome)
+    assert result.status == "claimed", result
+    assert _dump(store) != before
+
+
+def test_generation_claim_healthy_published_control(tmp_path):
+    """Positive control: genuine published state still admits."""
+    store, row, attempt, outcome, claimed = _published(tmp_path)
+    before = _dump(store)
+    result = _admit(store, outcome)
+    assert result.status == "claimed", result
+    assert _dump(store) != before
+
+
+@pytest.mark.parametrize("case", [
+    "missing_publish_claimed", "missing_published", "duplicate_publish_claimed",
+])
+def test_generation_admission_refuses_damaged_retained_publication_evidence(
+    tmp_path, case,
+):
+    """A missing/duplicated retained publication event refuses with no mutation."""
+    store, row, attempt, outcome, claimed = (
+        _published(tmp_path) if case == "missing_published" else _publishing(tmp_path)
+    )
+    if case == "missing_publish_claimed":
+        _delete_stage_event(store, "publish_claimed")
+    elif case == "missing_published":
+        _delete_stage_event(store, "published")
+    else:
+        _append_stage_event(store, dict(_stage_events(store, "publish_claimed")[0]))
+    before = _dump(store)
+    result = _admit(store, outcome)
+    assert result.status == "generation_pending", result
+    assert result.reason == "evidence_drift", result
+    assert _dump(store) == before
+    assert _stage_events(store, "generation_claimed") == []
+
+
+@pytest.mark.parametrize("stage", ["generation_claimed", "notification_settled"])
+def test_generation_admission_refuses_preexisting_admission_or_settlement_event(
+    tmp_path, stage,
+):
+    """A preexisting related admission/settlement event is never ignored."""
+    store, row, attempt, outcome, claimed = _publishing(tmp_path)
+    event = _preexisting_event(store, outcome, attempt, stage)
+    _append_stage_event(store, event)
+    before = _dump(store)
+    result = _admit(store, outcome)
+    assert result.status == "generation_pending", result
+    assert result.reason == "evidence_drift", result
+    assert _dump(store) == before
+    # The prior event is preserved exactly and never repaired by another insert.
+    assert len(_stage_events(store, stage)) == 1
+    if stage == "notification_settled":
+        assert _stage_events(store, "generation_claimed") == []
+
+
+def test_generation_claim_refuses_delayed_a_after_replacement_b_pending(tmp_path):
+    """A delayed admission for A cannot adopt a pointer that now names B."""
+    store, row, attempt, outcome, claimed = _publishing(tmp_path)
+    _point_dispatch_at_replacement(store, _notification(store, outcome))
+    before = _dump(store)
+    result = _admit(store, outcome)
+    assert result.status == "generation_pending", result
+    assert result.reason in ("evidence_drift", "identity_mismatch"), result
+    assert _dump(store) == before
+    assert _stage_events(store, "generation_claimed") == []
+
+
+def test_settlement_refuses_missing_retained_publication_evidence(tmp_path):
+    """Deleting a retained publication claim holds settlement."""
+    store, row, attempt, outcome, claimed = _publishing(tmp_path)
+    assert _admit(store, outcome).status == "claimed"
+    _delete_stage_event(store, "publish_claimed")
+    before = _dump(store)
+    result = _settle(store, outcome)
+    assert result.status == "settlement_pending", result
+    assert result.reason == "evidence_drift", result
+    assert _dump(store) == before
+    assert _notification(store, outcome).state == "admitted"
+    assert _stage_events(store, "notification_settled") == []
+
+
+def test_settlement_refuses_missing_ordinary_completion_proof(tmp_path):
+    """Deleting the exact ordinary completion holds settlement."""
+    store, row, attempt, outcome, claimed = _publishing(tmp_path)
+    assert _admit(store, outcome).status == "claimed"
+    _delete_ordinary_completion(store, row["id"])
+    before = _dump(store)
+    result = _settle(store, outcome)
+    assert result.status == "settlement_pending", result
+    assert result.reason == "evidence_drift", result
+    assert _dump(store) == before
+    assert _notification(store, outcome).state == "admitted"
+    assert _stage_events(store, "notification_settled") == []
+
+
+def test_settlement_refuses_preexisting_settlement_event(tmp_path):
+    """A stray preexisting settlement event blocks the first settle."""
+    store, row, attempt, outcome, claimed = _publishing(tmp_path)
+    assert _admit(store, outcome).status == "claimed"
+    _append_stage_event(
+        store, _preexisting_event(store, outcome, attempt, "notification_settled"),
+    )
+    before = _dump(store)
+    result = _settle(store, outcome)
+    assert result.status == "settlement_pending", result
+    assert result.reason == "evidence_drift", result
+    assert _dump(store) == before
+    assert len(_stage_events(store, "notification_settled")) == 1
+
+
+@pytest.mark.parametrize("mutate", ["cancel", "replace"])
+def test_settlement_refuses_cancelled_or_replaced_owner(tmp_path, mutate):
+    store, row, attempt, outcome, claimed = _publishing(tmp_path)
+    assert _admit(store, outcome).status == "claimed"
+    if mutate == "cancel":
+        _cancel_task(store)
+    else:
+        _replace_owner_session(store)
+    before = _dump(store)
+    result = _settle(store, outcome)
+    assert result.status == "settlement_pending", result
+    assert result.reason == "owner_lost", result
+    assert _dump(store) == before
+    assert _notification(store, outcome).state == "admitted"
+
+
+def test_settlement_replay_after_reopen_is_read_only(tmp_path):
+    store, row, attempt, outcome, claimed = _publishing(tmp_path)
+    assert _admit(store, outcome).status == "claimed"
+    assert _settle(store, outcome).status == "settled"
+    result_id = _reserved_result_id(store, outcome)
+    other = AuthorityPolicyStore(Database(tmp_path / "c2.db"))
+    other.bind_v2_permission_surface_reader(lambda agent: "a" * 64)
+    other.bind_v2_process_boot_id(BOOT_A)
+    before = _dump(store)
+    replay = other.settle_v2_continuation_generation_admission(
+        root_task_id=TASK_ID, manager_agent=MANAGER,
+        manager_session_id=SESSION_ID, result_id=result_id,
+        generation_id=outcome.notification_id, next_session_id=RESERVED,
+    )
+    assert replay.status == "already_settled_exact", replay
+    assert _dump(store) == before
+
+
+@pytest.mark.parametrize("fragment,occurrence", [
+    ("UPDATE authority_policy_v2_recovery_notifications", 1),
+    ("UPDATE authority_policy_v2_root_dispatch", 1),
+    ("UPDATE tasks", 1),
+])
+def test_generation_claim_sql_boundary_failure_rolls_back(
+    tmp_path, fragment, occurrence,
+):
+    """Each exact N/D/task UPDATE boundary rolls every field back."""
+    store, row, attempt, outcome, claimed = _publishing(tmp_path)
+    before = _dump(store)
+    real = store._db._conn
+    store._db._conn = _TargetedFailingConn(
+        real, sql_fragment=fragment, occurrence=occurrence,
+    )
+    try:
+        result = _admit(store, outcome)
+    finally:
+        store._db._conn = real
+    assert result.status == "generation_pending", result
+    assert result.reason == "generation_failed", result
+    assert _dump(store) == before
+    assert _stage_events(store, "generation_claimed") == []
+
+
+def test_generation_claim_commit_failure_rolls_back(tmp_path):
+    store, row, attempt, outcome, claimed = _publishing(tmp_path)
+    before = _dump(store)
+    real = store._db._conn
+    store._db._conn = _TargetedFailingConn(real, fail_commit=True)
+    try:
+        result = _admit(store, outcome)
+    finally:
+        store._db._conn = real
+    assert result.status == "generation_pending", result
+    assert result.reason == "generation_failed", result
+    assert _dump(store) == before
+    assert _stage_events(store, "generation_claimed") == []
+
+
+def test_settlement_sql_boundary_failure_rolls_back(tmp_path):
+    store, row, attempt, outcome, claimed = _publishing(tmp_path)
+    assert _admit(store, outcome).status == "claimed"
+    before = _dump(store)
+    real = store._db._conn
+    store._db._conn = _TargetedFailingConn(
+        real, sql_fragment="UPDATE authority_policy_v2_recovery_notifications",
+        occurrence=1,
+    )
+    try:
+        result = _settle(store, outcome)
+    finally:
+        store._db._conn = real
+    assert result.status == "settlement_pending", result
+    assert result.reason == "settlement_failed", result
+    assert _dump(store) == before
+    assert _notification(store, outcome).state == "admitted"
+    assert _stage_events(store, "notification_settled") == []
+
+
+def test_settlement_audit_failure_rolls_back(tmp_path):
+    store, row, attempt, outcome, claimed = _publishing(tmp_path)
+    assert _admit(store, outcome).status == "claimed"
+    before = _dump(store)
+    real = store._db._conn
+    store._db._conn = _TargetedFailingConn(real, audit_stage="notification_settled")
+    try:
+        result = _settle(store, outcome)
+    finally:
+        store._db._conn = real
+    assert result.status == "settlement_pending", result
+    assert result.reason == "settlement_failed", result
+    assert _dump(store) == before
+    assert _stage_events(store, "notification_settled") == []
+
+
+def test_settlement_commit_failure_rolls_back(tmp_path):
+    store, row, attempt, outcome, claimed = _publishing(tmp_path)
+    assert _admit(store, outcome).status == "claimed"
+    before = _dump(store)
+    real = store._db._conn
+    store._db._conn = _TargetedFailingConn(real, fail_commit=True)
+    try:
+        result = _settle(store, outcome)
+    finally:
+        store._db._conn = real
+    assert result.status == "settlement_pending", result
+    assert result.reason == "settlement_failed", result
+    assert _dump(store) == before
+    assert _stage_events(store, "notification_settled") == []
+
+
+class _RunStepOrch:
+    def __init__(self, store, calls):
+        self._db = store._db
+        self._calls = calls
+        self._audit = types.SimpleNamespace()
+        self._settings = types.SimpleNamespace(max_orchestration_steps=10)
+        self._queue = types.SimpleNamespace()
+
+    def _build_session_id(self):
+        return RESERVED
+
+    def _run_agent(self, *args, **kwargs):
+        self._calls.append("run_agent")
+        return None, None
+
+
+def test_direct_run_step_corrupted_publication_prerequisite_does_not_launch(
+    tmp_path,
+):
+    """A corrupted retained claim at the tagged path launches nothing at all."""
+    from runtime.orchestrator.run_step import run_step_impl
+
+    store, row, attempt, outcome, claimed = _publishing(tmp_path)
+    _delete_stage_event(store, "publish_claimed")
+    calls: list = []
+    run_step_impl(
+        _RunStepOrch(store, calls), TASK_ID,
+        metadata={"authority_v2_generation": outcome.notification_id},
+    )
+    assert calls == []
+    assert _task_row(store)["status"] == TaskStatus.PENDING.value
+    assert _dispatch(store).state == "pending"
+    assert _notification(store, outcome).state == "publishing"
+    assert _stage_events(store, "generation_claimed") == []
+
+
+def test_direct_run_step_settlement_failure_holds_launch_and_replay(tmp_path):
+    """A settlement failure after a valid claim holds launch; a replay cannot
+    launch the already-admitted invocation a second time."""
+    from runtime.orchestrator.run_step import run_step_impl
+
+    store, row, attempt, outcome, claimed = _publishing(tmp_path)
+    calls: list = []
+    # ``run_step`` resolves the Database via ``orch._db``; patch that exact
+    # instance method so the injected corruption happens at the real settlement
+    # boundary inside the real draft.
+    original = store._db.settle_v2_continuation_generation_admission
+    state = {"first": True}
+
+    def _fail_settlement_once(**kwargs):
+        if state["first"]:
+            state["first"] = False
+            _delete_ordinary_completion(store, row["id"])
+        return original(**kwargs)
+
+    store._db.settle_v2_continuation_generation_admission = _fail_settlement_once
+    try:
+        metadata = {"authority_v2_generation": outcome.notification_id}
+        run_step_impl(_RunStepOrch(store, calls), TASK_ID, metadata=metadata)
+        assert calls == []
+        task = _task_row(store)
+        assert task["status"] == TaskStatus.IN_PROGRESS.value
+        assert task["current_session_id"] == RESERVED
+        assert _notification(store, outcome).state == "admitted"
+        assert _stage_events(store, "notification_settled") == []
+        # No replay/reopen may launch the already-admitted invocation again.
+        run_step_impl(_RunStepOrch(store, calls), TASK_ID, metadata=metadata)
+        assert calls == []
+        assert _stage_events(store, "notification_settled") == []
+    finally:
+        del store._db.settle_v2_continuation_generation_admission

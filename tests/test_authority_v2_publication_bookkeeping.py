@@ -365,10 +365,25 @@ def _dump(store):
 
 
 class _TargetedFailingConn:
-    def __init__(self, real, *, audit_stage: str | None = None, fail_commit=False):
+    """A test-only connection wrapper that injects one exact boundary failure.
+
+    ``audit_stage`` fails the result-stage audit insert matching that stage.
+    ``sql_fragment``/``occurrence`` fail the Nth (1-based) ``execute`` whose SQL
+    contains the exact fragment, so a caller can target a precise UPDATE
+    boundary (e.g. the LATER root-dispatch update) rather than merely the first
+    statement mentioning a table.  ``fail_commit`` fails the commit boundary.
+    """
+
+    def __init__(
+        self, real, *, audit_stage: str | None = None, fail_commit=False,
+        sql_fragment: str | None = None, occurrence: int = 1,
+    ):
         self._real = real
         self._audit_stage = audit_stage
         self._fail_commit = fail_commit
+        self._sql_fragment = sql_fragment
+        self._occurrence = occurrence
+        self._seen = 0
 
     def execute(self, sql, *args, **kwargs):
         params = args[0] if args else None
@@ -379,6 +394,13 @@ class _TargetedFailingConn:
             and isinstance(params[3], str) and self._audit_stage in params[3]
         ):
             raise RuntimeError("injected publication audit failure")
+        if self._sql_fragment is not None and self._sql_fragment in sql:
+            self._seen += 1
+            if self._seen == self._occurrence:
+                raise RuntimeError(
+                    "injected SQL failure at occurrence %d: %s"
+                    % (self._occurrence, self._sql_fragment)
+                )
         return self._real.execute(sql, *args, **kwargs)
 
     def commit(self):
@@ -1566,3 +1588,91 @@ def test_publication_sql_mutation_failure_rolls_back(tmp_path, mutator):
         store._db._conn = real
     assert result.status.endswith("pending"), result
     assert _dump(store) == before
+
+
+# ── targeted boundary rollback (TASK-8552 correction) ────────────────────
+
+
+def test_invalidation_later_dispatch_update_failure_rolls_back_notification(tmp_path):
+    """The LATER root_dispatch UPDATE (not the first N UPDATE) fails.
+
+    The exact-SQL injector fires on the dispatch-retire statement; the earlier
+    notification ``invalidated`` UPDATE must be rolled back with the dispatch
+    and the closed audit never inserted.
+    """
+    store, row, attempt, outcome = _finalized(tmp_path)
+    _cancel_task(store)
+    before = _dump(store)
+    real = store._db._conn
+    store._db._conn = _TargetedFailingConn(
+        real, sql_fragment="UPDATE authority_policy_v2_root_dispatch",
+        occurrence=1,
+    )
+    try:
+        result = _invalidate(store, row)
+    finally:
+        store._db._conn = real
+    assert result.status.endswith("pending"), result
+    assert _dump(store) == before
+    assert _notification(store, outcome).state == "needed"
+    assert _dispatch(store).state == "pending"
+    assert _stage_events(store, "invalidated") == []
+
+
+def test_reclaim_sql_mutation_failure_retains_prior_lease_and_claim(tmp_path):
+    """A failed reclaim UPDATE retains the previous P/boot/lease/claim history."""
+    store, row, attempt, outcome = _finalized(tmp_path)
+    claimed = _claim(store, row)
+    assert claimed.status == "claimed"
+    # A genuine publisher restart makes the live lease reclaimable.
+    store.bind_v2_process_boot_id(BOOT_B)
+    before = _dump(store)
+    real = store._db._conn
+    store._db._conn = _TargetedFailingConn(
+        real, sql_fragment="UPDATE authority_policy_v2_recovery_notifications",
+        occurrence=1,
+    )
+    try:
+        result = _claim(store, row)
+    finally:
+        store._db._conn = real
+    assert result.status.endswith("pending"), result
+    assert _dump(store) == before
+    notification = _notification(store, outcome)
+    assert notification.state == "publishing"
+    assert notification.publication_attempt == 1
+    assert notification.publisher_boot_id == BOOT_A
+    assert notification.lease_deadline == claimed.lease_deadline
+    assert len(_stage_events(store, "publish_claimed")) == 1
+    assert _stage_events(store, "publish_failed") == []
+
+
+def test_reclaim_sql_mutation_failure_retains_prior_failure_history(tmp_path):
+    """A failed reclaim after a recorded failure keeps the failure evidence."""
+    store, row, attempt, outcome = _finalized(tmp_path)
+    claimed = _claim(store, row)
+    recorded = _failure(
+        store, row, publication_attempt=claimed.publication_attempt,
+        publisher_boot_id=claimed.publisher_boot_id,
+    )
+    assert recorded.status == "failure_recorded", recorded
+    store.bind_v2_process_boot_id(BOOT_B)
+    before = _dump(store)
+    real = store._db._conn
+    store._db._conn = _TargetedFailingConn(
+        real, sql_fragment="UPDATE authority_policy_v2_recovery_notifications",
+        occurrence=1,
+    )
+    try:
+        result = _claim(store, row)
+    finally:
+        store._db._conn = real
+    assert result.status.endswith("pending"), result
+    assert _dump(store) == before
+    notification = _notification(store, outcome)
+    assert notification.state == "publishing"
+    assert notification.publication_attempt == 1
+    assert notification.publisher_boot_id is None
+    assert notification.lease_deadline is None
+    assert len(_stage_events(store, "publish_claimed")) == 1
+    assert len(_stage_events(store, "publish_failed")) == 1

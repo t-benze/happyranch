@@ -1717,7 +1717,140 @@ def test_shipping_historically_migrated_callable_publication(tmp_path, monkeypat
 # publication/admission-stage fixture proof with the earlier consumer staged;
 # the provider launch remains the sole external-launch double.  It makes no
 # claim about a real authority-consumer REQUEST_CHANGES/next-result spend.
-def _drive_c3d3b_admission(fixture: _ShippingFixture) -> str:
+def _delete_result_stage_audit_rows(db, root_id: str, stage: str) -> None:
+    """Fixture-level removal of the exact retained result-stage audit rows."""
+    from runtime.models import AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
+
+    for audit in db.get_audit_logs(root_id):
+        payload = audit.get("payload")
+        if (
+            audit.get("action") == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
+            and isinstance(payload, dict) and payload.get("stage") == stage
+        ):
+            db._conn.execute("DELETE FROM audit_log WHERE id=?", (audit["id"],))
+    db._conn.commit()
+
+
+def _delete_ordinary_completion_audit_rows(db, root_id: str, result_id: int) -> None:
+    """Fixture-level removal of the exact ordinary completion evidence."""
+    for audit in db.get_audit_logs(root_id):
+        payload = audit.get("payload")
+        if (
+            audit.get("action") == "completion_report"
+            and isinstance(payload, dict)
+            and "_recovery_session_id" not in payload
+            and payload.get("_result_row_id") == result_id
+        ):
+            db._conn.execute("DELETE FROM audit_log WHERE id=?", (audit["id"],))
+    db._conn.commit()
+
+
+def _delete_recovery_settled_audit_rows(db, root_id: str) -> None:
+    """Fixture-level removal of the exact recovery-settled evidence."""
+    from runtime.models import AUTHORITY_POLICY_V2_RECOVERY_SETTLED_ACTION
+
+    for audit in db.get_audit_logs(root_id):
+        if audit.get("action") == AUTHORITY_POLICY_V2_RECOVERY_SETTLED_ACTION:
+            db._conn.execute("DELETE FROM audit_log WHERE id=?", (audit["id"],))
+    db._conn.commit()
+
+
+def _install_admission_negative(
+    db, root_id: str, result_id: int, negative: str, done: threading.Event,
+) -> str:
+    """Corrupt ONE prerequisite at the EXACT real run-step boundary.
+
+    The wrapper is installed on the SAME Database instance the real
+    Dispatcher/run_step consumes and then delegates to the UNCHANGED production
+    method, so the negative exercises the genuine production evidence reader
+    (no copied logic and no replacement of the shipping readers/writers).
+    ``done`` fires only after the real method has returned.
+    """
+    if negative == "missing_publication":
+        original = db.try_claim_v2_continuation_generation
+
+        def _corrupting_claim(**kwargs):
+            try:
+                _delete_result_stage_audit_rows(db, root_id, "publish_claimed")
+                return original(**kwargs)
+            finally:
+                done.set()
+
+        db.try_claim_v2_continuation_generation = _corrupting_claim
+        return "try_claim_v2_continuation_generation"
+    if negative == "missing_settlement_proof":
+        original = db.settle_v2_continuation_generation_admission
+
+        def _corrupting_settle(**kwargs):
+            try:
+                _delete_ordinary_completion_audit_rows(db, root_id, result_id)
+                _delete_recovery_settled_audit_rows(db, root_id)
+                return original(**kwargs)
+            finally:
+                done.set()
+
+        db.settle_v2_continuation_generation_admission = _corrupting_settle
+        return "settle_v2_continuation_generation_admission"
+    raise AssertionError(f"unknown negative: {negative}")
+
+
+def _assert_admission_negative(
+    fixture: _ShippingFixture, db, root_id: str, generation: str, negative: str,
+    attr: str, done: threading.Event, original_session: str,
+) -> str:
+    """Assert one corrupted-prerequisite negative through the REAL run-step.
+
+    No launch, preserved durable residue and no ordinary fallback: the held
+    external boundary still carries the original manager session and the
+    degraded durable state is exactly the genuine pre-transition evidence.
+    """
+    try:
+        assert done.wait(timeout=30.0), "the real run-step never reached the boundary"
+    finally:
+        try:
+            delattr(db, attr)
+        except AttributeError:
+            pass
+    notification = db.get_authority_policy_v2_recovery_notification(generation)
+    assert notification is not None
+    task = db.get_task(root_id)
+    dispatch = db.get_authority_policy_v2_root_dispatch(root_id)
+    stages = [
+        a["payload"]["stage"]
+        for a in db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=root_id, manager_agent=MANAGER,
+        )
+    ]
+    if negative == "missing_publication":
+        assert notification.state == "published", notification.state
+        assert task.status is TaskStatus.PENDING, task.status
+        assert dispatch is not None and dispatch.state == "pending"
+        assert stages.count("generation_claimed") == 0
+        assert stages.count("notification_settled") == 0
+        assert fixture.captured["session_id"] == original_session
+    else:
+        assert notification.state == "admitted", notification.state
+        assert task.status is TaskStatus.IN_PROGRESS, task.status
+        assert task.current_session_id == notification.next_session_id
+        assert dispatch is not None and dispatch.state == "admitted"
+        assert stages.count("generation_claimed") == 1
+        assert stages.count("notification_settled") == 0
+        # The settlement refusal held launch: the held external boundary still
+        # carries the ORIGINAL manager session, never the reserved next session.
+        assert fixture.captured["session_id"] == original_session
+        assert notification.next_session_id != original_session
+    # The durable generation count is unchanged: no second admission/allocation.
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_continue_envelopes"
+    ).fetchone()[0] == 1
+    fixture.release_launch()
+    fixture.join_workers()
+    return root_id
+
+
+def _drive_c3d3b_admission(
+    fixture: _ShippingFixture, *, negative: str | None = None,
+) -> str:
     fixture.activate_v2_pair()
     fixture.install_launch_hold()
     root_id = fixture.create_and_enqueue_root()
@@ -1800,6 +1933,13 @@ def _drive_c3d3b_admission(fixture: _ShippingFixture) -> str:
 
     db.bind_authority_policy_v2_process_boot_id(attempt.origin_boot_id)
 
+    negative_done = threading.Event()
+    negative_attr: str | None = None
+    if negative is not None:
+        negative_attr = _install_admission_negative(
+            db, root_id, row_id, negative, negative_done,
+        )
+
     # The REAL publisher discovers, claims, calls the REAL TaskQueue with the
     # tagged generation metadata and acknowledges the exact claim.
     receipts = publish_authority_policy_v2_notifications(
@@ -1808,6 +1948,12 @@ def _drive_c3d3b_admission(fixture: _ShippingFixture) -> str:
     assert receipts and receipts[0]["status"] == "published", receipts
     notification = db.get_authority_policy_v2_recovery_notification(generation)
     assert notification is not None and notification.state == "published"
+
+    if negative is not None:
+        return _assert_admission_negative(
+            fixture, db, root_id, generation, negative, negative_attr,
+            negative_done, session_id,
+        )
 
     # The tagged item is now in the REAL TaskQueue.  A second real worker
     # consumes it (the first invocation is still held at the external boundary,
@@ -1872,5 +2018,58 @@ def test_shipping_historically_migrated_publication_admission(tmp_path, monkeypa
     fixture.start()
     try:
         _drive_c3d3b_admission(fixture)
+    finally:
+        fixture.stop()
+
+
+# C3d3b correction: representative missing-prerequisite negatives through the
+# SAME real publisher -> TaskQueue -> Dispatcher/run_step -> held external
+# launch venue, fresh AND full historical-migrated.
+
+
+def test_shipping_missing_publication_prerequisite_refuses_admission(
+    tmp_path, monkeypatch,
+):
+    """A deleted retained publication claim refuses admission with no launch."""
+    fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2)
+    fixture.start()
+    try:
+        _drive_c3d3b_admission(fixture, negative="missing_publication")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_missing_publication_prerequisite(
+    tmp_path, monkeypatch,
+):
+    fixture = _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=True, queue_workers=2,
+    )
+    fixture.start()
+    try:
+        _drive_c3d3b_admission(fixture, negative="missing_publication")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_missing_settlement_proof_holds_launch(tmp_path, monkeypatch):
+    """A deleted ordinary completion holds settlement and the external launch."""
+    fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2)
+    fixture.start()
+    try:
+        _drive_c3d3b_admission(fixture, negative="missing_settlement_proof")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_missing_settlement_proof(
+    tmp_path, monkeypatch,
+):
+    fixture = _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=True, queue_workers=2,
+    )
+    fixture.start()
+    try:
+        _drive_c3d3b_admission(fixture, negative="missing_settlement_proof")
     finally:
         fixture.stop()

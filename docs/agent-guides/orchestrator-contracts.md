@@ -848,6 +848,30 @@ continuation hook stays fail-closed, envelope spend and the full
 consumer/reaper/startup-recovery integration remain later units, and the feature
 remains unaccepted.
 
+The C3d3b correction (same unmerged draft PR) makes generation admission and
+admission settlement enforce their COMPLETE row/evidence pre-state instead of one
+sentinel per symptom. Admission additionally requires the complete retained
+publication evidence for the exact generation — the bounded contiguous `{1..P}`
+claim history, the bound `P`/publisher boot and every state-required
+`published`/`publish_failed`/`publish_returned` observation, each a duplicate-free
+closed event classified before any discriminator filtering — and proves the
+ABSENCE of any prior related `generation_claimed`/`notification_settled` event; a
+deleted, duplicated, preexisting, foreign, malformed, opaque or extra-key row
+refuses with the exact prior residue and is never repaired by reinsertion.
+Settlement reuses that retained publication evidence plus the genuine
+ordinary-or-exact-recovery settlement proof at every boundary, requires coherent
+absence of settlement-stage evidence before the first `admitted -> settled`
+transition, treats an already-recorded claim/settled event inconsistent with the
+current N/D as a conflict, and replays `already_settled_exact` read-only. Every
+public writer still refuses caller transaction nesting before BEGIN/rollback.
+Focused fault injection now targets the exact N/D/task UPDATE,
+`generation_claimed`/`notification_settled` audit and commit boundaries —
+including invalidation's LATER root-dispatch UPDATE and reclaim failures that
+retain the previous P/boot/lease/claim/failure history — and the fresh AND full
+historical-migrated shipping venues add missing-retained-claim and
+missing-settlement-proof negatives that launch nothing, preserve the durable
+residue and take no ordinary fallback.
+
 The file-backed completion CLI preserves a supplied `manager_self_evaluation`
 member verbatim (including invalid/null values) so the daemon, rather than the
 client, validates it; an omitted member remains omitted. The shipping CLI to

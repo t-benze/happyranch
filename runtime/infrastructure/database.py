@@ -12680,6 +12680,114 @@ class Database:
             return False
         return self._v2_json_type_sensitive_equal(payload, expected)
 
+    def _v2_related_result_stage_events_absent_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, attempt_id: str,
+        stage: str, candidate_id: str, result_id: int, envelope_id: str,
+        notification_id: str, generation_id: str,
+    ) -> bool:
+        """True only when ZERO potentially-related events exist for ``stage``.
+
+        Enumerates and classifies BEFORE any discriminator filtering (the shared
+        identity reader), so a preexisting, malformed, duplicate or foreign
+        generation-admission/settlement event can never be mistaken for absence.
+        A provably unrelated genuine historical event whose every present causal
+        reference is well-typed and distinct stays unrelated; an opaque body or
+        an unreadable enumeration fails closed.
+        """
+        related = self._v2_related_publication_events_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=attempt_id, stage=stage, candidate_id=candidate_id,
+            result_id=result_id, envelope_id=envelope_id,
+            notification_id=notification_id, generation_id=generation_id,
+        )
+        return related is not None and len(related) == 0
+
+    def _authenticate_v2_retained_publication_evidence_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, attempt_id: str,
+        candidate_id: str, result_id: int, envelope_id: str,
+        notification, generation_id: str, allowed_states: tuple[str, ...],
+    ) -> bool:
+        """The complete retained publication evidence for one exact generation.
+
+        Requires the state-required bounded contiguous ``{1..P}`` claim history,
+        the exact bound ``P``/publisher boot, and every retained
+        ``published``/``publish_failed``/``publish_returned`` observation as a
+        duplicate-free closed event set with a well-typed in-range ``P``.  Every
+        row is classified before any discriminator filtering, so missing,
+        null/mistyped, wrong/distinct, conflicting, duplicate, foreign, opaque or
+        extra-key evidence refuses with no repair; a genuine earlier attempt
+        remains valid prior history after a real reclaim.  This is an
+        UNCOMMITTED read-only reader: it performs no write.
+        """
+        state = notification.state
+        if state not in allowed_states:
+            return False
+        publication_attempt = notification.publication_attempt
+        if not self._v2_is_int(publication_attempt) or publication_attempt < 1:
+            return False
+        boot = notification.publisher_boot_id
+        if not isinstance(boot, str) or not boot:
+            return False
+        claims = self._v2_authenticate_publication_claim_history_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=attempt_id, candidate_id=candidate_id, result_id=result_id,
+            envelope_id=envelope_id, notification_id=notification.notification_id,
+            generation_id=generation_id, publication_attempt=publication_attempt,
+        )
+        if claims is None:
+            return False
+        current_claim = claims.get(publication_attempt)
+        if current_claim is None:
+            return False
+        if current_claim.get("publisher_boot_id") != boot:
+            return False
+        observations: dict[str, dict[int, dict] | None] = {}
+        for stage in (
+            AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISHED,
+            AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_FAILED,
+            AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_RETURNED,
+        ):
+            authenticated = (
+                self._v2_authenticated_publication_events_by_attempt_uncommitted(
+                    root_task_id=root_task_id, manager_agent=manager_agent,
+                    attempt_id=attempt_id, stage=stage, candidate_id=candidate_id,
+                    result_id=result_id, envelope_id=envelope_id,
+                    notification_id=notification.notification_id,
+                    generation_id=generation_id,
+                    reference_attempt=publication_attempt,
+                )
+            )
+            if authenticated is None:
+                return False
+            observations[stage] = authenticated
+        published = observations[AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISHED] or {}
+        failed = observations[AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_FAILED] or {}
+        returned = observations[AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_RETURNED] or {}
+        # A recorded failure at the CURRENT attempt clears the publisher lease and
+        # boot, so it can never coexist with a bound current boot; a failure at an
+        # EARLIER attempt remains legitimate reclaim history.
+        if publication_attempt in failed:
+            return False
+        if state == "published":
+            if publication_attempt not in published:
+                return False
+            if returned:
+                return False
+        elif state == "publishing":
+            # A live bound claim can never coexist with a ``published`` event at
+            # the same attempt, and a ``publish_returned`` observation implies a
+            # prior admission that this pre-admission reader must never accept.
+            if publication_attempt in published:
+                return False
+            if returned:
+                return False
+        else:
+            # admitted/settled: a genuine consumer may have admitted from the live
+            # publishing claim or from the acknowledged published state; a
+            # ``publish_returned`` observation may legitimately exist afterwards.
+            pass
+        return True
+
     def _authenticate_v2_admission_ready_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int,
@@ -12688,10 +12796,17 @@ class Database:
 
         Requires N ``publishing`` OR ``published`` (a queue consumer may outrun
         publication acknowledgement), D still ``pending(G)``, no prior reserved
-        session and the read-only settlement proof.  ``needed`` (not yet
+        session, the read-only settlement proof, the COMPLETE retained
+        publication evidence for the exact generation (bounded contiguous
+        ``{1..P}`` claim history, bound P/boot and state-required
+        published/failure/return observations) and the PROVABLE ABSENCE of any
+        prior generation admission/settlement evidence.  ``needed`` (not yet
         published) refuses so admission is only reachable from a publication
         claim; ``admitted``/``settled``/``invalidated`` refuse as already
-        attempted.
+        attempted.  Preexisting related ``generation_claimed``/
+        ``notification_settled`` evidence is classified before any
+        discriminator filtering and can never be ignored or repaired by another
+        insertion.
         """
         code, ctx = self._authenticate_v2_post_final_evidence_uncommitted(
             root_task_id=root_task_id, manager_agent=manager_agent,
@@ -12721,6 +12836,38 @@ class Database:
             result_row=ctx["result_row"],
         ):
             return "evidence_drift", None
+        attempt = ctx["attempt"]
+        candidate = ctx["candidate"]
+        envelope = ctx["envelope"]
+        # The complete retained publication evidence for THIS exact generation:
+        # a deleted/duplicated/foreign/malformed claim or state-required
+        # published/failure/return observation refuses with the exact prior
+        # residue preserved, never repaired by reinsertion.
+        if not self._authenticate_v2_retained_publication_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+            result_id=result_id, envelope_id=envelope.envelope_id,
+            notification=notification, generation_id=notification.notification_id,
+            allowed_states=("publishing", "published"),
+        ):
+            return "evidence_drift", None
+        # The FIRST admission must be the ONLY one: any preexisting, duplicate,
+        # foreign, opaque or malformed related generation-claim/settlement event
+        # refuses.  Classification happens before any discriminator filtering so
+        # a wrong/null/absent discriminator cannot masquerade as absence.
+        for absent_stage in (
+            AUTHORITY_POLICY_V2_RESULT_STAGE_GENERATION_CLAIMED,
+            AUTHORITY_POLICY_V2_RESULT_STAGE_NOTIFICATION_SETTLED,
+        ):
+            if not self._v2_related_result_stage_events_absent_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                attempt_id=attempt.attempt_id, stage=absent_stage,
+                candidate_id=candidate.candidate_id, result_id=result_id,
+                envelope_id=envelope.envelope_id,
+                notification_id=notification.notification_id,
+                generation_id=notification.notification_id,
+            ):
+                return "evidence_drift", None
         return None, ctx
 
     def _try_claim_v2_continuation_generation_uncommitted(
@@ -12919,6 +13066,29 @@ class Database:
             or dispatch.generation_id != generation_id
         ):
             return _pending("identity_mismatch", **base)
+        # The admitted generation's COMPLETE retained publication evidence must
+        # authenticate: a deleted/duplicated/foreign/malformed claim or
+        # state-required published/return observation, or a bound boot that no
+        # retained claim proves, refuses with the exact admitted residue intact.
+        if not self._authenticate_v2_retained_publication_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+            result_id=result_id, envelope_id=envelope.envelope_id,
+            notification=notification, generation_id=generation_id,
+            allowed_states=("admitted", "settled"),
+        ):
+            return _pending("evidence_drift", **base)
+        # The final generation's GENUINE settlement proof (real ordinary
+        # completion OR the exact real callback_consumed Q plus both complete
+        # settlement audits) is required at every settlement/replay boundary, so
+        # deleting the completion/receipt after admission holds settlement.
+        if not self._authenticate_v2_publication_settlement_proof_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            attempt=attempt, candidate=candidate, envelope=envelope,
+            notification=notification, result_row=ctx["result_row"],
+        ):
+            return _pending("evidence_drift", **base)
         expected_claim = self._v2_admission_event_payload(
             stage=AUTHORITY_POLICY_V2_RESULT_STAGE_GENERATION_CLAIMED,
             attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
@@ -12939,6 +13109,10 @@ class Database:
             generation_id=generation_id, next_session_id=next_session_id,
         )
         if notification.state == "settled":
+            # An already-settled generation must still own the exact admitted
+            # dispatch pointer; a conflicting D is a conflict, not a replay.
+            if dispatch.state != "admitted":
+                return _pending("evidence_drift", **base)
             if self._authenticate_v2_admission_event_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 attempt_id=attempt.attempt_id, expected=expected_settled,
@@ -12949,6 +13123,20 @@ class Database:
             return _pending("evidence_drift", **base)
         if notification.state != "admitted" or dispatch.state != "admitted":
             return _pending("not_settleable", **base)
+        # The FIRST admitted -> settled transition requires coherent ABSENCE of
+        # any retained settlement-stage evidence: a preexisting/duplicate/
+        # foreign/malformed notification_settled event is a conflict and is never
+        # ignored or repaired by appending a second one.
+        if not self._v2_related_result_stage_events_absent_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=attempt.attempt_id,
+            stage=AUTHORITY_POLICY_V2_RESULT_STAGE_NOTIFICATION_SETTLED,
+            candidate_id=candidate.candidate_id, result_id=result_id,
+            envelope_id=envelope.envelope_id,
+            notification_id=notification.notification_id,
+            generation_id=generation_id,
+        ):
+            return _pending("evidence_drift", **base)
         task_row = self._conn.execute(
             "SELECT * FROM tasks WHERE id=?", (root_task_id,)
         ).fetchone()
