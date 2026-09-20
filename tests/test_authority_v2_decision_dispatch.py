@@ -872,6 +872,375 @@ def test_accepted_recovery_routes_v2_lineage_before_special_effects(tmp_path):
     assert calls and calls[0].get("result_row_id") == r2
 
 
+# ── terminal classification: exact proof, never mere absence/flags ────────
+
+
+def _insert_later_result(store):
+    cursor = store._db._conn.execute(
+        "INSERT INTO task_results "
+        "(task_id, agent, session_id, status, output_summary, decision_json, "
+        "confidence_score, created_at) VALUES (?,?,?,?,?,?,?,?)",
+        (TASK_ID, MANAGER, "sess-later", "completed", "later",
+         '{"action":"done"}', 70, "2026-09-21T00:00:05+00:00"),
+    )
+    store._db._conn.commit()
+    return cursor.lastrowid
+
+
+def test_gate_terminal_invalid_identity_is_foreign_not_ordinary(tmp_path):
+    """On a root with v2 history a malformed/unknown identity never becomes
+    the ordinary/v1 absence path (manager terminal-probe red case)."""
+    store, row, outcome, r2 = _spent_ready(tmp_path)
+    assert _claim(store, row).status == "claimed"
+    assert _ack(store, row).status == "applied"
+    report = _report_for_result(store, r2)
+    for identity in (None, True, False, "bogus", 999999, 0, -1):
+        before = _dump(store)
+        context = store._db.authority_policy_v2_completion_dispatch_context(
+            root_task_id=TASK_ID, result_row_id=identity,
+        )
+        assert context.kind == "foreign", (identity, context)
+        assert _gate(store, report, identity).kind == "skip", identity
+        assert _dump(store) == before
+
+
+def test_gate_terminal_corrupt_proof_never_ordinary_with_later_row(tmp_path):
+    """A corrupted terminal decision proof behind a retired pointer keeps the
+    lineage live even when a genuine later row exists -- and the exact ack
+    still refuses ``evidence_drift`` with the DB byte-for-byte unchanged."""
+    store, row, outcome, r2 = _spent_ready(tmp_path)
+    assert _claim(store, row).status == "claimed"
+    assert _ack(store, row).status == "applied"
+    later = _insert_later_result(store)
+    _corrupt_claim_event(store)
+    before = _dump(store)
+    assert _gate(
+        store, _report_for_result(store, later), later,
+    ).kind == "skip"
+    assert _dump(store) == before
+    replay = _ack(store, row)
+    assert replay.status == "ack_pending" and replay.reason == "evidence_drift"
+    assert _dump(store) == before
+
+
+def test_gate_corrupt_terminal_applied_event_never_ordinary(tmp_path):
+    """The terminal proof itself is re-authenticated: a mutated retained
+    ``decision_applied`` event keeps the lineage live for a later row too."""
+    store, row, outcome, r2 = _spent_ready(tmp_path)
+    assert _claim(store, row).status == "claimed"
+    assert _ack(store, row).status == "applied"
+    later = _insert_later_result(store)
+    event = _stage_events(store, APPLIED)[0]
+    event["report_digest"] = "0" * 64
+    store._db._conn.execute(
+        "UPDATE audit_log SET payload=? WHERE action='authority_policy_v2_result_stage' "
+        "AND json_extract(payload,'$.stage')=?",
+        (json.dumps(event), APPLIED),
+    )
+    store._db._conn.commit()
+    before = _dump(store)
+    assert _gate(store, _report_for_result(store, later), later).kind == "skip"
+    assert _dump(store) == before
+
+
+def test_none_resolver_maps_to_latest_row_but_direct_invalid_identity_is_foreign(
+    tmp_path,
+):
+    """Record the None-resolver behavior explicitly: the common entry resolves a
+    supplied ``None`` to the latest persisted row (a real identity), while a
+    directly supplied invalid identity on a v2 root is ''foreign''."""
+    from runtime.orchestrator.run_step import _resolve_completion_result_row_id
+
+    store, row, outcome, r2 = _spent_ready(tmp_path)
+    assert _claim(store, row).status == "claimed"
+    assert _ack(store, row).status == "applied"
+    report = _report_for_result(store, r2)
+    assert _resolve_completion_result_row_id(store._db, TASK_ID, report, None) == r2
+    resolved = store._db.authority_policy_v2_completion_dispatch_context(
+        root_task_id=TASK_ID, result_row_id=r2,
+    )
+    assert resolved.kind == "receipt"
+    assert store._db.authority_policy_v2_completion_dispatch_context(
+        root_task_id=TASK_ID, result_row_id=None,
+    ).kind == "foreign"
+
+
+# ── PUBLIC ack/refusal transaction matrix ─────────────────────────────────
+
+_ENVELOPE_UPDATE = "UPDATE authority_policy_v2_continue_envelopes"
+_TASKS_UPDATE = "UPDATE tasks SET status=?"
+_ESCALATION_PAYLOAD = "authority_v2_decision_dispatch_interrupted"
+
+
+def test_ack_sql_audit_and_commit_boundary_failures_roll_back_then_retry(tmp_path):
+    for index, (kwargs, expected) in enumerate((
+        ({"sql_fragment": _ENVELOPE_UPDATE, "occurrence": 1}, f"sql:{_ENVELOPE_UPDATE}"),
+        ({"audit_stage": APPLIED}, f"audit:{APPLIED}"),
+        ({"fail_commit": True}, "commit"),
+    )):
+        store, row, outcome, r2 = _spent_ready(_fresh_dir(tmp_path, f"ack-{index}"))
+        assert _claim(store, row).status == "claimed"
+        before = _dump(store)
+        real = store._db._conn
+        wrapper = _BoundaryFailingConn(real, **kwargs)
+        store._db._conn = wrapper
+        try:
+            result = _ack(store, row)
+        finally:
+            store._db._conn = real
+        assert wrapper.fired == expected, (kwargs, wrapper.fired)
+        assert result.status == "ack_pending" and result.reason == "ack_failed", result
+        assert _dump(store) == before
+        assert _receipt(store, r2)["decision_state"] == "claimed"
+        assert _stage_events(store, APPLIED) == []
+        # Remove the fault: exactly one prescribed retry, no second spend.
+        assert _ack(store, row).status == "applied"
+        assert len(_stage_events(store, "spent")) == 1
+        assert len(_stage_events(store, APPLIED)) == 1
+
+
+def test_refusal_sql_audit_and_commit_boundary_failures_roll_back_then_retry(tmp_path):
+    for index, (kwargs, expected) in enumerate((
+        ({"sql_fragment": _TASKS_UPDATE, "occurrence": 1}, f"sql:{_TASKS_UPDATE}"),
+        ({"audit_stage": _ESCALATION_PAYLOAD}, f"audit:{_ESCALATION_PAYLOAD}"),
+        ({"sql_fragment": _ENVELOPE_UPDATE, "occurrence": 1}, f"sql:{_ENVELOPE_UPDATE}"),
+        ({"audit_stage": INTERRUPTED}, f"audit:{INTERRUPTED}"),
+        ({"fail_commit": True}, "commit"),
+    )):
+        store, row, outcome, r2 = _spent_ready(_fresh_dir(tmp_path, f"ref-{index}"))
+        assert _claim(store, row).status == "claimed"
+        before = _dump(store)
+        real = store._db._conn
+        wrapper = _BoundaryFailingConn(real, **kwargs)
+        store._db._conn = wrapper
+        try:
+            result = _refuse(store, row)
+        finally:
+            store._db._conn = real
+        assert wrapper.fired == expected, (kwargs, wrapper.fired)
+        assert result.status == "refusal_pending" and result.reason == "refusal_failed"
+        assert _dump(store) == before
+        assert _receipt(store, r2)["decision_state"] == "claimed"
+        assert _stage_events(store, INTERRUPTED) == []
+        # Remove the fault: exactly one prescribed refusal, no second spend.
+        assert _refuse(store, row).status == "refused"
+        assert len(_stage_events(store, "spent")) == 1
+        assert len(_stage_events(store, INTERRUPTED)) == 1
+
+
+def test_ack_and_refusal_refuse_caller_transaction_preserving_pending_mutation(
+    tmp_path,
+):
+    for index, writer in enumerate(("ack", "refuse")):
+        store, row, outcome, r2 = _spent_ready(_fresh_dir(tmp_path, f"txn-{index}"))
+        assert _claim(store, row).status == "claimed"
+        real = store._db._conn
+        real.execute("BEGIN IMMEDIATE")
+        real.execute(
+            "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+            "VALUES (?,?,?,?,?)",
+            (TASK_ID, MANAGER, "pending_probe", "{}", "2026-09-21T00:00:00+00:00"),
+        )
+        assert real.in_transaction
+        before = _dump(store)
+        result = _ack(store, row) if writer == "ack" else _refuse(store, row)
+        assert result.reason == "transaction_owned", (writer, result)
+        assert real.in_transaction
+        assert _dump(store) == before
+        real.rollback()
+        assert store._db._conn.in_transaction is False
+        if writer == "ack":
+            assert _ack(store, row).status == "applied"
+        else:
+            assert _refuse(store, row).status == "refused"
+
+
+def test_ack_failure_preserves_committed_effect_and_claimed_receipt(tmp_path):
+    store, row, outcome, r2 = _spent_ready(tmp_path)
+    assert _claim(store, row).status == "claimed"
+    # A real, independently committed normal effect (task projection + a real
+    # child-ish result row) that acknowledgement must never roll back.
+    store._db._conn.execute(
+        "UPDATE tasks SET note=? WHERE id=?", ("committed-effect", TASK_ID),
+    )
+    _insert_later_result(store)
+    preserved_task = _row(store, "tasks", "id=?", (TASK_ID,))
+    before = _dump(store)
+    real = store._db._conn
+    wrapper = _BoundaryFailingConn(real, fail_commit=True)
+    store._db._conn = wrapper
+    try:
+        result = _ack(store, row)
+    finally:
+        store._db._conn = real
+    assert wrapper.fired == "commit"
+    assert result.status == "ack_pending" and result.reason == "ack_failed"
+    assert _dump(store) == before
+    assert _receipt(store, r2)["decision_state"] == "claimed"
+    assert _row(store, "tasks", "id=?", (TASK_ID,)) == preserved_task
+    # The fault removed: exactly one ack, no second spend/effect.
+    assert _ack(store, row).status == "applied"
+    assert len(_stage_events(store, "spent")) == 1
+    assert len(_stage_events(store, APPLIED)) == 1
+
+
+def test_refusal_failure_retains_discoverable_claimed_and_committed_effect(tmp_path):
+    store, row, outcome, r2 = _spent_ready(tmp_path)
+    assert _claim(store, row).status == "claimed"
+    # A real, independently committed child effect the refusal must never touch.
+    store._db._conn.execute(
+        "INSERT INTO tasks (id, status, assigned_agent, team, brief, task_type, "
+        "parent_task_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        ("TASK-CHILD-OWN", TaskStatus.PENDING.value, "dev_agent", TEAM, "child",
+         "subtask", TASK_ID, "2026-09-21T00:00:00+00:00",
+         "2026-09-21T00:00:00+00:00"),
+    )
+    store._db._conn.commit()
+    before = _dump(store)
+    real = store._db._conn
+    wrapper = _BoundaryFailingConn(real, fail_commit=True)
+    store._db._conn = wrapper
+    try:
+        result = _refuse(store, row)
+    finally:
+        store._db._conn = real
+    assert wrapper.fired == "commit"
+    assert result.status == "refusal_pending" and result.reason == "refusal_failed"
+    assert _dump(store) == before
+    assert _receipt(store, r2)["decision_state"] == "claimed"
+    assert _row(store, "tasks", "id=?", ("TASK-CHILD-OWN",))["status"] == (
+        TaskStatus.PENDING.value
+    )
+    # Exact retry settles the refusal; the committed child effect is preserved
+    # and there is no second spend.
+    assert _refuse(store, row).status == "refused"
+    assert _row(store, "tasks", "id=?", ("TASK-CHILD-OWN",))["status"] == (
+        TaskStatus.PENDING.value
+    )
+    assert len(_stage_events(store, "spent")) == 1
+
+
+def test_refusal_preserves_terminal_replaced_and_malformed_owner_without_mutation(
+    tmp_path,
+):
+    mutations = {
+        "cancelled": "UPDATE tasks SET cancelled_at=?, status=? WHERE id=?",
+        "terminal": "UPDATE tasks SET status=? WHERE id=?",
+        "replaced": "UPDATE tasks SET assigned_agent=? WHERE id=?",
+        "malformed": "UPDATE tasks SET assigned_agent=NULL WHERE id=?",
+    }
+    for index, (name, sql) in enumerate(mutations.items()):
+        store, row, outcome, r2 = _spent_ready(_fresh_dir(tmp_path, f"own-{index}"))
+        assert _claim(store, row).status == "claimed"
+        if name == "cancelled":
+            store._db._conn.execute(
+                sql, ("2026-09-21T00:00:00+00:00", TaskStatus.CANCELLED.value, TASK_ID),
+            )
+        elif name == "terminal":
+            store._db._conn.execute(sql, (TaskStatus.COMPLETED.value, TASK_ID))
+        elif name == "replaced":
+            store._db._conn.execute(sql, ("other_agent", TASK_ID))
+        else:
+            store._db._conn.execute(sql, (TASK_ID,))
+        store._db._conn.commit()
+        preserved = _row(store, "tasks", "id=?", (TASK_ID,))
+        result = _refuse(store, row)
+        assert result.status == "refused", (name, result)
+        # The differing/affirmatively cancelled task row is preserved EXACTLY:
+        # no task UPDATE, no restoration, no replacement mutation.
+        assert _row(store, "tasks", "id=?", (TASK_ID,)) == preserved, name
+        assert _receipt(store, r2)["decision_state"] == "refused"
+        # No escalation audit was minted for the preserved (non-current) owner.
+        assert [
+            row for row in store._db.get_audit_logs(TASK_ID)
+            if row["action"] == "escalation"
+        ] == []
+
+
+# ── ACTUAL reopen: an independent Database over the SAME persisted file ───
+
+
+def _reopened_store(store):
+    """A genuinely NEW Database connection over the SAME persisted file."""
+    path = store._db.db_path
+    old_conn = store._db._conn
+    reopened = AuthorityPolicyStore(Database(path))
+    assert reopened._db.db_path == path
+    assert reopened._db._conn is not old_conn
+    return reopened
+
+
+def test_reopen_after_spend_before_claim_ready_claims_once(tmp_path):
+    store, row, outcome, r2 = _spent_ready(tmp_path)
+    assert _receipt(store, r2)["decision_state"] == "ready"
+    reopened = _reopened_store(store)
+    assert _receipt(reopened, r2)["decision_state"] == "ready"
+    gate = _gate(reopened, _report_for_result(reopened, r2), r2)
+    assert gate.kind == "admitted", gate
+    assert _receipt(reopened, r2)["decision_state"] == "claimed"
+    assert len(_stage_events(reopened, CLAIMED)) == 1
+    # A second real reopen of the committed claim never admits a second
+    # consumer: the restart path performs the audited interruption refusal.
+    reopened_again = _reopened_store(reopened)
+    assert reopened_again._db._conn is not reopened._db._conn
+    assert _gate(
+        reopened_again, _report_for_result(reopened_again, r2), r2,
+    ).kind == "skip"
+    assert _receipt(reopened_again, r2)["decision_state"] == "refused"
+    assert len(_stage_events(reopened_again, INTERRUPTED)) == 1
+
+
+def test_reopen_after_committed_claim_before_effect_refuses_zero_entry(tmp_path):
+    store, row, outcome, r2 = _spent_ready(tmp_path)
+    assert _claim(store, row).status == "claimed"
+    reopened = _reopened_store(store)
+    # ZERO consumer entry: no ordinary body call, only the audited refusal.
+    assert _gate(reopened, _report_for_result(reopened, r2), r2).kind == "skip"
+    assert _receipt(reopened, r2)["decision_state"] == "refused"
+    assert len(_stage_events(reopened, INTERRUPTED)) == 1
+    assert len(_stage_events(reopened, APPLIED)) == 0
+    assert _row(reopened, "tasks", "id=?", (TASK_ID,))["status"] == (
+        TaskStatus.ESCALATED.value
+    )
+
+
+def test_reopen_after_committed_effect_and_failed_ack_preserves(tmp_path):
+    store, row, outcome, r2 = _spent_ready(tmp_path)
+    assert _claim(store, row).status == "claimed"
+    # A committed real normal child effect + a real committed task projection.
+    store._db._conn.execute(
+        "INSERT INTO tasks (id, status, assigned_agent, team, brief, task_type, "
+        "parent_task_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        ("TASK-CHILD-RO", TaskStatus.PENDING.value, "dev_agent", TEAM, "child",
+         "subtask", TASK_ID, "2026-09-21T00:00:00+00:00",
+         "2026-09-21T00:00:00+00:00"),
+    )
+    store._db._conn.commit()
+    real = store._db._conn
+    wrapper = _BoundaryFailingConn(real, fail_commit=True)
+    store._db._conn = wrapper
+    try:
+        ack = _ack(store, row)
+    finally:
+        store._db._conn = real
+    assert wrapper.fired == "commit"
+    assert ack.status == "ack_pending" and ack.reason == "ack_failed"
+
+    reopened = _reopened_store(store)
+    child_before = _row(reopened, "tasks", "id=?", ("TASK-CHILD-RO",))
+    assert _gate(reopened, _report_for_result(reopened, r2), r2).kind == "skip"
+    assert _receipt(reopened, r2)["decision_state"] == "refused"
+    # The committed child effect is preserved and no duplicate child/enqueue
+    # appears; the exact refusal replay is read-only.
+    assert _row(reopened, "tasks", "id=?", ("TASK-CHILD-RO",)) == child_before
+    assert len(_stage_events(reopened, INTERRUPTED)) == 1
+    before = _dump(reopened)
+    replay = _refuse(reopened, row)
+    assert replay.status == "already_refused", replay
+    assert _dump(reopened) == before
+    assert _row(reopened, "tasks", "id=?", ("TASK-CHILD-RO",)) == child_before
+
+
 def _fresh_dir(tmp_path, name):
     path = tmp_path / name
     path.mkdir()

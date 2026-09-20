@@ -1030,18 +1030,25 @@ and the unchanged `_consume_completion_report_body` (the EXISTING normal decisio
 body). Before ANY normal task mutation/orchestration audit/decision/delegate/
 enqueue effect the guard classifies the completion against the REAL persisted v2
 lineage through `Database.authority_policy_v2_completion_dispatch_context` (never
-reader absence or a mock's `None`): `no_v2` only when the root has no finalized v2
-generation (a pre-final, attempt/candidate-only lineage is unchanged ordinary);
+reader absence or a mock's `None`): `no_v2` only when the root has no v2 lineage
+at all (a pre-final, attempt/candidate-only lineage is unchanged ordinary);
 `causal` (the causal result of a finalized generation) is continuation bookkeeping
 only and never spends, remints or re-enters the normal effect; the exact active
 reserved next result `R2` is atomically SPENT through the EXISTING writer and then
 claimed exactly once; an exact `ready` receipt first requires the supplied report
 to bind to the retained `R2` body before claiming; a restarted `claimed` receipt
 performs audited interruption refusal; `applied`/`refused` are read-only; a fully
-terminal generation returns an unrelated later completion to the ordinary path;
-and every other unmatched/malformed/foreign identity on a LIVE lineage is a
-fail-closed skip, never ordinary permission, with a classification read failure
-also fail-closed. The winning caller retains the exact CAUSAL receipt identity from
+terminal generation returns an unrelated later completion to the ordinary path
+ONLY after every retained consumed envelope's exact terminal decision evidence
+(the retained `decision_claimed` plus `decision_applied`/`decision_dispatch_interrupted`
+events and the re-derived `spent` receipt) still authenticates — terminal flags, a
+latest `E` row or an absent exact receipt are never sufficient, and an older
+live/corrupt generation behind a terminal pointer keeps the lineage live; an
+identity with no real persisted result row on a root that HAS v2 history
+(including `None`/bool/string/unknown integer) is a fail-closed `foreign` skip,
+never the ordinary/v1 absence path; and every other unmatched/malformed/foreign
+identity is a fail-closed skip, never ordinary permission, with a classification
+read failure also fail-closed. The winning caller retains the exact CAUSAL receipt identity from
 `AuthorityPolicyV2CompletionDispatchContext` and acknowledges/refuses with THAT
 identity (never the reserved spending result id and never post-effect
 task/owner/pointer state); a bounded pending writer outcome leaves the receipt

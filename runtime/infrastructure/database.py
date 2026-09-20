@@ -14698,16 +14698,97 @@ class Database:
             "decision_state": envelope.decision_state,
         }
 
+    def _v2_terminal_decision_receipt_authenticated_uncommitted(
+        self, *, root_task_id: str, envelope,
+    ) -> bool:
+        """True only when a consumed terminal envelope is an EXACT genuine receipt.
+
+        The terminal ``applied``/``refused`` decision is trusted only after the
+        existing exact spent-receipt authenticator re-derives the complete
+        evidence for this envelope: the retained ``decision_claimed`` (plus
+        ``decision_applied``/``decision_dispatch_interrupted``) events, the
+        persisted R2 ``report_digest``, the publication/settlement proof, both
+        generation-admission events and the bound reservation.  A mutated or
+        corrupt terminal row therefore keeps the lineage live and fail-closed
+        instead of authorizing ordinary effects.
+        """
+        result_id = envelope.result_id
+        manager_agent = envelope.manager_agent
+        if not (
+            self._v2_is_int(result_id)
+            and isinstance(manager_agent, str)
+            and manager_agent
+        ):
+            return False
+        code, receipt = self._authenticate_v2_spent_decision_receipt_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            result_id=result_id,
+        )
+        if code is not None or receipt is None:
+            return False
+        if receipt["envelope"].envelope_id != envelope.envelope_id:
+            return False
+        # The terminal decision-state writes are authenticated with the SAME
+        # complete closed decision-event set the ack/refusal writers require, so
+        # a mutated preceding ``decision_claimed`` (or applied/interrupted) row
+        # can never be treated as a genuine terminal receipt.
+        event_base = {
+            "attempt_id": receipt["attempt"].attempt_id,
+            "candidate_id": receipt["candidate"].candidate_id,
+            "result_id": result_id,
+            "envelope_id": envelope.envelope_id,
+            "notification_id": receipt["notification"].notification_id,
+            "generation_id": receipt["generation_id"],
+            "next_session_id": receipt["next_session_id"],
+            "spending_result_id": receipt["spending_result_id"],
+            "report_digest": receipt["report_digest"],
+        }
+        if envelope.decision_state == "applied":
+            expected_events = {
+                AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED:
+                    self._v2_decision_event_payload(
+                        stage=AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED,
+                        **event_base,
+                    ),
+                AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_APPLIED:
+                    self._v2_decision_event_payload(
+                        stage=AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_APPLIED,
+                        **event_base,
+                    ),
+            }
+        elif envelope.decision_state == "refused":
+            expected_events = {
+                AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED:
+                    self._v2_decision_event_payload(
+                        stage=AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED,
+                        **event_base,
+                    ),
+                AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_DISPATCH_INTERRUPTED:
+                    self._v2_decision_event_payload(
+                        stage=AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_DISPATCH_INTERRUPTED,
+                        **event_base,
+                    ),
+            }
+        else:
+            return False
+        return self._authenticate_v2_decision_event_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            expected_events=expected_events,
+        )
+
     def _v2_root_lineage_live_uncommitted(
-        self, *, dispatch_row, envelopes, attempts,
+        self, *, root_task_id, dispatch_row, envelopes, attempts,
     ) -> bool:
         """True while a v2 authority obligation still owns the root.
 
-        A retired dispatch whose exact spent receipt is already
-        ``applied``/``refused`` is terminal; every envelope exhausted and every
-        attempt finalized also ends the lineage.  Anything uncertain (corrupt
-        row, ``pending``/``admitted`` pointer, active envelope, nonterminal
-        decision, unfinalized attempt) stays live and fail-closed.
+        A retired dispatch whose EVERY retained receipt is fully consumed and
+        whose exact terminal decision evidence still authenticates is terminal;
+        every envelope exhausted and every attempt finalized also ends the
+        lineage.  Terminal flags, a latest ``E`` row or an absent exact receipt
+        are NEVER sufficient on their own: the exact spent-receipt evidence is
+        re-authenticated, and an older live/corrupt generation behind a terminal
+        pointer keeps the lineage live and fail-closed, so a healthy later
+        (ordinary) completion is never authorized by a corrupt proof.
         """
         if dispatch_row is not None:
             try:
@@ -14739,13 +14820,9 @@ class Database:
             if envelope_row is None:
                 return True
             try:
-                envelope = self._authority_policy_v2_envelope_from_row(envelope_row)
+                self._authority_policy_v2_envelope_from_row(envelope_row)
             except ValueError:
                 return True
-            return not (
-                envelope.lifecycle_state == "consumed"
-                and envelope.decision_state in ("applied", "refused")
-            )
         for envelope_row in envelopes:
             try:
                 envelope = self._authority_policy_v2_envelope_from_row(envelope_row)
@@ -14755,13 +14832,19 @@ class Database:
                 return True
             if envelope.decision_state not in ("applied", "refused"):
                 return True
-        for attempt in attempts:
-            if attempt["finalization_state"] not in (
-                AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED,
-                AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_OWNER_LOST,
+            if not self._v2_terminal_decision_receipt_authenticated_uncommitted(
+                root_task_id=root_task_id, envelope=envelope,
             ):
                 return True
-        return False
+        if dispatch_row is None:
+            for attempt in attempts:
+                if attempt["finalization_state"] not in (
+                    AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED,
+                    AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_OWNER_LOST,
+                ):
+                    return True
+        # No retained envelope at all with a live pointer is never terminal.
+        return not envelopes
 
     @_synchronized
     def authority_policy_v2_completion_dispatch_context(
@@ -14847,16 +14930,26 @@ class Database:
                         decision_state=envelope.decision_state,
                     )
 
-        # 3. Every other identity on a fully terminal lineage is ordinary again.
-        if not self._v2_root_lineage_live_uncommitted(
-            dispatch_row=dispatch_row, envelopes=envelopes, attempts=attempts,
-        ):
-            return _ctx("no_v2")
-
+        # 3. On a root with v2 history, an identity with no real persisted
+        # result row for this root is a malformed/foreign identity -- never the
+        # ordinary/v1 absence path.  (Provably ordinary roots already returned
+        # above, so ``None``/bool/string/unknown integers fail closed here.)
         if row is None:
             return _ctx("foreign")
 
-        # 4. The current generation's active reserved next result R2.
+        # 4. Every other identity on a FULLY TERMINAL lineage whose exact
+        # terminal evidence still authenticates is ordinary again: a genuine
+        # later result/session is legitimate ordinary activity.  Terminal flags
+        # or a latest row alone are never accepted -- the retained proof is
+        # authenticated (an older live/corrupt generation behind a terminal
+        # pointer keeps the lineage live).
+        if not self._v2_root_lineage_live_uncommitted(
+            root_task_id=root_task_id, dispatch_row=dispatch_row,
+            envelopes=envelopes, attempts=attempts,
+        ):
+            return _ctx("no_v2")
+
+        # 5. The current generation's active reserved next result R2.
         if dispatch_row is not None:
             try:
                 dispatch = self._authority_policy_v2_root_dispatch_from_row(
