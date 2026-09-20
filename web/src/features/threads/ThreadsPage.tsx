@@ -32,7 +32,6 @@ import type {
   ThreadAttachment,
   ThreadAttachmentRef,
   ThreadMessage,
-  ThreadRecord,
 } from '@/lib/api/types';
 import { attachmentContentType, safeArtifactName } from '@/lib/threadAttachments';
 import type { PendingAttachment } from '@/design-system/patterns/Composer';
@@ -253,56 +252,6 @@ function collectThreadArtifacts(messages: ThreadMessage[]): ThreadAttachment[] {
     }
   }
   return [...seen.values()];
-}
-
-/* ------------------------------------------------------------------ */
-/*  THR-209 pin helpers                                                 */
-/* ------------------------------------------------------------------ */
-
-function PinIcon({ pinned }: { pinned: boolean }): JSX.Element {
-  return pinned ? (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M16 3l5 5-3.5 1.5-3 3L13 19l-2-2-4 4-2-2 4-4-2-2 6.5-.5 3-3L16 3z" />
-    </svg>
-  ) : (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <path d="M16 3l5 5-3.5 1.5-3 3L13 19l-2-2-4 4-2-2 4-4-2-2 6.5-.5 3-3L16 3z" />
-    </svg>
-  );
-}
-
-/**
- * THR-209 row pin toggle. A per-row component so each row owns its own
- * ``useSetThreadPinned`` mutation (the provider hooks bind one thread id).
- */
-function RowPinControl({
-  thread,
-  onError,
-}: {
-  thread: ThreadRecord;
-  onError: (message: string) => void;
-}): JSX.Element {
-  const pinMutation = useSetThreadPinned(thread.thread_id);
-  const toggle = () => {
-    onError('');
-    pinMutation
-      .mutateAsync({ pinned: !thread.pinned })
-      .catch(() => onError(S.pinFailed));
-  };
-  return (
-    <button
-      type="button"
-      aria-label={thread.pinned ? S.unpinThread(thread.thread_id) : S.pinThread(thread.thread_id)}
-      title={thread.pinned ? S.unpinAction : S.pinAction}
-      disabled={pinMutation.isPending}
-      onClick={toggle}
-      className={`text-text-muted hover:bg-surface-raised hover:text-text-primary disabled:text-text-disabled shrink-0 rounded p-1.5 transition-colors ${
-        thread.pinned ? 'text-accent' : ''
-      }`}
-    >
-      <PinIcon pinned={thread.pinned} />
-    </button>
-  );
 }
 
 /**
@@ -536,9 +485,9 @@ export function ThreadsPage(): JSX.Element {
   // immutable numeric thread id DESC (THR-10 above THR-2) then unpinned in
   // ordinary order; we split ONLY there for the section header, preserving
   // server order. Archived ('done') and 'all' buckets render ONE flat
-  // ordinary list — pin has zero presentation effect there — while rows in
-  // every bucket keep their per-row pin toggle (a mutation control, not
-  // presentation).
+  // ordinary list — pin has zero presentation effect there. Rows in every
+  // bucket only navigate; pin/unpin mutation controls remain in the detail
+  // toolbar.
   const showPinnedSection = bucket === 'open';
   const pinnedThreads = useMemo(
     () => (showPinnedSection ? threads.filter((t) => t.pinned) : []),
@@ -599,8 +548,8 @@ export function ThreadsPage(): JSX.Element {
   // Send mutation lives at the page level so the Composer pattern is pure.
   const sendFollowUp = useSendFollowUp(threadId ?? '');
   const abortReplies = useAbortReplies(threadId ?? '');
-  // THR-209 rename + pin mutations live at the page level; the detail header
-  // and list rows drive them.
+  // THR-209 rename + pin mutations live at the page level; the detail toolbar
+  // controls drive them.
   const renameMutation = useRenameThread(threadId ?? '');
   const pinMutation = useSetThreadPinned(threadId ?? '');
   const [pinError, setPinError] = useState<string | null>(null);
@@ -863,8 +812,8 @@ export function ThreadsPage(): JSX.Element {
               render ONLY in the Open bucket (pinned ranked by numeric thread
               id desc from the server; unpinned in ordinary order). Archived
               and All buckets render one flat ordinary list — pin has zero
-              presentation effect there — while every row keeps its per-row
-              pin toggle and the active query/filter still governs inclusion. */}
+              presentation effect there — and the active query/filter still
+              governs inclusion. Pin controls are detail-only. */}
           {!bucketLoading && !bucketError && threads.length > 0 && (
             <div className="overflow-hidden rounded-sm border border-border-default divide-y divide-border-default">
               {pinnedThreads.length > 0 && (
@@ -893,9 +842,6 @@ export function ThreadsPage(): JSX.Element {
                     }
                     href={path}
                     onSelect={() => { rememberRowNavigationScroll(); navigate(path); }}
-                    pinControl={
-                      <RowPinControl thread={t} onError={setPinError} />
-                    }
                     participants={t.participants}
                   />
                 );
@@ -926,9 +872,6 @@ export function ThreadsPage(): JSX.Element {
                     }
                     href={path}
                     onSelect={() => { rememberRowNavigationScroll(); navigate(path); }}
-                    pinControl={
-                      <RowPinControl thread={t} onError={setPinError} />
-                    }
                     participants={t.participants}
                   />
                 );
