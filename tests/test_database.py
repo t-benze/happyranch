@@ -4135,13 +4135,87 @@ class _ConnProxy:
             setattr(self._real, name, value)
 
 
+class _FetchFailingCursor:
+    """A cursor whose ``fetchall`` raises (page-boundary fetchall injection)."""
+
+    def __init__(self, message: str):
+        self._message = message
+
+    def fetchall(self):
+        raise sqlite3.OperationalError(self._message)
+
+
+class _ControlConnProxy:
+    """Delegating connection recording transaction control and injecting
+    a page-scoped execute/fetchall failure.
+
+    ``controls`` captures reader-issued BEGIN/COMMIT/ROLLBACK (and the
+    explicit ``commit``/``rollback`` methods) so a test can prove the reader
+    owns exactly one transaction — or borrows the caller's untouched.
+    """
+
+    def __init__(self, real, *, fail_execute_page=None, fail_fetch_page=None):
+        object.__setattr__(self, "_real", real)
+        object.__setattr__(self, "_fail_execute_page", fail_execute_page)
+        object.__setattr__(self, "_fail_fetch_page", fail_fetch_page)
+        object.__setattr__(self, "pages", 0)
+        object.__setattr__(self, "executes", 0)
+        object.__setattr__(self, "controls", [])
+
+    @property
+    def in_transaction(self):
+        return self._real.in_transaction
+
+    def execute(self, sql, params=()):
+        self.executes += 1
+        if sql in ("BEGIN", "COMMIT", "ROLLBACK"):
+            self.controls.append(sql)
+        if sql.startswith("SELECT rowid"):
+            self.pages += 1
+            if (
+                self._fail_execute_page is not None
+                and self.pages == self._fail_execute_page
+            ):
+                raise sqlite3.OperationalError("injected page execute failure")
+            cursor = self._real.execute(sql, params)
+            if (
+                self._fail_fetch_page is not None
+                and self.pages == self._fail_fetch_page
+            ):
+                return _FetchFailingCursor("injected page fetchall failure")
+            return cursor
+        return self._real.execute(sql, params)
+
+    def commit(self):
+        self.controls.append("commit")
+        return self._real.commit()
+
+    def rollback(self):
+        self.controls.append("rollback")
+        return self._real.rollback()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def __setattr__(self, name, value):
+        if name in {
+            "_real", "_fail_execute_page", "_fail_fetch_page",
+            "pages", "executes", "controls",
+        }:
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._real, name, value)
+
+
 def _marker_summary(db: Database, **kwargs):
     return db.summarize_workspace_cleanup_marker_history(
         _CLEANUP_MARKER, assigned_agent="dev_agent", **kwargs,
     )
 
 
-def test_c12a_marker_history_value_and_pagination_contract(db) -> None:
+def test_c12a_marker_history_value_and_pagination_contract(
+    db, tmp_path, monkeypatch,
+) -> None:
     now = datetime(2026, 1, 3, tzinfo=timezone.utc)
     for i in range(5):
         _cleanup_task(
@@ -4176,9 +4250,19 @@ def test_c12a_marker_history_value_and_pagination_contract(db) -> None:
         0, None, False,
     )
 
+    # Invalid page_size is rejected as a Python integer contract BEFORE any SQL
+    # or transaction change (no page SELECT, no BEGIN, no commit/rollback).
+    real = db._conn
+    invalid_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", invalid_proxy)
     for bad in (0, -1, True, 1.5, "1"):
         with pytest.raises(ValueError):
             _marker_summary(db, page_size=bad)
+    assert invalid_proxy.executes == 0
+    assert invalid_proxy.pages == 0
+    assert invalid_proxy.controls == []
+    assert real.in_transaction is False
+    monkeypatch.setattr(db, "_conn", real)
 
     # Naive UTC and a non-UTC offset normalize to their true instants.
     db.insert_task(TaskRecord(
@@ -4200,8 +4284,59 @@ def test_c12a_marker_history_value_and_pagination_contract(db) -> None:
     )
     assert summary.has_unfinished is True
 
+    # A prefix containing LIKE wildcards is matched literally, not as a pattern.
+    escaped = Database(tmp_path / "escaped.sqlite")
+    escaped.insert_task(TaskRecord(
+        id="TASK-LITERAL", brief="A%B_C\\D literal suffix",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=now, updated_at=now,
+    ))
+    escaped.insert_task(TaskRecord(
+        id="TASK-DECOY", brief="AxBxC\\D decoy suffix",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=now, updated_at=now,
+    ))
+    literal = escaped.summarize_workspace_cleanup_marker_history(
+        "A%B_C\\D", assigned_agent="dev_agent",
+    )
+    assert literal.count == 1
 
-def test_c12b_owned_transaction_success_and_page_two_failure(
+    # Equal instants written with different UTC offsets tie at the same instant.
+    tie = Database(tmp_path / "tie.sqlite")
+    occ = datetime(2026, 1, 3, 3, 30, tzinfo=timezone.utc)
+    tie.insert_task(TaskRecord(
+        id="TASK-Z", brief=f"{_CLEANUP_MARKER}\nz",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=occ, updated_at=occ,
+    ))
+    tie.insert_task(TaskRecord(
+        id="TASK-PLUS09", brief=f"{_CLEANUP_MARKER}\nplus09",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=datetime(2026, 1, 3, 12, 30, tzinfo=timezone(timedelta(hours=9))),
+        updated_at=occ,
+    ))
+    tie_summary = _marker_summary(tie)
+    assert tie_summary.count == 2
+    assert tie_summary.newest_created_at == occ
+
+
+def test_c12a_missing_timestamp_fails_closed(db) -> None:
+    """C12a: a marker row whose created_at cannot parse never yields an empty
+    or partial history — the reader propagates the parse failure."""
+    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    _cleanup_task(db, "TASK-A", created_at=now, status=TaskStatus.COMPLETED)
+    db._conn.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, status, created_at, "
+        "updated_at) VALUES ('TASK-EMPTY', ?, 'dev_agent', 'completed', '', ?)",
+        (f"{_CLEANUP_MARKER}\nempty", now.isoformat()),
+    )
+    db._conn.commit()
+    with pytest.raises(ValueError):
+        _marker_summary(db)
+    assert db._conn.in_transaction is False
+
+
+def test_c12b_owned_transaction_success_fetchall_and_parse_failures(
     db, monkeypatch,
 ) -> None:
     now = datetime(2026, 1, 3, tzinfo=timezone.utc)
@@ -4211,57 +4346,63 @@ def test_c12b_owned_transaction_success_and_page_two_failure(
         status=TaskStatus.IN_PROGRESS,
     )
     snapshot_sql = "SELECT id, status, created_at FROM tasks ORDER BY rowid"
-    before = [tuple(row) for row in db.execute(snapshot_sql).fetchall()]
-    assert db._conn.in_transaction is False
+    real = db._conn
+    before = [tuple(row) for row in real.execute(snapshot_sql).fetchall()]
+    assert real.in_transaction is False
 
+    # Success: the reader owns exactly one BEGIN and releases it with ROLLBACK.
+    success_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", success_proxy)
     summary = _marker_summary(db, page_size=1)
     assert (summary.count, summary.newest_created_at, summary.has_unfinished) == (
         2, now + timedelta(seconds=1), True,
     )
-    assert db._conn.in_transaction is False  # owned transaction released
-    after = [tuple(row) for row in db.execute(snapshot_sql).fetchall()]
-    assert before == after
-
-    real = db._conn
-    calls = {"n": 0}
-
-    def on_execute(sql, params):
-        if sql.startswith("SELECT rowid"):
-            calls["n"] += 1
-            if calls["n"] == 2:
-                raise sqlite3.OperationalError("page two fetch failed")
-
-    monkeypatch.setattr(db, "_conn", _ConnProxy(real, on_execute))
-    with pytest.raises(sqlite3.OperationalError):
-        _marker_summary(db, page_size=1)  # no partial summary escapes
+    assert success_proxy.controls == ["BEGIN", "rollback"]
+    assert real.in_transaction is False
+    assert [tuple(row) for row in real.execute(snapshot_sql).fetchall()] == before
     monkeypatch.setattr(db, "_conn", real)
-    assert db._conn.in_transaction is False
-    assert [tuple(row) for row in db.execute(snapshot_sql).fetchall()] == before
 
-    # A malformed created_at only on page two also fails closed.
-    db._conn.execute(
+    # Actual second-page cursor.fetchall failure AFTER page one accumulated:
+    # no partial summary escapes and the owned transaction is released.
+    fetch_proxy = _ControlConnProxy(real, fail_fetch_page=2)
+    monkeypatch.setattr(db, "_conn", fetch_proxy)
+    with pytest.raises(sqlite3.OperationalError):
+        _marker_summary(db, page_size=1)
+    assert fetch_proxy.pages == 2
+    assert fetch_proxy.controls == ["BEGIN", "rollback"]
+    assert real.in_transaction is False
+    assert [tuple(row) for row in real.execute(snapshot_sql).fetchall()] == before
+    monkeypatch.setattr(db, "_conn", real)
+
+    # A malformed created_at only on page two fails closed the same way.
+    real.execute(
         "INSERT INTO tasks (id, brief, assigned_agent, status, created_at, "
         "updated_at) VALUES ('TASK-BAD', ?, 'dev_agent', 'completed', "
         "'not-a-timestamp', ?)",
         (f"{_CLEANUP_MARKER}\nbad", now.isoformat()),
     )
-    db._conn.commit()
+    real.commit()
+    parse_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", parse_proxy)
     with pytest.raises(ValueError):
         _marker_summary(db, page_size=2)
-    assert db._conn.in_transaction is False
+    assert parse_proxy.pages == 2
+    assert parse_proxy.controls == ["BEGIN", "rollback"]
+    assert real.in_transaction is False
+    monkeypatch.setattr(db, "_conn", real)
 
-    # Recovery: repairing the fixture yields the exact summary.
-    db.update_task("TASK-BAD", status=TaskStatus.COMPLETED)
-    db._conn.execute(
+    # Recovery: restoring the fixture yields the exact complete summary.
+    real.execute(
         "UPDATE tasks SET created_at = ? WHERE id = 'TASK-BAD'",
         (now.isoformat(),),
     )
-    db._conn.commit()
+    real.commit()
     recovered = _marker_summary(db)
     assert recovered.count == 3
+    assert recovered.newest_created_at == now + timedelta(seconds=1)
 
 
-def test_c12c_borrowed_transaction_and_sentinel_preserved(
+def test_c12c_borrowed_transaction_success_fetchall_and_parse_failures(
     db, monkeypatch,
 ) -> None:
     now = datetime(2026, 1, 3, tzinfo=timezone.utc)
@@ -4271,6 +4412,8 @@ def test_c12c_borrowed_transaction_and_sentinel_preserved(
         status=TaskStatus.COMPLETED,
     )
     real = db._conn
+    snapshot_sql = "SELECT id, status, created_at FROM tasks ORDER BY rowid"
+    before = [tuple(row) for row in real.execute(snapshot_sql).fetchall()]
     real.execute("BEGIN")
     real.execute(
         "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
@@ -4279,39 +4422,59 @@ def test_c12c_borrowed_transaction_and_sentinel_preserved(
     )
     assert real.in_transaction is True
 
+    def assert_borrowed_state():
+        assert real.in_transaction is True
+        assert real.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE task_id='TASK-SENTINEL'",
+        ).fetchone()[0] == 1
+        with sqlite3.connect(str(db.db_path)) as other:
+            assert other.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE task_id='TASK-SENTINEL'",
+            ).fetchone()[0] == 0
+        assert [
+            tuple(row) for row in real.execute(snapshot_sql).fetchall()
+        ] == before
+
+    # Success: the reader issues no BEGIN/COMMIT/ROLLBACK and leaves the
+    # caller's transaction, sentinel and rows untouched.
+    success_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", success_proxy)
     summary = _marker_summary(db, page_size=1)
     assert (summary.count, summary.has_unfinished) == (2, False)
-    assert real.in_transaction is True
-    assert real.execute(
-        "SELECT COUNT(*) FROM audit_log WHERE task_id='TASK-SENTINEL'",
-    ).fetchone()[0] == 1
+    assert success_proxy.controls == []
+    assert_borrowed_state()
+    monkeypatch.setattr(db, "_conn", real)
 
-    other = sqlite3.connect(str(db.db_path))
-    try:
-        assert other.execute(
-            "SELECT COUNT(*) FROM audit_log WHERE task_id='TASK-SENTINEL'",
-        ).fetchone()[0] == 0
-    finally:
-        other.close()
-
-    # page-two OperationalError preserves the caller's transaction + sentinel.
-    calls = {"n": 0}
-
-    def on_execute(sql, params):
-        if sql.startswith("SELECT rowid"):
-            calls["n"] += 1
-            if calls["n"] == 2:
-                raise sqlite3.OperationalError("page two fetch failed")
-
-    monkeypatch.setattr(db, "_conn", _ConnProxy(real, on_execute))
+    # Second-page fetchall failure preserves the caller's transaction too.
+    fetch_proxy = _ControlConnProxy(real, fail_fetch_page=2)
+    monkeypatch.setattr(db, "_conn", fetch_proxy)
     with pytest.raises(sqlite3.OperationalError):
         _marker_summary(db, page_size=1)
+    assert fetch_proxy.pages == 2
+    assert fetch_proxy.controls == []
+    assert_borrowed_state()
     monkeypatch.setattr(db, "_conn", real)
+
+    # Second-page parse failure likewise.
+    real.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, status, created_at, "
+        "updated_at) VALUES ('TASK-BAD', ?, 'dev_agent', 'completed', "
+        "'not-a-timestamp', ?)",
+        (f"{_CLEANUP_MARKER}\nbad", now.isoformat()),
+    )
+    parse_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", parse_proxy)
+    with pytest.raises(ValueError):
+        _marker_summary(db, page_size=2)
+    assert parse_proxy.pages == 2
+    assert parse_proxy.controls == []
     assert real.in_transaction is True
     assert real.execute(
         "SELECT COUNT(*) FROM audit_log WHERE task_id='TASK-SENTINEL'",
     ).fetchone()[0] == 1
+    monkeypatch.setattr(db, "_conn", real)
 
+    # Caller rollback removes its own sentinel; the reader never did.
     real.rollback()
     assert real.in_transaction is False
     assert real.execute(
