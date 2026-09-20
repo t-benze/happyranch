@@ -438,7 +438,7 @@ describe('6 — absent keys, no-op semantics, rationale-only dirty', () => {
 
   test('6.4 the comparison is on (presence, value), never value alone — asserted on a MOUNTED transition', async () => {
     loaded({ persisted_yaml: { queue_workers: null, host_global_session_cap: null } });
-    mount();
+    const view = mount();
     // Absent keys seed the same digits a present 3/10 would, so identical
     // digits must NOT be read as identical state.
     expect(workers()).toHaveValue('3');
@@ -448,6 +448,10 @@ describe('6 — absent keys, no-op semantics, rationale-only dirty', () => {
     await userEvent.type(reasonBox(), 'stage both keys explicitly');
     expect(saveButton()).toBeEnabled();
     expect(document.body).not.toHaveTextContent(/no-op|nothing to save/i);
+    // Staging absent keys to PRESENT at the same digits is a real change, so the
+    // comparison panel appears and the form is genuinely dirty.
+    expect(document.body).toHaveTextContent(/Draft changes the saved configuration/);
+    expect(document.body).toHaveTextContent(/Unsaved changes/);
 
     // R9 6.4: the SAME component now sees keys PRESENT at identical digits.
     // R9 6.4: the SAME MOUNTED component now sees keys PRESENT at identical
@@ -467,6 +471,29 @@ describe('6 — absent keys, no-op semantics, rationale-only dirty', () => {
       .map((row) => (row as HTMLTableRowElement).cells[2].textContent);
     expect(savedCells).toEqual(['3', '10']);
     expect(reasonBox()).toHaveValue('stage both keys explicitly!');
+    // In THIS mount the accepted base was seeded while the keys were ABSENT, so
+    // at identical digits the transition is still a genuine configuration
+    // change (presence moves absent -> present) and the comparison panel
+    // correctly reflects that.
+    expect(document.body).toHaveTextContent(/Draft changes the saved configuration/);
+    expect(document.body).toHaveTextContent(/Unsaved changes/);
+
+    // CONTRAST — a base whose keys were ALREADY present at the same digits is
+    // rationale-only. That is a distinct SERVER state (the file carries the
+    // keys), so mount it explicitly rather than misrepresenting the same-mount
+    // presence change as a no-op.
+    view.unmount();
+    loaded({ persisted_yaml: { queue_workers: 3, host_global_session_cap: 10 } });
+    mount();
+    await userEvent.type(reasonBox(), 'only the reason');
+    expect(document.body).toHaveTextContent(
+      /values are unchanged from the saved file; only the reason differs/i,
+    );
+    expect(document.body).not.toHaveTextContent(/Draft changes the saved configuration/);
+    expect(document.body).not.toHaveTextContent(/Draft matches the saved configuration/);
+    expect(screen.queryByText('Worker-pool total')).not.toBeInTheDocument();
+    expect(document.body).toHaveTextContent(/Unsaved changes/);
+    expect(saveButton()).toBeEnabled();
   });
 
   test('6.5 defaults-only fixture shows no override control', () => {
@@ -717,6 +744,54 @@ describe('15 — numeric honesty at the write site (Q8 is NOT solved)', () => {
     mount();
     expect(screen.getByRole('alert')).toHaveTextContent(/Cannot read capacity configuration/);
     expect(document.body).not.toHaveTextContent(/envelope 0/);
+  });
+
+  test('15.6 / 15.10 the NULLABLE positions reject every remaining non-numeric type and invalid domain', () => {
+    const NULLABLE: [string, (bad: unknown) => Record<string, unknown>][] = [
+      ['persisted_yaml.queue_workers', (b) => ({ persisted_yaml: { queue_workers: b, host_global_session_cap: 10 } })],
+      ['persisted_yaml.host_global_session_cap', (b) => ({ persisted_yaml: { queue_workers: 3, host_global_session_cap: b } })],
+      ['effective_admission_cap', (b) => ({ effective_admission_cap: b, effective_admission_reason: 'x' })],
+    ];
+    for (const [slotName, patch] of NULLABLE) {
+      for (const [typeName, bad] of [
+        ['a quoted numeric', '5'],
+        ['a boolean', true],
+        ['an array', []],
+        ['an object', {}],
+      ] as [string, unknown][]) {
+        loaded(patch(bad));
+        const view = mount();
+        expect(document.body.textContent, `${slotName} = ${typeName}`)
+          .toMatch(/Cannot read capacity configuration/);
+        expect(document.body.textContent, `${slotName} = ${typeName}`).not.toMatch(/\b0\b/);
+        view.unmount();
+      }
+    }
+    // Domain: a persisted W/H of zero or negative is unusable (positive domain).
+    for (const patch of [
+      { persisted_yaml: { queue_workers: 0, host_global_session_cap: 10 } },
+      { persisted_yaml: { queue_workers: 3, host_global_session_cap: -1 } },
+    ]) {
+      loaded(patch);
+      const view = mount();
+      expect(document.body.textContent, JSON.stringify(patch))
+        .toMatch(/Cannot read capacity configuration/);
+      view.unmount();
+    }
+    // A FRACTION is not a safe integer: withheld, and 5.5 never renders as 5 —
+    // in a nullable slot as well as a non-nullable one.
+    for (const patch of [
+      { persisted_yaml: { queue_workers: 5.5, host_global_session_cap: 10 } },
+      { persisted_yaml: { queue_workers: 3, host_global_session_cap: 5.5 } },
+      { effective_admission_cap: 5.5, effective_admission_reason: 'x' },
+    ]) {
+      loaded(patch);
+      const view = mount();
+      expect(document.body.textContent, JSON.stringify(patch))
+        .toMatch(/outside the range this editor can represent exactly/);
+      expect(document.body, JSON.stringify(patch)).not.toHaveTextContent(/\b5\b/);
+      view.unmount();
+    }
   });
 
   test('15.4 an unsafe number that survived JSON.parse is withheld, not rendered', () => {

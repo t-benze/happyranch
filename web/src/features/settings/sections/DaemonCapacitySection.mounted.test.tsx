@@ -13,10 +13,11 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event';
 import { focusManager } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
-import { beforeEach, describe, expect, test } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { capacityObservation, capacityQueryKey } from '@/design-system/providers/_capacity-ordering';
 import { server } from '@/test/server';
+import { formatReceipt, classifySnapshot } from './capacityModel';
 import { renderGuarded } from './capacityTestMount';
 
 const SLUG = 'alpha';
@@ -24,6 +25,7 @@ const CAPACITY = `/api/v1/orgs/${SLUG}/settings/daemon-capacity`;
 const REV_A = `sha256:${'a'.repeat(64)}`;
 const REV_B = `sha256:${'b'.repeat(64)}`;
 const REV_C = `sha256:${'c'.repeat(64)}`;
+const REV_D = `sha256:${'d'.repeat(64)}`;
 
 function snapshot(overrides: Record<string, unknown> = {}) {
   return {
@@ -254,7 +256,17 @@ describe('1 / 5 / 6 — staged save at the real boundary', () => {
   });
 
   test('5.1 a below-envelope value SAVES with the waiting warning and NO extra acknowledgment', async () => {
-    stubVenue();
+    // A COHERENT accepted response for the 3/5 submission: the same pair that
+    // was sent, with restart_pending true because next-start 3/5 differs from
+    // running 3/10. The default 3/10 fixture would have hidden a wrong result.
+    stubVenue({
+      put: () => HttpResponse.json(snapshot({
+        revision: REV_B,
+        persisted_yaml: { queue_workers: 3, host_global_session_cap: 5 },
+        next_start: { queue_workers: 3, host_global_session_cap: 5 },
+        restart_pending: true,
+      })),
+    });
     mount();
     await ready();
     await setPair('3', '5');
@@ -267,7 +279,58 @@ describe('1 / 5 / 6 — staged save at the real boundary', () => {
     const body = JSON.parse(puts()[0].rawBody);
     expect(body.host_global_session_cap).toBe(5);
     expect(body.confirm_environment_shadow).toBe(false);
-    await screen.findByText(/^Saved(\.| for next restart\.)/);
+    await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
+    await waitFor(() => expect(savedCell()).toHaveTextContent('3'));
+    // The HOST row's next start moved 10 -> 5 (the workers row stays 3).
+    const hostNextCell = () =>
+      (within(screen.getByRole('table')).getAllByRole('row')[2] as HTMLTableRowElement).cells[3];
+    await waitFor(() => expect(hostNextCell()).toHaveTextContent('5'));
+    expect(nextCell()).toHaveTextContent('3');
+    // No extra mandatory acknowledgment was introduced by the waiting warning.
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_B);
+  });
+
+  test('5.5 L4 a real mounted excess-cap save adds no capability claim before OR after settlement', async () => {
+    stubVenue({
+      put: () => HttpResponse.json(snapshot({
+        revision: REV_B,
+        persisted_yaml: { queue_workers: 3, host_global_session_cap: 30 },
+        next_start: { queue_workers: 3, host_global_session_cap: 30 },
+        restart_pending: true,
+      })),
+    });
+    mount();
+    await ready();
+    await userEvent.clear(cap());
+    await userEvent.type(cap(), '30');
+    // The excess cap is above the worker-pool total 10: the copy says extra room
+    // adds no producers and never claims more capacity/throughput.
+    expect(document.body).toHaveTextContent(/Extra admission room does not create additional producers/);
+    expect(document.body).not.toHaveTextContent(/more capacity|higher throughput|additional capability|faster/i);
+
+    await saveWith('raise the cap');
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(JSON.parse(puts()[0].rawBody)).toEqual({
+      queue_workers: 3,
+      host_global_session_cap: 30,
+      rationale: 'raise the cap',
+      confirm_environment_shadow: false,
+    });
+    await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
+    await waitFor(() => expect(savedCell()).toHaveTextContent('3'));
+    const hostNextCell = () =>
+      (within(screen.getByRole('table')).getAllByRole('row')[2] as HTMLTableRowElement).cells[3];
+    await waitFor(() => expect(hostNextCell()).toHaveTextContent('30'));
+    // The honest excess-cap copy survives into the settled result panel, and no
+    // capability/throughput claim appears anywhere in the post-success state.
+    expect(document.body).toHaveTextContent(/Extra admission room does not create additional producers/);
+    expect(document.body).not.toHaveTextContent(/more capacity|higher throughput|additional capability|faster/i);
+    expect(document.body).not.toHaveTextContent(/Applied|Apply now|Restart daemon/);
+    expect(reasonBox()).toHaveValue('');
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    expect(capacityObservation(SLUG)?.outcome).toBe('usable');
+    expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_B);
   });
 
   test('6.2 staging absent keys sends both values explicitly and moves presence to present', async () => {
@@ -466,17 +529,48 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     await view.client.invalidateQueries({
       queryKey: capacityQueryKey(SLUG), refetchType: 'none',
     });
+    // The overlapping consumer STAYS MOUNTED through the pending write and its
+    // FINAL settlement — it is not unmounted to make the ending convenient.
     const second = renderGuarded(<AppRoutes />, {
       client: view.client,
       entries: [`/orgs/${SLUG}/settings/daemon-capacity`],
       resetOrdering: false,
     });
     await waitFor(() => expect(gets().length).toBeGreaterThan(afterProviderAttempt));
-    second.unmount();
 
-    gate.resolve(HttpResponse.json(snapshot({ revision: REV_B })));
-    await screen.findByText(/Saved/);
+    // Coherent settlement for the SUBMITTED 5/12 — the same pair the operator
+    // sent, a new revision, and a pending restart because next-start 5/12
+    // differs from running 3/10.
+    gate.resolve(HttpResponse.json(snapshot({
+      revision: REV_B,
+      persisted_yaml: { queue_workers: 5, host_global_session_cap: 12 },
+      next_start: { queue_workers: 5, host_global_session_cap: 12 },
+      restart_pending: true,
+    })));
+    await waitFor(() => expect(capacityObservation(SLUG)?.outcome).toBe('usable'));
+    expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_B);
+    expect(capacityObservation(SLUG)?.receiptAt).not.toBeNull();
+
+    // The still-mounted overlapping consumer settles on the SAME accepted
+    // result: its cache carries the accepted pair/revision and its query
+    // observation is a success, with no fabricated usable state from the
+    // during-write read.
+    await waitFor(() => {
+      expect(
+        second.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision,
+      ).toBe(REV_B);
+    });
+    expect(
+      second.client.getQueryData<{ persisted_yaml: { queue_workers: number } }>(
+        capacityQueryKey(SLUG),
+      )?.persisted_yaml.queue_workers,
+    ).toBe(5);
+    expect(second.client.getQueryState(capacityQueryKey(SLUG))?.status).toBe('success');
+    expect(second.client.isMutating()).toBe(0);
+    // The FIRST editor accepted the write: clean draft/reason and disarmed guard.
+    expect(view.client.getQueryState(capacityQueryKey(SLUG))?.status).toBe('success');
     expect(undeclared).toEqual([]);
+    second.unmount();
   });
 
   /**
@@ -567,7 +661,14 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
    * AFTER the write settled publishes normally, the receipt ADVANCES, and a
    * separate manual save carries the recovered revision.
    */
-  async function expectLaterRecovery(receiptAfterSave: number | null) {
+  async function expectLaterRecovery(
+    view: ReturnType<typeof mount>,
+    receiptAfterSave: number | null,
+  ) {
+    // Declare the coherent CONTINUING fixtures BEFORE any request is issued: a
+    // usable recovery read at REV_C, and an accepted response for the 7/12
+    // submission below carrying the same pair at a NEW revision with
+    // restart_pending true.
     server.use(
       http.get(CAPACITY, async ({ request }) => {
         captured.push({ method: 'GET', ifMatch: request.headers.get('if-match'), rawBody: '' });
@@ -577,14 +678,31 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
           restart_pending: true, revision: REV_C,
         }));
       }),
+      http.put(CAPACITY, async ({ request }) => {
+        captured.push({
+          method: 'PUT',
+          ifMatch: request.headers.get('if-match'),
+          rawBody: await request.text(),
+        });
+        return HttpResponse.json(snapshot({
+          revision: REV_D,
+          persisted_yaml: { queue_workers: 7, host_global_session_cap: 12 },
+          next_start: { queue_workers: 7, host_global_session_cap: 12 },
+          restart_pending: true,
+        }));
+      }),
     );
+
     await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
     await waitFor(() => expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_C));
     // Ordering safety was not bought by refusing later reads forever.
     expect(capacityObservation(SLUG)?.outcome).toBe('usable');
     expect((capacityObservation(SLUG)?.receiptAt ?? 0)).toBeGreaterThanOrEqual(receiptAfterSave ?? 0);
     expect(capacityObservation(SLUG)?.receiptAt).not.toBe(receiptAfterSave);
+    expect(workers()).toHaveValue('5');
+    expect(reasonBox()).toHaveValue('');
 
+    const receiptBeforeFinal = capacityObservation(SLUG)?.receiptAt ?? null;
     const putsBefore = puts().length;
     await setPair('7', '12');
     await saveWith('after recovery');
@@ -597,6 +715,32 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       rationale: 'after recovery',
       confirm_environment_shadow: false,
     });
+
+    // Drive the FINAL manual save to its ACTUAL terminal settlement: returned
+    // pair/revision, cache, receipt, draft/reason, lock/submission and guard.
+    await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
+    await waitFor(() => expect(savedCell()).toHaveTextContent('7'));
+    expect(nextCell()).toHaveTextContent('7');
+    expect(workers()).toHaveValue('7');
+    expect(cap()).toHaveValue('12');
+    expect(reasonBox()).toHaveValue('');
+    expect(
+      view.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision,
+    ).toBe(REV_D);
+    expect(
+      view.client.getQueryData<{ persisted_yaml: { queue_workers: number } }>(
+        capacityQueryKey(SLUG),
+      )?.persisted_yaml.queue_workers,
+    ).toBe(7);
+    expect(capacityObservation(SLUG)?.outcome).toBe('usable');
+    expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_D);
+    expect(capacityObservation(SLUG)?.receiptAt ?? null).not.toBe(receiptBeforeFinal);
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/You submitted/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Reconcile the saved values/)).not.toBeInTheDocument();
+    const unload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(false);
   }
 
   test('2.14 / 2.16 a permitted during-PUT read landing as a stale SUCCESS is dropped, then a later read recovers', async () => {
@@ -619,10 +763,24 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       confirm_environment_shadow: false,
     });
     expect('revision' in body).toBe(false);
-    // Drain the final transition rather than leaving a response in flight.
+    // Drain the final transition rather than leaving a response in flight, and
+    // assert the returned pair/revision, cache, receipt, clean draft/reason,
+    // released submission/lock and disarmed guard.
+    await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
     await waitFor(() => expect(savedCell()).toHaveTextContent('6'));
     expect(nextCell()).toHaveTextContent('6');
+    expect(cap()).toHaveValue('12');
+    expect(reasonBox()).toHaveValue('');
+    expect(
+      view.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision,
+    ).toBe(REV_C);
+    expect(capacityObservation(SLUG)?.outcome).toBe('usable');
+    expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_C);
     expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/You submitted/)).not.toBeInTheDocument();
+    const unload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(false);
   });
 
   test.each([
@@ -634,7 +792,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
   ])('2.15 / 2.16 the same during-PUT read landing as %s never downgrades the accepted state, and recovery still works', async (_label, late) => {
     const { view, receiptAfterSave, renderedReceipt } = await duringPutOrdering(late as () => Response);
     await expectAcceptedPostSaveState(view, receiptAfterSave, renderedReceipt);
-    await expectLaterRecovery(receiptAfterSave);
+    await expectLaterRecovery(view, receiptAfterSave);
   });
 
   test('2.16 recovery CONTINUES the 2.14 stale-success predecessor to a genuine receipt advance and a separate manual save', async () => {
@@ -642,7 +800,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       () => HttpResponse.json(snapshot({ revision: REV_A })),
     );
     await expectAcceptedPostSaveState(view, receiptAfterSave, renderedReceipt);
-    await expectLaterRecovery(receiptAfterSave);
+    await expectLaterRecovery(view, receiptAfterSave);
   });
 });
 
@@ -668,6 +826,9 @@ describe('4 — acknowledgment identity at the real boundary', () => {
         revision: REV_B,
         persisted_yaml: { queue_workers: 5, host_global_session_cap: 14 },
         next_start: { queue_workers: 3, host_global_session_cap: 14 },
+        // The resolved next-start pair (3/14) differs from running (3/10), so a
+        // coherent server response reports a pending restart.
+        restart_pending: true,
       })),
     });
     mount();
@@ -697,12 +858,14 @@ describe('4 — acknowledgment identity at the real boundary', () => {
 
     // POST-SAVE: the result panel resolves the SAME W = 3 / H = 14 pair and
     // names only the shadowed key. No "Applied", no restart claim.
-    await screen.findByText(/^Saved\. No restart is pending for these values\./);
+    await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
     expect(document.body).toHaveTextContent(/Saved value overridden: Task session slots is set by the environment/);
     expect(document.body).toHaveTextContent(/Expected next start: Task session slots 3, Host session admission limit 14/);
     expect(document.body).not.toHaveTextContent(/Applied|Apply now|Restart daemon/);
     expect(savedCell()).toHaveTextContent('5');
     expect(nextCell()).toHaveTextContent('3');
+    expect(capacityObservation(SLUG)?.outcome).toBe('usable');
+    expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_B);
   });
 
   test('4.1 an identical context refresh PRESERVES the acknowledgment', async () => {
@@ -723,7 +886,21 @@ describe('4 — acknowledgment identity at the real boundary', () => {
     // environment-resolved value moves 3 -> 4. The daemon resolves shadowed
     // keys from the environment while the revision is file-bytes-derived, so
     // this combination is genuinely reachable.
-    stubVenue({ get: (i) => HttpResponse.json(shadow(i === 0 ? 3 : 4)) });
+    stubVenue({
+      get: (i) => HttpResponse.json(shadow(i === 0 ? 3 : 4)),
+      // Coherent accepted response for the renewed 5/12 submission: the
+      // persisted pair that was sent, the environment still resolving W to 4,
+      // and a pending restart.
+      put: () => HttpResponse.json(snapshot({
+        environment_shadowed: ['queue_workers'],
+        environment_warning: 'Environment overrides win.',
+        revision: REV_C,
+        persisted_yaml: { queue_workers: 5, host_global_session_cap: 12 },
+        next_start: { queue_workers: 4, host_global_session_cap: 12 },
+        effective_admission_cap: 12,
+        restart_pending: true,
+      })),
+    });
     mount();
     await ready();
     await setPair('5', '12');
@@ -742,18 +919,32 @@ describe('4 — acknowledgment identity at the real boundary', () => {
     expect(screen.getByRole('checkbox')).not.toBeChecked();
     // The preview refreshes to the NEW resolved value.
     expect(document.body).toHaveTextContent(/Task session slots 4, Host session admission limit 12/);
+    // 4.1b: at the SAME revision, with the resolved override changed and the
+    // renewed acknowledgment missing, Save is EXPLICITLY disabled.
+    expect(saveButton()).toBeDisabled();
 
     // No PUT until renewed confirmation.
     await user.click(saveButton());
     expect(puts()).toHaveLength(0);
 
     await user.click(screen.getByRole('checkbox'));
+    expect(saveButton()).toBeEnabled();
     await user.click(saveButton());
     await waitFor(() => expect(puts()).toHaveLength(1));
     expect(puts()[0].ifMatch).toBe(`"${REV_A}"`);
-    const body = JSON.parse(puts()[0].rawBody);
-    expect(body.confirm_environment_shadow).toBe(true);
-    expect(body.queue_workers).toBe(5);
+    // FULL final request body after renewal — H, rationale and ack included.
+    expect(JSON.parse(puts()[0].rawBody)).toEqual({
+      queue_workers: 5,
+      host_global_session_cap: 12,
+      rationale: 'raising slots',
+      confirm_environment_shadow: true,
+    });
+    // ...and the accepted result settles coherently.
+    await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
+    await waitFor(() => expect(savedCell()).toHaveTextContent('5'));
+    expect(nextCell()).toHaveTextContent('4');
+    expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_C);
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
   });
 
   test('4.5 an unrelated effective_admission_cap change must NOT over-reset the acknowledgment', async () => {
@@ -1170,6 +1361,170 @@ describe('13 / 14 — denied and unusable reads', () => {
     expect(workers()).toHaveValue('5');
     expect(reasonBox()).toHaveValue('why');
   });
+
+  // -------------------------------------------------------------------------
+  // C1 — the retained values and their receipt are ONE record.
+  //
+  // A successful HTTP response whose body is unusable still advances the
+  // PROVIDER receipt (S5-R5: it identifies a real response). It did not,
+  // however, produce the values still on screen. Before the repair the editor
+  // stored only the snapshot and rendered the LATEST provider receipt beside
+  // it, so an unusable 200 re-labelled the previous values with the new
+  // response's time. Independent reviewer red proof: `additional.test.tsx` /
+  // `receipt-probe.log` at head a04446ca (usable 3/10 at 1800000000000, then a
+  // quoted-W 200 at 1800000060000 displayed the old values with the new time).
+  // -------------------------------------------------------------------------
+  test('C1 / 14.1 a successful GET with an UNUSABLE body retains the last values WITH their own receipt, while the provider receipt still advances', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1800000000000);
+    try {
+      stubVenue({
+        get: (i) => (i === 0
+          ? HttpResponse.json(snapshot())
+          : HttpResponse.json(snapshot({
+            persisted_yaml: { queue_workers: 'bad', host_global_session_cap: 10 },
+          }))),
+      });
+      mount();
+      await ready();
+
+      const retainedReceipt = formatReceipt(capacityObservation(SLUG)?.receiptAt ?? null);
+      expect(retainedReceipt).not.toBeNull();
+      expect(screen.getByText(/Last received/).textContent).toContain(retainedReceipt!);
+
+      await userEvent.type(reasonBox(), 'retain exact draft');
+      clock.mockReturnValue(1800000060000);
+      await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+      await screen.findByText(/Cannot read capacity configuration/);
+
+      // The successful response really arrived, so the PROVIDER receipt moved
+      // and the observation is correctly recorded as unusable.
+      expect(capacityObservation(SLUG)?.receiptAt).toBe(1800000060000);
+      expect(capacityObservation(SLUG)?.outcome).toBe('unusable');
+      expect(capacityObservation(SLUG)?.sourceRevision).toBeNull();
+
+      // The retained values keep the receipt of the response that produced
+      // them; the newer response's time is NOT attributed to them.
+      expect(screen.getByText('Last known')).toBeVisible();
+      expect(workers()).toHaveValue('3');
+      expect(savedCell()).toHaveTextContent('3');
+      expect(reasonBox()).toHaveValue('retain exact draft');
+      const newReceipt = formatReceipt(1800000060000);
+      expect(newReceipt).not.toBe(retainedReceipt);
+      const receipts = receiptStrings();
+      expect(receipts.length).toBeGreaterThan(0);
+      expect(receipts[0]).toContain(retainedReceipt!);
+      expect(receipts.every((text) => text.includes(retainedReceipt!))).toBe(true);
+      expect(receipts.some((text) => text.includes(newReceipt!))).toBe(false);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test('C1 / 14.1–14.4 usable -> shape-malformed -> representation-unusable -> failed -> usable keeps draft/reason/ack/base and one retained receipt, and never silently rebases', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1800000000000);
+    try {
+      stubVenue({
+        get: (i) => {
+          if (i === 0) return HttpResponse.json(snapshot(SHADOW_W));
+          if (i === 1) {
+            // shape-malformed: a quoted number in a nullable slot
+            return HttpResponse.json(snapshot({
+              ...SHADOW_W,
+              persisted_yaml: { queue_workers: '3', host_global_session_cap: 10 },
+            }));
+          }
+          if (i === 2) {
+            // representation-unusable: a token that did not survive JSON.parse
+            // as a safe integer (2**53 is not safe)
+            return HttpResponse.json(snapshot({
+              ...SHADOW_W,
+              persisted_yaml: { queue_workers: 2 ** 53, host_global_session_cap: 10 },
+            }));
+          }
+          if (i === 3) return HttpResponse.error();
+          // usable recovery on a NEW revision, still dirty -> explicit choice
+          return HttpResponse.json(snapshot({
+            ...SHADOW_W,
+            revision: REV_B,
+            persisted_yaml: { queue_workers: 2, host_global_session_cap: 9 },
+          }));
+        },
+      });
+      const view = mount();
+      await ready();
+      await setPair('5', '12');
+      await userEvent.type(reasonBox(), 'why');
+      await userEvent.click(screen.getByRole('checkbox'));
+      expect(screen.getByRole('checkbox')).toBeChecked();
+
+      const retainedReceipt = formatReceipt(capacityObservation(SLUG)?.receiptAt ?? null);
+      expect(retainedReceipt).not.toBeNull();
+
+      const refresh = async (index: number) => {
+        clock.mockReturnValue(1800000000000 + index * 60000);
+        await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+        await waitFor(() => expect(gets()).toHaveLength(index + 1));
+      };
+
+      // (1) shape-malformed successful 200
+      await refresh(1);
+      await screen.findByText(/Cannot read capacity configuration/);
+      expect(capacityObservation(SLUG)?.outcome).toBe('unusable');
+      expect(receiptStrings().every((text) => text.includes(retainedReceipt!))).toBe(true);
+
+      // (2) representation-unusable successful 200 — same retention semantics
+      await refresh(2);
+      await waitFor(() => expect(capacityObservation(SLUG)?.outcome).toBe('unusable'));
+      expect(receiptStrings().every((text) => text.includes(retainedReceipt!))).toBe(true);
+
+      // (3) genuine failure — receipt carried forward, still retained
+      await refresh(3);
+      await waitFor(() => expect(capacityObservation(SLUG)?.outcome).toBe('failed'));
+      await screen.findByText(/Could not refresh/);
+      expect(receiptStrings().every((text) => text.includes(retainedReceipt!))).toBe(true);
+
+      // Across every unusable/failed read the editor, reason, ack and accepted
+      // base survive byte-for-byte, and Save is refused.
+      expect(workers()).toHaveValue('5');
+      expect(cap()).toHaveValue('12');
+      expect(reasonBox()).toHaveValue('why');
+      expect(screen.getByRole('checkbox')).toBeChecked();
+      // The ACCEPTED base is still the original 3/10 in the displayed table.
+      expect(savedCell()).toHaveTextContent('3');
+      expect(runningCell()).toHaveTextContent('3');
+      expect(saveButton()).toBeDisabled();
+
+      // (4) usable recovery on a new revision: NEVER a silent rebase. The newer
+      // observation advances base only through an explicit choice, and the
+      // displayed values switch back to the CURRENT observation (with its own
+      // advancing receipt) rather than staying pinned to the old one.
+      await refresh(4);
+      await screen.findByText('Configuration changed elsewhere.');
+      expect(workers()).toHaveValue('5');
+      expect(reasonBox()).toHaveValue('why');
+      // The accepted BASE is still 3/10 — the new revision was recorded as an
+      // observation, not adopted.
+      expect(acceptedBaseText()).toMatch(/Task session slots 3/);
+      expect(screen.queryByText('Last known')).not.toBeInTheDocument();
+      expect(capacityObservation(SLUG)?.outcome).toBe('usable');
+      expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_B);
+      expect(receiptStrings()[0]).not.toContain(retainedReceipt!);
+
+      await userEvent.click(screen.getByRole('button', { name: 'Keep my draft, rebase onto latest' }));
+      await userEvent.click(saveButton());
+      await waitFor(() => expect(puts()).toHaveLength(1));
+      expect(puts()[0].ifMatch).toBe(`"${REV_B}"`);
+      expect(JSON.parse(puts()[0].rawBody)).toEqual({
+        queue_workers: 5,
+        host_global_session_cap: 12,
+        rationale: 'why',
+        confirm_environment_shadow: true,
+      });
+      expect(view.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision).toBe(REV_B);
+    } finally {
+      clock.mockRestore();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1317,11 +1672,49 @@ describe('15 / R7 — raw numeric envelopes, editor to wire and back', () => {
   const UNSAFE = '9007199254740993';
   const ROUNDED = 9007199254740992;
 
-  /** A raw JSON body with ONE slot replaced by an unsafe integer token. */
-  function rawWithUnsafe(slot: string, overrides: Record<string, unknown> = {}): Response {
-    const replacement = slot.replace(/:\d+$/, `:${UNSAFE}`);
-    const text = JSON.stringify(snapshot(overrides)).replace(slot, replacement);
-    expect(text).toContain(`${UNSAFE}`);
+  /**
+   * Inject the EXACT raw JSON `rawToken` at the exact path `path` of `root`,
+   * starting from the serialized text.
+   *
+   * The earlier helper replaced the FIRST textual occurrence of a key, which for
+   * `"queue_workers":3` is `running_at_daemon_start.queue_workers` — NOT the
+   * `persisted_yaml.queue_workers` the case named. This one serializes the
+   * parent object and replaces the parent fragment, so the path is exact; it
+   * then re-parses and VERIFIES that the named path now holds the token.
+   */
+  function injectRaw(root: unknown, path: string[], rawToken: string): string {
+    // Replace the target with a UNIQUE sentinel STRING, serialize, then swap the
+    // quoted sentinel for the raw token text. This makes the modified path
+    // unambiguous even when sibling members serialize identically (the earlier
+    // fragment-replace hit `running_at_daemon_start` when the case named
+    // `persisted_yaml`).
+    const sentinel = `__HR_RAW_${Math.random().toString(36).slice(2)}__`;
+    const clone = JSON.parse(JSON.stringify(root)) as Record<string, unknown>;
+    const parent = path.slice(0, -1).reduce<Record<string, unknown>>(
+      (node, k) => node[k] as Record<string, unknown>,
+      clone,
+    );
+    const key = path[path.length - 1];
+    expect(parent, `path ${path.join('.')} not present`).toHaveProperty(key);
+    parent[key] = sentinel;
+    const text = JSON.stringify(clone);
+    const replaced = text.replace(JSON.stringify(sentinel), rawToken);
+    expect(replaced, `path ${path.join('.')} not modified`).not.toBe(text);
+    // VERIFY the exact modified path, not just "the body contains the token".
+    const reparsed = JSON.parse(replaced) as Record<string, unknown>;
+    const at = (node: unknown) =>
+      path.reduce<unknown>(
+        (n, k) => (n as Record<string, unknown>)[k],
+        node,
+      );
+    expect(at(reparsed), `path ${path.join('.')}`).toEqual(JSON.parse(rawToken));
+    return replaced;
+  }
+
+  /** A raw JSON body with the exact `path` replaced by an unsafe integer. */
+  function rawWithUnsafeAt(path: string[], overrides: Record<string, unknown> = {}): Response {
+    const text = injectRaw(snapshot(overrides), path, UNSAFE);
+    expect(text).toContain(UNSAFE);
     expect(() => JSON.parse(text)).not.toThrow();
     return new HttpResponse(text, { headers: { 'content-type': 'application/json' } });
   }
@@ -1351,38 +1744,59 @@ describe('15 / R7 — raw numeric envelopes, editor to wire and back', () => {
     expect(puts()).toHaveLength(0);
   });
 
-  test('15.4 a raw GET carrying an unsafe token is withheld, never seeded and never rendered rounded', async () => {
-    stubVenue({
-      get: (i) => (i === 0
-        ? HttpResponse.json(snapshot())
-        : rawWithUnsafe('"queue_workers":3', { revision: REV_B })),
-    });
-    const view = mount();
-    await ready();
-    await setPair('5', '12');
-    await userEvent.type(reasonBox(), 'why');
-    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+  const UNSAFE_RAW_PATHS: [string, string[]][] = [
+    ['persisted_yaml.queue_workers', ['persisted_yaml', 'queue_workers']],
+    ['persisted_yaml.host_global_session_cap', ['persisted_yaml', 'host_global_session_cap']],
+    ['effective_admission_cap', ['effective_admission_cap']],
+    ['producer_envelope', ['producer_envelope']],
+    ['next_start.queue_workers', ['next_start', 'queue_workers']],
+    ['next_start.host_global_session_cap', ['next_start', 'host_global_session_cap']],
+    ['running_at_daemon_start.queue_workers', ['running_at_daemon_start', 'queue_workers']],
+    ['running_at_daemon_start.host_global_session_cap', ['running_at_daemon_start', 'host_global_session_cap']],
+  ];
 
-    await screen.findByText(/Latest capacity values are outside the range this editor can represent exactly/);
-    expect(document.body).not.toHaveTextContent(String(ROUNDED));
-    // Last known is retained and labelled; the editor is untouched.
-    expect(screen.getByText('Last known')).toBeVisible();
-    expect(savedCell()).toHaveTextContent('3');
-    expect(workers()).toHaveValue('5');
-    expect(reasonBox()).toHaveValue('why');
-    // The observation is NOT usable and no rebase is offered against it.
-    expect(capacityObservation(SLUG)?.outcome).toBe('unusable');
-    expect(capacityObservation(SLUG)?.sourceRevision).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' })).not.toBeInTheDocument();
-    expect(saveButton()).toBeDisabled();
-    fireEvent.submit(saveButton().closest('form') as HTMLFormElement);
-    await waitFor(() => expect(view.client.isMutating()).toBe(0));
-    expect(puts()).toHaveLength(0);
-  });
+  test.each(UNSAFE_RAW_PATHS)(
+    '15.4 / 15.5 a raw GET with an unsafe token at %s is withheld at the REAL boundary',
+    async (_label, path) => {
+      stubVenue({
+        get: (i) => (i === 0
+          ? HttpResponse.json(snapshot())
+          : rawWithUnsafeAt(path, { revision: REV_B })),
+      });
+      const view = mount();
+      await ready();
+      await setPair('5', '12');
+      await userEvent.type(reasonBox(), 'why');
+      await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+
+      await screen.findByText(/outside the range this editor can represent exactly/);
+      expect(document.body).not.toHaveTextContent(String(ROUNDED));
+      // Last known is retained and labelled; the editor is untouched.
+      expect(screen.getByText('Last known')).toBeVisible();
+      expect(savedCell()).toHaveTextContent('3');
+      expect(workers()).toHaveValue('5');
+      expect(reasonBox()).toHaveValue('why');
+      // The observation is NOT usable and no rebase is offered against the bad
+      // read. A GET's raw body does reach the React Query cache, so "never
+      // marked usable" is asserted through the SHARED classifier rather than by
+      // pretending the cache revision is untouched.
+      expect(capacityObservation(SLUG)?.outcome).toBe('unusable');
+      expect(capacityObservation(SLUG)?.sourceRevision).toBeNull();
+      expect(
+        classifySnapshot(view.client.getQueryData(capacityQueryKey(SLUG))).status,
+      ).not.toBe('usable');
+      expect(screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' })).not.toBeInTheDocument();
+      expect(saveButton()).toBeDisabled();
+      fireEvent.submit(saveButton().closest('form') as HTMLFormElement);
+      await waitFor(() => expect(view.client.isMutating()).toBe(0));
+      expect(puts()).toHaveLength(0);
+      view.unmount();
+    },
+  );
 
   test('R7 (F9) 15.5 a raw PUT SUCCESS carrying an unsafe token never enters accepted cache or base as usable', async () => {
     stubVenue({
-      put: () => rawWithUnsafe('"effective_admission_cap":10', { revision: REV_B }),
+      put: () => rawWithUnsafeAt(['effective_admission_cap'], { revision: REV_B }),
     });
     const view = mount();
     await ready();
@@ -1413,33 +1827,44 @@ describe('15 / R7 — raw numeric envelopes, editor to wire and back', () => {
     expect(puts()).toHaveLength(1);
   });
 
-  test('15.5 a raw 409 LATEST carrying an unsafe token offers no rebase and fabricates no number', async () => {
-    const latestText = JSON.stringify({
-      detail: { code: 'stale_revision', latest: snapshot({ revision: REV_B }) },
-    }).replace('"queue_workers":3', `"queue_workers":${UNSAFE}`);
-    expect(latestText).toContain(UNSAFE);
-    stubVenue({
-      put: () => new HttpResponse(latestText, {
-        status: 409, headers: { 'content-type': 'application/json' },
-      }),
-    });
-    mount();
-    await ready();
-    await setPair('5', '12');
-    await saveWith();
-    await screen.findByText(/Latest saved values are outside the range this editor can represent exactly/);
-    expect(document.body).not.toHaveTextContent(String(ROUNDED));
-    expect(screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' })).not.toBeInTheDocument();
-    expect(workers()).toHaveValue('5');
-    expect(savedCell()).toHaveTextContent('3');
-    expect(puts()).toHaveLength(1);
-  });
+  test.each([
+    ['persisted_yaml.queue_workers', ['detail', 'latest', 'persisted_yaml', 'queue_workers']],
+    ['persisted_yaml.host_global_session_cap', ['detail', 'latest', 'persisted_yaml', 'host_global_session_cap']],
+  ] as [string, string[]][])(
+    '15.5 a raw 409 LATEST carrying an unsafe token at %s offers no rebase and fabricates no number',
+    async (_label, path) => {
+      captured = [];
+      server.resetHandlers();
+      const latestText = injectRaw(
+        { detail: { code: 'stale_revision', latest: snapshot({ revision: REV_B }) } },
+        path,
+        UNSAFE,
+      );
+      expect(latestText).toContain(UNSAFE);
+      stubVenue({
+        put: () => new HttpResponse(latestText, {
+          status: 409, headers: { 'content-type': 'application/json' },
+        }),
+      });
+      const view = mount();
+      await ready();
+      await setPair('5', '12');
+      await saveWith();
+      await screen.findByText(/Latest saved values are outside the range this editor can represent exactly/);
+      expect(document.body).not.toHaveTextContent(String(ROUNDED));
+      expect(screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' })).not.toBeInTheDocument();
+      expect(workers()).toHaveValue('5');
+      expect(savedCell()).toHaveTextContent('3');
+      expect(puts()).toHaveLength(1);
+      view.unmount();
+    },
+  );
 
   test('15.5 a raw UNCERTAIN-REREAD carrying an unsafe token is not a usable observation', async () => {
     stubVenue({
       get: (i) => (i === 0
         ? HttpResponse.json(snapshot())
-        : rawWithUnsafe('"producer_envelope":10', { revision: REV_B })),
+        : rawWithUnsafeAt(['producer_envelope'], { revision: REV_B })),
       put: () => HttpResponse.json(
         { detail: { code: 'config_publication_uncertain', artifact_state: 'absent' } },
         { status: 503 },
@@ -1458,6 +1883,85 @@ describe('15 / R7 — raw numeric envelopes, editor to wire and back', () => {
     expect(document.body).not.toHaveTextContent(String(ROUNDED));
     expect(screen.getByText(/You submitted Task session slots 5/)).toBeVisible();
     expect(puts()).toHaveLength(1);
+  });
+
+  /**
+   * 15.10 L4 — the DOMAIN and NULLABILITY matrix at the REAL boundary, one row
+   * per documented field position (not a six-patch sample). Each row's
+   * `expectUsable` records the documented outcome; the unrelated metadata stays
+   * coherent so a DIFFERENT defect cannot accidentally satisfy the assertion.
+   */
+  const DOMAIN_RAW_CASES: [string, string[], string, boolean][] = [
+    ['persisted_yaml.queue_workers null (documented nullable)', ['persisted_yaml', 'queue_workers'], 'null', true],
+    ['persisted_yaml.host_global_session_cap null (documented nullable)', ['persisted_yaml', 'host_global_session_cap'], 'null', true],
+    ['effective_admission_cap null (documented nullable)', ['effective_admission_cap'], 'null', true],
+    ['persisted_yaml.queue_workers zero (positive domain)', ['persisted_yaml', 'queue_workers'], '0', false],
+    ['persisted_yaml.host_global_session_cap negative (positive domain)', ['persisted_yaml', 'host_global_session_cap'], '-1', false],
+    ['next_start.queue_workers zero (positive domain)', ['next_start', 'queue_workers'], '0', false],
+    ['next_start.host_global_session_cap zero (positive domain)', ['next_start', 'host_global_session_cap'], '0', false],
+    ['running_at_daemon_start.queue_workers zero (positive domain)', ['running_at_daemon_start', 'queue_workers'], '0', false],
+    ['running_at_daemon_start.host_global_session_cap negative (positive domain)', ['running_at_daemon_start', 'host_global_session_cap'], '-1', false],
+    ['producer_envelope negative (nonnegative domain)', ['producer_envelope'], '-1', false],
+    ['producer_components.task_workers negative (nonnegative domain)', ['producer_components', 'task_workers'], '-1', false],
+    ['producer_components.thread_workers negative (nonnegative domain)', ['producer_components', 'thread_workers'], '-1', false],
+    ['producer_components.dream_workers negative (nonnegative domain)', ['producer_components', 'dream_workers'], '-1', false],
+    ['producer_components.schedule_workers negative (nonnegative domain)', ['producer_components', 'schedule_workers'], '-1', false],
+    ['producer_components.wake_workers zero (nonnegative boundary)', ['producer_components', 'wake_workers'], '0', true],
+    ['producer_envelope zero (nonnegative boundary, task>envelope -> inconsistent)', ['producer_envelope'], '0', false],
+    ['persisted_yaml.queue_workers one (positive boundary)', ['persisted_yaml', 'queue_workers'], '1', true],
+    ['next_start.host_global_session_cap one (positive boundary)', ['next_start', 'host_global_session_cap'], '1', true],
+  ];
+
+  test.each(DOMAIN_RAW_CASES)(
+    '15.10 L4 raw domain/nullability: %s -> usable=%s',
+    async (_label, path, token, expectUsable) => {
+      stubVenue({
+        get: (i) => (i === 0
+          ? HttpResponse.json(snapshot())
+          : new HttpResponse(
+            injectRaw(snapshot({ revision: REV_B }), path, token),
+            { headers: { 'content-type': 'application/json' } },
+          )),
+      });
+      const view = mount();
+      await ready();
+      await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+      if (expectUsable) {
+        await waitFor(() => expect(capacityObservation(SLUG)?.outcome).toBe('usable'));
+        expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_B);
+        expect(screen.queryByText(/Cannot read capacity configuration/)).not.toBeInTheDocument();
+      } else {
+        await waitFor(() => expect(capacityObservation(SLUG)?.outcome).toBe('unusable'));
+        expect(capacityObservation(SLUG)?.sourceRevision).toBeNull();
+        expect(
+          screen.getAllByRole('alert').some((node) =>
+            /Cannot read capacity configuration|Capacity details are inconsistent in this response/
+              .test(node.textContent ?? '')),
+        ).toBe(true);
+        expect(
+          classifySnapshot(view.client.getQueryData(capacityQueryKey(SLUG))).status,
+        ).not.toBe('usable');
+      }
+      view.unmount();
+    },
+  );
+
+  test('15.10 L4 task_workers > producer_envelope is INCONSISTENT, never a negative total', async () => {
+    stubVenue({
+      get: (i) => (i === 0
+        ? HttpResponse.json(snapshot())
+        : new HttpResponse(
+          injectRaw(snapshot({ revision: REV_B }), ['producer_components', 'task_workers'], '12'),
+          { headers: { 'content-type': 'application/json' } },
+        )),
+    });
+    mount();
+    await ready();
+    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+    await screen.findAllByText(/Capacity details are inconsistent in this response/);
+    expect(document.body).not.toHaveTextContent(/\b-2\b/);
+    expect(capacityObservation(SLUG)?.outcome).toBe('unusable');
+    expect(capacityObservation(SLUG)?.sourceRevision).toBeNull();
   });
 });
 

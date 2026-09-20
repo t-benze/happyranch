@@ -165,7 +165,10 @@ The Settings surface ships as a full page (`web/src/features/settings/SettingsPa
   Three refusals are load-bearing and are enforced at the request handler, not
   only on the control. A refresh that FAILED leaves the last usable values on
   screen under a `Last known` label with the receipt of the response that
-  actually produced them, keeps the draft, reason and acknowledgment, and
+  actually produced them — the retained values carry their own receipt even when
+  a later request succeeds with an unusable body (that response still advances
+  the separate provider receipt, but never relabels the retained values) —
+  keeps the draft, reason and acknowledgment, and
   blocks the write until a genuinely successful, usable read recovers — a
   refetch result that merely carries cached data beside an error is not a
   success. An unresolved publication outcome (typed `config_publication_uncertain`,

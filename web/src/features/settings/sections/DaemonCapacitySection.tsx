@@ -298,12 +298,21 @@ export function DaemonCapacitySection(): JSX.Element {
   const [externalSeen, setExternalSeen] = useState(false);
   const [conflictUnusable, setConflictUnusable] = useState<string | null>(null);
   /**
-   * The last snapshot that classified USABLE. When the current read is
+   * The last snapshot that classified USABLE, retained TOGETHER with the
+   * receipt of the response that actually produced it. When the current read is
    * unusable or failed there is still something honest to show, labelled
-   * "Last known" with the receipt of the response that actually produced it
-   * (accepted 14.1 / 14.2 / 14.3).
+   * "Last known" with its OWN receipt (accepted 14.1 / 14.2 / 14.3).
+   *
+   * C1: a successful HTTP response with an unusable body still advances the
+   * PROVIDER receipt (S5-R5 — correctly, it identifies a real response), but it
+   * did not produce these values. Storing only the snapshot and rendering
+   * `query.observation.receiptAt` beside it attributed the new response's time
+   * to the old values. The receipt is therefore part of the retained record.
    */
-  const [lastUsable, setLastUsable] = useState<DaemonCapacitySnapshot | null>(null);
+  const [lastUsable, setLastUsable] = useState<{
+    snapshot: DaemonCapacitySnapshot;
+    receiptAt: number | null;
+  } | null>(null);
   /**
    * R5: the TEXT the accepted base seeded, so raw operator edits are tracked
    * independently of whether the draft currently parses into a valid pair.
@@ -352,10 +361,24 @@ export function DaemonCapacitySection(): JSX.Element {
     });
   }, [snapshot]);
 
-  // Retain the last USABLE observation so an unusable or failed read can still
-  // show labelled prior values instead of blanking the surface.
+  /**
+   * The provider-owned observation, read by the retention and read-acceptance
+   * effects below without making them depend on its identity.
+   */
+  const observationRef = useRef(query.observation);
+  observationRef.current = query.observation;
+
+  // Retain the last USABLE observation — snapshot AND its receipt — so an
+  // unusable or failed read can still show labelled prior values, each with the
+  // time of the response that actually produced it, instead of blanking the
+  // surface or borrowing a later response's receipt.
   useEffect(() => {
-    if (classification?.status === 'usable') setLastUsable(classification.snapshot);
+    if (classification?.status === 'usable') {
+      setLastUsable({
+        snapshot: classification.snapshot,
+        receiptAt: observationRef.current?.receiptAt ?? null,
+      });
+    }
   }, [classification]);
 
   /**
@@ -370,7 +393,7 @@ export function DaemonCapacitySection(): JSX.Element {
    * The snapshot the surface DISPLAYS: the current usable read, or the last
    * usable observation when the current read is unusable or failed.
    */
-  const displayedSnapshot = snapshot ?? lastUsable;
+  const displayedSnapshot = snapshot ?? lastUsable?.snapshot ?? null;
   /** No write may be built against a read we cannot trust. */
   const readBlocked = refreshFailed || readUnusableReason !== null || inconsistentRead;
 
@@ -424,12 +447,6 @@ export function DaemonCapacitySection(): JSX.Element {
   baseRef.current = base;
   const guardRef = useRef({ dirty: false, writeLocked: false });
   guardRef.current = { dirty, writeLocked };
-  /**
-   * The provider-owned observation, read inside the effect below without
-   * making the effect depend on its identity.
-   */
-  const observationRef = useRef(query.observation);
-  observationRef.current = query.observation;
 
   const acceptBase = useCallback((next: CapacityBase) => {
     const workers = String(next.pair.queue_workers);
@@ -806,7 +823,15 @@ export function DaemonCapacitySection(): JSX.Element {
     );
   }
 
-  const receipt = formatReceipt(query.observation?.receiptAt ?? null);
+  // C1: the receipt rendered beside the values must belong to the response that
+  // produced THOSE values. The provider's `receiptAt` advances on every genuine
+  // successful response (S5-R5), including one whose body is unusable, so while
+  // retained values are displayed the RETAINED receipt is the honest one — the
+  // later response's receipt must not be attributed to them. The two facts stay
+  // distinguishable: the unusable-response banner names the current read's
+  // failure, and the retained values carry their own "Last received" time.
+  const currentReceipt = formatReceipt(query.observation?.receiptAt ?? null);
+  const retainedReceipt = formatReceipt(lastUsable?.receiptAt ?? null);
   const pending = save.isPending;
   const reconciliationNeeded = conflictSeen || conflictUnusable !== null || externalSeen;
   // R3: reconciliation may only be offered against an observation that was
@@ -820,6 +845,8 @@ export function DaemonCapacitySection(): JSX.Element {
    */
   const displaySnapshot = displayedSnapshot;
   const showingLastKnown = displaySnapshot !== null && (snapshot === null || refreshFailed);
+  /** The receipt of the response that produced the values currently displayed. */
+  const valueReceipt = showingLastKnown ? retainedReceipt : currentReceipt;
   // Deliberately NOT disabled by `writeLocked`: a second Save attempt must be
   // explicitly REFUSED with a reason, not silently inert — and never a silent
   // last-write-wins. It IS disabled while the current state is unreadable or
@@ -837,7 +864,7 @@ export function DaemonCapacitySection(): JSX.Element {
             ? `Latest capacity values are ${REPRESENTATION_UNAVAILABLE.toLowerCase()} Editing is unavailable against this read.`
             : READ_UNUSABLE}
           {' '}Previously received values are shown below under “Last known”.
-          {receipt ? ` ${receipt}` : ''}
+          {valueReceipt ? ` ${valueReceipt}` : ''}
         </p>
       )}
       {inconsistentRead && (
@@ -848,7 +875,7 @@ export function DaemonCapacitySection(): JSX.Element {
       {refreshFailed && (
         <p role="alert" className="border-border-default bg-attention-soft text-attention-text mt-4 rounded-md border p-3 text-sm">
           {REFRESH_FAILED} Previously received values are shown below under “Last known”.
-          {receipt ? ` ${receipt}` : ''}
+          {valueReceipt ? ` ${valueReceipt}` : ''}
           {' '}Your draft, reason and acknowledgment are kept. Saving is blocked until a
           successful read confirms the saved revision.
         </p>
@@ -961,8 +988,12 @@ export function DaemonCapacitySection(): JSX.Element {
         </>
       )}
 
-      {receipt && (
-        <p className="text-text-secondary mt-3 text-xs">{receipt}</p>
+      {/* The receipt footer names the response behind the DISPLAYED values. While
+          retained values are shown it repeats their own retained receipt (the
+          banner already names it too); the newer unusable response's receipt is
+          deliberately NOT substituted for it (C1). */}
+      {valueReceipt && (
+        <p className="text-text-secondary mt-3 text-xs">{valueReceipt}</p>
       )}
 
       <form onSubmit={submit} noValidate>

@@ -187,6 +187,88 @@ describe('L3 — numeric honesty at the READ boundary (Q8 is NOT solved)', () =>
     expect(detail.latest.persisted_yaml.queue_workers).toBe(9007199254740992);
   });
 
+  test('15.6 L3 every required RAW NUMERIC FORM is delivered through the real transport and survives exactly', async () => {
+    // The transport is the same at every entry point, so the forms are asserted
+    // for a non-nullable slot (producer_envelope) AND a documented-nullable slot
+    // (persisted_yaml.queue_workers). No token is built as a JS number before
+    // stringify — every form is raw TEXT.
+    const forms: [string, string, unknown][] = [
+      ['a quoted numeric string', '"5.5"', '5.5'],
+      ['an unquoted fraction 5.5', '5.5', 5.5],
+      ['a boolean', 'true', true],
+      ['null', 'null', null],
+      ['an array', '[1,2]', [1, 2]],
+      ['a safe integer', '5', 5],
+    ];
+    for (const [slot, build] of [
+      ['producer_envelope', (token: string) => rawSnapshot({ producer_envelope: token })],
+      ['persisted_yaml.queue_workers', (token: string) =>
+        rawSnapshot({ persisted_yaml: `{"queue_workers":${token},"host_global_session_cap":10}` })],
+    ] as [string, (token: string) => string][]) {
+      for (const [label, rawToken, expected] of forms) {
+        server.resetHandlers();
+        const rawText = build(rawToken);
+        expect(rawText, `${slot} / ${label}`).toContain(rawToken);
+        server.use(http.get(PATH, () => rawJson(rawText)));
+        const snapshot = await getDaemonCapacity(SLUG);
+        const received = slot === 'producer_envelope'
+          ? snapshot.producer_envelope
+          : snapshot.persisted_yaml.queue_workers;
+        expect(received, `${slot} / ${label}`).toEqual(expected);
+        if (label.includes('fraction')) {
+          // 5.5 must never arrive as 5 at the transport boundary.
+          expect(String(received), `${slot} / ${label}`).toBe('5.5');
+          expect(received, `${slot} / ${label}`).not.toBe(5);
+        }
+      }
+    }
+  });
+
+  test('15.4 L3 raw unsafe tokens at the remaining published members and a 409 latest H lose their digits identically', async () => {
+    server.resetHandlers();
+    server.use(http.get(PATH, () => rawJson(rawSnapshot({
+      running_at_daemon_start: '{"queue_workers":9007199254740993,"host_global_session_cap":10}',
+    }))));
+    let snap = await getDaemonCapacity(SLUG);
+    expect(snap.running_at_daemon_start.queue_workers).toBe(9007199254740992);
+
+    server.resetHandlers();
+    server.use(http.get(PATH, () => rawJson(rawSnapshot({
+      running_at_daemon_start: '{"queue_workers":3,"host_global_session_cap":9007199254740993}',
+    }))));
+    snap = await getDaemonCapacity(SLUG);
+    expect(snap.running_at_daemon_start.host_global_session_cap).toBe(9007199254740992);
+
+    server.resetHandlers();
+    server.use(http.get(PATH, () => rawJson(rawSnapshot({
+      next_start: '{"queue_workers":9007199254740993,"host_global_session_cap":10}',
+    }))));
+    snap = await getDaemonCapacity(SLUG);
+    expect(snap.next_start.queue_workers).toBe(9007199254740992);
+
+    server.resetHandlers();
+    server.use(http.get(PATH, () => rawJson(rawSnapshot({
+      persisted_yaml: '{"queue_workers":3,"host_global_session_cap":9007199254740993}',
+    }))));
+    snap = await getDaemonCapacity(SLUG);
+    expect(snap.persisted_yaml.host_global_session_cap).toBe(9007199254740992);
+    expect(Number.isSafeInteger(snap.persisted_yaml.host_global_session_cap)).toBe(false);
+
+    // 409 latest.persisted_yaml.host_global_session_cap — same transport.
+    server.resetHandlers();
+    const latest = rawSnapshot({
+      persisted_yaml: '{"queue_workers":3,"host_global_session_cap":9007199254740993}',
+    });
+    capturePut(() => rawJson(`{"detail":{"code":"stale_revision","latest":${latest}}}`, { status: 409 }));
+    const error = await putDaemonCapacity(SLUG, {
+      revision: REV_A, queue_workers: 5, host_global_session_cap: 12,
+      rationale: 'r', confirm_environment_shadow: false,
+    }).catch((e: unknown) => e) as ApiError;
+    const detail = error.detail as { latest: { persisted_yaml: { host_global_session_cap: number } } };
+    expect(detail.latest.persisted_yaml.host_global_session_cap).toBe(9007199254740992);
+    expect(Number.isSafeInteger(detail.latest.persisted_yaml.host_global_session_cap)).toBe(false);
+  });
+
   test('15.11 CHARACTERIZED FALSE ACCEPT — a parsed safe integer cannot prove an exact or integral raw token', async () => {
     // Two raw FRACTIONAL tokens that JSON.parse rounds into SAFE INTEGERS.
     // Both PASS the guard. This is a documented, unfixed limitation of the
