@@ -485,9 +485,9 @@ export function ThreadsPage(): JSX.Element {
   // immutable numeric thread id DESC (THR-10 above THR-2) then unpinned in
   // ordinary order; we split ONLY there for the section header, preserving
   // server order. Archived ('done') and 'all' buckets render ONE flat
-  // ordinary list — pin has zero presentation effect there — while rows in
-  // every bucket keep their per-row pin toggle (a mutation control, not
-  // presentation).
+  // ordinary list — pin has zero presentation effect there. Rows in every
+  // bucket only navigate; pin/unpin mutation controls remain in the detail
+  // toolbar.
   const showPinnedSection = bucket === 'open';
   const pinnedThreads = useMemo(
     () => (showPinnedSection ? threads.filter((t) => t.pinned) : []),
@@ -548,8 +548,8 @@ export function ThreadsPage(): JSX.Element {
   // Send mutation lives at the page level so the Composer pattern is pure.
   const sendFollowUp = useSendFollowUp(threadId ?? '');
   const abortReplies = useAbortReplies(threadId ?? '');
-  // THR-209 rename + pin mutations live at the page level; the detail header
-  // and list rows drive them.
+  // THR-209 rename + pin mutations live at the page level; the detail toolbar
+  // controls drive them.
   const renameMutation = useRenameThread(threadId ?? '');
   const pinMutation = useSetThreadPinned(threadId ?? '');
   const [pinError, setPinError] = useState<string | null>(null);
