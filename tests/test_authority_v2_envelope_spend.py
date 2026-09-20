@@ -48,7 +48,6 @@ from tests.test_authority_v2_publication_bookkeeping import (
     _dump,
     _point_dispatch_at_replacement,
     _stage_events,
-    _TargetedFailingConn,
 )
 
 SPENT = "spent"
@@ -226,6 +225,231 @@ def test_spend_reopen_exact_retry_is_read_only(tmp_path):
     retry = _spend(reopened, row, outcome, r2)
     assert retry.status == "already_spent_exact", retry
     assert _dump(reopened) == before
+
+
+# ── A: discriminator classification before any stage filter ───────────────
+
+_MISSING = object()
+
+
+def _related_spent_event(store, row, attempt, outcome, r2, *, overrides=None):
+    """A spent-shaped result-stage event for the exact causal tuple."""
+    envelope = _envelope(store, outcome)
+    candidate = store.get_v2_candidate_for_result(row["id"])
+    event = {
+        "stage": SPENT,
+        "attempt_id": attempt.attempt_id,
+        "candidate_id": candidate.candidate_id,
+        "result_id": row["id"],
+        "envelope_id": envelope.envelope_id,
+        "notification_id": outcome.notification_id,
+        "generation_id": outcome.notification_id,
+        "next_session_id": RESERVED,
+        "spending_result_id": r2,
+    }
+    for key, value in (overrides or {}).items():
+        if value is _MISSING:
+            event.pop(key, None)
+        else:
+            event[key] = value
+    return event
+
+
+def _spent_report_digest(store):
+    events = _stage_events(store, SPENT)
+    assert len(events) == 1, events
+    return events[0]["report_digest"]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"stage": _MISSING},          # discriminator absent
+        {"stage": None},              # present null
+        {"stage": 7},                 # wrong type
+        {"stage": "unknown"},         # unrecognized string
+        {"stage": "not-a-stage"},     # arbitrary different string
+    ],
+)
+def test_spend_refuses_unprovable_stage_discriminator(tmp_path, overrides):
+    """An absent/null/mistyped/unknown discriminator is never unrelatedness."""
+    store, row, attempt, outcome, r2 = _reserved_state(tmp_path)
+    _append_stage_event(store, _related_spent_event(
+        store, row, attempt, outcome, r2, overrides=overrides,
+    ))
+    before = _dump(store)
+    result = _spend(store, row, outcome, r2)
+    assert result.status == "spend_pending", result
+    assert result.reason == "receipt_conflict", result
+    assert _dump(store) == before
+    assert _stage_events(store, SPENT) == []
+    assert _envelope(store, outcome).lifecycle_state == "active"
+    assert _dispatch(store).state == "admitted"
+
+
+def test_spend_replay_refuses_added_unprovable_stage_related_row(tmp_path):
+    """A related row with a null discriminator cannot hide from replay."""
+    store, row, attempt, outcome, r2 = _reserved_state(tmp_path)
+    assert _spend(store, row, outcome, r2).status == "spent"
+    _append_stage_event(store, _related_spent_event(
+        store, row, attempt, outcome, r2, overrides={"stage": None},
+    ))
+    before = _dump(store)
+    result = _spend(store, row, outcome, r2)
+    assert result.status == "spend_pending", result
+    assert result.reason == "receipt_conflict", result
+    assert _dump(store) == before
+    assert len(_stage_events(store, SPENT)) == 1
+
+
+def test_spend_refuses_recognized_other_stage_with_malformed_identity(tmp_path):
+    """A recognized name with a non-authentic shape is classified, not skipped.
+
+    The extra ``continued`` row carries a malformed (int) ``attempt_id`` and the
+    spent key set, so the later-stage authenticator filters it out by attempt
+    and only the spend classifier can catch it: ``result_id`` still matches, so
+    the row is related and the first spend refuses.
+    """
+    store, row, attempt, outcome, r2 = _reserved_state(tmp_path)
+    _append_stage_event(store, _related_spent_event(
+        store, row, attempt, outcome, r2,
+        overrides={"stage": "continued", "attempt_id": 7},
+    ))
+    before = _dump(store)
+    result = _spend(store, row, outcome, r2)
+    assert result.status == "spend_pending", result
+    assert result.reason == "receipt_conflict", result
+    assert _dump(store) == before
+    assert _envelope(store, outcome).lifecycle_state == "active"
+
+
+def test_spend_skips_provably_unrelated_spent_shaped_history(tmp_path):
+    """All-well-typed-and-distinct references stay independently unrelated."""
+    store, row, attempt, outcome, r2 = _reserved_state(tmp_path)
+    # A spent-shaped event for a DIFFERENT attempt/candidate/result/envelope/
+    # notification/generation/session is genuine distinct history.
+    _append_stage_event(store, {
+        "stage": SPENT,
+        "attempt_id": "APV2R-" + "1" * 64,
+        "candidate_id": "APV2C-" + "2" * 64,
+        "result_id": 987654,
+        "envelope_id": "APV2E-" + "3" * 64,
+        "notification_id": "APV2N-" + "4" * 64,
+        "generation_id": "APV2N-" + "4" * 64,
+        "next_session_id": "sess-unrelated",
+        "spending_result_id": 987655,
+        "report_digest": "5" * 64,
+    })
+    assert _spend(store, row, outcome, r2).status == "spent"
+    envelope = _envelope(store, outcome)
+    assert envelope.lifecycle_state == "consumed"
+    assert envelope.spending_result_id == r2
+    assert envelope.decision_state == "ready"
+    assert _dispatch(store).state == "retired"
+    events = _stage_events(store, SPENT)
+    assert len(events) == 2
+    assert {event["result_id"] for event in events} == {row["id"], 987654}
+
+
+# ── B: exact spending-report identity bound in the durable receipt ────────
+
+
+def test_spend_binds_report_digest_in_durable_receipt(tmp_path):
+    store, row, attempt, outcome, r2 = _reserved_state(tmp_path)
+    result = _spend(store, row, outcome, r2)
+    assert result.status == "spent", result
+    digest = _spent_report_digest(store)
+    assert result.report_digest == digest
+    assert len(digest) == 64
+    # The bound digest is exactly the retained R2 normalized report identity.
+    r2_row = store._db._conn.execute(
+        "SELECT * FROM task_results WHERE id=?", (r2,),
+    ).fetchone()
+    assert store._db._v2_spending_report_digest(r2_row) == digest
+    # An exact same-R2 replay carries the same bound identity read-only.
+    replay = _spend(store, row, outcome, r2)
+    assert replay.status == "already_spent_exact", replay
+    assert replay.report_digest == digest
+
+
+@pytest.mark.parametrize(
+    "column,value",
+    [
+        ("decision_json", '{"action":"delegate","agent":"dev_agent","prompt":"changed"}'),
+        ("output_summary", "changed summary"),
+        ("status", "failed"),
+        ("confidence_score", 12),
+        ("verdict", "REQUEST_CHANGES"),
+        ("output_dir", "output/other"),
+        ("risks_flagged", '["changed risk"]'),
+        ("waiting_on_job_ids", '["JOB-9999"]'),
+        ("local_ci", '{"exit_code": 1}'),
+    ],
+)
+def test_spend_replay_refuses_material_report_field_drift(tmp_path, column, value):
+    store, row, attempt, outcome, r2 = _reserved_state(tmp_path)
+    assert _spend(store, row, outcome, r2).status == "spent"
+    store._db._conn.execute(
+        f"UPDATE task_results SET {column}=? WHERE id=?", (value, r2),
+    )
+    store._db._conn.commit()
+    before = _dump(store)
+    result = _spend(store, row, outcome, r2)
+    assert result.status == "spend_pending", result
+    assert result.reason == "receipt_conflict", result
+    assert _dump(store) == before
+    assert len(_stage_events(store, SPENT)) == 1
+
+
+def test_spend_replay_refuses_semantic_json_type_drift(tmp_path):
+    """``1`` and ``true`` are distinct material report values."""
+    store, row, attempt, outcome, r2 = _reserved_state(tmp_path)
+    store._db._conn.execute(
+        "UPDATE task_results SET decision_json=? WHERE id=?",
+        ('{"action":"done","count":1}', r2),
+    )
+    store._db._conn.commit()
+    assert _spend(store, row, outcome, r2).status == "spent"
+    store._db._conn.execute(
+        "UPDATE task_results SET decision_json=? WHERE id=?",
+        ('{"action":"done","count":true}', r2),
+    )
+    store._db._conn.commit()
+    before = _dump(store)
+    result = _spend(store, row, outcome, r2)
+    assert result.status == "spend_pending", result
+    assert result.reason == "receipt_conflict", result
+    assert _dump(store) == before
+
+
+def test_spend_replay_refuses_json_presence_drift(tmp_path):
+    """An explicit JSON ``null`` never equals an absent/``None`` value."""
+    store, row, attempt, outcome, r2 = _reserved_state(tmp_path)
+    assert _spend(store, row, outcome, r2).status == "spent"
+    store._db._conn.execute(
+        "UPDATE task_results SET waiting_on_job_ids=? WHERE id=?", ("null", r2),
+    )
+    store._db._conn.commit()
+    before = _dump(store)
+    result = _spend(store, row, outcome, r2)
+    assert result.status == "spend_pending", result
+    assert result.reason == "receipt_conflict", result
+    assert _dump(store) == before
+
+
+def test_spend_first_write_accepts_ordinary_done_and_delegate(tmp_path):
+    """R2 is an ORDINARY next result: done/delegate admission is preserved."""
+    for index, decision in enumerate((
+        {"action": "done"},
+        {"action": "delegate", "agent": "dev_agent", "prompt": "next"},
+    )):
+        case = tmp_path / f"decision-{index}"
+        case.mkdir()
+        store, row, attempt, outcome, _unused = _reserved_state(case)
+        r2 = _insert_spending_result(store, decision=decision)
+        result = _spend(store, row, outcome, r2)
+        assert result.status == "spent", result
+        _assert_spent_receipt(store, outcome, r2)
 
 
 # ── refusals: the complete prior dump is preserved ────────────────────────
@@ -480,18 +704,84 @@ def test_spend_accepts_exact_recovery_settlement_proof(tmp_path):
 def test_spend_refuses_caller_transaction_preserving_pending_mutation(tmp_path):
     store, row, attempt, outcome, r2 = _reserved_state(tmp_path)
     conn = store._db._conn
+    before = _dump(store)
     conn.execute("BEGIN IMMEDIATE")
     conn.execute("UPDATE tasks SET note='pending-caller-mutation' WHERE id=?", (TASK_ID,))
-    pending = _row(store, "tasks", "id=?", (TASK_ID,))
-    assert pending["note"] == "pending-caller-mutation"
+    # The ENTIRE pending DB dump (not one task row) is visible and preserved.
+    pending_dump = _dump(store)
+    assert pending_dump != before
+    assert "pending-caller-mutation" in pending_dump
     assert conn.in_transaction is True
     result = _spend(store, row, outcome, r2)
     assert result.status == "spend_pending" and result.reason == "transaction_owned"
     assert conn.in_transaction is True
-    assert _row(store, "tasks", "id=?", (TASK_ID,)) == pending
+    assert _dump(store) == pending_dump
     conn.rollback()
+    assert conn.in_transaction is False
+    assert _dump(store) == before
     assert _envelope(store, outcome).lifecycle_state == "active"
+    assert _dispatch(store).state == "admitted"
     assert _stage_events(store, SPENT) == []
+    # The untouched writer still spends successfully after the caller rollback.
+    assert _spend(store, row, outcome, r2).status == "spent"
+
+
+def test_spend_refuses_replaced_owner_agent_protected_gate(tmp_path):
+    store, row, attempt, outcome, r2 = _reserved_state(tmp_path)
+    store._db._conn.execute(
+        "UPDATE tasks SET assigned_agent=? WHERE id=?", ("other_agent", TASK_ID),
+    )
+    store._db._conn.commit()
+    _assert_refused(store, outcome, r2, reason="owner_lost", row=row)
+
+
+class _BoundaryFailingConn:
+    """Inject EXACTLY ONE named boundary failure and record that it fired.
+
+    ``sql_fragment``/``occurrence`` fail the Nth (1-based) statement whose SQL
+    contains the fragment; ``audit_stage`` fails the matching result-stage audit
+    insert; ``fail_commit`` fails the commit boundary.  ``fired`` stays ``None``
+    unless the intended boundary was actually reached, so a test can prove the
+    injection fired instead of silently passing on an unreached path.
+    """
+
+    def __init__(
+        self, real, *, sql_fragment=None, occurrence=1, audit_stage=None,
+        fail_commit=False,
+    ):
+        self._real = real
+        self._sql_fragment = sql_fragment
+        self._occurrence = occurrence
+        self._audit_stage = audit_stage
+        self._fail_commit = fail_commit
+        self._seen = 0
+        self.fired = None
+
+    def execute(self, sql, *args, **kwargs):
+        params = args[0] if args else None
+        if (
+            self._audit_stage is not None
+            and "INSERT INTO audit_log" in sql
+            and isinstance(params, (tuple, list)) and len(params) >= 4
+            and isinstance(params[3], str) and self._audit_stage in params[3]
+        ):
+            self.fired = f"audit:{self._audit_stage}"
+            raise RuntimeError("injected audit boundary failure")
+        if self._sql_fragment is not None and self._sql_fragment in sql:
+            self._seen += 1
+            if self._seen == self._occurrence:
+                self.fired = f"sql:{self._sql_fragment}"
+                raise RuntimeError("injected SQL boundary failure")
+        return self._real.execute(sql, *args, **kwargs)
+
+    def commit(self):
+        if self._fail_commit:
+            self.fired = "commit"
+            raise RuntimeError("injected commit boundary failure")
+        return self._real.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
 
 
 @pytest.mark.parametrize(
@@ -505,13 +795,17 @@ def test_spend_sql_boundary_failure_rolls_back(tmp_path, fragment, occurrence):
     store, row, attempt, outcome, r2 = _reserved_state(tmp_path)
     before = _dump(store)
     real = store._db._conn
-    store._db._conn = _TargetedFailingConn(
+    wrapper = _BoundaryFailingConn(
         real, sql_fragment=fragment, occurrence=occurrence,
     )
+    store._db._conn = wrapper
     try:
         result = _spend(store, row, outcome, r2)
     finally:
         store._db._conn = real
+    # The INTENDED boundary actually fired (not an earlier/unreached path).
+    assert wrapper.fired == f"sql:{fragment}", wrapper.fired
+    assert wrapper._seen == occurrence
     assert result.status == "spend_pending" and result.reason == "spend_failed"
     assert _dump(store) == before
     assert _stage_events(store, SPENT) == []
@@ -520,23 +814,28 @@ def test_spend_sql_boundary_failure_rolls_back(tmp_path, fragment, occurrence):
 
 
 def test_spend_audit_and_commit_failure_roll_back_then_retry(tmp_path):
-    for index, wrapper in enumerate((
-        {"audit_stage": SPENT},
-        {"fail_commit": True},
+    for index, (wrapper, expected) in enumerate((
+        ({"audit_stage": SPENT}, f"audit:{SPENT}"),
+        ({"fail_commit": True}, "commit"),
     )):
         case = tmp_path / f"case-{index}"
         case.mkdir()
         store, row, attempt, outcome, r2 = _reserved_state(case)
         before = _dump(store)
         real = store._db._conn
-        store._db._conn = _TargetedFailingConn(real, **wrapper)
+        conn = _BoundaryFailingConn(real, **wrapper)
+        store._db._conn = conn
         try:
             result = _spend(store, row, outcome, r2)
         finally:
             store._db._conn = real
+        # The INTENDED boundary actually fired.
+        assert conn.fired == expected, conn.fired
         assert result.status == "spend_pending", result
         assert result.reason == "spend_failed", result
         assert _dump(store) == before
+        assert _envelope(store, outcome).lifecycle_state == "active"
+        assert _dispatch(store).state == "admitted"
         assert _stage_events(store, SPENT) == []
         assert _spend(store, row, outcome, r2).status == "spent"
 
@@ -598,16 +897,32 @@ def test_spend_two_connections_one_receipt(tmp_path):
 def test_spend_then_late_acknowledgement_safely_refuses(tmp_path):
     store, row, attempt, outcome, r2 = _reserved_state(tmp_path)
     assert _spend(store, row, outcome, r2).status == "spent"
+    # Use the ACTUAL retained publication attempt/boot, not a None stand-in.
+    retained = _row(
+        store, "authority_policy_v2_recovery_notifications", "notification_id=?",
+        (outcome.notification_id,),
+    )
+    assert retained["publication_attempt"] == 1
+    assert isinstance(retained["publisher_boot_id"], str)
     before = _dump(store)
     ack = store.acknowledge_v2_notification_publication(
         root_task_id=TASK_ID, manager_agent=MANAGER,
         manager_session_id=SESSION_ID, result_id=row["id"],
-        publication_attempt=1, publisher_boot_id=None,
+        publication_attempt=retained["publication_attempt"],
+        publisher_boot_id=retained["publisher_boot_id"],
     )
-    # A settled notification is never returned to a publication state.
-    assert ack.status in ("ack_pending", "publish_returned"), ack
+    # A settled notification is never returned to a publication state: the
+    # retired pointer makes the exact late acknowledgement a bounded
+    # ``stale_claim`` refusal with the complete residue preserved.
+    assert ack.status == "ack_pending", ack
+    assert ack.reason == "stale_claim", ack
     assert _dump(store) == before
     assert _dispatch(store).state == "retired"
+    assert _task(store)["status"] == TaskStatus.IN_PROGRESS.value
+    assert _row(
+        store, "authority_policy_v2_recovery_notifications", "notification_id=?",
+        (outcome.notification_id,),
+    ) == retained
 
 
 def test_spend_then_invalidation_keeps_pointer_and_task(tmp_path):
@@ -618,17 +933,19 @@ def test_spend_then_invalidation_keeps_pointer_and_task(tmp_path):
         root_task_id=TASK_ID, manager_agent=MANAGER,
         manager_session_id=SESSION_ID, result_id=row["id"],
     )
-    # Either an authenticated historical observation or a safe refusal; never a
-    # pointer/task regression of the spent generation.
-    assert invalidated.status in (
-        "invalidated", "already_invalidated", "invalidation_pending",
-    ), invalidated
-    if invalidated.status == "invalidation_pending":
-        assert _dump(store) == after_spend
+    # The exact documented post-spend outcome: a settled generation is not
+    # invalidatable, and the whole spent residue is preserved unchanged.
+    assert invalidated.status == "invalidation_pending", invalidated
+    assert invalidated.reason == "not_invalidatable", invalidated
+    assert _dump(store) == after_spend
     dispatch = _dispatch(store)
     assert dispatch.state == "retired", dispatch
     assert dispatch.generation_id == outcome.notification_id
-    assert _task(store)["status"] == TaskStatus.IN_PROGRESS.value
+    task = _task(store)
+    assert task["status"] == TaskStatus.IN_PROGRESS.value
+    assert task["current_session_id"] == RESERVED
+    assert _envelope(store, outcome).lifecycle_state == "consumed"
+    assert _envelope(store, outcome).spending_result_id == r2
 
 
 def test_spend_stale_a_after_replacement_generation_b_refuses(tmp_path):

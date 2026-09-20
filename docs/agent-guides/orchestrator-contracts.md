@@ -903,9 +903,12 @@ generation `G` still named by `D`, the reserved same-root manager session, the
 complete retained publication evidence plus the genuine ordinary-or-exact-
 `callback_consumed` settlement proof, and the immutable spending result `R2`
 (a real `task_results` row for the exact root/agent/reserved session, distinct
-from the causal result, with an exact persisted report object and its own
-authenticated v2 launch binding) together with the separated proof that ZERO
-potentially-related `spent` events exist. It atomically CASes the envelope
+from the causal result, whose EXACT normalized report identity — the same
+type/field-presence-preserving material projection the shipping callback
+admission persists — is derived from the retained row and bound into the durable
+`spent` receipt as `report_digest`, with its own authenticated v2 launch binding)
+together with the separated proof that ZERO potentially-related `spent` events
+exist. It atomically CASes the envelope
 `active -> consumed` with `spending_result_id=R2` and `decision_state='ready'`,
 the root dispatch `admitted(G) -> retired(G)` and exactly one closed `spent`
 (`ax`) audit, retaining the task, `R2`, `N`, `K/P/V`, the causal `J` and every
@@ -918,18 +921,26 @@ the spend-to-`ready` writer ships here and the ordinary decision consumer
 audits, and the common run_step/startup/reaper/shipping wiring) remains the NEXT
 serial unit. An exact same-R2 retry authenticates the consumed/retired/ready
 receipt read-only as `already_spent_exact` (including after a reopen) with no
-remint or dispatch; a causal-R replay, a foreign/wrong-session/malformed/
-nonexistent `R2`, a missing/null/mistyped generation or session, a replaced or
-cancelled owner, a conflicting/malformed/opaque/duplicate/extra-key `spent`
-event, a distinct later `R2` receipt and a stale-`A`-after-replacement-`B`
-pointer all refuse with the whole transaction rolled back (envelope active,
-dispatch admitted, `R2` retained, decision unapplied). Every distinct envelope
+remint or dispatch, re-deriving `R2`'s normalized report digest from the
+persisted row so ANY material report-field drift (a syntactically valid changed
+decision body or any summary/status/confidence/verdict/output-path/risks/
+wait-ID/local-CI change) refuses; a causal-R replay, a foreign/wrong-session/
+malformed/nonexistent `R2`, a missing/null/mistyped generation or session, a
+replaced or cancelled owner, a conflicting/malformed/opaque/duplicate/extra-key
+`spent` event, a spent-shaped related row whose stage discriminator is
+absent/null/mistyped/unknown (a non-`spent` row is skipped ONLY when it is a
+recognized other result stage carrying that stage's exact closed key set), a
+distinct later `R2` receipt and a stale-`A`-after-replacement-`B` pointer all
+refuse with the whole transaction rolled back (envelope active, dispatch
+admitted, `R2` retained, decision unapplied). Every distinct envelope
 UPDATE, dispatch UPDATE, audit-INSERT and COMMIT failure is proven to roll the
 transaction back before one safe exact retry, and two real connections with a
 deterministic `BEGIN IMMEDIATE` rendezvous prove ONE spend and ONE receipt/audit.
 A later legitimate selector activation never invalidates the pinned generation,
-and a post-spend late acknowledgement safely refuses while a post-spend
-invalidation is `not_invalidatable`, both with no pointer/task regression. The
+and a post-spend late acknowledgement carrying the ACTUAL retained publication
+attempt/boot refuses as bounded `stale_claim` while a post-spend invalidation is
+exactly `not_invalidatable`, both with the complete durable residue preserved and
+no pointer/task regression. The
 method is deliberately DARK (no automatic caller) and produces no launch
 authority; `tests/test_authority_v2_envelope_spend.py` drives the healthy,
 replay, refusal, boundary, contention and post-spend matrix at the real
@@ -939,7 +950,10 @@ venue through the actual reserved next invocation and real `R2` callback
 admission to an explicit public spend invocation — stage proof with a direct
 storage handoff, explicitly NOT common-consumer integration or final
 CLI->hook->Pending/enqueue acceptance — including a deterministic spend-audit
-failure that preserves the retained `R2` and then succeeds on the exact retry.
+failure that preserves the retained `R2` and then succeeds on the exact retry,
+plus labelled fixture-corruption A/B negatives at the actual spend boundary (a
+null-discriminator related audit row and a changed `R2` report body over the
+genuine shipping admission), each followed by a restored healthy exact replay.
 
 The file-backed completion CLI preserves a supplied `manager_self_evaluation`
 member verbatim (including invalid/null values) so the daemon, rather than the

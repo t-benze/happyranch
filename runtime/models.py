@@ -1261,9 +1261,11 @@ AUTHORITY_POLICY_V2_SPEND_PENDING_REASONS = frozenset({
 })
 # Closed result-stage event appended by the spend writer (the accepted ``ax``
 # audit).  It reuses the existing ``authority_policy_v2_result_stage`` action and
-# binds the exact causal identity PLUS the spending result and its reserved
-# session, so one receipt is discoverable and no new audit scope/table/column
-# outside this PR's unreleased additive representation is introduced.
+# binds the exact causal identity PLUS the spending result, its reserved session
+# and the exact normalized ``report_digest`` of that retained result, so one
+# receipt is discoverable, a replay cannot authenticate a changed report, and no
+# new audit scope/table/column outside this PR's unreleased additive
+# representation is introduced.
 AUTHORITY_POLICY_V2_RESULT_STAGE_SPENT = "spent"
 
 
@@ -2787,7 +2789,10 @@ class AuthorityPolicyV2SpendOutcome(BaseModel):
     ``already_spent_exact`` is a read-only exact retry of an authenticated
     consumed/ready receipt and performs NO write, remint or dispatch.
     ``spend_pending`` means no spend occurred and E stayed active / D admitted
-    with the decision unapplied.  None of these statuses is launch authority.
+    with the decision unapplied.  A committed outcome additionally carries
+    ``report_digest``: the exact normalized report identity of the retained
+    spending result bound into the durable receipt.  None of these statuses is
+    launch authority.
     """
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
@@ -2804,12 +2809,20 @@ class AuthorityPolicyV2SpendOutcome(BaseModel):
     )
     next_session_id: StrictStr | None = None
     decision_state: StrictStr | None = None
+    report_digest: StrictStr | None = None
 
     @field_validator("status")
     @classmethod
     def _v2_spend_status_is_closed(cls, value: str) -> str:
         if value not in AUTHORITY_POLICY_V2_SPEND_STATUSES:
             raise ValueError("spend status is not a closed value")
+        return value
+
+    @field_validator("report_digest")
+    @classmethod
+    def _v2_spend_report_digest_is_sha256(cls, value: str | None) -> str | None:
+        if value is not None:
+            _validate_authority_policy_v2_digest(value, "report_digest")
         return value
 
     @field_validator("reason")
@@ -2839,9 +2852,12 @@ class AuthorityPolicyV2SpendOutcome(BaseModel):
             or self.notification_id is None or self.envelope_id is None
             or self.generation_id is None or self.result_id is None
             or self.spending_result_id is None or self.next_session_id is None
-            or self.decision_state is None
+            or self.decision_state is None or self.report_digest is None
         ):
-            raise ValueError("a committed spend requires the exact receipt identity")
+            raise ValueError(
+                "a committed spend requires the exact receipt identity and "
+                "bound report digest"
+            )
         return self
 
 

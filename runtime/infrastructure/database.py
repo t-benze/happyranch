@@ -1534,6 +1534,88 @@ def scan_stale_pending_jobs_readonly(
         conn.close()
 
 
+# Closed key sets of every result-stage event that is NOT the ``spent`` receipt.
+# The spend classifier may only treat a non-``spent`` row as independently
+# legitimate prior history when the row's payload carries the exact closed key
+# set of the recognized other stage.  An arbitrary/absent/malformed
+# discriminator, or a recognized name with a non-authentic shape, is never
+# proof of unrelatedness and is classified by identity instead.  These shapes
+# mirror the in-file payload builders: the attempt-stage audits
+# (``admitted``/``*_audited``/``refused``), the final ``continued`` result-stage
+# event, and the publication/admission event payloads.
+_V2_ATTEMPT_RESULT_STAGE_KEYS = frozenset({
+    "stage", "attempt_id", "result_id", "binding_id", "contract_id",
+    "contract_version", "contract_digest", "release_id", "activation_id",
+    "activation_epoch", "selector_id", "assessment_digest", "owner_attempt_id",
+    "origin_boot_id", "finalization_state",
+})
+_V2_ATTEMPT_AUDIT_RESULT_STAGE_KEYS = _V2_ATTEMPT_RESULT_STAGE_KEYS | {
+    "candidate_id",
+}
+_V2_REFUSAL_RESULT_STAGE_KEYS = _V2_ATTEMPT_RESULT_STAGE_KEYS | {"refusal_code"}
+_V2_REFUSAL_RESULT_STAGE_KEYS_WITH_CANDIDATE = _V2_REFUSAL_RESULT_STAGE_KEYS | {
+    "candidate_id",
+}
+_V2_CONTINUED_RESULT_STAGE_KEYS = _V2_ATTEMPT_RESULT_STAGE_KEYS | {
+    "candidate_id", "envelope_id", "notification_id", "generation_id",
+}
+_V2_ADMISSION_RESULT_STAGE_KEYS = frozenset({
+    "stage", "attempt_id", "candidate_id", "result_id", "envelope_id",
+    "notification_id", "generation_id", "next_session_id",
+})
+_V2_PUBLICATION_RESULT_STAGE_KEYS = frozenset({
+    "stage", "attempt_id", "candidate_id", "result_id", "envelope_id",
+    "notification_id", "generation_id", "publication_attempt",
+    "publisher_boot_id",
+})
+_V2_INVALIDATION_RESULT_STAGE_KEYS = frozenset({
+    "stage", "attempt_id", "candidate_id", "result_id", "envelope_id",
+    "notification_id", "generation_id",
+})
+_V2_SPEND_OTHER_RESULT_STAGE_KEY_SETS = {
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED: (
+        _V2_ATTEMPT_RESULT_STAGE_KEYS,
+    ),
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED: (
+        _V2_ATTEMPT_AUDIT_RESULT_STAGE_KEYS,
+    ),
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED: (
+        _V2_ATTEMPT_AUDIT_RESULT_STAGE_KEYS,
+    ),
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED: (
+        _V2_ATTEMPT_AUDIT_RESULT_STAGE_KEYS,
+    ),
+    AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED: (
+        _V2_REFUSAL_RESULT_STAGE_KEYS,
+        _V2_REFUSAL_RESULT_STAGE_KEYS_WITH_CANDIDATE,
+    ),
+    AUTHORITY_POLICY_V2_RESULT_STAGE_CONTINUED: (
+        _V2_CONTINUED_RESULT_STAGE_KEYS,
+    ),
+    AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_CLAIMED: (
+        _V2_PUBLICATION_RESULT_STAGE_KEYS,
+    ),
+    AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISHED: (
+        _V2_PUBLICATION_RESULT_STAGE_KEYS,
+    ),
+    AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_FAILED: (
+        _V2_PUBLICATION_RESULT_STAGE_KEYS,
+    ),
+    AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_RETURNED: (
+        _V2_PUBLICATION_RESULT_STAGE_KEYS,
+    ),
+    AUTHORITY_POLICY_V2_RESULT_STAGE_INVALIDATED: (
+        _V2_INVALIDATION_RESULT_STAGE_KEYS,
+    ),
+    AUTHORITY_POLICY_V2_RESULT_STAGE_GENERATION_CLAIMED: (
+        _V2_ADMISSION_RESULT_STAGE_KEYS,
+    ),
+    AUTHORITY_POLICY_V2_RESULT_STAGE_NOTIFICATION_SETTLED: (
+        _V2_ADMISSION_RESULT_STAGE_KEYS,
+    ),
+}
+
+
 class Database:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -13303,9 +13385,18 @@ class Database:
     def _v2_spend_event_payload(
         self, *, attempt_id: str, candidate_id: str, result_id: int,
         envelope_id: str, notification_id: str, generation_id: str,
-        next_session_id: str, spending_result_id: int,
+        next_session_id: str, spending_result_id: int, report_digest: str,
     ) -> dict:
-        """One closed ``ax`` spend result-stage payload (result-keyed receipt)."""
+        """One closed ``ax`` spend result-stage payload (result-keyed receipt).
+
+        ``report_digest`` is the durable exact report identity of the retained
+        spending result R2: the type/field-presence-preserving normalized report
+        projection captured at FIRST spend.  A later read-only replay re-derives
+        it from the persisted R2 row, so ANY material report-field drift (a
+        syntactically valid changed decision body, summary, status, confidence,
+        verdict, output path, risks, wait IDs or local-CI evidence) fails the
+        closed comparison and refuses without a write.
+        """
         return {
             "stage": AUTHORITY_POLICY_V2_RESULT_STAGE_SPENT,
             "attempt_id": attempt_id,
@@ -13316,13 +13407,14 @@ class Database:
             "generation_id": generation_id,
             "next_session_id": next_session_id,
             "spending_result_id": spending_result_id,
+            "report_digest": report_digest,
         }
 
     def _v2_spend_event_identity_keys(self) -> set[str]:
         return {
             "stage", "attempt_id", "candidate_id", "result_id", "envelope_id",
             "notification_id", "generation_id", "next_session_id",
-            "spending_result_id",
+            "spending_result_id", "report_digest",
         }
 
     def _v2_related_spend_events_uncommitted(
@@ -13337,9 +13429,17 @@ class Database:
         filtering, so an appended row whose attempt/result/generation/session
         reference is null/missing/mistyped/foreign -- or whose body is opaque or
         carries extra keys -- can never be discarded before classification.
-        ``None`` means unreadable or opaque: the caller must fail closed.  A row
-        is independently unrelated ONLY when every present causal reference is
-        well-typed and provably different.
+        ``None`` means unreadable or opaque: the caller must fail closed.
+
+        A non-``spent`` row is skipped ONLY when its discriminator names a
+        recognized result stage AND its payload carries that stage's exact
+        authentic closed key set (``_v2_spend_other_stage_shape_is_closed``).
+        An absent/null/mistyped/unknown discriminator, or a recognized name with
+        a non-authentic shape, is therefore classified by the SAME typed causal
+        identities as a ``spent`` row: any matching or malformed present
+        reference makes it related.  A row is independently unrelated ONLY when
+        either it is a closed-shape other-stage event or every present causal
+        reference is well-typed and provably different.
         """
         rows = self._v2_identity_scoped_audits(
             root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
@@ -13362,8 +13462,17 @@ class Database:
             payload = row["payload"]
             if not isinstance(payload, dict):
                 return None
-            if payload.get("stage") != AUTHORITY_POLICY_V2_RESULT_STAGE_SPENT:
-                # A different closed stage is legitimate distinct history.
+            stage = payload.get("stage")
+            if (
+                stage != AUTHORITY_POLICY_V2_RESULT_STAGE_SPENT
+                and self._v2_spend_other_stage_shape_is_closed(stage, payload)
+            ):
+                # Independently legitimate OTHER-stage history is authenticated
+                # by its actual closed shape (exact key set) for a recognized
+                # result stage.  An absent/null/mistyped/unknown discriminator
+                # -- or a recognized name carrying a non-authentic shape -- is
+                # NOT proof of unrelatedness and falls through to identity
+                # classification below.
                 continue
             states = [
                 self._v2_identity_observation(payload, field, value, kind)
@@ -13373,6 +13482,24 @@ class Database:
                 continue
             related.append(payload)
         return related
+
+    @staticmethod
+    def _v2_spend_other_stage_shape_is_closed(stage, payload) -> bool:
+        """True only for a recognized OTHER result stage in its closed shape.
+
+        A different string is never assumed to be a valid other stage: the
+        discriminator must be one of the closed result-stage values that
+        actually produces a result-stage payload AND the payload's key set must
+        equal that stage's authentic closed key set.  Everything else (absent,
+        ``None``, non-string, unknown, or a recognized name with extra/missing
+        keys) is NOT independently legitimate history.
+        """
+        if not isinstance(stage, str):
+            return False
+        key_sets = _V2_SPEND_OTHER_RESULT_STAGE_KEY_SETS.get(stage)
+        if not key_sets:
+            return False
+        return frozenset(payload.keys()) in key_sets
 
     def _v2_spend_event_absent_uncommitted(self, **kwargs) -> bool:
         """True only when ZERO potentially-related ``spent`` events exist.
@@ -13407,18 +13534,62 @@ class Database:
             return False
         return self._v2_json_type_sensitive_equal(payload, expected)
 
+    @classmethod
+    def _v2_spending_report_identity(cls, row) -> dict:
+        """Normalized material report identity of one persisted spending result.
+
+        Mirrors the shipping callback admission's exact completion projection
+        (``completion_result_payload_matches``): every material report field the
+        callback route persists is carried with its JSON scalar type and
+        presence preserved (an explicit JSON ``null`` never equals an
+        absent/``None`` value, and ``True`` never equals integer ``1``).
+        Server-owned ``created_at`` and the separately authenticated
+        task/agent/session identity columns are deliberately excluded.
+        """
+        return {
+            "output_summary": row["output_summary"],
+            "confidence_score": row["confidence_score"],
+            "status": row["status"],
+            "output_dir": row["output_dir"],
+            "verdict": row["verdict"],
+            "risks_flagged": _canonical_completion_json(row["risks_flagged"]),
+            "decision_json": _canonical_completion_json(row["decision_json"]),
+            "waiting_on_job_ids": _canonical_completion_json(
+                row["waiting_on_job_ids"]
+            ),
+            "local_ci": _canonical_completion_json(row["local_ci"]),
+        }
+
+    @classmethod
+    def _v2_spending_report_digest(cls, row) -> str | None:
+        """Durable exact report identity digest, or ``None`` when underivable.
+
+        A failure to derive the normalized identity fails closed: the caller
+        treats it as a malformed/absent report, never as an ordinary path.
+        """
+        try:
+            return authority_policy_v2_sha256(
+                cls._v2_spending_report_identity(row)
+            )
+        except Exception:
+            return None
+
     def _authenticate_v2_spending_result_uncommitted(
         self, *, root_task_id: str, manager_agent: str, next_session_id: str,
         spending_result_id, causal_result_id: int,
     ):
-        """Authenticate the immutable spending result R2 or return ``None``.
+        """Authenticate the immutable spending result R2 report identity.
 
         R2 must be a real persisted result of the SAME root + reserved manager
         session (never a foreign/root/other-session row), must differ from the
         causal result R, and must carry an exact persisted decision/report body
-        (a JSON object).  A missing/null/mistyped identifier, an equal-to-R id,
-        a foreign session or a malformed report is invalid -- never absence and
-        never an ordinary-path permission.
+        (a JSON object).  Returns the explicit ``(row, report_digest)`` exact
+        report identity: ``report_digest`` is the normalized, type/field-
+        presence-preserving projection digest that the FIRST spend binds into
+        the durable ``spent`` receipt, so a later replay CANNOT authenticate a
+        changed payload.  A missing/null/mistyped identifier, an equal-to-R id,
+        a foreign session or a malformed/underivable report returns ``None`` --
+        never absence and never an ordinary-path permission.
         """
         if not self._v2_is_int(spending_result_id) or spending_result_id < 1:
             return None
@@ -13444,7 +13615,10 @@ class Database:
             return None
         if not isinstance(decision, dict):
             return None
-        return row
+        report_digest = self._v2_spending_report_digest(row)
+        if report_digest is None:
+            return None
+        return row, report_digest
 
     def _consume_v2_continue_envelope_uncommitted(
         self, envelope: AuthorityPolicyV2ContinueEnvelope, spending_result_id: int,
@@ -13543,21 +13717,25 @@ class Database:
             return _pending("identity_mismatch", **base)
         if dispatch.state not in ("admitted", "retired"):
             return _pending("identity_mismatch", **base)
+        # R2: the immutable spending result of the reserved same-root manager.
+        # Its EXACT normalized report identity is derived from the retained row
+        # now and bound into the durable ``spent`` receipt below; a later replay
+        # re-derives it and refuses on any material report-field drift.
+        r2 = self._authenticate_v2_spending_result_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            next_session_id=next_session_id, spending_result_id=spending_result_id,
+            causal_result_id=result_id,
+        )
+        if r2 is None:
+            return _pending("missing_result", **base)
+        _r2_row, report_digest = r2
         expected_spent = self._v2_spend_event_payload(
             attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
             result_id=result_id, envelope_id=envelope.envelope_id,
             notification_id=notification.notification_id,
             generation_id=generation_id, next_session_id=next_session_id,
-            spending_result_id=spending_result_id,
+            spending_result_id=spending_result_id, report_digest=report_digest,
         )
-        # R2: the immutable spending result of the reserved same-root manager.
-        r2_row = self._authenticate_v2_spending_result_uncommitted(
-            root_task_id=root_task_id, manager_agent=manager_agent,
-            next_session_id=next_session_id, spending_result_id=spending_result_id,
-            causal_result_id=result_id,
-        )
-        if r2_row is None:
-            return _pending("missing_result", **base)
         # Complete retained publication evidence + genuine ordinary OR exact
         # callback_consumed recovery settlement proof for the CAUSAL tuple
         # (including any conflicting potentially-related Q).
@@ -13639,6 +13817,7 @@ class Database:
             return AuthorityPolicyV2SpendOutcome(
                 status="already_spent_exact", **base,
                 decision_state=envelope.decision_state,
+                report_digest=report_digest,
             )
         # ------------------------------------------------------------------
         # First spend.  Only an active/null-receipt envelope with an admitted
@@ -13696,6 +13875,7 @@ class Database:
         )
         return AuthorityPolicyV2SpendOutcome(
             status="spent", **base, decision_state="ready",
+            report_digest=report_digest,
         )
 
     @_synchronized
@@ -13708,8 +13888,13 @@ class Database:
 
         Authenticates the complete post-final causal evidence, the exact tagged
         generation G, the reserved same-root manager session and the immutable
-        spending result R2 (its persisted report and its own launch binding),
-        then atomically CASes E ``active`` -> ``consumed`` with
+        spending result R2 — its persisted report AND the exact normalized report
+        identity derived from that retained row (its own launch binding is
+        authenticated too).  The derived ``report_digest`` is bound into the
+        durable ``spent`` receipt and returned on the committed outcome, so an
+        exact replay compares persisted R2 against the ACCEPTED identity; no
+        caller argument can supply, bypass or waive that comparison.  It then
+        atomically CASes E ``active`` -> ``consumed`` with
         ``spending_result_id=R2`` + ``decision_state='ready'``, D ``admitted``
         -> ``retired`` and exactly one closed ``spent`` audit.  An exact same-R2
         retry is a read-only ``already_spent_exact``; everything missing/null/

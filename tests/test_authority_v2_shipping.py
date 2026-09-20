@@ -2432,10 +2432,126 @@ def _drive_c3d3c1_spend(fixture: _ShippingFixture) -> str:
         generation=generation, reserved=reserved, r2=r2,
     )
     assert replay.status == "already_spent_exact", replay
+    assert replay.report_digest
     assert db._conn.execute(
         "SELECT COUNT(*) FROM authority_policy_v2_continue_envelopes "
         "WHERE spending_result_id=?", (r2,),
     ).fetchone()[0] == 1
+
+    # ------------------------------------------------------------------
+    # A/B negatives AT THE ACTUAL SPEND BOUNDARY over the genuinely admitted
+    # R2.  These are deliberately labelled FIXTURE CORRUPTION of retained
+    # evidence AFTER genuine shipping admission; the healthy control above
+    # (successful spend + exact replay) is preserved and re-asserted after
+    # each corruption is removed.
+    # ------------------------------------------------------------------
+    candidate = db.get_authority_policy_v2_candidate_for_result(causal_id)
+    related_identities = {
+        "attempt_id": attempt.attempt_id,
+        "candidate_id": candidate.candidate_id,
+        "result_id": causal_id,
+        "envelope_id": finalized.envelope_id,
+        "notification_id": generation,
+        "generation_id": generation,
+        "next_session_id": reserved,
+        "spending_result_id": r2,
+    }
+
+    def _spent_stage_count() -> int:
+        return sum(
+            1 for audit in db.list_authority_policy_v2_result_stage_audits(
+                root_task_id=root_id, manager_agent=MANAGER,
+            )
+            if audit["payload"].get("stage") == "spent"
+        )
+
+    def _insert_raw_stage(payload: dict) -> None:
+        db._conn.execute(
+            "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+            "VALUES (?,?,?,?,?)",
+            (root_id, MANAGER, "authority_policy_v2_result_stage",
+             json.dumps(payload), "2026-09-21T00:00:00+00:00"),
+        )
+        db._conn.commit()
+
+    def _delete_raw_stage(payload: dict) -> None:
+        cursor = db._conn.execute(
+            "DELETE FROM audit_log WHERE task_id=? AND agent=? AND action=? "
+            "AND payload=?",
+            (root_id, MANAGER, "authority_policy_v2_result_stage",
+             json.dumps(payload)),
+        )
+        assert cursor.rowcount == 1
+        db._conn.commit()
+
+    # A-negative: an exact-related spent-shaped audit whose discriminator is
+    # null is NOT unrelatedness -> the read-only replay refuses with the whole
+    # spent residue preserved.
+    a_payload = {**related_identities, "stage": None}
+    _insert_raw_stage(a_payload)
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE task_id=? AND agent=? "
+        "AND action=? AND payload=?",
+        (root_id, MANAGER, "authority_policy_v2_result_stage",
+         json.dumps(a_payload)),
+    ).fetchone()[0] == 1
+    envelope_before = db.get_authority_policy_v2_continue_envelope(
+        finalized.envelope_id
+    )
+    a_refused = _spend_call(
+        db, root_id=root_id, session_id=session_id, causal_id=causal_id,
+        generation=generation, reserved=reserved, r2=r2,
+    )
+    assert a_refused.status == "spend_pending", a_refused
+    assert a_refused.reason == "receipt_conflict", a_refused
+    assert (
+        db.get_authority_policy_v2_continue_envelope(finalized.envelope_id)
+        .model_dump()
+    ) == envelope_before.model_dump()
+    assert db.get_authority_policy_v2_root_dispatch(root_id).state == "retired"
+    assert _spent_stage_count() == 1
+    # Removing the fixture corruption restores the healthy exact replay.
+    _delete_raw_stage(a_payload)
+    assert _spend_call(
+        db, root_id=root_id, session_id=session_id, causal_id=causal_id,
+        generation=generation, reserved=reserved, r2=r2,
+    ).status == "already_spent_exact"
+
+    # B-negative: FIXTURE CORRUPTION of the retained R2 report body after
+    # genuine admission.  The bound report digest no longer matches, so the
+    # read-only replay refuses without any write; restoring the exact admitted
+    # body restores the healthy exact replay.
+    original_decision = db._conn.execute(
+        "SELECT decision_json FROM task_results WHERE id=?", (r2,),
+    ).fetchone()["decision_json"]
+    assert original_decision
+    db._conn.execute(
+        "UPDATE task_results SET decision_json=? WHERE id=?",
+        ('{"action":"delegate","agent":"dev_agent","prompt":"changed"}', r2),
+    )
+    db._conn.commit()
+    b_refused = _spend_call(
+        db, root_id=root_id, session_id=session_id, causal_id=causal_id,
+        generation=generation, reserved=reserved, r2=r2,
+    )
+    assert b_refused.status == "spend_pending", b_refused
+    assert b_refused.reason == "receipt_conflict", b_refused
+    consumed = db.get_authority_policy_v2_continue_envelope(finalized.envelope_id)
+    assert consumed.lifecycle_state == "consumed"
+    assert consumed.spending_result_id == r2
+    assert db.get_authority_policy_v2_root_dispatch(root_id).state == "retired"
+    assert _spent_stage_count() == 1
+    db._conn.execute(
+        "UPDATE task_results SET decision_json=? WHERE id=?",
+        (original_decision, r2),
+    )
+    db._conn.commit()
+    restored = _spend_call(
+        db, root_id=root_id, session_id=session_id, causal_id=causal_id,
+        generation=generation, reserved=reserved, r2=r2,
+    )
+    assert restored.status == "already_spent_exact", restored
+    assert restored.report_digest == replay.report_digest
 
     fixture.release_launch()
     fixture.join_workers()
