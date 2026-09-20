@@ -42,6 +42,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1396,6 +1397,43 @@ def _drive_c3d2_finalization(fixture: _ShippingFixture) -> str:
     assert db._conn.execute(
         "SELECT COUNT(*) FROM authority_policy_v2_root_dispatch"
     ).fetchone()[0] == 1
+
+    # The REAL ordinary completion producer (Orchestrator._log_step_result)
+    # writes the v2 result/session-attributed completion audit for THIS result;
+    # ordinary settlement then authenticates it read-only with no Q and no
+    # writes, proving the current event is scoped against prior manager history.
+    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+
+    result_row = db._conn.execute(
+        "SELECT * FROM task_results WHERE id=?", (row_id,)
+    ).fetchone()
+    report = completion_report_from_result_row(
+        root_id, dict(result_row), fallback_agent=MANAGER,
+    )
+    fixture.org.orchestrator._log_step_result(
+        root_id, types.SimpleNamespace(session_id=session_id), report,
+        result_row_id=row_id,
+    )
+    produced = [
+        row for row in db.get_audit_logs(root_id)
+        if row["action"] == "completion_report"
+        and isinstance(row["payload"], dict)
+        and row["payload"].get("_result_row_id") == row_id
+    ]
+    assert len(produced) == 1
+    assert produced[0]["payload"]["_result_session_id"] == session_id
+    ordinary_before = db._conn.execute(
+        "SELECT COUNT(*) FROM audit_log"
+    ).fetchone()[0]
+    ordinary = db.settle_authority_policy_v2_continuation_receipt(
+        root_task_id=root_id, manager_agent=MANAGER, manager_session_id=session_id,
+        result_id=row_id,
+    )
+    assert ordinary.status == "settled", ordinary
+    assert ordinary.recovery is False and ordinary.receipt_settled is False
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM audit_log"
+    ).fetchone()[0] == ordinary_before
 
     # Genuine recovery settlement against the REAL exact receipt identity.
     db._conn.execute(

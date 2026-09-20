@@ -638,6 +638,38 @@ envelope spend, the startup/reaper/run-step wiring and the production
 authority-hook continuation remain separate units; the shipping hook still
 fail-closes to ESCALATE and the dual-text feature remains unaccepted.
 
+C3d2 correction (same unmerged draft PR). The exact post-final causal replay and
+settlement now authenticate the COMPLETE durable evidence read-only through ONE
+shared post-final authenticator — the exact J/R/K/P/V joins, the authentic
+immutable binding plus pinned release/activation/selector history, the persisted
+assessment/decision identity, the consumed candidate/evaluation, BOTH halves of
+a0..a3 and the complete final E/N/D + final audit set — while deliberately NOT
+requiring the pre-final live-owner token, an `in_progress` pre-final task, a
+fresh mechanical-eligibility re-derivation or today's selector equality, so a
+legitimate finalized replay/reopen authenticates without restoring a live
+pre-final owner, re-evaluating or reminting. A deleted, mutated, duplicated or
+foreign admitted/prior-stage audit, or a changed `task_results` session/decision,
+returns bounded pending/refusal read-only with no Q/audit/allocation change even
+on reopen; settlement additionally authenticates the actual Pending causal
+owner/cancellation and the E/N/D stage. Settlement audit contents are bound
+value/type-sensitively (`true` never equals integer `1`) to the exact
+authenticated attempt/candidate/envelope/notification/generation/result/root/
+agent/session and the actual persisted completion projection, and potentially
+identity-related completion/settled rows are enumerated BEFORE discriminator
+filtering so malformed/conflicting/duplicate rows cannot disappear into an
+apparent absence (unrelated genuine historical sessions are never duplicates);
+corruption refuses read-only and a consumed Q stays consumed. Initial
+`callback_accepted` settlement validates the coherent pre-state — no
+settlement-owned completion or settled evidence for the exact result — before
+its atomic Q+completion+settled write, and targeted per-boundary failure
+injection proves rollback retains the accepted Q and every prior final row for
+one safe exact retry. Ordinary completion evidence is now scoped to the actual
+causal result/session: the real `Orchestrator._log_step_result` producer adds the
+v2-only `_result_row_id`/`_result_session_id` attribution at the completion seam
+(the v1/legacy path and `AuditLogger` bytes are unchanged), so a legitimate
+earlier manager completion no longer blocks a valid current result and an
+identical old-session body can never stand in for the current event.
+
 The file-backed completion CLI preserves a supplied `manager_self_evaluation`
 member verbatim (including invalid/null values) so the daemon, rather than the
 client, validates it; an omitted member remains omitted. The shipping CLI to

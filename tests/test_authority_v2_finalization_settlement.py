@@ -24,11 +24,13 @@ The broad integration suite is SKIPPED under founder THR-243 seq42, never PASS.
 from __future__ import annotations
 
 import json
+import types
 
 import pytest
 
+from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
-from runtime.models import TaskStatus
+from runtime.models import CompletionReport, NextStep, TaskStatus
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 from tests.test_authority_v2_attempt_admission import (
     MANAGER,
@@ -46,6 +48,8 @@ from tests.test_authority_v2_evaluation_stage import (
     _consume,
     _evaluate,
 )
+
+RECOVERY_SETTLED = "authority_policy_v2_recovery_settled"
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -164,23 +168,99 @@ def _result_row(store, result_id):
     ).fetchone()
 
 
+class _ProducerStub:
+    """Minimal host for the REAL ``Orchestrator._log_step_result`` producer."""
+
+    def __init__(self, store):
+        self._db = store._db
+        self._audit = AuditLogger(store._db)
+
+
+def _produce_ordinary_completion(store, result_row, *, session_id=None):
+    """Write the ordinary completion audit through the REAL producer seam.
+
+    Exercises ``Orchestrator._log_step_result`` (the production completion
+    audit producer) against the real persisted result/attempt evidence rather
+    than fabricating a hand-built stand-in.
+    """
+    from runtime.orchestrator.orchestrator import (
+        Orchestrator,
+        completion_report_from_result_row,
+    )
+
+    report = completion_report_from_result_row(
+        TASK_ID, dict(result_row), fallback_agent=MANAGER,
+    )
+    stub = types.SimpleNamespace(
+        session_id=session_id or result_row["session_id"],
+    )
+    Orchestrator._log_step_result(
+        _ProducerStub(store), TASK_ID, stub, report,
+        result_row_id=result_row["id"],
+    )
+
+
 def _insert_ordinary_completion(store, result_id):
-    row = _result_row(store, result_id)
+    _produce_ordinary_completion(store, _result_row(store, result_id))
+
+
+def _audit_rows(store, action: str) -> list:
+    return store._db._conn.execute(
+        "SELECT * FROM audit_log WHERE action=? ORDER BY id", (action,),
+    ).fetchall()
+
+
+def _mutate_audit_payload(store, action: str, fn, *, index: int = 0):
+    rows = _audit_rows(store, action)
+    payload = json.loads(rows[index]["payload"])
+    fn(payload)
+    store._db._conn.execute(
+        "UPDATE audit_log SET payload=? WHERE id=?",
+        (json.dumps(payload), rows[index]["id"]),
+    )
+    store._db._conn.commit()
+
+
+def _duplicate_audit_payload(store, action: str, fn, *, index: int = 0):
+    row = _audit_rows(store, action)[index]
+    payload = json.loads(row["payload"])
+    fn(payload)
     store._db._conn.execute(
         "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
         "VALUES (?,?,?,?,?)",
-        (
-            TASK_ID, MANAGER, "completion_report",
-            json.dumps({
-                "task_id": TASK_ID, "agent": MANAGER, "status": row["status"],
-                "confidence": row["confidence_score"],
-                "output_summary": row["output_summary"],
-                "decision": json.loads(row["decision_json"]),
-            }),
-            "2026-01-01T00:00:00+00:00",
-        ),
+        (row["task_id"], row["agent"], row["action"], json.dumps(payload),
+         row["timestamp"]),
     )
     store._db._conn.commit()
+
+
+class _TargetedFailingConn:
+    """Fail exactly ONE settlement write boundary (audit action or commit)."""
+
+    def __init__(self, real, *, audit_action: str | None = None,
+                 fail_commit: bool = False):
+        self._real = real
+        self._audit_action = audit_action
+        self._fail_commit = fail_commit
+
+    def execute(self, sql, *args, **kwargs):
+        params = args[0] if args else None
+        if (
+            self._audit_action is not None
+            and "INSERT INTO audit_log" in sql
+            and isinstance(params, (tuple, list)) and len(params) >= 3
+            and params[2] == self._audit_action
+        ):
+            raise RuntimeError("injected settlement write failure")
+        return self._real.execute(sql, *args, **kwargs)
+
+    def commit(self):
+        if self._fail_commit:
+            raise RuntimeError("injected commit failure")
+        return self._real.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
 
 
 def _reopen(tmp_path, boot_id="boot-other"):
@@ -768,3 +848,455 @@ def test_successful_finalization_prevents_later_refusal_rewrite(tmp_path):
     assert task_after.status is TaskStatus.PENDING
     assert task_after.status == task_before.status
     assert _attempt_row(store, row["id"])["finalization_state"] == "continued"
+
+
+# ── C3d2 correction: complete post-final evidence on replay/settlement ────
+
+
+def _drive_finalized(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    _drive(store, row, attempt, "consumed_audited")
+    assert _finalize(store, row, attempt).status == "continued"
+    return store, row, attempt
+
+
+def _settle_recovery(store, row):
+    return _settle(
+        store, row, recovery_session_id=SESSION_ID,
+        accepted_result_id=row["id"], accepted_result_session_id=SESSION_ID,
+    )
+
+
+def _delete_stage_audit(store, stage):
+    store._db._conn.execute(
+        "DELETE FROM audit_log WHERE action='authority_policy_v2_result_stage' "
+        "AND json_extract(payload,'$.stage')=?",
+        (stage,),
+    )
+    store._db._conn.commit()
+
+
+def _insert_audit(store, action, payload):
+    store._db._conn.execute(
+        "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+        "VALUES (?,?,?,?,?)",
+        (TASK_ID, MANAGER, action, json.dumps(payload), "2026-01-01T00:00:00+00:00"),
+    )
+    store._db._conn.commit()
+
+
+def test_final_replay_and_settlement_refuse_missing_admitted_audit(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _delete_stage_audit(store, "admitted")
+    _seed_q(store, row["id"])
+    before = _counts(store._db)
+
+    replay = _finalize(store, row, attempt)
+    assert replay.status == "finalization_pending", replay
+    settle = _settle_recovery(store, row)
+    assert settle.status == "settlement_pending", settle
+    assert _q(store)["state"] == "callback_accepted"
+    assert _counts(store._db) == before
+
+
+def test_final_replay_and_settlement_refuse_changed_result_session(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    store._db._conn.execute(
+        "UPDATE task_results SET session_id=? WHERE id=?",
+        ("sess-foreign", row["id"]),
+    )
+    store._db._conn.commit()
+    _seed_q(store, row["id"])
+    before = _counts(store._db)
+
+    replay = _finalize(store, row, attempt)
+    assert replay.status == "finalization_pending", replay
+    settle = _settle_recovery(store, row)
+    assert settle.status == "settlement_pending", settle
+    assert _q(store)["state"] == "callback_accepted"
+    assert _counts(store._db) == before
+
+
+def test_final_replay_refuses_mutated_result_decision(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    store._db._conn.execute(
+        "UPDATE task_results SET decision_json=? WHERE id=?",
+        (json.dumps({"action": "done"}), row["id"]),
+    )
+    store._db._conn.commit()
+    before = _counts(store._db)
+    outcome = _finalize(store, row, attempt)
+    assert outcome.status == "finalization_pending", outcome
+    assert _counts(store._db) == before
+
+
+@pytest.mark.parametrize("event", ["claimed", "evaluated", "consumed"])
+def test_final_replay_refuses_missing_candidate_prior_audit(tmp_path, event):
+    store, row, attempt = _drive_finalized(tmp_path)
+    candidate = store.get_v2_candidate_for_result(row["id"])
+    _mutate_bypassing_trigger(
+        store, trigger="authority_policy_v2_candidate_audit_no_delete",
+        statement=(
+            "DELETE FROM authority_policy_v2_candidate_audit "
+            "WHERE candidate_id=? AND event=?"
+        ),
+        params=(candidate.candidate_id, event),
+    )
+    outcome = _finalize(store, row, attempt)
+    assert outcome.status == "finalization_pending", outcome
+    assert _counts(store._db)["envelopes"] == 1
+
+
+@pytest.mark.parametrize(
+    "stage", ["claim_audited", "evaluation_audited", "consumed_audited"]
+)
+def test_final_replay_refuses_missing_result_stage_audit(tmp_path, stage):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _delete_stage_audit(store, stage)
+    outcome = _finalize(store, row, attempt)
+    assert outcome.status == "finalization_pending", outcome
+
+
+def test_final_replay_refuses_duplicate_admitted_audit(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _duplicate_audit_payload(
+        store, "authority_policy_v2_result_stage", lambda payload: None, index=0,
+    )
+    outcome = _finalize(store, row, attempt)
+    assert outcome.status == "finalization_pending", outcome
+
+
+def test_final_replay_refuses_evaluation_outcome_drift(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    candidate = store.get_v2_candidate_for_result(row["id"])
+    _mutate_bypassing_trigger(
+        store, trigger="authority_policy_v2_evaluations_no_update",
+        statement=(
+            "UPDATE authority_policy_v2_evaluations SET outcome=? WHERE candidate_id=?"
+        ),
+        params=("escalate_applies", candidate.candidate_id),
+    )
+    outcome = _finalize(store, row, attempt)
+    assert outcome.status == "finalization_pending", outcome
+
+
+def test_final_replay_refuses_candidate_pin_drift(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    candidate = store.get_v2_candidate_for_result(row["id"])
+    _mutate_bypassing_trigger(
+        store, trigger="authority_policy_v2_pins_no_update",
+        statement="UPDATE authority_policy_v2_pins SET model_id=? WHERE candidate_id=?",
+        params=("drifted-model", candidate.candidate_id),
+    )
+    outcome = _finalize(store, row, attempt)
+    assert outcome.status == "finalization_pending", outcome
+
+
+# ── C3d2 correction: exact settlement audit contents (item 2) ─────────────
+
+
+def _settled_exact(store, row):
+    _seed_q(store, row["id"])
+    assert _settle_recovery(store, row).status == "settled"
+    assert _q(store)["state"] == "callback_consumed"
+
+
+def _assert_exact_retry_refuses(store, row):
+    before = _counts(store._db)
+    retry = _settle_recovery(store, row)
+    assert retry.status == "settlement_pending", retry
+    assert _counts(store._db) == before
+    assert _q(store)["state"] == "callback_consumed"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("envelope_id", "APV2E-" + "0" * 64),
+        ("notification_id", "APV2N-" + "0" * 64),
+        ("generation_id", "APV2N-" + "0" * 64),
+        ("candidate_id", "APV2C-" + "0" * 64),
+        ("attempt_id", "APV2R-" + "0" * 64),
+        ("result_id", 999999),
+        ("_result_row_id", 999999),
+        ("root_task_id", "TASK-foreign"),
+        ("manager_session_id", "sess-foreign"),
+        ("recovery_session_id", "sess-foreign"),
+    ],
+)
+def test_settlement_exact_retry_rejects_settled_field_mutation(
+    tmp_path, field, value,
+):
+    store, row, _ = _drive_finalized(tmp_path)
+    _settled_exact(store, row)
+    _mutate_audit_payload(
+        store, RECOVERY_SETTLED, lambda payload: payload.__setitem__(field, value),
+    )
+    _assert_exact_retry_refuses(store, row)
+
+
+def test_settlement_exact_retry_rejects_settled_missing_key(tmp_path):
+    store, row, _ = _drive_finalized(tmp_path)
+    _settled_exact(store, row)
+    _mutate_audit_payload(
+        store, RECOVERY_SETTLED, lambda payload: payload.pop("generation_id"),
+    )
+    _assert_exact_retry_refuses(store, row)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("decision", {"action": "done"}),
+        ("status", "failed"),
+        ("confidence", True),
+        ("confidence", "90"),
+        ("output_summary", "tampered"),
+        ("session_id", "sess-foreign"),
+        ("result_id", 999999),
+        ("_result_row_id", 999999),
+        ("_recovery_session_id", "sess-foreign"),
+    ],
+)
+def test_settlement_exact_retry_rejects_completion_body_mutation(
+    tmp_path, field, value,
+):
+    store, row, _ = _drive_finalized(tmp_path)
+    _settled_exact(store, row)
+    _mutate_audit_payload(
+        store, "completion_report",
+        lambda payload: payload.__setitem__(field, value),
+    )
+    _assert_exact_retry_refuses(store, row)
+
+
+def test_settlement_exact_retry_rejects_duplicate_settled_row(tmp_path):
+    store, row, _ = _drive_finalized(tmp_path)
+    _settled_exact(store, row)
+    _duplicate_audit_payload(
+        store, RECOVERY_SETTLED,
+        lambda payload: payload.__setitem__("recovery_session_id", "sess-other"),
+    )
+    _assert_exact_retry_refuses(store, row)
+
+
+def test_settlement_exact_retry_rejects_duplicate_completion_row(tmp_path):
+    store, row, _ = _drive_finalized(tmp_path)
+    _settled_exact(store, row)
+    _duplicate_audit_payload(
+        store, "completion_report",
+        lambda payload: payload.__setitem__("_recovery_session_id", "sess-other"),
+    )
+    _assert_exact_retry_refuses(store, row)
+
+
+def test_settlement_exact_retry_rejects_malformed_settled_payload(tmp_path):
+    store, row, _ = _drive_finalized(tmp_path)
+    _settled_exact(store, row)
+    rows = _audit_rows(store, RECOVERY_SETTLED)
+    store._db._conn.execute(
+        "UPDATE audit_log SET payload=? WHERE id=?", ("[]", rows[0]["id"]),
+    )
+    store._db._conn.commit()
+    _assert_exact_retry_refuses(store, row)
+
+
+def test_settlement_exact_retry_ignores_unrelated_history(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _settled_exact(store, row)
+    # A genuine historical settlement for a DIFFERENT result is unrelated and
+    # must never be counted as a duplicate of the current exact receipt.
+    other_id = row["id"] + 1000
+    _insert_audit(store, RECOVERY_SETTLED, {
+        "_result_row_id": other_id, "result_id": other_id,
+        "recovery_session_id": "sess-history", "attempt_id": "APV2R-" + "1" * 64,
+        "candidate_id": "APV2C-" + "1" * 64, "envelope_id": "APV2E-" + "1" * 64,
+        "notification_id": "APV2N-" + "1" * 64, "generation_id": "APV2N-" + "1" * 64,
+        "root_task_id": TASK_ID, "manager_agent": MANAGER,
+        "manager_session_id": "sess-history",
+    })
+    before = _counts(store._db)
+    retry = _settle_recovery(store, row)
+    assert retry.status == "already_settled_exact", retry
+    assert _counts(store._db) == before
+
+
+# ── C3d2 correction: initial settlement pre-state (item 3) ────────────────
+
+
+def _settlement_evidence_payloads(store, row):
+    attempt = store.get_v2_attempt_for_result(row["id"])
+    candidate = store.get_v2_candidate_for_result(row["id"])
+    envelope = store.get_v2_continue_envelope_for_candidate(candidate.candidate_id)
+    notification = store.get_v2_recovery_notification_for_envelope(envelope.envelope_id)
+    settled = store._db._v2_settlement_settled_payload(
+        attempt=attempt, candidate=candidate, envelope=envelope,
+        notification=notification,
+    )
+    completion = store._db._v2_settlement_completion_payload(
+        root_task_id=TASK_ID, manager_agent=MANAGER,
+        result_row=_result_row(store, row["id"]), result_id=row["id"],
+        manager_session_id=SESSION_ID,
+    )
+    return settled, completion
+
+
+@pytest.mark.parametrize(
+    "kind", ["garbled_completion", "exact_completion", "settled_only", "both"],
+)
+def test_settlement_initial_refuses_preexisting_settlement_evidence(tmp_path, kind):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _seed_q(store, row["id"])
+    settled, completion = _settlement_evidence_payloads(store, row)
+    if kind == "garbled_completion":
+        _insert_audit(store, "completion_report", {
+            "_recovery_session_id": SESSION_ID, "_result_row_id": row["id"],
+            "status": "garbled",
+        })
+    if kind in ("exact_completion", "both"):
+        _insert_audit(store, "completion_report", completion)
+    if kind in ("settled_only", "both"):
+        _insert_audit(store, RECOVERY_SETTLED, settled)
+    before = _counts(store._db)
+
+    outcome = _settle_recovery(store, row)
+    assert outcome.status == "settlement_pending", outcome
+    assert _q(store)["state"] == "callback_accepted"
+    assert _counts(store._db) == before
+    assert _attempt_row(store, row["id"])["finalization_state"] == "continued"
+
+
+def test_settlement_initial_ignores_unrelated_history(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _seed_q(store, row["id"])
+    other_id = row["id"] + 1000
+    _insert_audit(store, "completion_report", {
+        "_recovery_session_id": "sess-history", "_result_row_id": other_id,
+        "status": "completed",
+    })
+    _insert_audit(store, RECOVERY_SETTLED, {
+        "_result_row_id": other_id, "result_id": other_id,
+        "recovery_session_id": "sess-history", "attempt_id": "APV2R-" + "1" * 64,
+        "candidate_id": "APV2C-" + "1" * 64, "envelope_id": "APV2E-" + "1" * 64,
+        "notification_id": "APV2N-" + "1" * 64, "generation_id": "APV2N-" + "1" * 64,
+        "root_task_id": TASK_ID, "manager_agent": MANAGER,
+        "manager_session_id": "sess-history",
+    })
+    before = _counts(store._db)
+    settled = _settle_recovery(store, row)
+    assert settled.status == "settled", settled
+    assert _q(store)["state"] == "callback_consumed"
+    assert _counts(store._db)["audit"] == before["audit"] + 2
+
+
+@pytest.mark.parametrize(
+    "mode", ["completion_audit", "settled_audit", "commit"],
+)
+def test_settlement_targeted_write_failure_retains_q_and_retries(tmp_path, mode):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _seed_q(store, row["id"])
+    before = _counts(store._db)
+
+    real = store._db._conn
+    if mode == "commit":
+        store._db._conn = _TargetedFailingConn(real, fail_commit=True)
+    else:
+        action = "completion_report" if mode == "completion_audit" else RECOVERY_SETTLED
+        store._db._conn = _TargetedFailingConn(real, audit_action=action)
+    try:
+        with pytest.raises(RuntimeError):
+            _settle_recovery(store, row)
+    finally:
+        store._db._conn = real
+
+    assert _q(store)["state"] == "callback_accepted"
+    after = _counts(store._db)
+    assert after["audit"] == before["audit"]
+    assert after["envelopes"] == before["envelopes"] == 1
+    assert after["notifications"] == before["notifications"] == 1
+    assert after["dispatch"] == before["dispatch"] == 1
+    assert store._db.get_task(TASK_ID).status is TaskStatus.PENDING
+    assert _attempt_row(store, row["id"])["finalization_state"] == "continued"
+
+    retry = _settle_recovery(store, row)
+    assert retry.status == "settled", retry
+    assert _q(store)["state"] == "callback_consumed"
+
+
+# ── C3d2 correction: ordinary completion evidence scope (item 4) ──────────
+
+
+def _prior_manager_completion(store, *, summary="Earlier legitimate manager turn"):
+    AuditLogger(store._db).log_completion_report(CompletionReport(
+        task_id=TASK_ID, agent=MANAGER, status="completed",
+        output_summary=summary, confidence=75,
+        decision=NextStep(action="delegate", agent="dev_agent", prompt="earlier work"),
+    ))
+
+
+def test_settlement_ordinary_accepts_current_after_prior_manager_history(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    # A prior attributed completion for a DIFFERENT result is unrelated.
+    _produce_ordinary_completion(store, _result_row(store, row["id"]))
+    _mutate_audit_payload(
+        store, "completion_report",
+        lambda payload: payload.__setitem__("_result_row_id", row["id"] + 1000),
+        index=0,
+    )
+    _prior_manager_completion(store)
+    _insert_ordinary_completion(store, row["id"])
+
+    before = _counts(store._db)
+    settled = _settle(store, row)
+    assert settled.status == "settled", settled
+    assert settled.recovery is False and settled.receipt_settled is False
+    assert _counts(store._db) == before
+    # Unrelated historical evidence remains intact and readable.
+    assert len(_payload_audits(store, "completion_report")) == 3
+
+
+def test_settlement_ordinary_refuses_identical_old_body(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _insert_ordinary_completion(store, row["id"])
+    # The ONLY attributed row is retargeted to a foreign result: the current
+    # session has no exact current audit, and an identical body must not match.
+    _mutate_audit_payload(
+        store, "completion_report",
+        lambda payload: payload.__setitem__("_result_row_id", row["id"] + 1000),
+    )
+    before = _counts(store._db)
+    outcome = _settle(store, row)
+    assert outcome.status == "settlement_pending", outcome
+    assert outcome.reason == "completion_evidence_missing"
+    assert _counts(store._db) == before
+
+
+def test_settlement_ordinary_refuses_duplicate_current_audit(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _insert_ordinary_completion(store, row["id"])
+    _duplicate_audit_payload(store, "completion_report", lambda payload: None)
+    outcome = _settle(store, row)
+    assert outcome.status == "settlement_pending", outcome
+
+
+def test_settlement_ordinary_refuses_malformed_current_audit(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _insert_ordinary_completion(store, row["id"])
+    _mutate_audit_payload(
+        store, "completion_report", lambda payload: payload.pop("status"),
+    )
+    outcome = _settle(store, row)
+    assert outcome.status == "settlement_pending", outcome
+    assert outcome.reason == "completion_evidence_missing"
+
+
+def test_settlement_ordinary_refuses_recovery_shaped_current_without_q(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _insert_ordinary_completion(store, row["id"])
+    _insert_audit(store, "completion_report", {
+        "_recovery_session_id": SESSION_ID, "_result_row_id": row["id"],
+        "status": "completed",
+    })
+    outcome = _settle(store, row)
+    assert outcome.status == "settlement_pending", outcome
+    assert outcome.reason == "completion_evidence_missing"

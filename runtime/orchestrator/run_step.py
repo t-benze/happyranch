@@ -387,11 +387,12 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         )
         return
 
-    orch._log_step_result(task_id, result, report)
     # THR-181 Track A: resolve the IMMUTABLE task-result row id whose
     # CompletionReport produced this decision. The authority hook derives its
     # candidate claim from it, so restart/recovery re-entry of the SAME row
-    # maps to the SAME candidate (never a second evaluation).
+    # maps to the SAME candidate (never a second evaluation).  It is resolved
+    # before the completion audit so a v2 manager result can be attributed to
+    # that exact causal result/session at the real completion producer seam.
     result_row_id = None
     if accepted_recovery_callback:
         accepted_row = db.get_accepted_task_completion_recovery_result(
@@ -423,6 +424,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         _result_row = db.get_latest_task_result(task_id, agent, result.session_id)
         if _result_row is not None:
             result_row_id = _result_row["id"]
+    orch._log_step_result(task_id, result, report, result_row_id=result_row_id)
     if accepted_recovery_callback:
         _consume_accepted_completion_recovery(
             orch, task_id, report, agent=agent,

@@ -1486,8 +1486,34 @@ class Orchestrator:
         task_id: str,
         result: ExecutorResult,
         report: CompletionReport | None,
+        *,
+        result_row_id: int | None = None,
     ) -> None:
         if report is None:
+            return
+        # THR-229 C3d2 correction: a v2 manager result carries an admitted
+        # attempt bound to the immutable ``task_results`` row.  Attribute the
+        # ordinary completion audit to that exact result/session so the later
+        # settlement authenticates the CURRENT event instead of counting all
+        # manager history.  The v1/legacy path is byte-identical (no
+        # attribution, unchanged AuditLogger behavior).
+        attribution: dict = {}
+        if result_row_id is not None:
+            attempt = self._db.get_authority_policy_v2_attempt_for_result(
+                result_row_id
+            )
+            if attempt is not None:
+                attribution = {
+                    "_result_row_id": result_row_id,
+                    "_result_session_id": attempt.manager_session_id,
+                }
+        if attribution:
+            self._db.insert_audit_log(
+                task_id=task_id,
+                agent=report.agent,
+                action="completion_report",
+                payload={**report.model_dump(), **attribution},
+            )
             return
         self._audit.log_completion_report(report=report)
 

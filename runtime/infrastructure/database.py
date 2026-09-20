@@ -7663,6 +7663,64 @@ class Database:
             )
             raise
 
+    def _authenticate_v2_candidate_pin_joins_uncommitted(
+        self, *, attempt: AuthorityPolicyV2Attempt,
+        candidate: AuthorityPolicyV2Candidate, pin: AuthorityPolicyV2Pin,
+        binding, release,
+    ) -> bool:
+        """The frozen K/P cross-row joins against the authenticated J/binding/release.
+
+        Shared by the pre-final claim/evaluation boundaries and the post-final
+        authenticator so both accept exactly the same immutable candidate/pin
+        tuple; a mixed or drifted K/P row never matches.
+        """
+        return not (
+            candidate.team != attempt.team
+            or candidate.root_task_id != attempt.root_task_id
+            or candidate.manager_agent != attempt.manager_agent
+            or candidate.manager_session_id != attempt.manager_session_id
+            or candidate.attempt_id != attempt.attempt_id
+            or candidate.result_id != attempt.result_id
+            or candidate.binding_id != attempt.binding_id
+            or candidate.contract_id != attempt.contract_id
+            or candidate.contract_version != attempt.contract_version
+            or candidate.contract_digest != attempt.contract_digest
+            or candidate.release_id != attempt.release_id
+            or candidate.activation_id != attempt.activation_id
+            or candidate.activation_epoch != attempt.activation_epoch
+            or candidate.selector_id != attempt.selector_id
+            or candidate.policy_version != release.version
+            or candidate.policy_digest != release.policy_digest
+            or candidate.provider_id != binding.provider_id
+            or candidate.executor_kind != binding.executor_kind
+            or candidate.model_id != binding.model_id
+            or candidate.origin_boot_id != attempt.origin_boot_id
+            or candidate.owner_attempt_id != attempt.owner_attempt_id
+            or pin.candidate_id != candidate.candidate_id
+            or pin.claim_key != candidate.claim_key
+            or pin.team != candidate.team
+            or pin.root_task_id != candidate.root_task_id
+            or pin.manager_agent != candidate.manager_agent
+            or pin.manager_session_id != candidate.manager_session_id
+            or pin.attempt_id != candidate.attempt_id
+            or pin.result_id != candidate.result_id
+            or pin.binding_id != candidate.binding_id
+            or pin.release_id != candidate.release_id
+            or pin.activation_id != candidate.activation_id
+            or pin.activation_epoch != candidate.activation_epoch
+            or pin.selector_id != candidate.selector_id
+            or pin.policy_version != candidate.policy_version
+            or pin.policy_digest != candidate.policy_digest
+            or pin.contract_digest != candidate.contract_digest
+            or pin.provider_id != candidate.provider_id
+            or pin.executor_kind != candidate.executor_kind
+            or pin.model_id != candidate.model_id
+            or pin.schema_raw_digest != candidate.schema_raw_digest
+            or pin.schema_inventory_digest != candidate.schema_inventory_digest
+            or pin.schema_object_count != candidate.schema_object_count
+            or pin.permission_surface_digest != candidate.permission_surface_digest
+        )
+
     def _authenticate_v2_candidate_evidence_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
@@ -7715,51 +7773,9 @@ class Database:
         except ValueError:
             return "identity_mismatch", None
 
-        if (
-            candidate.team != attempt.team
-            or candidate.root_task_id != root_task_id
-            or candidate.manager_agent != manager_agent
-            or candidate.manager_session_id != manager_session_id
-            or candidate.attempt_id != attempt.attempt_id
-            or candidate.result_id != result_id
-            or candidate.binding_id != attempt.binding_id
-            or candidate.contract_id != attempt.contract_id
-            or candidate.contract_version != attempt.contract_version
-            or candidate.contract_digest != attempt.contract_digest
-            or candidate.release_id != attempt.release_id
-            or candidate.activation_id != attempt.activation_id
-            or candidate.activation_epoch != attempt.activation_epoch
-            or candidate.selector_id != attempt.selector_id
-            or candidate.policy_version != release.version
-            or candidate.policy_digest != release.policy_digest
-            or candidate.provider_id != binding.provider_id
-            or candidate.executor_kind != binding.executor_kind
-            or candidate.model_id != binding.model_id
-            or candidate.origin_boot_id != attempt.origin_boot_id
-            or candidate.owner_attempt_id != attempt.owner_attempt_id
-            or pin.candidate_id != candidate.candidate_id
-            or pin.claim_key != candidate.claim_key
-            or pin.team != candidate.team
-            or pin.root_task_id != candidate.root_task_id
-            or pin.manager_agent != candidate.manager_agent
-            or pin.manager_session_id != candidate.manager_session_id
-            or pin.attempt_id != candidate.attempt_id
-            or pin.result_id != candidate.result_id
-            or pin.binding_id != candidate.binding_id
-            or pin.release_id != candidate.release_id
-            or pin.activation_id != candidate.activation_id
-            or pin.activation_epoch != candidate.activation_epoch
-            or pin.selector_id != candidate.selector_id
-            or pin.policy_version != candidate.policy_version
-            or pin.policy_digest != candidate.policy_digest
-            or pin.contract_digest != candidate.contract_digest
-            or pin.provider_id != candidate.provider_id
-            or pin.executor_kind != candidate.executor_kind
-            or pin.model_id != candidate.model_id
-            or pin.schema_raw_digest != candidate.schema_raw_digest
-            or pin.schema_inventory_digest != candidate.schema_inventory_digest
-            or pin.schema_object_count != candidate.schema_object_count
-            or pin.permission_surface_digest != candidate.permission_surface_digest
+        if not self._authenticate_v2_candidate_pin_joins_uncommitted(
+            attempt=attempt, candidate=candidate, pin=pin, binding=binding,
+            release=release,
         ):
             return "identity_mismatch", None
 
@@ -9863,6 +9879,38 @@ class Database:
             return False
         return all(payload.get(key) == value for key, value in expected.items())
 
+    @staticmethod
+    def _v2_is_int(value) -> bool:
+        """True only for a real JSON integer (never ``bool``)."""
+        return isinstance(value, int) and not isinstance(value, bool)
+
+    @classmethod
+    def _v2_json_type_sensitive_equal(cls, left, right) -> bool:
+        """Strict JSON equality where ``True`` never equals integer ``1``.
+
+        Dict key sets, list length/order and every scalar JSON type must match
+        exactly (``int`` vs ``bool`` vs ``str`` vs ``None`` are distinct), so a
+        mistyped or coerced persisted payload value is never accepted as the
+        authenticated preimage.
+        """
+        if type(left) is not type(right):
+            return False
+        if isinstance(left, dict):
+            if set(left.keys()) != set(right.keys()):
+                return False
+            return all(
+                cls._v2_json_type_sensitive_equal(left[key], right[key])
+                for key in left
+            )
+        if isinstance(left, list):
+            if len(left) != len(right):
+                return False
+            return all(
+                cls._v2_json_type_sensitive_equal(a, b)
+                for a, b in zip(left, right)
+            )
+        return left == right
+
     def _authenticate_v2_final_result_stage_uncommitted(
         self, attempt_row, candidate_id: str, envelope_id: str,
         notification_id: str, generation_id: str,
@@ -10028,6 +10076,197 @@ class Database:
             "generation_id": generation_id,
         }
 
+    def _authenticate_v2_post_final_evidence_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int,
+    ) -> tuple[str | None, dict | None]:
+        """Read-only authentication of the COMPLETE durable post-final evidence.
+
+        Shared by the exact post-final causal replay and by settlement BEFORE
+        any settlement write.  It reuses the established evidence rules — the
+        exact J/R/K/P/V joins, the authentic immutable binding and pinned
+        release/activation/selector history, the persisted assessment/decision
+        identity, the consumed candidate/evaluation, BOTH halves of a0..a3 and
+        the complete final E/N/D + audit set — but deliberately does NOT require
+        the pre-final live-owner token, an ``in_progress`` pre-final task, a
+        fresh mechanical-eligibility re-derivation or today's selector equality.
+        A legitimate finalized replay/reopen must authenticate without
+        restoring a live pre-final owner, re-evaluating or reminting.
+        """
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=manager_agent, manager_session_id=manager_session_id,
+            result_id=result_id, root_task_id=root_task_id,
+            team=AUTHORITY_POLICY_V2_TEAM,
+        )
+        row = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_attempts
+               WHERE root_task_id=? AND manager_agent=?
+                 AND manager_session_id=? AND result_id=?""",
+            (root_task_id, manager_agent, manager_session_id, result_id),
+        ).fetchone()
+        if row is None:
+            return "identity_mismatch", None
+        try:
+            attempt = self._authority_policy_v2_attempt_from_row(row)
+        except ValueError:
+            return "identity_mismatch", None
+        if attempt.attempt_id != attempt_id:
+            return "identity_mismatch", None
+        if attempt.finalization_state != "continued":
+            return "identity_mismatch", None
+        if attempt.stage != AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED:
+            return "evidence_drift", None
+        attempt_row = dict(row)
+        # a0 half: the single immutable admission event.  A deleted, mutated,
+        # duplicated or foreign admitted audit is missing evidence.
+        if not self._authenticate_v2_attempt_admission_audit_uncommitted(attempt_row):
+            return "identity_mismatch", None
+        # R: the exact causal result row, its identity AND its persisted
+        # normalized body/decision (including the accepted escalation action and
+        # the assessment digest the attempt was admitted with).
+        result_row = self._conn.execute(
+            "SELECT * FROM task_results WHERE id=?", (result_id,)
+        ).fetchone()
+        if (
+            result_row is None
+            or result_row["task_id"] != root_task_id
+            or result_row["agent"] != manager_agent
+            or result_row["session_id"] != manager_session_id
+        ):
+            return "identity_mismatch", None
+        if not self._authenticate_v2_result_body_uncommitted(result_row, attempt):
+            return "identity_mismatch", None
+        # Authentic immutable launch binding and its pinned release/activation/
+        # selector history (a later legitimate activation never invalidates the
+        # pinned tuple; today's selector equality is never required).
+        binding = self.get_authority_policy_v2_session_binding(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id,
+        )
+        if binding is None:
+            return "identity_mismatch", None
+        try:
+            self._authenticate_v2_session_binding_uncommitted(binding)
+        except Exception:
+            return "identity_mismatch", None
+        if (
+            binding.binding_id != attempt.binding_id
+            or binding.team != attempt.team
+            or binding.contract_id != attempt.contract_id
+            or binding.contract_version != attempt.contract_version
+            or binding.contract_digest != attempt.contract_digest
+            or binding.release_id != attempt.release_id
+            or binding.activation_id != attempt.activation_id
+            or binding.activation_epoch != attempt.activation_epoch
+            or binding.selector_id != attempt.selector_id
+        ):
+            return "identity_mismatch", None
+        release = self.get_authority_policy_v2_release(attempt.release_id)
+        activation = self.get_authority_policy_v2_activation(attempt.activation_id)
+        if release is None or activation is None:
+            return "identity_mismatch", None
+        if (
+            release.team != attempt.team
+            or release.policy_digest != binding.policy_digest
+            or release.version != binding.policy_version
+            or activation.team != attempt.team
+            or activation.release_id != attempt.release_id
+            or activation.release_digest != release.policy_digest
+            or activation.selector_epoch != attempt.activation_epoch
+            or binding.provider_id == "" or binding.executor_kind == ""
+            or binding.model_id == ""
+        ):
+            return "identity_mismatch", None
+        # K/P: the exact consumed candidate and its immutable pin tuple.
+        candidate_row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_candidates WHERE result_id=?",
+            (result_id,),
+        ).fetchone()
+        if candidate_row is None:
+            return "evidence_drift", None
+        try:
+            candidate = self._authority_policy_v2_candidate_from_row(candidate_row)
+        except ValueError:
+            return "identity_mismatch", None
+        pin_row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_pins WHERE candidate_id=?",
+            (candidate.candidate_id,),
+        ).fetchone()
+        if pin_row is None:
+            return "evidence_drift", None
+        try:
+            pin = self._authority_policy_v2_pin_from_row(pin_row)
+        except ValueError:
+            return "identity_mismatch", None
+        if not self._authenticate_v2_candidate_pin_joins_uncommitted(
+            attempt=attempt, candidate=candidate, pin=pin, binding=binding,
+            release=release,
+        ):
+            return "identity_mismatch", None
+        if candidate.lifecycle_stage != "consumed":
+            return "evidence_drift", None
+        # BOTH halves of a1/a2/a3.
+        for event in (
+            AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
+            AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_EVALUATED,
+            AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CONSUMED,
+        ):
+            if not self._authenticate_v2_candidate_audit_uncommitted(candidate, event):
+                return "evidence_drift", None
+        if not self._authenticate_v2_prior_result_stages_uncommitted(
+            attempt_row,
+            (
+                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
+                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED,
+            ),
+            candidate.candidate_id,
+        ):
+            return "evidence_drift", None
+        # V: the persisted outcome is authoritative and is never re-derived.
+        eval_code, eval_ctx = self._authenticate_v2_evaluation_evidence_uncommitted(
+            candidate=candidate, attempt=attempt, binding=binding, release=release,
+        )
+        if eval_code is not None:
+            return "evidence_drift", None
+        assert eval_ctx is not None
+        evaluation = eval_ctx["evaluation"]
+        # E/N/D plus the complete final audit set (candidate ``final`` event,
+        # closed ``continued`` result-stage evidence, final task/hook audits).
+        code, ctx = self._authenticate_v2_final_rows_uncommitted(
+            attempt=attempt, attempt_row=attempt_row, candidate=candidate,
+            evaluation=evaluation,
+        )
+        if code is not None:
+            return code, None
+        assert ctx is not None
+        return None, {
+            **ctx, "attempt": attempt, "candidate": candidate, "pin": pin,
+            "binding": binding, "release": release, "activation": activation,
+            "result_row": result_row, "evaluation": evaluation,
+        }
+
+    def _authenticate_v2_post_final_task_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+    ) -> bool:
+        """The post-final causal task projection: Pending with owner preserved.
+
+        Finalization returns the root to ``Pending``/null ``block_kind`` while
+        preserving the causal owner/session; settlement and exact replay both
+        authenticate that exact projection (never a live pre-final owner).
+        """
+        task = self._conn.execute(
+            "SELECT * FROM tasks WHERE id=?", (root_task_id,)
+        ).fetchone()
+        return not (
+            task is None
+            or task["cancelled_at"] is not None
+            or task["status"] != TaskStatus.PENDING.value
+            or task["block_kind"] is not None
+            or task["assigned_agent"] != manager_agent
+            or task["current_session_id"] != manager_session_id
+        )
+
     def _insert_v2_continue_envelope_uncommitted(
         self, envelope: AuthorityPolicyV2ContinueEnvelope,
     ) -> None:
@@ -10130,46 +10369,35 @@ class Database:
     def _finalize_v2_continuation_replay_uncommitted(
         self, attempt: AuthorityPolicyV2Attempt, attempt_row,
     ) -> AuthorityPolicyV2FinalizationOutcome:
-        def _pending(reason: str, **kw) -> AuthorityPolicyV2FinalizationOutcome:
+        def _pending(
+            reason: str, candidate_id: str | None = None,
+        ) -> AuthorityPolicyV2FinalizationOutcome:
             return AuthorityPolicyV2FinalizationOutcome(
                 status="finalization_pending", reason=reason,
-                attempt_id=attempt.attempt_id, **kw,
+                attempt_id=attempt.attempt_id, candidate_id=candidate_id,
             )
 
-        candidate_row = self._conn.execute(
-            "SELECT * FROM authority_policy_v2_candidates WHERE result_id=?",
-            (attempt.result_id,),
-        ).fetchone()
-        if candidate_row is None:
-            return _pending("evidence_drift")
-        try:
-            candidate = self._authority_policy_v2_candidate_from_row(candidate_row)
-        except ValueError:
-            return _pending("identity_mismatch")
-        if (
-            candidate.attempt_id != attempt.attempt_id
-            or candidate.root_task_id != attempt.root_task_id
-            or candidate.manager_agent != attempt.manager_agent
-            or candidate.manager_session_id != attempt.manager_session_id
-        ):
-            return _pending("identity_mismatch")
-        evaluation_row = self._conn.execute(
-            "SELECT * FROM authority_policy_v2_evaluations WHERE candidate_id=?",
-            (candidate.candidate_id,),
-        ).fetchone()
-        if evaluation_row is None:
-            return _pending("evidence_drift")
-        try:
-            evaluation = self._authority_policy_v2_evaluation_from_row(evaluation_row)
-        except ValueError:
-            return _pending("identity_mismatch")
-        code, ctx = self._authenticate_v2_final_rows_uncommitted(
-            attempt=attempt, attempt_row=attempt_row, candidate=candidate,
-            evaluation=evaluation,
+        # The exact post-final causal replay authenticates the COMPLETE durable
+        # evidence read-only (J/R/K/P/V joins, authentic pinned binding history,
+        # persisted assessment/decision identity, consumed candidate/evaluation,
+        # BOTH halves of a0..a3 and the complete final E/N/D + audit set).  A
+        # deleted/mutated/mixed prior audit or a result-body/identity drift
+        # refuses with the prior residue intact and allocates no second E/N/D,
+        # spends no envelope and resets no N.
+        code, ctx = self._authenticate_v2_post_final_evidence_uncommitted(
+            root_task_id=attempt.root_task_id, manager_agent=attempt.manager_agent,
+            manager_session_id=attempt.manager_session_id,
+            result_id=attempt.result_id,
         )
         if code is not None:
-            return _pending(code, candidate_id=candidate.candidate_id)
+            return _pending(self._v2_finalization_reason_for(code))
         assert ctx is not None
+        candidate = ctx["candidate"]
+        if not self._authenticate_v2_post_final_task_uncommitted(
+            root_task_id=attempt.root_task_id, manager_agent=attempt.manager_agent,
+            manager_session_id=attempt.manager_session_id,
+        ):
+            return _pending("identity_mismatch", candidate.candidate_id)
         return AuthorityPolicyV2FinalizationOutcome(
             status="already_continued", attempt_id=attempt.attempt_id,
             candidate_id=candidate.candidate_id,
@@ -10491,43 +10719,15 @@ class Database:
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int,
     ) -> tuple[str | None, dict | None]:
-        attempt_row = self._conn.execute(
-            """SELECT * FROM authority_policy_v2_attempts
-               WHERE root_task_id=? AND manager_agent=?
-                 AND manager_session_id=? AND result_id=?""",
-            (root_task_id, manager_agent, manager_session_id, result_id),
-        ).fetchone()
-        if attempt_row is None:
-            return "identity_mismatch", None
-        try:
-            attempt = self._authority_policy_v2_attempt_from_row(attempt_row)
-        except ValueError:
-            return "identity_mismatch", None
-        if attempt.finalization_state != "continued":
-            return "identity_mismatch", None
-        candidate_row = self._conn.execute(
-            "SELECT * FROM authority_policy_v2_candidates WHERE result_id=?",
-            (result_id,),
-        ).fetchone()
-        if candidate_row is None:
-            return "evidence_drift", None
-        try:
-            candidate = self._authority_policy_v2_candidate_from_row(candidate_row)
-        except ValueError:
-            return "identity_mismatch", None
-        evaluation_row = self._conn.execute(
-            "SELECT * FROM authority_policy_v2_evaluations WHERE candidate_id=?",
-            (candidate.candidate_id,),
-        ).fetchone()
-        if evaluation_row is None:
-            return "evidence_drift", None
-        try:
-            evaluation = self._authority_policy_v2_evaluation_from_row(evaluation_row)
-        except ValueError:
-            return "identity_mismatch", None
-        code, ctx = self._authenticate_v2_final_rows_uncommitted(
-            attempt=attempt, attempt_row=dict(attempt_row), candidate=candidate,
-            evaluation=evaluation,
+        # Settle authenticates the COMPLETE durable post-final evidence (J/R/K/P/V,
+        # pinned binding history, persisted assessment/decision identity, the
+        # consumed candidate/evaluation, BOTH halves of a0..a3, the final E/N/D
+        # and the complete final audit set) AND the actual Pending/current causal
+        # owner/cancellation projection BEFORE any settlement write; a partial
+        # final row or a stale/foreign owner refuses read-only.
+        code, ctx = self._authenticate_v2_post_final_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
         if code is not None:
             # Map the final-row classification into the bounded settlement
@@ -10537,58 +10737,90 @@ class Database:
         assert ctx is not None
         if ctx["notification"].state != "needed" or ctx["dispatch"].state != "pending":
             return "identity_mismatch", None
-        task = self._conn.execute(
-            "SELECT * FROM tasks WHERE id=?", (root_task_id,)
-        ).fetchone()
-        if (
-            task is None
-            or task["cancelled_at"] is not None
-            or task["status"] != TaskStatus.PENDING.value
-            or task["block_kind"] is not None
-            or task["assigned_agent"] != manager_agent
-            or task["current_session_id"] != manager_session_id
+        if not self._authenticate_v2_post_final_task_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id,
         ):
             return "identity_mismatch", None
-        result_row = self._conn.execute(
-            "SELECT * FROM task_results WHERE id=?", (result_id,)
-        ).fetchone()
-        if result_row is None:
-            return "evidence_drift", None
-        return None, {**ctx, "attempt": attempt, "candidate": candidate,
-                      "result_row": result_row}
+        return None, ctx
+
+    def _v2_recovery_completion_rows(
+        self, rows, *, result_id: int, manager_session_id: str,
+    ) -> list[dict]:
+        """Potentially recovery-settlement-related completion rows.
+
+        Enumerated BEFORE discriminator filtering: a row that carries a real
+        string recovery discriminator and references either the exact current
+        result or the exact current recovery session is identity-related and can
+        never hide from the cardinality check.  Ordinary (non-recovery)
+        completion evidence and unrelated genuine historical sessions are a
+        different evidence class and are not counted here.
+        """
+        related = []
+        for row in rows:
+            payload = row["payload"]
+            marker = payload.get("_recovery_session_id")
+            if not isinstance(marker, str):
+                continue
+            if marker == manager_session_id:
+                related.append(row)
+                continue
+            row_id = payload.get("_result_row_id")
+            if self._v2_is_int(row_id) and row_id == result_id:
+                related.append(row)
+        return related
+
+    def _v2_settled_rows(self, rows, *, result_id: int) -> list[dict]:
+        """Potentially settlement-related settled rows (before filtering).
+
+        Either exact settlement-owned result reference (``_result_row_id`` or the
+        closed payload ``result_id``) makes a row identity-related, so a
+        duplicate/conflicting row can never be filtered away.
+        """
+        related = []
+        for row in rows:
+            payload = row["payload"]
+            row_id = payload.get("_result_row_id")
+            if self._v2_is_int(row_id) and row_id == result_id:
+                related.append(row)
+                continue
+            payload_result = payload.get("result_id")
+            if self._v2_is_int(payload_result) and payload_result == result_id:
+                related.append(row)
+        return related
 
     def _authenticate_v2_settlement_evidence_uncommitted(
         self, *, root_task_id: str, manager_agent: str, result_id: int,
-        manager_session_id: str,
+        manager_session_id: str, result_row, attempt, candidate, envelope,
+        notification,
     ) -> bool:
-        """Authenticate the exact existing completion + recovery-settled audits."""
+        """Authenticate the exact existing completion + recovery-settled audits.
+
+        Every closed payload value/type is bound to the exact authenticated
+        attempt/candidate/envelope/notification/generation/result/root/agent/
+        session and to the actual persisted completion projection.  Comparisons
+        are type-sensitive (``true`` never equals integer ``1``).  Potentially
+        identity-related rows are enumerated BEFORE discriminator filtering, so
+        malformed/conflicting/duplicate rows cannot disappear into an apparent
+        absence; unrelated genuine historical sessions are never duplicates.
+        """
         completion = self._v2_identity_scoped_audits(
             root_task_id, manager_agent, "completion_report",
         )
         if completion is None:
             return False
-        scoped = [
-            row for row in completion
-            if row["payload"].get("_recovery_session_id") == manager_session_id
-            or row["payload"].get("_result_row_id") == result_id
-        ]
-        if len(scoped) != 1:
+        related = self._v2_recovery_completion_rows(
+            completion, result_id=result_id, manager_session_id=manager_session_id,
+        )
+        if len(related) != 1:
             return False
-        payload = scoped[0]["payload"]
-        expected_keys = {
-            "task_id", "agent", "result_id", "session_id", "status",
-            "output_summary", "confidence", "decision",
-            "_recovery_session_id", "_result_row_id",
-        }
-        if set(payload.keys()) != expected_keys:
-            return False
-        if (
-            payload["task_id"] != root_task_id
-            or payload["agent"] != manager_agent
-            or payload["result_id"] != result_id
-            or payload["session_id"] != manager_session_id
-            or payload["_recovery_session_id"] != manager_session_id
-            or payload["_result_row_id"] != result_id
+        expected_completion = self._v2_settlement_completion_payload(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            result_row=result_row, result_id=result_id,
+            manager_session_id=manager_session_id,
+        )
+        if not self._v2_json_type_sensitive_equal(
+            related[0]["payload"], expected_completion,
         ):
             return False
         settled = self._v2_identity_scoped_audits(
@@ -10597,20 +10829,47 @@ class Database:
         )
         if settled is None:
             return False
-        scoped_settled = [
-            row for row in settled
-            if row["payload"].get("_result_row_id") == result_id
-            and row["payload"].get("recovery_session_id") == manager_session_id
-        ]
-        if len(scoped_settled) != 1:
+        related_settled = self._v2_settled_rows(settled, result_id=result_id)
+        if len(related_settled) != 1:
             return False
-        spayload = scoped_settled[0]["payload"]
-        settled_keys = {
-            "attempt_id", "candidate_id", "envelope_id", "notification_id",
-            "generation_id", "result_id", "recovery_session_id", "root_task_id",
-            "manager_agent", "manager_session_id", "_result_row_id",
-        }
-        return set(spayload.keys()) == settled_keys
+        expected_settled = self._v2_settlement_settled_payload(
+            attempt=attempt, candidate=candidate, envelope=envelope,
+            notification=notification,
+        )
+        return self._v2_json_type_sensitive_equal(
+            related_settled[0]["payload"], expected_settled,
+        )
+
+    def _authenticate_v2_settlement_pre_state_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, result_id: int,
+        manager_session_id: str,
+    ) -> bool:
+        """True only when NO settlement-owned terminal evidence exists yet.
+
+        Initial ``callback_accepted`` settlement writes the completion and
+        recovery-settled audits atomically; contradictory or partially present
+        terminal evidence refuses without synthesizing, replacing or adding
+        evidence.  Only recovery-settlement-owned rows (a real recovery
+        discriminator / the settled action) are considered; the ordinary v2
+        producer audit and unrelated historical sessions are not
+        settlement-owned.
+        """
+        completion = self._v2_identity_scoped_audits(
+            root_task_id, manager_agent, "completion_report",
+        )
+        if completion is None:
+            return False
+        if self._v2_recovery_completion_rows(
+            completion, result_id=result_id, manager_session_id=manager_session_id,
+        ):
+            return False
+        settled = self._v2_identity_scoped_audits(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_RECOVERY_SETTLED_ACTION,
+            attempt_id=None,
+        )
+        if settled is None:
+            return False
+        return not self._v2_settled_rows(settled, result_id=result_id)
 
     def _v2_settlement_completion_payload(
         self, *, root_task_id: str, manager_agent: str, result_row,
@@ -10651,6 +10910,30 @@ class Database:
             "_result_row_id": candidate.result_id,
         }
 
+    def _v2_ordinary_completion_payload(
+        self, *, root_task_id: str, manager_agent: str, result_row,
+    ) -> dict | None:
+        """The exact normalized ordinary payload the real producer writes.
+
+        Reconstructs the persisted report through the SAME production
+        reconstruction the completion producer uses and appends the v2-only
+        result/session attribution, so a hand-built partial stand-in or an
+        identical old-session body can never match the current event.
+        """
+        from runtime.orchestrator.orchestrator import completion_report_from_result_row
+
+        try:
+            report = completion_report_from_result_row(
+                root_task_id, dict(result_row), fallback_agent=manager_agent,
+            )
+        except Exception:
+            return None
+        return {
+            **report.model_dump(),
+            "_result_row_id": result_row["id"],
+            "_result_session_id": result_row["session_id"],
+        }
+
     def _authenticate_v2_ordinary_completion_evidence_uncommitted(
         self, *, root_task_id: str, manager_agent: str, result_row,
     ) -> bool:
@@ -10658,38 +10941,43 @@ class Database:
 
         Ordinary callbacks have no recovery receipt: the accepted
         completion-consumer seam's actual completion_report is required instead,
-        and a recovery-shaped report is never fabricated or accepted here.
+        scoped to the exact causal result/session the v2 producer attributed.
+        A legitimate earlier manager completion (or an identical old-session
+        body, or a unattributed historical row) can never stand in for the
+        current event; a recovery-shaped report is never fabricated or accepted
+        here, and the payload is compared type-sensitively against the real
+        persisted normalized report.
         """
+        result_id = result_row["id"]
         rows = self._v2_identity_scoped_audits(
             root_task_id, manager_agent, "completion_report",
         )
         if rows is None:
             return False
-        ordinary = [
-            row for row in rows if "_recovery_session_id" not in row["payload"]
-        ]
-        if len(ordinary) != 1:
-            return False
-        payload = ordinary[0]["payload"]
-        if (
-            payload.get("task_id") != root_task_id
-            or payload.get("agent") != manager_agent
-            or payload.get("status") != result_row["status"]
-            or payload.get("output_summary") != result_row["output_summary"]
-            or payload.get("confidence") != result_row["confidence_score"]
+        if self._v2_recovery_completion_rows(
+            rows, result_id=result_id, manager_session_id=result_row["session_id"],
         ):
+            # A recovery-shaped receipt for this exact result/session is never
+            # ordinary authority, even when no Q currently matches it.
             return False
-        raw_decision = result_row["decision_json"]
-        try:
-            decision = json.loads(raw_decision) if raw_decision else None
-        except Exception:
+        current = []
+        for row in rows:
+            payload = row["payload"]
+            if "_recovery_session_id" in payload:
+                continue
+            row_id = payload.get("_result_row_id")
+            if not self._v2_is_int(row_id) or row_id != result_id:
+                continue
+            current.append(row)
+        if len(current) != 1:
             return False
-        try:
-            return authority_policy_v2_canonical_json_bytes(
-                payload.get("decision")
-            ) == authority_policy_v2_canonical_json_bytes(decision)
-        except Exception:
+        expected = self._v2_ordinary_completion_payload(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            result_row=result_row,
+        )
+        if expected is None:
             return False
+        return self._v2_json_type_sensitive_equal(current[0]["payload"], expected)
 
     @_synchronized
     def settle_authority_policy_v2_continuation_receipt(
@@ -10775,6 +11063,17 @@ class Database:
                     self._conn.rollback()
                     return _pending("identity_mismatch", **base)
                 if receipt["state"] == "callback_accepted":
+                    # Initial settlement may only write when NO settlement-owned
+                    # terminal evidence already exists for this exact result.  A
+                    # contradictory or partially present terminal state refuses
+                    # without synthesizing, replacing or adding evidence; the
+                    # atomic Q+completion+settled write below is unchanged.
+                    if not self._authenticate_v2_settlement_pre_state_uncommitted(
+                        root_task_id=root_task_id, manager_agent=manager_agent,
+                        result_id=result_id, manager_session_id=manager_session_id,
+                    ):
+                        self._conn.rollback()
+                        return _pending("identity_mismatch", **base)
                     now = _now().isoformat()
                     cursor = self._conn.execute(
                         """UPDATE task_completion_recoveries
@@ -10818,6 +11117,9 @@ class Database:
                     ok = self._authenticate_v2_settlement_evidence_uncommitted(
                         root_task_id=root_task_id, manager_agent=manager_agent,
                         result_id=result_id, manager_session_id=manager_session_id,
+                        result_row=result_row, attempt=attempt,
+                        candidate=candidate, envelope=envelope,
+                        notification=notification,
                     )
                     self._conn.rollback()
                     if ok:
