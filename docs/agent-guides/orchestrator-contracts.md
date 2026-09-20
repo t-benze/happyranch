@@ -504,6 +504,50 @@ existing `authority_policy_v2_claim_eligibility(orch)` seam, never an invented
 allow boolean), not only once at claim; ordinary `REQUEST_CHANGES`/partial-work
 diagnostics and valid historical DDL remain non-vetoes.
 
+Checkpoint C3d1 lands the accepted terminal pre-final refusal and exact
+recovery-receipt housekeeping. `AuthorityPolicyV2Attempt` may now finalize as
+`refused`/`owner_lost` with a closed `refusal_code` while retaining its greatest
+committed `stage`, exact immutable identities and canonical evidence; an
+unreleased forward-only trigger makes a finalized attempt terminal (it can never
+reopen or advance), and the candidate-audit closed event set gains `refused`.
+`Database.finalize_authority_policy_v2_attempt_refusal` owns ONE synchronized
+`BEGIN IMMEDIATE` transaction over exact J/R, the current task and the optional
+exact recovery receipt Q, refusing caller transaction nesting with
+`transaction_owned` BEFORE it would begin, roll back or invalidate the live
+owner. It authenticates only immutable OWNERSHIP evidence (attempt/result/binding
+identity and the greatest durable stage) and never the failed CONTINUATION
+evidence whose absence caused the refusal (a missing stage audit or a corrupted
+assessment is not required and is never reconstructed). For the still-current
+causal owner (`in_progress`, null `block_kind`, not cancelled) it writes the
+closed refusal result-stage event, a candidate `refused` event if K exists, the
+normal `escalation` audit and the bounded `completion_report` refusal audit, then
+CASes the task to `escalated` and J to `refused`; if Q is `callback_accepted` and
+exactly matches task/agent/recovery session/accepted result/session it is settled
+to `callback_consumed` in the SAME transaction. Ordinary callbacks keep Q absent.
+A cancelled/terminal/replaced owner preserves the winning task row exactly and
+records the old attempt `owner_lost`/`cancellation` disposition and audits,
+settling only an exact obsolete matching Q. No successor/new root, envelope,
+notification, dispatch generation or queue effect is created, and raw model prose
+never enters a bounded refusal diagnostic. Live-owner safety binds the trusted
+current daemon-process identity through `bind_authority_policy_v2_process_boot_id`
+(never a caller allow boolean): only the authentic in-memory owner token, an
+old-boot attempt, or a server-written durable failed-stage obligation may
+finalize; a same-boot attempt with no token (a second Database instance) cannot
+prove the winner is dead and returns bounded `housekeeping_pending`. Owned-stage
+failure paths record that durable obligation before poisoning the token, and no
+process-local liveness is reconstructed on reopen. Already-finalized attempts
+return a read-only `already_refused` exact replay only when the existing exact
+refusal/completion evidence authenticates; deleted, duplicated, mutated or
+malformed terminal evidence is never repaired and mints no second audit. Callable
+read-only discovery (`list_authority_policy_v2_unfinalized_attempts`,
+`get_authority_policy_v2_housekeeping_target`) surfaces unfinalized attempts
+including a failed claim with no K, and the durable J/R or recorded obligation
+remains discoverable after a refusal transaction failure. The store exposes thin
+forwards and never commits. The shipping authority hook remains fail-closed; the
+later final continuation/settlement/publication/admission/spend transitions and
+the startup/reaper/run-step automatic discovery wiring remain separate units, so
+the dual-text feature remains unaccepted.
+
 The file-backed completion CLI preserves a supplied `manager_self_evaluation`
 member verbatim (including invalid/null values) so the daemon, rather than the
 client, validates it; an omitted member remains omitted. The shipping CLI to

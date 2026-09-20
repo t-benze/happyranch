@@ -36,6 +36,8 @@ from runtime.models import (
     AuthorityPolicyV2CandidateAudit,
     AuthorityPolicyV2ControlReceipt,
     AuthorityPolicyV2Evaluation,
+    AuthorityPolicyV2HousekeepingOutcome,
+    AuthorityPolicyV2HousekeepingTarget,
     AuthorityPolicyV2PairedControlRequest,
     AuthorityPolicyV2Pin,
     AuthorityPolicyV2Release,
@@ -44,6 +46,8 @@ from runtime.models import (
     AuthorityFenceResult,
     AuthorityRedactionClass,
     AuthorityRetentionClass,
+    AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_OWNER_LOST,
+    AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED,
     AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_STATES,
     AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
     AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
@@ -57,12 +61,17 @@ from runtime.models import (
     AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
     AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CONSUMED,
     AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_EVALUATED,
+    AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_REFUSED,
     AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_CREATED,
     AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_CONSUMED,
     AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_EVALUATED,
     AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_TRANSITIONS,
     AUTHORITY_POLICY_V2_ESCALATION_DECISION_ACTION,
+    AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION,
+    AUTHORITY_POLICY_V2_HOUSEKEEPING_PENDING_CODE,
+    AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES,
     AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+    AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED,
     AUTHORITY_POLICY_V2_TEAM,
     authority_policy_v2_attempt_id,
     authority_policy_v2_canonical_json_bytes,
@@ -533,6 +542,40 @@ _AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
             CREATE TRIGGER IF NOT EXISTS authority_policy_v2_attempts_no_delete
                 BEFORE DELETE ON authority_policy_v2_attempts
                 BEGIN SELECT RAISE(ABORT, 'v2 attempt journal cannot be deleted'); END;
+            -- THR-229 checkpoint C3d1: finalized attempts are terminal.  The
+            -- greatest committed stage is retained on finalization, and once
+            -- ``finalization_state`` leaves ``unfinalized`` the row can never
+            -- reopen, advance or rewrite its refusal evidence.  While
+            -- ``unfinalized``, only the exact forward-only stage transitions
+            -- (or a single terminal finalization) are accepted; a refused or
+            -- owner_lost terminal always carries a non-null refusal_code.
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_attempts_finalization_guard
+                BEFORE UPDATE ON authority_policy_v2_attempts
+                WHEN NOT (
+                    (OLD.finalization_state IS NOT 'unfinalized'
+                     AND NEW.stage IS OLD.stage
+                     AND NEW.finalization_state IS OLD.finalization_state
+                     AND NEW.refusal_code IS OLD.refusal_code)
+                    OR
+                    (OLD.finalization_state IS 'unfinalized' AND (
+                        (NEW.finalization_state IS 'unfinalized'
+                         AND NEW.refusal_code IS NULL
+                         AND NEW.stage = CASE OLD.stage
+                             WHEN 'admitted' THEN 'claimed'
+                             WHEN 'claimed' THEN 'claim_audited'
+                             WHEN 'claim_audited' THEN 'evaluated'
+                             WHEN 'evaluated' THEN 'evaluation_audited'
+                             WHEN 'evaluation_audited' THEN 'consumed'
+                             WHEN 'consumed' THEN 'consumed_audited'
+                             ELSE NULL END)
+                        OR
+                        (NEW.finalization_state IN ('continued','refused','owner_lost')
+                         AND NEW.stage IS OLD.stage
+                         AND (NEW.finalization_state IS 'continued'
+                              OR NEW.refusal_code IS NOT NULL))
+                    ))
+                )
+                BEGIN SELECT RAISE(ABORT, 'v2 attempt finalization is terminal'); END;
 
             -- THR-229 checkpoint C3b: durable candidate (K), policy pin (P) and
             -- the closed candidate-audit event (a1 claim stage).  The candidate
@@ -682,7 +725,7 @@ _AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
                 root_task_id TEXT NOT NULL,
                 manager_agent TEXT NOT NULL,
                 manager_session_id TEXT NOT NULL,
-                event TEXT NOT NULL CHECK(event IN ('claimed','evaluated','consumed')),
+                event TEXT NOT NULL CHECK(event IN ('claimed','evaluated','consumed','refused')),
                 claim_key TEXT NOT NULL,
                 attempt_id TEXT NOT NULL,
                 result_id INTEGER NOT NULL,
@@ -1249,6 +1292,11 @@ class Database:
         # ``reader(agent)``; it is never a caller-supplied allow/deny boolean or
         # a precomputed digest.  When unbound the claim refuses (fail closed).
         self._v2_permission_surface_reader = None
+        # THR-229 C3d1: the trusted current daemon-process identity (the same
+        # ``authority_v2_origin_boot_id`` recorded on admitted attempts).  It is
+        # bound by the orchestration seam, never supplied as an allow boolean,
+        # and it is the only evidence that an attempt belongs to an old boot.
+        self._v2_process_boot_id: str | None = None
         # THR-129 lock instrumentation: configurable warning threshold for
         # lock wait/hold times (seconds). Test seam — tests set this to a low
         # value to verify instrumentation fires.
@@ -6664,6 +6712,18 @@ class Database:
         """
         self._v2_permission_surface_reader = reader
 
+    def bind_authority_policy_v2_process_boot_id(self, boot_id: str | None) -> None:
+        """Bind the trusted current daemon-process identity for housekeeping.
+
+        This is the existing server-owned process context (the same per-daemon
+        ``authority_v2_origin_boot_id`` recorded on admitted attempts), never a
+        caller-supplied allow boolean.  When unbound, an attempt whose origin
+        daemon boot may be gone cannot be safely attributed without the live
+        owner token or a recorded failed-stage obligation; housekeeping then
+        returns bounded ``housekeeping_pending`` without mutating task/Q/J.
+        """
+        self._v2_process_boot_id = boot_id
+
     def _forget_v2_live_owner(self, attempt_id: str, owner_attempt_id: str) -> None:
         if self._v2_live_attempt_owners.get(attempt_id) == owner_attempt_id:
             self._v2_live_attempt_owners.pop(attempt_id, None)
@@ -6721,11 +6781,74 @@ class Database:
         else:
             forget = poison
         if forget:
+            # THR-229 C3d1: record the durable server-owned failed-stage
+            # obligation BEFORE forgetting the process-local token, so a
+            # genuine failed-stage request remains safely attributable for
+            # refusal housekeeping after the winner is poisoned.  Best-effort:
+            # a storage failure here must never mask the primary refusal, and an
+            # exhausted/unwritable store promises no new durable diagnostic.
+            self._record_v2_failed_stage_obligation(
+                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                code=code,
+            )
             self._forget_v2_live_owner(attempt_id, owner_attempt_id)
         return AuthorityPolicyV2StageOutcome(
             status="refused", refusal_code=code, attempt_id=attempt_id,
             candidate_id=candidate_id, claim_key=claim_key, stage=stage,
         )
+
+    def _record_v2_failed_stage_obligation(
+        self, *, attempt_id: str, owner_attempt_id: str, code: str,
+    ) -> None:
+        """Persist the closed failed-stage housekeeping obligation (best effort).
+
+        Only a server-owned attempt whose ``origin_boot_id`` equals the bound
+        current daemon-process identity can produce an obligation, so the record
+        is trusted context rather than a caller-supplied boolean.  It is written
+        only for a closed refusal code on an unfinalized attempt, and never
+        fabricates task/receipt ownership.
+        """
+        if code not in AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES:
+            return
+        if self._v2_process_boot_id is None:
+            return
+        try:
+            if self._conn.in_transaction:
+                return
+            row = self._conn.execute(
+                """SELECT root_task_id, manager_agent, result_id, origin_boot_id,
+                          owner_attempt_id, finalization_state
+                     FROM authority_policy_v2_attempts WHERE attempt_id=?""",
+                (attempt_id,),
+            ).fetchone()
+            if row is None or row["finalization_state"] != "unfinalized":
+                return
+            if row["origin_boot_id"] != self._v2_process_boot_id:
+                return
+            if row["owner_attempt_id"] != owner_attempt_id:
+                return
+            self._conn.execute(
+                "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    row["root_task_id"], row["manager_agent"],
+                    AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION,
+                    json.dumps({
+                        "attempt_id": attempt_id,
+                        "result_id": row["result_id"],
+                        "refusal_code": code,
+                        "origin_boot_id": row["origin_boot_id"],
+                        "owner_attempt_id": row["owner_attempt_id"],
+                    }),
+                    _now().isoformat(),
+                ),
+            )
+            self._conn.commit()
+        except Exception:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
 
     def _authenticate_v2_result_body_uncommitted(
         self, result_row, attempt: AuthorityPolicyV2Attempt,
@@ -8565,6 +8688,607 @@ class Database:
             except ValueError:
                 continue
         return evaluations
+
+    # -- THR-229 checkpoint C3d1: durable pre-final refusal and exact recovery
+    # receipt housekeeping.  ONE Database-owned synchronized BEGIN IMMEDIATE
+    # transaction over the exact attempt journal (J) / immutable causal result
+    # (R), the current task and the optional exact recovery receipt (Q).  It
+    # authenticates immutable OWNERSHIP evidence (attempt/result/binding
+    # identity and the greatest durable stage) but never the failed CONTINUATION
+    # evidence whose absence caused the refusal (missing stage audit, corrupt
+    # assessment).  It mints no successor, envelope, notification or dispatch
+    # generation and never touches an unrelated/mismatched receipt.  The store
+    # is a thin forwarder; this method owns BEGIN/ROLLBACK/commit.
+
+    def _v2_refusal_stage_payload(
+        self, attempt_row: dict, candidate_id: str | None, refusal_code: str,
+        finalization_state: str,
+    ) -> dict:
+        payload = {
+            "stage": AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED,
+            "attempt_id": attempt_row["attempt_id"],
+            "result_id": attempt_row["result_id"],
+            "binding_id": attempt_row["binding_id"],
+            "contract_id": attempt_row["contract_id"],
+            "contract_version": attempt_row["contract_version"],
+            "contract_digest": attempt_row["contract_digest"],
+            "release_id": attempt_row["release_id"],
+            "activation_id": attempt_row["activation_id"],
+            "activation_epoch": attempt_row["activation_epoch"],
+            "selector_id": attempt_row["selector_id"],
+            "assessment_digest": attempt_row["assessment_digest"],
+            "owner_attempt_id": attempt_row["owner_attempt_id"],
+            "origin_boot_id": attempt_row["origin_boot_id"],
+            "refusal_code": refusal_code,
+            "finalization_state": finalization_state,
+        }
+        if candidate_id is not None:
+            payload["candidate_id"] = candidate_id
+        return payload
+
+    def _authenticate_v2_refusal_result_stage_uncommitted(
+        self, attempt_row: dict, *, candidate_id: str | None, refusal_code: str,
+        finalization_state: str,
+    ) -> bool:
+        """Require exactly one authentic closed terminal refusal stage event."""
+        expected = self._v2_refusal_stage_payload(
+            attempt_row, candidate_id, refusal_code, finalization_state,
+        )
+        try:
+            candidates = [
+                row for row in self.get_audit_logs(attempt_row["root_task_id"])
+                if row.get("action") == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
+                and row.get("agent") == attempt_row["manager_agent"]
+                and isinstance(row.get("payload"), dict)
+                and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
+                and row["payload"].get("stage") == AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED
+            ]
+        except Exception:
+            return False
+        if len(candidates) != 1:
+            return False
+        payload = candidates[0]["payload"]
+        if set(payload.keys()) != set(expected.keys()):
+            return False
+        return all(payload.get(key) == value for key, value in expected.items())
+
+    def _v2_refusal_completion_payload(
+        self, *, attempt_row: dict, refusal_code: str,
+        recovery_session_id: str | None,
+    ) -> dict:
+        payload = {
+            "attempt_id": attempt_row["attempt_id"],
+            "result_id": attempt_row["result_id"],
+            "refusal_code": refusal_code,
+        }
+        if recovery_session_id is not None:
+            payload["_recovery_session_id"] = recovery_session_id
+            payload["_result_row_id"] = attempt_row["result_id"]
+        return payload
+
+    def _authenticate_v2_refusal_completion_uncommitted(
+        self, attempt_row: dict, *, refusal_code: str,
+        recovery_session_id: str | None,
+    ) -> bool:
+        """Require exactly one authentic bounded refusal completion audit."""
+        expected = self._v2_refusal_completion_payload(
+            attempt_row=attempt_row, refusal_code=refusal_code,
+            recovery_session_id=recovery_session_id,
+        )
+        try:
+            candidates = [
+                row for row in self.get_audit_logs(attempt_row["root_task_id"])
+                if row.get("action") == "completion_report"
+                and row.get("agent") == attempt_row["manager_agent"]
+                and isinstance(row.get("payload"), dict)
+                and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
+                and row["payload"].get("refusal_code") == refusal_code
+            ]
+        except Exception:
+            return False
+        if len(candidates) != 1:
+            return False
+        payload = candidates[0]["payload"]
+        if set(payload.keys()) != set(expected.keys()):
+            return False
+        return all(payload.get(key) == value for key, value in expected.items())
+
+    def _authenticate_v2_obligation_uncommitted(self, attempt_row: dict) -> str | None:
+        """Return the closed code of exactly one authentic failed-stage obligation."""
+        try:
+            rows = [
+                row for row in self.get_audit_logs(attempt_row["root_task_id"])
+                if row.get("action") == AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION
+                and row.get("agent") == attempt_row["manager_agent"]
+                and isinstance(row.get("payload"), dict)
+                and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
+            ]
+        except Exception:
+            return None
+        if len(rows) != 1:
+            return None
+        payload = rows[0]["payload"]
+        expected_keys = {
+            "attempt_id", "result_id", "refusal_code", "origin_boot_id",
+            "owner_attempt_id",
+        }
+        if set(payload.keys()) != expected_keys:
+            return None
+        if (
+            payload["result_id"] != attempt_row["result_id"]
+            or payload["origin_boot_id"] != attempt_row["origin_boot_id"]
+            or payload["owner_attempt_id"] != attempt_row["owner_attempt_id"]
+            or payload["refusal_code"]
+            not in AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES
+        ):
+            return None
+        return payload["refusal_code"]
+
+    def _update_v2_attempt_finalization_uncommitted(
+        self, attempt: AuthorityPolicyV2Attempt, finalization_state: str,
+        refusal_code: str | None,
+    ) -> None:
+        """CAS the attempt to a terminal finalization, retaining its stage."""
+        if attempt.finalization_state != "unfinalized":
+            raise ValueError("v2 attempt is already finalized")
+        if finalization_state not in (
+            AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED,
+            AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_OWNER_LOST,
+            "continued",
+        ):
+            raise ValueError("illegal v2 attempt finalization")
+        if finalization_state == "continued":
+            refusal_code = None
+        elif refusal_code not in AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES:
+            raise ValueError("finalized v2 attempt requires a closed refusal code")
+        snapshot = attempt.model_dump(mode="json")
+        snapshot["finalization_state"] = finalization_state
+        snapshot["refusal_code"] = refusal_code
+        cursor = self._conn.execute(
+            """UPDATE authority_policy_v2_attempts
+                  SET finalization_state=?, refusal_code=?, canonical_payload_json=?
+                WHERE attempt_id=? AND finalization_state='unfinalized' AND stage=?""",
+            (
+                finalization_state, refusal_code,
+                authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8"),
+                attempt.attempt_id, attempt.stage,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("v2 attempt finalization CAS lost")
+
+    def _settle_v2_exact_receipt_uncommitted(
+        self, receipt_row, *, root_task_id: str, manager_agent: str,
+        manager_session_id: str, result_id: int, now: str,
+    ) -> bool:
+        """Settle exactly the still-accepted obsolete matching recovery receipt."""
+        cursor = self._conn.execute(
+            """UPDATE task_completion_recoveries
+                  SET state='callback_consumed', accepted_result_session_id=?,
+                      settled_at=?
+                WHERE id=? AND task_id=? AND agent=? AND recovery_session_id=?
+                  AND accepted_result_id=? AND accepted_result_session_id=?
+                  AND state='callback_accepted'""",
+            (
+                manager_session_id, now, receipt_row["id"], root_task_id,
+                manager_agent, manager_session_id, result_id, manager_session_id,
+            ),
+        )
+        return cursor.rowcount == 1
+
+    @_synchronized
+    def finalize_authority_policy_v2_attempt_refusal(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, refusal_code: str, owner_attempt_id: str | None = None,
+        recovery_session_id: str | None = None,
+    ) -> AuthorityPolicyV2HousekeepingOutcome:
+        """ONE terminal refusal-housekeeping transaction over exact J/R/task/Q.
+
+        Authenticate-then-mutate: a wrong/mixed tuple, a missing binding, an
+        unrelated receipt, an unauthorized contender or an unsafe attribution
+        refuses BEFORE any task/Q/J mutation.  The still-current causal owner is
+        escalated and J refused; a cancelled/terminal/replaced owner keeps the
+        winning task row exactly and records the old attempt owner_lost.  An
+        already-finalized J returns a read-only exact replay only when its exact
+        refusal/completion evidence authenticates, and is never repaired.
+        """
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=manager_agent, manager_session_id=manager_session_id,
+            result_id=result_id, root_task_id=root_task_id,
+            team=AUTHORITY_POLICY_V2_TEAM,
+        )
+
+        def _pending(reason: str) -> AuthorityPolicyV2HousekeepingOutcome:
+            return AuthorityPolicyV2HousekeepingOutcome(
+                status="housekeeping_pending", refusal_code=reason,
+                attempt_id=attempt_id,
+            )
+
+        if refusal_code not in AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES:
+            raise ValueError("refusal code is not a closed v2 housekeeping value")
+        if recovery_session_id is not None and recovery_session_id != manager_session_id:
+            return _pending("identity_mismatch")
+        # Reject caller-owned transaction nesting BEFORE BEGIN/ROLLBACK/liveness.
+        if self._conn.in_transaction:
+            return _pending("transaction_owned")
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute(
+                """SELECT * FROM authority_policy_v2_attempts
+                   WHERE root_task_id=? AND manager_agent=?
+                     AND manager_session_id=? AND result_id=?""",
+                (root_task_id, manager_agent, manager_session_id, result_id),
+            ).fetchone()
+            if row is None:
+                self._conn.rollback()
+                return _pending("identity_mismatch")
+            try:
+                attempt = self._authority_policy_v2_attempt_from_row(row)
+            except ValueError:
+                self._conn.rollback()
+                return _pending("identity_mismatch")
+            attempt_row = dict(row)
+            if attempt_id != attempt.attempt_id:
+                self._conn.rollback()
+                return _pending("identity_mismatch")
+
+            # Optional candidate (K) identity, if one was created.
+            candidate = None
+            candidate_row = self._conn.execute(
+                """SELECT * FROM authority_policy_v2_candidates
+                   WHERE root_task_id=? AND manager_agent=?
+                     AND manager_session_id=? AND result_id=?""",
+                (root_task_id, manager_agent, manager_session_id, result_id),
+            ).fetchone()
+            if candidate_row is not None:
+                try:
+                    candidate = self._authority_policy_v2_candidate_from_row(candidate_row)
+                except ValueError:
+                    self._conn.rollback()
+                    return _pending("identity_mismatch")
+                if (
+                    candidate.attempt_id != attempt.attempt_id
+                    or candidate.root_task_id != root_task_id
+                    or candidate.manager_agent != manager_agent
+                    or candidate.manager_session_id != manager_session_id
+                ):
+                    self._conn.rollback()
+                    return _pending("identity_mismatch")
+            candidate_id = None if candidate is None else candidate.candidate_id
+
+            # Optional exact Q: match by the exact recovery session identity.
+            receipts = self._conn.execute(
+                "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
+                (root_task_id, manager_agent),
+            ).fetchall()
+            exact_receipt = None
+            for receipt in receipts:
+                if receipt["recovery_session_id"] == manager_session_id:
+                    if exact_receipt is not None:
+                        self._conn.rollback()
+                        return _pending("identity_mismatch")
+                    exact_receipt = receipt
+            if receipts and exact_receipt is None:
+                # An unrelated/mismatched receipt must never be labelled
+                # ordinary/absent or settled as a replacement.
+                self._conn.rollback()
+                return _pending("identity_mismatch")
+            if exact_receipt is not None:
+                if (
+                    exact_receipt["accepted_result_id"] != result_id
+                    or exact_receipt["accepted_result_session_id"] != manager_session_id
+                    or exact_receipt["state"]
+                    not in ("callback_accepted", "callback_consumed")
+                ):
+                    self._conn.rollback()
+                    return _pending("identity_mismatch")
+            effective_recovery_session_id = (
+                manager_session_id if exact_receipt is not None
+                else recovery_session_id
+            )
+
+            # Already-finalized J: read-only exact replay, never repair.
+            if attempt.finalization_state in (
+                AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED,
+                AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_OWNER_LOST,
+            ):
+                stage_ok = self._authenticate_v2_refusal_result_stage_uncommitted(
+                    attempt_row, candidate_id=candidate_id,
+                    refusal_code=attempt.refusal_code,
+                    finalization_state=attempt.finalization_state,
+                )
+                completion_ok = self._authenticate_v2_refusal_completion_uncommitted(
+                    attempt_row, refusal_code=attempt.refusal_code,
+                    recovery_session_id=effective_recovery_session_id,
+                )
+                self._conn.rollback()
+                if stage_ok and completion_ok:
+                    return AuthorityPolicyV2HousekeepingOutcome(
+                        status="already_refused", refusal_code=attempt.refusal_code,
+                        attempt_id=attempt.attempt_id, candidate_id=candidate_id,
+                        stage=attempt.stage,
+                        finalization_state=attempt.finalization_state,
+                    )
+                return _pending("identity_mismatch")
+            if attempt.finalization_state != "unfinalized":
+                self._conn.rollback()
+                return _pending("identity_mismatch")
+            if exact_receipt is not None and exact_receipt["state"] == "callback_consumed":
+                # An already-consumed exact Q without a finalized J is
+                # inconsistent terminal evidence; never repair or re-settle it.
+                self._conn.rollback()
+                return _pending("identity_mismatch")
+
+            # Immutable ownership evidence (never the failed continuation
+            # evidence): the exact causal result row and immutable binding.
+            result_row = self._conn.execute(
+                "SELECT * FROM task_results WHERE id=?", (result_id,)
+            ).fetchone()
+            if (
+                result_row is None
+                or result_row["task_id"] != root_task_id
+                or result_row["agent"] != manager_agent
+                or result_row["session_id"] != manager_session_id
+            ):
+                self._conn.rollback()
+                return _pending("identity_mismatch")
+            binding = self.get_authority_policy_v2_session_binding(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                manager_session_id=manager_session_id,
+            )
+            if binding is None or binding.binding_id != attempt.binding_id:
+                self._conn.rollback()
+                return _pending("identity_mismatch")
+
+            task = self._conn.execute(
+                "SELECT * FROM tasks WHERE id=?", (root_task_id,)
+            ).fetchone()
+            if task is None:
+                self._conn.rollback()
+                return _pending("identity_mismatch")
+
+            now = _now().isoformat()
+            still_current = (
+                task["cancelled_at"] is None
+                and task["status"] == TaskStatus.IN_PROGRESS.value
+                and task["block_kind"] is None
+                and task["assigned_agent"] == manager_agent
+                and task["current_session_id"] == manager_session_id
+            )
+
+            if not still_current:
+                # Preserve the winning task row exactly.  Record the old
+                # attempt's owner_lost/cancellation disposition and audits; only
+                # an exact obsolete matching Q may be settled.
+                terminal = task["status"] in (
+                    "completed", "failed", "superseded", "cancelled",
+                )
+                final_code = (
+                    "cancelled"
+                    if (task["cancelled_at"] is not None or terminal)
+                    else "owner_lost"
+                )
+                self.insert_audit_log_uncommitted(
+                    root_task_id, manager_agent,
+                    AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+                    self._v2_refusal_stage_payload(
+                        attempt_row, candidate_id, final_code,
+                        AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_OWNER_LOST,
+                    ),
+                )
+                if candidate is not None:
+                    self._insert_v2_candidate_audit_uncommitted(
+                        candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_REFUSED,
+                        owner_attempt_id=attempt.owner_attempt_id,
+                        origin_boot_id=attempt.origin_boot_id, now=now,
+                    )
+                self.insert_audit_log_uncommitted(
+                    root_task_id, manager_agent, "completion_report",
+                    self._v2_refusal_completion_payload(
+                        attempt_row=attempt_row, refusal_code=final_code,
+                        recovery_session_id=effective_recovery_session_id,
+                    ),
+                )
+                settled = False
+                if exact_receipt is not None:
+                    if not self._settle_v2_exact_receipt_uncommitted(
+                        exact_receipt, root_task_id=root_task_id,
+                        manager_agent=manager_agent,
+                        manager_session_id=manager_session_id, result_id=result_id,
+                        now=now,
+                    ):
+                        self._conn.rollback()
+                        return _pending("identity_mismatch")
+                    settled = True
+                self._update_v2_attempt_finalization_uncommitted(
+                    attempt, AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_OWNER_LOST,
+                    final_code,
+                )
+                self._conn.commit()
+                if owner_attempt_id is not None:
+                    self._forget_v2_live_owner(attempt.attempt_id, owner_attempt_id)
+                return AuthorityPolicyV2HousekeepingOutcome(
+                    status="owner_lost", refusal_code=final_code,
+                    attempt_id=attempt.attempt_id, candidate_id=candidate_id,
+                    stage=attempt.stage,
+                    finalization_state=AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_OWNER_LOST,
+                    receipt_settled=settled,
+                )
+
+            # Live-owner safety: only the authentic uninterrupted owner token, an
+            # old-boot attempt (trusted current process identity differs) or a
+            # server-written durable failed-stage obligation may finalize.  A
+            # same-boot attempt with no token (e.g. a second Database instance)
+            # cannot prove the winner is dead and returns bounded pending.
+            live_owner = (
+                owner_attempt_id is not None
+                and self._v2_contender_is_authentic_owner(
+                    attempt_id=attempt.attempt_id,
+                    owner_attempt_id=owner_attempt_id,
+                    origin_boot_id=attempt.origin_boot_id,
+                )
+            )
+            old_boot = (
+                self._v2_process_boot_id is not None
+                and attempt.origin_boot_id != self._v2_process_boot_id
+            )
+            if not (live_owner or old_boot):
+                if self._authenticate_v2_obligation_uncommitted(attempt_row) is None:
+                    self._conn.rollback()
+                    return _pending("owner_lost")
+
+            # Still-current causal owner: closed result-level refusal event,
+            # candidate event if K exists, normal task escalation audit and the
+            # required completion_report/recovery-refusal audit; CAS task to
+            # escalated and J to refused, settling the exact Q in the SAME
+            # transaction.  No successor/new root, envelope, notification,
+            # dispatch generation or queue effect.
+            self.insert_audit_log_uncommitted(
+                root_task_id, manager_agent,
+                AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+                self._v2_refusal_stage_payload(
+                    attempt_row, candidate_id, refusal_code,
+                    AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED,
+                ),
+            )
+            if candidate is not None:
+                self._insert_v2_candidate_audit_uncommitted(
+                    candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_REFUSED,
+                    owner_attempt_id=attempt.owner_attempt_id,
+                    origin_boot_id=attempt.origin_boot_id, now=now,
+                )
+            self.insert_audit_log_uncommitted(
+                root_task_id, manager_agent, "escalation",
+                {
+                    "reason": "authority_v2_refusal",
+                    "refusal_code": refusal_code,
+                    "attempt_id": attempt.attempt_id,
+                },
+            )
+            cursor = self._conn.execute(
+                """UPDATE tasks SET status=?, block_kind=NULL, note=?, updated_at=?
+                   WHERE id=? AND cancelled_at IS NULL AND status=?
+                     AND block_kind IS NULL AND assigned_agent=?
+                     AND current_session_id=?""",
+                (
+                    TaskStatus.ESCALATED.value,
+                    f"authority_v2_refusal:{refusal_code}", now, root_task_id,
+                    TaskStatus.IN_PROGRESS.value, manager_agent,
+                    manager_session_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                self._conn.rollback()
+                return _pending("owner_lost")
+            self.insert_audit_log_uncommitted(
+                root_task_id, manager_agent, "completion_report",
+                self._v2_refusal_completion_payload(
+                    attempt_row=attempt_row, refusal_code=refusal_code,
+                    recovery_session_id=effective_recovery_session_id,
+                ),
+            )
+            settled = False
+            if exact_receipt is not None:
+                if not self._settle_v2_exact_receipt_uncommitted(
+                    exact_receipt, root_task_id=root_task_id,
+                    manager_agent=manager_agent,
+                    manager_session_id=manager_session_id, result_id=result_id,
+                    now=now,
+                ):
+                    self._conn.rollback()
+                    return _pending("identity_mismatch")
+                settled = True
+            self._update_v2_attempt_finalization_uncommitted(
+                attempt, AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED,
+                refusal_code,
+            )
+            self._conn.commit()
+            if owner_attempt_id is not None:
+                self._forget_v2_live_owner(attempt.attempt_id, owner_attempt_id)
+            return AuthorityPolicyV2HousekeepingOutcome(
+                status="refused", refusal_code=refusal_code,
+                attempt_id=attempt.attempt_id, candidate_id=candidate_id,
+                stage=attempt.stage,
+                finalization_state=AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED,
+                receipt_settled=settled,
+            )
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def _v2_housekeeping_target_from_row(
+        self, row, *, obligation_code: str | None,
+    ) -> AuthorityPolicyV2HousekeepingTarget:
+        attempt = self._authority_policy_v2_attempt_from_row(row)
+        candidate_row = self._conn.execute(
+            "SELECT candidate_id FROM authority_policy_v2_candidates WHERE result_id=?",
+            (attempt.result_id,),
+        ).fetchone()
+        candidate_id = (
+            None if candidate_row is None else candidate_row["candidate_id"]
+        )
+        return AuthorityPolicyV2HousekeepingTarget(
+            attempt_id=attempt.attempt_id,
+            team=attempt.team,
+            root_task_id=attempt.root_task_id,
+            manager_agent=attempt.manager_agent,
+            manager_session_id=attempt.manager_session_id,
+            result_id=attempt.result_id,
+            origin_boot_id=attempt.origin_boot_id,
+            owner_attempt_id=attempt.owner_attempt_id,
+            stage=attempt.stage,
+            finalization_state=attempt.finalization_state,
+            candidate_id=candidate_id,
+            obligation_code=obligation_code,
+        )
+
+    @_synchronized
+    def list_authority_policy_v2_unfinalized_attempts(
+        self,
+    ) -> list[AuthorityPolicyV2HousekeepingTarget]:
+        """Read-only discovery of every unfinalized pre-final attempt.
+
+        Reads are nonmutating and authenticate the actual persisted attempt row;
+        a failed claim that created no candidate (K) remains discoverable.  A
+        corrupt/unreadable attempt row is skipped rather than repaired.
+        """
+        rows = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_attempts
+               WHERE finalization_state='unfinalized'
+               ORDER BY created_at, attempt_id""",
+        ).fetchall()
+        targets = []
+        for row in rows:
+            try:
+                obligation_code = self._authenticate_v2_obligation_uncommitted(dict(row))
+                targets.append(self._v2_housekeeping_target_from_row(
+                    row, obligation_code=obligation_code,
+                ))
+            except ValueError:
+                continue
+        return targets
+
+    @_synchronized
+    def get_authority_policy_v2_housekeeping_target(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int,
+    ) -> AuthorityPolicyV2HousekeepingTarget | None:
+        """Read-only discovery of one exact unfinalized attempt (nonmutating)."""
+        row = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_attempts
+               WHERE root_task_id=? AND manager_agent=?
+                 AND manager_session_id=? AND result_id=?""",
+            (root_task_id, manager_agent, manager_session_id, result_id),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            obligation_code = self._authenticate_v2_obligation_uncommitted(dict(row))
+            return self._v2_housekeeping_target_from_row(
+                row, obligation_code=obligation_code,
+            )
+        except ValueError:
+            return None
 
 
     @_synchronized

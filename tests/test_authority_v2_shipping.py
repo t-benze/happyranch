@@ -1047,3 +1047,129 @@ def test_shipping_historically_migrated_callable_stage_negative(tmp_path, monkey
         _drive_c3b_claim(fixture, retained_eligibility_negative=True)
     finally:
         fixture.stop()
+
+
+# --------------------------------------------------------------------------
+# C3d1: the real admitted result drives the callable refusal-housekeeping seam
+# --------------------------------------------------------------------------
+
+
+def _drive_c3d1_refusal(fixture: _ShippingFixture) -> str:
+    """Real launch -> subprocess CLI admission -> callable refusal housekeeping.
+
+    The provider launch is held only at the external process boundary, so the
+    durable admitted result is genuine and the refusal seam runs against real
+    persisted evidence.  The attempt is treated as an old-boot/interrupted
+    pre-final attempt (the trusted current process identity differs), so
+    housekeeping may safely refuse it.  This is callable-housekeeping evidence:
+    the shipping hook stays fail-closed and no actual continuation/Pending/
+    enqueue is claimed.
+    """
+    fixture.activate_v2_pair()
+    fixture.install_launch_hold()
+    root_id = fixture.create_and_enqueue_root()
+    captured = fixture.wait_for_launch()
+    session_id = captured["session_id"]
+    binding = _binding(fixture, root_id, session_id)
+    assert binding is not None and binding["mode"] == "v2"
+
+    body = _completion_body(binding, root_id)
+    payload = fixture.write_payload(body)
+    result = fixture.run_cli(payload)
+    assert result.returncode == 0, result.stderr
+    assert fixture.last_http()["status"] == 200
+
+    results, attempt, audits = _admission_counts(fixture, root_id)
+    assert len(results) == 1 and attempt is not None
+    assert attempt.stage == "admitted"
+    row_id = results[0]["id"]
+    db = fixture.org.db
+
+    # Trusted current daemon-process identity differs from the attempt's origin
+    # boot: this is an old-boot/interrupted pre-final attempt.
+    db.bind_authority_policy_v2_process_boot_id("fixture-new-daemon-boot")
+    outcome = db.finalize_authority_policy_v2_attempt_refusal(
+        root_task_id=root_id, manager_agent=MANAGER, manager_session_id=session_id,
+        result_id=row_id, refusal_code="interrupted_pre_final",
+    )
+    assert outcome.status == "refused", outcome
+    assert outcome.finalization_state == "refused"
+    assert outcome.refusal_code == "interrupted_pre_final"
+    final = db.get_authority_policy_v2_attempt_for_result(row_id)
+    assert final is not None
+    assert final.finalization_state == "refused"
+    assert final.stage == "admitted"  # greatest committed stage retained
+
+    task = db.get_task(root_id)
+    assert task.status is TaskStatus.ESCALATED
+    assert task.block_kind is None
+    assert "authority_v2_refusal" in (task.note or "")
+
+    stage_audits = db.list_authority_policy_v2_result_stage_audits(
+        root_task_id=root_id, manager_agent=MANAGER,
+    )
+    assert [a["payload"]["stage"] for a in stage_audits] == ["admitted", "refused"]
+    refusals = [
+        a for a in db.get_audit_logs(root_id)
+        if a["action"] == "completion_report"
+        and isinstance(a["payload"], dict)
+        and a["payload"].get("attempt_id") == attempt.attempt_id
+    ]
+    assert len(refusals) == 1
+    assert refusals[0]["payload"]["refusal_code"] == "interrupted_pre_final"
+    # No continuation was manufactured.
+    assert db.get_active_authority_continue_envelope(root_id) is None
+
+    # Exact CLI/HTTP retry stays read-only success with authenticated terminal
+    # evidence: the durable result/attempt/audit counts and IDs are unchanged.
+    before = (len(results), row_id, len(stage_audits), attempt.owner_attempt_id)
+    retry = fixture.run_cli(payload)
+    assert retry.returncode == 0, retry.stderr
+    assert fixture.last_http()["status"] == 200
+    after_results, after_attempt, after_audits = _admission_counts(fixture, root_id)
+    assert (len(after_results), after_results[0]["id"], len(after_audits),
+            after_attempt.owner_attempt_id) == before
+
+    # Changed-body replay still refuses after the terminal refusal.
+    changed = dict(body)
+    changed["decision"] = {"action": "escalate", "reason": "changed after refusal"}
+    refused = fixture.run_cli(fixture.write_payload(changed, "changed-c3d1.json"))
+    assert refused.returncode != 0
+    assert fixture.last_http()["status"] == 409
+
+    # Read-only exact replay of the terminal refusal: never a second audit.
+    replay = db.finalize_authority_policy_v2_attempt_refusal(
+        root_task_id=root_id, manager_agent=MANAGER, manager_session_id=session_id,
+        result_id=row_id, refusal_code="interrupted_pre_final",
+    )
+    assert replay.status == "already_refused", replay
+    assert len(db.list_authority_policy_v2_result_stage_audits(
+        root_task_id=root_id, manager_agent=MANAGER,
+    )) == 2
+
+    # Discovery no longer lists the now-finalized attempt.
+    assert all(
+        t.attempt_id != attempt.attempt_id
+        for t in db.list_authority_policy_v2_unfinalized_attempts()
+    )
+
+    # A genuine callable refusal, not a fabricated continuation.
+    fixture.release_launch()
+    fixture.join_workers()
+    assert db.get_task(root_id).status is TaskStatus.ESCALATED
+    assert db.get_active_authority_continue_envelope(root_id) is None
+    return root_id
+
+
+def test_shipping_real_callable_refusal_housekeeping(shipping):
+    _drive_c3d1_refusal(shipping)
+
+
+def test_shipping_historically_migrated_callable_refusal(tmp_path, monkeypatch):
+    """The SAME real venue over a FULL historical schema migrated forward."""
+    fixture = _ShippingFixture(tmp_path, monkeypatch, seed_historical=True)
+    fixture.start()
+    try:
+        _drive_c3d1_refusal(fixture)
+    finally:
+        fixture.stop()

@@ -985,10 +985,15 @@ AUTHORITY_POLICY_V2_ESCALATION_DECISION_ACTION = "escalate"
 AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED = "claimed"
 AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_EVALUATED = "evaluated"
 AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CONSUMED = "consumed"
+# THR-229 checkpoint C3d1: the terminal refusal event written on an existing
+# candidate (K) when a pre-final attempt is durably refused.  It is append-only
+# like the other events and carries no authority.
+AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_REFUSED = "refused"
 AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENTS = frozenset({
     AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
     AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_EVALUATED,
     AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CONSUMED,
+    AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_REFUSED,
 })
 
 # THR-229 checkpoint C3c: the forward-only candidate (K) lifecycle.  Claim
@@ -1047,6 +1052,45 @@ AUTHORITY_POLICY_V2_STAGE_REFUSAL_CODES = frozenset({
     # bounded prior-stage/duplicate classification; none is authority.
     "already_evaluated", "already_consumed", "evaluation_missing",
     "evaluation_audit_missing", "evaluation_failed", "consume_failed",
+})
+
+# THR-229 checkpoint C3d1: the terminal pre-final refusal lifecycle.  A refusal
+# is a CLOSED diagnostic recorded on the immutable attempt journal (J) by ONE
+# Database-owned BEGIN IMMEDIATE transaction.  It is never authority, mints no
+# successor/envelope/notification/dispatch, and the closed code allowlist
+# rejects free prose.  ``interrupted_pre_final`` is the generic pre-final
+# interruption code; the specific failed-stage codes record the cause.
+AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED = "refused"
+AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_OWNER_LOST = "owner_lost"
+AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED = "refused"
+# The audit action recording the server-owned durable failed-stage obligation
+# that authorizes housekeeping when the winning owner token was poisoned by an
+# owned-stage failure.  It is written only by the server and is never a
+# caller-supplied allow boolean.  It is a durable discovery/housekeeping
+# obligation, not a second authority path.
+AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION = (
+    "authority_policy_v2_housekeeping_obligation"
+)
+
+AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES = frozenset({
+    "interrupted_pre_final", "claim_failed", "claim_audit_missing",
+    "evaluation_failed", "evaluation_audit_missing", "consume_failed",
+    "consume_audit_missing", "final_commit_failed", "identity_mismatch",
+    "owner_lost", "cancelled", "decision_dispatch_interrupted",
+})
+# A ``housekeeping_pending`` outcome carries a bounded control classification
+# (never a finalized refusal code).  The pending marker itself is the status.
+AUTHORITY_POLICY_V2_HOUSEKEEPING_PENDING_CODE = "authority_v2_housekeeping_pending"
+AUTHORITY_POLICY_V2_HOUSEKEEPING_PENDING_REASONS = frozenset({
+    "transaction_owned", "identity_mismatch", "owner_lost", "evidence_drift",
+    "schema_drift",
+})
+AUTHORITY_POLICY_V2_HOUSEKEEPING_OUTCOME_CODES = (
+    AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES
+    | AUTHORITY_POLICY_V2_HOUSEKEEPING_PENDING_REASONS
+)
+AUTHORITY_POLICY_V2_HOUSEKEEPING_OUTCOME_STATUSES = frozenset({
+    "refused", "owner_lost", "already_refused", "housekeeping_pending",
 })
 
 
@@ -1164,6 +1208,14 @@ class AuthorityPolicyV2Attempt(BaseModel):
             raise ValueError("contract_digest does not match the v2 contract")
         if not self.release_id.startswith("APV2-"):
             raise ValueError("release_id is not a v2 release reference")
+        if self.finalization_state in (
+            AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED,
+            AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_OWNER_LOST,
+        ):
+            if self.refusal_code not in AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES:
+                raise ValueError("a finalized v2 attempt requires a closed refusal code")
+        elif self.refusal_code is not None:
+            raise ValueError("an unfinalized v2 attempt carries no refusal code")
         return self
 
 
@@ -1733,6 +1785,101 @@ class AuthorityPolicyV2StageOutcome(BaseModel):
                 raise ValueError("a refused outcome requires a refusal code")
         elif self.refusal_code is not None:
             raise ValueError("a non-refused outcome carries no refusal code")
+        return self
+
+
+class AuthorityPolicyV2HousekeepingTarget(BaseModel):
+    """Bounded, read-only discovery record for one unfinalized attempt (J).
+
+    Discovery authenticates the actual persisted attempt row and never assumes a
+    candidate exists: a failed claim with no K is still discoverable.  The record
+    is evidence only and grants no housekeeping authority by itself.
+    """
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    attempt_id: StrictStr
+    team: StrictStr
+    root_task_id: StrictStr
+    manager_agent: StrictStr
+    manager_session_id: StrictStr
+    result_id: StrictInt = Field(ge=1, le=9223372036854775807)
+    origin_boot_id: StrictStr
+    owner_attempt_id: StrictStr
+    stage: StrictStr
+    finalization_state: StrictStr
+    candidate_id: StrictStr | None = None
+    obligation_code: StrictStr | None = None
+
+    @field_validator("stage")
+    @classmethod
+    def _v2_target_stage_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_ATTEMPT_STAGES:
+            raise ValueError("target stage is not a current closed stage")
+        return value
+
+    @field_validator("finalization_state")
+    @classmethod
+    def _v2_target_finalization_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_STATES:
+            raise ValueError("target finalization_state is not a closed value")
+        return value
+
+    @field_validator("obligation_code")
+    @classmethod
+    def _v2_target_obligation_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES:
+            raise ValueError("target obligation code is not a closed value")
+        return value
+
+
+class AuthorityPolicyV2HousekeepingOutcome(BaseModel):
+    """Bounded outcome of ONE callable refusal-housekeeping transaction.
+
+    ``refused``/``owner_lost`` name a just-committed terminal refusal;
+    ``already_refused`` is a read-only exact replay of an existing exact
+    refusal/completion audit pair; ``housekeeping_pending`` means safe
+    attribution could not be established (or the transaction failed), so the
+    task/Q/J/prior rows are honestly preserved and only housekeeping may retry.
+    This value is never authority and never a continuation grant.
+    """
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    status: StrictStr
+    attempt_id: StrictStr
+    refusal_code: StrictStr | None = None
+    candidate_id: StrictStr | None = None
+    stage: StrictStr | None = None
+    finalization_state: StrictStr | None = None
+    receipt_settled: bool = False
+
+    @field_validator("status")
+    @classmethod
+    def _v2_housekeeping_status_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_HOUSEKEEPING_OUTCOME_STATUSES:
+            raise ValueError("housekeeping outcome status is not a closed value")
+        return value
+
+    @field_validator("refusal_code")
+    @classmethod
+    def _v2_housekeeping_code_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_HOUSEKEEPING_OUTCOME_CODES:
+            raise ValueError("housekeeping code is not a closed value")
+        return value
+
+    @field_validator("finalization_state")
+    @classmethod
+    def _v2_housekeeping_finalization_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_STATES:
+            raise ValueError("housekeeping finalization_state is not a closed value")
+        return value
+
+    @model_validator(mode="after")
+    def _v2_housekeeping_shape(self) -> AuthorityPolicyV2HousekeepingOutcome:
+        if self.status in ("refused", "owner_lost", "already_refused"):
+            if self.refusal_code not in AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES:
+                raise ValueError("a terminal housekeeping outcome requires a refusal code")
+        elif self.refusal_code is None:
+            raise ValueError("a pending housekeeping outcome requires a bounded reason")
         return self
 
 

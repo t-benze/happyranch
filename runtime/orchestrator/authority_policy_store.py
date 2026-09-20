@@ -27,6 +27,8 @@ from runtime.models import (
     AuthorityPolicyV2Candidate,
     AuthorityPolicyV2ControlReceipt,
     AuthorityPolicyV2Evaluation,
+    AuthorityPolicyV2HousekeepingOutcome,
+    AuthorityPolicyV2HousekeepingTarget,
     AuthorityPolicyV2PairedControlRequest,
     AuthorityPolicyV2Pin,
     AuthorityPolicyV2Release,
@@ -310,6 +312,42 @@ class AuthorityPolicyStore:
     def get_v2_candidate_claim_audit(self, candidate_id: str) -> dict | None:
         return self._db.get_authority_policy_v2_candidate_audit(
             candidate_id, "claimed",
+        )
+
+    # -- THR-229 checkpoint C3d1: thin forwarders over the DB-owned terminal
+    # refusal housekeeping transaction and the read-only discovery seams.  The
+    # facade never begins, commits or rolls back; the Database owns the single
+    # BEGIN IMMEDIATE boundary and the trusted process identity is bound, never
+    # passed as an allow boolean.
+
+    def bind_v2_process_boot_id(self, boot_id: str | None) -> None:
+        """Bind the trusted current daemon-process identity for housekeeping."""
+        self._db.bind_authority_policy_v2_process_boot_id(boot_id)
+
+    def finalize_v2_attempt_refusal(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, refusal_code: str, owner_attempt_id: str | None = None,
+        recovery_session_id: str | None = None,
+    ) -> AuthorityPolicyV2HousekeepingOutcome:
+        return self._db.finalize_authority_policy_v2_attempt_refusal(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            refusal_code=refusal_code, owner_attempt_id=owner_attempt_id,
+            recovery_session_id=recovery_session_id,
+        )
+
+    def list_v2_unfinalized_attempts(
+        self,
+    ) -> list[AuthorityPolicyV2HousekeepingTarget]:
+        return self._db.list_authority_policy_v2_unfinalized_attempts()
+
+    def get_v2_housekeeping_target(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int,
+    ) -> AuthorityPolicyV2HousekeepingTarget | None:
+        return self._db.get_authority_policy_v2_housekeeping_target(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
     def bind_legacy_session(
