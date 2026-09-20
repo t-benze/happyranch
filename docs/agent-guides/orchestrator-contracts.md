@@ -969,6 +969,82 @@ convergence onto the selector, recovery/reaper and API/UI work remain
 outstanding serial units; this staged checkpoint neither activates a policy nor
 claims that lifecycle.
 
+Checkpoint C3d3c2 (same unmerged draft PR) lands the ordinary decision-dispatch
+claim/acknowledgement/interruption-refusal family and its directly coupled
+common-consumer gate, and nothing more. The consumed envelope carrying
+`spending_result_id` is the result-keyed decision receipt; its closed
+forward-only `decision_state` is the durable single-use token.
+`Database.claim_authority_policy_v2_decision_dispatch` (thin store forwarder
+`claim_v2_decision_dispatch`) is ONE synchronized `BEGIN IMMEDIATE` writer that
+refuses caller transaction nesting before BEGIN/rollback and otherwise
+authenticates the COMPLETE spent receipt (the exact post-final `J/K/P/V/E/N/D`
+and final audit set, the retired exact generation, the settled notification, the
+complete retained publication evidence plus the genuine ordinary-or-exact-
+`callback_consumed` settlement proof, both `generation_claimed`/
+`notification_settled` admission events, `R2`'s own authenticated launch binding,
+the exact `spent` audit whose bound `report_digest` still re-derives from the
+persisted `R2` row, and the still-current nonterminal reserved invocation), proves
+the ABSENCE of any potentially-related prior decision event, and CASes
+`ready -> claimed` with exactly one closed `decision_claimed` audit. ONLY that
+winning return authorizes exactly ONE ordinary consumer entry; a
+duplicate/restarted `claimed`, an `applied`/`refused` receipt, a conflicting/
+opaque/malformed/missing identity or a replaced/cancelled owner returns bounded
+`decision_pending` and never authorizes the consumer, and a failed claim/audit
+rolls back to `ready` for one exact retry without spending or evaluating again.
+`Database.acknowledge_authority_policy_v2_decision_dispatch` re-authenticates the
+complete spent receipt plus the single closed historical `decision_claimed` event
+and CASes `claimed -> applied` with exactly one closed `decision_applied` audit;
+it deliberately does NOT require, restore or regress the old task/owner/blocked
+projection (the consumer's independently committed task/child/effect rows and any
+generation `B` are preserved byte-for-byte), an exact applied replay is read-only
+`already_applied_exact` and never a second consumer call, and a failure leaves the
+receipt `claimed`. `Database.refuse_authority_policy_v2_decision_dispatch` is the
+audited `decision_dispatch_interrupted` refusal for an exception/restart after a
+committed claim (before the effect, after an independently committed task/child
+effect, or after a failed acknowledgement): it preserves the spent envelope, the
+causal `J/K/P/V` evidence and every already-committed effect, escalates ONLY the
+still-current nonterminal reserved invocation (a cancelled/terminal/replaced task
+and any generation `B` are preserved exactly, with no task mutation), retires/
+settles only the exact owned obligation and never mutates a replacement pointer,
+and CASes `claimed -> refused` with exactly one closed
+`decision_dispatch_interrupted` audit; a failed refusal transaction rolls back
+only itself, retaining the discoverable `claimed` state and a bounded pending
+outcome. `Database.get_authority_policy_v2_decision_receipt_for_result` is the
+read-only classification (`None` only for the provably no-v2 path; a corrupt
+canonical body returns `{"corrupt": true}` and is never ordinary absence) and
+`Database.authority_policy_v2_decision_result_report_binds` compares the supplied
+report's material scalar/collection projection and parsed decision action against
+the retained `R2` row. The COMMON consumer is guarded: `run_step.py` splits the
+existing `_consume_completion_report` into the single guarded entry (used by
+ordinary completion, accepted recovery, the startup sweep and the zombie reaper)
+and the unchanged `_consume_completion_report_body` (the EXISTING normal decision
+body). Before ANY normal task mutation/orchestration audit/decision/delegate/
+enqueue effect the guard classifies the exact result-keyed receipt: the
+uninterrupted winning claim runs the existing body exactly once and then
+acknowledges `claimed -> applied`; every other v2 outcome skips the body
+(performing audited interruption refusal for a restarted `claimed` receipt); a
+`ready` receipt first requires the supplied report to BE the exact persisted `R2`
+body and otherwise refuses without any effect; a missing/mistyped result identity
+on a root whose v2 generation is retired is never ordinary-path permission; and a
+provably ordinary/v1 result (including a lightweight/fake store with no v2
+reader) is unchanged. An exception raised by the normal body after the claim
+triggers the refusal bookkeeping and is re-raised, and an acknowledgement/audit
+failure leaves the receipt `claimed` and never re-runs the consumer. The
+accepted-recovery special branches route any spent next-result receipt through the
+same guarded entry so they cannot bypass it. The automatic v2 authority
+continuation hook stays fail-closed/DARK: the broader startup/reaper/queue
+producer discovery and the editable-pair editor/browser path remain
+unimplemented. `runtime/orchestrator/authority_policy_store.py` exposes thin
+`claim_v2_decision_dispatch`/`acknowledge_v2_decision_dispatch`/
+`refuse_v2_decision_dispatch`/`get_v2_decision_receipt_for_result`/
+`v2_decision_result_report_binds` forwarders that never begin/commit/roll back and
+perform no consumer/queue/external-process call.
+`tests/test_authority_v2_decision_dispatch.py` drives the healthy claim/ack/
+replay, interruption refusal, cancellation preservation, caller-nesting,
+boundary-injection, two-connection one-winner and corrupt/malformed-prior-event
+matrix plus the common-consumer gate classification at the real Database/store
+seam.
+
 ## Inline Delegation Chains
 
 A manager can declare a multi-leg workflow in one `delegate` decision using `NextStep.then` and optional per-leg `expect_verdict` gates. The orchestrator auto-advances to the next leg when a child terminates completed with a matching verdict. Since THR-211, auto-advance may also fire from a child whose completion report has durably landed while its task row still reads `in_progress` (the completion-status-lag window) — the recognition is session-safe and at-most-once, and the chain gate consumes the exact authenticated `(task_id, assigned_agent, current_session_id)` report so a newer unrelated row can never advance or clear the chain; see `tests/test_thr211_completion_status_lag.py` for the session-bound regression cases.

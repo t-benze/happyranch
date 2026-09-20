@@ -1268,6 +1268,46 @@ AUTHORITY_POLICY_V2_SPEND_PENDING_REASONS = frozenset({
 # representation is introduced.
 AUTHORITY_POLICY_V2_RESULT_STAGE_SPENT = "spent"
 
+# THR-229 checkpoint C3d3c2: bounded decision-dispatch vocabulary for the
+# ordinary decision consumer coupled to one spent result-keyed receipt.  The
+# receipt's ``decision_state`` is the durable single-use token: only a winning
+# ``ready -> claimed`` transition authorizes exactly ONE ordinary consumer
+# entry; a duplicate/restarted ``claimed`` (or an ``applied``/``refused``)
+# receipt never does.  None of these statuses is launch authority, and no
+# writer below performs a queue call, child creation or external process claim.
+AUTHORITY_POLICY_V2_DECISION_CLAIM_STATUSES = frozenset({
+    "claimed", "decision_pending",
+})
+AUTHORITY_POLICY_V2_DECISION_CLAIM_PENDING_REASONS = frozenset({
+    "transaction_owned", "identity_mismatch", "evidence_drift", "owner_lost",
+    "not_claimable", "already_claimed", "already_applied", "already_refused",
+    "claim_failed",
+})
+AUTHORITY_POLICY_V2_DECISION_ACK_STATUSES = frozenset({
+    "applied", "already_applied_exact", "ack_pending",
+})
+AUTHORITY_POLICY_V2_DECISION_ACK_PENDING_REASONS = frozenset({
+    "transaction_owned", "identity_mismatch", "evidence_drift", "not_claimed",
+    "already_refused", "ack_failed",
+})
+AUTHORITY_POLICY_V2_DECISION_REFUSAL_STATUSES = frozenset({
+    "refused", "already_refused", "refusal_pending",
+})
+AUTHORITY_POLICY_V2_DECISION_REFUSAL_PENDING_REASONS = frozenset({
+    "transaction_owned", "identity_mismatch", "evidence_drift", "not_claimable",
+    "already_applied", "refusal_failed",
+})
+# Closed result-stage events appended by the decision-dispatch writers.  They
+# reuse the existing ``authority_policy_v2_result_stage`` action, bind the exact
+# result-keyed receipt identity (including the bound ``report_digest``) and the
+# reserved next session, and therefore introduce no new audit scope, table or
+# column.  Each is a closed diagnostic, never raw model prose.
+AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED = "decision_claimed"
+AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_APPLIED = "decision_applied"
+AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_DISPATCH_INTERRUPTED = (
+    "decision_dispatch_interrupted"
+)
+
 
 class AuthorityPolicyV2Attempt(BaseModel):
     """Immutable admitted attempt journal row for one v2 callback result.
@@ -2858,6 +2898,238 @@ class AuthorityPolicyV2SpendOutcome(BaseModel):
                 "a committed spend requires the exact receipt identity and "
                 "bound report digest"
             )
+        return self
+
+
+class AuthorityPolicyV2DecisionClaimOutcome(BaseModel):
+    """Bounded outcome of the ONE atomic decision-dispatch claim transaction.
+
+    ``claimed`` just committed the single-use ``ready -> claimed`` CAS on the
+    exact result-keyed receipt together with one closed ``decision_claimed``
+    audit; ONLY that winning return authorizes exactly one ordinary consumer
+    entry.  ``decision_pending`` means NO consumer authority exists: the caller
+    must not run the normal decision body.  A committed outcome carries the exact
+    receipt identity plus the bound ``report_digest``; none of these statuses is
+    launch authority.
+    """
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    status: StrictStr
+    reason: StrictStr | None = None
+    attempt_id: StrictStr | None = None
+    candidate_id: StrictStr | None = None
+    notification_id: StrictStr | None = None
+    envelope_id: StrictStr | None = None
+    generation_id: StrictStr | None = None
+    result_id: StrictInt | None = Field(default=None, ge=1, le=9223372036854775807)
+    spending_result_id: StrictInt | None = Field(
+        default=None, ge=1, le=9223372036854775807,
+    )
+    next_session_id: StrictStr | None = None
+    decision_state: StrictStr | None = None
+    report_digest: StrictStr | None = None
+
+    @field_validator("status")
+    @classmethod
+    def _v2_decision_claim_status_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_DECISION_CLAIM_STATUSES:
+            raise ValueError("decision claim status is not a closed value")
+        return value
+
+    @field_validator("reason")
+    @classmethod
+    def _v2_decision_claim_reason_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_DECISION_CLAIM_PENDING_REASONS:
+            raise ValueError("decision claim reason is not a closed value")
+        return value
+
+    @field_validator("report_digest")
+    @classmethod
+    def _v2_decision_claim_report_digest_is_sha256(
+        cls, value: str | None,
+    ) -> str | None:
+        if value is not None:
+            _validate_authority_policy_v2_digest(value, "report_digest")
+        return value
+
+    @field_validator("decision_state")
+    @classmethod
+    def _v2_decision_claim_state_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_DECISION_STATES:
+            raise ValueError("decision claim state is not a closed value")
+        return value
+
+    @model_validator(mode="after")
+    def _v2_decision_claim_shape(self) -> AuthorityPolicyV2DecisionClaimOutcome:
+        if self.status == "decision_pending":
+            if self.reason is None:
+                raise ValueError("a pending decision claim requires a bounded reason")
+            return self
+        if self.reason is not None:
+            raise ValueError("a claimed decision carries no pending reason")
+        if self.decision_state != "claimed":
+            raise ValueError("a claimed decision receipt must be exactly claimed")
+        if (
+            self.attempt_id is None or self.candidate_id is None
+            or self.notification_id is None or self.envelope_id is None
+            or self.generation_id is None or self.result_id is None
+            or self.spending_result_id is None or self.next_session_id is None
+            or self.report_digest is None
+        ):
+            raise ValueError(
+                "a claimed decision requires the exact receipt identity and "
+                "bound report digest"
+            )
+        return self
+
+
+class AuthorityPolicyV2DecisionAckOutcome(BaseModel):
+    """Bounded outcome of the separate decision acknowledgement transaction.
+
+    ``applied`` just CASed ``claimed -> applied`` with one closed
+    ``decision_applied`` audit after the winning caller returned from the real
+    ordinary consumer.  ``already_applied_exact`` is a read-only replay of the
+    authenticated applied receipt and NEVER authorizes a second consumer call.
+    ``ack_pending`` means the receipt stayed ``claimed`` and no acknowledgement
+    was written; the caller must not re-run the consumer.
+    """
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    status: StrictStr
+    reason: StrictStr | None = None
+    attempt_id: StrictStr | None = None
+    candidate_id: StrictStr | None = None
+    envelope_id: StrictStr | None = None
+    generation_id: StrictStr | None = None
+    spending_result_id: StrictInt | None = Field(
+        default=None, ge=1, le=9223372036854775807,
+    )
+    next_session_id: StrictStr | None = None
+    decision_state: StrictStr | None = None
+    report_digest: StrictStr | None = None
+
+    @field_validator("status")
+    @classmethod
+    def _v2_decision_ack_status_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_DECISION_ACK_STATUSES:
+            raise ValueError("decision ack status is not a closed value")
+        return value
+
+    @field_validator("reason")
+    @classmethod
+    def _v2_decision_ack_reason_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_DECISION_ACK_PENDING_REASONS:
+            raise ValueError("decision ack reason is not a closed value")
+        return value
+
+    @field_validator("report_digest")
+    @classmethod
+    def _v2_decision_ack_report_digest_is_sha256(
+        cls, value: str | None,
+    ) -> str | None:
+        if value is not None:
+            _validate_authority_policy_v2_digest(value, "report_digest")
+        return value
+
+    @field_validator("decision_state")
+    @classmethod
+    def _v2_decision_ack_state_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_DECISION_STATES:
+            raise ValueError("decision ack state is not a closed value")
+        return value
+
+    @model_validator(mode="after")
+    def _v2_decision_ack_shape(self) -> AuthorityPolicyV2DecisionAckOutcome:
+        if self.status == "ack_pending":
+            if self.reason is None:
+                raise ValueError("a pending decision ack requires a bounded reason")
+            return self
+        if self.reason is not None:
+            raise ValueError("an acknowledged decision carries no pending reason")
+        if self.decision_state != "applied":
+            raise ValueError("an acknowledged decision receipt must be applied")
+        if (
+            self.envelope_id is None or self.spending_result_id is None
+            or self.next_session_id is None or self.report_digest is None
+        ):
+            raise ValueError("an acknowledged decision requires the exact receipt")
+        return self
+
+
+class AuthorityPolicyV2DecisionRefusalOutcome(BaseModel):
+    """Bounded outcome of the audited decision-dispatch interruption refusal.
+
+    ``refused`` just CASed ``claimed -> refused`` on the exact result-keyed
+    receipt with one closed ``decision_dispatch_interrupted`` audit; the spent
+    envelope, causal attempt/journal evidence and every earlier committed
+    effect are preserved byte-for-byte, the exact owned obligation is retired/
+    settled only, and any replacement generation B is untouched.  A
+    still-current nonterminal reserved invocation is escalated with the closed
+    diagnostic; a cancelled/terminal/replaced task is preserved exactly.
+    ``already_refused`` is a read-only exact replay.  ``refusal_pending`` means
+    the receipt stayed ``claimed`` (or the transaction failed) and the
+    discoverable claimed state is retained.
+    """
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    status: StrictStr
+    reason: StrictStr | None = None
+    attempt_id: StrictStr | None = None
+    candidate_id: StrictStr | None = None
+    envelope_id: StrictStr | None = None
+    generation_id: StrictStr | None = None
+    spending_result_id: StrictInt | None = Field(
+        default=None, ge=1, le=9223372036854775807,
+    )
+    next_session_id: StrictStr | None = None
+    decision_state: StrictStr | None = None
+    refusal_code: StrictStr | None = None
+
+    @field_validator("status")
+    @classmethod
+    def _v2_decision_refusal_status_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_DECISION_REFUSAL_STATUSES:
+            raise ValueError("decision refusal status is not a closed value")
+        return value
+
+    @field_validator("reason")
+    @classmethod
+    def _v2_decision_refusal_reason_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_DECISION_REFUSAL_PENDING_REASONS:
+            raise ValueError("decision refusal reason is not a closed value")
+        return value
+
+    @field_validator("refusal_code")
+    @classmethod
+    def _v2_decision_refusal_code_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value != AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_DISPATCH_INTERRUPTED:
+            raise ValueError("decision refusal code is not the closed interruption code")
+        return value
+
+    @field_validator("decision_state")
+    @classmethod
+    def _v2_decision_refusal_state_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_DECISION_STATES:
+            raise ValueError("decision refusal state is not a closed value")
+        return value
+
+    @model_validator(mode="after")
+    def _v2_decision_refusal_shape(self) -> AuthorityPolicyV2DecisionRefusalOutcome:
+        if self.status == "refusal_pending":
+            if self.reason is None:
+                raise ValueError("a pending decision refusal requires a bounded reason")
+            return self
+        if self.reason is not None:
+            raise ValueError("a refused decision carries no pending reason")
+        if self.decision_state != "refused":
+            raise ValueError("a refused decision receipt must be exactly refused")
+        if self.refusal_code != AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_DISPATCH_INTERRUPTED:
+            raise ValueError("a refused decision requires the closed interruption code")
+        if (
+            self.envelope_id is None or self.spending_result_id is None
+            or self.next_session_id is None
+        ):
+            raise ValueError("a refused decision requires the exact receipt")
         return self
 
 

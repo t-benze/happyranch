@@ -36,6 +36,9 @@ from runtime.models import (
     AuthorityPolicyV2CandidateAudit,
     AuthorityPolicyV2ContinueEnvelope,
     AuthorityPolicyV2ControlReceipt,
+    AuthorityPolicyV2DecisionAckOutcome,
+    AuthorityPolicyV2DecisionClaimOutcome,
+    AuthorityPolicyV2DecisionRefusalOutcome,
     AuthorityPolicyV2Evaluation,
     AuthorityPolicyV2FinalizationOutcome,
     AuthorityPolicyV2GenerationClaimOutcome,
@@ -90,6 +93,9 @@ from runtime.models import (
     AUTHORITY_POLICY_V2_RECOVERY_SETTLED_ACTION,
     AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
     AUTHORITY_POLICY_V2_RESULT_STAGE_CONTINUED,
+    AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_APPLIED,
+    AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED,
+    AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_DISPATCH_INTERRUPTED,
     AUTHORITY_POLICY_V2_RESULT_STAGE_GENERATION_CLAIMED,
     AUTHORITY_POLICY_V2_RESULT_STAGE_INVALIDATED,
     AUTHORITY_POLICY_V2_RESULT_STAGE_NOTIFICATION_SETTLED,
@@ -1572,6 +1578,17 @@ _V2_INVALIDATION_RESULT_STAGE_KEYS = frozenset({
     "stage", "attempt_id", "candidate_id", "result_id", "envelope_id",
     "notification_id", "generation_id",
 })
+# THR-229 checkpoint C3d3c2: the closed result-keyed decision-dispatch event
+# shape.  Each decision event binds the exact causal attempt/candidate/result/
+# envelope/notification/generation PLUS the reserved next session, the immutable
+# spending result and its bound ``report_digest`` -- the same exact receipt
+# identity the ``spent`` audit binds.  ``spent`` carries exactly this shape too.
+_V2_DECISION_RESULT_STAGE_KEYS = frozenset({
+    "stage", "attempt_id", "candidate_id", "result_id", "envelope_id",
+    "notification_id", "generation_id", "next_session_id",
+    "spending_result_id", "report_digest",
+})
+_V2_SPEND_RESULT_STAGE_KEYS = _V2_DECISION_RESULT_STAGE_KEYS
 _V2_SPEND_OTHER_RESULT_STAGE_KEY_SETS = {
     AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED: (
         _V2_ATTEMPT_RESULT_STAGE_KEYS,
@@ -1613,7 +1630,25 @@ _V2_SPEND_OTHER_RESULT_STAGE_KEY_SETS = {
     AUTHORITY_POLICY_V2_RESULT_STAGE_NOTIFICATION_SETTLED: (
         _V2_ADMISSION_RESULT_STAGE_KEYS,
     ),
+    # The decision-dispatch family is independently legitimate OTHER-stage
+    # history for the ``spent`` classifier, so a committed claim/applied/
+    # interruption never makes an exact ``already_spent_exact`` replay fail.
+    AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED: (
+        _V2_DECISION_RESULT_STAGE_KEYS,
+    ),
+    AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_APPLIED: (
+        _V2_DECISION_RESULT_STAGE_KEYS,
+    ),
+    AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_DISPATCH_INTERRUPTED: (
+        _V2_DECISION_RESULT_STAGE_KEYS,
+    ),
 }
+# Every recognized closed result-stage shape, used by the decision-dispatch
+# classifier to skip only genuinely authentic OTHER-stage history.
+_V2_ALL_RESULT_STAGE_KEY_SETS = dict(_V2_SPEND_OTHER_RESULT_STAGE_KEY_SETS)
+_V2_ALL_RESULT_STAGE_KEY_SETS[AUTHORITY_POLICY_V2_RESULT_STAGE_SPENT] = (
+    _V2_SPEND_RESULT_STAGE_KEYS,
+)
 
 
 class Database:
@@ -13926,6 +13961,799 @@ class Database:
             return AuthorityPolicyV2SpendOutcome(
                 status="spend_pending", reason="spend_failed",
             )
+
+    # ------------------------------------------------------------------
+    # THR-229 checkpoint C3d3c2: the ordinary decision-dispatch family.
+    #
+    # The consumed continuation envelope (E) carrying a non-null
+    # ``spending_result_id`` IS the result-keyed decision receipt (R2).  Its
+    # closed, forward-only ``decision_state`` is the durable single-use token:
+    # exactly ONE winning ``ready -> claimed`` CAS (plus one closed
+    # ``decision_claimed`` audit) authorizes exactly ONE ordinary consumer
+    # entry; a separate ``claimed -> applied`` acknowledgement records the
+    # consumer's return; and an audited ``decision_dispatch_interrupted``
+    # refusal records an exception/restart after the claim without ever
+    # re-invoking the consumer.  No writer here calls the consumer, a queue or
+    # an external process.
+    # ------------------------------------------------------------------
+
+    def _v2_decision_event_payload(
+        self, *, stage: str, attempt_id: str, candidate_id: str, result_id: int,
+        envelope_id: str, notification_id: str, generation_id: str,
+        next_session_id: str, spending_result_id: int, report_digest: str,
+    ) -> dict:
+        """One closed result-keyed decision-dispatch event payload."""
+        return {
+            "stage": stage,
+            "attempt_id": attempt_id,
+            "candidate_id": candidate_id,
+            "result_id": result_id,
+            "envelope_id": envelope_id,
+            "notification_id": notification_id,
+            "generation_id": generation_id,
+            "next_session_id": next_session_id,
+            "spending_result_id": spending_result_id,
+            "report_digest": report_digest,
+        }
+
+    @staticmethod
+    def _v2_result_stage_shape_is_closed(stage, payload) -> bool:
+        """True only for a recognized result stage in its exact closed shape."""
+        if not isinstance(stage, str):
+            return False
+        key_sets = _V2_ALL_RESULT_STAGE_KEY_SETS.get(stage)
+        if not key_sets:
+            return False
+        return frozenset(payload.keys()) in key_sets
+
+    def _v2_related_decision_events_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, attempt_id: str,
+        candidate_id: str, result_id: int, envelope_id: str,
+        notification_id: str, generation_id: str, next_session_id: str,
+        spending_result_id: int,
+    ) -> dict[str, list[dict]] | None:
+        """Enumerate POTENTIALLY related decision events BEFORE filtering.
+
+        Identity-scoped enumeration happens before any stage/discriminator
+        filtering, so an appended decision row whose attempt/result/envelope/
+        notification/generation/next-session/spending-result reference is
+        null/missing/mistyped/foreign -- or whose body is opaque or carries
+        extra keys -- can never be discarded before classification.  ``None``
+        means unreadable/opaque or a related row with a corrupt non-decision
+        shape: the caller must fail closed.
+
+        A row is skipped as independently legitimate history ONLY when its
+        discriminator names a recognized result stage AND its payload carries
+        that stage's exact closed key set.  Rows whose stage is one of the
+        decision-dispatch stages are classified by identity and grouped by
+        stage, so a conflicting decision event can never hide behind a
+        same-generation filter.
+        """
+        rows = self._v2_identity_scoped_audits(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            attempt_id=None, include_opaque=True,
+        )
+        if rows is None:
+            return None
+        decision_stages = (
+            AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED,
+            AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_APPLIED,
+            AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_DISPATCH_INTERRUPTED,
+        )
+        identities = (
+            ("attempt_id", attempt_id, "str"),
+            ("candidate_id", candidate_id, "str"),
+            ("result_id", result_id, "int"),
+            ("envelope_id", envelope_id, "str"),
+            ("notification_id", notification_id, "str"),
+            ("generation_id", generation_id, "str"),
+            ("next_session_id", next_session_id, "str"),
+            ("spending_result_id", spending_result_id, "int"),
+        )
+        by_stage: dict[str, list[dict]] = {}
+        for row in rows:
+            payload = row["payload"]
+            if not isinstance(payload, dict):
+                return None
+            stage = payload.get("stage")
+            states = [
+                self._v2_identity_observation(payload, field, value, kind)
+                for field, value, kind in identities
+            ]
+            if stage not in decision_stages:
+                if self._v2_result_stage_shape_is_closed(stage, payload):
+                    continue
+                if all(state == "distinct" for state in states):
+                    continue
+                # A corrupt-shape non-decision row with a matching/malformed
+                # causal reference is a conflict, never independently absent.
+                return None
+            if all(state == "distinct" for state in states):
+                continue
+            by_stage.setdefault(stage, []).append(payload)
+        return by_stage
+
+    def _v2_decision_events_absent_uncommitted(self, **kwargs) -> bool:
+        """True only when ZERO potentially-related decision events exist."""
+        by_stage = self._v2_related_decision_events_uncommitted(**kwargs)
+        return by_stage is not None and len(by_stage) == 0
+
+    def _authenticate_v2_decision_event_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, expected: dict,
+        allowed_stages: tuple[str, ...],
+    ) -> bool:
+        """Exactly one authentic CLOSED decision event for the exact receipt.
+
+        ``allowed_stages`` is the exact set of decision stages permitted to
+        coexist (for an ``applied`` replay that is claim+applied; for a fresh
+        acknowledgement or refusal it is only the historical claim).  A
+        missing, duplicated, mutated, conflicting, foreign, opaque or extra-key
+        decision event refuses with no repair-by-reinsertion.
+        """
+        by_stage = self._v2_related_decision_events_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=expected["attempt_id"], candidate_id=expected["candidate_id"],
+            result_id=expected["result_id"], envelope_id=expected["envelope_id"],
+            notification_id=expected["notification_id"],
+            generation_id=expected["generation_id"],
+            next_session_id=expected["next_session_id"],
+            spending_result_id=expected["spending_result_id"],
+        )
+        if by_stage is None:
+            return False
+        for stage, payloads in by_stage.items():
+            if stage not in allowed_stages:
+                return False
+            if len(payloads) != 1:
+                return False
+        rows = by_stage.get(expected["stage"], [])
+        if len(rows) != 1:
+            return False
+        payload = rows[0]
+        if set(payload.keys()) != set(expected.keys()):
+            return False
+        return self._v2_json_type_sensitive_equal(payload, expected)
+
+    def _authenticate_v2_spent_decision_receipt_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, result_id: int,
+    ) -> tuple[str | None, dict | None]:
+        """Read-only authentication of the complete spent result-keyed receipt.
+
+        Reuses the exact post-final evidence rules (J/K/P/V/E/N/D and every
+        final audit), then additionally requires the consumed envelope carrying
+        this exact spending result with a closed decision state, the retired
+        exact generation, the settled notification, the complete retained
+        publication + settlement proof, both generation-admission events, R2's
+        own authenticated launch binding and the exact ``spent`` audit whose
+        closed ``report_digest`` still re-derives from the persisted R2 row.
+        It deliberately does NOT require any task projection: the ordinary
+        consumer may legitimately have changed the task, and the claim/refusal
+        boundaries apply their own current-owner predicate.
+        """
+        # The post-final authenticator needs the causal manager session, which
+        # the caller resolves from the attempt journal.  Resolve it here so the
+        # exact causal tuple is never caller-supplied.
+        attempt_row = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_attempts
+               WHERE root_task_id=? AND manager_agent=? AND result_id=?""",
+            (root_task_id, manager_agent, result_id),
+        ).fetchone()
+        if attempt_row is None:
+            return "identity_mismatch", None
+        manager_session_id = attempt_row["manager_session_id"]
+        if not isinstance(manager_session_id, str) or not manager_session_id:
+            return "identity_mismatch", None
+        code, ctx = self._authenticate_v2_post_final_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+        )
+        if code is not None:
+            return code, None
+        assert ctx is not None
+        envelope = ctx["envelope"]
+        notification = ctx["notification"]
+        dispatch = ctx["dispatch"]
+        attempt = ctx["attempt"]
+        candidate = ctx["candidate"]
+        generation_id = ctx["generation_id"]
+        if (
+            envelope.lifecycle_state != "consumed"
+            or envelope.spending_result_id is None
+            or envelope.decision_state is None
+        ):
+            return "not_claimable", None
+        spending_result_id = envelope.spending_result_id
+        next_session_id = notification.next_session_id
+        if not isinstance(next_session_id, str) or not next_session_id:
+            return "identity_mismatch", None
+        if dispatch.state != "retired" or dispatch.generation_id != generation_id:
+            return "evidence_drift", None
+        if notification.state != "settled":
+            return "evidence_drift", None
+        r2 = self._authenticate_v2_spending_result_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            next_session_id=next_session_id, spending_result_id=spending_result_id,
+            causal_result_id=result_id,
+        )
+        if r2 is None:
+            return "missing_result", None
+        _r2_row, report_digest = r2
+        expected_spent = self._v2_spend_event_payload(
+            attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+            result_id=result_id, envelope_id=envelope.envelope_id,
+            notification_id=notification.notification_id,
+            generation_id=generation_id, next_session_id=next_session_id,
+            spending_result_id=spending_result_id, report_digest=report_digest,
+        )
+        if not self._authenticate_v2_spend_event_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            expected=expected_spent,
+        ):
+            return "evidence_drift", None
+        if not self._authenticate_v2_retained_publication_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+            result_id=result_id, envelope_id=envelope.envelope_id,
+            notification=notification, generation_id=generation_id,
+            allowed_states=("admitted", "settled"),
+        ):
+            return "evidence_drift", None
+        if not self._authenticate_v2_publication_settlement_proof_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            attempt=attempt, candidate=candidate, envelope=envelope,
+            notification=notification, result_row=ctx["result_row"],
+        ):
+            return "evidence_drift", None
+        for stage in (
+            AUTHORITY_POLICY_V2_RESULT_STAGE_GENERATION_CLAIMED,
+            AUTHORITY_POLICY_V2_RESULT_STAGE_NOTIFICATION_SETTLED,
+        ):
+            if not self._authenticate_v2_admission_event_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                attempt_id=attempt.attempt_id,
+                expected=self._v2_admission_event_payload(
+                    stage=stage, attempt_id=attempt.attempt_id,
+                    candidate_id=candidate.candidate_id, result_id=result_id,
+                    envelope_id=envelope.envelope_id,
+                    notification_id=notification.notification_id,
+                    generation_id=generation_id, next_session_id=next_session_id,
+                ),
+            ):
+                return "evidence_drift", None
+        binding2 = self.get_authority_policy_v2_session_binding(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=next_session_id,
+        )
+        if binding2 is None:
+            return "identity_mismatch", None
+        try:
+            self._authenticate_v2_session_binding_uncommitted(binding2)
+        except Exception:
+            return "identity_mismatch", None
+        if (
+            binding2.team != candidate.team
+            or binding2.contract_id != candidate.contract_id
+            or binding2.contract_version != candidate.contract_version
+            or binding2.contract_digest != candidate.contract_digest
+        ):
+            return "identity_mismatch", None
+        return None, {
+            **ctx,
+            "manager_session_id": manager_session_id,
+            "spending_result_id": spending_result_id,
+            "next_session_id": next_session_id,
+            "report_digest": report_digest,
+            "expected_spent": expected_spent,
+            "r2_row": _r2_row,
+        }
+
+    def _v2_claim_task_owner_current_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, next_session_id: str,
+    ) -> bool:
+        """The still-current nonterminal reserved invocation for the claim."""
+        task_row = self._conn.execute(
+            "SELECT * FROM tasks WHERE id=?", (root_task_id,)
+        ).fetchone()
+        return not (
+            task_row is None
+            or task_row["cancelled_at"] is not None
+            or task_row["status"] != TaskStatus.IN_PROGRESS.value
+            or task_row["block_kind"] is not None
+            or task_row["assigned_agent"] != manager_agent
+            or task_row["current_session_id"] != next_session_id
+        )
+
+    def _set_v2_decision_state_uncommitted(
+        self, envelope: AuthorityPolicyV2ContinueEnvelope, new_state: str,
+    ) -> None:
+        """CAS the closed forward-only decision state with its canonical body."""
+        updated = envelope.model_copy(update={"decision_state": new_state})
+        snapshot = updated.model_dump(mode="json")
+        canonical = authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8")
+        cursor = self._conn.execute(
+            """UPDATE authority_policy_v2_continue_envelopes
+                  SET decision_state=?, canonical_payload_json=?
+                WHERE envelope_id=? AND lifecycle_state='consumed'
+                  AND decision_state=?""",
+            (new_state, canonical, envelope.envelope_id, envelope.decision_state),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("v2 decision receipt CAS lost")
+
+    def _claim_v2_decision_dispatch_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, result_id: int,
+    ) -> AuthorityPolicyV2DecisionClaimOutcome:
+        def _pending(reason: str, **kw) -> AuthorityPolicyV2DecisionClaimOutcome:
+            return AuthorityPolicyV2DecisionClaimOutcome(
+                status="decision_pending", reason=reason, **kw,
+            )
+
+        code, receipt = self._authenticate_v2_spent_decision_receipt_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            result_id=result_id,
+        )
+        if code is not None:
+            return _pending(code)
+        assert receipt is not None
+        envelope = receipt["envelope"]
+        decision_state = envelope.decision_state
+        base = {
+            "attempt_id": receipt["attempt"].attempt_id,
+            "candidate_id": receipt["candidate"].candidate_id,
+            "notification_id": receipt["notification"].notification_id,
+            "envelope_id": envelope.envelope_id,
+            "generation_id": receipt["generation_id"],
+            "result_id": result_id,
+            "spending_result_id": receipt["spending_result_id"],
+            "next_session_id": receipt["next_session_id"],
+            "report_digest": receipt["report_digest"],
+        }
+        if decision_state == "claimed":
+            return _pending("already_claimed", **base)
+        if decision_state == "applied":
+            return _pending("already_applied", **base)
+        if decision_state == "refused":
+            return _pending("already_refused", **base)
+        if decision_state != "ready":
+            return _pending("not_claimable", **base)
+        if not self._v2_claim_task_owner_current_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            next_session_id=receipt["next_session_id"],
+        ):
+            return _pending("owner_lost", **base)
+        # The FIRST claim must be the ONLY one: prove ABSENCE of any related
+        # decision event separately from a false/malformed authentication.
+        if not self._v2_decision_events_absent_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=receipt["attempt"].attempt_id,
+            candidate_id=receipt["candidate"].candidate_id, result_id=result_id,
+            envelope_id=envelope.envelope_id,
+            notification_id=receipt["notification"].notification_id,
+            generation_id=receipt["generation_id"],
+            next_session_id=receipt["next_session_id"],
+            spending_result_id=receipt["spending_result_id"],
+        ):
+            return _pending("evidence_drift", **base)
+        self._set_v2_decision_state_uncommitted(envelope, "claimed")
+        self.insert_audit_log_uncommitted(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            self._v2_decision_event_payload(
+                stage=AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED, **base,
+            ),
+        )
+        return AuthorityPolicyV2DecisionClaimOutcome(
+            status="claimed", **base, decision_state="claimed",
+        )
+
+    @_synchronized
+    def claim_authority_policy_v2_decision_dispatch(
+        self, *, root_task_id: str, manager_agent: str, result_id: int,
+    ) -> AuthorityPolicyV2DecisionClaimOutcome:
+        """ONE synchronized atomic ``ready -> claimed`` decision-dispatch claim.
+
+        Authenticates the complete spent result-keyed receipt (J/K/P/V/E/N/D,
+        every final audit, the retained publication + settlement proof, the two
+        generation-admission events, R2 and its bound ``report_digest``, and the
+        exact ``spent`` audit), the still-current nonterminal reserved
+        invocation, then CASes ``decision_state ready -> claimed`` with exactly
+        one closed ``decision_claimed`` audit.  ONLY a ``claimed`` return
+        authorizes exactly one ordinary consumer entry.  A duplicate/restarted
+        ``claimed``, or an ``applied``/``refused`` receipt, returns bounded
+        ``decision_pending`` and never authorizes the consumer.  A failed
+        claim/audit rolls back to ``ready`` and permits an exact retry without
+        spending or evaluating again.  This method performs NO consumer call,
+        queue call, child creation or task-status effect.
+        """
+        if self._conn.in_transaction:
+            return AuthorityPolicyV2DecisionClaimOutcome(
+                status="decision_pending", reason="transaction_owned",
+            )
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            outcome = self._claim_v2_decision_dispatch_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                result_id=result_id,
+            )
+            if outcome.status == "decision_pending":
+                self._conn.rollback()
+                return outcome
+            self._conn.commit()
+            return outcome
+        except Exception:
+            self._conn.rollback()
+            return AuthorityPolicyV2DecisionClaimOutcome(
+                status="decision_pending", reason="claim_failed",
+            )
+
+    def _acknowledge_v2_decision_dispatch_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, result_id: int,
+    ) -> AuthorityPolicyV2DecisionAckOutcome:
+        def _pending(reason: str, **kw) -> AuthorityPolicyV2DecisionAckOutcome:
+            return AuthorityPolicyV2DecisionAckOutcome(
+                status="ack_pending", reason=reason, **kw,
+            )
+
+        code, receipt = self._authenticate_v2_spent_decision_receipt_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            result_id=result_id,
+        )
+        if code is not None:
+            return _pending(code)
+        assert receipt is not None
+        envelope = receipt["envelope"]
+        base = {
+            "attempt_id": receipt["attempt"].attempt_id,
+            "candidate_id": receipt["candidate"].candidate_id,
+            "envelope_id": envelope.envelope_id,
+            "generation_id": receipt["generation_id"],
+            "spending_result_id": receipt["spending_result_id"],
+            "next_session_id": receipt["next_session_id"],
+            "report_digest": receipt["report_digest"],
+        }
+        event_base = {
+            **base, "result_id": result_id,
+            "notification_id": receipt["notification"].notification_id,
+        }
+        claim_event = self._v2_decision_event_payload(
+            stage=AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED, **event_base,
+        )
+        applied_event = self._v2_decision_event_payload(
+            stage=AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_APPLIED, **event_base,
+        )
+        decision_state = envelope.decision_state
+        if decision_state == "applied":
+            if not self._authenticate_v2_decision_event_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                expected=applied_event,
+                allowed_stages=(
+                    AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED,
+                    AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_APPLIED,
+                ),
+            ):
+                return _pending("evidence_drift", **base)
+            return AuthorityPolicyV2DecisionAckOutcome(
+                status="already_applied_exact", **base, decision_state="applied",
+            )
+        if decision_state == "refused":
+            return _pending("already_refused", **base)
+        if decision_state != "claimed":
+            return _pending("not_claimed", **base)
+        # The historical claim must be exactly one authentic closed event, and
+        # no applied/interrupted event may already exist for this receipt.
+        if not self._authenticate_v2_decision_event_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            expected=claim_event,
+            allowed_stages=(AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED,),
+        ):
+            return _pending("evidence_drift", **base)
+        # The ordinary consumer may legitimately have completed, replaced or
+        # blocked the task: acknowledgement is bookkeeping and never requires
+        # or restores the old in_progress projection.
+        self._set_v2_decision_state_uncommitted(envelope, "applied")
+        self.insert_audit_log_uncommitted(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            applied_event,
+        )
+        return AuthorityPolicyV2DecisionAckOutcome(
+            status="applied", **base, decision_state="applied",
+        )
+
+    @_synchronized
+    def acknowledge_authority_policy_v2_decision_dispatch(
+        self, *, root_task_id: str, manager_agent: str, result_id: int,
+    ) -> AuthorityPolicyV2DecisionAckOutcome:
+        """ONE synchronized atomic ``claimed -> applied`` acknowledgement.
+
+        Called by the SAME winning claim caller after the real ordinary consumer
+        returns.  It re-authenticates the complete spent receipt and the single
+        closed historical ``decision_claimed`` event, CASes ``claimed ->
+        applied`` with exactly one closed ``decision_applied`` audit, and never
+        requires, restores or regresses the old task/owner/blocked projection
+        (the consumer's independently committed effects and any generation B are
+        preserved byte-for-byte).  An exact applied replay is read-only
+        ``already_applied_exact`` and NEVER authorizes a second consumer call; a
+        failure leaves the receipt ``claimed``.
+        """
+        if self._conn.in_transaction:
+            return AuthorityPolicyV2DecisionAckOutcome(
+                status="ack_pending", reason="transaction_owned",
+            )
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            outcome = self._acknowledge_v2_decision_dispatch_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                result_id=result_id,
+            )
+            if outcome.status == "ack_pending":
+                self._conn.rollback()
+                return outcome
+            self._conn.commit()
+            return outcome
+        except Exception:
+            self._conn.rollback()
+            return AuthorityPolicyV2DecisionAckOutcome(
+                status="ack_pending", reason="ack_failed",
+            )
+
+    def _refuse_v2_decision_dispatch_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, result_id: int,
+        now_dt: datetime,
+    ) -> AuthorityPolicyV2DecisionRefusalOutcome:
+        def _pending(reason: str, **kw) -> AuthorityPolicyV2DecisionRefusalOutcome:
+            return AuthorityPolicyV2DecisionRefusalOutcome(
+                status="refusal_pending", reason=reason, **kw,
+            )
+
+        code, receipt = self._authenticate_v2_spent_decision_receipt_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            result_id=result_id,
+        )
+        if code is not None:
+            return _pending(code)
+        assert receipt is not None
+        envelope = receipt["envelope"]
+        base = {
+            "attempt_id": receipt["attempt"].attempt_id,
+            "candidate_id": receipt["candidate"].candidate_id,
+            "envelope_id": envelope.envelope_id,
+            "generation_id": receipt["generation_id"],
+            "spending_result_id": receipt["spending_result_id"],
+            "next_session_id": receipt["next_session_id"],
+        }
+        event_base = {
+            **base, "result_id": result_id,
+            "notification_id": receipt["notification"].notification_id,
+            "report_digest": receipt["report_digest"],
+        }
+        interruption_event = self._v2_decision_event_payload(
+            stage=AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_DISPATCH_INTERRUPTED,
+            **event_base,
+        )
+        claim_event = self._v2_decision_event_payload(
+            stage=AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED,
+            **event_base,
+        )
+        decision_state = envelope.decision_state
+        if decision_state == "refused":
+            if not self._authenticate_v2_decision_event_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                expected=interruption_event,
+                allowed_stages=(
+                    AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED,
+                    AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_DISPATCH_INTERRUPTED,
+                ),
+            ):
+                return _pending("evidence_drift", **base)
+            return AuthorityPolicyV2DecisionRefusalOutcome(
+                status="already_refused", **base, decision_state="refused",
+                refusal_code=AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_DISPATCH_INTERRUPTED,
+            )
+        if decision_state == "applied":
+            return _pending("already_applied", **base)
+        if decision_state != "claimed":
+            # Only a committed claim may be interrupted; ``ready`` is not yet
+            # consumer-authorized and ``applied`` is terminal.
+            return _pending("not_claimable", **base)
+        if not self._authenticate_v2_decision_event_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            expected=claim_event,
+            allowed_stages=(AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED,),
+        ):
+            return _pending("evidence_drift", **base)
+        # Escalate ONLY the still-current nonterminal reserved invocation; a
+        # cancelled/terminal/replaced task (and any generation B) is preserved
+        # exactly, with no task mutation.
+        if self._v2_claim_task_owner_current_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            next_session_id=receipt["next_session_id"],
+        ):
+            cursor = self._conn.execute(
+                """UPDATE tasks SET status=?, block_kind=NULL, note=?, updated_at=?
+                   WHERE id=? AND cancelled_at IS NULL AND status=?
+                     AND block_kind IS NULL AND assigned_agent=?
+                     AND current_session_id=?""",
+                (
+                    TaskStatus.ESCALATED.value,
+                    "authority_v2_decision_dispatch_interrupted",
+                    now_dt.isoformat(), root_task_id,
+                    TaskStatus.IN_PROGRESS.value, manager_agent,
+                    receipt["next_session_id"],
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("v2 decision refusal task CAS lost")
+            self.insert_audit_log_uncommitted(
+                root_task_id, manager_agent, "escalation",
+                {
+                    "reason": "authority_v2_decision_dispatch_interrupted",
+                    "attempt_id": receipt["attempt"].attempt_id,
+                },
+            )
+        self._set_v2_decision_state_uncommitted(envelope, "refused")
+        self.insert_audit_log_uncommitted(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            interruption_event,
+        )
+        return AuthorityPolicyV2DecisionRefusalOutcome(
+            status="refused", **base, decision_state="refused",
+            refusal_code=AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_DISPATCH_INTERRUPTED,
+        )
+
+    @_synchronized
+    def refuse_authority_policy_v2_decision_dispatch(
+        self, *, root_task_id: str, manager_agent: str, result_id: int,
+    ) -> AuthorityPolicyV2DecisionRefusalOutcome:
+        """ONE synchronized audited ``claimed -> refused`` interruption refusal.
+
+        An exception or restart after a committed claim (before the effect,
+        after an independently committed task/child effect, or after a failed
+        acknowledgement) must never re-invoke the ordinary consumer.  This
+        writer preserves the spent envelope (E consumed), the causal attempt/
+        candidate/pin/evaluation evidence and every already-committed effect,
+        escalates ONLY the still-current nonterminal reserved invocation with
+        the closed ``decision_dispatch_interrupted`` diagnostic, preserves a
+        cancelled/terminal/replaced task and any replacement generation B
+        exactly, and retires/settles only the exact owned obligation (never a
+        replacement-pointer mutation).  A failed refusal audit/commit rolls
+        back only this transaction, leaving the discoverable ``claimed`` state
+        and a bounded truthful pending outcome.  An exact refused replay is
+        read-only.
+        """
+        if self._conn.in_transaction:
+            return AuthorityPolicyV2DecisionRefusalOutcome(
+                status="refusal_pending", reason="transaction_owned",
+            )
+        now_dt = _now()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            outcome = self._refuse_v2_decision_dispatch_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                result_id=result_id, now_dt=now_dt,
+            )
+            if outcome.status == "refusal_pending":
+                self._conn.rollback()
+                return outcome
+            self._conn.commit()
+            return outcome
+        except Exception:
+            self._conn.rollback()
+            return AuthorityPolicyV2DecisionRefusalOutcome(
+                status="refusal_pending", reason="refusal_failed",
+            )
+
+    @_synchronized
+    def get_authority_policy_v2_decision_receipt_for_result(
+        self, *, root_task_id: str, spending_result_id,
+    ) -> dict | None:
+        """Read-only classification of the exact result-keyed decision receipt.
+
+        Returns ``None`` when no consumed envelope carries this exact spending
+        result (the provably ordinary/v1 no-v2 path).  Otherwise returns the
+        closed ``decision_state`` plus the exact receipt identity.  A row whose
+        canonical body or column preimages are corrupt returns ``{"corrupt":
+        True}`` so a caller can NEVER treat a malformed receipt as ordinary
+        absence.
+        """
+        if not self._v2_is_int(spending_result_id):
+            return None
+        row = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_continue_envelopes
+               WHERE root_task_id=? AND spending_result_id=?""",
+            (root_task_id, spending_result_id),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            envelope = self._authority_policy_v2_envelope_from_row(row)
+        except ValueError:
+            return {"corrupt": True, "spending_result_id": spending_result_id}
+        return {
+            "corrupt": False,
+            "envelope_id": envelope.envelope_id,
+            "candidate_id": envelope.candidate_id,
+            "attempt_id": envelope.attempt_id,
+            "manager_agent": envelope.manager_agent,
+            "result_id": envelope.result_id,
+            "spending_result_id": envelope.spending_result_id,
+            "decision_state": envelope.decision_state,
+        }
+
+    @_synchronized
+    def authority_policy_v2_decision_result_report_binds(
+        self, *, root_task_id: str, spending_result_id, report,
+    ) -> bool:
+        """True only when the supplied report IS the exact persisted R2 body.
+
+        The retained ``task_results`` row is the authority.  Every materially
+        observable scalars collection (summary, confidence, status, output dir,
+        verdict, risks, wait IDs and local-CI evidence) is compared with its
+        JSON scalar type and presence preserved, and the parsed decision ACTION
+        of the supplied report must equal the persisted decision action (the
+        persisted ``decision_json`` is the raw authenticated wire carrier and
+        the guard compares the decision body's action; the storage receipt
+        separately binds the FULL normalized persisted report digest).  A
+        missing row, malformed persisted body, or ANY material drift is
+        ``False`` -- never ordinary-path permission.
+        """
+        if not self._v2_is_int(spending_result_id):
+            return False
+        row = self._conn.execute(
+            "SELECT * FROM task_results WHERE id=? AND task_id=?",
+            (spending_result_id, root_task_id),
+        ).fetchone()
+        if row is None:
+            return False
+        try:
+            raw_decision = row["decision_json"]
+            persisted_decision = (
+                json.loads(raw_decision)
+                if isinstance(raw_decision, str) and raw_decision else None
+            )
+        except Exception:
+            return False
+        if persisted_decision is not None and not isinstance(persisted_decision, dict):
+            return False
+        persisted_action = (
+            persisted_decision.get("action")
+            if isinstance(persisted_decision, dict) else None
+        )
+        supplied_decision = getattr(report, "decision", None)
+        if isinstance(supplied_decision, dict):
+            supplied_action = supplied_decision.get("action")
+        elif supplied_decision is None:
+            supplied_action = None
+        else:
+            supplied_action = getattr(supplied_decision, "action", None)
+        if supplied_action != persisted_action:
+            return False
+        try:
+            expected = self._v2_spending_report_identity(row)
+            supplied = {
+                "output_summary": getattr(report, "output_summary", None),
+                "confidence_score": getattr(report, "confidence_score", None),
+                "status": getattr(report, "status", None),
+                "output_dir": getattr(report, "output_dir", None),
+                "verdict": getattr(report, "verdict", None),
+                "risks_flagged": _canonical_completion_json(
+                    getattr(report, "risks_flagged", None)
+                ),
+                "decision_json": _canonical_completion_json(persisted_decision),
+                "waiting_on_job_ids": _canonical_completion_json(
+                    getattr(report, "waiting_on_job_ids", None)
+                ),
+                "local_ci": _canonical_completion_json(
+                    getattr(report, "local_ci", None)
+                ),
+            }
+        except Exception:
+            return False
+        # ``decision_json`` is re-derived from the persisted row so the exact
+        # rule is the material scalar/collection projection plus the action.
+        expected = {**expected, "decision_json": _canonical_completion_json(
+            persisted_decision
+        )}
+        return self._v2_json_type_sensitive_equal(expected, supplied)
 
     @_synchronized
     def get_authority_policy_v2_continue_envelope(

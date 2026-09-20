@@ -27,6 +27,9 @@ from runtime.models import (
     AuthorityPolicyV2Candidate,
     AuthorityPolicyV2ContinueEnvelope,
     AuthorityPolicyV2ControlReceipt,
+    AuthorityPolicyV2DecisionAckOutcome,
+    AuthorityPolicyV2DecisionClaimOutcome,
+    AuthorityPolicyV2DecisionRefusalOutcome,
     AuthorityPolicyV2Evaluation,
     AuthorityPolicyV2FinalizationOutcome,
     AuthorityPolicyV2GenerationClaimOutcome,
@@ -521,10 +524,52 @@ class AuthorityPolicyStore:
             spending_result_id=spending_result_id,
         )
 
+    # -- THR-229 checkpoint C3d3c2: thin forwarders over the DB-owned atomic
+    # decision-dispatch claim/acknowledgement/interruption-refusal transactions.
+    # The facade still never begins, commits or rolls back; none of these calls
+    # performs a consumer dispatch, queue call or external-process claim.
+
+    def claim_v2_decision_dispatch(
+        self, *, root_task_id: str, manager_agent: str, result_id: int,
+    ) -> AuthorityPolicyV2DecisionClaimOutcome:
+        return self._db.claim_authority_policy_v2_decision_dispatch(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            result_id=result_id,
+        )
+
+    def acknowledge_v2_decision_dispatch(
+        self, *, root_task_id: str, manager_agent: str, result_id: int,
+    ) -> AuthorityPolicyV2DecisionAckOutcome:
+        return self._db.acknowledge_authority_policy_v2_decision_dispatch(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            result_id=result_id,
+        )
+
+    def refuse_v2_decision_dispatch(
+        self, *, root_task_id: str, manager_agent: str, result_id: int,
+    ) -> AuthorityPolicyV2DecisionRefusalOutcome:
+        return self._db.refuse_authority_policy_v2_decision_dispatch(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            result_id=result_id,
+        )
+
+    def get_v2_decision_receipt_for_result(
+        self, *, root_task_id: str, spending_result_id,
+    ) -> dict | None:
+        return self._db.get_authority_policy_v2_decision_receipt_for_result(
+            root_task_id=root_task_id, spending_result_id=spending_result_id,
+        )
+
+    def v2_decision_result_report_binds(
+        self, *, root_task_id: str, spending_result_id, report,
+    ) -> bool:
+        return self._db.authority_policy_v2_decision_result_report_binds(
+            root_task_id=root_task_id, spending_result_id=spending_result_id,
+            report=report,
+        )
+
     def bind_legacy_session(
-        self,
-        *,
-        task_id: str,
+        self, *, task_id: str,
         agent_name: str,
         session_id: str,
         legacy_payload: dict,
