@@ -202,6 +202,32 @@ func waitHR8466Line(path, value string, timeout time.Duration) bool {
 	}
 }
 
+// waitHR8466LineOrStop is the goroutine-safe, stop-aware form of
+// waitHR8466Line.  A helper that drives the real child through barrier releases
+// must stop waiting as soon as the supervisor has terminated: once the single
+// Wait has reaped the child, a later “waiting:<i>“ line is physically
+// impossible, so waiting a full barrier for it can lose a race with the
+// caller's identical join bound.  The line is still returned when it appears.
+func waitHR8466LineOrStop(path, value string, stop <-chan struct{}, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		for _, line := range hr8466Events(path) {
+			if line == value {
+				return true
+			}
+		}
+		select {
+		case <-stop:
+			return false
+		default:
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // waitHR8466LineOrExit is the child-side barrier wait.  It also observes the
 // test-owned exit file so a real child can exit spontaneously while it is
 // parked at any barrier, which is what the R1/R2 child-exit regressions need.
@@ -1324,15 +1350,24 @@ func TestConsumerNeverRecoversHonorsOriginalDeadline(t *testing.T) {
 	// Release repeated records over the startup interval from a helper
 	// goroutine (no testing.T calls) so the deadline measurement is not
 	// serialized behind the child barriers.  The goroutine is joined below.
+	// Once the supervisor has terminated the child is reaped, so no further
+	// waiting:<i> line can arrive; stopRelease lets the helper join promptly
+	// instead of waiting a full barrier for a line that cannot appear (which
+	// races the identical join bound below).
 	released := make(chan struct{})
+	stopRelease := make(chan struct{})
 	go func() {
 		defer close(released)
 		for i := 0; i < 6; i++ {
-			if !waitHR8466Line(f.events, fmt.Sprintf("waiting:%d", i), hr8466NormalBarrier) {
+			if !waitHR8466LineOrStop(f.events, fmt.Sprintf("waiting:%d", i), stopRelease, hr8466NormalBarrier) {
 				return
 			}
 			f.releaseChild(i)
-			time.Sleep(40 * time.Millisecond)
+			select {
+			case <-time.After(40 * time.Millisecond):
+			case <-stopRelease:
+				return
+			}
 		}
 	}()
 
@@ -1353,6 +1388,7 @@ func TestConsumerNeverRecoversHonorsOriginalDeadline(t *testing.T) {
 	if code := h.waitDone(hr8466AdmissionBound); code != 0 {
 		t.Fatalf("never-recovers admission exit code=%d, want 0", code)
 	}
+	close(stopRelease)
 	select {
 	case <-released:
 	case <-time.After(hr8466NormalBarrier):
