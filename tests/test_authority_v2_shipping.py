@@ -1757,6 +1757,7 @@ def _delete_recovery_settled_audit_rows(db, root_id: str) -> None:
 
 def _install_admission_negative(
     db, root_id: str, result_id: int, negative: str, done: threading.Event,
+    publisher_done: threading.Event,
 ) -> str:
     """Corrupt ONE prerequisite at the EXACT real run-step boundary.
 
@@ -1764,13 +1765,17 @@ def _install_admission_negative(
     Dispatcher/run_step consumes and then delegates to the UNCHANGED production
     method, so the negative exercises the genuine production evidence reader
     (no copied logic and no replacement of the shipping readers/writers).
-    ``done`` fires only after the real method has returned.
+    ``publisher_done`` is set by the caller only after the REAL publisher has
+    fully returned, so the fixture's own corruption can never race (and thereby
+    invalidate) the publisher acknowledgement; ``done`` fires only after the
+    real method has returned.
     """
     if negative == "missing_publication":
         original = db.try_claim_v2_continuation_generation
 
         def _corrupting_claim(**kwargs):
             try:
+                publisher_done.wait(timeout=30.0)
                 _delete_result_stage_audit_rows(db, root_id, "publish_claimed")
                 return original(**kwargs)
             finally:
@@ -1783,6 +1788,7 @@ def _install_admission_negative(
 
         def _corrupting_settle(**kwargs):
             try:
+                publisher_done.wait(timeout=30.0)
                 _delete_ordinary_completion_audit_rows(db, root_id, result_id)
                 _delete_recovery_settled_audit_rows(db, root_id)
                 return original(**kwargs)
@@ -1934,10 +1940,11 @@ def _drive_c3d3b_admission(
     db.bind_authority_policy_v2_process_boot_id(attempt.origin_boot_id)
 
     negative_done = threading.Event()
+    publisher_done = threading.Event()
     negative_attr: str | None = None
     if negative is not None:
         negative_attr = _install_admission_negative(
-            db, root_id, row_id, negative, negative_done,
+            db, root_id, row_id, negative, negative_done, publisher_done,
         )
 
     # The REAL publisher discovers, claims, calls the REAL TaskQueue with the
@@ -1945,6 +1952,11 @@ def _drive_c3d3b_admission(
     receipts = publish_authority_policy_v2_notifications(
         fixture.org.orchestrator, fixture.state.queue,
     )
+    # Release the gated negative corruption only AFTER the publisher has fully
+    # returned, so the fixture's own evidence deletion can never race the
+    # publisher's acknowledgement (the healthy path has no gate and exercises
+    # the real concurrent consumer on purpose).
+    publisher_done.set()
     # The REAL second worker consumes the tagged item concurrently, so BOTH
     # orderings are legitimate: a winning acknowledgement reports ``published``
     # and the durable state may still be ``published``; the documented
