@@ -959,6 +959,184 @@ kill -{signal} $$
     assert (tmp_path / "cleanup-events.log").read_text().splitlines() == ["cleanup"]
 
 
+def _run_positive_start_cleanup_scenario(
+    tmp_path: Path, *, fault: str = "none", signal: str | None = None,
+) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
+    """Run the actual positive-start EXIT/trap seam with a failing teardown command."""
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    snapshot = "safe_systemctl_value() {" + harness.split("safe_systemctl_value() {", 1)[1].split("\ncleanup() {", 1)[0]
+    unit_helpers = "systemctl_absent_value() {" + harness.split("systemctl_absent_value() {", 1)[1].split("\ndiagnostics=", 1)[0]
+    cleanup = harness.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup EXIT", 1)[0]
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    event_log = tmp_path / "events.log"
+    (fake_bin / "systemctl").write_text(f'''#!/bin/bash
+printf 'systemctl:%s\\n' "$1" >>"$EVENT_LOG"
+case "$1" in
+  start) exit 37 ;;
+  show) case "$4" in InvocationID) echo unknown;; ActiveState) echo failed;; SubState) echo failed;; Result) echo exit-code;; ExecMainStatus) echo 37;; MainPID) echo 0;; *) echo unknown;; esac ;;
+  stop|disable|reset-failed) [[ "$1" != "{fault}" ]] || exit 55; exit 0 ;;
+  daemon-reload|list-jobs|list-unit-files) exit 0 ;;
+  *) printf 'unknown-systemctl:%s\\n' "$1" >>"$EVENT_LOG"; exit 97 ;;
+esac
+''')
+    (fake_bin / "sudo").write_text('''#!/bin/bash
+printf 'sudo:%s\\n' "$1" >>"$EVENT_LOG"
+case "$1" in
+  systemctl) shift; exec systemctl "$@";;
+  test) [[ "${2:-}" == '!' ]] && exit 0; exit 1;;
+  rm|find|kill|update-ca-certificates) exit 0;;
+  *) exit 98;;
+esac
+''')
+    (fake_bin / "pgrep").write_text("#!/bin/bash\nexit 1\n")
+    (fake_bin / "evidence").write_text(
+        "import os, sys\nopen(os.environ['EVENT_LOG'], 'a').write('evidence:%s\\n' % sys.argv[1])\n"
+    )
+    for executable in fake_bin.iterdir():
+        executable.chmod(0o700)
+    work = tmp_path / "work"; (work / "hs").mkdir(parents=True)
+    (work / "headscale").write_text("#!/bin/bash\necho '[]'\n"); (work / "headscale").chmod(0o700)
+    trigger = f"kill -{signal} $$" if signal else 'start_managed_target || exit "$?"'
+    script = f'''set -euo pipefail
+diagnostics={tmp_path!s}; work={work!s}; evidence_driver={fake_bin / "evidence"!s}; evidence_artifact=/missing
+failure_capture_driver=/missing
+peer_pid=""; daemon_pid=""; headscale_pid=""; sidecar_ip=""; run_id=test
+port_open() {{ return 1; }}
+tsnet_open() {{ return 1; }}
+evidence() {{ return 0; }}
+{snapshot}
+{unit_helpers}
+cleanup() {{
+{cleanup}
+}}
+trap cleanup EXIT
+trap 'cleanup 130' INT
+trap 'cleanup 143' TERM
+{trigger}
+'''
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, check=False,
+        env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "EVENT_LOG": str(event_log),
+                          "N3_RESIDUE_ROOT": str(tmp_path), "N3_UNIT_ROOT": str(tmp_path)},
+    )
+    events = event_log.read_text().splitlines() if event_log.exists() else []
+    return result, events, work
+
+
+@pytest.mark.parametrize("fault", ["none", "stop", "disable", "reset-failed"])
+def test_real_systemd_cleanup_command_faults_preserve_exit_37_and_finish_teardown(tmp_path: Path, fault: str) -> None:
+    """An independently failing stop/disable/reset cannot abort the EXIT teardown."""
+    result, events, work = _run_positive_start_cleanup_scenario(tmp_path, fault=fault)
+    assert result.returncode == 37, result.stderr
+    assert [event for event in events if event in {"systemctl:stop", "systemctl:disable", "systemctl:reset-failed"}] == [
+        "systemctl:stop", "systemctl:disable", "systemctl:reset-failed",
+    ]
+    assert (tmp_path / "cleanup-status.txt").read_text() == "fixtures_reaped=1\n"
+    assert (tmp_path / "cleanup-events.log").read_text().splitlines() == ["cleanup"]
+    assert not work.exists()
+    assert not any(event.startswith(("evidence:finalize", "evidence:validate", "unknown-")) for event in events)
+
+
+@pytest.mark.parametrize(("signal", "expected", "fault"), [
+    ("INT", 130, "stop"), ("TERM", 143, "reset-failed"),
+])
+def test_real_systemd_signal_cleanup_command_faults_preserve_signal_status_once(
+    tmp_path: Path, signal: str, expected: int, fault: str,
+) -> None:
+    """TERM/INT after trap registration keep their status through a failing teardown command."""
+    result, events, work = _run_positive_start_cleanup_scenario(tmp_path, fault=fault, signal=signal)
+    assert result.returncode == expected, result.stderr
+    assert [event for event in events if event in {"systemctl:stop", "systemctl:disable", "systemctl:reset-failed"}] == [
+        "systemctl:stop", "systemctl:disable", "systemctl:reset-failed",
+    ]
+    assert (tmp_path / "cleanup-status.txt").read_text() == "fixtures_reaped=1\n"
+    assert (tmp_path / "cleanup-events.log").read_text().splitlines() == ["cleanup"]
+    assert not work.exists()
+    assert not any(event.startswith(("evidence:finalize", "evidence:validate", "unknown-")) for event in events)
+
+
+def test_real_systemd_signal_during_cleanup_runs_teardown_once(tmp_path: Path) -> None:
+    """A second signal while teardown is running must not start a second teardown."""
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    snapshot = "safe_systemctl_value() {" + harness.split("safe_systemctl_value() {", 1)[1].split("\ncleanup() {", 1)[0]
+    unit_helpers = "systemctl_absent_value() {" + harness.split("systemctl_absent_value() {", 1)[1].split("\ndiagnostics=", 1)[0]
+    cleanup = harness.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup EXIT", 1)[0]
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    (fake_bin / "systemctl").write_text("""#!/bin/bash
+if [[ $1 == stop && ! -e "$EVENT_LOG.signalled" ]]; then
+  touch "$EVENT_LOG.signalled"
+  kill -TERM "$PPID"
+fi
+if [[ $1 == show && $4 == MainPID ]]; then echo 0; fi
+exit 0
+""")
+    (fake_bin / "sudo").write_text("#!/bin/bash\nif [[ $1 == systemctl ]]; then shift; exec systemctl \"$@\"; fi\nexit 0\n")
+    (fake_bin / "pgrep").write_text("#!/bin/bash\nexit 1\n")
+    for executable in fake_bin.iterdir():
+        executable.chmod(0o700)
+    work = tmp_path / "work"; (work / "hs").mkdir(parents=True)
+    (work / "headscale").write_text("#!/bin/bash\necho '[]'\n"); (work / "headscale").chmod(0o700)
+    script = f'''set -euo pipefail
+diagnostics={tmp_path!s}; work={work!s}; evidence_driver=/missing; evidence_artifact=/missing
+peer_pid=""; daemon_pid=""; headscale_pid=""; sidecar_ip=""; run_id=test
+port_open() {{ return 1; }}
+tsnet_open() {{ return 1; }}
+evidence() {{ return 0; }}
+{snapshot}
+{unit_helpers}
+cleanup() {{
+{cleanup}
+}}
+trap cleanup EXIT
+trap 'cleanup 130' INT
+trap 'cleanup 143' TERM
+kill -TERM $$
+'''
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, check=False,
+        env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "EVENT_LOG": str(tmp_path / "events.log"),
+                          "N3_RESIDUE_ROOT": str(tmp_path), "N3_UNIT_ROOT": str(tmp_path)},
+    )
+    assert result.returncode == 143, result.stderr
+    assert (tmp_path / "cleanup-events.log").read_text().splitlines() == ["cleanup"]
+    assert (tmp_path / "events.log.signalled").exists()
+
+
+@pytest.mark.parametrize(("caller_errexit", "expected"), [("on", "errexit-on"), ("off", "errexit-off")])
+def test_real_systemd_capture_preserves_caller_shell_options(tmp_path: Path, caller_errexit: str, expected: str) -> None:
+    """A bounded capture must restore the caller's errexit state on every return."""
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    snapshot = "safe_systemctl_value() {" + harness.split("safe_systemctl_value() {", 1)[1].split("\ncleanup() {", 1)[0]
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    (fake_bin / "mktemp").write_text("#!/bin/bash\nexec /usr/bin/mktemp \"$@\"\n")
+    (fake_bin / "date").write_text("#!/bin/bash\nprintf '1700000000000000000\\n'\n")
+    (fake_bin / "systemctl").write_text("""#!/bin/bash
+if [[ $1 == show ]]; then case "$4" in InvocationID) printf '%s\\n' 12345678123412341234123456789abc;; ActiveState) echo failed;; SubState) echo failed;; Result) echo exit-code;; ExecMainStatus) echo 37;; MainPID) echo 0;; *) echo unknown;; esac; exit 0; fi
+exit 1
+""")
+    (fake_bin / "sudo").write_text("#!/bin/bash\n[[ $1 == test ]] && exit 1\nexec \"$@\"\n")
+    (fake_bin / "journalctl").write_text("#!/bin/bash\nexit 1\n")
+    for executable in fake_bin.iterdir():
+        executable.chmod(0o700)
+    prelude = (
+        "capture_failure_snapshot option-probe || true"
+        if caller_errexit == "on"
+        else "set +e\ncapture_failure_snapshot option-probe"
+    )
+    script = f'''set -euo pipefail
+diagnostics={tmp_path!s}; failure_capture_driver=/missing; run_id=test
+{snapshot}
+{prelude}
+case "$-" in *e*) printf 'errexit-on\\n';; *) printf 'errexit-off\\n';; esac
+'''
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, check=False,
+        env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "N3_UNIT_ROOT": str(tmp_path)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == expected, result.stderr
+
+
 def _run_real_systemd_shipping_cleanup(tmp_path: Path, **env: str) -> subprocess.CompletedProcess[str]:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
     unit_helpers = "systemctl_absent_value() {" + harness.split("systemctl_absent_value() {", 1)[1].split("\ndiagnostics=", 1)[0]

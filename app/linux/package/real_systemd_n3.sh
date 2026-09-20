@@ -32,11 +32,12 @@ tsnet_open() {
   printf 'GET / HTTP/1.0\r\n\r\n' | timeout 5 sudo "$ts_dir/tailscale" --socket="$work/peer.sock" nc "$sidecar_ip" 443 >/dev/null 2>&1
 }
 systemctl_absent_value() {
-  local unit="$1" property="$2" expected="$3" value status
+  local unit="$1" property="$2" expected="$3" value status restore_errexit=0
+  case "$-" in *e*) restore_errexit=1 ;; esac
   set +e
   value="$(systemctl show "$unit" -p "$property" --value 2>/dev/null)"
   status=$?
-  set -e
+  (( restore_errexit )) && set -e || set +e
   [[ "$value" == "$expected" ]] || return 1
   # systemctl returns nonzero for a unit which is genuinely not loaded.  The
   # exact absent value is evidence for that exit only; empty/prose output and
@@ -49,11 +50,12 @@ unit_absent() {
   systemctl_absent_value "$unit" LoadState not-found || return 1
   systemctl_absent_value "$unit" ActiveState inactive || return 1
   systemctl_absent_value "$unit" SubState dead || return 1
-  local main_pid status
+  local main_pid status restore_errexit=0
+  case "$-" in *e*) restore_errexit=1 ;; esac
   set +e
   main_pid="$(systemctl show "$unit" -p MainPID --value 2>/dev/null)"
   status=$?
-  set -e
+  (( restore_errexit )) && set -e || set +e
   [[ -z "$main_pid" || "$main_pid" == 0 ]] || return 1
   (( status == 0 || status == 1 || status == 4 )) || return 1
   (( status == 0 )) || [[ "$main_pid" == 0 ]] || return 1
@@ -108,13 +110,16 @@ compact_boot_id() {
 }
 observe_presence() {
   # A failed/late existence probe is unknown, never a false claim of absence.
-  local path="$1" kind="$2" status
+  # Restore the caller's errexit state after the probe so a bounded capture can
+  # never re-arm `set -e` under the EXIT handler and abort remaining teardown.
+  local path="$1" kind="$2" status restore_errexit=0
   presence_value=false; presence_loss=observed_absent
   observe_remaining || { presence_value='"unknown"'; presence_loss=unattempted; return; }
+  case "$-" in *e*) restore_errexit=1 ;; esac
   set +e
   timeout --kill-after=1 "$observe_timeout_seconds" sudo test "$kind" "$path"
   status=$?
-  set -e
+  (( restore_errexit )) && set -e || set +e
   case "$status" in
     0) presence_value=true; presence_loss=observed_present ;;
     1) presence_value=false; presence_loss=observed_absent ;;
@@ -127,15 +132,16 @@ observe_systemctl_value() {
   # 512-byte cap.  `observation_loss` is a closed term: it distinguishes a
   # successful empty response, failed query, real timeout, truncation, parse
   # loss and work which was not attempted. Raw command output is never kept.
-  local unit="$1" property="$2" value file status bytes cap=128
+  local unit="$1" property="$2" value file status bytes cap=128 restore_errexit=0
   observation_value=unknown; observation_loss=unattempted
   observe_remaining || return
   (( observe_bytes_left < cap )) && cap="$observe_bytes_left"
   file="$(mktemp "$diagnostics/.n3-observe.XXXXXX")" || { observation_loss=launch_failure; return; }
+  case "$-" in *e*) restore_errexit=1 ;; esac
   set +e
   timeout --kill-after=1 "$observe_timeout_seconds" systemctl show "$unit" -p "$property" --value 2>/dev/null | head -c "$((cap + 1))" >"$file"
   status=${PIPESTATUS[0]}
-  set -e
+  (( restore_errexit )) && set -e || set +e
   value="$(<"$file")"; bytes="$(wc -c <"$file")"; rm -f "$file"
   (( bytes > cap )) && { observe_bytes_left=0; observation_loss=truncated; return; }
   observe_bytes_left=$((observe_bytes_left - bytes))
@@ -155,14 +161,15 @@ capture_diagnostic_receipts() {
   # The sidecar is the sole diagnostic receipt producer. Journal records are
   # accepted only when their unit, invocation, boot, and collection window all
   # match this failing run; the Python helper emits no journal prose.
-  local invocation_file journal_file helper_file field_file="" invocation status bytes now_us field_status field_bytes field
+  local invocation_file journal_file helper_file field_file="" invocation status bytes now_us field_status field_bytes field restore_errexit=0
+  case "$-" in *e*) restore_errexit=1 ;; esac
   diagnostic_receipts='[]'; diagnostic_receipt_loss='["unattempted"]'
   observe_remaining || return
   invocation_file="$(mktemp "$diagnostics/.n3-invocation.XXXXXX")" || { diagnostic_receipt_loss='["launch_failure"]'; return; }
   set +e
   timeout --kill-after=1 "$observe_timeout_seconds" systemctl show happyranch-tsnet-sidecar.service -p InvocationID --value 2>/dev/null | head -c 65 >"$invocation_file"
   status=${PIPESTATUS[0]}
-  set -e
+  (( restore_errexit )) && set -e || set +e
   invocation="$(<"$invocation_file")"; bytes="$(wc -c <"$invocation_file")"; rm -f "$invocation_file"
   if (( bytes > 64 )); then observe_bytes_left=0; diagnostic_receipt_loss='["truncated"]'; return; fi
   observe_bytes_left=$((observe_bytes_left - bytes))
@@ -176,7 +183,7 @@ capture_diagnostic_receipts() {
   set +e
   timeout --kill-after=1 "$observe_timeout_seconds" journalctl -u happyranch-tsnet-sidecar.service -b "$snapshot_boot_id" --since "@$snapshot_since_seconds" --output=json --no-pager 2>/dev/null | head -c "$((observe_bytes_left + 1))" >"$journal_file"
   status=${PIPESTATUS[0]}
-  set -e
+  (( restore_errexit )) && set -e || set +e
   bytes="$(wc -c <"$journal_file")"
   if (( bytes > observe_bytes_left )); then
     observe_bytes_left=0
@@ -197,7 +204,7 @@ capture_diagnostic_receipts() {
   set +e
   timeout --kill-after=1 "$observe_timeout_seconds" python "$failure_capture_driver" --input "$journal_file" --invocation-id "$invocation" --boot-id "$snapshot_boot_id" --since-us "$snapshot_since_us" --until-us "$now_us" >"$helper_file" 2>/dev/null
   status=$?
-  set -e
+  (( restore_errexit )) && set -e || set +e
   bytes="$(wc -c <"$helper_file")"
   if (( bytes > observe_bytes_left )); then observe_bytes_left=0; rm -f "$journal_file" "$helper_file"; diagnostic_receipt_loss='["truncated"]'; return; fi
   observe_bytes_left=$((observe_bytes_left - bytes))
@@ -209,7 +216,7 @@ capture_diagnostic_receipts() {
     set +e
     timeout --kill-after=1 "$observe_timeout_seconds" python -c 'import json,sys; value=json.load(open(sys.argv[1]))[sys.argv[2]]; assert isinstance(value,list); print(json.dumps(value,separators=(",",":")))' "$helper_file" "$field" >"$field_file" 2>/dev/null
     field_status=$?
-    set -e
+    (( restore_errexit )) && set -e || set +e
     field_bytes="$(wc -c <"$field_file")"
     if (( field_bytes > observe_bytes_left )); then observe_bytes_left=0; rm -f "$journal_file" "$helper_file" "$field_file"; diagnostic_receipt_loss='["truncated"]'; return; fi
     observe_bytes_left=$((observe_bytes_left - field_bytes))
@@ -223,7 +230,8 @@ capture_diagnostic_receipts() {
 capture_failure_snapshot() {
   # Snapshot work has an eight-second aggregate budget. No observation changes
   # the exit status that entered cleanup; all retained values are closed terms.
-  local name="${1:-failure-snapshot}" snapshot unit first=1 active sub result main pre source held marker dropin staging source_loss held_loss marker_loss dropin_loss staging_loss loss_first=1 losses_file jobs_file="" job_status job_bytes jobs_loss jobs_first snapshot_until_us
+  local name="${1:-failure-snapshot}" snapshot unit first=1 active sub result main pre source held marker dropin staging source_loss held_loss marker_loss dropin_loss staging_loss loss_first=1 losses_file jobs_file="" job_status job_bytes jobs_loss jobs_first snapshot_until_us restore_errexit=0
+  case "$-" in *e*) restore_errexit=1 ;; esac
   snapshot="$diagnostics/$name.json"
   losses_file="$(mktemp "$diagnostics/.n3-losses.XXXXXX")" || return 1
   observe_deadline=$((SECONDS + 8))
@@ -260,7 +268,7 @@ capture_failure_snapshot() {
       set +e
       timeout --kill-after=1 "$observe_timeout_seconds" systemctl list-jobs --no-legend --plain 2>/dev/null | head -c "$((observe_bytes_left + 1))" >"$jobs_file"
       job_status=${PIPESTATUS[0]}
-      set -e
+      (( restore_errexit )) && set -e || set +e
       job_bytes="$(wc -c <"$jobs_file")"
       if (( job_bytes > observe_bytes_left )); then jobs_loss=truncated; observe_bytes_left=0
       elif (( job_status == 124 )); then jobs_loss=timeout; observe_bytes_left=$((observe_bytes_left - job_bytes))
@@ -314,9 +322,20 @@ start_managed_target() {
 }
 cleanup() {
   local original_status="${1:-$?}" cleanup_failed=0
+  # EXIT, INT and TERM share exactly ONE teardown. The first invocation owns it
+  # and saves the initiating status; a signal arriving while teardown is running
+  # must not start a second pass or replace that saved status.
+  if [[ -n "${cleanup_active:-}" ]]; then
+    return
+  fi
+  cleanup_active=1
   set +e
   printf 'cleanup\n' >>"$diagnostics/cleanup-events.log"
   (( original_status == 0 )) || capture_failure_snapshot failure-before-teardown || true
+  # Capture isolates its own option changes; never rely on that here. Teardown
+  # must attempt its remaining work after an independent stop/disable/reset
+  # failure, and only the saved initiating status may leave this handler.
+  set +e
   # A trap can arrive while either real service barrier is held. Release both
   # controller-owned latches before stopping units so teardown cannot strand a
   # service in its existing ExecStartPre/ExecStopPost loop.
@@ -324,13 +343,13 @@ cleanup() {
     : | sudo tee "$barrier_dir/start-release" >/dev/null
     : | sudo tee "$barrier_dir/stop-release" >/dev/null
   fi
-  sudo systemctl stop happyranch-managed.target
+  sudo systemctl stop happyranch-managed.target || true
   if [[ -n "${sidecar_ip:-}" ]] && [[ -n "$peer_pid" ]] && sudo kill -0 "$peer_pid" 2>/dev/null; then
     ! tsnet_open || cleanup_failed=1
     (( cleanup_failed != 0 )) || evidence cleanup virtual_admission_removed_while_peer_alive || cleanup_failed=1
   fi
-  sudo systemctl disable happyranch-managed.target
-  sudo systemctl reset-failed happyranch-connector.service happyranch-tsnet-sidecar.service happyranch-managed.target
+  sudo systemctl disable happyranch-managed.target || true
+  sudo systemctl reset-failed happyranch-connector.service happyranch-tsnet-sidecar.service happyranch-managed.target || true
   sudo rm -rf /etc/systemd/system/happyranch-tsnet-sidecar.service.d
   sudo rm -f /etc/systemd/system/happyranch-connector.service /etc/systemd/system/happyranch-tsnet-sidecar.service /etc/systemd/system/happyranch-managed.target
   sudo systemctl daemon-reload
@@ -349,7 +368,7 @@ cleanup() {
   sudo update-ca-certificates >/dev/null 2>&1
   printf 'fixtures_reaped=%s\n' "$(( cleanup_failed == 0 ))" >"$diagnostics/cleanup-status.txt"
   sudo rm -rf /opt/happyranch /etc/happyranch /var/lib/happyranch-connector /var/lib/happyranch-tsnet-sidecar /run/happyranch-connector /run/happyranch-tsnet-sidecar /var/log/happyranch-connector /var/log/happyranch-tsnet-sidecar
-  systemctl list-unit-files happyranch-managed.target happyranch-connector.service happyranch-tsnet-sidecar.service --no-legend 2>/dev/null | grep -q . && cleanup_failed=1
+  if systemctl list-unit-files happyranch-managed.target happyranch-connector.service happyranch-tsnet-sidecar.service --no-legend 2>/dev/null | grep -q .; then cleanup_failed=1; fi
   for path in /opt/happyranch /etc/happyranch /var/lib/happyranch-connector /var/lib/happyranch-tsnet-sidecar /run/happyranch-connector /run/happyranch-tsnet-sidecar /var/log/happyranch-connector /var/log/happyranch-tsnet-sidecar /.happyranch-install-transaction.json /.happyranch-backup /.happyranch-units-backup; do
     sudo test ! -e "$path" || cleanup_failed=1
   done
