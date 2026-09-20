@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, NamedTuple
 
 from runtime.models import BlockKind, TaskStatus
 from runtime.orchestrator.org_config import load_org_config
@@ -517,27 +517,30 @@ def _consume_accepted_completion_recovery(
         return
     # THR-229 C3d3c2: an accepted-recovery special branch (blocked/jobs, leaf
     # subtask, continued-same-root, non-root escalation) must NOT bypass the v2
-    # decision-dispatch guard.  A spent next-result receipt always routes
-    # through the common guarded entry, which performs claim/refusal bookkeeping
-    # and never runs a special branch.
+    # decision-dispatch guard.  Classify against the REAL persisted lineage
+    # BEFORE any special effect: an active/unspent reserved R2, a spent receipt,
+    # a causal replay or any malformed/foreign identity on a live lineage all
+    # route through the common guarded entry (which spends/claims/refuses and
+    # never runs a special branch).  A classification read failure is fail-closed
+    # too -- never a silent special-branch fallthrough.
     _resolved_recovery_row = _resolve_completion_result_row_id(
         db, task_id, report, result_row_id,
     )
-    if (
-        isinstance(_resolved_recovery_row, int)
-        and not isinstance(_resolved_recovery_row, bool)
-    ):
-        try:
-            _recovery_receipt = db.get_authority_policy_v2_decision_receipt_for_result(
-                root_task_id=task_id, spending_result_id=_resolved_recovery_row,
-            )
-        except Exception:
-            _recovery_receipt = None
-        if _recovery_receipt is not None:
-            _consume_completion_report(
-                orch, task_id, report, result_row_id=_resolved_recovery_row,
-            )
-            return
+    try:
+        _recovery_context = db.authority_policy_v2_completion_dispatch_context(
+            root_task_id=task_id, result_row_id=_resolved_recovery_row,
+        )
+        _recovery_kind = getattr(_recovery_context, "kind", None)
+    except Exception:
+        logger.exception(
+            "run_step %s: v2 recovery classification failed", task_id,
+        )
+        _recovery_kind = "foreign"
+    if _recovery_kind != "no_v2":
+        _consume_completion_report(
+            orch, task_id, report, result_row_id=_resolved_recovery_row,
+        )
+        return
     effects_applied = (
         current.status in TERMINAL_STATES
     )
@@ -869,89 +872,137 @@ _V2_DECISION_DISPATCH_ADMITTED = "admitted"
 _V2_DECISION_DISPATCH_SKIP = "skip"
 
 
-def _v2_decision_dispatch_gate(
-    orch: "Orchestrator", task_id: str, report, result_row_id, agent: str,
-) -> str:
-    """Classify the report against the exact result-keyed decision receipt.
+class _V2DecisionDispatchOutcome(NamedTuple):
+    """The winning caller's exact identity for acknowledgement/refusal.
 
-    Returns ``ordinary`` for a provably no-v2/v1 path, ``admitted`` only for the
-    uninterrupted winning claim (one consumer entry), and ``skip`` for every
-    other outcome (duplicate/restarted/replayed/refused/conflicting/malformed),
-    after performing the interruption-refusal bookkeeping where required.
+    ``manager_agent``/``causal_result_id`` are the CAUSAL receipt identity the
+    claim was made with -- never the reserved spending result id and never
+    whichever task/owner happens to be current after the consumer effect.
     """
-    db = orch._db
-    if result_row_id is None or isinstance(result_row_id, bool) or not isinstance(
-        result_row_id, int
-    ):
-        # A missing/mistyped result identity on a root whose v2 generation was
-        # already spent/retired is NEVER ordinary-path permission.
-        try:
-            dispatch = db.get_authority_policy_v2_root_dispatch(task_id)
-        except Exception:
-            dispatch = None
-        if getattr(dispatch, "state", None) == "retired":
-            logger.warning(
-                "run_step %s: v2 decision receipt identity is missing/mistyped", task_id,
-            )
-            return _V2_DECISION_DISPATCH_SKIP
-        return _V2_DECISION_DISPATCH_ORDINARY
+    kind: str
+    manager_agent: str | None = None
+    causal_result_id: int | None = None
+
+
+def _v2_report_binds(db, task_id, spending_result_id, report) -> bool:
+    if spending_result_id is None:
+        return False
     try:
-        receipt = db.get_authority_policy_v2_decision_receipt_for_result(
-            root_task_id=task_id, spending_result_id=result_row_id,
+        return db.authority_policy_v2_decision_result_report_binds(
+            root_task_id=task_id, spending_result_id=spending_result_id,
+            report=report,
         )
     except Exception:
-        # A read failure is never ordinary-path permission when a v2 receipt
-        # might exist; fail closed rather than risk a duplicate consumer.
-        logger.exception("run_step %s: v2 decision receipt read failed", task_id)
-        return _V2_DECISION_DISPATCH_SKIP
-    if not isinstance(receipt, dict):
-        # No v2 reader on a lightweight/fake store (or no receipt row): the
-        # provably no-v2/v1 path.
-        return _V2_DECISION_DISPATCH_ORDINARY
-    if receipt.get("corrupt"):
-        logger.warning("run_step %s: v2 decision receipt is corrupt", task_id)
-        return _V2_DECISION_DISPATCH_SKIP
-    manager_agent = receipt.get("manager_agent") or agent
-    result_id = receipt.get("result_id")
-    if not isinstance(result_id, int) or isinstance(result_id, bool):
-        return _V2_DECISION_DISPATCH_SKIP
-    state = receipt.get("decision_state")
-    if state == "ready":
-        # The supplied report must BE the exact persisted R2 body before any
-        # claim/spend/effect; a foreign/conflicting report is never admitted.
-        try:
-            binds = db.authority_policy_v2_decision_result_report_binds(
-                root_task_id=task_id, spending_result_id=result_row_id,
-                report=report,
-            )
-        except Exception:
-            binds = False
-        if not binds:
+        return False
+
+
+def _v2_decision_dispatch_gate(
+    orch: "Orchestrator", task_id: str, report, result_row_id, agent: str,
+) -> _V2DecisionDispatchOutcome:
+    """Classify the report against the REAL persisted v2 lineage.
+
+    Returns an outcome whose ``kind`` is ``ordinary`` for a provably no-v2/v1
+    path, ``admitted`` only for the uninterrupted winning claim (one consumer
+    entry), and ``skip`` for every other outcome -- causal continuation replay,
+    a duplicate/restarted/refused receipt, a foreign or malformed identity, or
+    a lookup failure -- after performing the interruption-refusal bookkeeping
+    where required.  This is the production authority rule: reader absence or a
+    mock's ``None`` is never ordinary permission.
+    """
+    db = orch._db
+    skip = _V2DecisionDispatchOutcome(_V2_DECISION_DISPATCH_SKIP)
+    try:
+        context = db.authority_policy_v2_completion_dispatch_context(
+            root_task_id=task_id, result_row_id=result_row_id,
+        )
+    except Exception:
+        logger.exception("run_step %s: v2 completion classification failed", task_id)
+        return skip
+    kind = getattr(context, "kind", None)
+    if kind == "no_v2":
+        return _V2DecisionDispatchOutcome(_V2_DECISION_DISPATCH_ORDINARY)
+    if kind == "causal":
+        # The causal result R of a v2 attempt is continuation bookkeeping only:
+        # it never spends, remints, evaluates or re-enters the normal effect.
+        logger.info("run_step %s: v2 causal continuation replay", task_id)
+        return skip
+    manager_agent = getattr(context, "manager_agent", None) or agent
+    causal_result_id = getattr(context, "causal_result_id", None)
+    if kind == "reserved":
+        # The exact active reserved next result R2: atomically spend through the
+        # EXISTING writer, then claim exactly once.  A failed spend/claim yields
+        # ZERO consumer entry.
+        spending_result_id = getattr(context, "spending_result_id", None)
+        if not _v2_report_binds(db, task_id, spending_result_id, report):
+            logger.warning("run_step %s: v2 reserved report identity conflict", task_id)
+            return skip
+        spend = db.spend_authority_policy_v2_continue_envelope(
+            root_task_id=task_id, manager_agent=manager_agent,
+            manager_session_id=getattr(context, "manager_session_id", None),
+            result_id=causal_result_id,
+            generation_id=getattr(context, "generation_id", None),
+            next_session_id=getattr(context, "next_session_id", None),
+            spending_result_id=spending_result_id,
+        )
+        if getattr(spend, "status", None) not in ("spent", "already_spent_exact"):
             logger.warning(
-                "run_step %s: v2 decision report identity conflict", task_id,
+                "run_step %s: v2 reserved spend refused (%s)",
+                task_id, getattr(spend, "status", None),
             )
-            return _V2_DECISION_DISPATCH_SKIP
+            return skip
         claim = db.claim_authority_policy_v2_decision_dispatch(
-            root_task_id=task_id, manager_agent=manager_agent, result_id=result_id,
+            root_task_id=task_id, manager_agent=manager_agent,
+            result_id=causal_result_id,
         )
         if getattr(claim, "status", None) == "claimed":
-            return _V2_DECISION_DISPATCH_ADMITTED
-        # Duplicate claim, owner loss or claim failure: no consumer authority.
-        return _V2_DECISION_DISPATCH_SKIP
-    if state == "claimed":
-        # Restart after a committed claim (before the effect, after an effect or
-        # after a failed acknowledgement): audited refusal bookkeeping, never a
-        # second consumer.
-        try:
-            db.refuse_authority_policy_v2_decision_dispatch(
-                root_task_id=task_id, manager_agent=manager_agent,
-                result_id=result_id,
+            return _V2DecisionDispatchOutcome(
+                _V2_DECISION_DISPATCH_ADMITTED, manager_agent, causal_result_id,
             )
-        except Exception:
-            logger.exception("run_step %s: v2 decision refusal failed", task_id)
-        return _V2_DECISION_DISPATCH_SKIP
-    # ``applied``/``refused`` are terminal: read-only, never a second consumer.
-    return _V2_DECISION_DISPATCH_SKIP
+        return skip
+    if kind == "receipt":
+        if not isinstance(causal_result_id, int) or isinstance(causal_result_id, bool):
+            return skip
+        state = getattr(context, "decision_state", None)
+        if state == "ready":
+            if not _v2_report_binds(
+                db, task_id, getattr(context, "spending_result_id", None), report,
+            ):
+                logger.warning(
+                    "run_step %s: v2 decision report identity conflict", task_id,
+                )
+                return skip
+            claim = db.claim_authority_policy_v2_decision_dispatch(
+                root_task_id=task_id, manager_agent=manager_agent,
+                result_id=causal_result_id,
+            )
+            if getattr(claim, "status", None) == "claimed":
+                return _V2DecisionDispatchOutcome(
+                    _V2_DECISION_DISPATCH_ADMITTED, manager_agent, causal_result_id,
+                )
+            return skip
+        if state == "claimed":
+            # Restart after a committed claim (before the effect, after an
+            # effect or after a failed acknowledgement): audited refusal
+            # bookkeeping with the EXACT causal identity, never a second
+            # consumer.
+            try:
+                refusal = db.refuse_authority_policy_v2_decision_dispatch(
+                    root_task_id=task_id, manager_agent=manager_agent,
+                    result_id=causal_result_id,
+                )
+                if getattr(refusal, "status", None) != "refused":
+                    logger.warning(
+                        "run_step %s: v2 decision refusal pending (%s)",
+                        task_id, getattr(refusal, "reason", None),
+                    )
+            except Exception:
+                logger.exception("run_step %s: v2 decision refusal failed", task_id)
+            return skip
+        # ``applied``/``refused`` are terminal: read-only, never a second consumer.
+        return skip
+    # ``foreign``/unknown: an unmatched identity on a live lineage is never
+    # ordinary permission.
+    return skip
 
 
 def _consume_completion_report(
@@ -977,17 +1028,21 @@ def _consume_completion_report(
         return
     agent = task.assigned_agent or "unknown"
     resolved_row_id = _resolve_completion_result_row_id(db, task_id, report, result_row_id)
-    gate = _v2_decision_dispatch_gate(orch, task_id, report, resolved_row_id, agent)
-    if gate == _V2_DECISION_DISPATCH_SKIP:
+    outcome = _v2_decision_dispatch_gate(orch, task_id, report, resolved_row_id, agent)
+    if outcome.kind == _V2_DECISION_DISPATCH_SKIP:
         return
-    if gate == _V2_DECISION_DISPATCH_ORDINARY:
+    if outcome.kind == _V2_DECISION_DISPATCH_ORDINARY:
         _consume_completion_report_body(
             orch, task_id, report, result_row_id=resolved_row_id,
             recovery_reentry=recovery_reentry, recovery_owner=recovery_owner,
             recovery_result_id=recovery_result_id,
         )
         return
-    # ADMITTED: the winning claim authorizes exactly one consumer entry.
+    # ADMITTED: the winning claim authorizes exactly one consumer entry.  The
+    # SAME caller runs the EXISTING body outside any DB transaction once, then
+    # acknowledges the EXACT causal receipt it claimed.
+    manager_agent = outcome.manager_agent or agent
+    causal_result_id = outcome.causal_result_id
     try:
         _consume_completion_report_body(
             orch, task_id, report, result_row_id=resolved_row_id,
@@ -995,20 +1050,33 @@ def _consume_completion_report(
             recovery_result_id=recovery_result_id,
         )
     except BaseException:
+        # On exception, attempt the prescribed refusal with that SAME causal
+        # identity; already committed effects are preserved.
         try:
-            db.refuse_authority_policy_v2_decision_dispatch(
-                root_task_id=task_id, manager_agent=agent,
-                result_id=resolved_row_id,
+            refusal = db.refuse_authority_policy_v2_decision_dispatch(
+                root_task_id=task_id, manager_agent=manager_agent,
+                result_id=causal_result_id,
             )
+            if getattr(refusal, "status", None) != "refused":
+                logger.warning(
+                    "run_step %s: v2 decision refusal not settled (%s)",
+                    task_id, getattr(refusal, "reason", None),
+                )
         except Exception:  # pragma: no cover - fail-closed defensive
             logger.exception("run_step %s: v2 decision refusal failed", task_id)
         raise
-    # An acknowledgement/audit failure leaves the receipt ``claimed``; a later
-    # restart performs refusal housekeeping and never re-runs the consumer.
+    # A bounded ack/audit failure leaves the receipt ``claimed``; a later restart
+    # performs refusal housekeeping and never re-runs the consumer.
     try:
-        db.acknowledge_authority_policy_v2_decision_dispatch(
-            root_task_id=task_id, manager_agent=agent, result_id=resolved_row_id,
+        ack = db.acknowledge_authority_policy_v2_decision_dispatch(
+            root_task_id=task_id, manager_agent=manager_agent,
+            result_id=causal_result_id,
         )
+        if getattr(ack, "status", None) not in ("applied", "already_applied_exact"):
+            logger.warning(
+                "run_step %s: v2 decision acknowledgement not settled (%s)",
+                task_id, getattr(ack, "reason", None),
+            )
     except Exception:  # pragma: no cover - fail-closed defensive
         logger.exception("run_step %s: v2 decision acknowledgement failed", task_id)
 

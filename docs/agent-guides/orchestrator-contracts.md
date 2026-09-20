@@ -948,8 +948,11 @@ Database/store seam, and `tests/test_authority_v2_shipping.py` extends the fresh
 AND full historical-migrated owned-RuntimeDir/two-agent subprocess CLI -> HTTP
 venue through the actual reserved next invocation and real `R2` callback
 admission to an explicit public spend invocation — stage proof with a direct
-storage handoff, explicitly NOT common-consumer integration or final
-CLI->hook->Pending/enqueue acceptance — including a deterministic spend-audit
+storage handoff; the C3d3c2 checkpoint above adds the real common-consumer path
+end to end over the same venue (existing spend -> claim -> real normal decision
+effect -> applied, plus a zero-entry failed-spend case, a post-effect
+acknowledgement failure whose effect survives a reopen refusal, and the migrated
+venue) — including a deterministic spend-audit
 failure that preserves the retained `R2` and then succeeds on the exact retry,
 plus labelled fixture-corruption A/B negatives at the actual spend boundary (a
 null-discriminator related audit row and a changed `R2` report body over the
@@ -1009,29 +1012,50 @@ settles only the exact owned obligation and never mutates a replacement pointer,
 and CASes `claimed -> refused` with exactly one closed
 `decision_dispatch_interrupted` audit; a failed refusal transaction rolls back
 only itself, retaining the discoverable `claimed` state and a bounded pending
-outcome. `Database.get_authority_policy_v2_decision_receipt_for_result` is the
-read-only classification (`None` only for the provably no-v2 path; a corrupt
-canonical body returns `{"corrupt": true}` and is never ordinary absence) and
-`Database.authority_policy_v2_decision_result_report_binds` compares the supplied
-report's material scalar/collection projection and parsed decision action against
-the retained `R2` row. The COMMON consumer is guarded: `run_step.py` splits the
+outcome. `Database.get_authority_policy_v2_decision_receipt_for_result` is the read-only
+receipt lookup (`None` only when no consumed envelope carries that exact
+spending result; a corrupt canonical body returns `{"corrupt": true}`), and
+`Database.authority_policy_v2_decision_result_report_binds` normalizes BOTH sides
+through the established shipping representation
+(`completion_report_from_result_row`: the persisted `confidence_score` column is
+the model `confidence` field and the persisted raw `decision_json` is parsed into
+`NextStep` with the reserved carrier stripped), so the complete materially-consumed
+decision (not merely its action) plus every summary/status/confidence/verdict/
+output-path/risks/wait-ID/local-CI field must match the retained `R2` row while the
+persisted full material digest stays separately bound into `spent`.
+The COMMON consumer is guarded: `run_step.py` splits the
 existing `_consume_completion_report` into the single guarded entry (used by
 ordinary completion, accepted recovery, the startup sweep and the zombie reaper)
 and the unchanged `_consume_completion_report_body` (the EXISTING normal decision
 body). Before ANY normal task mutation/orchestration audit/decision/delegate/
-enqueue effect the guard classifies the exact result-keyed receipt: the
-uninterrupted winning claim runs the existing body exactly once and then
-acknowledges `claimed -> applied`; every other v2 outcome skips the body
-(performing audited interruption refusal for a restarted `claimed` receipt); a
-`ready` receipt first requires the supplied report to BE the exact persisted `R2`
-body and otherwise refuses without any effect; a missing/mistyped result identity
-on a root whose v2 generation is retired is never ordinary-path permission; and a
-provably ordinary/v1 result (including a lightweight/fake store with no v2
-reader) is unchanged. An exception raised by the normal body after the claim
-triggers the refusal bookkeeping and is re-raised, and an acknowledgement/audit
-failure leaves the receipt `claimed` and never re-runs the consumer. The
-accepted-recovery special branches route any spent next-result receipt through the
-same guarded entry so they cannot bypass it. The automatic v2 authority
+enqueue effect the guard classifies the completion against the REAL persisted v2
+lineage through `Database.authority_policy_v2_completion_dispatch_context` (never
+reader absence or a mock's `None`): `no_v2` only when the root has no finalized v2
+generation (a pre-final, attempt/candidate-only lineage is unchanged ordinary);
+`causal` (the causal result of a finalized generation) is continuation bookkeeping
+only and never spends, remints or re-enters the normal effect; the exact active
+reserved next result `R2` is atomically SPENT through the EXISTING writer and then
+claimed exactly once; an exact `ready` receipt first requires the supplied report
+to bind to the retained `R2` body before claiming; a restarted `claimed` receipt
+performs audited interruption refusal; `applied`/`refused` are read-only; a fully
+terminal generation returns an unrelated later completion to the ordinary path;
+and every other unmatched/malformed/foreign identity on a LIVE lineage is a
+fail-closed skip, never ordinary permission, with a classification read failure
+also fail-closed. The winning caller retains the exact CAUSAL receipt identity from
+`AuthorityPolicyV2CompletionDispatchContext` and acknowledges/refuses with THAT
+identity (never the reserved spending result id and never post-effect
+task/owner/pointer state); a bounded pending writer outcome leaves the receipt
+recoverable and never permits a second consumer. Every first-write/replay
+authenticates the COMPLETE closed decision-event set, so a mutated preceding
+`decision_claimed` refuses exactly like a mutated final event, and a historical
+acknowledgement/refusal still settles generation A after the consumer legitimately
+advanced the root pointer to generation B (A's retirement is proven by the exact
+`spent` audit, not by a still-current `D`). An exception raised by the normal body
+after the claim triggers the refusal bookkeeping and is re-raised, and an
+acknowledgement/audit failure leaves the receipt `claimed` and never re-runs the
+consumer. The accepted-recovery special branches classify against the same
+persisted lineage before ANY special effect (including a read failure, which is
+routed fail-closed) so they cannot bypass it. The automatic v2 authority
 continuation hook stays fail-closed/DARK: the broader startup/reaper/queue
 producer discovery and the editable-pair editor/browser path remain
 unimplemented. `runtime/orchestrator/authority_policy_store.py` exposes thin

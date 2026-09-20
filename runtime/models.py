@@ -3133,6 +3133,62 @@ class AuthorityPolicyV2DecisionRefusalOutcome(BaseModel):
         return self
 
 
+AUTHORITY_POLICY_V2_COMPLETION_DISPATCH_KINDS = frozenset({
+    "no_v2", "receipt", "reserved", "causal", "foreign",
+})
+
+
+class AuthorityPolicyV2CompletionDispatchContext(BaseModel):
+    """Read-only classification of one completion against the v2 lineage.
+
+    Produced from REAL persisted v2 rows (attempts, envelopes, notifications and
+    the root dispatch pointer) -- never from reader absence or a mock's
+    ``None``.  ``no_v2`` is the only kind that authorizes the unchanged ordinary
+    path.  ``receipt`` names an already-spent result-keyed receipt whose closed
+    ``decision_state`` is the single-use token.  ``reserved`` is the exact
+    active reserved next-result R2 that the common consumer must atomically
+    spend before claiming.  ``causal`` is the causal result R of a v2 attempt
+    and is continuation bookkeeping only.  ``foreign`` is every unmatched,
+    malformed or conflicting identity on a root with a live v2 lineage: it never
+    becomes ordinary permission.
+
+    The context carries the CAUSAL manager identity, so the winning caller
+    acknowledges/refuses with exactly the identity it claimed -- never the
+    reserved spending result id and never whichever task/owner happens to be
+    current after the effect.
+    """
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    kind: StrictStr
+    manager_agent: StrictStr | None = None
+    manager_session_id: StrictStr | None = None
+    causal_result_id: StrictInt | None = Field(
+        default=None, ge=1, le=9223372036854775807,
+    )
+    generation_id: StrictStr | None = None
+    next_session_id: StrictStr | None = None
+    spending_result_id: StrictInt | None = Field(
+        default=None, ge=1, le=9223372036854775807,
+    )
+    decision_state: StrictStr | None = None
+
+    @field_validator("kind")
+    @classmethod
+    def _v2_completion_dispatch_kind_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_COMPLETION_DISPATCH_KINDS:
+            raise ValueError("completion dispatch kind is not a closed value")
+        return value
+
+    @field_validator("decision_state")
+    @classmethod
+    def _v2_completion_dispatch_state_is_closed(
+        cls, value: str | None,
+    ) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_DECISION_STATES:
+            raise ValueError("completion dispatch state is not a closed value")
+        return value
+
+
 class AuthorityPolicyV2SchemaIntegrity(BaseModel):
     """Bounded read-only v2 schema-integrity EVIDENCE (THR-229 checkpoint C3a).
 

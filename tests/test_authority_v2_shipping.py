@@ -265,6 +265,9 @@ class _ShippingFixture:
         self.cli_env: dict[str, str] = {}
         self.port = 0
         self._results: list[dict] = []
+        # Per-session release let a later case resume ONLY the reserved
+        # invocation while the earlier causal launch stays held.
+        self.released_sessions: set[str] = set()
 
     # -- setup ---------------------------------------------------------
     def start(self) -> "_ShippingFixture":
@@ -409,10 +412,19 @@ class _ShippingFixture:
             kwargs["recovery_launch_validator"]()
             fixture.captured = dict(kwargs)
             fixture.launch_event.set()
-            if not fixture.release_event.wait(timeout=_LAUNCH_HOLD_SECONDS):
+            session = kwargs["session_id"]
+            deadline = time.monotonic() + _LAUNCH_HOLD_SECONDS
+            while time.monotonic() < deadline:
+                if (
+                    fixture.release_event.is_set()
+                    or session in fixture.released_sessions
+                ):
+                    break
+                time.sleep(0.02)
+            else:
                 raise AssertionError("held launch was never released")
             return ExecutorResult(
-                success=True, duration_seconds=1, session_id=kwargs["session_id"],
+                success=True, duration_seconds=1, session_id=session,
             )
 
         self.monkeypatch.setattr(
@@ -425,6 +437,10 @@ class _ShippingFixture:
 
     def release_launch(self) -> None:
         self.release_event.set()
+
+    def release_session(self, session_id: str) -> None:
+        """Resume ONLY one held invocation (later reserved-invocation cases)."""
+        self.released_sessions.add(session_id)
 
     def join_workers(self, *, timeout: float = _JOIN_SECONDS) -> None:
         if self.server is None:
@@ -2578,5 +2594,354 @@ def test_shipping_historically_migrated_reserved_invocation_and_spend(
     fixture.start()
     try:
         _drive_c3d3c1_spend(fixture)
+    finally:
+        fixture.stop()
+
+
+# ==========================================================================
+# C3d3c2: the reserved invocation's REAL common consumer runs the existing
+# spend -> claim -> real normal decision effect -> applied.  The explicit
+# storage spend handoff is deliberately replaced by the actual run-step guard.
+# ==========================================================================
+
+
+def _reserved_decision_body(binding: dict, task_id: str, action: str) -> dict:
+    body = _completion_body(binding, task_id)
+    if action == "done":
+        body["decision"] = {
+            "action": "done",
+            "summary": "isolated shipping continuation done",
+        }
+    else:
+        body["decision"] = {
+            "action": "delegate", "agent": WORKER,
+            "prompt": "isolated shipping continuation delegate",
+        }
+    return body
+
+
+def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="healthy"):
+    fixture.activate_v2_pair()
+    fixture.install_launch_hold()
+    root_id = fixture.create_and_enqueue_root()
+    captured = fixture.wait_for_launch()
+    session_id = captured["session_id"]
+    binding = _binding(fixture, root_id, session_id)
+    assert binding is not None and binding["mode"] == "v2"
+
+    body = _completion_body(binding, root_id)
+    result = fixture.run_cli(fixture.write_payload(body))
+    assert result.returncode == 0, result.stderr
+    assert fixture.last_http()["status"] == 200
+
+    results, attempt, _audits = _admission_counts(fixture, root_id)
+    assert len(results) == 1 and attempt is not None
+    causal_id = results[0]["id"]
+    db = fixture.org.db
+
+    from runtime.orchestrator.authority import (
+        _strict_permission_surface_digest,
+        publish_authority_policy_v2_notifications,
+    )
+
+    db.bind_authority_policy_v2_permission_surface_reader(
+        lambda agent: _strict_permission_surface_digest(
+            fixture.org.orchestrator, agent,
+        )
+    )
+    stage_kwargs = dict(
+        root_task_id=root_id, manager_agent=MANAGER, manager_session_id=session_id,
+        result_id=causal_id, origin_boot_id=attempt.origin_boot_id,
+        owner_attempt_id=attempt.owner_attempt_id,
+    )
+    assert db.claim_authority_policy_v2_candidate(**stage_kwargs).status == "claimed"
+    assert db.audit_authority_policy_v2_candidate_claim(**stage_kwargs).status == "claim_audited"
+    assert db.evaluate_authority_policy_v2_candidate(**stage_kwargs).status == "evaluated"
+    assert db.audit_authority_policy_v2_candidate_evaluation(**stage_kwargs).status == "evaluation_audited"
+    assert db.consume_authority_policy_v2_candidate(**stage_kwargs).status == "consumed"
+    assert db.audit_authority_policy_v2_candidate_consumption(**stage_kwargs).status == "consumed_audited"
+    finalized = db.finalize_authority_policy_v2_continuation(**stage_kwargs)
+    assert finalized.status == "continued", finalized
+    generation = finalized.notification_id
+
+    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+
+    result_row = db._conn.execute(
+        "SELECT * FROM task_results WHERE id=?", (causal_id,)
+    ).fetchone()
+    report = completion_report_from_result_row(
+        root_id, dict(result_row), fallback_agent=MANAGER,
+    )
+    fixture.org.orchestrator._log_step_result(
+        root_id, types.SimpleNamespace(session_id=session_id), report,
+        result_row_id=causal_id,
+    )
+    pub_kwargs = dict(
+        root_task_id=root_id, manager_agent=MANAGER,
+        manager_session_id=session_id, result_id=causal_id,
+    )
+    assert db.settle_authority_policy_v2_continuation_receipt(**pub_kwargs).status == "settled"
+    db.bind_authority_policy_v2_process_boot_id(attempt.origin_boot_id)
+
+    receipts = publish_authority_policy_v2_notifications(
+        fixture.org.orchestrator, fixture.state.queue,
+    )
+    assert receipts and receipts[0]["status"] in ("published", "publish_returned"), receipts
+
+    reserved = None
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        admitted = db.get_authority_policy_v2_recovery_notification(generation)
+        if (
+            admitted is not None and admitted.state == "settled"
+            and admitted.next_session_id
+        ):
+            reserved = admitted.next_session_id
+            if fixture.captured.get("session_id") == reserved:
+                break
+        time.sleep(0.05)
+    assert reserved is not None, "generation was never admitted"
+    assert fixture.captured["session_id"] == reserved
+
+    # Real R2 through the ACTUAL shipping subprocess CLI -> HTTP -> persisted
+    # result, while the reserved invocation is still held at the launch.
+    reserved_binding = _binding(fixture, root_id, reserved)
+    assert reserved_binding is not None and reserved_binding["mode"] == "v2"
+    reserved_body = _reserved_decision_body(reserved_binding, root_id, action)
+    reserved_payload = fixture.write_payload(
+        reserved_body, name=f"completion-reserved-{action}.json",
+    )
+    reserved_result = fixture.run_cli(reserved_payload)
+    assert reserved_result.returncode == 0, reserved_result.stderr
+    assert fixture.last_http()["status"] == 200
+    r2_row = db.get_task_results(root_id)[-1]
+    assert r2_row["session_id"] == reserved
+    r2 = r2_row["id"]
+    assert r2 != causal_id
+    envelope_id = finalized.envelope_id
+    assert (
+        db.get_authority_policy_v2_continue_envelope(envelope_id).lifecycle_state
+        == "active"
+    )
+
+    def _stages() -> list[str]:
+        return [
+            a["payload"].get("stage")
+            for a in db.list_authority_policy_v2_result_stage_audits(
+                root_task_id=root_id, manager_agent=MANAGER,
+            )
+        ]
+
+    from runtime.infrastructure.database import Database as _Database
+
+    real_spend = _Database.spend_authority_policy_v2_continue_envelope
+    real_ack = _Database.acknowledge_authority_policy_v2_decision_dispatch
+    spend_attempts: list = []
+    if mode == "spend_failure":
+        from runtime.models import AuthorityPolicyV2SpendOutcome
+
+        def _no_spend(self, **kwargs):
+            spend_attempts.append(kwargs)
+            return AuthorityPolicyV2SpendOutcome(
+                status="spend_pending", reason="spend_failed",
+            )
+
+        fixture.monkeypatch.setattr(
+            _Database, "spend_authority_policy_v2_continue_envelope", _no_spend,
+        )
+    elif mode == "ack_failure":
+        def _failing_ack(self, **kwargs):
+            raise RuntimeError("isolated post-effect acknowledgement failure")
+
+        fixture.monkeypatch.setattr(
+            _Database, "acknowledge_authority_policy_v2_decision_dispatch",
+            _failing_ack,
+        )
+
+    # Resume ONLY the reserved invocation: its REAL run_step common consumer
+    # performs the existing spend -> claim -> real normal effect -> applied.
+    # No explicit storage spend handoff.
+    fixture.release_session(reserved)
+    state = None
+    if mode == "spend_failure":
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline and not spend_attempts:
+            time.sleep(0.05)
+        assert spend_attempts, "the reserved consumer never attempted the spend"
+    else:
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            state = db.get_authority_policy_v2_continue_envelope(
+                envelope_id
+            ).decision_state
+            if state in ("applied", "refused"):
+                break
+            time.sleep(0.05)
+
+    try:
+        if mode == "spend_failure":
+            # Failed spend yields ZERO consumer entry: E stays active with no
+            # spending receipt, no decision event and no real effect.
+            active = db.get_authority_policy_v2_continue_envelope(envelope_id)
+            assert active.lifecycle_state == "active"
+            assert active.spending_result_id is None
+            assert active.decision_state is None
+            assert _stages().count("decision_claimed") == 0
+            assert _stages().count("decision_applied") == 0
+            assert db.get_task(root_id).status is not TaskStatus.COMPLETED
+            return root_id
+
+        if mode == "ack_failure":
+            # The consumer effect committed but the acknowledgement failed:
+            # the exact receipt stays discoverably ``claimed``.
+            assert state == "claimed", state
+            stages = _stages()
+            assert stages.count("spent") == 1
+            assert stages.count("decision_claimed") == 1
+            assert stages.count("decision_applied") == 0
+            if action == "done":
+                assert db.get_task(root_id).status is TaskStatus.COMPLETED
+            else:
+                children = [dict(row) for row in db._conn.execute(
+                    "SELECT * FROM tasks WHERE parent_task_id=?", (root_id,),
+                ).fetchall()]
+                assert len(children) == 1, children
+            fixture.monkeypatch.setattr(
+                _Database, "acknowledge_authority_policy_v2_decision_dispatch",
+                real_ack,
+            )
+            # A reopen refuses exactly once with the same causal identity and
+            # never re-runs the consumer or regresses the committed effect.
+            from runtime.orchestrator.run_step import _v2_decision_dispatch_gate
+
+            r2_dict = dict(db._conn.execute(
+                "SELECT * FROM task_results WHERE id=?", (r2,)
+            ).fetchone())
+            r2_report = completion_report_from_result_row(
+                root_id, r2_dict, fallback_agent=MANAGER,
+            )
+            gate = _v2_decision_dispatch_gate(
+                fixture.org.orchestrator, root_id, r2_report, r2, MANAGER,
+            )
+            assert gate.kind == "skip", gate
+            assert (
+                db.get_authority_policy_v2_continue_envelope(envelope_id).decision_state
+                == "refused"
+            )
+            stages = _stages()
+            assert stages.count("decision_dispatch_interrupted") == 1
+            assert stages.count("decision_applied") == 0
+            if action == "done":
+                assert db.get_task(root_id).status is TaskStatus.COMPLETED
+            else:
+                children = [dict(row) for row in db._conn.execute(
+                    "SELECT * FROM tasks WHERE parent_task_id=?", (root_id,),
+                ).fetchall()]
+                assert len(children) == 1, children
+            return root_id
+
+        # Healthy: exactly one spend, claim, real normal decision effect and
+        # acknowledgement, and no interruption.
+        assert state == "applied", state
+        stages = _stages()
+        assert stages.count("spent") == 1
+        assert stages.count("decision_claimed") == 1
+        assert stages.count("decision_applied") == 1
+        assert stages.count("decision_dispatch_interrupted") == 0
+        if action == "done":
+            assert db.get_task(root_id).status is TaskStatus.COMPLETED
+        else:
+            children = [dict(row) for row in db._conn.execute(
+                "SELECT * FROM tasks WHERE parent_task_id=?", (root_id,),
+            ).fetchall()]
+            assert len(children) == 1, children
+            assert children[0]["assigned_agent"] == WORKER
+
+        # Reopen/duplicate sees the terminal exact receipt: never a second
+        # consumer, never a second child/enqueue, no new audit.
+        before = db._conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE parent_task_id=?", (root_id,),
+        ).fetchone()[0]
+        from runtime.orchestrator.run_step import _v2_decision_dispatch_gate
+
+        r2_dict = dict(db._conn.execute(
+            "SELECT * FROM task_results WHERE id=?", (r2,)
+        ).fetchone())
+        r2_report = completion_report_from_result_row(
+            root_id, r2_dict, fallback_agent=MANAGER,
+        )
+        gate = _v2_decision_dispatch_gate(
+            fixture.org.orchestrator, root_id, r2_report, r2, MANAGER,
+        )
+        assert gate.kind == "skip", gate
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE parent_task_id=?", (root_id,),
+        ).fetchone()[0] == before
+        assert _stages().count("decision_applied") == 1
+        return root_id
+    finally:
+        if mode == "spend_failure":
+            fixture.monkeypatch.setattr(
+                _Database, "spend_authority_policy_v2_continue_envelope",
+                real_spend,
+            )
+        if mode == "ack_failure":
+            fixture.monkeypatch.setattr(
+                _Database, "acknowledge_authority_policy_v2_decision_dispatch",
+                real_ack,
+            )
+        fixture.release_launch()
+        fixture.join_workers()
+
+
+def test_shipping_real_reserved_invocation_common_consumer_done(tmp_path, monkeypatch):
+    fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2)
+    fixture.start()
+    try:
+        _drive_c3d3c2_dispatch(fixture, action="done")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_real_reserved_invocation_common_consumer_delegate(
+    tmp_path, monkeypatch,
+):
+    fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2)
+    fixture.start()
+    try:
+        _drive_c3d3c2_dispatch(fixture, action="delegate")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_common_consumer_done(tmp_path, monkeypatch):
+    fixture = _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=True, queue_workers=2,
+    )
+    fixture.start()
+    try:
+        _drive_c3d3c2_dispatch(fixture, action="done")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_real_common_consumer_spend_failure_zero_entry(
+    tmp_path, monkeypatch,
+):
+    fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2)
+    fixture.start()
+    try:
+        _drive_c3d3c2_dispatch(fixture, action="done", mode="spend_failure")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_real_common_consumer_ack_failure_then_reopen(
+    tmp_path, monkeypatch,
+):
+    fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2)
+    fixture.start()
+    try:
+        _drive_c3d3c2_dispatch(fixture, action="done", mode="ack_failure")
     finally:
         fixture.stop()

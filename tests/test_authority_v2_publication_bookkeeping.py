@@ -282,7 +282,7 @@ def _clone_row(store, table, pk_column, source_pk, overrides):
 
 
 def _point_dispatch_at_replacement(
-    store, notification, generation_id=None,
+    store, notification, generation_id=None, *, envelope_overrides=None,
 ):
     """Fixture-level replacement root pointer (D names a REAL generation B).
 
@@ -291,6 +291,8 @@ def _point_dispatch_at_replacement(
     result/attempt/candidate/envelope/notification rows under new identities.
     The cloned B is never authenticated as evidence; it exists only so the
     genuine forward-only retired -> pending pointer transition can be exercised.
+    ``envelope_overrides`` lets a caller stage B from an already-consumed A
+    envelope (whose unique ``spending_result_id`` must be cleared on the clone).
     """
     if generation_id is None:
         generation_id = REPLACEMENT_GENERATION
@@ -326,14 +328,17 @@ def _point_dispatch_at_replacement(
             "result_id": replacement_result_id,
         },
     )
+    envelope_values = {
+        "envelope_id": envelope_id, "candidate_id": candidate_id,
+        "claim_key": "claim-replacement-b", "manager_session_id": session_id,
+        "attempt_id": attempt_id, "result_id": replacement_result_id,
+    }
+    if envelope_overrides:
+        envelope_values.update(envelope_overrides)
     _clone_row(
         store, "authority_policy_v2_continue_envelopes", "envelope_id",
         envelope["envelope_id"],
-        {
-            "envelope_id": envelope_id, "candidate_id": candidate_id,
-            "claim_key": "claim-replacement-b", "manager_session_id": session_id,
-            "attempt_id": attempt_id, "result_id": replacement_result_id,
-        },
+        envelope_values,
     )
     _clone_row(
         store, "authority_policy_v2_recovery_notifications", "notification_id",

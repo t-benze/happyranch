@@ -36,6 +36,7 @@ from runtime.models import (
     AuthorityPolicyV2CandidateAudit,
     AuthorityPolicyV2ContinueEnvelope,
     AuthorityPolicyV2ControlReceipt,
+    AuthorityPolicyV2CompletionDispatchContext,
     AuthorityPolicyV2DecisionAckOutcome,
     AuthorityPolicyV2DecisionClaimOutcome,
     AuthorityPolicyV2DecisionRefusalOutcome,
@@ -121,6 +122,8 @@ from runtime.models import (
     DreamKbCandidate,
     DreamRecord,
     DreamStatus,
+    LocalCiEvidence,
+    NextStep,
     ScheduleStatus,
     TaskAttachmentRecord,
     TaskRecord,
@@ -1256,6 +1259,9 @@ def _serialize_authority_audit_payload(payload: object | None) -> str | None:
         return None
     model = AuthorityAuditPayload.model_validate(payload)
     return json.dumps(model.model_dump(mode="json", exclude_none=True))
+
+
+_V2_MALFORMED_DECISION = object()
 
 
 def _canonical_completion_json(value):
@@ -14079,17 +14085,22 @@ class Database:
         return by_stage is not None and len(by_stage) == 0
 
     def _authenticate_v2_decision_event_uncommitted(
-        self, *, root_task_id: str, manager_agent: str, expected: dict,
-        allowed_stages: tuple[str, ...],
+        self, *, root_task_id: str, manager_agent: str,
+        expected_events: dict[str, dict],
     ) -> bool:
-        """Exactly one authentic CLOSED decision event for the exact receipt.
+        """Exactly the COMPLETE closed decision-event set for the exact receipt.
 
-        ``allowed_stages`` is the exact set of decision stages permitted to
-        coexist (for an ``applied`` replay that is claim+applied; for a fresh
-        acknowledgement or refusal it is only the historical claim).  A
-        missing, duplicated, mutated, conflicting, foreign, opaque or extra-key
-        decision event refuses with no repair-by-reinsertion.
+        ``expected_events`` maps EVERY allowed decision stage to its exact
+        closed payload.  The persisted set must equal that key set with exactly
+        one CLOSED, type-sensitive-equal payload per stage.  A preceding claim
+        whose retained ``report_digest`` (or any other field) was mutated is
+        therefore refused exactly like a mutated final event -- an exact replay
+        never authenticates a corrupted history.  Missing, duplicated,
+        conflicting, foreign, opaque or extra-key rows refuse with no repair.
         """
+        if not expected_events:
+            return False
+        expected = next(iter(expected_events.values()))
         by_stage = self._v2_related_decision_events_uncommitted(
             root_task_id=root_task_id, manager_agent=manager_agent,
             attempt_id=expected["attempt_id"], candidate_id=expected["candidate_id"],
@@ -14101,18 +14112,18 @@ class Database:
         )
         if by_stage is None:
             return False
-        for stage, payloads in by_stage.items():
-            if stage not in allowed_stages:
-                return False
-            if len(payloads) != 1:
-                return False
-        rows = by_stage.get(expected["stage"], [])
-        if len(rows) != 1:
+        if set(by_stage.keys()) != set(expected_events.keys()):
             return False
-        payload = rows[0]
-        if set(payload.keys()) != set(expected.keys()):
-            return False
-        return self._v2_json_type_sensitive_equal(payload, expected)
+        for stage, expected_payload in expected_events.items():
+            rows = by_stage.get(stage, [])
+            if len(rows) != 1:
+                return False
+            payload = rows[0]
+            if set(payload.keys()) != set(expected_payload.keys()):
+                return False
+            if not self._v2_json_type_sensitive_equal(payload, expected_payload):
+                return False
+        return True
 
     def _authenticate_v2_spent_decision_receipt_uncommitted(
         self, *, root_task_id: str, manager_agent: str, result_id: int,
@@ -14146,6 +14157,7 @@ class Database:
         code, ctx = self._authenticate_v2_post_final_evidence_uncommitted(
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
+            require_dispatch_generation=False,
         )
         if code is not None:
             return code, None
@@ -14166,8 +14178,15 @@ class Database:
         next_session_id = notification.next_session_id
         if not isinstance(next_session_id, str) or not next_session_id:
             return "identity_mismatch", None
-        if dispatch.state != "retired" or dispatch.generation_id != generation_id:
-            return "evidence_drift", None
+        # The C3d3b pointer is REQUIRED to name this exact spent generation while
+        # it is still current (``retired``).  A later legitimate generation B
+        # may legitimately own the single root pointer; A's own retirement is
+        # then durably proven by the exact ``spent`` audit below, so historical
+        # acknowledgement/refusal must not depend on a still-current D, regress
+        # B, or lose the ability to settle A.
+        if dispatch.generation_id == generation_id:
+            if dispatch.state != "retired":
+                return "evidence_drift", None
         if notification.state != "settled":
             return "evidence_drift", None
         r2 = self._authenticate_v2_spending_result_uncommitted(
@@ -14425,11 +14444,10 @@ class Database:
         if decision_state == "applied":
             if not self._authenticate_v2_decision_event_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
-                expected=applied_event,
-                allowed_stages=(
-                    AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED,
-                    AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_APPLIED,
-                ),
+                expected_events={
+                    AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED: claim_event,
+                    AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_APPLIED: applied_event,
+                },
             ):
                 return _pending("evidence_drift", **base)
             return AuthorityPolicyV2DecisionAckOutcome(
@@ -14443,8 +14461,9 @@ class Database:
         # no applied/interrupted event may already exist for this receipt.
         if not self._authenticate_v2_decision_event_uncommitted(
             root_task_id=root_task_id, manager_agent=manager_agent,
-            expected=claim_event,
-            allowed_stages=(AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED,),
+            expected_events={
+                AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED: claim_event,
+            },
         ):
             return _pending("evidence_drift", **base)
         # The ordinary consumer may legitimately have completed, replaced or
@@ -14538,11 +14557,10 @@ class Database:
         if decision_state == "refused":
             if not self._authenticate_v2_decision_event_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
-                expected=interruption_event,
-                allowed_stages=(
-                    AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED,
-                    AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_DISPATCH_INTERRUPTED,
-                ),
+                expected_events={
+                    AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED: claim_event,
+                    AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_DISPATCH_INTERRUPTED: interruption_event,
+                },
             ):
                 return _pending("evidence_drift", **base)
             return AuthorityPolicyV2DecisionRefusalOutcome(
@@ -14557,8 +14575,9 @@ class Database:
             return _pending("not_claimable", **base)
         if not self._authenticate_v2_decision_event_uncommitted(
             root_task_id=root_task_id, manager_agent=manager_agent,
-            expected=claim_event,
-            allowed_stages=(AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED,),
+            expected_events={
+                AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED: claim_event,
+            },
         ):
             return _pending("evidence_drift", **base)
         # Escalate ONLY the still-current nonterminal reserved invocation; a
@@ -14679,22 +14698,361 @@ class Database:
             "decision_state": envelope.decision_state,
         }
 
+    def _v2_root_lineage_live_uncommitted(
+        self, *, dispatch_row, envelopes, attempts,
+    ) -> bool:
+        """True while a v2 authority obligation still owns the root.
+
+        A retired dispatch whose exact spent receipt is already
+        ``applied``/``refused`` is terminal; every envelope exhausted and every
+        attempt finalized also ends the lineage.  Anything uncertain (corrupt
+        row, ``pending``/``admitted`` pointer, active envelope, nonterminal
+        decision, unfinalized attempt) stays live and fail-closed.
+        """
+        if dispatch_row is not None:
+            try:
+                dispatch = self._authority_policy_v2_root_dispatch_from_row(
+                    dispatch_row
+                )
+            except ValueError:
+                return True
+            if dispatch.state != "retired":
+                return True
+            notification_row = self._conn.execute(
+                "SELECT * FROM authority_policy_v2_recovery_notifications "
+                "WHERE notification_id=?",
+                (dispatch.generation_id,),
+            ).fetchone()
+            if notification_row is None:
+                return True
+            try:
+                notification = self._authority_policy_v2_notification_from_row(
+                    notification_row
+                )
+            except ValueError:
+                return True
+            envelope_row = self._conn.execute(
+                "SELECT * FROM authority_policy_v2_continue_envelopes "
+                "WHERE envelope_id=?",
+                (notification.envelope_id,),
+            ).fetchone()
+            if envelope_row is None:
+                return True
+            try:
+                envelope = self._authority_policy_v2_envelope_from_row(envelope_row)
+            except ValueError:
+                return True
+            return not (
+                envelope.lifecycle_state == "consumed"
+                and envelope.decision_state in ("applied", "refused")
+            )
+        for envelope_row in envelopes:
+            try:
+                envelope = self._authority_policy_v2_envelope_from_row(envelope_row)
+            except ValueError:
+                return True
+            if envelope.lifecycle_state != "consumed":
+                return True
+            if envelope.decision_state not in ("applied", "refused"):
+                return True
+        for attempt in attempts:
+            if attempt["finalization_state"] not in (
+                AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED,
+                AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_OWNER_LOST,
+            ):
+                return True
+        return False
+
+    @_synchronized
+    def authority_policy_v2_completion_dispatch_context(
+        self, *, root_task_id: str, result_row_id,
+    ) -> AuthorityPolicyV2CompletionDispatchContext:
+        """Read-only classification of one completion against the v2 lineage.
+
+        Uses REAL persisted provenance (the attempt journal, continuation
+        envelopes and the root dispatch pointer) -- never reader absence or a
+        mock ``None``.  ``no_v2`` is returned only when the root has no v2
+        lineage at all, or when a fully terminal generation (its exact spent
+        receipt already ``applied``/``refused``) leaves an unrelated later
+        completion legitimately ordinary.  The causal result R of any attempt is
+        ``causal``; an exact result-keyed receipt is ``receipt``; the active
+        reserved next result of the current generation is ``reserved``; every
+        other unmatched/malformed identity on a live lineage is ``foreign`` and
+        never ordinary permission.
+        """
+        def _ctx(kind, **kw) -> AuthorityPolicyV2CompletionDispatchContext:
+            return AuthorityPolicyV2CompletionDispatchContext(kind=kind, **kw)
+
+        attempts = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_attempts WHERE root_task_id=?",
+            (root_task_id,),
+        ).fetchall()
+        dispatch_row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_root_dispatch WHERE root_task_id=?",
+            (root_task_id,),
+        ).fetchone()
+        envelopes = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_continue_envelopes "
+            "WHERE root_task_id=?",
+            (root_task_id,),
+        ).fetchall()
+        if not envelopes and dispatch_row is None:
+            # Provably no finalized v2 generation: either no v2 lineage at all,
+            # or only PRE-FINAL attempts/candidates (a live-owner duplicate
+            # loses the candidate claim there, and a refused attempt is
+            # terminal).  The ordinary path is unchanged in both cases.
+            return _ctx("no_v2")
+
+        row = None
+        if self._v2_is_int(result_row_id):
+            row = self._conn.execute(
+                "SELECT * FROM task_results WHERE id=? AND task_id=?",
+                (result_row_id, root_task_id),
+            ).fetchone()
+
+        # 1. Causal R: the causal result of a FINALIZED v2 generation (an
+        # attempt that owns an envelope).  An unfinalized attempt whose causal
+        # result is the reserved R2 itself (a genuine NEW R2 authority attempt)
+        # is NOT a causal replay -- it is exactly the reserved next result.
+        if row is not None:
+            parsed_envelopes = []
+            for envelope_row in envelopes:
+                try:
+                    parsed_envelopes.append(
+                        self._authority_policy_v2_envelope_from_row(envelope_row)
+                    )
+                except ValueError:
+                    continue
+            for envelope in parsed_envelopes:
+                if (
+                    self._v2_is_int(envelope.result_id)
+                    and envelope.result_id == result_row_id
+                ):
+                    return _ctx(
+                        "causal", manager_agent=row["agent"],
+                        causal_result_id=result_row_id,
+                    )
+            # 2. The exact result-keyed receipt of ANY generation.
+            for envelope in parsed_envelopes:
+                if (
+                    self._v2_is_int(envelope.spending_result_id)
+                    and envelope.spending_result_id == result_row_id
+                ):
+                    return _ctx(
+                        "receipt",
+                        manager_agent=envelope.manager_agent,
+                        manager_session_id=envelope.manager_session_id,
+                        causal_result_id=envelope.result_id,
+                        spending_result_id=result_row_id,
+                        decision_state=envelope.decision_state,
+                    )
+
+        # 3. Every other identity on a fully terminal lineage is ordinary again.
+        if not self._v2_root_lineage_live_uncommitted(
+            dispatch_row=dispatch_row, envelopes=envelopes, attempts=attempts,
+        ):
+            return _ctx("no_v2")
+
+        if row is None:
+            return _ctx("foreign")
+
+        # 4. The current generation's active reserved next result R2.
+        if dispatch_row is not None:
+            try:
+                dispatch = self._authority_policy_v2_root_dispatch_from_row(
+                    dispatch_row
+                )
+            except ValueError:
+                return _ctx("foreign")
+            notification_row = self._conn.execute(
+                "SELECT * FROM authority_policy_v2_recovery_notifications "
+                "WHERE notification_id=?",
+                (dispatch.generation_id,),
+            ).fetchone()
+            if notification_row is None:
+                return _ctx("foreign")
+            try:
+                notification = self._authority_policy_v2_notification_from_row(
+                    notification_row
+                )
+            except ValueError:
+                return _ctx("foreign")
+            envelope_row = self._conn.execute(
+                "SELECT * FROM authority_policy_v2_continue_envelopes "
+                "WHERE envelope_id=?",
+                (notification.envelope_id,),
+            ).fetchone()
+            if envelope_row is None:
+                return _ctx("foreign")
+            try:
+                envelope = self._authority_policy_v2_envelope_from_row(envelope_row)
+            except ValueError:
+                return _ctx("foreign")
+            if (
+                dispatch.state == "admitted"
+                and notification.state == "settled"
+                and envelope.lifecycle_state == "active"
+                and envelope.spending_result_id is None
+                and envelope.decision_state is None
+                and isinstance(notification.next_session_id, str)
+                and notification.next_session_id
+                and row["agent"] == envelope.manager_agent
+                and row["session_id"] == notification.next_session_id
+            ):
+                return _ctx(
+                    "reserved",
+                    manager_agent=envelope.manager_agent,
+                    manager_session_id=envelope.manager_session_id,
+                    causal_result_id=envelope.result_id,
+                    generation_id=dispatch.generation_id,
+                    next_session_id=notification.next_session_id,
+                    spending_result_id=result_row_id,
+                )
+        return _ctx("foreign")
+
+    @classmethod
+    def _v2_parse_material_decision(cls, raw):
+        """Normalize one ``decision_json`` through the shipping NextStep carrier.
+
+        The reserved ``_manager_self_evaluation`` key is stripped exactly as
+        ``completion_report_from_result_row`` strips it.  Returns the parsed
+        ``NextStep`` JSON projection, ``None`` for an absent decision, or the
+        malformed sentinel for a present non-object/unparseable/invalid body.
+        """
+        if raw is None or raw == "":
+            return None
+        try:
+            parsed = (
+                json.loads(raw)
+                if isinstance(raw, (str, bytes, bytearray)) else raw
+            )
+        except (ValueError, TypeError):
+            return _V2_MALFORMED_DECISION
+        if not isinstance(parsed, dict):
+            return _V2_MALFORMED_DECISION
+        parsed.pop("_manager_self_evaluation", None)
+        try:
+            return NextStep(**parsed).model_dump(mode="json")
+        except (ValidationError, ValueError, TypeError):
+            return _V2_MALFORMED_DECISION
+
+    @classmethod
+    def _v2_parse_material_list(cls, raw):
+        """Normalize one persisted/collection JSON list the shipping way."""
+        if raw is None or raw == "":
+            return []
+        try:
+            parsed = (
+                json.loads(raw)
+                if isinstance(raw, (str, bytes, bytearray)) else raw
+            )
+        except (ValueError, TypeError):
+            return _V2_MALFORMED_DECISION
+        return parsed
+
+    @classmethod
+    def _v2_parse_material_local_ci(cls, raw):
+        """Normalize persisted local-CI evidence the shipping way.
+
+        An invalid local-CI body is treated as absent exactly like
+        ``completion_report_from_result_row`` (it does not invent a model), while
+        a present non-object carrier is a malformed conflict.
+        """
+        if raw is None or raw == "":
+            return None
+        try:
+            parsed = (
+                json.loads(raw)
+                if isinstance(raw, (str, bytes, bytearray)) else raw
+            )
+        except (ValueError, TypeError):
+            return _V2_MALFORMED_DECISION
+        if not isinstance(parsed, dict):
+            return _V2_MALFORMED_DECISION
+        try:
+            return LocalCiEvidence(**parsed).model_dump(mode="json")
+        except (ValidationError, ValueError, TypeError):
+            return None
+
+    @classmethod
+    def _v2_completion_material_projection_from_row(cls, row) -> dict | None:
+        """The materially consumed completion projection of one persisted row."""
+        row = dict(row)
+        decision = cls._v2_parse_material_decision(row.get("decision_json"))
+        risks = cls._v2_parse_material_list(row.get("risks_flagged"))
+        waiting = cls._v2_parse_material_list(row.get("waiting_on_job_ids"))
+        local_ci = cls._v2_parse_material_local_ci(row.get("local_ci"))
+        if (
+            decision is _V2_MALFORMED_DECISION
+            or risks is _V2_MALFORMED_DECISION
+            or waiting is _V2_MALFORMED_DECISION
+            or local_ci is _V2_MALFORMED_DECISION
+        ):
+            return None
+        return {
+            "output_summary": row.get("output_summary") or "",
+            "confidence": row.get("confidence_score") or 0,
+            "status": row.get("status") or "completed",
+            "output_dir": row.get("output_dir"),
+            "verdict": row.get("verdict"),
+            "risks_flagged": risks,
+            "waiting_on_job_ids": waiting,
+            "local_ci": local_ci,
+            "decision": decision,
+        }
+
+    @classmethod
+    def _v2_completion_material_projection_from_report(cls, report) -> dict | None:
+        """The materially consumed projection of one supplied completion."""
+        decision = getattr(report, "decision", None)
+        if decision is not None:
+            if hasattr(decision, "model_dump"):
+                decision = decision.model_dump(mode="json")
+            elif isinstance(decision, dict):
+                try:
+                    decision = NextStep(**decision).model_dump(mode="json")
+                except (ValidationError, ValueError, TypeError):
+                    return None
+            else:
+                return None
+        local_ci = getattr(report, "local_ci", None)
+        if local_ci is not None:
+            if hasattr(local_ci, "model_dump"):
+                local_ci = local_ci.model_dump(mode="json")
+            elif isinstance(local_ci, dict):
+                try:
+                    local_ci = LocalCiEvidence(**local_ci).model_dump(mode="json")
+                except (ValidationError, ValueError, TypeError):
+                    return None
+            else:
+                return None
+        return {
+            "output_summary": getattr(report, "output_summary", None) or "",
+            "confidence": getattr(report, "confidence", None),
+            "status": getattr(report, "status", None),
+            "output_dir": getattr(report, "output_dir", None),
+            "verdict": getattr(report, "verdict", None),
+            "risks_flagged": getattr(report, "risks_flagged", None) or [],
+            "waiting_on_job_ids": getattr(report, "waiting_on_job_ids", None) or [],
+            "local_ci": local_ci,
+            "decision": decision,
+        }
+
     @_synchronized
     def authority_policy_v2_decision_result_report_binds(
         self, *, root_task_id: str, spending_result_id, report,
     ) -> bool:
-        """True only when the supplied report IS the exact persisted R2 body.
+        """True only when the supplied report IS the materially exact R2 body.
 
-        The retained ``task_results`` row is the authority.  Every materially
-        observable scalars collection (summary, confidence, status, output dir,
-        verdict, risks, wait IDs and local-CI evidence) is compared with its
-        JSON scalar type and presence preserved, and the parsed decision ACTION
-        of the supplied report must equal the persisted decision action (the
-        persisted ``decision_json`` is the raw authenticated wire carrier and
-        the guard compares the decision body's action; the storage receipt
-        separately binds the FULL normalized persisted report digest).  A
-        missing row, malformed persisted body, or ANY material drift is
-        ``False`` -- never ordinary-path permission.
+        Both sides are normalized through the ESTABLISHED shipping
+        representation (``completion_report_from_result_row``): the persisted
+        ``confidence_score`` column maps to the model ``confidence`` field and
+        the parsed ``NextStep`` decision is compared field-for-field, so a
+        same-action decision with a different ``summary``/``agent``/``prompt``/
+        ``then``/``children``/``revisit``/``attachments`` (or any other effective
+        drift) refuses before any effect.  The persisted full material digest
+        bound into the durable ``spent`` receipt is unchanged and remains the
+        separate authority over the raw wire carrier.
         """
         if not self._v2_is_int(spending_result_id):
             return False
@@ -14705,55 +15063,13 @@ class Database:
         if row is None:
             return False
         try:
-            raw_decision = row["decision_json"]
-            persisted_decision = (
-                json.loads(raw_decision)
-                if isinstance(raw_decision, str) and raw_decision else None
-            )
+            persisted = self._v2_completion_material_projection_from_row(row)
+            supplied = self._v2_completion_material_projection_from_report(report)
         except Exception:
             return False
-        if persisted_decision is not None and not isinstance(persisted_decision, dict):
+        if persisted is None or supplied is None:
             return False
-        persisted_action = (
-            persisted_decision.get("action")
-            if isinstance(persisted_decision, dict) else None
-        )
-        supplied_decision = getattr(report, "decision", None)
-        if isinstance(supplied_decision, dict):
-            supplied_action = supplied_decision.get("action")
-        elif supplied_decision is None:
-            supplied_action = None
-        else:
-            supplied_action = getattr(supplied_decision, "action", None)
-        if supplied_action != persisted_action:
-            return False
-        try:
-            expected = self._v2_spending_report_identity(row)
-            supplied = {
-                "output_summary": getattr(report, "output_summary", None),
-                "confidence_score": getattr(report, "confidence_score", None),
-                "status": getattr(report, "status", None),
-                "output_dir": getattr(report, "output_dir", None),
-                "verdict": getattr(report, "verdict", None),
-                "risks_flagged": _canonical_completion_json(
-                    getattr(report, "risks_flagged", None)
-                ),
-                "decision_json": _canonical_completion_json(persisted_decision),
-                "waiting_on_job_ids": _canonical_completion_json(
-                    getattr(report, "waiting_on_job_ids", None)
-                ),
-                "local_ci": _canonical_completion_json(
-                    getattr(report, "local_ci", None)
-                ),
-            }
-        except Exception:
-            return False
-        # ``decision_json`` is re-derived from the persisted row so the exact
-        # rule is the material scalar/collection projection plus the action.
-        expected = {**expected, "decision_json": _canonical_completion_json(
-            persisted_decision
-        )}
-        return self._v2_json_type_sensitive_equal(expected, supplied)
+        return self._v2_json_type_sensitive_equal(persisted, supplied)
 
     @_synchronized
     def get_authority_policy_v2_continue_envelope(
