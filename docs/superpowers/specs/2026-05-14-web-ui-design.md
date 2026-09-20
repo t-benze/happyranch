@@ -20,7 +20,11 @@ The web UI is a single-page React + Tailwind application bundled into the existi
 - **Mobile / responsive design.** Desktop founder workstation only.
 - **Offline / PWA / service worker.**
 - **Dark/light toggle.** Single dark palette in v1.
-- **Internationalization layer.**
+- **Internationalization layer.** _(Historically superseded 2026-09-20: THR-118
+  W1 ships a first-party typed `en`/`zh-CN` foundation — see
+  `2026-09-20-web-i18n-design.md` and `web/ARCHITECTURE.md`. The W1 slice ships
+  no route translation and no public selector; the text above remains the state
+  of the original 2026-05-14 design.)_
 - **File/image uploads.** Markdown text bodies only, mirroring the thread data model.
 - **Real-time token streaming of agent replies.** Replies arrive whole (matches threads spec §2).
 - **Mid-feature E2E browser tests.** Add when a second feature lands.

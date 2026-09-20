@@ -1,6 +1,7 @@
 import type { Preview } from '@storybook/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
+import { I18nProvider } from '@/hooks/i18n';
 import { TooltipProvider } from '@/design-system/primitives/Tooltip';
 import '../src/styles.css';
 
@@ -12,13 +13,15 @@ const preview: Preview = {
   decorators: [
     (Story) => (
       <MemoryRouter>
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <div className="bg-surface-canvas text-text-primary min-h-screen px-4 py-6 sm:px-8 lg:px-12">
-              <Story />
-            </div>
-          </TooltipProvider>
-        </QueryClientProvider>
+        <I18nProvider>
+          <QueryClientProvider client={queryClient}>
+            <TooltipProvider>
+              <div className="bg-surface-canvas text-text-primary min-h-screen px-4 py-6 sm:px-8 lg:px-12">
+                <Story />
+              </div>
+            </TooltipProvider>
+          </QueryClientProvider>
+        </I18nProvider>
       </MemoryRouter>
     ),
   ],
