@@ -1,7 +1,7 @@
 """TASK8446 installer filesystem causal matrix (seq246 A/B/C; TASK8468 finding 4).
 
-This module is the *complete finite enumeration* of the real installer
-filesystem operations accepted in
+This module enumerates, for each declared fixture configuration, the finite
+set of real installer filesystem operations accepted in
 ``engineering_manager/output/TASK-8446/seq246-corrected-cases.md`` sections
 A/B/C: preparation (P0-P3), staged payload/manifest (P1-P2), drop-in backup
 (P4), every ownership/progress/rollback/commit record update (P5-rN), the
@@ -16,14 +16,19 @@ then faulted in turn.  No operation is invented and no whole family is mapped
 to a representative.  ``pytest_generate_tests`` turns the finite sorted list
 into one maintained test parameter per real call and fault mode, each with an
 exact-one-hit receipt, an immediate-state oracle and two successful real
-reinstalls.
+reinstalls.  Coverage is claimed only over the enumerated configurations in
+``_CONFIGS``; combinations whose operations cannot occur for a configuration
+are recorded as inapplicable in the task operation map rather than counted as
+executed.
 
 Fault modes per accepted section B: ``E`` = ``OSError`` raised before/after
 the saved binding, ``P`` = a real partial destination write/copy followed by
 ``OSError``, and ``K`` = a one-shot ``BaseException`` escaping ordinary
 cleanup.  A ``K`` (or partial residue) before the first durable ownership
 record is unrecorded preparation residue: it is preserved and refused (M9),
-never mistaken for a coherent owned transaction.
+never mistaken for a coherent owned transaction.  A ``persistent`` ``E``
+raises on every matching occurrence while present and is cleared before the
+successful recovery.
 """
 from __future__ import annotations
 
@@ -166,20 +171,50 @@ def _snapshot(root: Path) -> dict[str, tuple]:
 
 
 class _Config:
+    """One accepted fixture configuration.
+
+    ``enrollment`` selects whether the *new* install has an enrollment source
+    (and therefore publishes a transient drop-in).  ``prior_units``,
+    ``prior_dropin`` and ``prior_dropin_dir`` shape the upgrade baseline so the
+    finite reachable prior-existence branches are exercised without inventing
+    unreachable combinations.
+    """
+
     def __init__(self, name: str, *, upgrade: bool, system_service: bool,
-                 enrollment: bool) -> None:
+                 enrollment: bool, prior_units: object = "all",
+                 prior_dropin: bool = False, prior_dropin_dir: bool = False) -> None:
         self.name = name
         self.upgrade = upgrade
         self.system_service = system_service
         self.enrollment = enrollment
+        self._prior_units = prior_units
+        self.prior_dropin = prior_dropin
+        self.prior_dropin_dir = prior_dropin_dir
+
+    @property
+    def prior_unit_set(self) -> tuple[str, ...]:
+        if self._prior_units == "all":
+            return tuple(UNITS)
+        if self._prior_units == "none":
+            return ()
+        return tuple(self._prior_units)
 
 
 _CONFIGS = (
     _Config("upgrade-noroot", upgrade=True, system_service=False, enrollment=False),
     _Config("fresh-noroot", upgrade=False, system_service=False, enrollment=False),
-    _Config("upgrade-system", upgrade=True, system_service=True, enrollment=True),
-    _Config("upgrade-system-nodropin", upgrade=True, system_service=True, enrollment=False),
+    _Config("upgrade-system", upgrade=True, system_service=True, enrollment=True,
+            prior_dropin=True, prior_dropin_dir=True),
+    _Config("upgrade-system-nodropin", upgrade=True, system_service=True,
+            enrollment=True, prior_dropin=False, prior_dropin_dir=False),
+    _Config("upgrade-system-noenroll-priordropin", upgrade=True, system_service=True,
+            enrollment=False, prior_dropin=True, prior_dropin_dir=True),
+    _Config("upgrade-system-noenroll-nodropin", upgrade=True, system_service=True,
+            enrollment=False, prior_dropin=False, prior_dropin_dir=False),
+    _Config("upgrade-noroot-unitabsent", upgrade=True, system_service=False,
+            enrollment=False, prior_units=(UNITS[1],)),
     _Config("fresh-system", upgrade=False, system_service=True, enrollment=True),
+    _Config("fresh-system-noenroll", upgrade=False, system_service=True, enrollment=False),
 )
 
 
@@ -191,26 +226,44 @@ def _build_base(root: Path, config: _Config, old: Path) -> None:
     else:
         root.mkdir(parents=True, exist_ok=True)
         (root / "unrelated.txt").write_bytes(b"keep")
+    _shape_prior(root, config)
 
 
-def _apply_loss_detecting_prior(root: Path, config: _Config) -> None:
-    """Give the upgrade baseline three distinct unit modes and a distinct drop-in."""
+def _shape_prior(root: Path, config: _Config) -> None:
+    """Apply the declared prior-existence branch with loss-detecting bytes/modes.
+
+    Upgrade baselines carry three distinguishable prior unit bodies/modes
+    (``0600/0640/0644``) and a distinct operator drop-in (``0640`` file,
+    ``0710`` directory) with an unrelated sibling.  Absent units are removed
+    from the real OLD baseline so the recorded prior-absence branch is genuine.
+    """
     if not config.upgrade:
         return
+    present = set(config.prior_unit_set)
     for index, unit in enumerate(UNITS):
         target = root / "etc/systemd/system" / unit
-        target.write_bytes(f"OLD-unit-{index}-{unit}".encode())
-        target.chmod((0o600, 0o640, 0o644)[index])
-    if config.system_service and config.enrollment:
-        dropin_dir = root / "etc/systemd/system/happyranch-tsnet-sidecar.service.d"
+        if unit in present:
+            target.write_bytes(f"OLD-unit-{index}-{unit}".encode())
+            target.chmod((0o600, 0o640, 0o644)[index])
+        elif target.exists() or target.is_symlink():
+            target.unlink()
+    if not config.system_service:
+        return
+    dropin_dir = root / "etc/systemd/system/happyranch-tsnet-sidecar.service.d"
+    dropin = dropin_dir / "10-enrollment-credential.conf"
+    if config.prior_dropin:
         dropin_dir.mkdir(parents=True, exist_ok=True)
         dropin_dir.chmod(0o710)
-        dropin = dropin_dir / "10-enrollment-credential.conf"
         dropin.write_bytes(b"operator-managed-prior-dropin\n")
         dropin.chmod(0o640)
         sibling = dropin_dir / "99-foreign-sibling.conf"
         sibling.write_bytes(b"foreign-sibling\n")
         sibling.chmod(0o600)
+    else:
+        if dropin.exists() or dropin.is_symlink():
+            dropin.unlink()
+        if not config.prior_dropin_dir and dropin_dir.exists():
+            shutil.rmtree(dropin_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -219,12 +272,14 @@ def _apply_loss_detecting_prior(root: Path, config: _Config) -> None:
 
 class _Rule:
     def __init__(self, *, operation: str, stage: str, occurrence: int,
-                 exception: type[BaseException], partial: bool = False) -> None:
+                 exception: type[BaseException], partial: bool = False,
+                 persistent: bool = False) -> None:
         self.operation = operation
         self.stage = stage
         self.occurrence = occurrence
         self.exception = exception
         self.partial = partial
+        self.persistent = persistent
         self.seen = 0
         self.raises = 0
 
@@ -255,7 +310,7 @@ class _SeamGuard:
         if stage != rule.stage or operation != rule.operation:
             return False
         rule.seen += 1
-        if rule.seen != rule.occurrence:
+        if not rule.persistent and rule.seen != rule.occurrence:
             return False
         self._fire(rule, path)
         return True
@@ -313,6 +368,31 @@ _WORK = _DISCOVERY_ROOT / "discovery"
 _CACHE: dict[str, dict] = {}
 
 
+def _prior_identities(template: Path, config: _Config) -> dict:
+    """Distinguishable prior identities for the loss-detecting immediate oracle."""
+    old_units: dict[str, dict] = {}
+    absent_units: list[str] = []
+    if config.upgrade:
+        for unit in UNITS:
+            path = template / "etc/systemd/system" / unit
+            if path.is_file():
+                old_units[unit] = {
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    "mode": stat.S_IMODE(path.lstat().st_mode),
+                }
+            else:
+                absent_units.append(unit)
+    dropin = None
+    dropin_path = (template / "etc/systemd/system/happyranch-tsnet-sidecar.service.d"
+                   / "10-enrollment-credential.conf")
+    if dropin_path.is_file():
+        dropin = {
+            "sha256": hashlib.sha256(dropin_path.read_bytes()).hexdigest(),
+            "mode": stat.S_IMODE(dropin_path.lstat().st_mode),
+        }
+    return {"old_units": old_units, "absent_units": tuple(absent_units), "dropin": dropin}
+
+
 def _config_cache(config: _Config) -> dict:
     if config.name in _CACHE:
         return _CACHE[config.name]
@@ -323,6 +403,7 @@ def _config_cache(config: _Config) -> dict:
     try:
         _build_base(template, config, old)
         old_snapshot = _snapshot(template)
+        prior = _prior_identities(template, config)
         old_payload = (
             _inventory_tree(template / "opt/happyranch")
             if (template / "opt/happyranch").is_dir() else None
@@ -355,6 +436,7 @@ def _config_cache(config: _Config) -> dict:
         "ranks": _ranks(trace),
         "commit": commit,
         "first_record": first_record,
+        **prior,
     }
     return _CACHE[config.name]
 
@@ -394,10 +476,13 @@ def _publication_cases() -> list[_PubCase]:
 # Recovery / rollback finite enumeration (RB and REC)
 # ---------------------------------------------------------------------------
 
-_RECOVERY_CONFIGS = tuple(
-    config for config in _CONFIGS
-    if config.name in {"upgrade-noroot", "upgrade-system", "fresh-system"}
-)
+_RECOVERY_CONFIGS = tuple(_CONFIGS)
+
+# The only real content-write destinations on the rollback/recovery route: a
+# partial destination write is meaningful there, while ``*_restore`` uses
+# ``os.replace`` and ``*_unlink``/``*_rmdir`` remove (their gradual effects are
+# the distinct occurrences already enumerated).
+_RECOVERY_WRITE_OPERATIONS = frozenset({"record_temp_create", "record_temp_write"})
 
 
 def _recovery_cache(config: _Config) -> dict:
@@ -408,27 +493,12 @@ def _recovery_cache(config: _Config) -> dict:
     base = _WORK / ("recovery-" + config.name)
     template = base / "template"
     _build_base(template, config, old)
-    _apply_loss_detecting_prior(template, config)
     old_snapshot = _snapshot(template)
     old_payload = (
         _inventory_tree(template / "opt/happyranch")
         if (template / "opt/happyranch").is_dir() else None
     )
-    old_units = {}
-    if config.upgrade:
-        for unit in UNITS:
-            path = template / "etc/systemd/system" / unit
-            old_units[unit] = {
-                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                "mode": stat.S_IMODE(path.lstat().st_mode),
-            }
-    dropin = None
-    dropin_path = template / "etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf"
-    if dropin_path.is_file():
-        dropin = {
-            "sha256": hashlib.sha256(dropin_path.read_bytes()).hexdigest(),
-            "mode": stat.S_IMODE(dropin_path.lstat().st_mode),
-        }
+    prior = _prior_identities(template, config)
     # Build the widest interrupted (uncommitted) state using real production
     # publication, then record the real recovery operation trace.
     interrupted = base / "interrupted"
@@ -450,10 +520,9 @@ def _recovery_cache(config: _Config) -> dict:
         "old": old_snapshot,
         "new": _snapshot(expected),
         "old_payload": old_payload,
-        "old_units": old_units,
-        "dropin": dropin,
         "trace": recording.trace,
         "ranks": _ranks(recording.trace),
+        **prior,
     }
     return _CACHE[key]
 
@@ -463,18 +532,22 @@ class _RRCacheUnset(Exception):
 
 
 class _RRCase:
-    def __init__(self, cache: dict, index: int, route: str, mode: str) -> None:
+    def __init__(self, cache: dict, index: int, route: str, mode: str,
+                 persistent: bool = False) -> None:
         self.cache = cache
         self.index = index
         self.route = route
         self.mode = mode
+        self.persistent = persistent
         stage, operation, path = cache["trace"][index]
         self.stage = stage
         self.operation = operation
         self.relpath = Path(path).name
         self.occurrence = cache["ranks"][index]
+        suffix = "-persistent" if persistent else ""
         self.id = (
-            f"{cache['config'].name}-{route}-{mode}-{operation}-{stage}-{self.occurrence}"
+            f"{cache['config'].name}-{route}-{mode}{suffix}-{operation}-{stage}"
+            f"-{self.occurrence}"
         )
 
 
@@ -483,9 +556,18 @@ def _recovery_cases() -> list[_RRCase]:
     for config in _RECOVERY_CONFIGS:
         cache = _recovery_cache(config)
         for index in range(len(cache["trace"])):
+            operation = cache["trace"][index][1]
+            occurrence = cache["ranks"][index]
+            modes = ["E", "K"]
+            if operation in _RECOVERY_WRITE_OPERATIONS:
+                modes.append("P")
             for route in ("RB", "REC"):
-                for mode in ("E", "K"):
+                for mode in modes:
                     cases.append(_RRCase(cache, index, route, mode))
+                    if mode == "E" and occurrence == 1:
+                        # Persistent fault at the first real occurrence of every
+                        # distinct rollback/recovery operation.
+                        cases.append(_RRCase(cache, index, route, mode, persistent=True))
     return cases
 
 
@@ -500,6 +582,9 @@ def pytest_generate_tests(metafunc) -> None:
     if "rr_case" in metafunc.fixturenames:
         cases = _recovery_cases()
         metafunc.parametrize("rr_case", cases, ids=[case.id for case in cases])
+    if "config" in metafunc.fixturenames:
+        configs = list(_CONFIGS)
+        metafunc.parametrize("config", configs, ids=[config.name for config in configs])
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +619,33 @@ def _prior_artifact_retained(root: Path, relative: str, identity: dict,
     return False
 
 
+def _assert_old_evidence(root: Path, cache: dict) -> None:
+    """Every prior artifact must remain reachable in its active or backup place.
+
+    This is the immediate-state oracle applied *before* the recovery retry, so
+    an eventual-equal snapshot cannot hide a prior byte/mode that was already
+    destroyed by the fault.
+    """
+    if cache["old_payload"] is not None:
+        active = root / "opt/happyranch"
+        backup = root / _PAYLOAD_BACKUP_NAME
+        assert _tree_matches(active, cache["old_payload"]) or _tree_matches(
+            backup, cache["old_payload"]
+        )
+    unit_backup = root / _UNIT_BACKUP_NAME
+    for unit, identity in cache["old_units"].items():
+        assert _prior_artifact_retained(
+            root, f"etc/systemd/system/{unit}", identity, unit_backup
+        )
+    if cache["dropin"] is not None:
+        assert _prior_artifact_retained(
+            root,
+            "etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf",
+            cache["dropin"],
+            unit_backup / "happyranch-tsnet-sidecar.service.d",
+        )
+
+
 # ---------------------------------------------------------------------------
 # A/B/C. Publication-path finite matrix (P0-P5, I1-I4, C1-C3, M9)
 # ---------------------------------------------------------------------------
@@ -566,24 +678,37 @@ def test_publication_operation_fault_matrix(tmp_path: Path, pub_case: _PubCase) 
 
     if unrecorded:
         # M9: no durable ownership record yet; the unknown orphan is preserved
-        # and refused, and no OLD artifact changed.
+        # and refused, and no OLD artifact changed.  The full snapshot is
+        # re-checked after *each* refusal, not only after both.
         observed = _snapshot(case)
         assert _old_artifacts_untouched(observed, cache["old"])
         for _ in range(2):
             with pytest.raises(PackageError, match="transaction_state_invalid"):
                 _recover_interrupted(case)
-        assert _snapshot(case) == observed
+            assert _snapshot(case) == observed
         return
 
-    if pub_case.mode == "E" and pre_commit:
-        assert _snapshot(case) == cache["old"]
-    if pub_case.mode == "E" and not pre_commit:
+    # Immediate-state oracle, before any recovery retry.  An ordinary
+    # ``OSError`` is caught by install's own handler, so the state is already
+    # OLD (pre-commit) or preserved NEW (post-commit); a ``K`` escapes that
+    # handler, so the intermediate evidence must be observable here.
+    if pub_case.mode in ("E", "P"):
+        if pre_commit:
+            assert _snapshot(case) == cache["old"]
+        else:
+            assert _payload_is_new(case, _WORK / config.name / "expected")
+    elif pre_commit:
+        _assert_old_evidence(case, cache)
+    else:
+        # A K after the authoritative commit escapes ordinary cleanup; the
+        # committed NEW payload must already be authoritative.
         assert _payload_is_new(case, _WORK / config.name / "expected")
 
     _recover_interrupted(case)
     if pre_commit:
         assert _snapshot(case) == cache["old"]
     install_linux_package(new, case, system_service=config.system_service)
+    assert _snapshot(case) == cache["new"]
     install_linux_package(new, case, system_service=config.system_service)
     assert _snapshot(case) == cache["new"]
 
@@ -612,6 +737,8 @@ def test_recovery_operation_fault_matrix(tmp_path: Path, rr_case: _RRCase) -> No
         stage=rr_case.stage,
         occurrence=rr_case.occurrence,
         exception=_MODE_EXCEPTION[rr_case.mode],
+        partial=rr_case.mode == "P",
+        persistent=rr_case.persistent,
     )
     if rr_case.route == "REC":
         _build_interrupted_state(case, config, new)
@@ -624,33 +751,51 @@ def test_recovery_operation_fault_matrix(tmp_path: Path, rr_case: _RRCase) -> No
         guard = _SeamGuard([recovery_rule], armed=False, trigger=trigger)
         with pytest.raises((OSError, _Interrupted)):
             install_linux_package(new, case, system_service=config.system_service, guard=guard)
+
+    if rr_case.persistent:
+        # A persistent fault fires on every real occurrence it reaches while
+        # present.  OLD evidence must survive; after the fault clears the real
+        # install entry point performs the recovery itself.
+        assert recovery_rule.raises >= 1
+        assert recovery_rule.raises == recovery_rule.seen
+        _assert_old_evidence(case, cache)
+        install_linux_package(new, case, system_service=config.system_service)
+        assert _snapshot(case) == cache["new"]
+        install_linux_package(new, case, system_service=config.system_service)
+        assert _snapshot(case) == cache["new"]
+        return
+
     assert recovery_rule.raises == 1
 
     # While faulted, every OLD byte/mode remains reachable in its active or
-    # recorded backup location.
-    if cache["old_payload"] is not None:
-        active = case / "opt/happyranch"
-        backup = case / _PAYLOAD_BACKUP_NAME
-        assert _tree_matches(active, cache["old_payload"]) or _tree_matches(
-            backup, cache["old_payload"]
-        )
-    unit_backup = case / _UNIT_BACKUP_NAME
-    for unit, identity in cache["old_units"].items():
-        assert _prior_artifact_retained(
-            case, f"etc/systemd/system/{unit}", identity, unit_backup
-        )
-    if cache["dropin"] is not None and config.system_service:
-        assert _prior_artifact_retained(
-            case,
-            "etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf",
-            cache["dropin"],
-            unit_backup / "happyranch-tsnet-sidecar.service.d",
-        )
+    # recorded backup location (the immediate-state oracle before recovery).
+    _assert_old_evidence(case, cache)
 
     _recover_interrupted(case)
     assert _snapshot(case) == cache["old"]
     install_linux_package(new, case, system_service=config.system_service)
+    assert _snapshot(case) == cache["new"]
     install_linux_package(new, case, system_service=config.system_service)
+    assert _snapshot(case) == cache["new"]
+
+
+def test_install_recovery_call_path(tmp_path: Path, config: _Config) -> None:
+    """The shipping install entry point performs its own recovery.
+
+    Direct ``_recover_interrupted`` before both installs cannot demonstrate
+    that ``install_linux_package`` recovers an interrupted state, so this test
+    leaves the interrupted state in place and asserts that install's internal
+    recovery ran (real ``rollback_*`` operations) and reached NEW.
+    """
+    cache = _recovery_cache(config)
+    _old, new = _packages()
+    case = tmp_path / "root"
+    shutil.copytree(cache["template"], case, symlinks=True)
+    _build_interrupted_state(case, config, new)
+    recording = _SeamGuard()
+    install_linux_package(new, case, system_service=config.system_service, guard=recording)
+    operations = {operation for _stage, operation, _path in recording.trace}
+    assert any(operation.startswith("rollback_") for operation in operations)
     assert _snapshot(case) == cache["new"]
 
 
@@ -704,7 +849,9 @@ def _refuse_twice(root: Path, before: dict, recovery=True) -> None:
                 _recover_interrupted(root)
             else:
                 install_linux_package(_packages()[1], root)
-    assert _snapshot(root) == before
+        # The full marker/foreign/external state is unchanged after *each*
+        # refusal, not only after both.
+        assert _snapshot(root) == before
 
 
 _UPGRADE = _CONFIGS[0]
@@ -902,7 +1049,7 @@ def test_m6_unrecorded_residue_refused_unchanged(tmp_path: Path, residue: str) -
     for _ in range(2):
         with pytest.raises(PackageError, match="transaction_state_invalid"):
             _recover_interrupted(root)
-    assert _snapshot(root) == before
+        assert _snapshot(root) == before
 
 
 def test_m6_truly_clean_root_remains_installable(tmp_path: Path) -> None:
@@ -945,7 +1092,7 @@ def test_m8_payload_backup_symlink_refused_and_target_unchanged(tmp_path: Path) 
     for _ in range(2):
         with pytest.raises(PackageError, match="transaction_state_invalid"):
             _recover_interrupted(root)
-    assert _snapshot(root) == before
+        assert _snapshot(root) == before
     assert (external / "sentinel").read_bytes() == b"EXTERNAL"
 
 
@@ -962,7 +1109,7 @@ def test_m8_stage_symlink_refused_and_target_unchanged(tmp_path: Path) -> None:
     for _ in range(2):
         with pytest.raises(PackageError, match="transaction_state_invalid"):
             _recover_interrupted(root)
-    assert _snapshot(root) == before
+        assert _snapshot(root) == before
     assert (external / "sentinel").read_bytes() == b"EXTERNAL"
 
 
@@ -990,7 +1137,7 @@ def test_m9_interruption_before_first_record_preserves_orphan(
     for _ in range(2):
         with pytest.raises(PackageError, match="transaction_state_invalid"):
             _recover_interrupted(root)
-    assert _snapshot(root) == observed
+        assert _snapshot(root) == observed
 
 
 def test_m9_interruption_before_stage_allocation_is_clean(tmp_path: Path) -> None:
