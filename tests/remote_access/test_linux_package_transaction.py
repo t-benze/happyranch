@@ -16,6 +16,7 @@ import os
 import shutil
 import stat
 import unittest.mock
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -26,12 +27,16 @@ from runtime.remote_access.linux_package import (
     UNITS,
     _PAYLOAD_BACKUP_NAME,
     _UNIT_BACKUP_NAME,
+    _inventory_tree,
     _recover_interrupted,
+    _record_temp,
+    build_linux_package,
     install_linux_package,
 )
 from tests.remote_access.test_linux_package import (
     _InstallerGuard,
     _distinct_package,
+    _inputs,
     _installer_snapshot,
     _rewrite_package,
     _stage_system_credentials,
@@ -604,4 +609,479 @@ def test_system_service_partial_dropin_write_restores_prior_dropin(tmp_path: Pat
     assert len(guard.receipts()) == 1
     assert _installer_snapshot(root) == before
     assert sibling.read_bytes() == b"foreign-sibling\n"
+    assert not list(root.glob(".happyranch-*"))
+
+
+# ---------------------------------------------------------------------------
+# F. Loss-detecting fixtures and complete oracles (TASK8468 finding 3)
+# ---------------------------------------------------------------------------
+
+def _loss_detecting_packages(tmp_path: Path) -> tuple[Path, Path]:
+    """OLD/NEW packages whose sidecar, connector AND wheel bytes all differ."""
+    packages: list[Path] = []
+    for version in ("1-OLD", "2-NEW"):
+        folder = tmp_path / f"inputs-{version}"
+        folder.mkdir()
+        sidecar, connector, wheel, inventory, notices = _inputs(folder)
+        label = version.encode()
+        sidecar.write_bytes(b"sidecar-" + label)
+        connector.write_bytes(b"connector-" + label)
+        with zipfile.ZipFile(wheel, "a") as archive:
+            archive.writestr("runtime/version.py", f"VERSION = {version!r}\n")
+        packages.append(
+            build_linux_package(
+                folder / "pkg.tar", sidecar, connector, wheel, inventory, notices,
+                version=version,
+            )
+        )
+    old, new = packages
+    assert old != new
+    return old, new
+
+
+def _node(path: Path) -> tuple:
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode):
+        kind: tuple = ("link", os.readlink(path))
+    elif stat.S_ISDIR(metadata.st_mode):
+        kind = ("dir", stat.S_IMODE(metadata.st_mode))
+    elif stat.S_ISREG(metadata.st_mode):
+        kind = ("file", path.read_bytes(), stat.S_IMODE(metadata.st_mode))
+    else:
+        kind = ("other", stat.S_IFMT(metadata.st_mode))
+    return (kind, metadata.st_uid, metadata.st_gid)
+
+
+def _full_snapshot(root: Path) -> dict[str, tuple]:
+    """Complete lstat oracle: type, bytes, file/dir modes, links, uid/gid."""
+    state = {".": _node(root)}
+    for path in sorted(root.rglob("*")):
+        state[str(path.relative_to(root))] = _node(path)
+    return state
+
+
+def _rewrite_record(root: Path, mutate) -> dict:
+    marker = root / TRANSACTION_MARKER
+    record = json.loads(marker.read_text(encoding="utf-8"))
+    mutate(record)
+    marker.write_text(json.dumps(record), encoding="utf-8")
+    marker.chmod(0o600)
+    return record
+
+
+def _preparing_root(tmp_path: Path, name: str) -> tuple[Path, Path]:
+    """A real preparing record: stage allocated, no prior OLD byte mutated."""
+    package = _distinct_package(tmp_path, name, b"new")
+    root = tmp_path / name / "root"
+    root.mkdir(parents=True)
+    guard = _InstallerGuard(
+        operation="stage_payload:bin/happyranch-connector",
+        stage="before",
+        exception=_Interrupted,
+    )
+    with pytest.raises(_Interrupted):
+        install_linux_package(package, root, guard=guard)
+    assert (root / TRANSACTION_MARKER).exists()
+    assert json.loads((root / TRANSACTION_MARKER).read_text())["phase"] == "preparing"
+    return root, package
+
+
+def test_loss_detecting_fixture_distinguishes_every_payload_member(tmp_path: Path) -> None:
+    old, new = _loss_detecting_packages(tmp_path)
+    old_root = tmp_path / "old-root"
+    new_root = tmp_path / "new-root"
+    install_linux_package(old, old_root)
+    install_linux_package(new, new_root)
+    for relative in (
+        "bin/happyranch-tsnet-sidecar",
+        "bin/happyranch-connector",
+        "share/happyranch.whl",
+        "manifest.json",
+    ):
+        assert (
+            old_root / "opt/happyranch" / relative
+        ).read_bytes() != (new_root / "opt/happyranch" / relative).read_bytes(), relative
+
+
+# ---------------------------------------------------------------------------
+# G. Fresh partial rollback resumes for every owned removal (finding 1, R1/R4)
+# ---------------------------------------------------------------------------
+
+_PAYLOAD_REMOVAL_OCCURRENCES = tuple(range(1, 11))
+
+
+class _RollbackRemovalProbe:
+    """Interrupt a real fresh-payload rollback after the Nth owned removal.
+
+    The wrapper executes the saved ``os.unlink``/``os.rmdir`` binding first, so
+    every receipt records a real mutation, and raises once the selected
+    occurrence (or every occurrence when ``persistent``) is reached.
+    """
+
+    def __init__(self, root: Path, occurrence: int, exception: type[BaseException],
+                 persistent: bool = False) -> None:
+        self.opt = root / "opt/happyranch"
+        self.occurrence = occurrence
+        self.exception = exception
+        self.persistent = persistent
+        self.hits: list[tuple[str, str]] = []
+        self._unlink = None
+        self._rmdir = None
+
+    def __enter__(self) -> "_RollbackRemovalProbe":
+        self._unlink, self._rmdir = os.unlink, os.rmdir
+        os.unlink = self._wrap(self._unlink, "unlink")
+        os.rmdir = self._wrap(self._rmdir, "rmdir")
+        return self
+
+    def _wrap(self, original, operation: str):
+        def wrapper(path, *args, **kwargs):
+            result = original(path, *args, **kwargs)
+            candidate = Path(path)
+            if candidate == self.opt or self.opt in candidate.parents:
+                self.hits.append((operation, str(candidate)))
+                if self.persistent or len(self.hits) == self.occurrence:
+                    raise self.exception("rollback-removal")
+            return result
+
+        return wrapper
+
+    def __exit__(self, *_exc) -> bool:
+        os.unlink, os.rmdir = self._unlink, self._rmdir
+        return False
+
+
+def _assert_fresh_absence(root: Path) -> None:
+    assert not (root / "opt").exists()
+    assert not (root / "etc").exists()
+    assert not list(root.glob(".happyranch-*"))
+    assert (root / "unrelated.txt").read_bytes() == b"keep"
+
+
+@pytest.mark.parametrize("exception", [OSError, KeyboardInterrupt], ids=["E", "K"])
+@pytest.mark.parametrize("occurrence", _PAYLOAD_REMOVAL_OCCURRENCES)
+def test_fresh_exception_rollback_resumes_at_every_payload_removal(
+    tmp_path: Path, occurrence: int, exception: type[BaseException],
+) -> None:
+    """RB: an interrupted fresh rollback removal must resume to absence."""
+    package = _distinct_package(tmp_path, "1", b"one")
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "unrelated.txt").write_bytes(b"keep")
+    reference = tmp_path / "reference"
+    install_linux_package(package, reference)
+    expected = _inventory_tree(reference / "opt/happyranch")
+
+    publication = _InstallerGuard(operation="payload_publish", stage="after")
+    with pytest.raises((OSError, KeyboardInterrupt)):
+        with _RollbackRemovalProbe(root, occurrence, exception) as probe:
+            install_linux_package(package, root, guard=publication)
+    assert len(probe.hits) == occurrence
+    assert all(hit[1].startswith(str(root / "opt/happyranch")) for hit in probe.hits)
+    # While faulted: fresh OLD absence preserved, partial NEW still owned.
+    assert (root / TRANSACTION_MARKER).exists()
+    assert not (root / _PAYLOAD_BACKUP_NAME).exists()
+    assert (root / "unrelated.txt").read_bytes() == b"keep"
+    # Fault cleared: expose full fresh absence before any reinstall.
+    _recover_interrupted(root)
+    _assert_fresh_absence(root)
+    install_linux_package(package, root)
+    install_linux_package(package, root)
+    assert _inventory_tree(root / "opt/happyranch") == expected
+    assert not list(root.glob(".happyranch-*"))
+
+
+@pytest.mark.parametrize("exception", [OSError, KeyboardInterrupt], ids=["E", "K"])
+@pytest.mark.parametrize("occurrence", _PAYLOAD_REMOVAL_OCCURRENCES)
+def test_fresh_interrupted_recovery_resumes_at_every_payload_removal(
+    tmp_path: Path, occurrence: int, exception: type[BaseException],
+) -> None:
+    """REC: an interrupted fresh recovery removal must resume to absence."""
+    package = _distinct_package(tmp_path, "1", b"one")
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "unrelated.txt").write_bytes(b"keep")
+    reference = tmp_path / "reference"
+    install_linux_package(package, reference)
+    expected = _inventory_tree(reference / "opt/happyranch")
+
+    publication = _InstallerGuard(
+        operation="payload_publish", stage="after", exception=_Interrupted
+    )
+    with pytest.raises(_Interrupted):
+        install_linux_package(package, root, guard=publication)
+    assert (root / TRANSACTION_MARKER).exists()
+    with pytest.raises((OSError, KeyboardInterrupt)):
+        with _RollbackRemovalProbe(root, occurrence, exception) as probe:
+            _recover_interrupted(root)
+    assert len(probe.hits) == occurrence
+    assert all(hit[1].startswith(str(root / "opt/happyranch")) for hit in probe.hits)
+    assert not (root / _PAYLOAD_BACKUP_NAME).exists()
+    assert (root / "unrelated.txt").read_bytes() == b"keep"
+    _recover_interrupted(root)
+    _assert_fresh_absence(root)
+    install_linux_package(package, root)
+    install_linux_package(package, root)
+    assert _inventory_tree(root / "opt/happyranch") == expected
+    assert not list(root.glob(".happyranch-*"))
+
+
+@pytest.mark.parametrize("route", ["RB", "REC"])
+@pytest.mark.parametrize("exception", [OSError, KeyboardInterrupt], ids=["E", "K"])
+def test_fresh_rollback_persistent_removal_fault_refuses_then_recovers(
+    tmp_path: Path, route: str, exception: type[BaseException],
+) -> None:
+    """A persistent removal fault may refuse while present, never permanently."""
+    package = _distinct_package(tmp_path, "1", b"one")
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "unrelated.txt").write_bytes(b"keep")
+    reference = tmp_path / "reference"
+    install_linux_package(package, reference)
+    expected = _inventory_tree(reference / "opt/happyranch")
+
+    if route == "RB":
+        publication = _InstallerGuard(operation="payload_publish", stage="after")
+        with pytest.raises((OSError, KeyboardInterrupt)):
+            with _RollbackRemovalProbe(root, 1, exception, persistent=True):
+                install_linux_package(package, root, guard=publication)
+    else:
+        publication = _InstallerGuard(
+            operation="payload_publish", stage="after", exception=_Interrupted
+        )
+        with pytest.raises(_Interrupted):
+            install_linux_package(package, root, guard=publication)
+        with pytest.raises((OSError, KeyboardInterrupt)):
+            with _RollbackRemovalProbe(root, 1, exception, persistent=True):
+                _recover_interrupted(root)
+    assert (root / TRANSACTION_MARKER).exists()
+    assert not (root / _PAYLOAD_BACKUP_NAME).exists()
+    assert (root / "unrelated.txt").read_bytes() == b"keep"
+    # Fault cleared: coherent owned state must reach absence and reinstall.
+    _recover_interrupted(root)
+    _assert_fresh_absence(root)
+    install_linux_package(package, root)
+    install_linux_package(package, root)
+    assert _inventory_tree(root / "opt/happyranch") == expected
+    assert not list(root.glob(".happyranch-*"))
+
+
+# ---------------------------------------------------------------------------
+# H. Disjoint ownership negatives: two-call unchanged oracles (finding 2)
+# ---------------------------------------------------------------------------
+
+def test_foreign_stage_sentinel_attempt_identity_is_refused_unchanged(tmp_path: Path) -> None:
+    """M4: a plausible attempt/stage name may not redirect to foreign content."""
+    root, _package = _preparing_root(tmp_path, "foreign-stage")
+    foreign = root / ".happyranch-stage-foreign-sentinel"
+    foreign.mkdir(mode=0o750)
+    sentinel = foreign / "sentinel"
+    sentinel.write_bytes(b"FOREIGN")
+    sentinel.chmod(0o640)
+    _rewrite_record(root, lambda record: record.update(
+        {"attempt_id": "foreign", "stage": str(foreign)}
+    ))
+    before = _full_snapshot(root)
+    for _ in range(2):
+        with pytest.raises(PackageError, match="transaction_state_invalid"):
+            _recover_interrupted(root)
+    assert _full_snapshot(root) == before
+    assert sentinel.read_bytes() == b"FOREIGN"
+    assert stat.S_IMODE(foreign.lstat().st_mode) == 0o750
+
+
+def test_arbitrary_created_parent_is_refused_unchanged(tmp_path: Path) -> None:
+    """M4: created-parents is a finite plan, not an arbitrary delete list."""
+    root, _package = _preparing_root(tmp_path, "foreign-parent")
+    foreign = root / "foreign-empty"
+    foreign.mkdir(mode=0o710)
+    _rewrite_record(root, lambda record: record["created_parents"].append("foreign-empty"))
+    before = _full_snapshot(root)
+    for _ in range(2):
+        with pytest.raises(PackageError, match="transaction_state_invalid"):
+            _recover_interrupted(root)
+    assert _full_snapshot(root) == before
+    assert foreign.is_dir()
+    assert stat.S_IMODE(foreign.lstat().st_mode) == 0o710
+
+
+def test_contradictory_committed_phase_is_refused_unchanged(tmp_path: Path) -> None:
+    """M5: a preparing record relabelled committed has impossible facts."""
+    root, _package = _preparing_root(tmp_path, "contradictory")
+    _rewrite_record(root, lambda record: record.update({"phase": "committed"}))
+    before = _full_snapshot(root)
+    for _ in range(2):
+        with pytest.raises(PackageError, match="transaction_state_invalid"):
+            _recover_interrupted(root)
+    assert _full_snapshot(root) == before
+
+
+@pytest.mark.parametrize("field", ["created_parents", "published_units"])
+def test_object_valued_record_elements_are_refused_not_typeerror(
+    tmp_path: Path, field: str,
+) -> None:
+    """M3: element type is validated before any set/membership operation."""
+    root, _package = _preparing_root(tmp_path, f"unhashable-{field}")
+    _rewrite_record(root, lambda record: record.update({field: [{}]}))
+    before = _full_snapshot(root)
+    for _ in range(2):
+        with pytest.raises(PackageError, match="transaction_state_invalid"):
+            _recover_interrupted(root)
+    assert _full_snapshot(root) == before
+
+
+def test_lone_record_temp_residue_is_preserved_and_refused(tmp_path: Path) -> None:
+    """M6: an unrecorded transaction temp is unknown residue, never overwritten."""
+    package = _distinct_package(tmp_path, "1", b"one")
+    root = tmp_path / "root"
+    root.mkdir()
+    temporary = root / (TRANSACTION_MARKER + ".tmp")
+    temporary.write_bytes(b"FOREIGN-TEMP")
+    temporary.chmod(0o600)
+    before = _full_snapshot(root)
+    for _ in range(2):
+        with pytest.raises(PackageError, match="transaction_state_invalid"):
+            _recover_interrupted(root)
+    assert _full_snapshot(root) == before
+    assert temporary.read_bytes() == b"FOREIGN-TEMP"
+
+
+def test_root_ancestor_symlink_is_refused_and_external_target_unchanged(tmp_path: Path) -> None:
+    """M8: no write may follow a symlink above the selected root."""
+    package = _distinct_package(tmp_path, "1", b"one")
+    external = tmp_path / "external"
+    external.mkdir(mode=0o755)
+    sentinel = external / "sentinel"
+    sentinel.write_bytes(b"EXTERNAL")
+    alias = tmp_path / "alias"
+    alias.symlink_to(external, target_is_directory=True)
+    root = alias / "chosen"
+    before = _full_snapshot(external)
+    for _ in range(2):
+        with pytest.raises(PackageError, match="transaction_state_invalid"):
+            install_linux_package(package, root)
+    assert _full_snapshot(external) == before
+    assert not (external / "chosen").exists()
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires POSIX FIFO")
+def test_wrong_leaf_type_is_refused_before_filesystem_operation(tmp_path: Path) -> None:
+    """M8: an unexpected leaf type fails in the preflight category."""
+    package = _distinct_package(tmp_path, "1", b"one")
+    root = tmp_path / "root"
+    units = root / "etc/systemd/system"
+    units.mkdir(parents=True)
+    fifo = units / UNITS[0]
+    os.mkfifo(fifo, 0o600)
+    before = _full_snapshot(root)
+    for _ in range(2):
+        with pytest.raises(PackageError, match="transaction_state_invalid"):
+            install_linux_package(package, root)
+    assert _full_snapshot(root) == before
+    assert stat.S_ISFIFO(fifo.lstat().st_mode)
+
+
+# ---------------------------------------------------------------------------
+# I. Closed commit-authority and unit-restore cases, real bindings (finding 4)
+# ---------------------------------------------------------------------------
+
+def _upgrade_loss_detecting_root(tmp_path: Path) -> tuple[Path, Path]:
+    """An OLD install with three distinguishable prior unit bodies/modes."""
+    old, new = _loss_detecting_packages(tmp_path)
+    root = tmp_path / "root"
+    install_linux_package(old, root)
+    for index, unit in enumerate(UNITS):
+        destination = root / "etc/systemd/system" / unit
+        destination.write_bytes(f"OLD-unit-{index}".encode())
+        destination.chmod((0o600, 0o640, 0o644)[index])
+    return root, new
+
+
+@pytest.mark.parametrize("when", ["before", "after"])
+def test_real_commit_replace_restores_old_or_preserves_new(tmp_path: Path, when: str) -> None:
+    """I5: the real os.replace of the committed record owns the decision."""
+    root, new = _upgrade_loss_detecting_root(tmp_path)
+    old = _full_snapshot(root)
+    expected = tmp_path / "expected"
+    shutil.copytree(root, expected, symlinks=True)
+    install_linux_package(new, expected)
+    new_snapshot = _full_snapshot(expected)
+
+    hits: list[dict] = []
+    original = os.replace
+
+    def replace(src, dst):
+        is_commit = (
+            Path(src) == _record_temp(root)
+            and json.loads(Path(src).read_text(encoding="utf-8"))["phase"] == "committed"
+        )
+        if is_commit and not hits and when == "before":
+            hits.append({"op": "os.replace", "when": when, "actual": False})
+            raise OSError("commit-before")
+        result = original(src, dst)
+        if is_commit and not hits and when == "after":
+            hits.append({"op": "os.replace", "when": when, "actual": True})
+            raise OSError("commit-after")
+        return result
+
+    with unittest.mock.patch.object(os, "replace", replace):
+        with pytest.raises(OSError, match="commit"):
+            install_linux_package(new, root)
+    assert len(hits) == 1
+    assert hits[0]["actual"] is (when == "after")
+    if when == "before":
+        assert _full_snapshot(root) == old
+        assert not list(root.glob(".happyranch-*"))
+    else:
+        assert _full_snapshot(root) == new_snapshot
+        assert not (root / TRANSACTION_MARKER).exists()
+        assert not list(root.glob(".happyranch-*"))
+    install_linux_package(new, root)
+    install_linux_package(new, root)
+    assert _full_snapshot(root) == new_snapshot
+
+
+@pytest.mark.parametrize("route", ["RB", "REC"])
+@pytest.mark.parametrize("unit", UNITS)
+def test_each_unit_restore_resumes_in_both_routes(
+    tmp_path: Path, route: str, unit: str,
+) -> None:
+    """R2: every unit restore interruption resumes to OLD, hit exactly once."""
+    root, new = _upgrade_loss_detecting_root(tmp_path)
+    old = _full_snapshot(root)
+    hits: list[dict] = []
+    original = os.replace
+
+    def publication(name: str) -> None:
+        if name == f"unit_published:{UNITS[-1]}":
+            raise OSError("publication") if route == "RB" else _Interrupted("publication")
+
+    backup = root / _UNIT_BACKUP_NAME
+    backup_unit = backup / unit
+
+    def restore(src, dst):
+        result = original(src, dst)
+        if not hits and Path(src) == backup_unit:
+            hits.append({"source": str(Path(src).relative_to(root)), "actual": not Path(src).exists()})
+            raise _Interrupted("restore-after")
+        return result
+
+    if route == "REC":
+        with pytest.raises(_Interrupted):
+            install_linux_package(new, root, fault=publication)
+    with unittest.mock.patch.object(os, "replace", restore):
+        with pytest.raises(_Interrupted):
+            if route == "RB":
+                install_linux_package(new, root, fault=publication)
+            else:
+                _recover_interrupted(root)
+    assert len(hits) == 1
+    assert hits[0]["source"] == f"{_UNIT_BACKUP_NAME}/{unit}"
+    assert hits[0]["actual"] is True
+    # Fault cleared: full OLD restoration, then two successful NEW installs.
+    _recover_interrupted(root)
+    assert _full_snapshot(root) == old
+    install_linux_package(new, root)
+    install_linux_package(new, root)
+    assert (root / "opt/happyranch/bin/happyranch-tsnet-sidecar").read_bytes() == b"sidecar-2-NEW"
     assert not list(root.glob(".happyranch-*"))

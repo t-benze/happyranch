@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import secrets
 from pathlib import Path, PurePosixPath
 import shutil
@@ -54,9 +55,25 @@ _RESIDUE_PREFIXES = (
     _PAYLOAD_BACKUP_NAME,
     _UNIT_BACKUP_NAME,
     _STAGE_PREFIX,
-    "happyranch-install-transaction",
+    ".happyranch-install-transaction",
 )
 _DROPIN_BYTES = b"[Service]\nLoadCredential=enrollment.key:/etc/happyranch/enrollment.key\n"
+# A record is produced only by this module: the attempt identity is a 32-char
+# lowercase hex token and the stage directory name is the ``mkdtemp`` product
+# of ``.happyranch-stage-<attempt>-<8 random chars>``.  Requiring that exact
+# shape (rather than a bare prefix) prevents a plausible marker from
+# redirecting ownership to an unrelated foreign directory.
+_ATTEMPT_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+_STAGE_SUFFIX_PATTERN = re.compile(r"^[a-z0-9_]{8}$")
+# Finite, source-derived plan of parents the installer may create.  A record
+# may only ever claim to own parents from this closed set, so an arbitrary
+# entry can never authorize deleting a pre-existing empty directory.
+_CREATED_PARENT_PLAN = (
+    "opt",
+    "etc",
+    "etc/systemd",
+    "etc/systemd/system",
+)
 _TRANSACTION_KEYS = frozenset({
     "schema_version", "attempt_id", "root", "phase", "payload_present",
     "units", "dropin_present", "stage", "created_parents",
@@ -565,6 +582,37 @@ def _tree_matches(path: Path, inventory: object) -> bool:
         return False
 
 
+def _tree_is_owned_partial(path: Path, inventory: object) -> bool:
+    """True when every surviving entry is an exact member of the recorded tree.
+
+    A rollback that removes a freshly published payload can be interrupted
+    after any interior unlink/rmdir.  The remainder is then a strict subset of
+    the recorded NEW identity: no entry may exist outside that inventory and
+    every surviving entry must match its recorded type/mode/bytes.  Foreign,
+    corrupt or unexplained content therefore still refuses.
+    """
+    if not isinstance(inventory, dict) or set(inventory) != {"root_mode", "entries"}:
+        return False
+    entries = inventory.get("entries")
+    if not isinstance(entries, dict):
+        return False
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        return False
+    if stat.S_IMODE(metadata.st_mode) != inventory.get("root_mode"):
+        return False
+    try:
+        present = _inventory_tree(path)["entries"]
+    except OSError:
+        return False
+    if not set(present).issubset(entries):
+        return False
+    return all(entry == entries[relative] for relative, entry in present.items())
+
+
 def _file_matches(path: Path, identity: object) -> bool:
     if not isinstance(identity, dict):
         return False
@@ -621,8 +669,39 @@ def _valid_inventory(inventory: object) -> bool:
     return True
 
 
-def _assert_safe_target(root: Path, path: Path) -> None:
-    """Reject unsafe types/symlinks on the exact path or any ancestor below root."""
+def _assert_safe_root_ancestry(root: Path) -> None:
+    """Refuse a selected root reached through a symlinked ancestor.
+
+    ``_assert_safe_target`` only inspects the root itself and the components
+    *below* it.  A symlink anywhere above the selected root silently redirects
+    every subsequent write outside the caller's chosen tree, so the whole
+    ancestor chain is checked once per entry point without following links.
+    Components that do not exist yet are tolerated (the leaf checks cover
+    them); an existing component must be a real directory.
+    """
+    target = Path(os.path.abspath(root))
+    current = Path(target.anchor)
+    for part in target.parts[1:-1]:
+        current = current / part
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise PackageError("transaction_state_invalid") from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise PackageError("transaction_state_invalid")
+
+
+def _assert_safe_target(root: Path, path: Path, *, directory: bool | None = None) -> None:
+    """Reject unsafe types/symlinks on the exact path or any ancestor below root.
+
+    ``directory`` narrows the expected leaf type: ``True`` requires a real
+    directory, ``False`` a regular file, and ``None`` accepts either while
+    still refusing links, FIFOs, sockets and devices.  Type is validated here,
+    before any filesystem operation, so an unexpected leaf never reaches
+    ``shutil`` as an unrelated exception category.
+    """
     root, path = Path(root), Path(path)
     try:
         metadata = root.lstat()
@@ -646,29 +725,39 @@ def _assert_safe_target(root: Path, path: Path) -> None:
             raise PackageError("transaction_state_invalid") from exc
         if stat.S_ISLNK(child.st_mode):
             raise PackageError("transaction_state_invalid")
-        if index != len(parts) - 1 and not stat.S_ISDIR(child.st_mode):
+        if index != len(parts) - 1:
+            if not stat.S_ISDIR(child.st_mode):
+                raise PackageError("transaction_state_invalid")
+        elif directory is True:
+            if not stat.S_ISDIR(child.st_mode):
+                raise PackageError("transaction_state_invalid")
+        elif directory is False:
+            if not stat.S_ISREG(child.st_mode):
+                raise PackageError("transaction_state_invalid")
+        elif not (stat.S_ISDIR(child.st_mode) or stat.S_ISREG(child.st_mode)):
             raise PackageError("transaction_state_invalid")
 
 
-def _record_paths(root: Path, record: Mapping[str, object]) -> list[Path]:
+def _record_paths(root: Path, record: Mapping[str, object]) -> list[tuple[Path, bool]]:
     payload_backup, unit_backup, marker = _transaction_paths(root)
-    paths = [
-        root, marker, _record_temp(root), payload_backup, unit_backup,
-        root / "opt", root / "opt/happyranch",
-        root / "etc/systemd/system",
-        root / "etc/systemd/system" / _DROPIN_SERVICE_DIR,
-        root / "etc/systemd/system" / _DROPIN_SERVICE_DIR / _DROPIN_FILE_NAME,
+    paths: list[tuple[Path, bool]] = [
+        (root, True), (marker, False), (_record_temp(root), False),
+        (payload_backup, True), (unit_backup, True),
+        (root / "opt", True), (root / "opt/happyranch", True),
+        (root / "etc/systemd/system", True),
+        (root / "etc/systemd/system" / _DROPIN_SERVICE_DIR, True),
+        (root / "etc/systemd/system" / _DROPIN_SERVICE_DIR / _DROPIN_FILE_NAME, False),
     ]
-    paths.extend(root / "etc/systemd/system" / unit for unit in UNITS)
+    paths.extend((root / "etc/systemd/system" / unit, False) for unit in UNITS)
     stage = record.get("stage")
     if stage is not None:
-        paths.append(Path(str(stage)))
+        paths.append((Path(str(stage)), True))
     return paths
 
 
 def _assert_record_paths_safe(root: Path, record: Mapping[str, object]) -> None:
-    for path in _record_paths(root, record):
-        _assert_safe_target(root, path)
+    for path, directory in _record_paths(root, record):
+        _assert_safe_target(root, path, directory=directory)
 
 
 def _replace(source: Path, destination: Path, guard, operation: str) -> None:
@@ -759,6 +848,69 @@ def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
     return result
 
 
+def _allowed_created_parents(record: Mapping[str, object]) -> set[str]:
+    """The closed, source-derived universe of parents an install may create."""
+    allowed = set(_CREATED_PARENT_PLAN)
+    if record.get("new_dropin") is not None:
+        allowed.add(f"etc/systemd/system/{_DROPIN_SERVICE_DIR}")
+    return allowed
+
+
+def _backups_complete(record: Mapping[str, object]) -> bool:
+    """True when recorded prior-existence matches the recorded backup inventory."""
+    backups = record["backups"]
+    if not isinstance(backups, dict):
+        return False
+    if (backups["payload"] is not None) != record["payload_present"]:
+        return False
+    if (backups["dropin"] is not None) != record["dropin_present"]:
+        return False
+    return all(
+        (backups["units"][unit] is not None) == record["units"][unit] for unit in UNITS
+    )
+
+
+def _validate_progress(record: Mapping[str, object]) -> None:
+    """Reject phase/progress/prior-existence combinations that cannot occur.
+
+    Every accepted phase is reachable only through the source publication
+    sequence in ``install_linux_package``; a marker whose phase and recorded
+    progress contradict that sequence (for example a ``committed`` record that
+    never published any unit) is refused before any cleanup could act on it.
+    """
+    phase = record["phase"]
+    published = record["published_units"]
+    if phase == "preparing":
+        empty_units = {unit: None for unit in UNITS}
+        if record["backups"] != {"payload": None, "units": empty_units, "dropin": None}:
+            raise PackageError("transaction_state_invalid")
+        if published or record["dropin_published"]:
+            raise PackageError("transaction_state_invalid")
+        return
+    if phase == "rolling_back":
+        # A rollback may have consumed any subset of the recorded backups;
+        # per-path identity classification already refuses unexplained gaps.
+        return
+    if not _backups_complete(record):
+        raise PackageError("transaction_state_invalid")
+    if phase in {"prepared", "payload_retained", "payload_published"}:
+        if published or record["dropin_published"]:
+            raise PackageError("transaction_state_invalid")
+    elif phase == "units_publishing":
+        if record["dropin_published"]:
+            raise PackageError("transaction_state_invalid")
+    elif phase == "dropin_publishing":
+        if set(published) != set(UNITS):
+            raise PackageError("transaction_state_invalid")
+        if record["dropin_published"] and record["new_dropin"] is None:
+            raise PackageError("transaction_state_invalid")
+    elif phase == "committed":
+        if set(published) != set(UNITS):
+            raise PackageError("transaction_state_invalid")
+        if record["dropin_published"] != (record["new_dropin"] is not None):
+            raise PackageError("transaction_state_invalid")
+
+
 def _load_record(root: Path, marker: Path) -> dict:
     """Strictly classify an existing record; any ambiguity is refused unchanged."""
     try:
@@ -773,7 +925,8 @@ def _load_record(root: Path, marker: Path) -> dict:
         raise PackageError("transaction_state_invalid")
     if type(record["schema_version"]) is not int or record["schema_version"] != TRANSACTION_SCHEMA_VERSION:
         raise PackageError("transaction_state_invalid")
-    if not isinstance(record["attempt_id"], str) or not record["attempt_id"]:
+    attempt = record["attempt_id"]
+    if not isinstance(attempt, str) or _ATTEMPT_ID_PATTERN.match(attempt) is None:
         raise PackageError("transaction_state_invalid")
     if record["root"] != str(root):
         raise PackageError("transaction_state_invalid")
@@ -785,18 +938,24 @@ def _load_record(root: Path, marker: Path) -> dict:
     if not isinstance(units, dict) or set(units) != set(UNITS) or any(type(value) is not bool for value in units.values()):
         raise PackageError("transaction_state_invalid")
     created = record["created_parents"]
-    if not isinstance(created, list) or len(set(created)) != len(created):
+    if not isinstance(created, list) or any(not isinstance(item, str) for item in created):
+        raise PackageError("transaction_state_invalid")
+    if len(set(created)) != len(created):
         raise PackageError("transaction_state_invalid")
     if any(
-        not isinstance(item, str) or not item or item.startswith("/")
+        not item or item.startswith("/")
         or ".." in PurePosixPath(item).parts
         for item in created
     ):
         raise PackageError("transaction_state_invalid")
-    published = record["published_units"]
-    if not isinstance(published, list) or len(set(published)) != len(published):
+    if any(item not in _allowed_created_parents(record) for item in created):
         raise PackageError("transaction_state_invalid")
-    if any(not isinstance(unit, str) or unit not in UNITS for unit in published):
+    published = record["published_units"]
+    if not isinstance(published, list) or any(not isinstance(unit, str) for unit in published):
+        raise PackageError("transaction_state_invalid")
+    if len(set(published)) != len(published):
+        raise PackageError("transaction_state_invalid")
+    if any(unit not in UNITS for unit in published):
         raise PackageError("transaction_state_invalid")
     stage = record["stage"]
     if stage is not None:
@@ -805,7 +964,10 @@ def _load_record(root: Path, marker: Path) -> dict:
         stage_path = Path(stage)
         if stage_path.parent != Path(root):
             raise PackageError("transaction_state_invalid")
-        if not stage_path.name.startswith(f"{_STAGE_PREFIX}{record['attempt_id']}-"):
+        prefix = f"{_STAGE_PREFIX}{attempt}-"
+        if not stage_path.name.startswith(prefix):
+            raise PackageError("transaction_state_invalid")
+        if _STAGE_SUFFIX_PATTERN.match(stage_path.name[len(prefix):]) is None:
             raise PackageError("transaction_state_invalid")
     if not _valid_inventory(record["new_payload"]):
         raise PackageError("transaction_state_invalid")
@@ -829,6 +991,7 @@ def _load_record(root: Path, marker: Path) -> dict:
             continue
         if not _valid_file_identity(entry):
             raise PackageError("transaction_state_invalid")
+    _validate_progress(record)
     return record
 
 
@@ -852,21 +1015,21 @@ def _cleanup_owned(root: Path, record: dict, guard) -> None:
     """Remove exact recorded owned residue, then the marker last."""
     payload_backup, unit_backup, marker = _transaction_paths(root)
     for path in (payload_backup, unit_backup):
-        _assert_safe_target(root, path)
+        _assert_safe_target(root, path, directory=True)
         if _backup_present(path):
             _remove_tree(path, guard, "backup_remove")
     temporary = _record_temp(root)
-    _assert_safe_target(root, temporary)
+    _assert_safe_target(root, temporary, directory=False)
     if _backup_present(temporary):
         _unlink(temporary, guard, "record_temp_remove")
     stage = record.get("stage")
     if stage is not None:
         stage_path = Path(stage)
-        _assert_safe_target(root, stage_path)
+        _assert_safe_target(root, stage_path, directory=True)
         if _backup_present(stage_path):
             _remove_tree(stage_path, guard, "stage_remove")
     _remove_created_parents(root, record, guard)
-    _assert_safe_target(root, marker)
+    _assert_safe_target(root, marker, directory=False)
     if _backup_present(marker):
         _unlink(marker, guard, "marker_remove")
 
@@ -892,6 +1055,11 @@ def _classify_payload(root: Path, record: dict) -> str:
     if not opt.exists():
         return "nothing"
     if _tree_matches(opt, record["new_payload"]):
+        return "remove"
+    # A fresh rollback publishes ``rolling_back`` before it unlinks any member,
+    # so a partial NEW tree that is a strict subset of the recorded NEW
+    # inventory is genuine resumable progress rather than foreign content.
+    if record["phase"] == "rolling_back" and _tree_is_owned_partial(opt, record["new_payload"]):
         return "remove"
     raise PackageError("transaction_state_invalid")
 
@@ -1010,11 +1178,12 @@ def _restore_old(root: Path, record: dict, guard) -> None:
 
 def _cleanup_pre_record(root: Path, stage: Path | None, guard) -> None:
     temporary = _record_temp(root)
+    _assert_safe_target(root, temporary, directory=False)
     if _backup_present(temporary):
         _unlink(temporary, guard, "record_temp_remove")
     if stage is not None:
         stage_path = Path(stage)
-        _assert_safe_target(root, stage_path)
+        _assert_safe_target(root, stage_path, directory=True)
         if _backup_present(stage_path):
             _remove_tree(stage_path, guard, "stage_remove")
 
@@ -1028,12 +1197,13 @@ def _recover_interrupted(root: Path, guard=None) -> None:
     owned transactions are recovered to OLD (uncommitted) or completed NEW
     (committed).
     """
+    _assert_safe_root_ancestry(root)
     if not root.exists() and not root.is_symlink():
         return
     if root.is_symlink() or not root.is_dir():
         raise PackageError("transaction_state_invalid")
     marker = root / TRANSACTION_MARKER
-    _assert_safe_target(root, marker)
+    _assert_safe_target(root, marker, directory=False)
     if not marker.exists():
         if marker.is_symlink():
             raise PackageError("transaction_state_invalid")
@@ -1080,13 +1250,14 @@ def install_linux_package(
     publishes_dropin = system_service and credential_source.is_file()
     # Ownership/type preflight: no write or delete may follow a symlink or an
     # unexpected type at any target or ancestor below the selected root.
-    for path in (
-        root, opt, units, dropin_dir, dropin,
-        *(units / unit for unit in UNITS),
-        root / TRANSACTION_MARKER, _record_temp(root),
-        root / _PAYLOAD_BACKUP_NAME, root / _UNIT_BACKUP_NAME,
-    ):
-        _assert_safe_target(root, path)
+    typed_targets: list[tuple[Path, bool]] = [
+        (root, True), (opt, True), (units, True), (dropin_dir, True), (dropin, False),
+        (root / TRANSACTION_MARKER, False), (_record_temp(root), False),
+        (root / _PAYLOAD_BACKUP_NAME, True), (root / _UNIT_BACKUP_NAME, True),
+    ]
+    typed_targets.extend((units / unit, False) for unit in UNITS)
+    for path, directory in typed_targets:
+        _assert_safe_target(root, path, directory=directory)
     payload_present = opt.exists()
     dropin_present = dropin.exists()
     unit_present = {name: (units / name).exists() for name in UNITS}
