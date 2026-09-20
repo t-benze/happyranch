@@ -4347,10 +4347,13 @@ def test_c12b_owned_transaction_success_fetchall_and_parse_failures(
     )
     snapshot_sql = "SELECT id, status, created_at FROM tasks ORDER BY rowid"
     real = db._conn
-    before = [tuple(row) for row in real.execute(snapshot_sql).fetchall()]
     assert real.in_transaction is False
 
+    def rows():
+        return [tuple(row) for row in real.execute(snapshot_sql).fetchall()]
+
     # Success: the reader owns exactly one BEGIN and releases it with ROLLBACK.
+    before_success = rows()
     success_proxy = _ControlConnProxy(real)
     monkeypatch.setattr(db, "_conn", success_proxy)
     summary = _marker_summary(db, page_size=1)
@@ -4359,11 +4362,13 @@ def test_c12b_owned_transaction_success_fetchall_and_parse_failures(
     )
     assert success_proxy.controls == ["BEGIN", "rollback"]
     assert real.in_transaction is False
-    assert [tuple(row) for row in real.execute(snapshot_sql).fetchall()] == before
+    assert rows() == before_success
     monkeypatch.setattr(db, "_conn", real)
 
     # Actual second-page cursor.fetchall failure AFTER page one accumulated:
-    # no partial summary escapes and the owned transaction is released.
+    # no partial summary escapes and the owned transaction is released, with
+    # every fixture row snapshotted immediately before the operation.
+    before_fetch = rows()
     fetch_proxy = _ControlConnProxy(real, fail_fetch_page=2)
     monkeypatch.setattr(db, "_conn", fetch_proxy)
     with pytest.raises(sqlite3.OperationalError):
@@ -4371,10 +4376,26 @@ def test_c12b_owned_transaction_success_fetchall_and_parse_failures(
     assert fetch_proxy.pages == 2
     assert fetch_proxy.controls == ["BEGIN", "rollback"]
     assert real.in_transaction is False
-    assert [tuple(row) for row in real.execute(snapshot_sql).fetchall()] == before
+    assert rows() == before_fetch
     monkeypatch.setattr(db, "_conn", real)
 
-    # A malformed created_at only on page two fails closed the same way.
+    # Restoration after the fetch failure is proven by an instrumented OWNED
+    # read BEFORE the separate parse injection.
+    before_restored = rows()
+    restored_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", restored_proxy)
+    restored = _marker_summary(db, page_size=1)
+    assert (restored.count, restored.newest_created_at, restored.has_unfinished) == (
+        2, now + timedelta(seconds=1), True,
+    )
+    assert restored_proxy.controls == ["BEGIN", "rollback"]
+    assert real.in_transaction is False
+    assert rows() == before_restored
+    monkeypatch.setattr(db, "_conn", real)
+
+    # A malformed created_at only on page two fails closed. All fixture rows,
+    # including the deliberately malformed row, are snapshotted immediately
+    # before the operation and compared unchanged after it.
     real.execute(
         "INSERT INTO tasks (id, brief, assigned_agent, status, created_at, "
         "updated_at) VALUES ('TASK-BAD', ?, 'dev_agent', 'completed', "
@@ -4382,6 +4403,7 @@ def test_c12b_owned_transaction_success_fetchall_and_parse_failures(
         (f"{_CLEANUP_MARKER}\nbad", now.isoformat()),
     )
     real.commit()
+    before_parse = rows()
     parse_proxy = _ControlConnProxy(real)
     monkeypatch.setattr(db, "_conn", parse_proxy)
     with pytest.raises(ValueError):
@@ -4389,17 +4411,20 @@ def test_c12b_owned_transaction_success_fetchall_and_parse_failures(
     assert parse_proxy.pages == 2
     assert parse_proxy.controls == ["BEGIN", "rollback"]
     assert real.in_transaction is False
+    assert rows() == before_parse
     monkeypatch.setattr(db, "_conn", real)
 
-    # Recovery: restoring the fixture yields the exact complete summary.
+    # Recovery: repairing the disposable fixture yields the exact complete
+    # summary (count, newest UTC instant, unfinished).
     real.execute(
         "UPDATE tasks SET created_at = ? WHERE id = 'TASK-BAD'",
         (now.isoformat(),),
     )
     real.commit()
     recovered = _marker_summary(db)
-    assert recovered.count == 3
-    assert recovered.newest_created_at == now + timedelta(seconds=1)
+    assert (
+        recovered.count, recovered.newest_created_at, recovered.has_unfinished,
+    ) == (3, now + timedelta(seconds=1), True)
 
 
 def test_c12c_borrowed_transaction_success_fetchall_and_parse_failures(
@@ -4413,7 +4438,11 @@ def test_c12c_borrowed_transaction_success_fetchall_and_parse_failures(
     )
     real = db._conn
     snapshot_sql = "SELECT id, status, created_at FROM tasks ORDER BY rowid"
-    before = [tuple(row) for row in real.execute(snapshot_sql).fetchall()]
+
+    def rows():
+        return [tuple(row) for row in real.execute(snapshot_sql).fetchall()]
+
+    before = rows()
     real.execute("BEGIN")
     real.execute(
         "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
@@ -4422,7 +4451,7 @@ def test_c12c_borrowed_transaction_success_fetchall_and_parse_failures(
     )
     assert real.in_transaction is True
 
-    def assert_borrowed_state():
+    def assert_borrowed_state(expected_rows):
         assert real.in_transaction is True
         assert real.execute(
             "SELECT COUNT(*) FROM audit_log WHERE task_id='TASK-SENTINEL'",
@@ -4431,18 +4460,18 @@ def test_c12c_borrowed_transaction_success_fetchall_and_parse_failures(
             assert other.execute(
                 "SELECT COUNT(*) FROM audit_log WHERE task_id='TASK-SENTINEL'",
             ).fetchone()[0] == 0
-        assert [
-            tuple(row) for row in real.execute(snapshot_sql).fetchall()
-        ] == before
+        assert rows() == expected_rows
 
     # Success: the reader issues no BEGIN/COMMIT/ROLLBACK and leaves the
-    # caller's transaction, sentinel and rows untouched.
+    # caller's transaction, local sentinel and rows untouched.
     success_proxy = _ControlConnProxy(real)
     monkeypatch.setattr(db, "_conn", success_proxy)
     summary = _marker_summary(db, page_size=1)
-    assert (summary.count, summary.has_unfinished) == (2, False)
+    assert (summary.count, summary.newest_created_at, summary.has_unfinished) == (
+        2, now + timedelta(seconds=1), False,
+    )
     assert success_proxy.controls == []
-    assert_borrowed_state()
+    assert_borrowed_state(before)
     monkeypatch.setattr(db, "_conn", real)
 
     # Second-page fetchall failure preserves the caller's transaction too.
@@ -4452,34 +4481,66 @@ def test_c12c_borrowed_transaction_success_fetchall_and_parse_failures(
         _marker_summary(db, page_size=1)
     assert fetch_proxy.pages == 2
     assert fetch_proxy.controls == []
-    assert_borrowed_state()
+    assert_borrowed_state(before)
     monkeypatch.setattr(db, "_conn", real)
 
-    # Second-page parse failure likewise.
+    # Restoration after the fetch failure, still inside the caller's
+    # transaction and instrumented to prove the reader owns nothing.
+    post_fetch_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", post_fetch_proxy)
+    post_fetch = _marker_summary(db, page_size=1)
+    assert (
+        post_fetch.count, post_fetch.newest_created_at, post_fetch.has_unfinished,
+    ) == (2, now + timedelta(seconds=1), False)
+    assert post_fetch_proxy.controls == []
+    assert_borrowed_state(before)
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Second-page parse failure likewise. The deliberately malformed row is
+    # written by fixture SQL and stays uncommitted inside the caller's
+    # transaction; all rows are snapshotted immediately before the operation.
     real.execute(
         "INSERT INTO tasks (id, brief, assigned_agent, status, created_at, "
         "updated_at) VALUES ('TASK-BAD', ?, 'dev_agent', 'completed', "
         "'not-a-timestamp', ?)",
         (f"{_CLEANUP_MARKER}\nbad", now.isoformat()),
     )
+    before_parse = rows()
     parse_proxy = _ControlConnProxy(real)
     monkeypatch.setattr(db, "_conn", parse_proxy)
     with pytest.raises(ValueError):
         _marker_summary(db, page_size=2)
     assert parse_proxy.pages == 2
     assert parse_proxy.controls == []
-    assert real.in_transaction is True
-    assert real.execute(
-        "SELECT COUNT(*) FROM audit_log WHERE task_id='TASK-SENTINEL'",
-    ).fetchone()[0] == 1
+    assert_borrowed_state(before_parse)
     monkeypatch.setattr(db, "_conn", real)
 
-    # Caller rollback removes its own sentinel; the reader never did.
+    # Repair the malformed row inside the caller's transaction (no reader
+    # commit/rollback for restoration), then assert the exact recovered
+    # summary and the caller state/sentinel BEFORE the caller rolls back.
+    real.execute(
+        "UPDATE tasks SET created_at = ? WHERE id = 'TASK-BAD'",
+        (now.isoformat(),),
+    )
+    before_recovered = rows()
+    recovered_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", recovered_proxy)
+    recovered = _marker_summary(db, page_size=2)
+    assert (
+        recovered.count, recovered.newest_created_at, recovered.has_unfinished,
+    ) == (3, now + timedelta(seconds=1), False)
+    assert recovered_proxy.controls == []
+    assert_borrowed_state(before_recovered)
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Caller rollback alone removes its own sentinel and the uncommitted
+    # fixture row; the reader never did.
     real.rollback()
     assert real.in_transaction is False
     assert real.execute(
         "SELECT COUNT(*) FROM audit_log WHERE task_id='TASK-SENTINEL'",
     ).fetchone()[0] == 0
+    assert rows() == before
 
 
 def test_c12d_concurrent_append_snapshot_deterministic(db, monkeypatch) -> None:
