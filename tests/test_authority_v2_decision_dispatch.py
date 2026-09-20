@@ -481,4 +481,3 @@ def _fresh_dir(tmp_path, name):
     path = tmp_path / name
     path.mkdir()
     return path
-
