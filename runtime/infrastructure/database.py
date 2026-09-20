@@ -8,8 +8,12 @@ import sqlite3
 import threading
 import time as _time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable
+
+from pydantic import ValidationError
 
 from runtime.models import (
     AuthorityAuditEvent,
@@ -66,6 +70,102 @@ from runtime.daemon.thread_mentions import (
 
 def _parse_dt(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _iso_datetime_separator_index(value: str) -> int | None:
+    """Return CPython's single ISO date/time boundary for raw-hour checks.
+
+    This intentionally mirrors only the standard parser's date-boundary
+    choice, not its timestamp parser.  In the extended week-date overlap,
+    ``YYYY-Www-`` is the separator at offset 8 when a digit at offset 10
+    makes both readings possible.  Guessing both offsets would turn a valid
+    minute field into an apparent hour 24.
+    """
+    if len(value) <= 7:
+        return None
+    if value[4] == "-":
+        if len(value) > 5 and value[5] == "W":
+            if len(value) > 8 and value[8] == "-":
+                if len(value) > 10 and value[10].isascii() and value[10].isdigit():
+                    return 8
+                return 10
+            return 8
+        return 10
+    if value[4] == "W":
+        index = 7
+        while index < len(value) and value[index].isascii() and value[index].isdigit():
+            index += 1
+        if index < 9:
+            return index
+        return 7 if index % 2 == 0 else 8
+    return 8
+
+
+def _has_raw_iso_hour_24(value: str) -> bool:
+    """Identify parser-selected raw hour 24 without narrowing ISO parsing."""
+    # ``_parse_dt`` replaces Z before delegating to the standard parser; that
+    # replacement is after the date/time boundary and cannot alter this index.
+    boundary = _iso_datetime_separator_index(value)
+    return boundary is not None and value[boundary + 1:boundary + 3] == "24"
+
+
+def _is_aware_datetime(value: object) -> bool:
+    """Return whether one persisted ordering value is a usable aware ISO time.
+
+    This deliberately shares the helper's existing parser rather than treating
+    SQLite's permissive date functions as the timestamp authority.  It is used
+    both inside the bounded newer-owner query and after bounded reads; it never
+    creates a second lookup.
+    """
+    if not isinstance(value, str):
+        return False
+    # CPython 3.14 normalizes ISO hour 24 to the next day's midnight.  The
+    # finite selector instead has an explicit persisted-ordering contract: an
+    # hour-24 value is malformed.  Keep this a narrow exception around the
+    # standard parser rather than a format whitelist, so all other parser-valid
+    # ISO forms retain their existing behavior.
+    try:
+        parsed = _parse_dt(value)
+    except (TypeError, ValueError):
+        return False
+    return parsed.tzinfo is not None and not _has_raw_iso_hour_24(value)
+
+
+_WORKSPACE_CLEANUP_BRIEF_MARKER = "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)"
+_WORKSPACE_CLEANUP_TERMINAL_STATUSES = frozenset({
+    TaskStatus.COMPLETED.value,
+    TaskStatus.FAILED.value,
+    TaskStatus.CANCELLED.value,
+    TaskStatus.SUPERSEDED.value,
+})
+
+
+@dataclass(frozen=True)
+class WorkspaceCleanupReclamationCandidate:
+    """One conservatively selected dormant scratch root.
+
+    This is a read-only planning shape.  In particular, a candidate is not an
+    action permit: the later hook must still make its fresh owner/config and
+    unchanged consumer admissions.
+    """
+
+    task_id: str
+    session_id: str
+    scratch_path: Path
+    result: dict
+
+
+@dataclass(frozen=True)
+class WorkspaceCleanupReclamationSelection:
+    """Bounded output for the future cleanup-action hook.
+
+    ``read_observations`` is deliberately exposed so the hook can account for
+    its own config/owner observations without guessing at helper internals.
+    """
+
+    owner_task_id: str
+    candidates: tuple[WorkspaceCleanupReclamationCandidate, ...]
+    read_observations: tuple[str, ...]
 
 
 # ── TASK-5966 strict mention-led exchange bounds (founder-ratified) ──────
@@ -5543,6 +5643,33 @@ class Database:
         return result
 
     @_synchronized
+    def list_workspace_cleanup_activity(self, agent: str, limit: int = 5) -> list[dict]:
+        """Return the newest distinct scheduler-triggered cleanup tasks for an agent.
+
+        The audit action is the sole eligibility marker.  Joining it before the
+        limit avoids a bounded audit-page scan and duplicate trigger rows cannot
+        displace another task.  A correlated result lookup keeps the task's
+        current lifecycle status separate from its latest agent result.
+        """
+        rows = self._conn.execute(
+            """SELECT t.id AS task_id, t.status, t.created_at,
+                      (SELECT r.status FROM task_results r
+                       WHERE r.task_id=t.id AND r.agent=?
+                       ORDER BY r.id DESC LIMIT 1) AS result_status,
+                      (SELECT r.output_summary FROM task_results r
+                       WHERE r.task_id=t.id AND r.agent=?
+                       ORDER BY r.id DESC LIMIT 1) AS output_summary
+               FROM tasks t
+               JOIN (SELECT DISTINCT task_id FROM audit_log
+                     WHERE action='workspace_cleanup_triggered' AND agent=?) a
+                 ON a.task_id=t.id
+               WHERE t.assigned_agent=?
+               ORDER BY t.created_at DESC, t.id DESC LIMIT ?""",
+            (agent, agent, agent, agent, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @_synchronized
     def get_latest_task_result(
         self, task_id: str, agent: str, session_id: str,
     ) -> dict | None:
@@ -5561,6 +5688,318 @@ class Database:
         if d.get("waiting_on_job_ids"):
             d["waiting_on_job_ids"] = json.loads(d["waiting_on_job_ids"])
         return d
+
+    @_synchronized
+    def select_workspace_cleanup_reclamation_candidates(
+        self,
+        *,
+        owner_task_id: str,
+        agent: str,
+        stale_orchestration_step_count: int,
+        claimed_next_step_count: int,
+        canonical_workspace: Path,
+        authoritative_workspace: Path,
+        admit_observation: Callable[[str], bool] | None = None,
+    ) -> WorkspaceCleanupReclamationSelection | None:
+        """Validate one claimed cleanup owner and build its finite shortlist.
+
+        Every database read has a named pre-admission.  The later run-step
+        hook supplies its monotonic deadline/read-budget callback; this helper
+        neither starts a clock nor performs config, consumer, audit, or write
+        work.  Refusal is intentionally represented by ``None`` so callers
+        cannot confuse a partial shortlist with a safe action.
+        """
+        observations: list[str] = []
+
+        def admit(name: str) -> bool:
+            if admit_observation is not None and not admit_observation(name):
+                return False
+            observations.append(name)
+            return True
+
+        # These are invocation-local CAS inputs, not durable-owner facts.
+        # Refuse malformed supplied claim context before even admitting the
+        # owner read; a valid supplied pair still requires that fresh read.
+        if stale_orchestration_step_count != 0 or claimed_next_step_count != 1:
+            return None
+
+        # 1. Current durable owner.  The registered identity and canonical
+        # workspace are supplied by the authoritative caller; no roster read
+        # is invented here.  The stale count and CAS-written next count bind
+        # this read-only helper to the invocation that actually won the
+        # initial (0 -> 1) claim; cleanup ordinal is not a claim count.
+        if not admit("owner"):
+            return None
+        try:
+            owner = self.get_task(owner_task_id)
+        except (sqlite3.Error, ValidationError, TypeError, ValueError):
+            return None
+        if (
+            owner is None
+            or owner.id != owner_task_id
+            or owner.assigned_agent != agent
+            or owner.status is not TaskStatus.IN_PROGRESS
+            or owner.block_kind is not None
+            or owner.cancelled_at is not None
+            or owner.orchestration_step_count != 1
+            or canonical_workspace != authoritative_workspace
+            or not owner.brief.startswith(_WORKSPACE_CLEANUP_BRIEF_MARKER)
+        ):
+            return None
+
+        # 2. Exactly one marker on this owner, without an agent prefilter.
+        if not admit("marker"):
+            return None
+        try:
+            marker_rows = self._conn.execute(
+                """SELECT agent, payload FROM audit_log
+                   WHERE task_id=? AND action='workspace_cleanup_triggered'
+                   ORDER BY id ASC LIMIT 2""",
+                (owner_task_id,),
+            ).fetchall()
+        except sqlite3.Error:
+            return None
+        if len(marker_rows) != 1 or marker_rows[0]["agent"] != agent:
+            return None
+        try:
+            marker_payload = json.loads(marker_rows[0]["payload"])
+            run_number = marker_payload["run_number"]
+            brief_kind = marker_payload["brief_kind"]
+        except (TypeError, KeyError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if type(run_number) is not int or run_number < 3 or brief_kind != "cleanup":
+            return None
+
+        # 3. Complete bounded history.  Tuple comparison uses the stored
+        # bytewise strings, never numeric TASK suffixes.
+        if not admit("history"):
+            return None
+        escaped_marker = _WORKSPACE_CLEANUP_BRIEF_MARKER.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        try:
+            history = self._conn.execute(
+                """SELECT id, created_at FROM tasks
+                   WHERE assigned_agent=? AND brief LIKE ? ESCAPE '\\'
+                   ORDER BY created_at DESC, id DESC LIMIT 1001""",
+                (agent, escaped_marker + "%"),
+            ).fetchall()
+        except sqlite3.Error:
+            return None
+        if len(history) == 1001:
+            return None
+        try:
+            history_tuples = [(str(row["created_at"]), str(row["id"])) for row in history]
+            if any(not _is_aware_datetime(created_at) for created_at, _ in history_tuples):
+                return None
+        except (TypeError, ValueError):
+            return None
+        if len(set(history_tuples)) != len(history_tuples) or history_tuples != sorted(history_tuples, reverse=True):
+            return None
+        owner_matches = [item for item in history_tuples if item[1] == owner.id]
+        if len(owner_matches) != 1:
+            return None
+        owner_tuple = owner_matches[0]
+        older_count = sum(1 for item in history_tuples if item < owner_tuple)
+        if run_number != older_count + 1:
+            return None
+
+        # 4. A delayed original is permitted only when no later marker-bearing
+        # owner (including an unreadable/orphaned one) exists.
+        if not admit("newer_owner"):
+            return None
+        # SQLite's date functions accept and normalize values that the
+        # history/candidate parser rejects, and they recognize only a subset
+        # of accepted ISO representations.  Register the same pure validator
+        # for this one bounded query, then immediately unregister it.  This
+        # adds no SQL observation or connection-wide policy.
+        timestamp_predicate = "_workspace_cleanup_is_aware_datetime"
+        registered_timestamp_predicate = False
+        try:
+            self._conn.create_function(
+                timestamp_predicate, 1, lambda value: int(_is_aware_datetime(value)),
+            )
+            registered_timestamp_predicate = True
+            newer = self._conn.execute(
+            f"""SELECT a.task_id, a.agent, a.payload, t.created_at, t.status
+               FROM audit_log a LEFT JOIN tasks t ON t.id=a.task_id
+               WHERE a.action='workspace_cleanup_triggered' AND a.task_id<>?
+                 AND (t.id IS NULL OR {timestamp_predicate}(t.created_at)=0
+                      OR t.created_at>? OR (t.created_at=? AND t.id>?))
+               ORDER BY CASE WHEN t.id IS NULL OR {timestamp_predicate}(t.created_at)=0 THEN 0 ELSE 1 END,
+                        t.created_at DESC, a.task_id DESC LIMIT 2""",
+                (owner_task_id, owner_tuple[0], owner_tuple[0], owner_task_id),
+            ).fetchall()
+        except sqlite3.Error:
+            return None
+        finally:
+            if registered_timestamp_predicate:
+                self._conn.create_function(timestamp_predicate, 1, None)
+        if newer:
+            return None
+
+        # 5. Read six raw terminal candidates before applying the age filter.
+        if not admit("candidates"):
+            return None
+        try:
+            raw_candidates = self._conn.execute(
+                """SELECT id, status, assigned_agent, created_at, completed_at,
+                          current_session_id
+                   FROM tasks
+                   WHERE assigned_agent=?
+                     AND status IN ('completed','failed','cancelled','superseded')
+                   ORDER BY completed_at ASC, id ASC LIMIT 6""",
+                (agent,),
+            ).fetchall()
+        except sqlite3.Error:
+            return None
+        if len(raw_candidates) == 6:
+            return None
+        candidate_rows: list[sqlite3.Row] = []
+        try:
+            for row in raw_candidates:
+                created_at = row["created_at"]
+                completed_at = row["completed_at"]
+                if (
+                    not isinstance(created_at, str)
+                    or not isinstance(completed_at, str)
+                    or not _is_aware_datetime(created_at)
+                    or not _is_aware_datetime(completed_at)
+                ):
+                    return None
+                if row["status"] not in _WORKSPACE_CLEANUP_TERMINAL_STATUSES:
+                    return None
+                if (completed_at, str(row["id"])) < owner_tuple:
+                    candidate_rows.append(row)
+        except (TypeError, ValueError):
+            return None
+
+        # 6/7. Complete graph snapshots.  Only components touching the owner
+        # or selected candidates are validated; unrelated malformed data is
+        # deliberately ignored.
+        if not admit("graph_tasks"):
+            return None
+        try:
+            graph_tasks = self._conn.execute(
+                """SELECT id, assigned_agent, status FROM tasks ORDER BY id ASC LIMIT 10001""",
+            ).fetchall()
+        except sqlite3.Error:
+            return None
+        if len(graph_tasks) == 10001:
+            return None
+        if not admit("graph_edges"):
+            return None
+        try:
+            graph_edges = self._conn.execute(
+                """SELECT child_id, relative_id FROM (
+                        SELECT id AS child_id, parent_task_id AS relative_id FROM tasks
+                        WHERE parent_task_id IS NOT NULL
+                        UNION ALL
+                        SELECT id AS child_id, revisit_of_task_id AS relative_id FROM tasks
+                        WHERE revisit_of_task_id IS NOT NULL
+                    ) ORDER BY child_id ASC, relative_id ASC LIMIT 20001""",
+            ).fetchall()
+        except sqlite3.Error:
+            return None
+        if len(graph_edges) == 20001:
+            return None
+        nodes = {str(row["id"]): row for row in graph_tasks}
+        adjacency: dict[str, set[str]] = {node_id: set() for node_id in nodes}
+        directed: dict[str, set[str]] = {node_id: set() for node_id in nodes}
+        for edge in graph_edges:
+            child_id, relative_id = str(edge["child_id"]), str(edge["relative_id"])
+            if child_id in adjacency:
+                adjacency[child_id].add(relative_id)
+                directed[child_id].add(relative_id)
+            if relative_id in adjacency:
+                adjacency[relative_id].add(child_id)
+
+        selected_ids = {str(row["id"]) for row in candidate_rows}
+        required_roots = {owner_task_id, *selected_ids}
+        for root in required_roots:
+            if root not in nodes:
+                return None
+            visited: set[str] = set()
+            stack: list[tuple[str, str | None]] = [(root, None)]
+            while stack:
+                node_id, parent_id = stack.pop()
+                if node_id in visited:
+                    return None
+                node = nodes.get(node_id)
+                if node is None or node["status"] not in {
+                    "pending", "in_progress", "escalated", * _WORKSPACE_CLEANUP_TERMINAL_STATUSES,
+                }:
+                    return None
+                visited.add(node_id)
+                for neighbour in adjacency.get(node_id, ()):
+                    if neighbour not in nodes:
+                        return None
+                    if neighbour == parent_id:
+                        continue
+                    relative = nodes[neighbour]
+                    if relative["assigned_agent"] != agent and relative["status"] not in _WORKSPACE_CLEANUP_TERMINAL_STATUSES:
+                        return None
+                    stack.append((neighbour, node_id))
+            if root != owner_task_id and owner_task_id in visited:
+                return None
+            # Directed parent/revisit cycles need a second traversal because
+            # undirected deduplication intentionally suppresses reciprocal
+            # edges.  Keep it iterative: a valid component may contain all
+            # 10,000 admitted rows and must not depend on Python's recursion
+            # limit.
+            directed_state: dict[str, int] = {}
+            for start in visited:
+                if directed_state.get(start, 0) == 2:
+                    continue
+                directed_state[start] = 1
+                directed_stack: list[tuple[str, object]] = [
+                    (start, iter(relative for relative in directed.get(start, ()) if relative in visited)),
+                ]
+                while directed_stack:
+                    node_id, relatives = directed_stack[-1]
+                    try:
+                        relative_id = next(relatives)
+                    except StopIteration:
+                        directed_state[node_id] = 2
+                        directed_stack.pop()
+                        continue
+                    state = directed_state.get(relative_id, 0)
+                    if state == 1:
+                        return None
+                    if state == 0:
+                        directed_state[relative_id] = 1
+                        directed_stack.append((
+                            relative_id,
+                            iter(relative for relative in directed.get(relative_id, ()) if relative in visited),
+                        ))
+
+        # One and only one exact persisted-result read follows for each
+        # selected target.  A refusal starts no later result read.
+        candidates: list[WorkspaceCleanupReclamationCandidate] = []
+        for row in candidate_rows:
+            task_id = str(row["id"])
+            session_id = row["current_session_id"]
+            if not isinstance(session_id, str) or not session_id:
+                return None
+            if not admit(f"result:{task_id}"):
+                return None
+            if not task_id.startswith("TASK-") or not task_id[5:].isdigit():
+                return None
+            try:
+                result = self.get_latest_task_result(task_id, agent, session_id)
+            except (sqlite3.Error, json.JSONDecodeError, ValidationError, TypeError, ValueError):
+                return None
+            if result is None or result.get("status") != row["status"]:
+                return None
+            candidates.append(WorkspaceCleanupReclamationCandidate(
+                task_id=task_id,
+                session_id=session_id,
+                scratch_path=canonical_workspace / ".happyranch" / "task-tmp" / task_id,
+                result=result,
+            ))
+        return WorkspaceCleanupReclamationSelection(
+            owner_task_id=owner_task_id,
+            candidates=tuple(candidates),
+            read_observations=tuple(observations),
+        )
 
     @_synchronized
     def get_latest_completion_report(

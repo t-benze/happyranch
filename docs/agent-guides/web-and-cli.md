@@ -1,5 +1,25 @@
 # Web And CLI
 
+## Daemon-managed workspace cleanup
+
+`workspace_cleanup.reclamation_actions_enabled` is an internal, strict boolean
+configuration key that defaults to `false`; it creates no Web or CLI setting.
+When enabled, only the pre-agent cleanup hook may act, and only on a
+third-or-later cleanup ordinal whose scheduler-created preclaim owner is
+assigned to a registered in-memory `TeamsRegistry` agent and reconciles
+to the invocation's initial successful claim (the first two runs stay
+report-only), after its current-owner, bounded provenance, one-second deadline,
+and at-most-23 read/load admissions, with no refill or recovery. It makes at
+most five best-effort consumer calls. A fresh `false` value stops a later
+admission but cannot preempt an already admitted call. Each attempt records the
+owner `workspace_cleanup_reclamation_attempt` audit before the prompt carries the
+known facts, including the literal `after` remainder or `null`. A `None`
+consumer result is reported literally as
+`refused_or_unavailable`; known partial/failure facts are retained, the
+transported remainder is exactly the returned `after` accounting or `null`, and
+publication failure stops later calls. The ordinary agent completion summary
+remains the normal callback/CLI result surface.
+
 ## Web UI
 
 ### Dashboard projection
@@ -26,6 +46,60 @@ Every browser-callable daemon route maps to one TypeScript function in `web/src/
 
 - Python: `tests/contract/test_openapi_snapshot.py` pins OpenAPI to `tests/contract/openapi.json`. Regenerate intentional changes with `HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`.
 - TypeScript: `web/src/test/openapi-coverage.test.ts` asserts every documented path is either included with a TS mirror or excluded with justification.
+
+### Tasks list
+
+The Tasks heading, grouping controls, inline filters and root rows share one
+scroll owner. Status, Agent and Thread grouping use loaded matching roots;
+counts do not claim a server total or count subtasks. Status grouping preserves
+all seven lifecycle groups in display order: Waiting on you, In progress,
+Pending, Failed, Completed, Cancelled, Resolved. Completed excludes superseded,
+which appears in Resolved; display order does not change severity rollups or
+filter-option order. Resting list rows and their lineage use the existing raised
+section surface (white in light mode, semantic raised override in dark mode),
+with distinct hover styling. Only superseded rows are dimmed in every grouping.
+Tasks opts into blue in-progress and amber escalated badges and its own AppBar metrics; other
+surfaces retain their defaults.
+
+Filter supports status and exact assigned-agent name. Apply submits both drafts;
+closing the panel leaves applied values unchanged. Clear omits both parameters.
+An empty agent means no agent filter, not an unassigned-only request. Applied
+values remain visible, including for successful empty results. A new org/filter
+request starts without another context's cursor; returning to a cached context
+retains its own pages. Local recovery ownership resets on context changes.
+`Waiting on you` uses a separate root traversal with exact
+`status=escalated`; it is never derived from loaded ordinary pages or a
+severity rollup. Its rows are root-only and own the presentation when an
+ordinary page contains the same task id. While its cursor remains, wording is
+non-exact (`50+ waiting on you`); only an exhausted traversal may show an
+exact count. The ordinary cursor order is unchanged.
+When the attention traversal has rows, they render as the FIRST group inside the
+shared list shell — the same `tasks-group` wrapper, group heading (attention
+dot + `Waiting on you`) and raised rows-card as every status group — directly
+after the task column header and above the status groups; there is no separate
+outer padded/inset card. When there are no escalated roots (and attention is
+not loading or errored), no `Waiting on you` group, heading or empty card is
+rendered. If attention has no rows while its traversal loads or errors, the
+ordinary list remains usable and the attention loading/error state renders
+separately; a non-empty escalated group can coexist with an ordinary initial
+loading/error state without hiding the shared list shell, and a successful
+empty ordinary result must not claim `No tasks` while escalated rows are
+visible.
+Ordinary status/agent filters remain their established independent traversal;
+they do not alter the separate attention query. Initial attention failures make
+no count claim and show Retry. A failed attention refresh or continuation keeps
+the deduplicated loaded rows and their honest current count visible with a
+stale/error warning; continuation Retry resumes the failed attention cursor,
+while ordinary pagination retains its own separate page Retry. Waiting rows
+share the ordinary responsive row treatment because they live under the shared
+list shell; its page-local load-more and Retry controls wrap within the group at
+narrow widths; shared button behavior is unchanged.
+Initial ordinary failures show an
+explicit Retry; failed ordinary refreshes retain cached rows and a stale warning;
+failed ordinary pagination retains loaded rows and requires its separate page Retry.
+Manual refresh retries the active context's loaded pages. Subtask severity
+rollups are count-free; task detail owns subtask browsing. No New task flow is
+exposed by this list.
 
 ### Thread-detail system rows
 
@@ -102,6 +176,8 @@ The Agents page (`web/src/features/agents/`) shows the active agent roster plus 
 Teams membership editing (add/remove workers only — manager reassignment is founder-gated) is available via `PUT /settings/teams`, wrapping `TeamsRegistry` mutators with `validate_team_membership` consistency checks and 409 rollback on drift.
 
 **Backend:** The `GET /agents` response now includes `repos`, `system_prompt`, and `model` fields (additive, `allow_rules` remains excluded). The `PUT /agents/{agent}/model` route sets or clears the per-agent model (see below).
+
+The agent detail pane also reads `GET /agents/{agent}/cleanup-activity`. It returns at most five newest distinct tasks that have the authoritative `workspace_cleanup_triggered` audit marker and are currently assigned to that agent. A task's lifecycle status and latest same-agent result status remain separate; missing summaries are rendered as unavailable. This GET is a read-only projection and does not start or perform cleanup.
 
 Build and dev commands:
 

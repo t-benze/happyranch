@@ -146,7 +146,7 @@ const RADIUS_CONTRACT: readonly RadiusRow[] = [
     token: "--radius-pill",
     source: "patterns/StatusBadge.tsx",
     startPattern: "<span\\s+className=\\{\`text-mono-sm",
-    endPattern: "\\$\\{cls\\}\`\\}",
+    endPattern: "\\$\\{cls\\} \\$\\{presentation === 'tasks' \\? 'tasks-status' : ''\\}\`\\}",
   },
   {
     id: "agent-chip",

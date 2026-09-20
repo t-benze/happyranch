@@ -44,8 +44,8 @@ The identity migration validates exact shapes and empty legacy runner graphs;
 existing local-job semantics are preserved. Model/migration tests provide the
 contract; no production runner authentication, transport, or execution is implied.
 
-`task_scratch_reclamation.py` remains production-unreferenced. Its private
-`collect_revalidate_seal_consume_disposable` seam is test-only: it retains each
+`task_scratch_reclamation.py` is invoked only by the bounded pre-agent
+`run_step` hook. Its private `collect_revalidate_seal_consume_disposable` seam retains each
 bounded E1/C1/E2/C2/seal/E3/C3/E4 collector admission, compares stable typed
 lifecycle/session/PID-start and complete public/private coverage projections
 (including bucket classification/accounting and dominance, but not timestamps), and
@@ -58,8 +58,31 @@ writers or hostile same-UID swaps. Its assertion
 shapes do not establish lifecycle/liveness provenance; Git evidence and ambiguous
 identity/device evidence refuse reclamation. POSIX pathname removal does not
 guarantee survival of hostile same-UID replacement in the final check/syscall
-window. Existing dormant-engine tests retain this boundary; this cleanup adds no
-caller, scheduler activation, legacy-backlog eligibility, or live deletion.
+window. The scheduler remains a trigger/marker producer only; this cleanup adds
+no scheduler activation, legacy-backlog eligibility, or unbounded deletion.
+
+`Database.select_workspace_cleanup_reclamation_candidates` is likewise a
+read-only planning helper called only by the `run_step` hook. It first rejects supplied
+claim-count inputs other than initial `0 -> 1` before admission or SQL, then
+uses a fresh durable owner read to validate a valid supplied pair before the
+bounded marker/history,
+newer-owner, six-raw-candidate, graph, and exact-result reads. It exposes each
+read admission to the pre-agent `run_step` hook and returns `None` on every malformed,
+oversized, related-live, inconsistent, or unavailable SQL/decode observation. It neither reads config
+nor imports or invokes the reclamation consumer, writes an audit, or grants an
+action permit. The helper performs seven base SQL observations plus at most
+five exact result reads; the hook's initial config read and five fresh
+config/owner pairs make the complete admission model 23 reads. A fifth consumer
+admission at read 23 is allowed; prospective read 24 refuses before another
+load. These admissions bound later work rather than preempting an in-flight SQL
+or OS operation, and the six raw rows are never refilled after age filtering.
+Persisted ISO ordering accepts parser-valid aware forms but explicitly refuses
+the parser-selected raw hour-24 field on every supported interpreter across
+calendar and ISO-week extended/basic forms (including parser-supported
+one-character separators). The narrow boundary check follows the standard
+parser's one date/time boundary; it does not mistake an overlapping ISO-week
+minute field for hour 24, while a runtime parser's next-day normalization still
+cannot change selector ordering.
 
 ### Task-scratch report-only observations
 
@@ -104,9 +127,9 @@ residual partitions. Repositories, special entries, malformed literal parents,
 unknown, zero, incomplete or nonready coverage cannot authorize eligibility.
 
 The collectors are now observed by these report-only production callers. The
-reclamation engine remains dormant and unreferenced: observations neither seal
-an executable ledger nor authorize deletion. Any future action requires fresh
-recollection, coverage, independent review and explicit activation. Legacy,
+reclamation hook separately makes its own fresh bounded consumer admission;
+report-only observations neither seal an executable ledger nor authorize that
+action. Legacy,
 shared `/tmp` and pre-contract roots remain ineligible. Portable observations
 cannot exclude future writers or a hostile same-UID race.
 
@@ -139,7 +162,7 @@ cannot exclude future writers or a hostile same-UID race.
 - **Threads.** Founder-visible coordination and cross-team handoff conversations with per-thread recipient-set routing (THR-198): mention routing and the strict mention-led exchange are **UNCONDITIONAL** (founder ruling TASK-6027) — valid current-participant @-mentions narrow conversational REPLY wakes to exactly that set (speaker excluded), zero valid mentions broadcast to participants (there is no disabled-thread state and no routing/exchange switch, route, CLI verb, UI control, or config key: the per-thread mention-routing setting, the proposed `reply_exchange_enabled`, and the org kill switch were all removed; the shipped `mention_routing_enabled` column is inert legacy compatibility storage only — never read to alter behavior, never exposed on the wire), priority/fallback is present (frozen priority cohorts, 5-minute grace, 4-hour fail-open), and TASK_FOLLOWUP/BOOTSTRAP wakes are isolated and never mention-routed; dispatch from a thread is self-only. Threads carry composer attribution (`composed_by`, `composed_from_task_id`, `composed_from_dream_id`) — the dream marker identifies dream-originated founder threads. Specs `docs/superpowers/specs/2026-05-13-threads-design.md` and successors (broadcast-only, agent-initiated, markdown composer, task-followup, escalation surfacing, working indicator, close-out removal/resume, file attachments); impl `runtime/infrastructure/thread_store.py`, `runtime/daemon/thread_runner.py`. See [Thread Broadcast Routing](#thread-broadcast-routing), [Thread Agent-Session Resume](#thread-agent-session-resume), and [Thread Task Followup](#thread-task-followup) below for traps.
 - **Thread rename + pin (THR-209 Phase 1).** Founder-only thread-organization controls. Rename edits the durable `subject` (`POST /threads/{id}/rename`; trim, non-empty, ≤120 chars, duplicates allowed, last successful save wins); pin/unpin is durable founder-workspace presentation state stored in an additive nullable `threads.pinned_at` column (`POST /threads/{id}/pin`, strict bool). **Invariants:** both are presentation/organization controls — they never create a thread message, never send a notification, never touch participants/unread, and never change activity timestamps (`started_at`/`archived_at`); identity (`id`, URL, participants, routing, lifecycle) is immutable under rename/pin. Pinned threads rank above unpinned (Pinned section) in **open-thread views only**, ordered by immutable numeric thread ID descending (THR-10 above THR-2, never activity/lexicographic); ordinary (unpinned) order is unchanged; archived/closed views have **zero pin presentation** (one ordinary list, no pinned/unpinned split, no pin rank) while the durable pin state is retained for reopen/restore, and the status-less query/"all" merge are ordinary views too; pin state lives on the thread row, so deleting a thread removes its pin state automatically. List rows are navigation-only; Pin/Unpin remains in the thread detail header. The web optimistic cache reorders open lists under the same numeric rule immediately (before response/refetch) and archived/status-less caches never reorder — no client/server semantic divergence (TASK-5987). Audit rows `thread_renamed` / `thread_pinned` / `thread_unpinned` use the existing `audit_log.task_id` = THR-* scope convention and never appear as thread messages. Each mutation is ONE rollback-safe transaction under the org `db_lock` (`rename_thread_with_audit` / `set_thread_pinned_with_audit` in `runtime/infrastructure/database.py`): authoritative old-value read + idempotence decision + `subject`/`pinned_at` write + audit row commit atomically; on audit failure everything rolls back (no durable unaudited transition, error response). Concurrent renames are last-successful-save-wins with a truthful sequential old→new audit chain; concurrent same/opposite-state pins emit exactly the audit rows for the durable transitions (true no-ops unaudited). Spec `docs/superpowers/specs/2026-08-25-thread-rename-and-pinning-design.md`; routes `runtime/daemon/routes/threads.py`; wire adds `pinned`/`pinned_at`/`last_activity_at` to thread rows; web UI `web/src/features/threads/ThreadsPage.tsx` (Pinned section, inline rename, detail-header pin controls).
 - **Thread escalation surfacing.** When a thread-dispatched task escalates to `escalated`, the runtime injects a `task_escalated` system message into the originating thread and re-invokes the dispatching manager for a founder-facing followup — mirroring the terminal task-followup. Rendered in both web (ThreadsPage.tsx `task_escalated` case) and CLI (`thread forward`). Spec `docs/superpowers/specs/2026-06-06-thread-escalation-surfacing-design.md`; impl `runtime/orchestrator/run_step.py`, `runtime/daemon/thread_runner.py`.
-- **Tasks surface.** Org-wide work list (not a kanban) with roots-only default view, group-by segmented control (Status / Agent / Thread), severity rollup per root reflecting the worst status of its subtree (DERIVE over `parent_task_id` children — no schema change; `GET /orgs/{slug}/tasks/roots`). Bidirectional lineage inline (\u2190 supersedes / \u2192 revisits) backed by `revisit_of_task_id` + `get_direct_revisits()`. Task detail pane with connected vertical chain timeline (`walk_revisit_chain()`), blocked node naming its blocker, property rail, append activity log, and raw monospace brief with "Show full" toggle. State vocabulary: Loading (skeleton rows by group), Empty per group, Error-with-retry. Keyboard: \u2191/\u2193 move selection, Enter opens, Esc clears. Spec `docs/design-overhaul/product_lead-2026-06-17-design-overhaul-PRD-final.md` (\u00a74.3); web `web/src/features/tasks/TasksPage.tsx`, `TaskDetailPane.tsx`; route `runtime/daemon/routes/tasks.py` (`/tasks/roots`).
+- **Tasks surface.** Org-wide work list (not a kanban) with roots-only default view, group-by segmented control (Status / Agent / Thread), severity rollup per root reflecting the worst status of its subtree (DERIVE over `parent_task_id` children — no schema change; `GET /orgs/{slug}/tasks/roots`). `Waiting on you` is a separate exact-`status=escalated` roots traversal, not an inferred ordinary-page/severity-rollup count or ordinary filter projection; it task-id-deduplicates and becomes exact only after cursor exhaustion. When non-empty it renders as the FIRST ordinary-styled group inside the shared list shell (same `tasks-group` wrapper, group heading and raised rows-card as every status group) directly after the task column header and above the status groups — never a separate outer card — and it is absent (no group, heading or empty card) when empty and attention is not loading/errored. A failed attention refresh or continuation retains known rows/count with a visible error state, and continuation retry uses that stream's cursor. Its page-local Waiting controls wrap within the group at narrow widths without changing the shared Button primitive, and a non-empty escalated group may coexist with ordinary loading/error/empty states without hiding the shell or contradicting visible rows. Bidirectional lineage inline (\u2190 supersedes / \u2192 revisits) backed by `revisit_of_task_id` + `get_direct_revisits()`. Task detail pane with connected vertical chain timeline (`walk_revisit_chain()`), blocked node naming its blocker, property rail, append activity log, and raw monospace brief with "Show full" toggle. State vocabulary: Loading (skeleton rows by group), Empty per group, Error-with-retry. Keyboard: \u2191/\u2193 move selection, Enter opens, Esc clears. Spec `docs/design-overhaul/product_lead-2026-06-17-design-overhaul-PRD-final.md` (\u00a74.3); web `web/src/features/tasks/TasksPage.tsx`, `TaskDetailPane.tsx`; route `runtime/daemon/routes/tasks.py` (`/tasks/roots`).
 - **Knowledge base.** Per-org shared, durable cross-agent knowledge (rules, references, founder rulings); orgs do not share a KB. Contract `docs/agent-guides/features-and-invariants.md`; impl `runtime/infrastructure/kb_store.py`, `runtime/daemon/routes/kb.py`. See [Knowledge Base](#knowledge-base) below for traps.
 - **KB view tracking.** Agent-CLI KB entry read counting scoped to agent consults only (founder ruling THR-009). Distinguished from web reads via `X-HappyRanch-Surface: cli` request header (a source label, not auth). Read surface is CLI-only: `happyranch kb stats` renders a table ordered by view count; no web surface. Spec `docs/superpowers/specs/2026-06-10-kb-view-tracking-design.md`; impl `cli/commands/kb.py`, `runtime/daemon/routes/kb.py`, `runtime/infrastructure/database.py` (`kb_views` table).
 - **Shared artifacts.** Per-org opaque file blobs produced by one agent and visible to all agents in the org. Impl `runtime/infrastructure/artifact_store.py`, `runtime/daemon/routes/artifacts.py`; CLI `happyranch artifacts {put,list,get}`. See [Shared Artifacts](#shared-artifacts) below for traps.

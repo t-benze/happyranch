@@ -344,6 +344,22 @@ before any `ZoneInfo()` call. (Pre-TASK-976 an omitted value defaulted to the
 literal `UTC`; orgs relying on that implicit default now schedule on
 machine-local time — host-local night, as intended.)
 
+## Org Config: Workspace Cleanup
+
+`workspace_cleanup.enabled` is a boolean scheduler switch that defaults to
+`true`; setting it to `false` disables the daemon-managed cleanup scheduler.
+`workspace_cleanup.reclamation_actions_enabled` is separately strictly boolean
+and defaults to `false`. When true, the bounded pre-agent reclamation hook may
+select and revalidate finite canonical targets before invoking the existing
+consumer; it acts only on a third-or-later cleanup ordinal whose preclaim owner
+is assigned to a registered in-memory `TeamsRegistry` agent and reconciles to
+the invocation's initial successful claim (the first two runs stay
+report-only), under one shared one-second deadline and at most 23 read/load
+admissions with at most five best-effort consumer calls and no refill or
+recovery. `false` prevents those action admissions and affects later admissions
+only; it cannot revoke an already admitted call. Malformed values retain the
+shared loader's existing error behavior.
+
 ## Agent Configuration: Single Source of Truth (THR-095)
 
 **Founder-ratified invariant (THR-095 option B):** Every piece of agent

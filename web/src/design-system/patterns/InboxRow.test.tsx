@@ -1,6 +1,35 @@
-import { describe, expect, test } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, expect, test, vi } from 'vitest';
+import { createEvent, fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { InboxRow } from './InboxRow';
+
+describe.each(['default', 'thread'] as const)('InboxRow — %s navigation', (layout) => {
+  test('keeps a native link, plain-click/Enter selection and no pin control', async () => {
+    const onSelect = vi.fn();
+    render(<InboxRow threadId="THR-10" subject="Navigate" status="open" needsYou={false} active={false} layout={layout} href="/threads/THR-10" onSelect={onSelect} />);
+    const row = screen.getByRole('link', { name: /Navigate/ });
+    expect(row).toHaveAttribute('href', '/threads/THR-10');
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    await userEvent.click(row);
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    row.focus();
+    expect(row).toHaveFocus();
+    await userEvent.keyboard('{Enter}');
+    expect(onSelect).toHaveBeenCalledTimes(2);
+  });
+
+  test('leaves modified and non-primary clicks to native anchor behavior', () => {
+    const onSelect = vi.fn();
+    render(<InboxRow threadId="THR-10" subject="Navigate" status="open" needsYou={false} active={false} layout={layout} href="#thread-10" onSelect={onSelect} />);
+    const row = screen.getByRole('link');
+    for (const init of [{ metaKey: true }, { ctrlKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }, { button: 2 }]) {
+      const event = createEvent.click(row, init);
+      fireEvent(row, event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+});
 
 /**
  * THREADS-05 — the inbox row maps the honest, data-derivable subset of the

@@ -8,10 +8,10 @@
  * numeric thread ID desc (THR-209 msg 9 correction: never activity, never
  * lexicographic; including under the active filter), archived/closed views
  * with zero pin presentation (no section, no rank), the 'all' merged bucket
- * with no pin leak, direct row + header controls, and keyboard/accessibility
+ * with no pin leak, navigation-only rows + detail controls, and keyboard/accessibility
  * assertions.
  */
-import { act, screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
@@ -203,6 +203,49 @@ afterEach(() => {
 /* ------------------------------------------------------------------ */
 
 describe('THR-209 — Pinned section', () => {
+  test.each([
+    ['Open', true, 'click'],
+    ['Open', false, 'enter'],
+    ['Archived', true, 'enter'],
+    ['Archived', false, 'click'],
+    ['All', true, 'click'],
+    ['All', false, 'enter'],
+  ] as const)('%s rows navigate without pin controls or mutations (pinned=%s, %s)', async (bucket, pinned, action) => {
+    const state = [
+      mkThread('THR-10', 'Open pinned', { pinned: true, participants: ['agent_a', 'agent_b'] }),
+      mkThread('THR-2', 'Open ordinary', { participants: ['agent_a', 'agent_b'] }),
+      mkThread('THR-9', 'Archived pinned', { status: 'archived', pinned: true, participants: ['agent_a', 'agent_b'] }),
+      mkThread('THR-1', 'Archived ordinary', { status: 'archived', participants: ['agent_a', 'agent_b'] }),
+    ];
+    const target = state.find((thread) => thread.pinned === pinned && thread.status === (bucket === 'Archived' ? 'archived' : 'open'))!;
+    stubList(state);
+    stubDetail(target);
+    const postPin = vi.fn(() => HttpResponse.json({}));
+    server.use(http.post(`/api/v1/orgs/${SLUG}/threads/:id/pin`, postPin));
+    mountAt(`/orgs/${SLUG}/threads`);
+    await screen.findByRole('link', { name: /Open pinned/ });
+    if (bucket !== 'Open') await userEvent.click(screen.getByRole('tab', { name: new RegExp(bucket) }));
+    if (bucket === 'All') await screen.findByRole('link', { name: /Archived ordinary/ });
+    const row = await screen.findByRole('link', { name: new RegExp(target.subject) });
+    for (const thread of state.filter((thread) => bucket === 'All' || thread.status === (bucket === 'Open' ? 'open' : 'archived'))) {
+      const link = screen.getByRole('link', { name: new RegExp(thread.subject) });
+      expect(within(link).queryByRole('button')).not.toBeInTheDocument();
+      expect(within(link).getByText('agent_a · agent_b')).toBeInTheDocument();
+    }
+    expect(screen.queryByRole('button', { name: /pin/i })).not.toBeInTheDocument();
+    expect(row).toHaveAttribute('href', `/orgs/${SLUG}/threads/${target.thread_id}`);
+    if (action === 'enter') {
+      row.focus();
+      expect(row).toHaveFocus();
+      await userEvent.keyboard('{Enter}');
+    } else {
+      await userEvent.click(row);
+    }
+    await screen.findByRole('heading', { name: target.subject });
+    expect(screen.getByRole('button', { name: pinned ? 'Unpin' : 'Pin' })).toBeInTheDocument();
+    expect(postPin).not.toHaveBeenCalled();
+  });
+
   test('pinned threads render in a Pinned section above ordinary threads', async () => {
     stubList([
       mkThread('THR-A', 'Pinned one', { pinned: true, pinned_at: '2026-05-20T00:00:00Z' }),
@@ -543,7 +586,8 @@ describe('THR-209 — optimistic pin reorders the open list under the server rul
       releasePost = res;
     });
     server.use(
-      http.post(`/api/v1/orgs/${SLUG}/threads/THR-10/pin`, async () => {
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-10/pin`, async ({ request }) => {
+        expect(await request.json()).toEqual({ pinned: true });
         await gate;
         state[1].pinned = true;
         state[1].pinned_at = '2026-05-21T00:00:00Z';
@@ -566,12 +610,13 @@ describe('THR-209 — optimistic pin reorders the open list under the server rul
       expect(data?.threads.map((thread) => thread.thread_id)).toEqual(['THR-10', 'THR-2', 'THR-1']);
       expect(data?.threads[0].pinned).toBe(true);
     });
+    expect(screen.getByRole('button', { name: 'Unpin' })).toBeDisabled();
 
     // Release the response — success + refetch reconcile to the same order.
     await act(async () => {
       releasePost();
     });
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeEnabled());
     await userEvent.click(screen.getByRole('link', { name: /All threads/i }));
     await waitFor(() => expect(rowSubjects()).toEqual(expect.arrayContaining([
       expect.stringContaining('Ten unpinned'),
@@ -601,7 +646,8 @@ describe('THR-209 — optimistic pin reorders the open list under the server rul
       releasePost = res;
     });
     server.use(
-      http.post(`/api/v1/orgs/${SLUG}/threads/THR-2/pin`, async () => {
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-2/pin`, async ({ request }) => {
+        expect(await request.json()).toEqual({ pinned: false });
         await gate;
         state[1].pinned = false;
         state[1].pinned_at = null;
@@ -621,11 +667,12 @@ describe('THR-209 — optimistic pin reorders the open list under the server rul
       expect(data?.threads.map((thread) => thread.thread_id)).toEqual(['THR-10', 'THR-1', 'THR-2']);
       expect(data?.threads[2].pinned).toBe(false);
     });
+    expect(screen.getByRole('button', { name: 'Pin' })).toBeDisabled();
 
     await act(async () => {
       releasePost();
     });
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeEnabled());
     await userEvent.click(screen.getByRole('link', { name: /All threads/i }));
     await waitFor(() => expect(rowSubjects()).toHaveLength(3));
     expect(rowSubjects().map((s) => s.includes('Two pinned') ? 'Two' : s.includes('Ten') ? 'Ten' : s.includes('One') ? 'One' : '?')).toEqual(['Ten', 'One', 'Two']);
@@ -789,7 +836,7 @@ describe('THR-209 — inline rename', () => {
 });
 
 /* ------------------------------------------------------------------ */
-/*  Pin from detail header + overflow                                  */
+/*  Pin from detail header                                             */
 /* ------------------------------------------------------------------ */
 
 describe('THR-209 — pin from detail', () => {

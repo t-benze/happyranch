@@ -60,12 +60,6 @@ interface InboxRowProps {
    * `onSelect` and fall through to default anchor behaviour.
    */
   onSelect?: () => void;
-  /**
-   * THR-209: optional sibling control (e.g. a pin toggle) rendered beside
-   * the row anchor. A sibling, never nested inside the `<a>` — interactive
-   * inside interactive is invalid HTML and breaks assistive tech.
-   */
-  pinControl?: ReactNode;
   participants?: string[];
 }
 
@@ -84,7 +78,6 @@ export function InboxRow({
   layout = 'default',
   href,
   onSelect,
-  pinControl,
   participants = [],
 }: InboxRowProps): JSX.Element {
   const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
@@ -162,14 +155,7 @@ export function InboxRow({
         </div>
       </a>
     );
-    return pinControl ? (
-      <div className="relative">
-        <div className="min-w-0 pr-10">{rowEl}</div>
-        <div className="absolute right-2 top-2">{pinControl}</div>
-      </div>
-    ) : (
-      rowEl
-    );
+    return rowEl;
   }
 
   const statusLabel = status === 'open' ? 'active' : 'done';
@@ -227,12 +213,5 @@ export function InboxRow({
     </a>
   );
 
-  return pinControl ? (
-    <div className="flex items-center gap-1">
-      <div className="min-w-0 flex-1">{rowEl}</div>
-      {pinControl}
-    </div>
-  ) : (
-    rowEl
-  );
+  return rowEl;
 }

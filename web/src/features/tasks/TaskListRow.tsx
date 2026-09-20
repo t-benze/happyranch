@@ -29,25 +29,12 @@ export interface TaskListRoutes {
   detail(taskId: string): string;
 }
 
-/**
- * Shared flex column widths. The header row and every data row use the same
- * tokens so the columns line up. Standard Tailwind widths only — the feature
- * surface forbids arbitrary values (`tailwindcss/no-arbitrary-value`).
- *
- * THR-046 msg-11: STATUS and TASK are now separate columns (the old TASK
- * column contained the status pill; now STATUS holds the pill and TASK holds
- * the monospace task-id badge).
- */
+/** The named Tasks grid is shared by the header and every desktop row. */
 const COL = {
-  status: 'w-28 shrink-0',
-  task: 'w-24 shrink-0',
-  title: 'min-w-0 flex-1',
-  agent: 'w-36 shrink-0',
-  thread: 'w-24 shrink-0',
-  updated: 'w-14 shrink-0 text-right',
+  status: 'min-w-0', task: 'min-w-0', title: 'min-w-0',
+  agent: 'min-w-0', thread: 'min-w-0', updated: 'min-w-0 text-right',
 } as const;
-
-const ROW_FLEX = 'flex items-center gap-3';
+const ROW_FLEX = 'tasks-grid items-center';
 
 function relativeAge(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
@@ -80,8 +67,8 @@ export function severityRollupStatus(task: TaskRecord): TaskStatus {
  */
 const ROLLUP_COLOR: Record<TaskStatus, string> = {
   pending: 'text-status-archiving',
-  in_progress: 'text-status-open',
-  escalated: 'text-status-escalated',
+  in_progress: 'text-info',
+  escalated: 'text-attention-text',
   blocked: 'text-status-escalated',
   completed: 'text-status-open',
   failed: 'text-status-abandoned',
@@ -160,7 +147,7 @@ function agentChipRole(name: string): 'worker' | 'founder' {
 export function TaskListColumnHeader(): JSX.Element {
   return (
     <div
-      className={`${ROW_FLEX} text-text-muted border-border-default bg-surface-page rounded-xl border px-3 py-2.5 text-xs font-medium tracking-wide`}
+      className={`${ROW_FLEX} text-text-muted border-border-default bg-surface-page tasks-column-header rounded-xl border shadow-sm font-semibold tracking-wide`}
     >
       <div className={COL.status}>STATUS</div>
       <div className={COL.task}>TASK</div>
@@ -185,23 +172,23 @@ export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Ele
   const revisits = directRevisits(task);
 
   return (
-    <div className="border-border-default border-b last:border-b-0">
+    <div className={`border-border-default border-b ${task.status === 'superseded' ? 'opacity-60' : ''}`}>
       <Link
         to={to}
-        className={`${ROW_FLEX} hover:bg-surface-hover rounded-md px-2 py-2.5 text-sm no-underline transition-colors`}
+        className={`${ROW_FLEX} hover:bg-surface-hover tasks-row rounded-md text-sm no-underline transition-colors`}
       >
         {/* STATUS — compact primary task status only, whitespace-nowrap to prevent wrapping */}
         <div className={`${COL.status} whitespace-nowrap`}>
-          <StatusBadge status={task.status} />
+          <StatusBadge status={task.status} presentation="tasks" />
         </div>
         {/* TASK — monospace task-id badge */}
-        <div className={`${COL.task} whitespace-nowrap`}>
+        <div className={`${COL.task} tasks-id truncate [&>span]:text-text-muted`} title={task.task_id}>
           <IdBadge id={task.task_id} kind="task" />
         </div>
         {/* TITLE — headline text + optional second-line context (waiting qualifier
             and/or worst-child severity rollup), both clipped to the title column */}
         <div className={`${COL.title} flex flex-col items-start justify-center gap-0.5 overflow-hidden`}>
-          <span className="text-text-primary w-full min-w-0 truncate">{briefHeadline(task.brief)}</span>
+          <span className="text-text-primary text-task-title w-full min-w-0 truncate font-semibold" title={task.brief}>{briefHeadline(task.brief)}</span>
           {(waitingContext(task.status, task.block_kind) || rollup !== task.status) && (
             <div className="flex max-w-full items-center gap-1.5 overflow-hidden text-xs whitespace-nowrap">
               {waitingContext(task.status, task.block_kind) && (
@@ -219,7 +206,7 @@ export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Ele
           )}
         </div>
         {/* AGENT — AgentChip or em-dash fallback */}
-        <div className={`${COL.agent} truncate`}>
+        <div className={`${COL.agent} truncate`} title={agent ?? undefined}>
           {agent ? (
             <AgentChip name={agent} role={agentChipRole(agent)} />
           ) : (
@@ -227,15 +214,15 @@ export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Ele
           )}
         </div>
         {/* THREAD — IdBadge or em-dash fallback */}
-        <div className={`${COL.thread} truncate`}>
+        <div className={`${COL.thread} tasks-id truncate`} title={thread ?? undefined}>
           {thread ? (
-            <IdBadge id={thread} kind="thread" />
+            <span className="[&>span]:text-info"><IdBadge id={thread} kind="thread" /></span>
           ) : (
             <span className="text-text-muted">—</span>
           )}
         </div>
         {/* UPDATED — relative age */}
-        <div className={`${COL.updated} text-text-muted tabular-nums`}>
+        <div className={`${COL.updated} text-task-meta font-mono text-text-muted whitespace-nowrap tabular-nums`}>
           {relativeAge(task.updated_at)}
         </div>
       </Link>

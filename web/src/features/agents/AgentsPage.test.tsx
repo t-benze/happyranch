@@ -1811,6 +1811,163 @@ describe('AgentDetailPane — recent jobs cross-link', () => {
   });
 });
 
+describe('AgentDetailPane — cleanup activity', () => {
+  test('renders an agent-scoped task link, distinct statuses, and an unavailable summary', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_head/cleanup-activity`, () =>
+        HttpResponse.json({ activities: [{
+          task_id: 'TASK-CLEANUP-6', status: 'failed', result_status: 'blocked',
+          created_at: '2026-05-20T08:00:00Z', output_summary: '   ',
+        }] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+
+    await waitFor(() => expect(screen.getByText(/Cleanup activity/i)).toBeInTheDocument());
+    const link = await screen.findByRole('link', { name: 'TASK-CLEANUP-6' });
+    expect(link).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-CLEANUP-6`);
+    expect(screen.getByText(/Task: failed.*Result: blocked/)).toBeInTheDocument();
+    expect(screen.getByText('Summary unavailable')).toBeInTheDocument();
+  });
+
+  test('renders a populated hostile, long summary literally after loading', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+    const summary = '<cleanup> ' + 'bounded evidence '.repeat(40);
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_head/cleanup-activity`, async () => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return HttpResponse.json({ activities: [{
+          task_id: 'TASK-CLEANUP-LONG', status: 'failed', result_status: 'blocked',
+          created_at: '2026-05-20T08:00:00Z', output_summary: summary,
+        }] });
+      }),
+    );
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+
+    expect(await screen.findByText(/Loading cleanup activity/i)).toBeInTheDocument();
+    expect(await screen.findByText(summary.trim())).toBeInTheDocument();
+    expect(screen.queryByText('cleanup', { selector: 'cleanup' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'TASK-CLEANUP-LONG' }))
+      .toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-CLEANUP-LONG`);
+  });
+
+  test('shows an error and retries the cleanup activity request', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+    let attempts = 0;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_head/cleanup-activity`, () => {
+        attempts += 1;
+        return attempts === 1
+          ? HttpResponse.json({ detail: 'unavailable' }, { status: 500 })
+          : HttpResponse.json({ activities: [] });
+      }),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+
+    await screen.findByText('Failed to load cleanup activity.');
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await screen.findByText('No cleanup activity for this agent.');
+    expect(attempts).toBe(2);
+  });
+
+  test('retained pane ignores a late previous-agent response before Enter activates the current task', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+    let resolvePrevious!: () => void;
+    let observePreviousRequest!: () => void;
+    const previous = new Promise<void>((resolve) => { resolvePrevious = resolve; });
+    const previousRequest = new Promise<void>((resolve) => { observePreviousRequest = resolve; });
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_head/cleanup-activity`, async () => {
+        observePreviousRequest();
+        await previous;
+        return HttpResponse.json({ activities: [{ task_id: 'TASK-OLD', status: 'failed', result_status: null, created_at: '2026-05-20T08:00:00Z', output_summary: 'old owner' }] });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/agents/support_agent/cleanup-activity`, () =>
+        HttpResponse.json({ activities: [{ task_id: 'TASK-CURRENT', status: 'completed', result_status: 'completed', created_at: '2026-05-21T08:00:00Z', output_summary: 'current owner' }] }),
+      ),
+    );
+    const user = userEvent.setup();
+    const { client } = mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_head`]);
+    await screen.findByText(/Loading cleanup activity/i);
+    await previousRequest;
+    await user.click(await screen.findByRole('button', { name: /support_agent/i }));
+    const task = await screen.findByRole('link', { name: 'TASK-CURRENT' });
+    resolvePrevious();
+    await act(async () => { await previous; });
+    await waitFor(() => {
+      const oldQuery = client.getQueryCache().find({ queryKey: ['cleanup-activity', SLUG, 'engineering_head'] });
+      expect(oldQuery?.state.fetchStatus).toBe('idle');
+      expect(oldQuery?.state.status).toBe('success');
+      expect(oldQuery?.state.data).toEqual(expect.objectContaining({ activities: [expect.objectContaining({ task_id: 'TASK-OLD' })] }));
+    });
+    expect(screen.queryByText('old owner')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'TASK-CURRENT' })).toBeInTheDocument();
+    task.focus();
+    await user.keyboard('{Enter}');
+    expect(await screen.findByRole('heading', { name: 'TASK-CURRENT' })).toBeInTheDocument();
+  });
+
+  test('retained pane ignores a late same-agent response after an org switch', async () => {
+    const OTHER = 'other-org';
+    stubBaseHandlers();
+    stubDetailHandlers();
+    let resolveOld!: () => void;
+    let observeOldRequest!: () => void;
+    const old = new Promise<void>((resolve) => { resolveOld = resolve; });
+    const oldRequest = new Promise<void>((resolve) => { observeOldRequest = resolve; });
+    const otherAgents = { agents: [AGENTS_PAYLOAD.agents[0]] };
+    server.use(
+      http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }, { slug: OTHER, root: '/y' }] })),
+      http.get(`/api/v1/orgs/${OTHER}/agents`, () => HttpResponse.json(otherAgents)),
+      http.get(`/api/v1/orgs/${OTHER}/settings`, () => HttpResponse.json({})),
+      http.get(`/api/v1/orgs/${OTHER}/teams`, () => HttpResponse.json({ teams: [] })),
+      http.get(`/api/v1/orgs/${OTHER}/tasks`, () => HttpResponse.json({ tasks: [] })),
+      http.get(`/api/v1/orgs/${OTHER}/jobs/`, () => HttpResponse.json({ jobs: [] })),
+      http.get(`/api/v1/orgs/${OTHER}/agents/engineering_head/memory/entries/`, () => HttpResponse.json({ entries: [] })),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_head/cleanup-activity`, async () => {
+        observeOldRequest();
+        await old;
+        return HttpResponse.json({ activities: [{ task_id: 'TASK-OLD-ORG', status: 'failed', result_status: null, created_at: '2026-05-20T08:00:00Z', output_summary: 'old org' }] });
+      }),
+      http.get(`/api/v1/orgs/${OTHER}/agents/engineering_head/cleanup-activity`, () =>
+        HttpResponse.json({ activities: [{ task_id: 'TASK-NEW-ORG', status: 'completed', result_status: 'completed', created_at: '2026-05-21T08:00:00Z', output_summary: 'new org' }] }),
+      ),
+    );
+    const user = userEvent.setup();
+    const { client } = mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_head`]);
+    await screen.findByText(/Loading cleanup activity/i);
+    await oldRequest;
+    // Radix Select consults this browser API during its real pointer path;
+    // JSDOM omits it, so provide the harmless false response on this trigger.
+    const orgSwitcher = screen.getByLabelText('Active org');
+    Object.defineProperty(orgSwitcher, 'hasPointerCapture', { value: () => false });
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: () => {} });
+    await user.click(orgSwitcher);
+    await user.click(await screen.findByRole('option', { name: OTHER }));
+    const task = await screen.findByRole('link', { name: 'TASK-NEW-ORG' });
+    expect(task).toHaveAttribute('href', `/orgs/${OTHER}/tasks/TASK-NEW-ORG`);
+    resolveOld();
+    await act(async () => { await old; });
+    await waitFor(() => {
+      const oldQuery = client.getQueryCache().find({ queryKey: ['cleanup-activity', SLUG, 'engineering_head'] });
+      expect(oldQuery?.state.fetchStatus).toBe('idle');
+      expect(oldQuery?.state.status).toBe('success');
+      expect(oldQuery?.state.data).toEqual(expect.objectContaining({ activities: [expect.objectContaining({ task_id: 'TASK-OLD-ORG' })] }));
+    });
+    expect(screen.queryByText('old org')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'TASK-NEW-ORG' })).toBeInTheDocument();
+    task.focus();
+    await user.keyboard('{Enter}');
+    expect(await screen.findByRole('heading', { name: 'TASK-NEW-ORG' })).toBeInTheDocument();
+  });
+});
+
 describe('AgentDetailPane — Start Thread Reflection affordance (THR-106)', () => {
   test('Reflection button appears in Start Thread dialog for a single-agent start', async () => {
     stubBaseHandlers();

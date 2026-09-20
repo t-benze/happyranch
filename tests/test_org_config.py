@@ -20,6 +20,63 @@ def test_missing_file_returns_empty_config(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = load_org_config(runtime)
     assert cfg.session_timeout_seconds is None
+    assert cfg.workspace_cleanup_reclamation_actions_enabled is False
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "",
+        "workspace_cleanup: {}\n",
+        "workspace_cleanup:\n",
+        "workspace_cleanup:\n  enabled: false\n",
+    ],
+)
+def test_workspace_cleanup_reclamation_actions_default_false(
+    tmp_path: Path, body: str,
+) -> None:
+    """An absent block/key, a null block, and an empty block are reserved and
+    disabled (the null block is not a mapping error)."""
+    runtime = _runtime(tmp_path)
+    _write_config(runtime, body)
+
+    assert load_org_config(runtime).workspace_cleanup_reclamation_actions_enabled is False
+
+
+@pytest.mark.parametrize("value", [False, True])
+def test_workspace_cleanup_reclamation_actions_accepts_booleans(
+    tmp_path: Path, value: bool,
+) -> None:
+    runtime = _runtime(tmp_path)
+    _write_config(runtime, f"workspace_cleanup:\n  reclamation_actions_enabled: {value}\n")
+
+    assert load_org_config(runtime).workspace_cleanup_reclamation_actions_enabled is value
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["null", "'false'", "'true'", "0", "1", "1.5", "[]", "{}"],
+)
+def test_workspace_cleanup_reclamation_actions_rejects_non_booleans(
+    tmp_path: Path, value: str,
+) -> None:
+    runtime = _runtime(tmp_path)
+    _write_config(runtime, f"workspace_cleanup:\n  reclamation_actions_enabled: {value}\n")
+
+    with pytest.raises(OrgConfigError, match="workspace_cleanup\\.reclamation_actions_enabled"):
+        load_org_config(runtime)
+
+
+def test_workspace_cleanup_flags_remain_independent(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    _write_config(runtime, """workspace_cleanup:
+  enabled: false
+  reclamation_actions_enabled: true
+""")
+
+    cfg = load_org_config(runtime)
+    assert cfg.workspace_cleanup_enabled is False
+    assert cfg.workspace_cleanup_reclamation_actions_enabled is True
 
 
 def test_loads_session_timeout(tmp_path: Path) -> None:

@@ -1,15 +1,24 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { Link, MemoryRouter } from 'react-router-dom';
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { Link, MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
 import * as api from '@/lib/api';
+import { __resetTokenCacheForTests } from '@/lib/auth';
+import { useResolveEscalation } from '@/hooks/tasks';
 import type { SSEOptions } from '@/lib/api';
 import type { ActiveChainResponse, JobRecord, TaskEvent, TaskRecord } from '@/lib/api/types';
+
+beforeEach(() => {
+  server.use(
+    http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] })),
+    http.get('/api/v1/orgs/:slug/dashboard/summary', () => HttpResponse.json({ org_age_days: 1 })),
+  );
+});
 
 const SLUG = 'hk-macau-tourism';
 
@@ -79,6 +88,361 @@ const JOB: JobRecord = {
 };
 
 describe('TasksPage — read path (roots endpoint)', () => {
+  test('uses a non-exact count until every status=escalated page is exhausted', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const firstPage = Array.from({ length: 50 }, (_, index) => rootTask({
+      task_id: `TASK-ESC-${index + 11}`,
+      brief: `Escalation ${index + 11}`,
+      status: 'escalated',
+      severity_rollup: 'escalated',
+    }));
+    const finalPage = Array.from({ length: 10 }, (_, index) => rootTask({
+      task_id: `TASK-ESC-${index + 1}`,
+      brief: `Escalation ${index + 1}`,
+      status: 'escalated',
+      severity_rollup: 'escalated',
+    }));
+    const attentionRequests: Record<string, string>[] = [];
+    server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+      const params = Object.fromEntries(new URL(request.url).searchParams);
+      if (params.status !== 'escalated') return HttpResponse.json({ tasks: [], next_cursor: null });
+      attentionRequests.push(params);
+      return HttpResponse.json(params.before
+        ? { tasks: finalPage, next_cursor: null }
+        : { tasks: firstPage, next_cursor: 'TASK-ESC-11' });
+    }));
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+
+    expect(await screen.findByText('50+ waiting on you')).toBeInTheDocument();
+    expect(screen.queryByText('50 waiting on you')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Load more waiting-on-you tasks' }));
+    expect(await screen.findByText('60 waiting on you')).toBeInTheDocument();
+    expect(attentionRequests).toEqual([
+      { status: 'escalated', limit: '50' },
+      { status: 'escalated', limit: '50', before: 'TASK-ESC-11' },
+    ]);
+  });
+
+  test('deduplicates an escalated root that occurs in both traversals', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const shared = rootTask({
+      task_id: 'TASK-SHARED-ESC', brief: 'Shared escalation', status: 'escalated', severity_rollup: 'escalated',
+    });
+    server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) =>
+      HttpResponse.json(new URL(request.url).searchParams.get('status') === 'escalated'
+        ? { tasks: [shared], next_cursor: null }
+        : { tasks: [shared, rootTask({ task_id: 'TASK-ORDINARY', brief: 'Ordinary root' })], next_cursor: null }),
+    ));
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+
+    expect(await screen.findByText('Shared escalation')).toBeInTheDocument();
+    expect(screen.getAllByText('Shared escalation')).toHaveLength(1);
+    expect(screen.getByText('Ordinary root')).toBeInTheDocument();
+  });
+
+  test('keeps ordinary results usable when the attention traversal fails and retries independently', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    let attentionAttempts = 0;
+    const escalated = rootTask({
+      task_id: 'TASK-RECOVERED-ESC', brief: 'Recovered escalation', status: 'escalated', severity_rollup: 'escalated',
+    });
+    server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+      if (new URL(request.url).searchParams.get('status') !== 'escalated') {
+        return HttpResponse.json({ tasks: [rootTask({ task_id: 'TASK-ORDINARY', brief: 'Ordinary remains visible' })], next_cursor: null });
+      }
+      attentionAttempts += 1;
+      return attentionAttempts === 1
+        ? new HttpResponse(null, { status: 500 })
+        : HttpResponse.json({ tasks: [escalated], next_cursor: null });
+    }));
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+
+    expect(await screen.findByText('Ordinary remains visible')).toBeInTheDocument();
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not load waiting-on-you tasks');
+    await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Recovered escalation')).toBeInTheDocument();
+    expect(attentionAttempts).toBe(2);
+  });
+
+  test('C08 resolves through the mounted provider then refetches both streams into the final waiting rows', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    let resolved = false;
+    const oldEscalation = rootTask({
+      task_id: 'TASK-RESOLVED-ESC', brief: 'Escalation now resolved', status: 'escalated', severity_rollup: 'escalated',
+    });
+    const promotedRoot = rootTask({
+      task_id: 'TASK-PROMOTED-ESC', brief: 'New escalation after refetch', status: 'pending', severity_rollup: 'pending',
+    });
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+        const attention = new URL(request.url).searchParams.get('status') === 'escalated';
+        if (!resolved) return HttpResponse.json({ tasks: attention ? [oldEscalation] : [oldEscalation, promotedRoot], next_cursor: null });
+        return HttpResponse.json({
+          tasks: attention
+            ? [{ ...promotedRoot, status: 'escalated', severity_rollup: 'escalated' }]
+            : [{ ...oldEscalation, status: 'resolved', severity_rollup: 'resolved' }, { ...promotedRoot, status: 'escalated', severity_rollup: 'escalated' }],
+          next_cursor: null,
+        });
+      }),
+      http.post(`/api/v1/orgs/${SLUG}/tasks/TASK-RESOLVED-ESC/resolve-escalation`, () => {
+        resolved = true;
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+    function ResolveButton() {
+      const resolve = useResolveEscalation('TASK-RESOLVED-ESC');
+      return <button onClick={() => void resolve.mutateAsync({ decision: 'continue', rationale: 'Founder resolution' })}>Resolve waiting task</button>;
+    }
+    const queryClient = makeQueryClient();
+    render(<MemoryRouter initialEntries={[`/orgs/${SLUG}/tasks`]}><AppProvider client={queryClient}>
+      <Routes><Route path="/orgs/:slug/tasks" element={<ResolveButton />} /></Routes><AppRoutes />
+    </AppProvider></MemoryRouter>);
+    await screen.findByText('Escalation now resolved');
+    expect(screen.getAllByText('Escalation now resolved')).toHaveLength(1);
+    await userEvent.click(screen.getByRole('button', { name: 'Resolve waiting task' }));
+    await screen.findByText('New escalation after refetch');
+    const waiting = screen.getByRole('heading', { name: 'Waiting on you' }).closest('.tasks-group') as HTMLElement;
+    expect(within(waiting).queryByText('Escalation now resolved')).not.toBeInTheDocument();
+    expect(within(waiting).getByText('New escalation after refetch')).toBeInTheDocument();
+    expect(screen.getAllByText('New escalation after refetch')).toHaveLength(1);
+    expect(screen.getByText('1 waiting on you')).toBeInTheDocument();
+    await queryClient.cancelQueries();
+    queryClient.clear();
+  });
+
+  test('does not render a late attention response from a prior org', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    let releaseOld!: () => void;
+    const oldAttention = new Promise<void>((resolve) => { releaseOld = resolve; });
+    const oldEscalation = rootTask({
+      task_id: 'TASK-ORG-A-ESC', brief: 'Old org escalation', status: 'escalated', severity_rollup: 'escalated',
+    });
+    const newEscalation = rootTask({
+      task_id: 'TASK-ORG-B-ESC', brief: 'Current org escalation', status: 'escalated', severity_rollup: 'escalated',
+    });
+    server.use(http.get('/api/v1/orgs/:slug/tasks/roots', async ({ request, params }) => {
+      const status = new URL(request.url).searchParams.get('status');
+      if (status !== 'escalated') return HttpResponse.json({ tasks: [], next_cursor: null });
+      if (params.slug === 'org-a') {
+        await oldAttention;
+        return HttpResponse.json({ tasks: [oldEscalation], next_cursor: null });
+      }
+      return HttpResponse.json({ tasks: [newEscalation], next_cursor: null });
+    }));
+    const queryClient = makeQueryClient();
+    render(
+      <MemoryRouter initialEntries={['/orgs/org-a/tasks']}>
+        <AppProvider client={queryClient}>
+          <Link to="/orgs/org-b/tasks">Go org b</Link><AppRoutes />
+        </AppProvider>
+      </MemoryRouter>,
+    );
+
+    await userEvent.click(screen.getByRole('link', { name: 'Go org b' }));
+    expect(await screen.findByText('Current org escalation')).toBeInTheDocument();
+    releaseOld();
+    await waitFor(() => expect(screen.queryByText('Old org escalation')).not.toBeInTheDocument());
+    expect(screen.getByText('Current org escalation')).toBeInTheDocument();
+    await queryClient.cancelQueries();
+    queryClient.clear();
+  });
+
+  test('settles both old-org streams before keeping only the filtered current-org rows', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    let releaseOldOrdinary!: () => void;
+    let releaseOldAttention!: () => void;
+    const oldOrdinary = new Promise<void>((resolve) => { releaseOldOrdinary = resolve; });
+    const oldAttention = new Promise<void>((resolve) => { releaseOldAttention = resolve; });
+    const requests: { slug: string; params: Record<string, string>; settled: boolean }[] = [];
+    const oldRoot = rootTask({ task_id: 'TASK-ORG-A', brief: 'Old org ordinary root' });
+    const oldEscalation = rootTask({ task_id: 'TASK-ORG-A-ESC', brief: 'Old org escalation', status: 'escalated', severity_rollup: 'escalated' });
+    const currentRoot = rootTask({ task_id: 'TASK-ORG-B', brief: 'Current org ordinary root' });
+    const currentFiltered = rootTask({ task_id: 'TASK-ORG-B-COMPLETE', brief: 'Current org filtered root', status: 'completed', severity_rollup: 'completed' });
+    const currentEscalation = rootTask({ task_id: 'TASK-ORG-B-ESC', brief: 'Current org escalation', status: 'escalated', severity_rollup: 'escalated' });
+    server.use(http.get('/api/v1/orgs/:slug/tasks/roots', async ({ request, params }) => {
+      const url = new URL(request.url);
+      const status = url.searchParams.get('status');
+      const receipt = { slug: String(params.slug), params: Object.fromEntries(url.searchParams), settled: false };
+      requests.push(receipt);
+      if (params.slug === 'org-a') await (status === 'escalated' ? oldAttention : oldOrdinary);
+      receipt.settled = true;
+      if (params.slug === 'org-a') return HttpResponse.json({ tasks: status === 'escalated' ? [oldEscalation] : [oldRoot], next_cursor: null });
+      if (status === 'escalated') return HttpResponse.json({ tasks: [currentEscalation], next_cursor: null });
+      return HttpResponse.json({ tasks: status === 'completed' ? [currentFiltered] : [currentRoot], next_cursor: null });
+    }));
+    const interceptedFetch = globalThis.fetch;
+    let releaseBodies!: () => void;
+    const bodyGate = new Promise<void>((resolve) => { releaseBodies = resolve; });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (...args) => {
+      const response = await interceptedFetch(...args);
+      if (String(args[0]).includes('/orgs/org-a/tasks/roots')) {
+        const originalText = response.text.bind(response);
+        response.text = async () => { await bodyGate; return originalText(); };
+      }
+      return response;
+    });
+    const queryClient = makeQueryClient();
+    render(<MemoryRouter initialEntries={['/orgs/org-a/tasks']}><AppProvider client={queryClient}>
+      <Link to="/orgs/org-b/tasks">Go org b</Link><AppRoutes />
+    </AppProvider></MemoryRouter>);
+
+    await waitFor(() => expect(requests.filter((request) => request.slug === 'org-a')).toHaveLength(2));
+    expect(requests.filter((request) => request.slug === 'org-a').map((request) => request.params))
+      .toEqual(expect.arrayContaining([{ limit: '50' }, { status: 'escalated', limit: '50' }]));
+    await userEvent.click(screen.getByRole('link', { name: 'Go org b' }));
+    expect(await screen.findByText('Current org ordinary root')).toBeInTheDocument();
+    expect(await screen.findByText('Current org escalation')).toBeInTheDocument();
+    await waitFor(() => expect(requests.filter((request) => request.slug === 'org-b')).toHaveLength(2));
+    expect(requests.filter((request) => request.slug === 'org-b').map((request) => request.params))
+      .toEqual(expect.arrayContaining([{ limit: '50' }, { status: 'escalated', limit: '50' }]));
+
+    releaseOldOrdinary();
+    releaseOldAttention();
+    await waitFor(() => expect(requests.filter((request) => request.slug === 'org-a').every((request) => request.settled)).toBe(true));
+    releaseBodies();
+    const oldOrdinaryKey = ['tasks-roots-infinite', 'org-a', undefined] as const;
+    const oldAttentionKey = ['tasks-roots-infinite', 'org-a', { status: 'escalated' }] as const;
+    const currentOrdinaryKey = ['tasks-roots-infinite', 'org-b', undefined] as const;
+    const currentAttentionKey = ['tasks-roots-infinite', 'org-b', { status: 'escalated' }] as const;
+    await waitFor(() => {
+      for (const key of [oldOrdinaryKey, oldAttentionKey, currentOrdinaryKey, currentAttentionKey]) {
+        expect(queryClient.getQueryState(key)).toMatchObject({ status: 'success', fetchStatus: 'idle' });
+      }
+    });
+    expect(queryClient.getQueryData(oldOrdinaryKey)).toEqual({ pages: [{ tasks: [oldRoot], next_cursor: null }], pageParams: [undefined] });
+    expect(queryClient.getQueryData(oldAttentionKey)).toEqual({ pages: [{ tasks: [oldEscalation], next_cursor: null }], pageParams: [undefined] });
+    expect(queryClient.getQueryData(currentOrdinaryKey)).toEqual({ pages: [{ tasks: [currentRoot], next_cursor: null }], pageParams: [undefined] });
+    expect(queryClient.getQueryData(currentAttentionKey)).toEqual({ pages: [{ tasks: [currentEscalation], next_cursor: null }], pageParams: [undefined] });
+    expect(screen.queryByText('Old org ordinary root')).not.toBeInTheDocument();
+    expect(screen.queryByText('Old org escalation')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Filter' }));
+    await userEvent.selectOptions(screen.getByLabelText('Task status'), 'completed');
+    await userEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    expect(await screen.findByText('Current org filtered root')).toBeInTheDocument();
+    expect(screen.getByText('Current org escalation')).toBeInTheDocument();
+    expect(screen.queryByText('Current org ordinary root')).not.toBeInTheDocument();
+    expect(requests.filter((request) => request.slug === 'org-b').map((request) => request.params))
+      .toContainEqual({ status: 'completed', limit: '50' });
+    const currentFilteredKey = ['tasks-roots-infinite', 'org-b', { status: 'completed' }] as const;
+    await waitFor(() => expect(queryClient.getQueryState(currentFilteredKey)).toMatchObject({ status: 'success', fetchStatus: 'idle' }));
+    expect(queryClient.getQueryData(currentFilteredKey)).toEqual({ pages: [{ tasks: [currentFiltered], next_cursor: null }], pageParams: [undefined] });
+    expect(screen.queryByText('Old org ordinary root')).not.toBeInTheDocument();
+    expect(screen.queryByText('Old org escalation')).not.toBeInTheDocument();
+    expect(screen.getByText('Current org filtered root')).toBeInTheDocument();
+    expect(screen.getByText('Current org escalation')).toBeInTheDocument();
+    await queryClient.cancelQueries();
+    queryClient.clear();
+  });
+
+  test('keeps an older attention row through ordinary page two and deduplicates later-page overlap', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    let intersect: IntersectionObserverCallback | undefined;
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback: IntersectionObserverCallback) { intersect = callback; }
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+      takeRecords() { return []; }
+      root = null;
+      rootMargin = '';
+      thresholds = [];
+    });
+    const oldEscalation = rootTask({ task_id: 'TASK-OLD-ESC', brief: 'Older escalation', status: 'escalated', severity_rollup: 'escalated' });
+    const laterEscalation = rootTask({ task_id: 'TASK-LATER-ESC', brief: 'Later escalation', status: 'escalated', severity_rollup: 'escalated' });
+    const firstOrdinary = rootTask({ task_id: 'TASK-ORD-ONE', brief: 'First ordinary root' });
+    const laterOrdinary = rootTask({ task_id: 'TASK-ORD-TWO', brief: 'Second ordinary root' });
+    server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+      const params = new URL(request.url).searchParams;
+      if (params.get('status') === 'escalated') {
+        return HttpResponse.json(params.has('before')
+          ? { tasks: [oldEscalation, laterEscalation], next_cursor: null }
+          : { tasks: [oldEscalation], next_cursor: 'attention-2' });
+      }
+      return HttpResponse.json(params.has('before')
+        ? { tasks: [oldEscalation, laterOrdinary], next_cursor: null }
+        : { tasks: [firstOrdinary], next_cursor: 'ordinary-2' });
+    }));
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+    expect(await screen.findByText('Older escalation')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Load more waiting-on-you tasks' }));
+    expect(await screen.findByText('Later escalation')).toBeInTheDocument();
+    await act(async () => intersect?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver));
+    expect(await screen.findByText('Second ordinary root')).toBeInTheDocument();
+    expect(screen.getAllByText('Older escalation')).toHaveLength(1);
+    expect(screen.getAllByText('Later escalation')).toHaveLength(1);
+    expect(screen.getAllByText('First ordinary root')).toHaveLength(1);
+    expect(screen.getAllByText('Second ordinary root')).toHaveLength(1);
+  });
+
+  test('shows an older escalated root from its independent status query without claiming a partial exact count', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const requests: Record<string, string>[] = [];
+    const ordinary = rootTask({ task_id: 'TASK-ORD', brief: 'Newest ordinary root' });
+    const escalated = rootTask({
+      task_id: 'TASK-ESC-OLD',
+      brief: 'Older founder decision',
+      status: 'escalated',
+      severity_rollup: 'escalated',
+    });
+    server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+      const params = Object.fromEntries(new URL(request.url).searchParams);
+      requests.push(params);
+      return HttpResponse.json(params.status === 'escalated'
+        ? { tasks: [escalated], next_cursor: 'TASK-ESC-OLD' }
+        : { tasks: [ordinary], next_cursor: null });
+    }));
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+
+    expect(await screen.findByRole('heading', { name: 'Waiting on you' })).toBeInTheDocument();
+    expect(screen.getByText('Older founder decision')).toBeInTheDocument();
+    expect(screen.getByText('50+ waiting on you')).toBeInTheDocument();
+    expect(screen.queryByText('1 WAITING ON YOU')).not.toBeInTheDocument();
+    expect(requests).toEqual([
+      { limit: '50' },
+      { status: 'escalated', limit: '50' },
+    ]);
+  });
+
+  test('keeps Waiting on you visible when the ordinary roots traversal is empty', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const escalated = rootTask({
+      task_id: 'TASK-ESC-ONLY',
+      brief: 'Founder decision without ordinary roots',
+      status: 'escalated',
+      severity_rollup: 'escalated',
+    });
+    server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+      const status = new URL(request.url).searchParams.get('status');
+      return HttpResponse.json(status === 'escalated'
+        ? { tasks: [escalated], next_cursor: null }
+        : { tasks: [], next_cursor: null });
+    }));
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+
+    const heading = await screen.findByRole('heading', { name: 'Waiting on you' });
+    expect(screen.getByText('Founder decision without ordinary roots')).toBeInTheDocument();
+    expect(screen.getByText('1 waiting on you')).toBeInTheDocument();
+    // The escalated group is rendered inside the shared list shell, after the
+    // column header, even when the ordinary traversal returns zero rows.
+    const list = screen.getByTestId('tasks-responsive-list');
+    expect(within(list).getByRole('heading', { name: 'Waiting on you' })).toBe(heading);
+    expect(list.querySelector('.tasks-column-header')).not.toBeNull();
+    expect(list.querySelector('[aria-labelledby="waiting-on-you-heading"] li')).not.toBeNull();
+    // 'No tasks' would contradict the visible escalated row.
+    expect(screen.queryByText('No tasks')).not.toBeInTheDocument();
+    // Responsive coverage now flows through the shared list shell.
+    expect(screen.getByTestId('tasks-responsive-styles')).toHaveTextContent('@media (max-width: 767px)');
+    expect(screen.getByTestId('tasks-responsive-styles')).not.toHaveTextContent('data-waiting-on-you-responsive-list');
+  });
+
   test('keeps initial loading distinct from empty', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
@@ -116,7 +480,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
     expect(retry).toHaveFocus();
     await user.keyboard('{Enter}');
     expect(await screen.findByText(/Draft Hong Kong visa guide/)).toBeInTheDocument();
-    expect(requests).toBe(2);
+    expect(requests).toBe(3);
   });
 
   test('reserves the empty state for a successful zero-row response', async () => {
@@ -133,51 +497,120 @@ describe('TasksPage — read path (roots endpoint)', () => {
     expect(screen.queryByText('Could not load tasks')).not.toBeInTheDocument();
   });
 
-  test('retains populated cached rows when a stale refetch fails and retries all loaded pages', async () => {
-    sessionStorage.setItem('happyranch.token', 'tok');
-    const queryClient = makeQueryClient();
-    queryClient.setQueryData(['tasks-roots-infinite', SLUG, undefined], {
-      pages: [
-        { tasks: [TASK], next_cursor: 'page-2' },
-        { tasks: [rootTask({ task_id: 'TASK-0092', brief: 'Cached second page' })], next_cursor: null },
-      ],
-      pageParams: [undefined, 'page-2'],
-    });
-    let shouldFail = true;
-    const requestedBefore: string[] = [];
-    server.use(
-      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
-        const before = new URL(request.url).searchParams.get('before') ?? 'first';
-        requestedBefore.push(before);
+  test.each(['unfiltered', 'filtered'] as const)(
+    'C09 %s retains two cached pages through invalidation500, keyboard Retry500, then Retry200',
+    async (context) => {
+      __resetTokenCacheForTests();
+      sessionStorage.clear();
+      sessionStorage.setItem('happyranch.token', 'synthetic-c09');
+      const queryClient = makeQueryClient();
+      const params = context === 'filtered'
+        ? { status: 'in_progress', assigned_agent: 'agent-c09' } : undefined;
+      const key = ['tasks-roots-infinite', SLUG, params];
+      const first = rootTask({ ...TASK, assigned_agent: 'agent-c09' });
+      const second = rootTask({ ...first, task_id: 'TASK-0092', brief: 'Cached second page' });
+      const cached = {
+        pages: [
+          { tasks: [first], next_cursor: 'page-2' },
+          { tasks: [second], next_cursor: null },
+        ],
+        pageParams: [undefined, 'page-2'],
+      };
+      // Seed both keys so selecting the filtered context causes no setup HTTP.
+      queryClient.setQueryData(['tasks-roots-infinite', SLUG, undefined], cached);
+      queryClient.setQueryData(key, cached);
+      let shouldFail = true;
+      const ledger: { pathname: string; params: Record<string, string>; bearer: string | null }[] = [];
+      server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+        const url = new URL(request.url);
+        if (url.searchParams.get('status') === 'escalated') {
+          return HttpResponse.json({ tasks: [], next_cursor: null });
+        }
+        ledger.push({ pathname: url.pathname, params: Object.fromEntries(url.searchParams),
+          bearer: request.headers.get('authorization') });
         if (shouldFail) return new HttpResponse(null, { status: 500 });
-        return HttpResponse.json(
-          before === 'first'
-            ? { tasks: [TASK], next_cursor: 'page-2' }
-            : { tasks: [rootTask({ task_id: 'TASK-0092', brief: 'Recovered second page' })], next_cursor: null },
-        );
-      }),
-    );
-    render(
-      <MemoryRouter initialEntries={[`/orgs/${SLUG}/tasks`]}>
-        <AppProvider client={queryClient}><AppRoutes /></AppProvider>
-      </MemoryRouter>,
-    );
-
-    expect(await screen.findByText(/Draft Hong Kong visa guide/)).toBeInTheDocument();
-    await act(() => queryClient.invalidateQueries({
-      queryKey: ['tasks-roots-infinite', SLUG, undefined],
-      exact: true,
-    }));
-    expect(await screen.findByText('Tasks may be out of date')).toBeInTheDocument();
-    expect(screen.getByText('Cached second page')).toBeInTheDocument();
-    expect(screen.queryByText('End of list')).not.toBeInTheDocument();
-
-    shouldFail = false;
-    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(await screen.findByText('Recovered second page')).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByText('Tasks may be out of date')).not.toBeInTheDocument());
-    expect(requestedBefore).toEqual(['first', 'first', 'page-2']);
-  });
+        return HttpResponse.json(url.searchParams.has('before')
+          ? { tasks: [{ ...second, brief: 'Recovered second page' }], next_cursor: null }
+          : { tasks: [first], next_cursor: 'page-2' });
+      }));
+      function Location() {
+        const location = useLocation();
+        return <output aria-label="C09 current URL">{location.pathname}</output>;
+      }
+      const mounted = render(
+        <MemoryRouter initialEntries={[`/orgs/${SLUG}/tasks`]}>
+          <AppProvider client={queryClient}><Location /><AppRoutes /></AppProvider>
+        </MemoryRouter>,
+      );
+      const user = userEvent.setup();
+      const requestAt = (before?: string) => ({ pathname: `/api/v1/orgs/${SLUG}/tasks/roots`,
+        params: { ...params, limit: '50', ...(before ? { before } : {}) },
+        bearer: 'Bearer synthetic-c09' });
+      function inventory(secondBrief: string) {
+        const rows = within(screen.getByTestId('tasks-responsive-list')).getAllByRole('listitem');
+        expect(rows.map((row) => within(row).getByRole('link').getAttribute('href')).sort())
+          .toEqual([`/orgs/${SLUG}/tasks/TASK-0091`, `/orgs/${SLUG}/tasks/TASK-0092`]);
+        expect(screen.getByText(first.brief)).toBeInTheDocument();
+        expect(screen.getByText(secondBrief)).toBeInTheDocument();
+        expect(screen.getByLabelText('C09 current URL').textContent).toBe(`/orgs/${SLUG}/tasks`);
+        if (params) {
+          expect(screen.getByText(/Applied filters:/).textContent)
+            .toBe('Applied filters: status = in_progress assigned agent = agent-c09');
+        } else expect(screen.queryByText(/Applied filters:/)).not.toBeInTheDocument();
+      }
+      async function failed(attempts: number) {
+        await waitFor(() => {
+          expect(queryClient.getQueryState(key)).toMatchObject({ status: 'error', fetchStatus: 'idle' });
+          expect(within(screen.getByRole('alert')).getByRole('button', { name: 'Retry' })).toBeEnabled();
+        });
+        expect(screen.getByRole('alert')).toHaveTextContent('Tasks may be out of date');
+        inventory('Cached second page');
+        expect(queryClient.getQueryData(key)).toEqual(cached);
+        for (const text of ['No tasks', 'End of list', 'Could not load tasks', 'Recovered second page']) {
+          expect(screen.queryByText(text)).not.toBeInTheDocument();
+        }
+        expect(ledger).toEqual(Array.from({ length: attempts }, () => requestAt()));
+      }
+      async function keyboardRetry() {
+        const retry = within(screen.getByRole('alert')).getByRole('button', { name: 'Retry' });
+        expect(retry).toBeEnabled(); retry.focus(); expect(retry).toHaveFocus();
+        await user.keyboard('{Enter}');
+      }
+      try {
+        await screen.findByText('Cached second page');
+        if (params) {
+          await user.click(screen.getByRole('button', { name: 'Filter' }));
+          await user.selectOptions(screen.getByLabelText('Task status'), params.status);
+          await user.type(screen.getByLabelText('Assigned agent (exact name)'), params.assigned_agent);
+          await user.click(screen.getByRole('button', { name: 'Apply' }));
+        }
+        inventory('Cached second page');
+        expect(ledger).toEqual([]);
+        await act(() => queryClient.invalidateQueries({ queryKey: key, exact: true }));
+        await failed(1);
+        await keyboardRetry();
+        await failed(2);
+        shouldFail = false;
+        await keyboardRetry();
+        await screen.findByText('Recovered second page');
+        await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+        inventory('Recovered second page');
+        expect(screen.queryByText('Cached second page')).not.toBeInTheDocument();
+        expect(screen.queryByText('Tasks may be out of date')).not.toBeInTheDocument();
+        expect(screen.queryByText('No tasks')).not.toBeInTheDocument();
+        expect(screen.getByText('End of list')).toBeInTheDocument();
+        expect(queryClient.getQueryState(key)).toMatchObject({ status: 'success', fetchStatus: 'idle' });
+        expect(queryClient.getQueryData(key)).toEqual({ ...cached, pages: [cached.pages[0],
+          { tasks: [{ ...second, brief: 'Recovered second page' }], next_cursor: null }] });
+        expect(ledger).toEqual([requestAt(), requestAt(), requestAt(), requestAt('page-2')]);
+        if (params) expect(queryClient.getQueryData(['tasks-roots-infinite', SLUG, undefined])).toEqual(cached);
+      } finally {
+        mounted.unmount();
+        await queryClient.cancelQueries(); queryClient.clear();
+        __resetTokenCacheForTests(); sessionStorage.clear();
+      }
+    },
+  );
 
   test('retains the first page when fetching the next page fails and retries that page only', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
@@ -197,6 +630,9 @@ describe('TasksPage — read path (roots endpoint)', () => {
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
         const before = new URL(request.url).searchParams.get('before') ?? 'first';
+        if (new URL(request.url).searchParams.get('status') === 'escalated') {
+          return HttpResponse.json({ tasks: [], next_cursor: null });
+        }
         requestedBefore.push(before);
         if (before === 'first') {
           return HttpResponse.json({ tasks: [TASK], next_cursor: 'page-2' });
@@ -287,7 +723,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
     );
     mountAt(`/orgs/${SLUG}/tasks`);
     await waitFor(() => {
-      expect(screen.getByText(/Active/)).toBeInTheDocument();
+      expect(screen.getByText(/In progress/)).toBeInTheDocument();
     });
   });
 
@@ -302,7 +738,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
     mountAt(`/orgs/${SLUG}/tasks`);
     const tablist = await screen.findByRole('tablist', { name: 'Group by' });
     // Segmented = a grouped, bordered, rounded container — not plain text tabs.
-    expect(tablist).toHaveClass('rounded-lg');
+    expect(tablist).toHaveClass('rounded-full');
     expect(tablist).toHaveClass('border');
     // The active segment ('Status', the default) carries the accent fill.
     expect(screen.getByRole('tab', { name: 'Status' })).toHaveClass(
@@ -339,14 +775,14 @@ describe('TasksPage — read path (roots endpoint)', () => {
     );
     mountAt(`/orgs/${SLUG}/tasks`);
     const inProgress = await screen.findByRole('heading', {
-      name: /Active/,
+      name: /In progress/,
     });
     // Count badge reflects the client-side group size (2 in_progress roots).
     expect(within(inProgress).getByText('2')).toBeInTheDocument();
     // Colored status dot uses the green 'open' token for in_progress.
     const dot = inProgress.querySelector('span[aria-hidden="true"]');
     expect(dot).not.toBeNull();
-    expect(dot).toHaveClass('text-status-open');
+    expect(dot).toHaveClass('text-info');
     // The pending group shows a count of 1.
     const pending = screen.getByRole('heading', { name: /Pending/ });
     expect(within(pending).getByText('1')).toBeInTheDocument();
@@ -410,7 +846,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
     // The worse-child root names the worst descendant status inline, colored
     // with the escalated token.
     const rollup = await screen.findByText('subtask escalated');
-    expect(rollup).toHaveClass('text-status-escalated');
+    expect(rollup).toHaveClass('text-attention-text');
     // The healthy root surfaces no inline rollup (no fabricated subtask state).
     expect(screen.queryByText('subtask in progress')).not.toBeInTheDocument();
     // STATUS column for the worse-child root shows compact primary 'in_progress'
@@ -447,7 +883,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
 
     expect(titleColumn).toBe(title.parentElement);
     expect(titleColumn).toHaveClass('min-w-0');
-    expect(titleColumn).toHaveClass('flex-1');
+    expect(titleColumn?.parentElement).toHaveClass('tasks-grid');
     expect(titleColumn).toHaveClass('flex-col');
     expect(titleColumn).toHaveClass('items-start');
     expect(title).toHaveClass('w-full');
@@ -537,9 +973,142 @@ describe('TasksPage — read path (roots endpoint)', () => {
   });
 });
 
+// THR-221 seq448: the escalated 'Waiting on you' group must be an ordinary
+// group (same wrapper/heading/rows-card) ranked FIRST inside the shared list
+// shell — not a separate padded box above the column header. Its independent
+// status=escalated traversal contract is unchanged.
+describe('TasksPage — escalated group is the first ordinary-styled group (THR-221 seq448)', () => {
+  function escalatedHandler(escalated: TaskRecord[], ordinary: TaskRecord[]) {
+    return http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) =>
+      HttpResponse.json(new URL(request.url).searchParams.get('status') === 'escalated'
+        ? { tasks: escalated, next_cursor: null }
+        : { tasks: ordinary, next_cursor: null }),
+    );
+  }
+
+  test('renders the escalated group first inside the list shell with the ordinary group styling', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const escalated = rootTask({ task_id: 'TASK-ESC-A', brief: 'Founder decision A', status: 'escalated', severity_rollup: 'escalated' });
+    const running = rootTask({ task_id: 'TASK-RUN-A', brief: 'Running root A', status: 'in_progress', severity_rollup: 'in_progress' });
+    const failed = rootTask({ task_id: 'TASK-FAIL-A', brief: 'Failed root A', status: 'failed', severity_rollup: 'failed' });
+    const completed = rootTask({ task_id: 'TASK-COMP-A', brief: 'Completed root A', status: 'completed', severity_rollup: 'completed' });
+    server.use(escalatedHandler([escalated], [running, failed, completed]));
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await screen.findByText('Founder decision A');
+
+    const list = screen.getByTestId('tasks-responsive-list');
+    const headings = within(list).getAllByRole('heading');
+    expect(headings.map((h) => h.textContent)).toEqual([
+      'Waiting on you',
+      'In progress1',
+      'Failed1',
+      'Completed1',
+    ]);
+
+    const header = list.querySelector('.tasks-column-header');
+    const escalatedSection = list.querySelector('[aria-labelledby="waiting-on-you-heading"]') as HTMLElement | null;
+    expect(header).not.toBeNull();
+    expect(escalatedSection).not.toBeNull();
+    // The escalated group is a descendant of the shared list shell, positioned
+    // after the column header and before every ordinary group.
+    expect(header!.compareDocumentPosition(escalatedSection!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(list.querySelector('section')).toBe(escalatedSection);
+    expect(within(escalatedSection!).getByText('Founder decision A')).toBeInTheDocument();
+    expect(escalatedSection!.querySelectorAll('li')).toHaveLength(1);
+
+    // Same class-token set as an ordinary group rows-card (classList.contains,
+    // never a substring/word-boundary match).
+    for (const token of ['bg-surface-raised', 'rounded-xl', 'border', 'shadow-sm']) {
+      expect(escalatedSection!.classList.contains(token)).toBe(true);
+    }
+    expect(escalatedSection!.classList.contains('bg-surface-page')).toBe(false);
+    expect(escalatedSection!.classList.contains('mx-6')).toBe(false);
+    expect(escalatedSection!.classList.contains('p-3')).toBe(false);
+
+    // No outer padded/inset wrapper — the group is exactly the shared wrapper.
+    const group = headings[0].closest('.tasks-group') as HTMLElement | null;
+    expect(group).not.toBeNull();
+    expect(group!.classList.contains('mx-6')).toBe(false);
+    expect(group!.classList.contains('p-3')).toBe(false);
+    expect(group!.classList.contains('bg-surface-page')).toBe(false);
+    // Truthful count note from the independent traversal (exact when exhausted).
+    expect(within(group!).getByText('1 waiting on you')).toBeInTheDocument();
+  });
+
+  test('renders no escalated group when the attention traversal is empty and keeps ordinary order', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const running = rootTask({ task_id: 'TASK-RUN-B', brief: 'Running root B', status: 'in_progress', severity_rollup: 'in_progress' });
+    const failed = rootTask({ task_id: 'TASK-FAIL-B', brief: 'Failed root B', status: 'failed', severity_rollup: 'failed' });
+    const completed = rootTask({ task_id: 'TASK-COMP-B', brief: 'Completed root B', status: 'completed', severity_rollup: 'completed' });
+    server.use(escalatedHandler([], [running, failed, completed]));
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await screen.findByText('Running root B');
+
+    const list = screen.getByTestId('tasks-responsive-list');
+    expect(within(list).queryByRole('heading', { name: /Waiting on you/ })).toBeNull();
+    expect(screen.queryByText(/waiting on you/)).not.toBeInTheDocument();
+    expect(list.querySelector('[aria-labelledby="waiting-on-you-heading"]')).toBeNull();
+    const headings = within(list).getAllByRole('heading');
+    // First heading is the first ordinary status group; Failed still precedes
+    // Completed (GROUP_ORDER_STATUS unchanged).
+    expect(headings.map((h) => h.textContent)).toEqual(['In progress1', 'Failed1', 'Completed1']);
+  });
+
+  test.each(['loading', 'error'] as const)(
+    'keeps the list shell and escalated group when the ordinary traversal is %s',
+    async (mode) => {
+      sessionStorage.setItem('happyranch.token', 'tok');
+      const escalated = rootTask({ task_id: 'TASK-ESC-C', brief: 'Founder decision C', status: 'escalated', severity_rollup: 'escalated' });
+      server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, async ({ request }) => {
+        if (new URL(request.url).searchParams.get('status') === 'escalated') {
+          return HttpResponse.json({ tasks: [escalated], next_cursor: null });
+        }
+        if (mode === 'error') return new HttpResponse(null, { status: 500 });
+        await new Promise(() => undefined);
+        return HttpResponse.json({ tasks: [], next_cursor: null });
+      }));
+
+      mountAt(`/orgs/${SLUG}/tasks`);
+      const heading = await screen.findByRole('heading', { name: 'Waiting on you' });
+      const list = screen.getByTestId('tasks-responsive-list');
+      expect(within(list).getByRole('heading', { name: 'Waiting on you' })).toBe(heading);
+      expect(screen.getByText('Founder decision C')).toBeInTheDocument();
+      if (mode === 'error') {
+        // Ordinary initial error stays truthful and visible below the shell.
+        expect(await screen.findByText('Could not load tasks')).toBeInTheDocument();
+      } else {
+        expect(screen.getByText('Loading…')).toBeInTheDocument();
+      }
+      // The visible escalated row is never contradicted by an empty-ordinary claim.
+      expect(screen.queryByText('No tasks')).not.toBeInTheDocument();
+    },
+  );
+
+  test('keeps ordinary rows visible while the attention traversal is still loading', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const running = rootTask({ task_id: 'TASK-RUN-D', brief: 'Running root D', status: 'in_progress', severity_rollup: 'in_progress' });
+    server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, async ({ request }) => {
+      if (new URL(request.url).searchParams.get('status') === 'escalated') {
+        await new Promise(() => undefined);
+      }
+      return HttpResponse.json({ tasks: [running], next_cursor: null });
+    }));
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await screen.findByText('Running root D');
+    expect(screen.getByText('Loading waiting-on-you tasks…')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Waiting on you' })).toBeNull();
+    const list = screen.getByTestId('tasks-responsive-list');
+    expect(within(list).getByText('Running root D')).toBeInTheDocument();
+    expect(screen.queryByText('No tasks')).not.toBeInTheDocument();
+  });
+});
+
 // THR-037 Change B Phase 2: the status-GROUP header maps must speak the Path-B
 // vocabulary. `escalated` is a first-class attention group (red dot, surfaced
-// early); `cancelled` is a calm terminal group (muted dot, dimmed/terminal set);
+// early); `cancelled` is a calm terminal group (muted dot, full opacity);
 // `blocked` is fully retired from this presentation surface.
 describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2)', () => {
   function mountStatuses(tasks: TaskRecord[]) {
@@ -552,7 +1121,7 @@ describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2
     return mountAt(`/orgs/${SLUG}/tasks`);
   }
 
-  test('escalated group renders the red attention dot + a proper label and sorts early', async () => {
+  test('escalated group renders the amber attention dot + a proper label and sorts early', async () => {
     const running = rootTask({
       task_id: 'TASK-0600',
       status: 'in_progress',
@@ -572,14 +1141,14 @@ describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2
     const escalatedHeading = await screen.findByRole('heading', {
       name: /Waiting on you/,
     });
-    // Red attention dot — the SAME token StatusBadge uses for escalated.
+    // Amber attention dot — the SAME token StatusBadge uses for escalated.
     const dot = escalatedHeading.querySelector('span[aria-hidden="true"]');
     expect(dot).not.toBeNull();
-    expect(dot).toHaveClass('text-status-escalated');
+    expect(dot).toHaveClass('text-attention-text');
 
     // Sorts EARLY: the escalated attention group precedes the in_progress group
     // in document order (first-class attention, surfaced near the top).
-    const activeHeading = screen.getByRole('heading', { name: /Active/ });
+    const activeHeading = screen.getByRole('heading', { name: /In progress/ });
     expect(
       escalatedHeading.compareDocumentPosition(activeHeading) &
         Node.DOCUMENT_POSITION_FOLLOWING,
@@ -591,7 +1160,7 @@ describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2
     expect(escalatedHeading.parentElement).not.toHaveClass('opacity-60');
   });
 
-  test('cancelled group renders the muted/terminal treatment and is in the dimmed set', async () => {
+  test('cancelled group renders the muted/terminal treatment without dimming', async () => {
     const cancelled = rootTask({
       task_id: 'TASK-0602',
       status: 'cancelled',
@@ -609,9 +1178,8 @@ describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2
     expect(dot).not.toBeNull();
     expect(dot).toHaveClass('text-status-archived');
 
-    // Cancelled sits in the terminal/dimmed set (calmer than completed).
-    // Dimming is on the heading's wrapper (a-tasks: label above rows-card).
-    expect(cancelledHeading.parentElement).toHaveClass('opacity-60');
+    // Cancelled retains full opacity; only superseded rows are dimmed.
+    expect(cancelledHeading.parentElement).not.toHaveClass('opacity-60');
   });
 
   test('no `blocked` group label or dot path remains on this surface', async () => {
@@ -625,7 +1193,7 @@ describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2
     ];
     mountStatuses(tasks);
 
-    await screen.findByRole('heading', { name: /Active/ });
+    await screen.findByRole('heading', { name: /In progress/ });
     // No retired `blocked` group heading.
     expect(screen.queryByRole('heading', { name: /Blocked/ })).toBeNull();
     // No retired blocked dot token anywhere in the rendered surface.
@@ -668,15 +1236,15 @@ describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () =
       await screen.findByRole('heading', { name: 'What the org is working on' }),
     ).toBeInTheDocument();
 
-    // Eyebrow derives from loaded list data: 3 roots · 1 waiting on you
-    // (escalated) · 1 failed (rollup). Wait for the roots query to populate
+    // Eyebrow derives from the ordinary list: escalated roots are owned by the
+    // separate Waiting-on-you presentation. Wait for the roots query to populate
     // (the static header renders before the fetch resolves).
     await waitFor(() =>
-      expect(screen.getByText(/ROOT TASKS/)).toHaveTextContent('3 ROOT TASKS'),
+      expect(screen.getByText(/ROOT TASKS/)).toHaveTextContent('2 LOADED MATCHING ROOT TASKS'),
     );
     const eyebrow = screen.getByText(/ROOT TASKS/);
     expect(eyebrow).toHaveTextContent('SUBTASKS ROLL UP');
-    expect(eyebrow).toHaveTextContent('1 WAITING ON YOU');
+    expect(eyebrow).not.toHaveTextContent('WAITING ON YOU');
     expect(eyebrow).toHaveTextContent('1 FAILED');
   });
 
@@ -796,7 +1364,7 @@ describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () =
     expect(statusText).not.toContain('escalated');
     // TITLE column: 'subtask escalated' appears as second-line context.
     const rollup = within(row).getByText('subtask escalated');
-    expect(rollup).toHaveClass('text-status-escalated');
+    expect(rollup).toHaveClass('text-attention-text');
   });
 
   test('STATUS compact when delegated + worse rollup — both waiting and rollup in TITLE', async () => {
@@ -934,7 +1502,7 @@ describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () =
 
 // THR-046 msg-11: wider layout, cream canvas, rounded column header,
 // rounded bordered group-section cards, right-aligned group-by control,
-// "Waiting on you" escalation label, "Active" in_progress label.
+// "Waiting on you" escalation label, "In progress" label.
 describe('TasksPage — THR-046 msg-11 layout reshape', () => {
   function mountTasks(tasks: TaskRecord[]) {
     sessionStorage.setItem('happyranch.token', 'tok');
@@ -988,13 +1556,13 @@ describe('TasksPage — THR-046 msg-11 layout reshape', () => {
     });
     // The header contains a flex row with justify-between — the title (left)
     // and the group-by tabs (right) are siblings.
-    const headerFlex = document.querySelector('header .flex.items-start.justify-between');
+    const headerFlex = screen.getByTestId('tasks-page-header');
     expect(headerFlex).not.toBeNull();
     const tablist = headerFlex!.querySelector('[role="tablist"]');
     expect(tablist).not.toBeNull();
   });
 
-  test('escalated group renders as "Waiting on you" with red attention dot', async () => {
+  test('escalated group renders as "Waiting on you" with amber attention dot', async () => {
     mountTasks([
       rootTask({
         task_id: 'TASK-0730',
@@ -1006,16 +1574,16 @@ describe('TasksPage — THR-046 msg-11 layout reshape', () => {
     const heading = await screen.findByRole('heading', {
       name: /Waiting on you/,
     });
-    // Red attention dot.
+    // Amber attention dot.
     const dot = heading.querySelector('span[aria-hidden="true"]');
     expect(dot).not.toBeNull();
-    expect(dot).toHaveClass('text-status-escalated');
+    expect(dot).toHaveClass('text-attention-text');
     // Not dimmed (dimming lives on the heading's wrapper — a-tasks label
     // above rows-card).
     expect(heading.parentElement).not.toHaveClass('opacity-60');
   });
 
-  test('in_progress group renders as "Active" with green status dot', async () => {
+  test('in_progress group renders as "In progress" with blue status dot', async () => {
     mountTasks([
       rootTask({
         task_id: 'TASK-0740',
@@ -1025,11 +1593,11 @@ describe('TasksPage — THR-046 msg-11 layout reshape', () => {
       }),
     ]);
     const heading = await screen.findByRole('heading', {
-      name: /Active/,
+      name: /In progress/,
     });
     const dot = heading.querySelector('span[aria-hidden="true"]');
     expect(dot).not.toBeNull();
-    expect(dot).toHaveClass('text-status-open');
+    expect(dot).toHaveClass('text-info');
     // Count badge present.
     expect(within(heading).getByText('1')).toBeInTheDocument();
   });

@@ -1,12 +1,20 @@
 /**
- * Mock implementation of `SettingsApi` for the prototype sandbox.
+ * Mock implementation of `SettingsApi` for the designer/prototype sandbox.
  *
- * Retained for direct SettingsDialog tests; no application or prototype route
- * mounts that dialog. The fixture remains read-only and makes no backend calls.
+ * Consumed by `PrototypeProvider`, and therefore reachable from every
+ * Storybook story that decorates with that provider (for example
+ * `design-system/TasksList.stories.tsx`). Because this module ships to the
+ * browser it must stay free of test-runner imports: an earlier `vi.fn()` spy
+ * dependency on `vitest` crashed the Storybook preview with "Vitest failed to
+ * access its internal state". The mutation hooks below resolve ordinary typed
+ * fixture values instead; tests that need call assertions supply their own
+ * spies (see `src/features/settings/SettingsDialog.test.tsx`). The fixture
+ * remains read-only and makes no backend calls.
  */
-import { vi } from 'vitest';
 import type { SettingsApi, QueryLike } from './DataContext';
 import type {
+  DaemonCapacitySnapshot,
+  DaemonCapacityWrite,
   NextWakesResponse,
   OrgSettingsPatch,
   SettingsSnapshot,
@@ -66,33 +74,41 @@ const NEXT_WAKES_FIXTURE: NextWakesResponse = {
   error: null,
 };
 
+const DAEMON_CAPACITY_FIXTURE: DaemonCapacitySnapshot = {
+  running_at_daemon_start: { queue_workers: 6, host_global_session_cap: 13 },
+  running_provenance: 'startup-resolved settings snapshot',
+  persisted_yaml: { queue_workers: null, host_global_session_cap: null },
+  next_start: { queue_workers: 6, host_global_session_cap: 13 },
+  environment_shadowed: [], environment_warning: null,
+  producer_envelope: 13,
+  producer_components: { task_workers: 6, thread_workers: 4, dream_workers: 1, wake_workers: 1, schedule_workers: 1 },
+  effective_admission_cap: 13,
+  effective_admission_reason: 'Prototype capability snapshot',
+  warnings: [],
+  revision: 'sha256:prototype', restart_required: false, restart_pending: false,
+  guidance: { queue_workers: 'Empirical guidance', host_global_session_cap: 'Empirical guidance', enforced: false },
+  authorization: 'Local operator; daemon bearer required. Bearer authorization cannot be attributed to a verified person.',
+};
+
+/** Browser-safe stand-in for the no-op mutation callbacks previously supplied by `vi.fn()`. */
+function noop(): void {}
+
 export const mockSettingsApi: SettingsApi = {
   useSettings: () => ok(FIXTURE),
   useUpdateOrgSettings: () => ({
-    mutate: vi.fn(),
-    mutateAsync: vi.fn((_patch: OrgSettingsPatch) => Promise.resolve(FIXTURE)),
-    reset: vi.fn(),
+    mutate: noop,
+    mutateAsync: (_patch: OrgSettingsPatch) => Promise.resolve(FIXTURE),
+    reset: noop,
     isPending: false,
     isSuccess: false,
     isError: false,
     error: null,
     data: undefined,
   }),
-  useDaemonCapacity: () => ok({
-    running_at_daemon_start: { queue_workers: 6, host_global_session_cap: 13 },
-    running_provenance: 'startup-resolved settings snapshot',
-    persisted_yaml: { queue_workers: null, host_global_session_cap: null },
-    next_start: { queue_workers: 6, host_global_session_cap: 13 },
-    environment_shadowed: [], environment_warning: null,
-    producer_envelope: 13,
-    producer_components: { task_workers: 6, thread_workers: 4, dream_workers: 1, wake_workers: 1, schedule_workers: 1 },
-    effective_admission_cap: 13,
-    effective_admission_reason: 'Prototype capability snapshot',
-    warnings: [],
-    revision: 'sha256:prototype', restart_required: false, restart_pending: false,
-    guidance: { queue_workers: 'Empirical guidance', host_global_session_cap: 'Empirical guidance', enforced: false },
-    authorization: 'Local operator; daemon bearer required. Bearer authorization cannot be attributed to a verified person.',
+  useDaemonCapacity: () => ok(DAEMON_CAPACITY_FIXTURE),
+  useUpdateDaemonCapacity: () => ({
+    mutateAsync: (_capacity: DaemonCapacityWrite) => Promise.resolve(DAEMON_CAPACITY_FIXTURE),
+    isPending: false,
   }),
-  useUpdateDaemonCapacity: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useNextWakes: () => ok(NEXT_WAKES_FIXTURE),
 };
