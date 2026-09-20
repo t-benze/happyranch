@@ -380,7 +380,12 @@ second candidate for the same causal tuple. This PR's own new
 `admitted|claimed|claim_audited`; no released column is altered, dropped or
 reinterpreted and `audit_log` keeps its existing action scope.
 
-`Database.claim_authority_policy_v2_candidate` runs ONE synchronized
+`Database.claim_authority_policy_v2_candidate` refuses transaction nesting
+with the closed code `transaction_owned` BEFORE it would `BEGIN`, `ROLLBACK`
+or invalidate the live owner whenever the caller already owns a transaction —
+the caller's transaction and its pending work are left untouched and the two
+stage commits stay independent (no merged transaction, no silent savepoint and
+no changed R4 durability) — and otherwise runs ONE synchronized
 `BEGIN IMMEDIATE` (the independent C3a reference is constructed OUTSIDE it and
 its frozen raw digest is re-validated while the transaction is held) that
 re-reads and authenticates the actual immutable admitted result: exact
@@ -393,7 +398,14 @@ owner/session), the causal result row/task/agent/session AND its normalized body
 launch binding, the pinned release/activation/selector identity through its own
 pinned epoch (a later legitimate activation never replaces or invalidates an
 older pin, and corrupt/mixed pinned history refuses with no fallback to today's
-policy) and the resolved provider/executor/model. The applicable mechanical
+policy) and the resolved provider/executor/model. Claim also freezes the ACTUAL
+claim-time schema evidence (raw/inventory digest and object count) and bounded
+read-only permission-surface evidence — read through the narrowly scoped
+server-side reader bound on the Database as `reader(agent)`, never a
+caller-supplied allow/deny boolean or precomputed digest — onto BOTH K and P;
+an unbound/read-failed/malformed read fails closed and can never become a
+sentinel digest, and these evidence columns are not claim-preimage inputs. The
+applicable mechanical
 eligibility predicates — revisit lineage, active chain/fanout, blocked job,
 successor root and the revise-budget ceiling — are re-derived from the persisted
 task row; no caller boolean substitutes for a server fact, and the legacy
@@ -402,13 +414,21 @@ a v2 veto or a phrase/clause unlock. On success it inserts K+P and advances J to
 `claimed`, preserving R and a0 and NOT appending the a1 claim event.
 
 A separate second transaction (`audit_authority_policy_v2_candidate_claim`)
-authenticates the same uninterrupted live winning owner (an in-memory
-admission-registered token, never the mere persisted UUID strings), K/P/J and all
-prior evidence, inserts exactly one candidate claim event plus the required
-`claim_audited` result-stage evidence, and advances J to `claim_audited`
+RE-AUTHENTICATES the complete evidence instead of trusting K/P — the causal
+result row/body, immutable binding, authenticated pinned release/activation/
+selector prefix, the full candidate/pin/attempt/release/binding joins
+(provider/executor/model/version/digest/boot/owner), the prior required a0 and
+the current task ownership/cancellation — and rechecks the ORIGINAL frozen
+claim-time schema/permission evidence under its owned transaction (no
+recapture-and-rebaseline). It inserts exactly one candidate claim event plus the
+required `claim_audited` result-stage evidence and advances J to `claim_audited`
 atomically. A failed claim leaves J admitted/a0 with no K/P; a failed claim-audit
-preserves the claimed K/P with no a1; both poison the winning token so a retry
-cannot become a fresh authority. Refusals return only a bounded
+preserves the claimed K/P with no a1. An owned-stage failure, a genuine
+cancellation/replacement, or a schema/permission-drift refusal by the authentic
+uninterrupted owner poisons the winning token so a later retry cannot become a
+fresh authority; an unauthorized/stale/duplicate contender (wrong boot, wrong
+owner, wrong tuple, second connection, duplicate call, transaction-nesting
+refusal) is classified before liveness and never poisons the winner. Refusals return only a bounded
 `AuthorityPolicyV2StageOutcome` with a closed refusal code: this checkpoint
 performs NO refusal housekeeping and NO evaluation/consume/envelope/finalization,
 does not mutate tasks into Pending/Escalated, and the later THR-229
@@ -418,7 +438,8 @@ event inside its own stage, so later legitimate stage events never invalidate
 the single immutable a0; exact CLI/HTTP transport retries after progression stay
 read-only success and a changed client payload still refuses. `AuthorityPolicyStore`
 exposes only thin forwarders (`claim_v2_candidate`, `audit_v2_candidate_claim`,
-the authenticated K/P/a1 readers) and never commits or nests. The shipping
+`bind_v2_permission_surface_reader`, the authenticated K/P/a1 readers) and never
+commits or nests. The shipping
 authority hook remains fail-closed (ESCALATE) until the complete
 consumer/refusal/finalization path lands.
 

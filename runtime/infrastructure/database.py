@@ -558,6 +558,11 @@ _AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
                 causal_result_digest TEXT NOT NULL,
                 origin_boot_id TEXT NOT NULL,
                 owner_attempt_id TEXT NOT NULL,
+                schema_raw_digest TEXT NOT NULL,
+                schema_inventory_digest TEXT NOT NULL,
+                schema_object_count INTEGER NOT NULL
+                    CHECK(schema_object_count >= 0 AND schema_object_count <= 100000),
+                permission_surface_digest TEXT NOT NULL,
                 canonical_payload_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 UNIQUE(claim_key),
@@ -597,6 +602,11 @@ _AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
                 provider_id TEXT NOT NULL,
                 executor_kind TEXT NOT NULL,
                 model_id TEXT NOT NULL,
+                schema_raw_digest TEXT NOT NULL,
+                schema_inventory_digest TEXT NOT NULL,
+                schema_object_count INTEGER NOT NULL
+                    CHECK(schema_object_count >= 0 AND schema_object_count <= 100000),
+                permission_surface_digest TEXT NOT NULL,
                 canonical_payload_json TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
@@ -1118,6 +1128,12 @@ class Database:
         # strings cannot advance the attempt.  This is an ownership marker, not
         # a credential, and it is never persisted.
         self._v2_live_attempt_owners: dict[str, str] = {}
+        # THR-229 C3b correction: the narrowly scoped server-side permission
+        # reader.  It is bound by the orchestration seam (the store the
+        # orchestrator constructs) and called inside the server process as
+        # ``reader(agent)``; it is never a caller-supplied allow/deny boolean or
+        # a precomputed digest.  When unbound the claim refuses (fail closed).
+        self._v2_permission_surface_reader = None
         # THR-129 lock instrumentation: configurable warning threshold for
         # lock wait/hold times (seconds). Test seam — tests set this to a low
         # value to verify instrumentation fires.
@@ -6482,16 +6498,73 @@ class Database:
     # evaluation/consume/envelope/finalization: a refusal returns only a
     # bounded disposition for the later consumer.
 
+    def bind_authority_policy_v2_permission_surface_reader(self, reader) -> None:
+        """Bind the server-side permission reader ``reader(agent) -> digest``.
+
+        The orchestration seam (the store the orchestrator constructs) supplies
+        a callable that reads the live org permission surface; it is never a
+        caller-supplied allow/deny boolean or a precomputed digest.  Unbinding
+        (``None``) makes every claim refuse fail-closed.
+        """
+        self._v2_permission_surface_reader = reader
+
     def _forget_v2_live_owner(self, attempt_id: str, owner_attempt_id: str) -> None:
         if self._v2_live_attempt_owners.get(attempt_id) == owner_attempt_id:
             self._v2_live_attempt_owners.pop(attempt_id, None)
 
+    def _v2_contender_is_authentic_owner(
+        self, *, attempt_id: str, owner_attempt_id: str, origin_boot_id: str,
+    ) -> bool:
+        """True only when this caller presents the real uninterrupted owner proof.
+
+        The registered in-memory token must match AND the durable attempt's
+        ``owner_attempt_id``/``origin_boot_id`` must equal the caller's values.
+        Persisted UUID strings are readable identity markers, not proof, so a
+        wrong-boot / wrong-token / wrong-tuple contender is classified as
+        unauthorized and never changes the original owner's liveness.
+        """
+        if self._v2_live_attempt_owners.get(attempt_id) != owner_attempt_id:
+            return False
+        try:
+            row = self._conn.execute(
+                """SELECT owner_attempt_id, origin_boot_id
+                     FROM authority_policy_v2_attempts WHERE attempt_id=?""",
+                (attempt_id,),
+            ).fetchone()
+        except Exception:
+            return False
+        if row is None:
+            return False
+        return (
+            row["owner_attempt_id"] == owner_attempt_id
+            and row["origin_boot_id"] == origin_boot_id
+        )
+
     def _refuse_v2_stage(
         self, *, attempt_id: str, owner_attempt_id: str, code: str,
+        origin_boot_id: str | None = None,
         candidate_id: str | None = None, claim_key: str | None = None,
-        stage: str | None = None, poison: bool = True,
+        stage: str | None = None, poison: bool | None = None,
     ) -> AuthorityPolicyV2StageOutcome:
-        if poison:
+        """Return a bounded refusal, classifying liveness before poisoning.
+
+        ``poison=None`` auto-classifies: only the authentic continuing owner
+        (registered live token AND matching durable owner/boot) is forgotten, so
+        an unauthorized/stale/duplicate contender cannot poison the winner.
+        ``poison=True`` forces the owned-stage failure residue; ``poison=False``
+        never forgets the owner (transaction-nesting and duplicate refusals).
+        """
+        if poison is None:
+            forget = (
+                origin_boot_id is not None
+                and self._v2_contender_is_authentic_owner(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    origin_boot_id=origin_boot_id,
+                )
+            )
+        else:
+            forget = poison
+        if forget:
             self._forget_v2_live_owner(attempt_id, owner_attempt_id)
         return AuthorityPolicyV2StageOutcome(
             status="refused", refusal_code=code, attempt_id=attempt_id,
@@ -6572,11 +6645,137 @@ class Database:
                 raise ValueError("authority v2 pin column/preimage mismatch")
         return pin
 
+    def _authenticate_v2_claim_evidence_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str,
+    ) -> tuple[str | None, dict | None]:
+        """Re-read and authenticate the complete claim-stage evidence.
+
+        Shared by BOTH the first (claim) and second (claim-audit) boundaries so
+        the second boundary re-authenticates the causal result row/body, the
+        immutable launch binding, the authenticated pinned
+        release/activation/selector prefix, the single ``a0`` admitted audit and
+        the current task ownership/cancellation — rather than trusting the
+        already-persisted K/P row.  Returns ``(refusal_code, None)`` on any
+        mismatch/mutation/deletion, or ``(None, ctx)`` with the authenticated
+        values.
+        """
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=manager_agent, manager_session_id=manager_session_id,
+            result_id=result_id, root_task_id=root_task_id,
+            team=AUTHORITY_POLICY_V2_TEAM,
+        )
+        row = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_attempts
+               WHERE root_task_id=? AND manager_agent=?
+                 AND manager_session_id=? AND result_id=?""",
+            (root_task_id, manager_agent, manager_session_id, result_id),
+        ).fetchone()
+        if row is None:
+            return "identity_mismatch", None
+        try:
+            attempt = self._authority_policy_v2_attempt_from_row(row)
+        except ValueError:
+            return "identity_mismatch", None
+        if attempt.finalization_state != "unfinalized":
+            return "owner_lost", None
+        # Uninterrupted live-owner proof: the in-memory winning token, the
+        # persisted random owner marker and the daemon-process boot UUID must
+        # all agree.  Persisted UUID strings alone are never proof.
+        if self._v2_live_attempt_owners.get(attempt.attempt_id) != owner_attempt_id:
+            return "owner_lost", None
+        if (
+            owner_attempt_id != attempt.owner_attempt_id
+            or origin_boot_id != attempt.origin_boot_id
+        ):
+            return "owner_lost", None
+        if not self._authenticate_v2_attempt_admission_audit_uncommitted(dict(row)):
+            return "identity_mismatch", None
+
+        task = self._conn.execute(
+            "SELECT * FROM tasks WHERE id=?", (root_task_id,)
+        ).fetchone()
+        if task is None:
+            return "identity_mismatch", None
+        if task["cancelled_at"] is not None or task["status"] in {
+            "completed", "failed", "cancelled", "superseded",
+        }:
+            return "cancelled", None
+        if task["status"] != "in_progress" or task["block_kind"] is not None:
+            return "cancelled", None
+        if (
+            task["assigned_agent"] != manager_agent
+            or task["current_session_id"] != manager_session_id
+        ):
+            return "owner_lost", None
+
+        result_row = self._conn.execute(
+            "SELECT * FROM task_results WHERE id=?", (result_id,)
+        ).fetchone()
+        if (
+            result_row is None
+            or result_row["task_id"] != root_task_id
+            or result_row["agent"] != manager_agent
+            or result_row["session_id"] != manager_session_id
+        ):
+            return "identity_mismatch", None
+        if not self._authenticate_v2_result_body_uncommitted(result_row, attempt):
+            return "identity_mismatch", None
+
+        binding = self.get_authority_policy_v2_session_binding(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id,
+        )
+        if binding is None:
+            return "identity_mismatch", None
+        try:
+            self._authenticate_v2_session_binding_uncommitted(binding)
+        except Exception:
+            return "identity_mismatch", None
+        if (
+            binding.binding_id != attempt.binding_id
+            or binding.team != attempt.team
+            or binding.contract_id != attempt.contract_id
+            or binding.contract_version != attempt.contract_version
+            or binding.contract_digest != attempt.contract_digest
+            or binding.release_id != attempt.release_id
+            or binding.activation_id != attempt.activation_id
+            or binding.activation_epoch != attempt.activation_epoch
+            or binding.selector_id != attempt.selector_id
+        ):
+            return "identity_mismatch", None
+
+        release = self.get_authority_policy_v2_release(attempt.release_id)
+        activation = self.get_authority_policy_v2_activation(attempt.activation_id)
+        if release is None or activation is None:
+            return "identity_mismatch", None
+        if (
+            release.team != attempt.team
+            or release.policy_digest != binding.policy_digest
+            or release.version != binding.policy_version
+            or activation.team != attempt.team
+            or activation.release_id != attempt.release_id
+            or activation.release_digest != release.policy_digest
+            or activation.selector_epoch != attempt.activation_epoch
+            or binding.provider_id == "" or binding.executor_kind == ""
+            or binding.model_id == ""
+        ):
+            return "identity_mismatch", None
+        return None, {
+            "attempt": attempt, "row": row, "task": task,
+            "result_row": result_row, "binding": binding,
+            "release": release, "activation": activation,
+        }
+
     def _claim_authority_policy_v2_candidate_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
-        max_revise_rounds: int, now: str,
+        max_revise_rounds: int, now: str, schema_evidence,
     ) -> AuthorityPolicyV2StageOutcome:
+        from runtime.orchestrator.authority import (
+            capture_authority_policy_v2_permission_surface,
+        )
+
         attempt_id = authority_policy_v2_attempt_id(
             manager_agent=manager_agent, manager_session_id=manager_session_id,
             result_id=result_id, root_task_id=root_task_id,
@@ -6588,18 +6787,18 @@ class Database:
                 status="refused", refusal_code=code, attempt_id=attempt_id,
             )
 
-        row = self._conn.execute(
-            """SELECT * FROM authority_policy_v2_attempts
-               WHERE root_task_id=? AND manager_agent=?
-                 AND manager_session_id=? AND result_id=?""",
-            (root_task_id, manager_agent, manager_session_id, result_id),
-        ).fetchone()
-        if row is None:
-            return _refused("identity_mismatch")
-        try:
-            attempt = self._authority_policy_v2_attempt_from_row(row)
-        except ValueError:
-            return _refused("identity_mismatch")
+        code, ctx = self._authenticate_v2_claim_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+        )
+        if code is not None:
+            return _refused(code)
+        assert ctx is not None
+        attempt = ctx["attempt"]
+        binding = ctx["binding"]
+        release = ctx["release"]
+        task = ctx["task"]
         if attempt.stage != AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED:
             if attempt.stage in (
                 AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
@@ -6607,37 +6806,10 @@ class Database:
             ):
                 return _refused("already_claimed")
             return _refused("identity_mismatch")
-        if attempt.finalization_state != "unfinalized":
-            return _refused("owner_lost")
-        # Uninterrupted live-owner proof: the in-memory winning token, the
-        # persisted random owner marker and the daemon-process boot UUID must
-        # all agree.  Persisted UUID strings alone are never proof.
-        if self._v2_live_attempt_owners.get(attempt.attempt_id) != owner_attempt_id:
-            return _refused("owner_lost")
-        if (
-            owner_attempt_id != attempt.owner_attempt_id
-            or origin_boot_id != attempt.origin_boot_id
-        ):
-            return _refused("owner_lost")
-        if not self._authenticate_v2_attempt_admission_audit_uncommitted(dict(row)):
-            return _refused("identity_mismatch")
-
-        task = self._conn.execute(
-            "SELECT * FROM tasks WHERE id=?", (root_task_id,)
-        ).fetchone()
-        if task is None:
-            return _refused("identity_mismatch")
-        if task["cancelled_at"] is not None or task["status"] in {
-            "completed", "failed", "cancelled", "superseded",
-        }:
-            return _refused("cancelled")
-        if task["status"] != "in_progress" or task["block_kind"] is not None:
-            return _refused("cancelled")
-        if (
-            task["assigned_agent"] != manager_agent
-            or task["current_session_id"] != manager_session_id
-        ):
-            return _refused("owner_lost")
+        # Applicable mechanical eligibility predicates, re-derived from the
+        # persisted task row.  No caller boolean and no
+        # ``_server_fact_clause`` adverse-review/partial-work/raw-DDL clause is a
+        # v2 veto or a phrase/clause unlock.
         if (
             task["revisit_of_task_id"]
             or task["active_chain"]
@@ -6654,58 +6826,16 @@ class Database:
         if max_revise_rounds > 0 and int(task["revision_count"] or 0) >= max_revise_rounds:
             return _refused("claim_failed")
 
-        result_row = self._conn.execute(
-            "SELECT * FROM task_results WHERE id=?", (result_id,)
-        ).fetchone()
-        if (
-            result_row is None
-            or result_row["task_id"] != root_task_id
-            or result_row["agent"] != manager_agent
-            or result_row["session_id"] != manager_session_id
-        ):
-            return _refused("identity_mismatch")
-        if not self._authenticate_v2_result_body_uncommitted(result_row, attempt):
-            return _refused("identity_mismatch")
-
-        binding = self.get_authority_policy_v2_session_binding(
-            root_task_id=root_task_id, manager_agent=manager_agent,
-            manager_session_id=manager_session_id,
+        # Freeze the read-only permission-surface evidence through the bound
+        # server-side reader.  Captured after authentication (so an
+        # unauthorized contender still refuses with its real code) but before
+        # any K/P write; an unbound/read-failed/malformed read fails closed and
+        # can never become a sentinel digest.
+        permission = capture_authority_policy_v2_permission_surface(
+            self, manager_agent,
         )
-        if binding is None:
-            return _refused("identity_mismatch")
-        try:
-            self._authenticate_v2_session_binding_uncommitted(binding)
-        except Exception:
-            return _refused("identity_mismatch")
-        if (
-            binding.binding_id != attempt.binding_id
-            or binding.team != attempt.team
-            or binding.contract_id != attempt.contract_id
-            or binding.contract_version != attempt.contract_version
-            or binding.contract_digest != attempt.contract_digest
-            or binding.release_id != attempt.release_id
-            or binding.activation_id != attempt.activation_id
-            or binding.activation_epoch != attempt.activation_epoch
-            or binding.selector_id != attempt.selector_id
-        ):
-            return _refused("identity_mismatch")
-
-        release = self.get_authority_policy_v2_release(attempt.release_id)
-        activation = self.get_authority_policy_v2_activation(attempt.activation_id)
-        if release is None or activation is None:
-            return _refused("identity_mismatch")
-        if (
-            release.team != attempt.team
-            or release.policy_digest != binding.policy_digest
-            or release.version != binding.policy_version
-            or activation.team != attempt.team
-            or activation.release_id != attempt.release_id
-            or activation.release_digest != release.policy_digest
-            or activation.selector_epoch != attempt.activation_epoch
-            or binding.provider_id == "" or binding.executor_kind == ""
-            or binding.model_id == ""
-        ):
-            return _refused("identity_mismatch")
+        if permission.evidence is None:
+            return _refused("evidence_drift")
 
         claim_key = authority_policy_v2_sha256(
             authority_policy_v2_candidate_claim_preimage(
@@ -6729,6 +6859,8 @@ class Database:
         candidate = self._v2_candidate_from_claim_key(
             claim_key, attempt=attempt, binding=binding,
             origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+            schema_evidence=schema_evidence,
+            permission_surface_digest=permission.evidence.digest,
         )
         return self._insert_v2_candidate_and_pin_uncommitted(
             candidate=candidate, attempt=attempt, binding=binding,
@@ -6739,7 +6871,7 @@ class Database:
     def _v2_candidate_from_claim_key(
         self, claim_key: str, *, attempt: AuthorityPolicyV2Attempt,
         binding: AuthorityPolicyV2SessionBinding, origin_boot_id: str,
-        owner_attempt_id: str,
+        owner_attempt_id: str, schema_evidence, permission_surface_digest: str,
     ) -> AuthorityPolicyV2Candidate:
         return AuthorityPolicyV2Candidate(
             candidate_id=f"APV2C-{claim_key}",
@@ -6769,6 +6901,10 @@ class Database:
             ),
             origin_boot_id=origin_boot_id,
             owner_attempt_id=owner_attempt_id,
+            schema_raw_digest=schema_evidence.raw_digest,
+            schema_inventory_digest=schema_evidence.inventory_digest,
+            schema_object_count=schema_evidence.object_count,
+            permission_surface_digest=permission_surface_digest,
         )
 
     def _insert_v2_candidate_and_pin_uncommitted(
@@ -6786,6 +6922,8 @@ class Database:
                 policy_digest, activation_id, activation_epoch, selector_id,
                 provider_id, executor_kind, model_id, causal_result_id,
                 causal_result_digest, origin_boot_id, owner_attempt_id,
+                schema_raw_digest, schema_inventory_digest, schema_object_count,
+                permission_surface_digest,
                 canonical_payload_json, created_at)
                VALUES (:candidate_id,:claim_key,:team,:root_task_id,:manager_agent,
                        :manager_session_id,:attempt_id,:result_id,:binding_id,
@@ -6793,7 +6931,9 @@ class Database:
                        :policy_version,:policy_digest,:activation_id,
                        :activation_epoch,:selector_id,:provider_id,:executor_kind,
                        :model_id,:causal_result_id,:causal_result_digest,
-                       :origin_boot_id,:owner_attempt_id,:canonical_payload_json,
+                       :origin_boot_id,:owner_attempt_id,:schema_raw_digest,
+                       :schema_inventory_digest,:schema_object_count,
+                       :permission_surface_digest,:canonical_payload_json,
                        :created_at)""",
             {
                 **candidate_snapshot,
@@ -6822,6 +6962,10 @@ class Database:
             provider_id=candidate.provider_id,
             executor_kind=candidate.executor_kind,
             model_id=candidate.model_id,
+            schema_raw_digest=candidate.schema_raw_digest,
+            schema_inventory_digest=candidate.schema_inventory_digest,
+            schema_object_count=candidate.schema_object_count,
+            permission_surface_digest=candidate.permission_surface_digest,
         )
         pin_snapshot = pin.model_dump(mode="json")
         self._conn.execute(
@@ -6830,12 +6974,17 @@ class Database:
                 manager_session_id, attempt_id, result_id, binding_id, release_id,
                 activation_id, activation_epoch, selector_id, policy_version,
                 policy_digest, contract_digest, provider_id, executor_kind,
-                model_id, canonical_payload_json, created_at)
+                model_id, schema_raw_digest, schema_inventory_digest,
+                schema_object_count, permission_surface_digest,
+                canonical_payload_json, created_at)
                VALUES (:candidate_id,:claim_key,:team,:root_task_id,:manager_agent,
                        :manager_session_id,:attempt_id,:result_id,:binding_id,
                        :release_id,:activation_id,:activation_epoch,:selector_id,
                        :policy_version,:policy_digest,:contract_digest,:provider_id,
-                       :executor_kind,:model_id,:canonical_payload_json,:created_at)""",
+                       :executor_kind,:model_id,:schema_raw_digest,
+                       :schema_inventory_digest,:schema_object_count,
+                       :permission_surface_digest,:canonical_payload_json,
+                       :created_at)""",
             {
                 **pin_snapshot,
                 "canonical_payload_json": authority_policy_v2_canonical_json_bytes(
@@ -6860,11 +7009,19 @@ class Database:
     ) -> AuthorityPolicyV2StageOutcome:
         """First C3b transaction: atomically create K+P and advance J to claimed.
 
-        The independent C3a schema reference is constructed OUTSIDE this write
-        transaction; the frozen raw digest is then re-validated while holding
-        BEGIN IMMEDIATE, so an independent connection's DDL cannot change the
-        candidate between capture and the commit.  This transaction never
-        appends the separate ``a1`` claim-stage audit.
+        The independent C3a schema reference and the read-only permission
+        surface are captured OUTSIDE this write transaction; the frozen raw
+        digest is then re-validated while holding BEGIN IMMEDIATE, so an
+        independent connection's DDL cannot change the candidate between
+        capture and the commit.  This transaction never appends the separate
+        ``a1`` claim-stage audit.
+
+        Transaction ownership: when the caller ALREADY owns a transaction this
+        method refuses with ``transaction_owned`` BEFORE it would BEGIN,
+        ROLLBACK or invalidate the live owner, so the caller's transaction and
+        its work are left untouched.  Moving the two stage commits into the
+        caller's transaction, or silently using a savepoint, would change the
+        R4 durability meaning and is deliberately not done.
         """
         from runtime.orchestrator.authority import (
             capture_authority_policy_v2_schema_integrity,
@@ -6876,11 +7033,18 @@ class Database:
             result_id=result_id, root_task_id=root_task_id,
             team=AUTHORITY_POLICY_V2_TEAM,
         )
+        if self._conn.in_transaction:
+            return self._refuse_v2_stage(
+                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                code="transaction_owned",
+                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED, poison=False,
+            )
         capture = capture_authority_policy_v2_schema_integrity(self)
         if capture.evidence is None:
             return self._refuse_v2_stage(
                 attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                 code="schema_drift", stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
+                origin_boot_id=origin_boot_id,
             )
         evidence = capture.evidence
         now = _now().isoformat()
@@ -6892,12 +7056,14 @@ class Database:
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code="schema_drift",
                     stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
+                    origin_boot_id=origin_boot_id,
                 )
             outcome = self._claim_authority_policy_v2_candidate_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
                 origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
                 max_revise_rounds=max_revise_rounds, now=now,
+                schema_evidence=evidence,
             )
             if outcome.status == "refused":
                 self._conn.rollback()
@@ -6905,9 +7071,10 @@ class Database:
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=outcome.refusal_code or "claim_failed",
                     stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
-                    poison=outcome.refusal_code not in {
+                    origin_boot_id=origin_boot_id,
+                    poison=False if outcome.refusal_code in {
                         "already_claimed", "already_audited",
-                    },
+                    } else None,
                 )
             self._conn.commit()
             return outcome
@@ -6915,7 +7082,7 @@ class Database:
             self._conn.rollback()
             self._refuse_v2_stage(
                 attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                code="claim_failed",
+                code="claim_failed", origin_boot_id=origin_boot_id,
             )
             raise
 
@@ -6935,33 +7102,28 @@ class Database:
                 candidate_id=candidate_id,
             )
 
-        row = self._conn.execute(
-            """SELECT * FROM authority_policy_v2_attempts
-               WHERE root_task_id=? AND manager_agent=?
-                 AND manager_session_id=? AND result_id=?""",
-            (root_task_id, manager_agent, manager_session_id, result_id),
-        ).fetchone()
-        if row is None:
-            return _refused("identity_mismatch")
-        try:
-            attempt = self._authority_policy_v2_attempt_from_row(row)
-        except ValueError:
-            return _refused("identity_mismatch")
+        # Re-authenticate the complete claim-stage evidence at the SECOND
+        # boundary: the causal result row/body, the immutable launch binding,
+        # the authenticated pinned release/activation/selector prefix, the
+        # single a0 admitted audit and the current task ownership/cancellation.
+        # The already-persisted K/P row is NOT trusted on its own; a between-
+        # stage mutation/deletion/mixed identity refuses without inventing
+        # evidence or advancing J.
+        code, ctx = self._authenticate_v2_claim_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+        )
+        if code is not None:
+            return _refused(code)
+        assert ctx is not None
+        attempt = ctx["attempt"]
+        binding = ctx["binding"]
+        release = ctx["release"]
         if attempt.stage == AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED:
             return _refused("already_audited")
         if attempt.stage != AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED:
             return _refused("claim_audit_missing")
-        if attempt.finalization_state != "unfinalized":
-            return _refused("owner_lost")
-        if self._v2_live_attempt_owners.get(attempt.attempt_id) != owner_attempt_id:
-            return _refused("owner_lost")
-        if (
-            owner_attempt_id != attempt.owner_attempt_id
-            or origin_boot_id != attempt.origin_boot_id
-        ):
-            return _refused("owner_lost")
-        if not self._authenticate_v2_attempt_admission_audit_uncommitted(dict(row)):
-            return _refused("identity_mismatch")
 
         candidate_row = self._conn.execute(
             """SELECT * FROM authority_policy_v2_candidates
@@ -6985,35 +7147,90 @@ class Database:
             pin = self._authority_policy_v2_pin_from_row(pin_row)
         except ValueError:
             return _refused("identity_mismatch", candidate.candidate_id)
+
+        # Full cross-row candidate/pin/attempt/release/binding joins, including
+        # provider/executor/model/version/digest/boot/owner and the frozen
+        # evidence.  Column/preimage consistency (already checked by the two
+        # row readers) and the causal-row digest (row identity only) are NOT a
+        # substitute for these joins.
         if (
-            candidate.attempt_id != attempt.attempt_id
-            or candidate.claim_key != pin.claim_key
-            or pin.candidate_id != candidate.candidate_id
+            candidate.team != attempt.team
+            or candidate.root_task_id != root_task_id
+            or candidate.manager_agent != manager_agent
+            or candidate.manager_session_id != manager_session_id
+            or candidate.attempt_id != attempt.attempt_id
+            or candidate.result_id != result_id
             or candidate.binding_id != attempt.binding_id
+            or candidate.contract_id != attempt.contract_id
+            or candidate.contract_version != attempt.contract_version
+            or candidate.contract_digest != attempt.contract_digest
             or candidate.release_id != attempt.release_id
             or candidate.activation_id != attempt.activation_id
             or candidate.activation_epoch != attempt.activation_epoch
             or candidate.selector_id != attempt.selector_id
+            or candidate.policy_version != release.version
+            or candidate.policy_digest != release.policy_digest
+            or candidate.provider_id != binding.provider_id
+            or candidate.executor_kind != binding.executor_kind
+            or candidate.model_id != binding.model_id
+            or candidate.origin_boot_id != attempt.origin_boot_id
+            or candidate.owner_attempt_id != attempt.owner_attempt_id
+            or pin.candidate_id != candidate.candidate_id
+            or pin.claim_key != candidate.claim_key
+            or pin.team != candidate.team
+            or pin.root_task_id != candidate.root_task_id
+            or pin.manager_agent != candidate.manager_agent
+            or pin.manager_session_id != candidate.manager_session_id
+            or pin.attempt_id != candidate.attempt_id
+            or pin.result_id != candidate.result_id
+            or pin.binding_id != candidate.binding_id
+            or pin.release_id != candidate.release_id
+            or pin.activation_id != candidate.activation_id
+            or pin.activation_epoch != candidate.activation_epoch
+            or pin.selector_id != candidate.selector_id
+            or pin.policy_version != candidate.policy_version
+            or pin.policy_digest != candidate.policy_digest
+            or pin.contract_digest != candidate.contract_digest
+            or pin.provider_id != candidate.provider_id
+            or pin.executor_kind != candidate.executor_kind
+            or pin.model_id != candidate.model_id
+            or pin.schema_raw_digest != candidate.schema_raw_digest
+            or pin.schema_inventory_digest != candidate.schema_inventory_digest
+            or pin.schema_object_count != candidate.schema_object_count
+            or pin.permission_surface_digest != candidate.permission_surface_digest
         ):
             return _refused("identity_mismatch", candidate.candidate_id)
 
-        # The same uninterrupted winning owner and the task's live owner/session
-        # must still hold; a cancellation or replacement between stages refuses
-        # without touching the replacement state.
-        task = self._conn.execute(
-            "SELECT * FROM tasks WHERE id=?", (root_task_id,)
-        ).fetchone()
-        if task is None:
-            return _refused("identity_mismatch", candidate.candidate_id)
-        if task["cancelled_at"] is not None or task["status"] != "in_progress" or (
-            task["block_kind"] is not None
+        # Recheck the ORIGINAL frozen claim-time evidence under this owned
+        # transaction: no recapture-and-rebaseline after a change.  Missing or
+        # unreadable evidence can never authenticate.
+        from runtime.models import (
+            AuthorityPolicyV2PermissionSurface as _PermissionSurface,
+            AuthorityPolicyV2SchemaIntegrity as _SchemaIntegrity,
+        )
+        from runtime.orchestrator.authority import (
+            V2_PERMISSION_SURFACE_CONTRACT,
+            V2_SCHEMA_INTEGRITY_CONTRACT,
+            recheck_authority_policy_v2_permission_surface,
+            recheck_authority_policy_v2_schema_integrity,
+        )
+
+        frozen_schema = _SchemaIntegrity(
+            contract_version=V2_SCHEMA_INTEGRITY_CONTRACT,
+            raw_digest=candidate.schema_raw_digest,
+            inventory_digest=candidate.schema_inventory_digest,
+            object_count=candidate.schema_object_count,
+        )
+        if not recheck_authority_policy_v2_schema_integrity(frozen_schema, self):
+            return _refused("schema_drift", candidate.candidate_id)
+        frozen_permission = _PermissionSurface(
+            contract_version=V2_PERMISSION_SURFACE_CONTRACT,
+            digest=candidate.permission_surface_digest,
+        )
+        if not recheck_authority_policy_v2_permission_surface(
+            frozen_permission, self, manager_agent,
         ):
-            return _refused("cancelled", candidate.candidate_id)
-        if (
-            task["assigned_agent"] != manager_agent
-            or task["current_session_id"] != manager_session_id
-        ):
-            return _refused("owner_lost", candidate.candidate_id)
+            return _refused("evidence_drift", candidate.candidate_id)
 
         existing_audit = self._conn.execute(
             """SELECT 1 FROM authority_policy_v2_candidate_audit
@@ -7090,16 +7307,30 @@ class Database:
     ) -> AuthorityPolicyV2StageOutcome:
         """Second C3b transaction: append the a1 claim event and audited stage.
 
-        Authenticates the same uninterrupted winning owner, K/P/J and the a0
-        admission evidence; inserts exactly one candidate claim event plus the
-        required ``claim_audited`` result-stage evidence; advances J to
-        ``claim_audited`` atomically.  A failure preserves the claimed K/P.
+        Re-authenticates the complete evidence (result row/body, immutable
+        binding, authenticated pinned release/activation/selector prefix, K/P/J
+        joins, prior a0, task ownership/cancellation) AND rechecks the ORIGINAL
+        frozen claim-time schema/permission evidence; inserts exactly one
+        candidate claim event plus the required ``claim_audited`` result-stage
+        evidence; advances J to ``claim_audited`` atomically.  A failure
+        preserves the claimed K/P.
+
+        Transaction ownership: when the caller ALREADY owns a transaction this
+        method refuses with ``transaction_owned`` BEFORE it would BEGIN,
+        ROLLBACK or invalidate the live owner, so the caller's transaction and
+        its work are left untouched.
         """
         attempt_id = authority_policy_v2_attempt_id(
             manager_agent=manager_agent, manager_session_id=manager_session_id,
             result_id=result_id, root_task_id=root_task_id,
             team=AUTHORITY_POLICY_V2_TEAM,
         )
+        if self._conn.in_transaction:
+            return self._refuse_v2_stage(
+                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                code="transaction_owned",
+                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED, poison=False,
+            )
         now = _now().isoformat()
         try:
             self._conn.execute("BEGIN IMMEDIATE")
@@ -7116,10 +7347,10 @@ class Database:
                     code=outcome.refusal_code or "claim_audit_missing",
                     candidate_id=outcome.candidate_id,
                     stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
-                    poison=outcome.refusal_code in {
-                        "claim_audit_missing", "cancelled", "owner_lost",
-                        "identity_mismatch",
-                    },
+                    origin_boot_id=origin_boot_id,
+                    poison=False if outcome.refusal_code in {
+                        "already_audited", "already_claimed",
+                    } else None,
                 )
             self._conn.commit()
             return outcome
@@ -7129,6 +7360,7 @@ class Database:
                 attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                 code="claim_audit_missing",
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
+                origin_boot_id=origin_boot_id,
             )
             raise
 

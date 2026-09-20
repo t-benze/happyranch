@@ -51,7 +51,12 @@ WHAT_NOT = "Continue 実装, debugging and review corrections."
 
 
 def _store(tmp_path) -> AuthorityPolicyStore:
-    return AuthorityPolicyStore(Database(tmp_path / "c2.db"))
+    store = AuthorityPolicyStore(Database(tmp_path / "c2.db"))
+    # THR-229 C3b correction: the narrowly scoped server-side permission reader
+    # must be bound before a v2 claim can capture frozen permission evidence.
+    # Tests use a stable server-side digest; an unbound reader fails closed.
+    store.bind_v2_permission_surface_reader(lambda agent: "a" * 64)
+    return store
 
 
 def _activate_v2(store: AuthorityPolicyStore):

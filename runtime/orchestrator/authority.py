@@ -95,6 +95,7 @@ from runtime.models import (
     AuthorityDisposition,
     AuthorityDispositionCode,
     AuthorityFenceResult,
+    AuthorityPolicyV2PermissionSurface,
     AuthorityPolicyV2SchemaIntegrity,
     TaskStatus,
     ManagerSelfEvaluation,
@@ -256,6 +257,7 @@ def _live_schema_digest(db) -> str:
 # the candidate.
 
 V2_SCHEMA_INTEGRITY_CONTRACT = "authority-policy-v2-schema-integrity-v1"
+V2_PERMISSION_SURFACE_CONTRACT = "authority-policy-v2-permission-surface-v1"
 
 # Exact ordered ``CREATE TABLE`` bytes the current source produces when it
 # migrates the immutable historical constructor
@@ -692,6 +694,93 @@ def recheck_authority_policy_v2_schema_integrity(
     return current == raw_digest
 
 
+@dataclass(frozen=True)
+class AuthorityPolicyV2PermissionSurfaceOutcome:
+    """Result of the v2 permission-surface capture: bounded evidence on
+    success, a bounded machine-readable diagnostic on fail-closed refusal.
+    Exactly one of ``evidence`` / ``diagnostic`` is set.  There is deliberately
+    no permissive default and no sentinel digest: an absent reader, a read
+    defect, or a malformed value all yield ``evidence=None``."""
+
+    evidence: AuthorityPolicyV2PermissionSurface | None
+    diagnostic: dict[str, object] | None
+
+
+def _v2_permission_reader(db):
+    """Return the server-side permission reader bound on ``db`` or ``None``.
+
+    The reader is the narrowly scoped server-side orchestration seam; it is
+    never a caller-provided allow/deny boolean or a precomputed digest.
+    """
+    return getattr(db, "_v2_permission_surface_reader", None)
+
+
+def capture_authority_policy_v2_permission_surface(
+    db, agent: str,
+) -> AuthorityPolicyV2PermissionSurfaceOutcome:
+    """Read the current permission-surface digest through the bound reader.
+
+    The reader is called as ``reader(agent)`` inside the server process.  An
+    unbound reader, a raising read, or a value that is not exactly one 64-char
+    lower-hex digest fails closed with a bounded diagnostic and NO evidence, so
+    a later recheck can never authenticate a sentinel.
+    """
+    reader = _v2_permission_reader(db)
+    if reader is None:
+        return AuthorityPolicyV2PermissionSurfaceOutcome(
+            evidence=None,
+            diagnostic={"code": "permission_surface_unavailable",
+                        "kind": "permission", "object": None, "v2": False},
+        )
+    try:
+        digest = reader(agent)
+    except Exception:
+        return AuthorityPolicyV2PermissionSurfaceOutcome(
+            evidence=None,
+            diagnostic={"code": "permission_surface_unreadable",
+                        "kind": "permission", "object": None, "v2": False},
+        )
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        return AuthorityPolicyV2PermissionSurfaceOutcome(
+            evidence=None,
+            diagnostic={"code": "permission_surface_malformed",
+                        "kind": "permission", "object": None, "v2": False},
+        )
+    return AuthorityPolicyV2PermissionSurfaceOutcome(
+        evidence=AuthorityPolicyV2PermissionSurface(
+            contract_version=V2_PERMISSION_SURFACE_CONTRACT, digest=digest,
+        ),
+        diagnostic=None,
+    )
+
+
+def recheck_authority_policy_v2_permission_surface(
+    evidence: AuthorityPolicyV2PermissionSurface | None,
+    db, agent: str,
+) -> bool:
+    """Deny ANY later permission-surface change or unreadable read.
+
+    The comparison is against the reader's CURRENT value through the same
+    server-side seam; an unavailable reader, read defect or malformed value
+    never becomes a successful recheck.
+    """
+    if evidence is None:
+        return False
+    if getattr(evidence, "contract_version", None) != V2_PERMISSION_SURFACE_CONTRACT:
+        return False
+    digest = getattr(evidence, "digest", None)
+    if not isinstance(digest, str) or len(digest) != 64:
+        return False
+    current = capture_authority_policy_v2_permission_surface(db, agent)
+    if current.evidence is None:
+        return False
+    return current.evidence.digest == digest
+
+
 def _permission_digest(orch: "Orchestrator", agent: str) -> str:
     """Digest of the current org permission surface (org_config + the active
     agent definition). ``orch`` may be None in unit contexts — the digest
@@ -719,6 +808,35 @@ def _permission_digest(orch: "Orchestrator", agent: str) -> str:
             parts.append("agent_def:unavailable")
     except Exception:
         parts.append("agent_def:unavailable")
+    return _sha256("\x1f".join(parts))
+
+
+def _strict_permission_surface_digest(orch: "Orchestrator", agent: str) -> str:
+    """Read the live org permission surface or RAISE (never a sentinel digest).
+
+    This is the C3b claim/evidence server-side reader: unlike the legacy
+    ``_permission_digest`` it never degrades a read failure into a digest of
+    ``unavailable`` markers, so ``capture_authority_policy_v2_permission_surface``
+    fails closed when the surface cannot be read.  Bind it as the reader via
+    ``AuthorityPolicyStore.bind_v2_permission_surface_reader`` (partial on the
+    concrete orchestrator) before a v2 claim.
+    """
+    from runtime.orchestrator.org_config import load_org_config
+    from runtime.orchestrator.prompt_loader import load_agent
+
+    import dataclasses
+
+    org_config = load_org_config(orch._paths)
+    parts = [json.dumps(dataclasses.asdict(org_config), sort_keys=True, default=str)]
+    agent_def = load_agent(orch._paths, agent)
+    if agent_def is None:
+        raise ValueError("active agent definition unavailable")
+    parts.append(
+        json.dumps(
+            {"name": agent_def.name, "allow_rules": sorted(agent_def.allow_rules)},
+            sort_keys=True,
+        )
+    )
     return _sha256("\x1f".join(parts))
 
 

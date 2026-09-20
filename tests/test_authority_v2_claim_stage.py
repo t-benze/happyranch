@@ -89,6 +89,13 @@ def _audit(store, row, attempt, *, task_id: str = TASK_ID, session_id: str = SES
     return store.audit_v2_candidate_claim(**kwargs)
 
 
+def _raw_stage(store, result_id: int) -> str:
+    return store._db._conn.execute(
+        "SELECT stage FROM authority_policy_v2_attempts WHERE result_id=?",
+        (result_id,),
+    ).fetchone()[0]
+
+
 def _stage_audits(store, task_id: str = TASK_ID) -> list[str]:
     return [
         row["payload"]["stage"]
@@ -777,3 +784,352 @@ def test_strict_candidate_and_outcome_values():
     assert AuthorityPolicyV2StageOutcome(
         status="refused", refusal_code="owner_lost",
     ).refusal_code == "owner_lost"
+
+
+# ── C3b correction 1: respect the caller's transaction ───────────────────
+#
+# Both public writers must reject transaction nesting BEFORE they would BEGIN,
+# ROLLBACK or invalidate the live owner, leaving the caller transaction and its
+# pending work untouched.  Rejecting after owning the write would discard the
+# caller's work; moving the two stage commits into the caller transaction (or
+# silently using a savepoint) would change their R4 durability meaning.
+
+
+def test_claim_refuses_nested_transaction_and_preserves_caller(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    before = _counts(store._db)
+    conn = store._db._conn
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("UPDATE tasks SET brief='caller pending write' WHERE id=?", (TASK_ID,))
+
+    outcome = _claim(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "transaction_owned"
+    # The caller's transaction and its pending write are untouched.
+    assert conn.in_transaction is True
+    assert conn.execute(
+        "SELECT brief FROM tasks WHERE id=?", (TASK_ID,)
+    ).fetchone()[0] == "caller pending write"
+    # No owned write/rollback/owner-invalidation occurred.
+    assert _counts(store._db)["candidates"] == before["candidates"]
+    conn.rollback()
+    assert conn.in_transaction is False
+    assert _counts(store._db) == before
+    # The authentic uninterrupted owner is NOT poisoned by the nesting refusal.
+    assert _claim(store, row, attempt).status == "claimed"
+
+
+def test_claim_nested_caller_can_commit_afterwards(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    conn = store._db._conn
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("UPDATE tasks SET brief='caller committed write' WHERE id=?", (TASK_ID,))
+    assert _claim(store, row, attempt).refusal_code == "transaction_owned"
+    conn.commit()
+    assert conn.in_transaction is False
+    assert conn.execute(
+        "SELECT brief FROM tasks WHERE id=?", (TASK_ID,)
+    ).fetchone()[0] == "caller committed write"
+    assert _claim(store, row, attempt).status == "claimed"
+
+
+def test_audit_refuses_nested_transaction_and_preserves_caller(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _claim(store, row, attempt).status == "claimed"
+    before = _counts(store._db)
+    conn = store._db._conn
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("UPDATE tasks SET brief='caller audit write' WHERE id=?", (TASK_ID,))
+
+    outcome = _audit(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "transaction_owned"
+    assert conn.in_transaction is True
+    assert conn.execute(
+        "SELECT brief FROM tasks WHERE id=?", (TASK_ID,)
+    ).fetchone()[0] == "caller audit write"
+    assert _counts(store._db) == before
+    conn.rollback()
+    assert _counts(store._db) == before
+    # The authentic owner is not poisoned: it can still complete a1 exactly once.
+    assert _audit(store, row, attempt).status == "claim_audited"
+    assert len(store.list_v2_candidate_audits(
+        store.get_v2_candidate_for_result(row["id"]).candidate_id)) == 1
+
+
+# ── C3b correction 2: reauthenticate the full evidence at the 2nd boundary ─
+
+
+def test_result_body_drift_between_stages_refuses_audit(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _claim(store, row, attempt).status == "claimed"
+    candidate_id = store.get_v2_candidate_for_result(row["id"]).candidate_id
+    before = _counts(store._db)
+    store._db._conn.execute(
+        """UPDATE task_results SET decision_json=json_set(
+               decision_json, '$._manager_self_evaluation.what_to_escalate.confidence', 1)
+           WHERE id=?""",
+        (row["id"],),
+    )
+    store._db._conn.commit()
+    outcome = _audit(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "identity_mismatch"
+    assert _counts(store._db) == before
+    assert store._db.get_authority_policy_v2_attempt_for_result(row["id"]).stage == "claimed"
+    assert store.list_v2_candidate_audits(candidate_id) == []
+    assert _stage_audits(store) == ["admitted"]
+
+
+def test_result_row_identity_drift_between_stages_refuses_audit(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _claim(store, row, attempt).status == "claimed"
+    store._db._conn.execute(
+        "UPDATE task_results SET session_id='sess-other' WHERE id=?", (row["id"],),
+    )
+    store._db._conn.commit()
+    outcome = _audit(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "identity_mismatch"
+    assert store._db.get_authority_policy_v2_attempt_for_result(row["id"]).stage == "claimed"
+
+
+def test_missing_admitted_audit_between_stages_refuses_audit(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _claim(store, row, attempt).status == "claimed"
+    store._db._conn.execute(
+        "DELETE FROM audit_log WHERE action='authority_policy_v2_result_stage'"
+    )
+    store._db._conn.commit()
+    outcome = _audit(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "identity_mismatch"
+    assert _raw_stage(store, row["id"]) == "claimed"
+
+
+def test_duplicated_admitted_audit_between_stages_refuses_audit(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _claim(store, row, attempt).status == "claimed"
+    audits = store._db.list_authority_policy_v2_result_stage_audits(
+        root_task_id=TASK_ID, manager_agent=MANAGER,
+    )
+    store._db.insert_audit_log_uncommitted(
+        TASK_ID, MANAGER, "authority_policy_v2_result_stage", dict(audits[0]["payload"]),
+    )
+    store._db.commit()
+    outcome = _audit(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "identity_mismatch"
+    assert _raw_stage(store, row["id"]) == "claimed"
+
+
+def test_cancellation_between_stages_prohibits_advancement(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _claim(store, row, attempt).status == "claimed"
+    store._db._conn.execute(
+        "UPDATE tasks SET cancelled_at='2026-09-20T00:00:00+00:00' WHERE id=?",
+        (TASK_ID,),
+    )
+    store._db._conn.commit()
+    outcome = _audit(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "cancelled"
+    # A genuine cancellation poisons the authentic owner: no later advancement.
+    assert _audit(store, row, attempt).refusal_code == "owner_lost"
+    assert store._db.get_authority_policy_v2_attempt_for_result(row["id"]).stage == "claimed"
+
+
+def test_replacement_between_stages_prohibits_advancement(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _claim(store, row, attempt).status == "claimed"
+    store._db._conn.execute(
+        "UPDATE tasks SET current_session_id='sess-replacement' WHERE id=?", (TASK_ID,),
+    )
+    store._db._conn.commit()
+    outcome = _audit(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "owner_lost"
+    assert _audit(store, row, attempt).refusal_code == "owner_lost"
+
+
+# ── C3b correction 3: losing calls must not poison the winner ─────────────
+
+
+def test_wrong_boot_loser_does_not_poison_winner(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _claim(store, row, attempt).status == "claimed"
+    loser = _audit(store, row, attempt, origin_boot_id="other-boot")
+    assert loser.status == "refused" and loser.refusal_code == "owner_lost"
+    # The original uninterrupted owner still completes a1 exactly once.
+    assert _audit(store, row, attempt).status == "claim_audited"
+    assert _audit(store, row, attempt).refusal_code == "already_audited"
+    assert len(store.list_v2_candidate_audits(
+        store.get_v2_candidate_for_result(row["id"]).candidate_id)) == 1
+
+
+def test_wrong_owner_and_tuple_losers_do_not_poison_winner(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _claim(store, row, attempt).status == "claimed"
+    assert _audit(
+        store, row, attempt, owner_attempt_id="not-the-owner",
+    ).refusal_code == "owner_lost"
+    assert _audit(
+        store, row, attempt, result_id=row["id"] + 999,
+    ).refusal_code == "identity_mismatch"
+    assert _audit(store, row, attempt).status == "claim_audited"
+
+
+def test_duplicate_claim_loser_does_not_poison_winner(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    won = _claim(store, row, attempt)
+    assert won.status == "claimed"
+    assert _claim(store, row, attempt).refusal_code == "already_claimed"
+    assert _audit(store, row, attempt).status == "claim_audited"
+
+
+# ── C3b correction 4: retain claim-time schema/permission evidence ────────
+
+
+def test_claim_freezes_and_pin_mirrors_claim_time_evidence(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    claimed = _claim(store, row, attempt)
+    candidate = store.get_v2_candidate(claimed.candidate_id)
+    pin = store.get_v2_pin(claimed.candidate_id)
+    assert candidate.schema_raw_digest and candidate.schema_inventory_digest
+    assert candidate.schema_object_count > 0
+    assert candidate.permission_surface_digest == "a" * 64
+    # The pin is identity-equal on the frozen evidence.
+    assert (
+        pin.schema_raw_digest == candidate.schema_raw_digest
+        and pin.schema_inventory_digest == candidate.schema_inventory_digest
+        and pin.schema_object_count == candidate.schema_object_count
+        and pin.permission_surface_digest == candidate.permission_surface_digest
+    )
+    # The evidence fields are NOT new claim-preimage inputs.
+    assert candidate.preimage() == authority_policy_v2_candidate_claim_preimage(
+        activation_id=candidate.activation_id,
+        activation_selector_epoch=candidate.activation_epoch,
+        causal_result_digest=candidate.causal_result_digest,
+        causal_result_id=candidate.result_id,
+        contract_digest=candidate.contract_digest,
+        executor_kind=candidate.executor_kind,
+        manager_agent=candidate.manager_agent,
+        manager_session_id=candidate.manager_session_id,
+        model_id=candidate.model_id,
+        policy_digest=candidate.policy_digest,
+        policy_version=candidate.policy_version,
+        provider_id=candidate.provider_id,
+        release_id=candidate.release_id,
+        root_task_id=candidate.root_task_id,
+        team=candidate.team,
+    )
+
+
+def test_schema_drift_between_claim_and_audit_refuses(tmp_path):
+    """The manager probe's ``schema_drift_after_claim`` case: a new index after
+    the K/P commit denies at the second boundary."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _claim(store, row, attempt).status == "claimed"
+    store._db._conn.execute("CREATE INDEX task8450_unreviewed ON tasks(brief)")
+    store._db._conn.commit()
+    before = _counts(store._db)
+    outcome = _audit(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "schema_drift"
+    assert _counts(store._db) == before
+    assert store._db.get_authority_policy_v2_attempt_for_result(row["id"]).stage == "claimed"
+    assert store.list_v2_candidate_audits(
+        store.get_v2_candidate_for_result(row["id"]).candidate_id) == []
+
+
+def test_schema_drift_between_stages_refuses_after_another_accepted_layout(tmp_path):
+    """Switching to a DIFFERENT individually accepted layout after capture is
+    still a denial: the comparison is against the exact frozen raw digest."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _claim(store, row, attempt).status == "claimed"
+    # Drop and recreate a legal candidate-table trigger so the raw DDL digest
+    # changes while the inventory may still resemble a layout.
+    store._db._conn.execute("DROP TRIGGER authority_policy_v2_pins_no_delete")
+    store._db._conn.execute(
+        """CREATE TRIGGER authority_policy_v2_pins_no_delete
+           BEFORE DELETE ON authority_policy_v2_pins
+           BEGIN SELECT RAISE(ABORT, 'v2 policy pin cannot be deleted'); END"""
+    )
+    store._db._conn.commit()
+    outcome = _audit(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "schema_drift"
+
+
+def test_permission_change_between_stages_refuses_audit(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _claim(store, row, attempt).status == "claimed"
+    store.bind_v2_permission_surface_reader(lambda agent: "b" * 64)
+    outcome = _audit(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "evidence_drift"
+    assert store._db.get_authority_policy_v2_attempt_for_result(row["id"]).stage == "claimed"
+
+
+def test_permission_read_failure_fails_closed(tmp_path):
+    def boom(agent):
+        raise RuntimeError("permission surface unreadable")
+
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store.bind_v2_permission_surface_reader(boom)
+    outcome = _claim(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "evidence_drift"
+    assert _counts(store._db)["candidates"] == 0
+
+
+def test_permission_read_failure_between_stages_fails_closed(tmp_path):
+    def boom(agent):
+        raise RuntimeError("permission surface unreadable")
+
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _claim(store, row, attempt).status == "claimed"
+    store.bind_v2_permission_surface_reader(boom)
+    outcome = _audit(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "evidence_drift"
+
+
+def test_unbound_permission_reader_refuses_claim(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store.bind_v2_permission_surface_reader(None)
+    outcome = _claim(store, row, attempt)
+    assert outcome.status == "refused" and outcome.refusal_code == "evidence_drift"
+    assert _counts(store._db)["candidates"] == 0
+
+
+def test_missing_or_empty_frozen_evidence_fails_closed(tmp_path):
+    from runtime.models import (
+        AuthorityPolicyV2PermissionSurface,
+        AuthorityPolicyV2SchemaIntegrity,
+    )
+    from runtime.orchestrator.authority import (
+        V2_PERMISSION_SURFACE_CONTRACT,
+        V2_SCHEMA_INTEGRITY_CONTRACT,
+        recheck_authority_policy_v2_permission_surface,
+        recheck_authority_policy_v2_schema_integrity,
+    )
+
+    db = Database(tmp_path / "evidence.db")
+    assert recheck_authority_policy_v2_schema_integrity(None, db) is False
+    assert recheck_authority_policy_v2_permission_surface(None, db, MANAGER) is False
+    empty = AuthorityPolicyV2SchemaIntegrity(
+        contract_version=V2_SCHEMA_INTEGRITY_CONTRACT,
+        raw_digest="", inventory_digest="", object_count=0,
+    )
+    assert recheck_authority_policy_v2_schema_integrity(empty, db) is False
+    empty_permission = AuthorityPolicyV2PermissionSurface(
+        contract_version=V2_PERMISSION_SURFACE_CONTRACT, digest="",
+    )
+    assert recheck_authority_policy_v2_permission_surface(
+        empty_permission, db, MANAGER,
+    ) is False
+
+
+def test_candidate_column_canonical_evidence_mismatch_refuses(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    claimed = _claim(store, row, attempt)
+    real = store._db._conn.execute(
+        "SELECT * FROM authority_policy_v2_candidates WHERE candidate_id=?",
+        (claimed.candidate_id,),
+    ).fetchone()
+    tampered = dict(real)
+    tampered["permission_surface_digest"] = "c" * 64
+    with pytest.raises(ValueError):
+        store._db._authority_policy_v2_candidate_from_row(tampered)
+    tampered2 = dict(real)
+    tampered2["schema_raw_digest"] = "d" * 64
+    with pytest.raises(ValueError):
+        store._db._authority_policy_v2_candidate_from_row(tampered2)

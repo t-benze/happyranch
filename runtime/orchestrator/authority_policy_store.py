@@ -191,6 +191,17 @@ class AuthorityPolicyStore:
     # candidate/pin claim and the separate claim-audit stage.  The facade never
     # begins, commits or rolls back and never nests a committing call.
 
+    def bind_v2_permission_surface_reader(self, reader) -> None:
+        """Bind the server-side permission reader ``reader(agent) -> digest``.
+
+        This is the narrowly scoped orchestration seam: the caller supplies a
+        callable that reads the live permission surface inside the server
+        process (e.g. the orchestrator's ``_permission_digest`` for the agent),
+        never an allow/deny boolean or a precomputed digest.  Until it is bound,
+        a v2 claim refuses fail-closed with ``evidence_drift``.
+        """
+        self._db.bind_authority_policy_v2_permission_surface_reader(reader)
+
     def claim_v2_candidate(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,

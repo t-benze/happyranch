@@ -972,6 +972,12 @@ AUTHORITY_POLICY_V2_STAGE_OUTCOME_STATUSES = frozenset({
 AUTHORITY_POLICY_V2_STAGE_REFUSAL_CODES = frozenset({
     "cancelled", "owner_lost", "identity_mismatch", "claim_failed",
     "claim_audit_missing", "already_claimed", "already_audited", "schema_drift",
+    # C3b correction: the caller already owns a transaction; this stage refuses
+    # before it would ever BEGIN/ROLLBACK so the caller's work is untouched.
+    "transaction_owned",
+    # C3b correction: the frozen claim-time permission-surface evidence no
+    # longer authenticates (or is missing/unreadable) at the second boundary.
+    "evidence_drift",
 })
 
 
@@ -1179,6 +1185,16 @@ class AuthorityPolicyV2Candidate(BaseModel):
     causal_result_digest: StrictStr
     origin_boot_id: StrictStr
     owner_attempt_id: StrictStr
+    # C3b correction: the ACTUAL claim-time schema evidence and bounded
+    # read-only permission-surface evidence are frozen onto the candidate so the
+    # second boundary can recheck the ORIGINAL evidence (no recapture/rebaseline)
+    # and later evaluation/consume/finalize code reads the same authenticated
+    # values.  These are evidence only, never a clause input, and are
+    # deliberately NOT part of the frozen R2 claim preimage.
+    schema_raw_digest: StrictStr = ""
+    schema_inventory_digest: StrictStr = ""
+    schema_object_count: StrictInt = 0
+    permission_surface_digest: StrictStr = ""
     created_at: datetime = Field(default_factory=_now)
 
     @field_validator(
@@ -1186,6 +1202,15 @@ class AuthorityPolicyV2Candidate(BaseModel):
     )
     @classmethod
     def _v2_candidate_digests_are_lower_hex(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_digest(value, info.field_name)
+
+    @field_validator(
+        "schema_raw_digest", "schema_inventory_digest", "permission_surface_digest",
+    )
+    @classmethod
+    def _v2_candidate_evidence_digests(cls, value: str, info) -> str:
+        if value == "":
+            return value
         return _validate_authority_policy_v2_digest(value, info.field_name)
 
     @field_validator("candidate_id")
@@ -1308,6 +1333,12 @@ class AuthorityPolicyV2Pin(BaseModel):
     provider_id: StrictStr
     executor_kind: StrictStr
     model_id: StrictStr
+    # C3b correction: identity-equal to the candidate's frozen claim-time
+    # schema/permission evidence (evidence only; never a claim preimage input).
+    schema_raw_digest: StrictStr = ""
+    schema_inventory_digest: StrictStr = ""
+    schema_object_count: StrictInt = 0
+    permission_surface_digest: StrictStr = ""
     created_at: datetime = Field(default_factory=_now)
 
     @field_validator("candidate_id")
@@ -1317,6 +1348,15 @@ class AuthorityPolicyV2Pin(BaseModel):
             raise ValueError("candidate_id must start with APV2C-")
         _validate_authority_policy_v2_digest(value[len("APV2C-"):], "candidate_id")
         return value
+
+    @field_validator(
+        "schema_raw_digest", "schema_inventory_digest", "permission_surface_digest",
+    )
+    @classmethod
+    def _v2_pin_evidence_digests(cls, value: str, info) -> str:
+        if value == "":
+            return value
+        return _validate_authority_policy_v2_digest(value, info.field_name)
 
     @field_validator("claim_key", "contract_digest", "policy_digest")
     @classmethod
@@ -1491,6 +1531,24 @@ class AuthorityPolicyV2SchemaIntegrity(BaseModel):
     raw_digest: StrictStr
     inventory_digest: StrictStr
     object_count: StrictInt = Field(ge=0, le=100000)
+
+
+class AuthorityPolicyV2PermissionSurface(BaseModel):
+    """Bounded read-only v2 permission-surface evidence (THR-229 C3b correction).
+
+    Produced by the narrowly scoped server-side permission reader bound on the
+    ``Database`` — never from a caller-supplied allow/deny boolean.  ``digest``
+    is the digest of the current org permission surface (org config + the
+    active agent definition) read through that server-side seam.  This value is
+    integrity EVIDENCE only: it grants no authority and never repairs anything.
+    A recheck denies ANY later change; an unavailable/read-failure/malformed
+    read can never become a successful recheck.
+    """
+
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    contract_version: StrictStr
+    digest: StrictStr
 
 
 class AuthorityPolicyV2PairedControlRequest(BaseModel):

@@ -853,6 +853,18 @@ def _drive_c3b_claim(fixture: _ShippingFixture) -> tuple[str, str]:
     row_id = results[0]["id"]
     db = fixture.org.db
 
+    # Bind the narrowly scoped server-side permission reader (the exact
+    # orchestration seam the later continuation consumer uses).  It reads the
+    # fixture's live org config/agent definition inside the server process; a
+    # read failure raises and the claim refuses fail-closed.
+    from runtime.orchestrator.authority import _strict_permission_surface_digest
+
+    db.bind_authority_policy_v2_permission_surface_reader(
+        lambda agent: _strict_permission_surface_digest(
+            fixture.org.orchestrator, agent,
+        )
+    )
+
     # Real admitted result -> callable seam: one atomic K/P/J claimed commit.
     claimed = db.claim_authority_policy_v2_candidate(
         root_task_id=root_id, manager_agent=MANAGER, manager_session_id=session_id,
