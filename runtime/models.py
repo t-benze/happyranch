@@ -1155,6 +1155,54 @@ AUTHORITY_POLICY_V2_SETTLEMENT_PENDING_REASONS = frozenset({
     "receipt_missing", "completion_evidence_missing", "settlement_failed",
 })
 
+# THR-229 checkpoint C3d3a: bounded authenticated publication-bookkeeping
+# vocabulary.  These statuses/reasons are the closed outcome of the callable
+# discovery/claim/acknowledge/failure/invalidate storage seams.  None of them is
+# launch authority; the storage seam never performs a queue call and the real
+# publication caller plus non-bypassable generation admission remain later units.
+AUTHORITY_POLICY_V2_PUBLICATION_LEASE_SECONDS = 30
+AUTHORITY_POLICY_V2_PUBLICATION_STATES = frozenset({
+    "needed", "publishing", "published",
+})
+AUTHORITY_POLICY_V2_PUBLICATION_CLAIM_STATUSES = frozenset({
+    "claimed", "publication_pending",
+})
+AUTHORITY_POLICY_V2_PUBLICATION_CLAIM_PENDING_REASONS = frozenset({
+    "transaction_owned", "identity_mismatch", "evidence_drift", "owner_lost",
+    "not_publishable", "lease_live", "attempt_overflow", "boot_unbound",
+    "publication_failed",
+})
+AUTHORITY_POLICY_V2_PUBLICATION_ACK_STATUSES = frozenset({
+    "published", "publish_returned", "ack_pending",
+})
+AUTHORITY_POLICY_V2_PUBLICATION_ACK_PENDING_REASONS = frozenset({
+    "transaction_owned", "identity_mismatch", "evidence_drift", "stale_claim",
+    "admission_evidence_missing", "ack_failed",
+})
+AUTHORITY_POLICY_V2_PUBLICATION_FAILURE_STATUSES = frozenset({
+    "failure_recorded", "failure_pending",
+})
+AUTHORITY_POLICY_V2_PUBLICATION_FAILURE_PENDING_REASONS = frozenset({
+    "transaction_owned", "identity_mismatch", "evidence_drift", "stale_claim",
+    "failure_failed",
+})
+AUTHORITY_POLICY_V2_INVALIDATION_STATUSES = frozenset({
+    "invalidated", "already_invalidated", "invalidation_pending",
+})
+AUTHORITY_POLICY_V2_INVALIDATION_PENDING_REASONS = frozenset({
+    "transaction_owned", "identity_mismatch", "evidence_drift",
+    "not_invalidatable", "invalidation_failed",
+})
+# Closed result-stage events appended by the publication/invalidation writers.
+# They reuse the existing ``authority_policy_v2_result_stage`` action and carry
+# the exact attempt identity, so each is discoverable and no new audit scope /
+# table / column is introduced.
+AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_CLAIMED = "publish_claimed"
+AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISHED = "published"
+AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_FAILED = "publish_failed"
+AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_RETURNED = "publish_returned"
+AUTHORITY_POLICY_V2_RESULT_STAGE_INVALIDATED = "invalidated"
+
 
 class AuthorityPolicyV2Attempt(BaseModel):
     """Immutable admitted attempt journal row for one v2 callback result.
@@ -2300,6 +2348,259 @@ class AuthorityPolicyV2SettlementOutcome(BaseModel):
             raise ValueError("a settled outcome carries no pending reason")
         if self.status == "already_settled_exact" and not self.receipt_settled:
             raise ValueError("already_settled_exact requires the settled receipt")
+        return self
+
+
+# THR-229 checkpoint C3d3a: bounded discovery record and outcomes for the
+# callable authenticated publication-bookkeeping storage seams.  The discovery
+# record is EVIDENCE ONLY and grants no authority; the outcomes are closed
+# dispositions, never launch authority.
+
+
+class AuthorityPolicyV2PublicationTarget(BaseModel):
+    """Read-only discovery record for one publishable notification (N)."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    notification_id: StrictStr
+    envelope_id: StrictStr
+    candidate_id: StrictStr
+    result_id: StrictInt = Field(ge=1, le=9223372036854775807)
+    root_task_id: StrictStr
+    manager_agent: StrictStr
+    manager_session_id: StrictStr
+    selector_id: StrictStr
+    state: StrictStr
+    publication_attempt: StrictInt = Field(default=0, ge=0, le=2147483647)
+    publisher_boot_id: StrictStr | None = None
+    lease_deadline: StrictStr | None = None
+
+    @field_validator("notification_id")
+    @classmethod
+    def _v2_publication_target_notification_shape(cls, value: str) -> str:
+        if not value.startswith("APV2N-"):
+            raise ValueError("notification_id must start with APV2N-")
+        _validate_authority_policy_v2_digest(value[len("APV2N-"):], "notification_id")
+        return value
+
+    @field_validator("envelope_id")
+    @classmethod
+    def _v2_publication_target_envelope_shape(cls, value: str) -> str:
+        if not value.startswith("APV2E-"):
+            raise ValueError("envelope_id must start with APV2E-")
+        _validate_authority_policy_v2_digest(value[len("APV2E-"):], "envelope_id")
+        return value
+
+    @field_validator("candidate_id")
+    @classmethod
+    def _v2_publication_target_candidate_shape(cls, value: str) -> str:
+        if not value.startswith("APV2C-"):
+            raise ValueError("candidate_id must start with APV2C-")
+        _validate_authority_policy_v2_digest(value[len("APV2C-"):], "candidate_id")
+        return value
+
+    @field_validator("selector_id")
+    @classmethod
+    def _v2_publication_target_selector_ref(cls, value: str) -> str:
+        return _validate_authority_policy_v2_selector_ref(value, "selector_id")
+
+    @field_validator("root_task_id", "manager_agent", "manager_session_id")
+    @classmethod
+    def _v2_publication_target_identity_scalars(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_text(value, info.field_name, 128)
+
+    @field_validator("state")
+    @classmethod
+    def _v2_publication_target_state_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_PUBLICATION_STATES:
+            raise ValueError("publication target state is not a closed value")
+        return value
+
+    @field_validator("publisher_boot_id", "lease_deadline")
+    @classmethod
+    def _v2_publication_target_optional_scalars(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return None
+        return _validate_authority_policy_v2_text(value, info.field_name, 128)
+
+    @model_validator(mode="after")
+    def _v2_publication_target_lease_pair(self) -> AuthorityPolicyV2PublicationTarget:
+        if (self.publisher_boot_id is None) != (self.lease_deadline is None):
+            raise ValueError("publisher boot and lease are present or absent together")
+        return self
+
+
+class AuthorityPolicyV2PublicationClaimOutcome(BaseModel):
+    """Bounded outcome of the ONE publication claim/reclaim transaction."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    status: StrictStr
+    reason: StrictStr | None = None
+    notification_id: StrictStr | None = None
+    envelope_id: StrictStr | None = None
+    generation_id: StrictStr | None = None
+    publication_attempt: StrictInt | None = Field(default=None, ge=1, le=2147483647)
+    publisher_boot_id: StrictStr | None = None
+    lease_deadline: StrictStr | None = None
+
+    @field_validator("status")
+    @classmethod
+    def _v2_publication_claim_status_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_PUBLICATION_CLAIM_STATUSES:
+            raise ValueError("publication claim status is not a closed value")
+        return value
+
+    @field_validator("reason")
+    @classmethod
+    def _v2_publication_claim_reason_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_PUBLICATION_CLAIM_PENDING_REASONS:
+            raise ValueError("publication claim reason is not a closed value")
+        return value
+
+    @model_validator(mode="after")
+    def _v2_publication_claim_shape(self) -> AuthorityPolicyV2PublicationClaimOutcome:
+        if self.status == "publication_pending":
+            if self.reason is None:
+                raise ValueError("a pending publication claim requires a bounded reason")
+            if self.publication_attempt is not None:
+                raise ValueError("a pending publication claim carries no attempt")
+            return self
+        if self.reason is not None:
+            raise ValueError("a claimed outcome carries no pending reason")
+        if (
+            self.notification_id is None or self.generation_id is None
+            or self.publication_attempt is None or self.publisher_boot_id is None
+            or self.lease_deadline is None
+        ):
+            raise ValueError("a claimed outcome requires the exact claim evidence")
+        return self
+
+
+class AuthorityPolicyV2PublicationAckOutcome(BaseModel):
+    """Bounded outcome of the exact publication acknowledgement transaction."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    status: StrictStr
+    reason: StrictStr | None = None
+    notification_id: StrictStr | None = None
+    generation_id: StrictStr | None = None
+    publication_attempt: StrictInt | None = Field(default=None, ge=1, le=2147483647)
+    state: StrictStr | None = None
+
+    @field_validator("status")
+    @classmethod
+    def _v2_publication_ack_status_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_PUBLICATION_ACK_STATUSES:
+            raise ValueError("publication acknowledgement status is not a closed value")
+        return value
+
+    @field_validator("reason")
+    @classmethod
+    def _v2_publication_ack_reason_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_PUBLICATION_ACK_PENDING_REASONS:
+            raise ValueError("publication acknowledgement reason is not a closed value")
+        return value
+
+    @model_validator(mode="after")
+    def _v2_publication_ack_shape(self) -> AuthorityPolicyV2PublicationAckOutcome:
+        if self.status == "ack_pending":
+            if self.reason is None:
+                raise ValueError("a pending acknowledgement requires a bounded reason")
+            if self.publication_attempt is not None:
+                raise ValueError("a pending acknowledgement carries no attempt")
+            return self
+        if self.reason is not None:
+            raise ValueError("a completed acknowledgement carries no pending reason")
+        if (
+            self.notification_id is None or self.generation_id is None
+            or self.publication_attempt is None or self.state is None
+        ):
+            raise ValueError("a completed acknowledgement requires the exact identity")
+        return self
+
+
+class AuthorityPolicyV2PublicationFailureOutcome(BaseModel):
+    """Bounded outcome of the audited queue-failure bookkeeping transaction."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    status: StrictStr
+    reason: StrictStr | None = None
+    notification_id: StrictStr | None = None
+    generation_id: StrictStr | None = None
+    publication_attempt: StrictInt | None = Field(default=None, ge=1, le=2147483647)
+    state: StrictStr | None = None
+
+    @field_validator("status")
+    @classmethod
+    def _v2_publication_failure_status_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_PUBLICATION_FAILURE_STATUSES:
+            raise ValueError("publication failure status is not a closed value")
+        return value
+
+    @field_validator("reason")
+    @classmethod
+    def _v2_publication_failure_reason_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_PUBLICATION_FAILURE_PENDING_REASONS:
+            raise ValueError("publication failure reason is not a closed value")
+        return value
+
+    @model_validator(mode="after")
+    def _v2_publication_failure_shape(self) -> AuthorityPolicyV2PublicationFailureOutcome:
+        if self.status == "failure_pending":
+            if self.reason is None:
+                raise ValueError("a pending failure record requires a bounded reason")
+            if self.publication_attempt is not None:
+                raise ValueError("a pending failure record carries no attempt")
+            return self
+        if self.reason is not None:
+            raise ValueError("a recorded failure carries no pending reason")
+        if (
+            self.notification_id is None or self.generation_id is None
+            or self.publication_attempt is None or self.state is None
+        ):
+            raise ValueError("a recorded failure requires the exact identity")
+        return self
+
+
+class AuthorityPolicyV2InvalidationOutcome(BaseModel):
+    """Bounded outcome of the exact generation-invalidation transaction."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    status: StrictStr
+    reason: StrictStr | None = None
+    notification_id: StrictStr | None = None
+    generation_id: StrictStr | None = None
+    envelope_id: StrictStr | None = None
+    notification_state: StrictStr | None = None
+    dispatch_state: StrictStr | None = None
+
+    @field_validator("status")
+    @classmethod
+    def _v2_invalidation_status_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_INVALIDATION_STATUSES:
+            raise ValueError("invalidation status is not a closed value")
+        return value
+
+    @field_validator("reason")
+    @classmethod
+    def _v2_invalidation_reason_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_INVALIDATION_PENDING_REASONS:
+            raise ValueError("invalidation reason is not a closed value")
+        return value
+
+    @model_validator(mode="after")
+    def _v2_invalidation_shape(self) -> AuthorityPolicyV2InvalidationOutcome:
+        if self.status == "invalidation_pending":
+            if self.reason is None:
+                raise ValueError("a pending invalidation requires a bounded reason")
+            return self
+        if self.reason is not None:
+            raise ValueError("a completed invalidation carries no pending reason")
+        if (
+            self.notification_id is None or self.generation_id is None
+            or self.envelope_id is None or self.notification_state is None
+            or self.dispatch_state is None
+        ):
+            raise ValueError("a completed invalidation requires the exact identity")
         return self
 
 

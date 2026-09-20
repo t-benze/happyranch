@@ -701,6 +701,72 @@ vetoes ordinary completion and remains byte-for-byte unchanged. Explicit
 recovery without an exact Q still fails `receipt_missing`/`identity_mismatch`;
 no Q, audit, synthetic settlement or historical row is rewritten.
 
+Checkpoint C3d3a lands the accepted R4 publish step-3 storage seams on the same
+unmerged draft PR: callable, Database-owned authenticated notification discovery,
+publication claim, acknowledgement, bounded queue-failure bookkeeping and
+generation invalidation. It adds NO table and changes no released column or
+overloaded meaning; it completes only this PR's existing unreleased N/D state
+and evidence columns. Discovery
+(`Database.list_authority_policy_v2_publication_targets`) is a READ-ONLY listing
+of every `needed`/`publishing`/`published` notification whose current root
+dispatch is `pending(G)`, independent of whether a recovery transition just
+happened; it deliberately includes live-lease and exact already-consumed-receipt
+rows because actual reclaim eligibility belongs at claim. The claim
+(`Database.claim_authority_policy_v2_notification_publication`) refuses caller
+transaction nesting with `transaction_owned` before it would `BEGIN`/`ROLLBACK`/
+invalidate the owner and otherwise runs ONE synchronized `BEGIN IMMEDIATE` that
+re-authenticates the complete post-final evidence, the actual Pending/null
+`block_kind`/not-cancelled causal owner/session and the pointer G; it CASes
+`needed -> publishing` or reclaims `publishing`/`published` ONLY after the bound
+daemon-process identity differs from the persisted publisher boot (verified
+death/restart) or the 30-second server-clock lease expired — never a caller
+allow boolean and never elapsed time alone to declare a still-live publisher
+dead — then increments the bounded positive publication attempt (overflow
+refuses), records the bound boot/lease, keeps the canonical row/columns
+consistent and appends exactly one closed `publish_claimed` audit for the exact
+G/P in the SAME transaction. A failure restores the previous state/counter/lease
+and appends nothing, and a live duplicate or wrong tuple is a bounded refusal
+that never poisons the winner. The acknowledgement
+(`Database.acknowledge_authority_policy_v2_notification_publication`) requires
+the exact G/boot/P and state `publishing`, authenticates the retained closed
+claim audit and the Pending causal owner, CASes to `published` with exactly one
+closed `published` audit atomically and returns an exact read-only retry; a stale
+P/boot never acknowledges or resets a newer claim, and an
+`admitted`/`settled` notification whose consumer outran acknowledgement is never
+returned to `published` (only a `publish_returned` observation for the exact
+prior P would be eligible, and until the real generation-admission producer
+exists that evidence cannot be authenticated, so the path refuses fail-closed
+with `admission_evidence_missing` and zero mutation). The failure bookkeeping
+(`Database.record_authority_policy_v2_notification_publication_failure`) keeps
+the monotonic attempt number, clears the publisher lease so the notification
+stays safely reclaimable and appends one closed `publish_failed` audit; if
+recording fails the prior publishing lease/state survives reclaimable. The
+invalidation
+(`Database.invalidate_authority_policy_v2_notification_generation`) authenticates
+the complete post-final evidence while allowing the root pointer to have
+legitimately advanced to a replacement generation, atomically marks the exact
+old G `invalidated` and retires D ONLY while it still names that G with one
+closed `invalidated` audit; it never mutates a cancelled/terminal/replacement
+task, retires replacement generation B, resets N to `needed`, spends E or
+creates any escalation/notification-routing side effect, and a failed audit rolls
+its own invalidation changes back. None of these writers performs a queue call.
+`AuthorityPolicyStore` exposes thin forwarders (`list_v2_publication_targets`,
+`claim_v2_notification_publication`, `acknowledge_v2_notification_publication`,
+`record_v2_notification_publication_failure`,
+`invalidate_v2_notification_generation`) that never begin/commit/rollback. The
+prerequisite ordinary-evidence correction is included:
+`_v2_completion_row_is_ordinary_related` now evaluates EVERY present causal
+reference before declaring a completion row independently unrelated, so a
+well-typed-but-DIFFERENT result id can no longer veto a surviving exact or
+malformed session reference; the Cartesian relatedness matrix lives in
+`tests/test_authority_v2_finalization_settlement.py` and the publication seams
+in `tests/test_authority_v2_publication_bookkeeping.py`. Production automatic
+publication and generation admission remain the NEXT unit: the real publisher
+plus the non-bypassable generation-admission/fallback fences, envelope spend,
+the startup/reaper/run-step discovery wiring and the editable-pair
+editor/browser path remain unimplemented and these storage methods alone confer
+no launch authority.
+
 The file-backed completion CLI preserves a supplied `manager_self_evaluation`
 member verbatim (including invalid/null values) so the daemon, rather than the
 client, validates it; an omitted member remains omitted. The shipping CLI to

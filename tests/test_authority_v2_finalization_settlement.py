@@ -1245,13 +1245,17 @@ def _prior_manager_completion(store, *, summary="Earlier legitimate manager turn
 
 def test_settlement_ordinary_accepts_current_after_prior_manager_history(tmp_path):
     store, row, attempt = _drive_finalized(tmp_path)
-    # A prior attributed completion for a DIFFERENT result is unrelated.
+    # A prior attributed completion whose result AND session references are both
+    # well-typed and DIFFERENT is provably unrelated history.  (A distinct result
+    # id carrying the EXACT current session is conflicting evidence, not
+    # unrelated history — see the Cartesian relatedness matrix above.)
     _produce_ordinary_completion(store, _result_row(store, row["id"]))
-    _mutate_audit_payload(
-        store, "completion_report",
-        lambda payload: payload.__setitem__("_result_row_id", row["id"] + 1000),
-        index=0,
-    )
+
+    def _retarget_prior(payload):
+        payload["_result_row_id"] = row["id"] + 1000
+        payload["_result_session_id"] = "sess-other"
+
+    _mutate_audit_payload(store, "completion_report", _retarget_prior, index=0)
     _prior_manager_completion(store)
     _insert_ordinary_completion(store, row["id"])
 
@@ -1812,3 +1816,139 @@ def test_settlement_ordinary_refuses_old_body_without_current_audit(tmp_path):
     assert outcome.status == "settlement_pending", outcome
     assert outcome.reason == "completion_evidence_missing", outcome
     assert _counts(store._db) == before
+
+
+# ── C3d3a prerequisite: ordinary-evidence Cartesian relatedness matrix ────
+#
+# The public settlement boundary classifies an ordinary producer completion row
+# from FIELD PRESENCE over the exact causal tuple.  The result reference
+# (exact / distinct / missing / malformed) is crossed with the session reference
+# (exact / distinct / missing / malformed).  A row is identity-RELATED whenever
+# ANY present reference matches the exact current result/session or is malformed;
+# it is provably UNRELATED only when every present reference is well-typed and a
+# different value.  A DISTINCT result reference never vetoes a surviving exact or
+# malformed session reference — the exact defect manager step23-probe.py
+# observations (a) and (b) demonstrate (a well-typed-but-conflicting result id
+# with the exact current session, and with a null session, were both wrongly
+# accepted as ordinary evidence).
+
+_RESULT_REFERENCE_CASES = {
+    "exact": lambda result_id, session_id: {"_result_row_id": result_id},
+    "distinct": lambda result_id, session_id: {"_result_row_id": result_id + 999999},
+    "missing": lambda result_id, session_id: {},
+    "malformed": lambda result_id, session_id: {"_result_row_id": None},
+}
+_SESSION_REFERENCE_CASES = {
+    "exact": lambda result_id, session_id: {"_result_session_id": session_id},
+    "distinct": lambda result_id, session_id: {"_result_session_id": "sess-other"},
+    "missing": lambda result_id, session_id: {},
+    "malformed": lambda result_id, session_id: {"_result_session_id": None},
+}
+# Every PRESENT reference is well-typed and provably a different value; no
+# present reference is matching or malformed, so the row is independently
+# unrelated history (never broadened into a valid evidence row).
+_PROVABLY_UNRELATED_REFERENCE_COMBINATIONS = frozenset({
+    ("distinct", "distinct"),
+    ("distinct", "missing"),
+    ("missing", "distinct"),
+    ("missing", "missing"),
+})
+
+
+def _mutate_ordinary_completion_references(store, row, result_state, session_state):
+    def mutate(payload):
+        payload.pop("_result_row_id", None)
+        payload.pop("_result_session_id", None)
+        payload.update(_RESULT_REFERENCE_CASES[result_state](row["id"], SESSION_ID))
+        payload.update(_SESSION_REFERENCE_CASES[session_state](row["id"], SESSION_ID))
+
+    _mutate_audit_payload(store, "completion_report", mutate)
+
+
+def _duplicate_ordinary_completion_with_references(
+    store, row, result_state, session_state,
+):
+    def mutate(payload):
+        payload.pop("_result_row_id", None)
+        payload.pop("_result_session_id", None)
+        payload.update(_RESULT_REFERENCE_CASES[result_state](row["id"], SESSION_ID))
+        payload.update(_SESSION_REFERENCE_CASES[session_state](row["id"], SESSION_ID))
+
+    _duplicate_audit_payload(store, "completion_report", mutate)
+
+
+@pytest.mark.parametrize("result_state", sorted(_RESULT_REFERENCE_CASES))
+@pytest.mark.parametrize("session_state", sorted(_SESSION_REFERENCE_CASES))
+def test_ordinary_duplicate_cartesian_relatedness_matrix(
+    tmp_path, result_state, session_state,
+):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    _drive(store, row, attempt, "consumed_audited")
+    assert _finalize(store, row, attempt).status == "continued"
+    _insert_ordinary_completion(store, row["id"])
+    assert _settle(store, row).status == "settled"
+
+    _duplicate_ordinary_completion_with_references(
+        store, row, result_state, session_state,
+    )
+    before = _counts(store._db)
+    outcome = _settle(store, row)
+    if (result_state, session_state) in _PROVABLY_UNRELATED_REFERENCE_COMBINATIONS:
+        # An unrelated extra historical row neither supplies current authority
+        # nor blocks the one exact ordinary evidence row.
+        assert outcome.status == "settled", outcome
+    else:
+        assert outcome.status == "settlement_pending", outcome
+        assert outcome.reason == "completion_evidence_missing", outcome
+    # No refused case ever mutates task/J/K/P/V/E/N/D/Q/audit counts.
+    assert _counts(store._db) == before
+
+
+@pytest.mark.parametrize(
+    "session_state", ["exact", "malformed"],
+    ids=["exact-session-probe-a", "null-session-probe-b"],
+)
+def test_ordinary_conflicting_result_lone_candidate_refuses(tmp_path, session_state):
+    """Lone-candidate form of the two demonstrated manager probe conflicts.
+
+    A well-typed but DIFFERENT result reference combined with the exact current
+    session or a malformed/null session is completion evidence for THIS causal
+    result/session and can never be accepted as ordinary absence, whether it is
+    an extra duplicate or the only surviving row.
+    """
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    _drive(store, row, attempt, "consumed_audited")
+    assert _finalize(store, row, attempt).status == "continued"
+    _insert_ordinary_completion(store, row["id"])
+
+    def mutate(payload):
+        payload["_result_row_id"] = row["id"] + 999999
+        payload["_result_session_id"] = (
+            SESSION_ID if session_state == "exact" else None
+        )
+
+    _mutate_audit_payload(store, "completion_report", mutate)
+    before = _counts(store._db)
+    outcome = _settle(store, row)
+    assert outcome.status == "settlement_pending", outcome
+    assert outcome.reason == "completion_evidence_missing", outcome
+    assert _counts(store._db) == before
+
+
+def test_ordinary_conflicting_duplicate_refuses_after_repeat_and_reopen(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    _drive(store, row, attempt, "consumed_audited")
+    assert _finalize(store, row, attempt).status == "continued"
+    _insert_ordinary_completion(store, row["id"])
+    assert _settle(store, row).status == "settled"
+    _duplicate_ordinary_completion_with_references(store, row, "distinct", "exact")
+
+    before = _counts(store._db)
+    first = _settle(store, row)
+    assert first.status == "settlement_pending", first
+    assert _counts(store._db) == before
+
+    reopened = _reopen(tmp_path)
+    again = _settle(reopened, row)
+    assert again.status == "settlement_pending", again
+    assert _counts(reopened._db) == before

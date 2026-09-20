@@ -42,6 +42,11 @@ from runtime.models import (
     AuthorityPolicyV2HousekeepingTarget,
     AuthorityPolicyV2PairedControlRequest,
     AuthorityPolicyV2Pin,
+    AuthorityPolicyV2PublicationAckOutcome,
+    AuthorityPolicyV2PublicationClaimOutcome,
+    AuthorityPolicyV2PublicationFailureOutcome,
+    AuthorityPolicyV2PublicationTarget,
+    AuthorityPolicyV2InvalidationOutcome,
     AuthorityPolicyV2RecoveryNotification,
     AuthorityPolicyV2Release,
     AuthorityPolicyV2RootDispatch,
@@ -78,9 +83,15 @@ from runtime.models import (
     AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION,
     AUTHORITY_POLICY_V2_HOUSEKEEPING_PENDING_CODE,
     AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES,
+    AUTHORITY_POLICY_V2_PUBLICATION_LEASE_SECONDS,
     AUTHORITY_POLICY_V2_RECOVERY_SETTLED_ACTION,
     AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
     AUTHORITY_POLICY_V2_RESULT_STAGE_CONTINUED,
+    AUTHORITY_POLICY_V2_RESULT_STAGE_INVALIDATED,
+    AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_CLAIMED,
+    AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_FAILED,
+    AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_RETURNED,
+    AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISHED,
     AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED,
     AUTHORITY_POLICY_V2_TEAM,
     authority_policy_v2_attempt_id,
@@ -10016,8 +10027,13 @@ class Database:
         )
         if ref_state == "related":
             return True
-        if ref_state == "distinct":
-            return False
+        # A provably-DISTINCT result reference never vetoes a surviving exact or
+        # malformed SESSION reference: EVERY present causal reference is
+        # evaluated before the row may be declared independently unrelated.  A
+        # well-typed-but-conflicting result id therefore cannot hide an exact or
+        # malformed current-session duplicate, while a row whose every present
+        # result AND session reference is well-typed and distinct stays
+        # independently unrelated.
         return cls._v2_session_reference_related(
             payload, ("_result_session_id", "session_id"), manager_session_id,
         )
@@ -10114,11 +10130,20 @@ class Database:
         self, *, attempt: AuthorityPolicyV2Attempt, attempt_row,
         candidate: AuthorityPolicyV2Candidate,
         evaluation: AuthorityPolicyV2Evaluation,
+        require_dispatch_generation: bool = True,
     ) -> tuple[str | None, dict | None]:
         """Authenticate E/N/D plus the complete final audit set read-only.
 
         Does not require the task to still be in progress, so it also serves the
         exact post-final causal replay.  Missing/corrupt/mixed evidence refuses.
+
+        ``require_dispatch_generation`` stays ``True`` for every existing
+        settlement/replay reader (the live root pointer MUST name this exact
+        generation).  The C3d3a invalidation seam passes ``False`` so an exact
+        old generation can still be authenticated and invalidated after the
+        root pointer has legitimately advanced to a replacement generation B;
+        the dispatch identity/envelope/owner joins are still authenticated
+        unchanged, so this never broadens settlement or admits a foreign tuple.
         """
         if (
             evaluation.outcome != "continue_applies"
@@ -10195,12 +10220,14 @@ class Database:
             dispatch = self._authority_policy_v2_root_dispatch_from_row(dispatch_row)
         except ValueError:
             return "identity_mismatch", None
-        if (
-            dispatch.generation_id != generation_id
-            or dispatch.envelope_id != envelope.envelope_id
-            or dispatch.expected_manager_agent != candidate.manager_agent
-            or dispatch.expected_manager_session_id != candidate.manager_session_id
-        ):
+        if dispatch.generation_id == generation_id:
+            if (
+                dispatch.envelope_id != envelope.envelope_id
+                or dispatch.expected_manager_agent != candidate.manager_agent
+                or dispatch.expected_manager_session_id != candidate.manager_session_id
+            ):
+                return "already_finalized", None
+        elif require_dispatch_generation:
             return "already_finalized", None
         if not self._authenticate_v2_candidate_audit_uncommitted(
             candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_FINAL,
@@ -10229,7 +10256,7 @@ class Database:
 
     def _authenticate_v2_post_final_evidence_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
-        result_id: int,
+        result_id: int, require_dispatch_generation: bool = True,
     ) -> tuple[str | None, dict | None]:
         """Read-only authentication of the COMPLETE durable post-final evidence.
 
@@ -10387,6 +10414,7 @@ class Database:
         code, ctx = self._authenticate_v2_final_rows_uncommitted(
             attempt=attempt, attempt_row=attempt_row, candidate=candidate,
             evaluation=evaluation,
+            require_dispatch_generation=require_dispatch_generation,
         )
         if code is not None:
             return code, None
@@ -11382,6 +11410,702 @@ class Database:
         except Exception:
             self._conn.rollback()
             raise
+
+    # -- THR-229 checkpoint C3d3a: callable authenticated publication
+    # bookkeeping.  Discovery is a read-only listing; claim/acknowledge/failure
+    # and invalidation are Database-owned synchronized transactions.  NONE of
+    # these methods calls the queue, launches work, reevaluates a candidate,
+    # remints an envelope, changes a task status or admits a generation: the
+    # real publisher plus the non-bypassable generation-admission fallback and
+    # the next-result spend remain later units.
+
+    def _authenticate_v2_publication_final_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, allow_post_admission: bool = False,
+    ) -> tuple[str | None, dict | None]:
+        """The minimum post-final seam publication bookkeeping needs.
+
+        Reuses the COMPLETE post-final authentication (J/R/K/P/V, the pinned
+        binding history, a0..a3 and the final E/N/D + audit set) plus the actual
+        Pending causal-owner projection, but accepts the notification in
+        ``needed`` (first claim) or a reclaimable ``publishing``/``published``
+        state.  ``admitted``/``settled`` are only admitted for the narrow
+        post-admission acknowledgement classification (``allow_post_admission``)
+        and are never publishable; ``invalidated`` never is.  The settlement
+        reader's own ``needed``-only contract is untouched.
+        """
+        code, ctx = self._authenticate_v2_post_final_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+        )
+        if code is not None:
+            return (
+                "evidence_drift" if code == "evidence_drift" else "identity_mismatch"
+            ), None
+        assert ctx is not None
+        if ctx["dispatch"].state != "pending":
+            return "evidence_drift", None
+        if ctx["notification"].notification_id != ctx["dispatch"].generation_id:
+            return "evidence_drift", None
+        allowed = {"needed", "publishing", "published"}
+        if allow_post_admission:
+            allowed = allowed | {"admitted", "settled"}
+        if ctx["notification"].state not in allowed:
+            return "evidence_drift", None
+        if not self._authenticate_v2_post_final_task_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id,
+        ):
+            return "identity_mismatch", None
+        return None, ctx
+
+    def _v2_publication_audit_payload(
+        self, *, stage: str, attempt_id: str, candidate_id: str, result_id: int,
+        envelope_id: str, notification_id: str, generation_id: str,
+        publication_attempt: int | None = None,
+        publisher_boot_id: str | None = None,
+    ) -> dict:
+        """One closed publication/invalidation result-stage payload."""
+        payload = {
+            "stage": stage,
+            "attempt_id": attempt_id,
+            "candidate_id": candidate_id,
+            "result_id": result_id,
+            "envelope_id": envelope_id,
+            "notification_id": notification_id,
+            "generation_id": generation_id,
+        }
+        if publication_attempt is not None:
+            payload["publication_attempt"] = publication_attempt
+        if publisher_boot_id is not None:
+            payload["publisher_boot_id"] = publisher_boot_id
+        return payload
+
+    def _authenticate_v2_publication_event_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, attempt_id: str,
+        expected: dict,
+    ) -> bool:
+        """Exactly one authentic CLOSED publication/invalidation event.
+
+        The event is scoped to the immutable attempt id, its stage and its
+        generation (and, when the stage persists one, its exact publication
+        attempt), so several legitimate reclaims of the same generation with
+        different ``P`` never invalidate each other.  A missing, duplicated,
+        mutated, foreign or extra-key event refuses.
+        """
+        rows = self._v2_identity_scoped_audits(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            attempt_id=attempt_id,
+        )
+        if rows is None:
+            return False
+        matches = []
+        for row in rows:
+            payload = row["payload"]
+            if not isinstance(payload, dict):
+                continue
+            if (
+                payload.get("stage") != expected["stage"]
+                or payload.get("generation_id") != expected["generation_id"]
+            ):
+                continue
+            if "publication_attempt" in expected and (
+                payload.get("publication_attempt") != expected["publication_attempt"]
+            ):
+                continue
+            matches.append(payload)
+        if len(matches) != 1:
+            return False
+        return self._v2_json_type_sensitive_equal(matches[0], expected)
+
+    @_synchronized
+    def list_authority_policy_v2_publication_targets(
+        self,
+    ) -> list[AuthorityPolicyV2PublicationTarget]:
+        """Read-only discovery of every needed/publishing/published N with a
+        current pending root-dispatch pointer and no generation admission.
+
+        Listing is DISCOVERY, never authority: it deliberately includes rows
+        whose lease is still live (or an exact already-consumed receipt history)
+        so the caller can decide, and the claim transaction always re-reads and
+        authenticates the complete evidence itself.  Unreadable/corrupt rows are
+        not surfaced as bounded targets.
+        """
+        rows = self._conn.execute(
+            """SELECT n.notification_id, n.envelope_id, n.candidate_id,
+                      n.result_id, n.root_task_id, n.manager_agent,
+                      n.manager_session_id, n.selector_id, n.state,
+                      n.publication_attempt, n.publisher_boot_id, n.lease_deadline
+                 FROM authority_policy_v2_recovery_notifications n
+                 JOIN authority_policy_v2_root_dispatch d
+                   ON d.generation_id = n.notification_id
+                WHERE n.state IN ('needed','publishing','published')
+                  AND d.state = 'pending'
+                ORDER BY n.created_at, n.notification_id"""
+        ).fetchall()
+        targets: list[AuthorityPolicyV2PublicationTarget] = []
+        for row in rows:
+            try:
+                targets.append(AuthorityPolicyV2PublicationTarget(**dict(row)))
+            except ValidationError:
+                continue
+        return targets
+
+    def _claim_v2_notification_publication_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, publisher_boot_id: str, now_dt: datetime,
+    ) -> AuthorityPolicyV2PublicationClaimOutcome:
+        def _pending(reason: str, **kw) -> AuthorityPolicyV2PublicationClaimOutcome:
+            return AuthorityPolicyV2PublicationClaimOutcome(
+                status="publication_pending", reason=reason, **kw,
+            )
+
+        code, ctx = self._authenticate_v2_publication_final_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+        )
+        if code is not None:
+            return _pending(
+                "evidence_drift" if code == "evidence_drift" else "identity_mismatch"
+            )
+        assert ctx is not None
+        notification = ctx["notification"]
+        candidate = ctx["candidate"]
+        attempt = ctx["attempt"]
+        envelope = ctx["envelope"]
+        generation_id = ctx["generation_id"]
+        notification_id = notification.notification_id
+        base = {
+            "notification_id": notification_id,
+            "envelope_id": envelope.envelope_id,
+            "generation_id": generation_id,
+        }
+        state = notification.state
+        now_iso = now_dt.isoformat()
+        if state == "publishing" or state == "published":
+            # Reclaim only after verified publisher process death/restart (the
+            # bound daemon-process identity differs) or expiry of the 30-second
+            # server-clock lease.  A live same-process lease is never stolen.
+            reclaimable = (
+                notification.publisher_boot_id != publisher_boot_id
+                or notification.lease_deadline is None
+                or now_iso >= notification.lease_deadline
+            )
+            if not reclaimable:
+                return _pending("lease_live", **base)
+        elif state != "needed":
+            return _pending("not_publishable", **base)
+        prior_attempt = notification.publication_attempt
+        if prior_attempt >= 2147483647:
+            return _pending("attempt_overflow", **base)
+        new_attempt = prior_attempt + 1
+        lease_deadline = (
+            now_dt + timedelta(seconds=AUTHORITY_POLICY_V2_PUBLICATION_LEASE_SECONDS)
+        ).isoformat()
+        updated = notification.model_copy(update={
+            "state": "publishing",
+            "publication_attempt": new_attempt,
+            "publisher_boot_id": publisher_boot_id,
+            "lease_deadline": lease_deadline,
+            "updated_at": now_dt,
+        })
+        snapshot = updated.model_dump(mode="json")
+        canonical = authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8")
+        cursor = self._conn.execute(
+            """UPDATE authority_policy_v2_recovery_notifications
+                  SET state='publishing', publication_attempt=?, publisher_boot_id=?,
+                      lease_deadline=?, canonical_payload_json=?, updated_at=?
+                WHERE notification_id=? AND state=? AND publication_attempt=?""",
+            (
+                new_attempt, publisher_boot_id, lease_deadline, canonical,
+                snapshot["updated_at"], notification_id, state, prior_attempt,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return _pending("identity_mismatch", **base)
+        self.insert_audit_log_uncommitted(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            self._v2_publication_audit_payload(
+                stage=AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_CLAIMED,
+                attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+                result_id=result_id, envelope_id=envelope.envelope_id,
+                notification_id=notification_id, generation_id=generation_id,
+                publication_attempt=new_attempt, publisher_boot_id=publisher_boot_id,
+            ),
+        )
+        return AuthorityPolicyV2PublicationClaimOutcome(
+            status="claimed", notification_id=notification_id,
+            envelope_id=envelope.envelope_id, generation_id=generation_id,
+            publication_attempt=new_attempt, publisher_boot_id=publisher_boot_id,
+            lease_deadline=lease_deadline,
+        )
+
+    @_synchronized
+    def claim_authority_policy_v2_notification_publication(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int,
+    ) -> AuthorityPolicyV2PublicationClaimOutcome:
+        """ONE synchronized publication claim/reclaim transaction.
+
+        CAS ``needed`` -> ``publishing`` (or reclaims a dead/expired
+        ``publishing``/``published``) with the current bound daemon-process
+        identity and a 30-second server-clock lease, increments the bounded
+        positive publication attempt and appends exactly one closed
+        ``publish_claimed`` audit for the exact G/P in the SAME transaction.
+        Failure restores the previous state/counter/lease and appends nothing.
+        No queue call, task mutation, reevaluation or admission happens here.
+        """
+        if self._conn.in_transaction:
+            return AuthorityPolicyV2PublicationClaimOutcome(
+                status="publication_pending", reason="transaction_owned",
+            )
+        publisher_boot_id = self._v2_process_boot_id
+        if not isinstance(publisher_boot_id, str) or not publisher_boot_id:
+            return AuthorityPolicyV2PublicationClaimOutcome(
+                status="publication_pending", reason="boot_unbound",
+            )
+        now_dt = _now()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            outcome = self._claim_v2_notification_publication_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                manager_session_id=manager_session_id, result_id=result_id,
+                publisher_boot_id=publisher_boot_id, now_dt=now_dt,
+            )
+            if outcome.status == "publication_pending":
+                self._conn.rollback()
+                return outcome
+            self._conn.commit()
+            return outcome
+        except Exception:
+            self._conn.rollback()
+            return AuthorityPolicyV2PublicationClaimOutcome(
+                status="publication_pending", reason="publication_failed",
+            )
+
+    def _ack_v2_notification_publication_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, publication_attempt: int, publisher_boot_id: str,
+        now_dt: datetime,
+    ) -> AuthorityPolicyV2PublicationAckOutcome:
+        def _pending(reason: str, **kw) -> AuthorityPolicyV2PublicationAckOutcome:
+            return AuthorityPolicyV2PublicationAckOutcome(
+                status="ack_pending", reason=reason, **kw,
+            )
+
+        code, ctx = self._authenticate_v2_post_final_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+        )
+        if code is not None:
+            return _pending(
+                "evidence_drift" if code == "evidence_drift" else "identity_mismatch"
+            )
+        assert ctx is not None
+        notification = ctx["notification"]
+        candidate = ctx["candidate"]
+        attempt = ctx["attempt"]
+        envelope = ctx["envelope"]
+        dispatch = ctx["dispatch"]
+        generation_id = ctx["generation_id"]
+        notification_id = notification.notification_id
+        base = {
+            "notification_id": notification_id,
+            "generation_id": generation_id,
+        }
+        if (
+            notification_id != dispatch.generation_id
+            or dispatch.state != "pending"
+        ):
+            return _pending("stale_claim", **base)
+        state = notification.state
+        if state in ("admitted", "settled"):
+            # The consumer outran acknowledgement.  Only a ``publish_returned``
+            # observation for the EXACT prior P is eligible, never a return to
+            # ``published``.  The complete required admission evidence cannot be
+            # authenticated before the real generation-admission producer lands,
+            # so this path refuses fail-closed with no mutation; the final real
+            # producer race proof belongs to the generation-admission unit.
+            if (
+                notification.publication_attempt != publication_attempt
+                or notification.publisher_boot_id != publisher_boot_id
+            ):
+                return _pending("stale_claim", **base)
+            return _pending("admission_evidence_missing", **base)
+        if state not in ("publishing", "published"):
+            return _pending("stale_claim", **base)
+        if not self._authenticate_v2_post_final_task_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id,
+        ):
+            return _pending("identity_mismatch", **base)
+        if (
+            notification.publication_attempt != publication_attempt
+            or notification.publisher_boot_id != publisher_boot_id
+        ):
+            return _pending("stale_claim", **base)
+        if not self._authenticate_v2_publication_event_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=attempt.attempt_id,
+            expected=self._v2_publication_audit_payload(
+                stage=AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_CLAIMED,
+                attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+                result_id=result_id, envelope_id=envelope.envelope_id,
+                notification_id=notification_id, generation_id=generation_id,
+                publication_attempt=publication_attempt,
+                publisher_boot_id=publisher_boot_id,
+            ),
+        ):
+            return _pending("evidence_drift", **base)
+        if state == "published":
+            if self._authenticate_v2_publication_event_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                attempt_id=attempt.attempt_id,
+                expected=self._v2_publication_audit_payload(
+                    stage=AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISHED,
+                    attempt_id=attempt.attempt_id,
+                    candidate_id=candidate.candidate_id, result_id=result_id,
+                    envelope_id=envelope.envelope_id,
+                    notification_id=notification_id, generation_id=generation_id,
+                    publication_attempt=publication_attempt,
+                    publisher_boot_id=publisher_boot_id,
+                ),
+            ):
+                return AuthorityPolicyV2PublicationAckOutcome(
+                    status="published", state="published",
+                    publication_attempt=publication_attempt, **base,
+                )
+            return _pending("evidence_drift", **base)
+        updated = notification.model_copy(update={
+            "state": "published", "updated_at": now_dt,
+        })
+        snapshot = updated.model_dump(mode="json")
+        canonical = authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8")
+        cursor = self._conn.execute(
+            """UPDATE authority_policy_v2_recovery_notifications
+                  SET state='published', canonical_payload_json=?, updated_at=?
+                WHERE notification_id=? AND state='publishing'
+                  AND publication_attempt=? AND publisher_boot_id=?""",
+            (
+                canonical, snapshot["updated_at"], notification_id,
+                publication_attempt, publisher_boot_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return _pending("stale_claim", **base)
+        self.insert_audit_log_uncommitted(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            self._v2_publication_audit_payload(
+                stage=AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISHED,
+                attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+                result_id=result_id, envelope_id=envelope.envelope_id,
+                notification_id=notification_id, generation_id=generation_id,
+                publication_attempt=publication_attempt,
+                publisher_boot_id=publisher_boot_id,
+            ),
+        )
+        return AuthorityPolicyV2PublicationAckOutcome(
+            status="published", state="published",
+            publication_attempt=publication_attempt, **base,
+        )
+
+    @_synchronized
+    def acknowledge_authority_policy_v2_notification_publication(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, publication_attempt: int, publisher_boot_id: str,
+    ) -> AuthorityPolicyV2PublicationAckOutcome:
+        """Exact publication acknowledgement: ``publishing`` -> ``published``.
+
+        Requires the exact G/publisher boot/P and state ``publishing``,
+        authenticates the retained closed claim audit and the actual Pending
+        causal owner, CASes to ``published`` and appends exactly one closed
+        ``published`` audit atomically.  An exact retry authenticates the
+        retained evidence read-only.  A stale P/boot never acknowledges or
+        resets a newer claim.  No queue call happens here.
+        """
+        if self._conn.in_transaction:
+            return AuthorityPolicyV2PublicationAckOutcome(
+                status="ack_pending", reason="transaction_owned",
+            )
+        now_dt = _now()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            outcome = self._ack_v2_notification_publication_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                manager_session_id=manager_session_id, result_id=result_id,
+                publication_attempt=publication_attempt,
+                publisher_boot_id=publisher_boot_id, now_dt=now_dt,
+            )
+            if outcome.status == "ack_pending":
+                self._conn.rollback()
+                return outcome
+            self._conn.commit()
+            return outcome
+        except Exception:
+            self._conn.rollback()
+            return AuthorityPolicyV2PublicationAckOutcome(
+                status="ack_pending", reason="ack_failed",
+            )
+
+    def _record_v2_notification_publication_failure_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, publication_attempt: int, publisher_boot_id: str,
+        now_dt: datetime,
+    ) -> AuthorityPolicyV2PublicationFailureOutcome:
+        def _pending(reason: str, **kw) -> AuthorityPolicyV2PublicationFailureOutcome:
+            return AuthorityPolicyV2PublicationFailureOutcome(
+                status="failure_pending", reason=reason, **kw,
+            )
+
+        code, ctx = self._authenticate_v2_publication_final_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+        )
+        if code is not None:
+            return _pending(
+                "evidence_drift" if code == "evidence_drift" else "identity_mismatch"
+            )
+        assert ctx is not None
+        notification = ctx["notification"]
+        candidate = ctx["candidate"]
+        attempt = ctx["attempt"]
+        envelope = ctx["envelope"]
+        generation_id = ctx["generation_id"]
+        notification_id = notification.notification_id
+        base = {
+            "notification_id": notification_id,
+            "generation_id": generation_id,
+        }
+        if notification.publication_attempt != publication_attempt:
+            return _pending("stale_claim", **base)
+        if notification.state != "publishing":
+            return _pending("stale_claim", **base)
+        expected_failed = self._v2_publication_audit_payload(
+            stage=AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_FAILED,
+            attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+            result_id=result_id, envelope_id=envelope.envelope_id,
+            notification_id=notification_id, generation_id=generation_id,
+            publication_attempt=publication_attempt,
+            publisher_boot_id=publisher_boot_id,
+        )
+        if notification.publisher_boot_id is None and notification.lease_deadline is None:
+            # Exact read-only replay of the already-recorded failure: the
+            # retained publish_failed event is the evidence, not a new write.
+            if self._authenticate_v2_publication_event_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                attempt_id=attempt.attempt_id, expected=expected_failed,
+            ):
+                return AuthorityPolicyV2PublicationFailureOutcome(
+                    status="failure_recorded", state="publishing",
+                    publication_attempt=publication_attempt, **base,
+                )
+            return _pending("evidence_drift", **base)
+        if notification.publisher_boot_id != publisher_boot_id:
+            return _pending("stale_claim", **base)
+        # Bounded audited retry state: keep the monotonic attempt number but
+        # clear the lease so the notification is safely reclaimable.  A
+        # recording failure below rolls the whole thing back, leaving the
+        # prior publishing lease reclaimable by death/expiry.
+        updated = notification.model_copy(update={
+            "state": "publishing",
+            "publisher_boot_id": None,
+            "lease_deadline": None,
+            "updated_at": now_dt,
+        })
+        snapshot = updated.model_dump(mode="json")
+        canonical = authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8")
+        cursor = self._conn.execute(
+            """UPDATE authority_policy_v2_recovery_notifications
+                  SET publisher_boot_id=NULL, lease_deadline=NULL,
+                      canonical_payload_json=?, updated_at=?
+                WHERE notification_id=? AND state='publishing'
+                  AND publication_attempt=? AND publisher_boot_id=?""",
+            (
+                canonical, snapshot["updated_at"], notification_id,
+                publication_attempt, publisher_boot_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return _pending("stale_claim", **base)
+        self.insert_audit_log_uncommitted(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            expected_failed,
+        )
+        return AuthorityPolicyV2PublicationFailureOutcome(
+            status="failure_recorded", state="publishing",
+            publication_attempt=publication_attempt, **base,
+        )
+
+    @_synchronized
+    def record_authority_policy_v2_notification_publication_failure(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, publication_attempt: int, publisher_boot_id: str,
+    ) -> AuthorityPolicyV2PublicationFailureOutcome:
+        """Bounded audited queue-failure bookkeeping for one exact claim.
+
+        Requires the exact G/P/boot and state ``publishing``, keeps the monotonic
+        publication attempt, clears the publisher lease so the notification stays
+        safely reclaimable and appends exactly one closed ``publish_failed``
+        audit atomically.  If recording fails, the prior publishing
+        lease/state survives reclaimable by death/expiry.  This method does not
+        call the queue, reevaluate or mint.
+        """
+        if self._conn.in_transaction:
+            return AuthorityPolicyV2PublicationFailureOutcome(
+                status="failure_pending", reason="transaction_owned",
+            )
+        now_dt = _now()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            outcome = self._record_v2_notification_publication_failure_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                manager_session_id=manager_session_id, result_id=result_id,
+                publication_attempt=publication_attempt,
+                publisher_boot_id=publisher_boot_id, now_dt=now_dt,
+            )
+            if outcome.status == "failure_pending":
+                self._conn.rollback()
+                return outcome
+            self._conn.commit()
+            return outcome
+        except Exception:
+            self._conn.rollback()
+            return AuthorityPolicyV2PublicationFailureOutcome(
+                status="failure_pending", reason="failure_failed",
+            )
+
+    def _invalidate_v2_notification_generation_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, now_dt: datetime,
+    ) -> AuthorityPolicyV2InvalidationOutcome:
+        def _pending(reason: str, **kw) -> AuthorityPolicyV2InvalidationOutcome:
+            return AuthorityPolicyV2InvalidationOutcome(
+                status="invalidation_pending", reason=reason, **kw,
+            )
+
+        code, ctx = self._authenticate_v2_post_final_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            require_dispatch_generation=False,
+        )
+        if code is not None:
+            return _pending(
+                "evidence_drift" if code == "evidence_drift" else "identity_mismatch"
+            )
+        assert ctx is not None
+        notification = ctx["notification"]
+        candidate = ctx["candidate"]
+        attempt = ctx["attempt"]
+        envelope = ctx["envelope"]
+        dispatch = ctx["dispatch"]
+        generation_id = ctx["generation_id"]
+        notification_id = notification.notification_id
+        base = {
+            "notification_id": notification_id,
+            "envelope_id": envelope.envelope_id,
+            "generation_id": generation_id,
+        }
+        expected_audit = self._v2_publication_audit_payload(
+            stage=AUTHORITY_POLICY_V2_RESULT_STAGE_INVALIDATED,
+            attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+            result_id=result_id, envelope_id=envelope.envelope_id,
+            notification_id=notification_id, generation_id=generation_id,
+        )
+        if notification.state == "invalidated":
+            if self._authenticate_v2_publication_event_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                attempt_id=attempt.attempt_id, expected=expected_audit,
+            ):
+                return AuthorityPolicyV2InvalidationOutcome(
+                    status="already_invalidated", notification_state="invalidated",
+                    dispatch_state=dispatch.state, **base,
+                )
+            return _pending("evidence_drift", **base)
+        if notification.state == "settled":
+            return _pending("not_invalidatable", **base)
+        updated = notification.model_copy(update={
+            "state": "invalidated", "updated_at": now_dt,
+        })
+        snapshot = updated.model_dump(mode="json")
+        canonical = authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8")
+        cursor = self._conn.execute(
+            """UPDATE authority_policy_v2_recovery_notifications
+                  SET state='invalidated', canonical_payload_json=?, updated_at=?
+                WHERE notification_id=? AND state=?""",
+            (canonical, snapshot["updated_at"], notification_id, notification.state),
+        )
+        if cursor.rowcount != 1:
+            return _pending("identity_mismatch", **base)
+        # Retire the root dispatch ONLY while it still points at this exact
+        # generation; a replacement generation B is never mutated.
+        dispatch_state = dispatch.state
+        if dispatch.generation_id == generation_id and dispatch.state != "retired":
+            d_updated = dispatch.model_copy(update={
+                "state": "retired", "updated_at": now_dt,
+            })
+            d_snapshot = d_updated.model_dump(mode="json")
+            d_canonical = authority_policy_v2_canonical_json_bytes(
+                d_snapshot
+            ).decode("utf-8")
+            d_cursor = self._conn.execute(
+                """UPDATE authority_policy_v2_root_dispatch
+                      SET state='retired', canonical_payload_json=?, updated_at=?
+                    WHERE root_task_id=? AND generation_id=? AND state=?""",
+                (
+                    d_canonical, d_snapshot["updated_at"], root_task_id,
+                    generation_id, dispatch.state,
+                ),
+            )
+            if d_cursor.rowcount != 1:
+                return _pending("identity_mismatch", **base)
+            dispatch_state = "retired"
+        self.insert_audit_log_uncommitted(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            expected_audit,
+        )
+        return AuthorityPolicyV2InvalidationOutcome(
+            status="invalidated", notification_state="invalidated",
+            dispatch_state=dispatch_state, **base,
+        )
+
+    @_synchronized
+    def invalidate_authority_policy_v2_notification_generation(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int,
+    ) -> AuthorityPolicyV2InvalidationOutcome:
+        """Exact cancellation/replacement-owner generation invalidation.
+
+        Authenticates the complete post-final evidence (allowing the root pointer
+        to have legitimately advanced to a replacement generation), atomically
+        marks the exact old G ``invalidated`` and retires the root dispatch ONLY
+        while it still points at that G, with one closed ``invalidated`` audit.
+        It never mutates a cancelled/terminal/replacement task, retires a
+        replacement generation, resets N to needed, spends the envelope or
+        creates any escalation/notification-routing side effect.  A failed audit
+        rolls its own invalidation changes back.
+        """
+        if self._conn.in_transaction:
+            return AuthorityPolicyV2InvalidationOutcome(
+                status="invalidation_pending", reason="transaction_owned",
+            )
+        now_dt = _now()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            outcome = self._invalidate_v2_notification_generation_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                manager_session_id=manager_session_id, result_id=result_id,
+                now_dt=now_dt,
+            )
+            if outcome.status == "invalidation_pending":
+                self._conn.rollback()
+                return outcome
+            self._conn.commit()
+            return outcome
+        except Exception:
+            self._conn.rollback()
+            return AuthorityPolicyV2InvalidationOutcome(
+                status="invalidation_pending", reason="invalidation_failed",
+            )
 
     @_synchronized
     def get_authority_policy_v2_continue_envelope(

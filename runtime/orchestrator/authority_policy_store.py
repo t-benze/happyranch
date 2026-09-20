@@ -33,6 +33,11 @@ from runtime.models import (
     AuthorityPolicyV2HousekeepingTarget,
     AuthorityPolicyV2PairedControlRequest,
     AuthorityPolicyV2Pin,
+    AuthorityPolicyV2PublicationAckOutcome,
+    AuthorityPolicyV2PublicationClaimOutcome,
+    AuthorityPolicyV2PublicationFailureOutcome,
+    AuthorityPolicyV2PublicationTarget,
+    AuthorityPolicyV2InvalidationOutcome,
     AuthorityPolicyV2RecoveryNotification,
     AuthorityPolicyV2Release,
     AuthorityPolicyV2RootDispatch,
@@ -420,6 +425,56 @@ class AuthorityPolicyStore:
         self, root_task_id: str,
     ) -> AuthorityPolicyV2RootDispatch | None:
         return self._db.get_authority_policy_v2_root_dispatch(root_task_id)
+
+    # -- THR-229 checkpoint C3d3a: thin forwarders over the DB-owned read-only
+    # publication discovery and the callable authenticated publication claim/
+    # acknowledgement/failure/invalidation transactions.  The facade never
+    # begins, commits or rolls back; the Database owns the single BEGIN IMMEDIATE
+    # boundary and the trusted daemon-process identity is bound, never passed as
+    # a caller allow boolean.  None of these calls performs a queue call.
+
+    def list_v2_publication_targets(self) -> list[AuthorityPolicyV2PublicationTarget]:
+        return self._db.list_authority_policy_v2_publication_targets()
+
+    def claim_v2_notification_publication(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int,
+    ) -> AuthorityPolicyV2PublicationClaimOutcome:
+        return self._db.claim_authority_policy_v2_notification_publication(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+        )
+
+    def acknowledge_v2_notification_publication(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, publication_attempt: int, publisher_boot_id: str,
+    ) -> AuthorityPolicyV2PublicationAckOutcome:
+        return self._db.acknowledge_authority_policy_v2_notification_publication(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            publication_attempt=publication_attempt,
+            publisher_boot_id=publisher_boot_id,
+        )
+
+    def record_v2_notification_publication_failure(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, publication_attempt: int, publisher_boot_id: str,
+    ) -> AuthorityPolicyV2PublicationFailureOutcome:
+        return self._db.record_authority_policy_v2_notification_publication_failure(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            publication_attempt=publication_attempt,
+            publisher_boot_id=publisher_boot_id,
+        )
+
+    def invalidate_v2_notification_generation(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int,
+    ) -> AuthorityPolicyV2InvalidationOutcome:
+        return self._db.invalidate_authority_policy_v2_notification_generation(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+        )
 
     def bind_legacy_session(
         self,
