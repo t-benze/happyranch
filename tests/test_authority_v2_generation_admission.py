@@ -1017,6 +1017,39 @@ def _ack_admitted(store, row, claimed):
     )
 
 
+class _OverlapConn:
+    """Test-only connection wrapper that rendezvouses TWO real connections at
+    their first ``BEGIN IMMEDIATE``.
+
+    The shared barrier guarantees both acknowledgements are genuinely
+    in-flight concurrently before either transaction proceeds, so the
+    two-connection proof records actual overlap instead of a sequential
+    replay.  A deterministic barrier never relies on sleeps.
+    """
+
+    def __init__(self, real, barrier, entered, tag, lock):
+        self._real = real
+        self._barrier = barrier
+        self._entered = entered
+        self._tag = tag
+        self._lock = lock
+        self._rendezvoused = False
+
+    def execute(self, sql, *args, **kwargs):
+        if (
+            not self._rendezvoused
+            and sql.strip().upper().startswith("BEGIN IMMEDIATE")
+        ):
+            self._rendezvoused = True
+            with self._lock:
+                self._entered.append(self._tag)
+            self._barrier.wait(timeout=30)
+        return self._real.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
 def _insert_extra_related_receipt(store, result_id):
     """A second POTENTIALLY related recovery receipt (conflict, not absence)."""
     store._db._conn.execute(
@@ -1299,19 +1332,37 @@ def test_ack_after_admitted_p1_p2_reclaim_history(tmp_path):
 
 @pytest.mark.parametrize("settle", [False, True])
 def test_ack_after_admission_refuses_caller_transaction_nesting(tmp_path, settle):
+    """The nesting refusal is classified BEFORE any BEGIN/ROLLBACK and the
+    caller's still-uncommitted transaction and exact pending mutation survive
+    the public call for both the admitted and settled states."""
     store, row, attempt, outcome, claimed = _admitted_stage(tmp_path, settle=settle)
+    durable_before = _dump(store)
     conn = store._db._conn
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute(
             "UPDATE tasks SET assigned_agent='caller-pending' WHERE id=?", (TASK_ID,)
         )
+        pending_before = _dump(store)
         result = _ack_admitted(store, row, claimed)
+        # Asserted BEFORE the finally-rollback: the method must not have
+        # begun, committed, rolled back or changed the caller's open
+        # transaction or its exact pending work.
+        assert conn.in_transaction is True
+        assert _dump(store) == pending_before
+        assert conn.execute(
+            "SELECT assigned_agent FROM tasks WHERE id=?", (TASK_ID,)
+        ).fetchone()["assigned_agent"] == "caller-pending"
     finally:
         conn.rollback()
     assert result.status == "ack_pending", result
     assert result.reason == "transaction_owned", result
+    assert conn.in_transaction is False
     assert _stage_events(store, "publish_returned") == []
+    # The uncommitted caller mutation never became durable and the exact
+    # durable pre-state survives the refusal.
+    assert _dump(store) == durable_before
+    assert store._db.get_task(TASK_ID).assigned_agent != "caller-pending"
 
 
 @pytest.mark.parametrize("settle", [False, True])
@@ -1354,16 +1405,50 @@ def test_ack_admitted_commit_failure_rolls_back(tmp_path, settle):
 
 
 def test_ack_after_admitted_two_connections_one_observation(tmp_path):
-    """Two connections acknowledging the same generation: one observation,
-    the loser is a read-only replay with no state regression."""
+    """Two REAL connections acknowledge the same generation with a
+    deterministic rendezvous at ``BEGIN IMMEDIATE`` so both acknowledgements
+    are genuinely in-flight: exactly one durable ``publish_returned``
+    observation commits and the loser is a read-only replay with no state
+    regression."""
+    import threading
+
     store, row, attempt, outcome, claimed = _admitted_stage(tmp_path)
-    first = _ack_admitted(store, row, claimed)
-    assert first.status == "publish_returned", first
-    after_first = _dump(store)
     other = AuthorityPolicyStore(Database(tmp_path / "c2.db"))
     other.bind_v2_permission_surface_reader(lambda agent: "a" * 64)
     other.bind_v2_process_boot_id(BOOT_A)
-    loser = _ack_admitted(other, row, claimed)
-    assert loser.status == "publish_returned", loser
+
+    barrier = threading.Barrier(2)
+    entered: list[str] = []
+    lock = threading.Lock()
+    for tag, s in (("a", store), ("b", other)):
+        s._db._conn = _OverlapConn(s._db._conn, barrier, entered, tag, lock)
+
+    results: dict[str, object] = {}
+
+    def _run(tag, s):
+        results[tag] = _ack_admitted(s, row, claimed)
+
+    threads = [
+        threading.Thread(target=_run, args=("a", store)),
+        threading.Thread(target=_run, args=("b", other)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    for thread in threads:
+        assert not thread.is_alive(), "ack did not complete"
+
+    # Recorded actual overlap: both connections reached their own
+    # BEGIN IMMEDIATE and rendezvoused at the barrier before either
+    # transaction proceeded.
+    with lock:
+        assert sorted(entered) == ["a", "b"], entered
+    assert set(results) == {"a", "b"}
+    assert all(r.status == "publish_returned" for r in results.values()), results
+    # Exactly one durable observation: no loser append and no state
+    # regression (the generation stays admitted and no published audit is
+    # minted by the outrun-acknowledgement observation).
     assert len(_stage_events(store, "publish_returned")) == 1
-    assert _dump(store) == after_first
+    assert _notification(store, outcome).state == "admitted"
+    assert _stage_events(store, "published") == []
