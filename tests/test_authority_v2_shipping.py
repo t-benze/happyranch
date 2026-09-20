@@ -2733,30 +2733,25 @@ def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="he
         ]
 
     from runtime.infrastructure.database import Database as _Database
+    from tests.test_authority_v2_envelope_spend import _BoundaryFailingConn
 
-    real_spend = _Database.spend_authority_policy_v2_continue_envelope
-    real_ack = _Database.acknowledge_authority_policy_v2_decision_dispatch
-    spend_attempts: list = []
+    # The REAL spend/claim/ack writers are invoked; only one EXACT SQL/audit
+    # boundary is injected on the shared connection, and the fired signal is
+    # awaited deterministically (never an elapsed-sleep inference).
+    conn_wrapper = None
+    real_conn = db._conn
     if mode == "spend_failure":
-        from runtime.models import AuthorityPolicyV2SpendOutcome
-
-        def _no_spend(self, **kwargs):
-            spend_attempts.append(kwargs)
-            return AuthorityPolicyV2SpendOutcome(
-                status="spend_pending", reason="spend_failed",
-            )
-
-        fixture.monkeypatch.setattr(
-            _Database, "spend_authority_policy_v2_continue_envelope", _no_spend,
-        )
+        conn_wrapper = _BoundaryFailingConn(real_conn, audit_stage="spent")
     elif mode == "ack_failure":
-        def _failing_ack(self, **kwargs):
-            raise RuntimeError("isolated post-effect acknowledgement failure")
-
-        fixture.monkeypatch.setattr(
-            _Database, "acknowledge_authority_policy_v2_decision_dispatch",
-            _failing_ack,
+        conn_wrapper = _BoundaryFailingConn(
+            real_conn, audit_stage="decision_applied",
         )
+    elif mode == "claim_failure":
+        conn_wrapper = _BoundaryFailingConn(
+            real_conn, audit_stage="decision_claimed",
+        )
+    if conn_wrapper is not None:
+        db._conn = conn_wrapper
 
     # Resume ONLY the reserved invocation: its REAL run_step common consumer
     # performs the existing spend -> claim -> real normal effect -> applied.
@@ -2765,9 +2760,21 @@ def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="he
     state = None
     if mode == "spend_failure":
         deadline = time.monotonic() + 60.0
-        while time.monotonic() < deadline and not spend_attempts:
+        while time.monotonic() < deadline and conn_wrapper.fired is None:
             time.sleep(0.05)
-        assert spend_attempts, "the reserved consumer never attempted the spend"
+        assert conn_wrapper.fired == "audit:spent", conn_wrapper.fired
+    elif mode in ("ack_failure", "claim_failure"):
+        stage = "decision_applied" if mode == "ack_failure" else "decision_claimed"
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            if conn_wrapper.fired == f"audit:{stage}":
+                break
+            time.sleep(0.05)
+        assert conn_wrapper.fired == f"audit:{stage}", conn_wrapper.fired
+        state = db.get_authority_policy_v2_continue_envelope(
+            envelope_id
+        ).decision_state
+        assert state == ("claimed" if mode == "ack_failure" else "ready"), state
     else:
         deadline = time.monotonic() + 60.0
         while time.monotonic() < deadline:
@@ -2791,6 +2798,17 @@ def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="he
             assert db.get_task(root_id).status is not TaskStatus.COMPLETED
             return root_id
 
+        if mode == "claim_failure":
+            # The REAL spend committed but the claim-audit boundary failed: the
+            # receipt stays discoverably ``ready`` with ZERO consumer entry and
+            # no real effect (an exact retry may still claim later).
+            assert state == "ready", state
+            assert _stages().count("spent") == 1
+            assert _stages().count("decision_claimed") == 0
+            assert _stages().count("decision_applied") == 0
+            assert db.get_task(root_id).status is not TaskStatus.COMPLETED
+            return root_id
+
         if mode == "ack_failure":
             # The consumer effect committed but the acknowledgement failed:
             # the exact receipt stays discoverably ``claimed``.
@@ -2806,12 +2824,10 @@ def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="he
                     "SELECT * FROM tasks WHERE parent_task_id=?", (root_id,),
                 ).fetchall()]
                 assert len(children) == 1, children
-            fixture.monkeypatch.setattr(
-                _Database, "acknowledge_authority_policy_v2_decision_dispatch",
-                real_ack,
-            )
             # A reopen refuses exactly once with the same causal identity and
-            # never re-runs the consumer or regresses the committed effect.
+            # never re-runs the consumer or regresses the committed effect.  The
+            # REAL refusal writer runs (the injected boundary only affects the
+            # ``decision_applied`` audit, never the interruption audit).
             from runtime.orchestrator.run_step import _v2_decision_dispatch_gate
 
             r2_dict = dict(db._conn.execute(
@@ -2880,16 +2896,8 @@ def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="he
         assert _stages().count("decision_applied") == 1
         return root_id
     finally:
-        if mode == "spend_failure":
-            fixture.monkeypatch.setattr(
-                _Database, "spend_authority_policy_v2_continue_envelope",
-                real_spend,
-            )
-        if mode == "ack_failure":
-            fixture.monkeypatch.setattr(
-                _Database, "acknowledge_authority_policy_v2_decision_dispatch",
-                real_ack,
-            )
+        if conn_wrapper is not None:
+            db._conn = real_conn
         fixture.release_launch()
         fixture.join_workers()
 
@@ -2940,6 +2948,69 @@ def test_shipping_real_common_consumer_ack_failure_then_reopen(
     tmp_path, monkeypatch,
 ):
     fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2)
+    fixture.start()
+    try:
+        _drive_c3d3c2_dispatch(fixture, action="done", mode="ack_failure")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_real_common_consumer_claim_failure_zero_entry(
+    tmp_path, monkeypatch,
+):
+    fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2)
+    fixture.start()
+    try:
+        _drive_c3d3c2_dispatch(fixture, action="done", mode="claim_failure")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_common_consumer_delegate(
+    tmp_path, monkeypatch,
+):
+    fixture = _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=True, queue_workers=2,
+    )
+    fixture.start()
+    try:
+        _drive_c3d3c2_dispatch(fixture, action="delegate")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_common_consumer_spend_failure(
+    tmp_path, monkeypatch,
+):
+    fixture = _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=True, queue_workers=2,
+    )
+    fixture.start()
+    try:
+        _drive_c3d3c2_dispatch(fixture, action="done", mode="spend_failure")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_common_consumer_claim_failure(
+    tmp_path, monkeypatch,
+):
+    fixture = _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=True, queue_workers=2,
+    )
+    fixture.start()
+    try:
+        _drive_c3d3c2_dispatch(fixture, action="done", mode="claim_failure")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_common_consumer_ack_failure_then_reopen(
+    tmp_path, monkeypatch,
+):
+    fixture = _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=True, queue_workers=2,
+    )
     fixture.start()
     try:
         _drive_c3d3c2_dispatch(fixture, action="done", mode="ack_failure")
