@@ -216,9 +216,9 @@ function classifySaveError(error: unknown): SaveOutcome {
 
 function SectionLabel({ children, note }: { children: string; note?: string }): JSX.Element {
   return (
-    <h3 className="text-text-muted mt-8 mb-3 text-xs font-semibold tracking-wider uppercase">
+    <h3 className="text-text-secondary mt-8 mb-3 text-xs font-semibold tracking-wider uppercase">
       {children}
-      {note ? <span className="text-text-muted ml-2 font-normal tracking-normal normal-case">{note}</span> : null}
+      {note ? <span className="text-text-secondary ml-2 font-normal tracking-normal normal-case">{note}</span> : null}
     </h3>
   );
 }
@@ -870,7 +870,7 @@ export function DaemonCapacitySection(): JSX.Element {
           <SectionLabel>Startup, saved and next start</SectionLabel>
           <table className="border-border-default w-full border-collapse overflow-hidden rounded-md border text-sm">
             <thead>
-              <tr className="text-text-muted bg-surface-sunken text-left text-xs tracking-wide uppercase">
+              <tr className="text-text-secondary bg-surface-sunken text-left text-xs tracking-wide uppercase">
                 <th scope="col" className="border-border-default border-b p-3 font-semibold">Setting</th>
                 <th scope="col" className="border-border-default border-b p-3 font-semibold">Running at startup</th>
                 <th scope="col" className="border-border-default border-b p-3 font-semibold">Saved in file</th>
@@ -885,7 +885,7 @@ export function DaemonCapacitySection(): JSX.Element {
                 <tr key={key}>
                   <th scope="row" className="border-border-default border-b p-3 text-left font-medium">
                     {label}
-                    <code className="text-text-muted ml-2 font-mono text-xs font-normal">{key}</code>
+                    <code className="text-text-secondary ml-2 font-mono text-xs font-normal">{key}</code>
                   </th>
                   <td className="border-border-default border-b p-3 font-mono">
                     {displaySnapshot.running_at_daemon_start[key]}
@@ -943,7 +943,7 @@ export function DaemonCapacitySection(): JSX.Element {
         <div className="border-border-default border-b pb-5">
           <label htmlFor="capacity-workers" className="text-text-primary text-sm font-semibold">
             {WORKERS_LABEL}
-            <code className="text-text-muted ml-2 font-mono text-xs font-normal">queue_workers</code>
+            <code className="text-text-secondary ml-2 font-mono text-xs font-normal">queue_workers</code>
           </label>
           <p id="capacity-workers-help" className="text-text-secondary mt-1 max-w-prose text-sm">
             Maximum task-worker slots across all organizations. Other limits can keep fewer sessions
@@ -981,7 +981,7 @@ export function DaemonCapacitySection(): JSX.Element {
         <div className="border-border-default border-b py-5">
           <label htmlFor="capacity-cap" className="text-text-primary text-sm font-semibold">
             {CAP_LABEL}
-            <code className="text-text-muted ml-2 font-mono text-xs font-normal">host_global_session_cap</code>
+            <code className="text-text-secondary ml-2 font-mono text-xs font-normal">host_global_session_cap</code>
           </label>
           <p id="capacity-cap-help" className="text-text-secondary mt-1 max-w-prose text-sm">
             Shared by task, thread, dream, wake and schedule sessions. Does not cap every process on the
@@ -1042,7 +1042,7 @@ export function DaemonCapacitySection(): JSX.Element {
                           per-key next-start values. Under a W override the pool
                           is built from the environment-resolved W, not the draft
                           the environment will shadow. */}
-                      <span className="text-text-muted ml-2 font-sans text-sm">
+                      <span className="text-text-secondary ml-2 font-sans text-sm">
                         {consequence.resolved.queue_workers} task + {consequence.nonTaskContribution} other producers
                       </span>
                     </p>

@@ -23,12 +23,24 @@
  *   16.8  computed visibility (scrolled into view, collapsed-container and
  *         ancestor-clip aware) of every important warning and helper string.
  *   16.9  colour independence — every important state carries words, not hue.
- *   16.10 computed contrast for the gated helper/error/warning/ack/
- *         reconciliation/status set, plus the :focus-visible ring.
+ *   16.10 computed contrast for EVERY capacity helper, error, warning, ack,
+ *         reconciliation, status and control string — a shared token's origin
+ *         does not put a capacity requirement out of scope — plus the
+ *         :focus-visible ring. The only ungated samples are the enumerated,
+ *         identity-pinned exceptions in `DECLARED_CONTRAST_EXEMPTIONS`, each
+ *         of which names the EXCLUDED change its repair needs; an exemption id
+ *         the declaration does not cover fails the run.
  *   16.11 the 16.6 tab order walked by real keystrokes at both widths in both
  *         themes, with the ring measured where it actually paints.
- *   19.2  RETIRED as a separate case — superseded by 16.11, which adds both
- *         themes and both widths. Recorded here so the pointer is not lost.
+ *   19.2  NOT retired. Its assertion — a REAL-BROWSER KEYBOARD PASS AT
+ *         1440x1000 — stays mapped and enforced here. It SHARES 16.11's
+ *         evidence, because 16.11's four walks are a strict superset (both
+ *         widths x both themes), so the two 1440x1000 walks in `tabOrders`
+ *         ARE 19.2's result. The sharing is only legitimate while that
+ *         mapping holds, so the acceptance gate below asserts the 1440x1000
+ *         walks exist, are non-empty, and carry a visible, >=3:1 focus ring
+ *         on every control — a missing 1440x1000 walk FAILS the run rather
+ *         than silently retiring the case.
  *   19.5  evidence packaging: this committed script writes one PNG per
  *         state/viewport/theme under `--out`, names each file for its state,
  *         records every sha256 in MANIFEST.json, and carries the synthetic
@@ -349,16 +361,31 @@ const CONTRAST_FN = () => {
   }) : [];
 
   /**
-   * Accepted 16.10 (as extended by the review) gates HELPER, ERROR, WARNING,
-   * ACKNOWLEDGMENT, RECONCILIATION and STATUS copy plus the focus ring. Every
-   * other capacity string is still measured and reported, but its colour comes
-   * from a SHARED token this bounded screen has no authority to change, so it
-   * is reported as an out-of-scope observation rather than silently omitted.
+   * Accepted 16.10, as extended by the review AND by the manager's TASK-8562
+   * correction: EVERY capacity helper, error, warning, acknowledgment,
+   * reconciliation, status and control string is gated. A shared token's
+   * ORIGIN does not put a capacity requirement out of scope — capacity-local
+   * class use of an existing darker token is authorized and is how the muted
+   * copy was repaired.
+   *
+   * The ONLY thing that is not gated is an ENUMERATED, identity-pinned
+   * exception whose repair genuinely requires an EXCLUDED change (a shared
+   * design-system primitive or a shared token definition). There is no
+   * category waiver: anything that is not one of these exact elements fails
+   * the run, so a NEW low-contrast string can never silently join the
+   * "reported" bucket.
    */
-  const GATED_SELF = '[role="alert"], [role="status"], [id$="-help"], [id$="-guidance"],'
-    + ' [id$="-error"], label[for^="capacity-"]';
-  const GATED_ROOTS = '#capacity-override, #capacity-outcome, [role="alert"], [role="status"]';
-  const isGated = (el) => el.matches(GATED_SELF) || el.closest(GATED_ROOTS) !== null;
+  const CONTRAST_EXEMPTIONS = [{
+    id: 'shared-button-primitive-accent-label',
+    match: 'button.pasture-button-type',
+    reason: 'SHARED Button primitive. Its label is --color-text-inverse on '
+      + '--color-accent-default (3.96:1 light). Reaching AA requires editing the '
+      + 'shared primitive or the shared accent token, both EXCLUDED from this '
+      + 'capacity radius. Surfaced as a concrete need, never as a met criterion.',
+  }];
+  const exemptionFor = (el) => CONTRAST_EXEMPTIONS.find(
+    (e) => el.matches(e.match) || el.closest(e.match) !== null,
+  ) ?? null;
 
   const out = [];
   for (const el of candidates) {
@@ -366,9 +393,15 @@ const CONTRAST_FN = () => {
       ? `#${el.id}`
       : `${el.tagName.toLowerCase()}.${(el.className || '').toString().split(/\s+/).slice(0, 2).join('.')}`;
     const style = getComputedStyle(el);
+    const exempt = exemptionFor(el);
     const fg = parse(style.color);
     const bg = effectiveBackground(el);
-    if (!fg || !bg) { out.push({ selector, present: true, unmeasurable: style.color }); continue; }
+    if (!fg || !bg) {
+      out.push({
+        selector, present: true, unmeasurable: style.color, gated: exempt === null,
+      });
+      continue;
+    }
     // A fully transparent foreground paints nothing and is not a contrast
     // finding; opacity-reduced text IS composited before measuring.
     if (fg.a === 0) continue;
@@ -381,7 +414,9 @@ const CONTRAST_FN = () => {
     const large = px >= 24 || (bold && px >= 18.66);
     out.push({
       selector,
-      gated: isGated(el),
+      gated: exempt === null,
+      exemptionId: exempt?.id ?? null,
+      exemptionReason: exempt?.reason ?? null,
       present: true,
       text: (el.textContent ?? '').trim().slice(0, 60),
       color: style.color,
@@ -395,6 +430,22 @@ const CONTRAST_FN = () => {
   }
   return out;
 };
+
+/**
+ * The exception inventory the RUN must be judged against, declared OUTSIDE the
+ * page so it is visible in the manifest even when an exception is not observed
+ * in a particular state. `CONTRAST_FN` carries the enforcing copy; this list is
+ * reconciled against the ids it actually emitted, and a drift between the two
+ * FAILS the run rather than quietly widening the waiver.
+ */
+const DECLARED_CONTRAST_EXEMPTIONS = [{
+  id: 'shared-button-primitive-accent-label',
+  match: 'button.pasture-button-type',
+  criterion: '16.10 control label contrast',
+  excludedChangeRequired: 'edit the shared design-system Button primitive, or the '
+    + 'shared --color-accent-default / --color-text-inverse token pair',
+  status: 'NOT MET — surfaced to the manager as a concrete need',
+}];
 
 /**
  * 16.11 — walk the 16.6 tab order and measure the REAL focus ring.
@@ -873,10 +924,11 @@ try {
     lowContrastFindings: results.flatMap((r) => (r.contrast ?? [])
       .filter((c) => c.present && c.gated && (c.unmeasurable !== undefined || !c.passesAA))
       .map((c) => ({ file: r.file, ...c }))),
-    // REPORTED, with its cause named: decorative/muted capacity copy whose
-    // colour is the SHARED `--color-text-muted` (and the shared Button
-    // primitive's accent foreground), which this bounded screen may not change.
-    // Disclosed as an out-of-scope observation, never as a met criterion.
+    // REPORTED, never waived: the ENUMERATED exceptions only. Each entry names
+    // the exact element identity and the excluded change its repair needs.
+    // This is a concrete need surfaced to the manager, NOT a met criterion and
+    // NOT a category/shared-token waiver — anything outside the enumerated set
+    // is gated above and fails the run.
     contrastOutsideThisScope: (() => {
       const seen = new Map();
       for (const r of results) {
@@ -887,7 +939,8 @@ try {
             seen.set(key, {
               theme: r.theme, selector: c.selector, color: c.color,
               background: c.background, ratio: c.ratio, threshold: c.threshold,
-              sample: c.text, occurrences: 0,
+              sample: c.text, exemptionId: c.exemptionId ?? null,
+              exemptionReason: c.exemptionReason ?? null, occurrences: 0,
             });
           }
           seen.get(key).occurrences += 1;
@@ -895,6 +948,19 @@ try {
       }
       return [...seen.values()].sort((a, b) => a.ratio - b.ratio);
     })(),
+    // 19.2 — the case is MAPPED, not retired. It shares 16.11's evidence, and
+    // this roll-up names exactly which walks are its result. Empty means the
+    // sharing is no longer legitimate, and the gate fails the run.
+    case192KeyboardPass1440: tabOrders
+      .filter((t) => t.viewport === '1440x1000' && (t.order ?? []).length > 0)
+      .map((t) => ({ viewport: t.viewport, theme: t.theme, controls: t.order.length })),
+    contrastExemptionsDeclared: DECLARED_CONTRAST_EXEMPTIONS,
+    // Any exemption id the page emitted that this file does not declare. A
+    // non-empty list means the enforcing copy and the declared inventory have
+    // drifted, and it FAILS the run.
+    undeclaredContrastExemptions: [...new Set(results.flatMap(
+      (r) => (r.contrast ?? []).map((c) => c.exemptionId).filter(Boolean),
+    ))].filter((id) => !DECLARED_CONTRAST_EXEMPTIONS.some((e) => e.id === id)),
     contrastSamplesMeasured: results.reduce((n, r) => n + (r.contrast ?? []).length, 0),
     focusRingsMissing: tabOrders.flatMap((t) => t.order
       .filter((o) => o && (!o.focusVisible || !o.focusRingVisible))
@@ -939,7 +1005,7 @@ try {
   console.log(`horizontal overflow states: ${manifest.horizontalOverflowStates.length}`);
   console.log(`contrast samples measured: ${manifest.contrastSamplesMeasured}`);
   console.log(`low-contrast findings in the GATED set (16.10): ${manifest.lowContrastFindings.length}`);
-  console.log(`low-contrast observations outside this scope (shared tokens): ${manifest.contrastOutsideThisScope.length}`);
+  console.log(`low-contrast observations in the ENUMERATED exception set: ${manifest.contrastOutsideThisScope.length}`);
   console.log(`controls without a visible focus ring (16.11): ${manifest.focusRingsMissing.length}`);
   console.log(`focus rings below 3:1 against their surround (16.10/16.11): ${manifest.lowContrastFocusRings.length}`);
   console.log(`visibility failures (16.8): ${manifest.visibilityFailures.length}`);
@@ -951,6 +1017,12 @@ try {
     ['undeclared /api/ paths (fail-closed venue)', undeclared],
     ['horizontal overflow', manifest.horizontalOverflowStates],
     ['low-contrast text (16.10)', manifest.lowContrastFindings],
+    ['undeclared contrast exemptions', manifest.undeclaredContrastExemptions],
+    // 19.2 is asserted by its ABSENCE of a result, so the gate entry is
+    // inverted: a missing 1440x1000 keyboard pass is the failure.
+    ['19.2 keyboard pass at 1440x1000 missing',
+      (!PARTIAL_RUN && manifest.case192KeyboardPass1440.length === 0)
+        ? ['no 1440x1000 tab-order walk'] : []],
     ['controls without a visible focus ring (16.11)', manifest.focusRingsMissing],
     ['low-contrast focus rings (16.10)', manifest.lowContrastFocusRings],
     ['computed visibility failures (16.8)', manifest.visibilityFailures],
