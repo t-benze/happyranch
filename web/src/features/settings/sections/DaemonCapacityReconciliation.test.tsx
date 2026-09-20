@@ -18,6 +18,7 @@ import { AppRoutes } from '@/routes';
 import { capacityObservation, capacityQueryKey } from '@/design-system/providers/_capacity-ordering';
 import { server } from '@/test/server';
 import { renderGuarded } from './capacityTestMount';
+import { formatReceipt } from './capacityModel';
 
 const SLUG = 'alpha';
 const CAPACITY = `/api/v1/orgs/${SLUG}/settings/daemon-capacity`;
@@ -150,6 +151,67 @@ const rebaseButton = () => screen.getByRole('button', { name: /Keep my draft, re
 const acceptButton = () => screen.getByRole('button', { name: /Discard draft, accept latest/ });
 const workersRow = () => within(screen.getByRole('table')).getAllByRole('row')[1] as HTMLTableRowElement;
 const savedCell = () => workersRow().cells[2];
+const nextCell = () => workersRow().cells[3];
+/** Every rendered receipt string; the banner and the footer can both carry one. */
+const receiptStrings = (): string[] =>
+  screen.getAllByText(/Last received/).map((node) => node.textContent ?? '');
+
+/**
+ * C3: the COMPLETE terminal state of a successful manual save.
+ *
+ * `sourceRevision` is a provider revision identity, NOT a receipt assertion.
+ * The ACTUAL `receiptAt` must have advanced to the accepted response and the
+ * rendered receipt must name it; the whole accepted W/H pair must be in the
+ * cache and on screen; and the reconciliation records, submission, write lock
+ * and navigation guard must all be gone.
+ */
+async function expectAcceptedSaveTerminal(args: {
+  view: ReturnType<typeof mount>;
+  receiptBefore: number | null;
+  workers: number;
+  cap: number;
+  revision: string;
+}) {
+  await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
+  await waitFor(() => expect(savedCell()).toHaveTextContent(String(args.workers)));
+  expect(nextCell()).toHaveTextContent(String(args.workers));
+  expect(workers()).toHaveValue(String(args.workers));
+  expect(cap()).toHaveValue(String(args.cap));
+  expect(reasonBox()).toHaveValue('');
+  const cached = args.view.client.getQueryData<{
+    revision: string;
+    persisted_yaml: { queue_workers: number; host_global_session_cap: number };
+    next_start: { queue_workers: number; host_global_session_cap: number };
+  }>(capacityQueryKey(SLUG));
+  expect(cached?.revision).toBe(args.revision);
+  expect(cached?.persisted_yaml).toEqual({
+    queue_workers: args.workers,
+    host_global_session_cap: args.cap,
+  });
+  expect(cached?.next_start).toEqual({
+    queue_workers: args.workers,
+    host_global_session_cap: args.cap,
+  });
+  const observation = capacityObservation(SLUG);
+  expect(observation?.outcome).toBe('usable');
+  expect(observation?.sourceRevision).toBe(args.revision);
+  expect(observation?.receiptAt).not.toBeNull();
+  expect(observation?.receiptAt).not.toBe(args.receiptBefore);
+  expect(
+    receiptStrings().some((text) => text.includes(formatReceipt(observation!.receiptAt)!)),
+  ).toBe(true);
+  expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/You submitted/)).not.toBeInTheDocument();
+  expect(screen.queryByText('Currently saved')).not.toBeInTheDocument();
+  expect(screen.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+  expect(screen.queryByText(/Save result unknown/)).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Keep my draft, rebase onto latest/ }))
+    .not.toBeInTheDocument();
+  expect(saveButton()).toBeEnabled();
+  const unload = new Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(unload);
+  expect(unload.defaultPrevented).toBe(false);
+}
 
 async function ready() {
   await screen.findByRole('heading', { name: 'Capacity' }, { timeout: 5000 });
@@ -289,6 +351,7 @@ describe('2 — read ordering that no hook-mocked test can see', () => {
     ).toBe(4);
 
     // The manual save carries EXACTLY B, and settles coherently.
+    const receiptBeforeSave = capacityObservation(SLUG)?.receiptAt ?? null;
     await setPair('6', '13');
     await saveWith('after competing reads');
     await waitFor(() => expect(puts()).toHaveLength(1));
@@ -299,28 +362,15 @@ describe('2 — read ordering that no hook-mocked test can see', () => {
       rationale: 'after competing reads',
       confirm_environment_shadow: false,
     });
-    await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
-    // FINAL coherent settlement: the returned pair/revision is displayed and
-    // cached, the draft/reason are clean, the lock is gone and the guard is
-    // disarmed. Asserting only a banner would accept an incoherent body.
-    await waitFor(() => expect(savedCell()).toHaveTextContent('6'));
-    expect(workersRow().cells[3]).toHaveTextContent('6');
-    expect(workers()).toHaveValue('6');
-    expect(cap()).toHaveValue('13');
-    expect(reasonBox()).toHaveValue('');
-    expect(view.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision).toBe(REV_C);
-    expect(
-      view.client.getQueryData<{ persisted_yaml: { queue_workers: number } }>(
-        capacityQueryKey(SLUG),
-      )?.persisted_yaml.queue_workers,
-    ).toBe(6);
-    expect(capacityObservation(SLUG)?.outcome).toBe('usable');
-    expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_C);
-    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    // FINAL coherent settlement: the complete accepted pair/revision is
+    // displayed and cached, the ACTUAL receipt advanced (never only a
+    // `sourceRevision` proxy), the draft/reason are clean, the lock is gone and
+    // the guard is disarmed. Asserting only a banner would accept an incoherent
+    // body.
+    await expectAcceptedSaveTerminal({
+      view, receiptBefore: receiptBeforeSave, workers: 6, cap: 13, revision: REV_C,
+    });
     expect(screen.queryByText(/Reconcile the saved values/)).not.toBeInTheDocument();
-    const unload = new Event('beforeunload', { cancelable: true });
-    window.dispatchEvent(unload);
-    expect(unload.defaultPrevented).toBe(false);
   });
 
   test('2.8 an obsolete FAILURE never downgrades a state a newer usable read recovered', async () => {
@@ -513,12 +563,13 @@ describe('7 — dirty refresh and explicit reconciliation', () => {
         }))),
       put: putSuccess,
     });
-    mount();
+    const view = mount();
     await ready();
     await setPair('5', '12');
     await userEvent.type(reasonBox(), 'raising slots');
     await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
     await screen.findByText('Configuration changed elsewhere.');
+    return view;
   }
 
   const unusedPut = () => HttpResponse.json(snapshot({ revision: REV_C }));
@@ -568,7 +619,7 @@ describe('7 — dirty refresh and explicit reconciliation', () => {
   });
 
   test('7.4 accept-latest resets the form and the subsequent save carries the latest revision', async () => {
-    await dirtyThenChangedRevision(() => HttpResponse.json(snapshot({
+    const view = await dirtyThenChangedRevision(() => HttpResponse.json(snapshot({
       revision: REV_C,
       persisted_yaml: { queue_workers: 2, host_global_session_cap: 9 },
       next_start: { queue_workers: 2, host_global_session_cap: 9 },
@@ -583,6 +634,7 @@ describe('7 — dirty refresh and explicit reconciliation', () => {
     // Accepted 7.4: the subsequent PUT carries the ACCEPTED-LATEST pair 2/9
     // with a FRESH reason — not a newly invented pair.
     expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    const receiptBeforeSave = capacityObservation(SLUG)?.receiptAt ?? null;
     await saveWith('fresh reason');
     await waitFor(() => expect(puts()).toHaveLength(1));
     expect(puts()[0].ifMatch).toBe(`"${REV_B}"`);
@@ -592,16 +644,12 @@ describe('7 — dirty refresh and explicit reconciliation', () => {
       rationale: 'fresh reason',
       confirm_environment_shadow: false,
     });
-    // And it settles coherently with the SAME pair the operator sent.
-    await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
-    await waitFor(() => expect(savedCell()).toHaveTextContent('2'));
-    expect(reasonBox()).toHaveValue('');
-    expect(workers()).toHaveValue('2');
-    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/You submitted/)).not.toBeInTheDocument();
-    const unload = new Event('beforeunload', { cancelable: true });
-    window.dispatchEvent(unload);
-    expect(unload.defaultPrevented).toBe(false);
+    // And it settles coherently with the SAME pair the operator sent: the final
+    // W AND H, the full cached pair/next-start, the ACTUAL receipt and a
+    // disarmed guard.
+    await expectAcceptedSaveTerminal({
+      view, receiptBefore: receiptBeforeSave, workers: 2, cap: 9, revision: REV_C,
+    });
   });
 
   test('7.5 doing nothing never auto-rebases on a further refresh', async () => {
@@ -776,6 +824,7 @@ describe('10 — typed publication-uncertain, carried to its final save', () => 
     expect(cap()).toHaveValue('12');
     expect(reasonBox()).toHaveValue('measured receipts');
 
+    const receiptBeforeSave = capacityObservation(SLUG)?.receiptAt ?? null;
     await userEvent.click(saveButton());
     await waitFor(() => expect(puts()).toHaveLength(2));
     expect(puts()[1].ifMatch).toBe(`"${REV_C}"`);
@@ -785,21 +834,12 @@ describe('10 — typed publication-uncertain, carried to its final save', () => 
       rationale: 'measured receipts',
       confirm_environment_shadow: false,
     });
-    // FINAL: the returned base is displayed and CACHED, the receipt names the
-    // accepted write, the guard is disarmed and no residual lock or submission
+    // FINAL: the complete accepted pair is displayed and CACHED with the ACTUAL
+    // receipt (not only a `sourceRevision`), and no residual lock or submission
     // remains.
-    await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
-    await waitFor(() => expect(savedCell()).toHaveTextContent('5'));
-    expect(workers()).toHaveValue('5');
-    expect(reasonBox()).toHaveValue('');
-    expect(view.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision).toBe(REV_D);
-    expect(capacityObservation(SLUG)?.outcome).toBe('usable');
-    expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_D);
-    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/You submitted/)).not.toBeInTheDocument();
-    const unload = new Event('beforeunload', { cancelable: true });
-    window.dispatchEvent(unload);
-    expect(unload.defaultPrevented).toBe(false);
+    await expectAcceptedSaveTerminal({
+      view, receiptBefore: receiptBeforeSave, workers: 5, cap: 12, revision: REV_D,
+    });
   });
 
   test('10.8 accept-latest branch: clean at 7/14, then a NEW intentional edit saves 8/15 @ REV_C', async () => {
@@ -839,6 +879,7 @@ describe('10 — typed publication-uncertain, carried to its final save', () => 
     expect(clean.defaultPrevented).toBe(false);
 
     await setPair('8', '15');
+    const receiptBeforeSave = capacityObservation(SLUG)?.receiptAt ?? null;
     await saveWith('new intent');
     await waitFor(() => expect(puts()).toHaveLength(2));
     expect(puts()[1].ifMatch).toBe(`"${REV_C}"`);
@@ -848,17 +889,9 @@ describe('10 — typed publication-uncertain, carried to its final save', () => 
       rationale: 'new intent',
       confirm_environment_shadow: false,
     });
-    await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
-    await waitFor(() => expect(savedCell()).toHaveTextContent('8'));
-    expect(workers()).toHaveValue('8');
-    expect(reasonBox()).toHaveValue('');
-    expect(view.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision).toBe(REV_D);
-    expect(capacityObservation(SLUG)?.outcome).toBe('usable');
-    expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_D);
-    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
-    const unload = new Event('beforeunload', { cancelable: true });
-    window.dispatchEvent(unload);
-    expect(unload.defaultPrevented).toBe(false);
+    await expectAcceptedSaveTerminal({
+      view, receiptBefore: receiptBeforeSave, workers: 8, cap: 15, revision: REV_D,
+    });
   });
 
   test('10.9 a newer draft after settlement is held independently from the pinned submission', async () => {
@@ -904,6 +937,7 @@ describe('10 — typed publication-uncertain, carried to its final save', () => 
 
     await userEvent.click(rebaseButton());
     expect(workers()).toHaveValue('7');
+    const receiptBeforeSave = capacityObservation(SLUG)?.receiptAt ?? null;
     await userEvent.click(saveButton());
     await waitFor(() => expect(puts()).toHaveLength(2));
     // The NEWER draft against the LATEST revision — never the pinned 5/12.
@@ -914,17 +948,9 @@ describe('10 — typed publication-uncertain, carried to its final save', () => 
       rationale: 'measured receipts',
       confirm_environment_shadow: false,
     });
-    await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
-    await waitFor(() => expect(savedCell()).toHaveTextContent('7'));
-    expect(workers()).toHaveValue('7');
-    expect(reasonBox()).toHaveValue('');
-    expect(view.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision).toBe(REV_D);
-    expect(capacityObservation(SLUG)?.outcome).toBe('usable');
-    expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_D);
-    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
-    const unload = new Event('beforeunload', { cancelable: true });
-    window.dispatchEvent(unload);
-    expect(unload.defaultPrevented).toBe(false);
+    await expectAcceptedSaveTerminal({
+      view, receiptBefore: receiptBeforeSave, workers: 7, cap: 14, revision: REV_D,
+    });
   });
 });
 
@@ -1022,6 +1048,7 @@ describe('11 — lost response: every reread relation is named accurately', () =
     expect(screen.queryByText(/You submitted/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Save result unknown/)).not.toBeInTheDocument();
     expect(puts()).toHaveLength(1);
+    const receiptBeforeSave = capacityObservation(SLUG)?.receiptAt ?? null;
     await userEvent.click(saveButton());
     await waitFor(() => expect(puts()).toHaveLength(2));
     expect(puts()[1].ifMatch).toBe(`"${REV_B}"`);
@@ -1031,18 +1058,9 @@ describe('11 — lost response: every reread relation is named accurately', () =
       rationale: 'measured receipts',
       confirm_environment_shadow: false,
     });
-    await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
-    await waitFor(() => expect(savedCell()).toHaveTextContent('5'));
-    expect(workers()).toHaveValue('5');
-    expect(reasonBox()).toHaveValue('');
-    expect(view.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision).toBe(REV_D);
-    expect(capacityObservation(SLUG)?.outcome).toBe('usable');
-    expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_D);
-    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/You submitted/)).not.toBeInTheDocument();
-    const unload = new Event('beforeunload', { cancelable: true });
-    window.dispatchEvent(unload);
-    expect(unload.defaultPrevented).toBe(false);
+    await expectAcceptedSaveTerminal({
+      view, receiptBefore: receiptBeforeSave, workers: 5, cap: 12, revision: REV_D,
+    });
   });
 
   test('11.10 accept-latest branch: a clean intermediate state, then a new edit saves against REV_B', async () => {
@@ -1079,6 +1097,7 @@ describe('11 — lost response: every reread relation is named accurately', () =
     expect(clean.defaultPrevented).toBe(false);
 
     await setPair('6', '13');
+    const receiptBeforeSave = capacityObservation(SLUG)?.receiptAt ?? null;
     await saveWith('new pair');
     await waitFor(() => expect(puts()).toHaveLength(2));
     expect(puts()[1].ifMatch).toBe(`"${REV_B}"`);
@@ -1088,18 +1107,9 @@ describe('11 — lost response: every reread relation is named accurately', () =
       rationale: 'new pair',
       confirm_environment_shadow: false,
     });
-    await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
-    await waitFor(() => expect(savedCell()).toHaveTextContent('6'));
-    expect(workers()).toHaveValue('6');
-    expect(reasonBox()).toHaveValue('');
-    expect(view.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision).toBe(REV_D);
-    expect(capacityObservation(SLUG)?.outcome).toBe('usable');
-    expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_D);
-    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/You submitted/)).not.toBeInTheDocument();
-    const unload2 = new Event('beforeunload', { cancelable: true });
-    window.dispatchEvent(unload2);
-    expect(unload2.defaultPrevented).toBe(false);
+    await expectAcceptedSaveTerminal({
+      view, receiptBefore: receiptBeforeSave, workers: 6, cap: 13, revision: REV_D,
+    });
   });
 
   test('11.11 absent-key reread beside a pinned submission names three records distinctly', async () => {

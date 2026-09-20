@@ -712,14 +712,21 @@ describe('15 — numeric honesty at the write site (Q8 is NOT solved)', () => {
   });
 
   test('15.10 the DOMAIN and RELATIONAL invariants are enforced, not rendered', () => {
-    // W and H strictly positive.
+    // W and H strictly positive, in EVERY consumed position.
     for (const patch of [
       { next_start: { queue_workers: 0, host_global_session_cap: 10 } },
+      { next_start: { queue_workers: -1, host_global_session_cap: 10 } },
       { next_start: { queue_workers: 3, host_global_session_cap: 0 } },
       { running_at_daemon_start: { queue_workers: -1, host_global_session_cap: 10 } },
+      { running_at_daemon_start: { queue_workers: 3, host_global_session_cap: 0 } },
+      { running_at_daemon_start: { queue_workers: 3, host_global_session_cap: -1 } },
       { persisted_yaml: { queue_workers: 0, host_global_session_cap: 10 } },
-      // producer components nonnegative.
+      // Every producer component is nonnegative — each has its own case.
       { producer_components: { task_workers: -1, thread_workers: 4, dream_workers: 1, wake_workers: 1, schedule_workers: 1 } },
+      { producer_components: { task_workers: 3, thread_workers: -1, dream_workers: 1, wake_workers: 1, schedule_workers: 1 } },
+      { producer_components: { task_workers: 3, thread_workers: 4, dream_workers: -1, wake_workers: 1, schedule_workers: 1 } },
+      { producer_components: { task_workers: 3, thread_workers: 4, dream_workers: 1, wake_workers: -1, schedule_workers: 1 } },
+      { producer_components: { task_workers: 3, thread_workers: 4, dream_workers: 1, wake_workers: 1, schedule_workers: -1 } },
       { producer_envelope: -1 },
     ]) {
       loaded(patch);

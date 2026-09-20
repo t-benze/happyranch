@@ -164,6 +164,17 @@ function mount(path = `/orgs/${SLUG}/settings/daemon-capacity`) {
 const workers = () => screen.getByLabelText(/Task session slots/);
 const cap = () => screen.getByLabelText(/Host session admission limit/);
 const reasonBox = () => screen.getByLabelText('Reason for change');
+/**
+ * Container-scoped accessors. Two editors can be mounted at once with the SAME
+ * `label[for]` id, so a global label query is ambiguous; these read the control
+ * inside one editor's own subtree.
+ */
+const workersIn = (root: HTMLElement) =>
+  root.querySelector('#capacity-workers') as HTMLInputElement;
+const capIn = (root: HTMLElement) =>
+  root.querySelector('#capacity-cap') as HTMLInputElement;
+const reasonIn = (root: HTMLElement) =>
+  root.querySelector('#capacity-reason') as HTMLTextAreaElement;
 const saveButton = () => screen.getByRole('button', { name: /Save for next restart|Saving/ });
 function workersRow(): HTMLTableRowElement {
   return within(screen.getByRole('table')).getAllByRole('row')[1] as HTMLTableRowElement;
@@ -570,6 +581,94 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     // The FIRST editor accepted the write: clean draft/reason and disarmed guard.
     expect(view.client.getQueryState(capacityQueryKey(SLUG))?.status).toBe('success');
     expect(undeclared).toEqual([]);
+    second.unmount();
+  });
+
+  test('C3 / 2.13b a clean SECOND editor adopts another editor\'s accepted write and saves the ADOPTED base', async () => {
+    const gate = deferred<Response>();
+    stubVenue({
+      put: (i) => (i === 0
+        ? gate.promise
+        : HttpResponse.json(snapshot({
+          revision: REV_C,
+          persisted_yaml: { queue_workers: 5, host_global_session_cap: 12 },
+          next_start: { queue_workers: 5, host_global_session_cap: 12 },
+          restart_pending: true,
+        }))),
+    });
+    const view = mount();
+    await ready();
+    await setPair('5', '12');
+    await saveWith();
+    await screen.findByText('Saving for next restart…');
+
+    // A REAL second editor on the SAME QueryClient, mounted during the pending
+    // write, with the ordering ledger NOT reset.
+    await view.client.invalidateQueries({ queryKey: capacityQueryKey(SLUG), refetchType: 'none' });
+    const second = renderGuarded(<AppRoutes />, {
+      client: view.client,
+      entries: [`/orgs/${SLUG}/settings/daemon-capacity`],
+      resetOrdering: false,
+    });
+    const secondUi = within(second.container);
+    await waitFor(() => expect(workersIn(second.container)).toHaveValue('3'));
+
+    // The FIRST editor's coherent 5/12 @ REV_B settlement.
+    gate.resolve(HttpResponse.json(snapshot({
+      revision: REV_B,
+      persisted_yaml: { queue_workers: 5, host_global_session_cap: 12 },
+      next_start: { queue_workers: 5, host_global_session_cap: 12 },
+      restart_pending: true,
+    })));
+    const firstUi = within(view.container);
+
+    // INITIATOR: accepted, clean, with NO phantom "changed elsewhere" against
+    // the revision it just saved.
+    await firstUi.findByText(/^Saved for next restart\. Running limits are unchanged\./);
+    await waitFor(() => expect(workersIn(view.container)).toHaveValue('5'));
+    expect(capIn(view.container)).toHaveValue('12');
+    expect(reasonIn(view.container)).toHaveValue('');
+    expect(firstUi.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    expect(firstUi.queryByText(/Configuration changed elsewhere\./)).not.toBeInTheDocument();
+    expect(firstUi.queryByText(/You submitted/)).not.toBeInTheDocument();
+    expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_B);
+
+    // SECOND editor: adopted the SAME accepted base and pair from the shared
+    // cache; it is clean and has manufactured no reconciliation.
+    await waitFor(() => expect(workersIn(second.container)).toHaveValue('5'));
+    expect(capIn(second.container)).toHaveValue('12');
+    expect(secondUi.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    expect(secondUi.queryByText(/Configuration changed elsewhere\./)).not.toBeInTheDocument();
+    expect(
+      second.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision,
+    ).toBe(REV_B);
+
+    // Submit against the ADOPTED base. The stale-base defect sent If-Match REV_A
+    // with the 3/10 pair here.
+    await userEvent.type(reasonIn(second.container), 'second editor reason');
+    await userEvent.click(secondUi.getByRole('button', { name: /Save for next restart/ }));
+    await waitFor(() => expect(puts()).toHaveLength(2));
+    expect(puts()[1].ifMatch).toBe(`"${REV_B}"`);
+    expect(JSON.parse(puts()[1].rawBody)).toEqual({
+      queue_workers: 5,
+      host_global_session_cap: 12,
+      rationale: 'second editor reason',
+      confirm_environment_shadow: false,
+    });
+
+    // The second editor drains its OWN coherent settlement.
+    await secondUi.findByText(/^Saved for next restart\. Running limits are unchanged\./);
+    await waitFor(() => expect(reasonIn(second.container)).toHaveValue(''));
+    expect(workersIn(second.container)).toHaveValue('5');
+    expect(
+      second.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision,
+    ).toBe(REV_C);
+    expect(capacityObservation(SLUG)?.outcome).toBe('usable');
+    expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_C);
+    expect(undeclared).toEqual([]);
+    const unload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(false);
     second.unmount();
   });
 
@@ -1420,6 +1519,44 @@ describe('13 / 14 — denied and unusable reads', () => {
     }
   });
 
+  test('C1 a byte-IDENTICAL successful refresh is retained with ITS OWN receipt when a later read fails', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1800000000000);
+    try {
+      // Two byte-identical usable successes, then a genuine failure.
+      stubVenue({
+        get: (i) => (i < 2 ? HttpResponse.json(snapshot()) : HttpResponse.error()),
+      });
+      const view = mount();
+      await ready();
+      const before = view.client.getQueryData(capacityQueryKey(SLUG));
+
+      clock.mockReturnValue(1800000060000);
+      await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+      await waitFor(() => expect(capacityObservation(SLUG)?.receiptAt).toBe(1800000060000));
+
+      // The premise of the defect: React Query structurally shares the
+      // byte-identical body, so the component sees the SAME data object. A
+      // classification-only retention effect therefore never runs — yet a real
+      // usable response WAS received and its receipt must be retained.
+      expect(view.client.getQueryData(capacityQueryKey(SLUG))).toBe(before);
+      expect(receiptStrings()[0]).toContain(formatReceipt(1800000060000)!);
+
+      clock.mockReturnValue(1800000120000);
+      await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+      await screen.findByText(/Could not refresh/);
+
+      // The failure carries the provider receipt forward unchanged, and the
+      // retained values keep t1 — never rolling back to the t0 receipt.
+      expect(capacityObservation(SLUG)?.outcome).toBe('failed');
+      expect(capacityObservation(SLUG)?.receiptAt).toBe(1800000060000);
+      expect(receiptStrings().length).toBeGreaterThan(0);
+      expect(receiptStrings().every((text) => text.includes(formatReceipt(1800000060000)!))).toBe(true);
+      expect(receiptStrings().some((text) => text.includes(formatReceipt(1800000000000)!))).toBe(false);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   test('C1 / 14.1–14.4 usable -> shape-malformed -> representation-unusable -> failed -> usable keeps draft/reason/ack/base and one retained receipt, and never silently rebases', async () => {
     const clock = vi.spyOn(Date, 'now').mockReturnValue(1800000000000);
     try {
@@ -1449,6 +1586,18 @@ describe('13 / 14 — denied and unusable reads', () => {
             persisted_yaml: { queue_workers: 2, host_global_session_cap: 9 },
           }));
         },
+        // A COHERENT accepted response for the final 5/12 manual save: the same
+        // persisted pair the operator sent at a new revision. `queue_workers`
+        // is environment-shadowed, so the RESOLVED next-start W stays 3 and the
+        // acknowledged override remains valid. The default fixture's 3/10 body
+        // would let an incoherent final state pass.
+        put: () => HttpResponse.json(snapshot({
+          ...SHADOW_W,
+          revision: REV_C,
+          persisted_yaml: { queue_workers: 5, host_global_session_cap: 12 },
+          next_start: { queue_workers: 3, host_global_session_cap: 12 },
+          restart_pending: true,
+        })),
       });
       const view = mount();
       await ready();
@@ -1511,6 +1660,13 @@ describe('13 / 14 — denied and unusable reads', () => {
       expect(receiptStrings()[0]).not.toContain(retainedReceipt!);
 
       await userEvent.click(screen.getByRole('button', { name: 'Keep my draft, rebase onto latest' }));
+      // The rebase adopted the observed REV_B 2/9 as the accepted base. The
+      // reconciliation panel is intentionally cleared, so the accepted base is
+      // read from the displayed comparison table (saved 2, running 3).
+      await waitFor(() => expect(savedCell()).toHaveTextContent('2'));
+      expect(runningCell()).toHaveTextContent('3');
+      clock.mockReturnValue(1800000300000);
+      const receiptBeforeSave = capacityObservation(SLUG)?.receiptAt ?? null;
       await userEvent.click(saveButton());
       await waitFor(() => expect(puts()).toHaveLength(1));
       expect(puts()[0].ifMatch).toBe(`"${REV_B}"`);
@@ -1520,7 +1676,42 @@ describe('13 / 14 — denied and unusable reads', () => {
         rationale: 'why',
         confirm_environment_shadow: true,
       });
-      expect(view.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision).toBe(REV_B);
+      // Drain the manual save to its ACTUAL terminal settlement: the returned
+      // 5/12 pair (not the default 3/10 body) is displayed AND cached, the
+      // provider receipt advanced to the accepted response and is rendered, the
+      // draft/reason are clean and the navigation guard is disarmed.
+      await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
+      await waitFor(() => expect(savedCell()).toHaveTextContent('5'));
+      // The environment-resolved next-start W stays 3 for the shadowed key,
+      // while the persisted pair is the accepted 5/12.
+      expect(nextCell()).toHaveTextContent('3');
+      expect(runningCell()).toHaveTextContent('3');
+      expect(workers()).toHaveValue('5');
+      expect(cap()).toHaveValue('12');
+      expect(reasonBox()).toHaveValue('');
+      const cached = view.client.getQueryData<{
+        revision: string;
+        persisted_yaml: { queue_workers: number; host_global_session_cap: number };
+        next_start: { queue_workers: number; host_global_session_cap: number };
+      }>(capacityQueryKey(SLUG));
+      expect(cached?.revision).toBe(REV_C);
+      expect(cached?.persisted_yaml).toEqual({ queue_workers: 5, host_global_session_cap: 12 });
+      expect(cached?.next_start).toEqual({ queue_workers: 3, host_global_session_cap: 12 });
+      expect(capacityObservation(SLUG)?.outcome).toBe('usable');
+      expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_C);
+      expect(capacityObservation(SLUG)?.receiptAt).not.toBeNull();
+      expect(capacityObservation(SLUG)?.receiptAt).not.toBe(receiptBeforeSave);
+      expect(
+        receiptStrings().some((text) =>
+          text.includes(formatReceipt(capacityObservation(SLUG)!.receiptAt)!),
+        ),
+      ).toBe(true);
+      expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/You submitted/)).not.toBeInTheDocument();
+      expect(saveButton()).toBeEnabled();
+      const unload = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(unload);
+      expect(unload.defaultPrevented).toBe(false);
     } finally {
       clock.mockRestore();
     }
@@ -1895,19 +2086,39 @@ describe('15 / R7 — raw numeric envelopes, editor to wire and back', () => {
     ['persisted_yaml.queue_workers null (documented nullable)', ['persisted_yaml', 'queue_workers'], 'null', true],
     ['persisted_yaml.host_global_session_cap null (documented nullable)', ['persisted_yaml', 'host_global_session_cap'], 'null', true],
     ['effective_admission_cap null (documented nullable)', ['effective_admission_cap'], 'null', true],
+    // NULLABILITY — all TEN non-nullable positions reject a raw null. None may
+    // be coerced to zero or accepted as a usable base.
+    ['running_at_daemon_start.queue_workers null (non-nullable)', ['running_at_daemon_start', 'queue_workers'], 'null', false],
+    ['running_at_daemon_start.host_global_session_cap null (non-nullable)', ['running_at_daemon_start', 'host_global_session_cap'], 'null', false],
+    ['next_start.queue_workers null (non-nullable)', ['next_start', 'queue_workers'], 'null', false],
+    ['next_start.host_global_session_cap null (non-nullable)', ['next_start', 'host_global_session_cap'], 'null', false],
+    ['producer_envelope null (non-nullable)', ['producer_envelope'], 'null', false],
+    ['producer_components.task_workers null (non-nullable)', ['producer_components', 'task_workers'], 'null', false],
+    ['producer_components.thread_workers null (non-nullable)', ['producer_components', 'thread_workers'], 'null', false],
+    ['producer_components.dream_workers null (non-nullable)', ['producer_components', 'dream_workers'], 'null', false],
+    ['producer_components.wake_workers null (non-nullable)', ['producer_components', 'wake_workers'], 'null', false],
+    ['producer_components.schedule_workers null (non-nullable)', ['producer_components', 'schedule_workers'], 'null', false],
+    // DOMAIN — W and H strictly positive in every consumed position.
     ['persisted_yaml.queue_workers zero (positive domain)', ['persisted_yaml', 'queue_workers'], '0', false],
     ['persisted_yaml.host_global_session_cap negative (positive domain)', ['persisted_yaml', 'host_global_session_cap'], '-1', false],
     ['next_start.queue_workers zero (positive domain)', ['next_start', 'queue_workers'], '0', false],
     ['next_start.host_global_session_cap zero (positive domain)', ['next_start', 'host_global_session_cap'], '0', false],
     ['running_at_daemon_start.queue_workers zero (positive domain)', ['running_at_daemon_start', 'queue_workers'], '0', false],
     ['running_at_daemon_start.host_global_session_cap negative (positive domain)', ['running_at_daemon_start', 'host_global_session_cap'], '-1', false],
+    // DOMAIN — envelope/components nonnegative; every component has its own
+    // negative row, including wake_workers.
     ['producer_envelope negative (nonnegative domain)', ['producer_envelope'], '-1', false],
     ['producer_components.task_workers negative (nonnegative domain)', ['producer_components', 'task_workers'], '-1', false],
     ['producer_components.thread_workers negative (nonnegative domain)', ['producer_components', 'thread_workers'], '-1', false],
     ['producer_components.dream_workers negative (nonnegative domain)', ['producer_components', 'dream_workers'], '-1', false],
+    ['producer_components.wake_workers negative (nonnegative domain)', ['producer_components', 'wake_workers'], '-1', false],
     ['producer_components.schedule_workers negative (nonnegative domain)', ['producer_components', 'schedule_workers'], '-1', false],
+    // Nonnegative boundary that stays usable.
     ['producer_components.wake_workers zero (nonnegative boundary)', ['producer_components', 'wake_workers'], '0', true],
-    ['producer_envelope zero (nonnegative boundary, task>envelope -> inconsistent)', ['producer_envelope'], '0', false],
+    // Envelope zero beside the default task_workers 3 is the task>envelope
+    // INCONSISTENCY case, not a positive zero-envelope control. The coherent
+    // zero control is a separate test below.
+    ['producer_envelope zero with task_workers 3 (task>envelope -> inconsistent)', ['producer_envelope'], '0', false],
     ['persisted_yaml.queue_workers one (positive boundary)', ['persisted_yaml', 'queue_workers'], '1', true],
     ['next_start.host_global_session_cap one (positive boundary)', ['next_start', 'host_global_session_cap'], '1', true],
   ];
@@ -1925,11 +2136,18 @@ describe('15 / R7 — raw numeric envelopes, editor to wire and back', () => {
       });
       const view = mount();
       await ready();
+      if (!expectUsable) {
+        // A DIRTY editor makes "the bad read supplied a usable base" observable:
+        // the draft must survive untouched and a real submit must be refused.
+        await setPair('5', '12');
+        await userEvent.type(reasonBox(), 'bad-read draft');
+      }
       await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
       if (expectUsable) {
         await waitFor(() => expect(capacityObservation(SLUG)?.outcome).toBe('usable'));
         expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_B);
         expect(screen.queryByText(/Cannot read capacity configuration/)).not.toBeInTheDocument();
+        expect(screen.queryByText(/Capacity details are inconsistent in this response/)).not.toBeInTheDocument();
       } else {
         await waitFor(() => expect(capacityObservation(SLUG)?.outcome).toBe('unusable'));
         expect(capacityObservation(SLUG)?.sourceRevision).toBeNull();
@@ -1938,13 +2156,55 @@ describe('15 / R7 — raw numeric envelopes, editor to wire and back', () => {
             /Cannot read capacity configuration|Capacity details are inconsistent in this response/
               .test(node.textContent ?? '')),
         ).toBe(true);
-        expect(
-          classifySnapshot(view.client.getQueryData(capacityQueryKey(SLUG))).status,
-        ).not.toBe('usable');
+        const observedStatus = classifySnapshot(
+          view.client.getQueryData(capacityQueryKey(SLUG)),
+        ).status;
+        expect(observedStatus).not.toBe('usable');
+        // No usable base, no rounded/coerced form value and no reconciliation
+        // target: the accepted base is still 3/10, the dirty draft is intact,
+        // no rebase/accept control is offered and a real submit issues ZERO PUTs.
+        expect(savedCell()).toHaveTextContent('3');
+        expect(workers()).toHaveValue('5');
+        expect(cap()).toHaveValue('12');
+        expect(reasonBox()).toHaveValue('bad-read draft');
+        if (observedStatus === 'inconsistent') {
+          expect(document.body).toHaveTextContent(/Capacity details are inconsistent in this response/);
+          expect(screen.getByText('Accepted base').parentElement?.textContent)
+            .toMatch(/Task session slots 3/);
+        } else {
+          expect(screen.getByText('Last known')).toBeVisible();
+        }
+        expect(screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Discard draft, accept latest' })).not.toBeInTheDocument();
+        expect(saveButton()).toBeDisabled();
+        fireEvent.submit(saveButton().closest('form') as HTMLFormElement);
+        await waitFor(() => expect(view.client.isMutating()).toBe(0));
+        expect(puts()).toHaveLength(0);
       }
       view.unmount();
     },
   );
+
+  test('15.10 L4 a COHERENT zero producer envelope with zero task workers is USABLE (positive control)', async () => {
+    stubVenue({
+      get: (i) => (i === 0
+        ? HttpResponse.json(snapshot())
+        : HttpResponse.json(snapshot({
+          revision: REV_B,
+          producer_envelope: 0,
+          producer_components: {
+            task_workers: 0, thread_workers: 0, dream_workers: 0, wake_workers: 0, schedule_workers: 0,
+          },
+        }))),
+    });
+    mount();
+    await ready();
+    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+    await waitFor(() => expect(capacityObservation(SLUG)?.outcome).toBe('usable'));
+    expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_B);
+    expect(screen.queryByText(/Cannot read capacity configuration/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Capacity details are inconsistent in this response/)).not.toBeInTheDocument();
+  });
 
   test('15.10 L4 task_workers > producer_envelope is INCONSISTENT, never a negative total', async () => {
     stubVenue({

@@ -167,7 +167,9 @@ The Settings surface ships as a full page (`web/src/features/settings/SettingsPa
   screen under a `Last known` label with the receipt of the response that
   actually produced them — the retained values carry their own receipt even when
   a later request succeeds with an unusable body (that response still advances
-  the separate provider receipt, but never relabels the retained values) —
+  the separate provider receipt, but never relabels the retained values), and a
+  byte-identical successful response still dates those retained values with its
+  OWN receipt even though React Query structurally shares the value object —
   keeps the draft, reason and acknowledgment, and
   blocks the write until a genuinely successful, usable read recovers — a
   refetch result that merely carries cached data beside an error is not a
@@ -179,6 +181,11 @@ The Settings surface ships as a full page (`web/src/features/settings/SettingsPa
   accepted them, so a newer verified read supersedes an older 409 body for both
   rebase and accept-latest; an accepted write then clears the reconciliation
   state its own response made obsolete and finishes in a coherent clean state.
+  The suppression that stops the SUBMITTING editor mislabelling its own accepted
+  write as an external change is scoped to that editor's in-flight write: a
+  second editor mounted on the SAME client treats the write as the external
+  change it is, adopting it when clean and recording it for an explicit choice
+  when dirty, rather than staying stale on the older base and revision.
   Draft consequence arithmetic uses the RESOLVED per-key next-start values, so
   an environment-shadowed key contributes the environment's value rather than
   the draft the environment will shadow.

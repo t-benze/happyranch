@@ -400,19 +400,49 @@ export function DaemonCapacitySection(): JSX.Element {
    */
   const observationRef = useRef(query.observation);
   observationRef.current = query.observation;
+  /**
+   * C3: whether THIS editor has a write it initiated still in flight.
+   *
+   * The capacity observation is module-scoped by org, so `origin: 'write'`
+   * cannot by itself tell the SUBMITTING editor apart from a SECOND mounted
+   * editor observing that same accepted write. Without local ownership the
+   * read-acceptance effect suppressed every editor, leaving a clean second
+   * editor stale on an older base/revision and ready to submit a stale
+   * `If-Match`. Only the initiator owns its own response; another observer sees
+   * it as the external change it is.
+   */
+  const ownWriteInFlightRef = useRef(false);
 
   // Retain the last USABLE observation — snapshot AND its receipt — so an
   // unusable or failed read can still show labelled prior values, each with the
   // time of the response that actually produced it, instead of blanking the
   // surface or borrowing a later response's receipt.
+  //
+  // C1: `classification` is memoized on `query.data`, and React Query's
+  // structural sharing returns a REFERENCE-IDENTICAL object for a byte-identical
+  // successful response. Depending on `classification` alone therefore MISSES a
+  // real, usable observation whose values did not change, leaving the retained
+  // receipt behind the provider's. The observation's own settlement sequence is
+  // the stable marker of "a genuine usable response produced a snapshot": it
+  // advances only when the provider publishes a successful read or accepts a
+  // write — never on a cache reread, remount or dropped read. Depending on the
+  // always-new `query.observation` OBJECT would instead re-run this effect on
+  // every render, so the scalar sequence is used.
+  const usableObservationSeq = query.observation?.outcome === 'usable'
+    ? query.observation.settledSeq
+    : null;
   useEffect(() => {
-    if (classification?.status === 'usable') {
-      setLastUsable({
-        snapshot: classification.snapshot,
-        receiptAt: observationRef.current?.receiptAt ?? null,
-      });
-    }
-  }, [classification]);
+    const observation = observationRef.current;
+    // Only a genuine USABLE observation may (re)date the retained values. A
+    // failed, unusable or dropped read carries its own outcome, so it can never
+    // attach its timestamp to values it did not produce.
+    if (classification?.status !== 'usable') return;
+    if (observation === null || observation.outcome !== 'usable') return;
+    setLastUsable({
+      snapshot: classification.snapshot,
+      receiptAt: observation.receiptAt,
+    });
+  }, [classification, usableObservationSeq]);
 
   /**
    * The current read FAILED after a successful one (R1). React Query keeps the
@@ -539,8 +569,18 @@ export function DaemonCapacitySection(): JSX.Element {
     // beside the still-dirty pre-save state and record a phantom "changed
     // elsewhere" against the revision just saved. The submit handler owns
     // accepting a write result; this effect owns READ observations only.
+    //
+    // C3: suppression is scoped to THIS editor's own in-flight write. A second
+    // mounted editor on the same QueryClient has no such write, so it adopts the
+    // accepted snapshot exactly like any other external change (and, if dirty,
+    // records it as `latest`). The module-scoped observation alone cannot make
+    // that distinction.
     const observation = observationRef.current;
-    if (observation?.origin === 'write' && observation.sourceRevision === observed.revision) {
+    if (
+      ownWriteInFlightRef.current
+      && observation?.origin === 'write'
+      && observation.sourceRevision === observed.revision
+    ) {
       return;
     }
     if (!guardRef.current.dirty && !guardRef.current.writeLocked) {
@@ -725,6 +765,10 @@ export function DaemonCapacitySection(): JSX.Element {
     };
     setSubmission(record);
     setOutcome({ kind: 'saving' });
+    // C3: mark this write as OWNED by this editor for exactly as long as the
+    // request is in flight, so the read-acceptance effect can suppress only its
+    // own cache-write notification. Cleared on EVERY settlement path.
+    ownWriteInFlightRef.current = true;
     try {
       const result = await save.mutateAsync({
         revision: record.baseRevision,
@@ -790,6 +834,8 @@ export function DaemonCapacitySection(): JSX.Element {
       }
       setOutcome(classified);
       if (classified.kind === 'rejected' && classified.focus) focusField(classified.focus);
+    } finally {
+      ownWriteInFlightRef.current = false;
     }
   }
 
