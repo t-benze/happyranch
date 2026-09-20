@@ -579,23 +579,45 @@ func assertHR8466NoFixtureLeak(t *testing.T, f *hr8466Fixture) {
 // assert negative READY/WATCHDOG properties only after the prior record was
 // fully consumed and before the gated record is acted on.
 type hr8466ProbeLog struct {
-	mu         sync.Mutex
-	results    []sidecarObservation
-	background []bool
-	durations  []time.Duration
-	armGate    bool
-	gateIn     chan int
-	gateOut    chan struct{}
+	mu          sync.Mutex
+	results     []sidecarObservation
+	background  []bool
+	durations   []time.Duration
+	armGate     bool
+	gateIn      chan int
+	gateOut     chan struct{}
+	gateRelease *sync.Once
 }
 
 func newHR8466ProbeLog() *hr8466ProbeLog {
-	return &hr8466ProbeLog{gateIn: make(chan int, 1), gateOut: make(chan struct{})}
+	return &hr8466ProbeLog{
+		gateIn:      make(chan int, 1),
+		gateOut:     make(chan struct{}, 1),
+		gateRelease: &sync.Once{},
+	}
 }
 
 func (p *hr8466ProbeLog) armNext() {
 	p.mu.Lock()
+	// A fresh once per armed gate keeps release idempotent and safe against a
+	// double release from both the test and failure-path teardown.
+	p.gateRelease = &sync.Once{}
 	p.armGate = true
 	p.mu.Unlock()
+}
+
+// releaseGate is the idempotent, failure-safe release for an armed or entered
+// query gate.  It never blocks and never panics on a repeated release, so
+// teardown can always unblock a stranded supervisor even after an assertion
+// abort.
+func (p *hr8466ProbeLog) releaseGate() {
+	p.mu.Lock()
+	once := p.gateRelease
+	p.mu.Unlock()
+	if once == nil {
+		return
+	}
+	once.Do(func() { p.gateOut <- struct{}{} })
 }
 
 func (p *hr8466ProbeLog) probe(ctx context.Context) sidecarObservation {
@@ -793,11 +815,9 @@ func (h *hr8466Supervisor) waitProbeGateEntered(timeout time.Duration) int {
 
 func (h *hr8466Supervisor) releaseProbeGate() {
 	h.t.Helper()
-	select {
-	case h.probe.gateOut <- struct{}{}:
-	case <-time.After(hr8466NormalBarrier):
-		h.t.Fatal("probe gate release was not consumed")
-	}
+	// Idempotent: an explicit release and a failure-path teardown release of
+	// the same armed gate must not panic or block.
+	h.probe.releaseGate()
 }
 
 // waitDone is the product wait: it fails the assertion when the supervisor does
@@ -818,13 +838,19 @@ func (h *hr8466Supervisor) waitDone(timeout time.Duration) int {
 }
 
 // teardown is the separate guaranteed test-owned path: it records
-// TEST_TEARDOWN_BEGIN before any kill, cancels the supervisor, and waits for
-// the supervisor's own cmd.Wait result within the admission+teardown bound.
+// TEST_TEARDOWN_BEGIN before any kill, releases any armed/entered query gate so
+// a failure-path assertion cannot strand the supervisor, cancels it, and joins
+// the supervisor's own cmd.Wait result within the admission+teardown bound.  A
+// failed join is reported; a child ESRCH alone is never treated as a join.
 func (h *hr8466Supervisor) teardown() {
 	if h.finished {
 		return
 	}
 	h.fixture.beginTeardown()
+	// Failure-safe, idempotent gate release: an entered completed-query gate
+	// leaves the supervisor blocked in the health query and cannot be unblocked
+	// by cancellation alone.
+	h.probe.releaseGate()
 	h.cancel()
 	if h.cmd != nil && h.cmd.Process != nil {
 		_ = h.cmd.Process.Kill()
@@ -834,7 +860,10 @@ func (h *hr8466Supervisor) teardown() {
 		h.finished = true
 	case <-time.After(hr8466AdmissionBound):
 		// The product waitDone already fails the test when termination is
-		// required; teardown must never itself report success.
+		// required; teardown must never itself report success.  Report the
+		// failed join explicitly rather than returning silently.
+		h.t.Errorf("teardown returned after %s without joining the supervisor; calls=%v probes=%d",
+			hr8466AdmissionBound, h.calls(), h.probe.count())
 	}
 }
 
@@ -2148,5 +2177,110 @@ func TestConsumerReadinessTerminalIndependentOfChildCleanupPermission(t *testing
 	if code := h.waitDone(hr8466AdmissionBound); code != 0 {
 		t.Fatalf("admission exit code=%d, want 0", code)
 	}
+	assertHR8466NoFixtureLeak(t, f)
+}
+
+// Case 6: cancellation that races the delivery of an already-completed healthy
+// query must never publish a positive receipt.  The maintained real child-FD
+// and real-query gate holds delivery of the completed observation, cancels the
+// actual supervisor context, and only then releases it.  Both pre-READY
+// publication paths (the initial ready record and the later healthy-record
+// pre-READY gate) and the post-READY watchdog path are covered.
+func TestConsumerCancellationAfterCompletedHealthyQuerySuppressesPositive(
+	t *testing.T,
+) {
+	for _, mode := range []string{"ready", "watchdog"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newHR8466Fixture(t)
+			f.setPlan("ready", "healthy")
+			f.setState("healthy")
+			h := startHR8466Supervisor(t, f, 10*time.Second, 10*time.Second)
+			defer h.teardown()
+
+			index := 0
+			if mode == "watchdog" {
+				f.waitChildWaiting(t, 0)
+				f.releaseChild(0)
+				h.waitCount("READY=1", 1, hr8466NormalBarrier)
+				index = 1
+			}
+			h.armProbeGate()
+			f.waitChildWaiting(t, index)
+			f.releaseChild(index)
+			h.waitProbeGateEntered(hr8466NormalBarrier)
+			// The healthy query has completed; cancellation precedes delivery.
+			h.cancel()
+			h.releaseProbeGate()
+			h.waitCount("STOPPING=1", 1, hr8466NormalBarrier)
+			if mode == "ready" && h.count("READY=1") != 0 {
+				t.Fatalf("READY published after cancellation: %v", h.calls())
+			}
+			if mode == "watchdog" && h.count("WATCHDOG=1") != 0 {
+				t.Fatalf("WATCHDOG published after cancellation: %v", h.calls())
+			}
+			if code := h.waitDone(hr8466AdmissionBound); code != 0 {
+				t.Fatalf("cancellation exit code=%d, want 0", code)
+			}
+			assertHR8466NoFixtureLeak(t, f)
+		})
+	}
+}
+
+// Case 7: the at-most-once terminal STOPPING latch is independent of child
+// cleanup permission.  A refused admission stop followed by a spontaneous
+// child exit emits exactly one STOPPING and keeps the failed exit
+// classification, without granting product child TERM permission.
+func TestConsumerRefusedStopThenSpontaneousExitNotifiesStoppingOnce(t *testing.T) {
+	f := newHR8466Fixture(t)
+	f.setPlan("ready", "failed")
+	f.setState("healthy")
+	f.requireStopFailure()
+	h := startHR8466Supervisor(t, f, 10*time.Second, 10*time.Second)
+	defer h.teardown()
+
+	f.waitChildWaiting(t, 0)
+	f.releaseChild(0)
+	h.waitCount("READY=1", 1, hr8466NormalBarrier)
+	f.waitChildWaiting(t, 1)
+	f.releaseChild(1)
+	h.waitCount("STOPPING=1", 1, hr8466NormalBarrier)
+	f.waitEvent(t, "stop-failed", hr8466NormalBarrier)
+	// No product TERM was permitted; the child exits spontaneously.
+	if events := f.productEvents(); hr8466HasEvent(events, "term") {
+		t.Fatalf("child cleanup attempted after a refused stop: events=%v", events)
+	}
+	f.exitChild()
+	if code := h.waitDone(hr8466AdmissionBound); code != 1 {
+		t.Fatalf("refused cleanup changed exit classification: %d", code)
+	}
+	if got := h.count("STOPPING=1"); got != 1 {
+		t.Fatalf("terminal refusal then spontaneous child exit emitted STOPPING %d times: %v",
+			got, h.calls())
+	}
+	assertHR8466NoFixtureLeak(t, f)
+}
+
+// Case 8: a failure-path assertion that aborts while the completed-query gate
+// is entered must still be torn down to a bounded, joined state.  Teardown
+// releases the entered gate idempotently, joins the supervisor within the
+// accepted bound, and a repeated teardown must not panic.
+func TestConsumerFailurePathTeardownReleasesEnteredGateAndJoins(t *testing.T) {
+	f := newHR8466Fixture(t)
+	f.setPlan("ready")
+	f.setState("healthy")
+	h := startHR8466Supervisor(t, f, 20*time.Second, 20*time.Second)
+	h.armProbeGate()
+	f.waitChildWaiting(t, 0)
+	f.releaseChild(0)
+	h.waitProbeGateEntered(hr8466NormalBarrier)
+
+	// This is the equivalent of a Fatal assertion aborting before the explicit
+	// releaseProbeGate call.
+	h.teardown()
+	if !h.finished {
+		t.Fatalf("failure-path teardown did not join the supervisor within %s", hr8466AdmissionBound)
+	}
+	// Idempotent: the registered cleanup invokes teardown again.
+	h.teardown()
 	assertHR8466NoFixtureLeak(t, f)
 }

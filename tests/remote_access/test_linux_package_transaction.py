@@ -916,6 +916,68 @@ def test_contradictory_committed_phase_is_refused_unchanged(tmp_path: Path) -> N
     assert _full_snapshot(root) == before
 
 
+def test_committed_record_with_unwritten_final_unit_is_refused_unchanged(
+    tmp_path: Path,
+) -> None:
+    """F1: a real ``units_publishing`` record relabelled ``committed`` before the
+    final unit was written must not delete the OLD backups.
+
+    The intent list already names every unit, so the contradiction is only
+    visible by comparing the complete active NEW composition (payload, units,
+    drop-in) against the recorded intended identities.
+    """
+    old = _distinct_unit_package(tmp_path, "1", b"old")
+    new = _distinct_unit_package(tmp_path, "2", b"new")
+    root = tmp_path / "false-committed" / "root"
+    install_linux_package(old, root)
+    old_last_unit = (root / "etc/systemd/system" / UNITS[-1]).read_bytes()
+    guard = _InstallerGuard(
+        operation=f"unit_publish:{UNITS[-1]}", stage="before", occurrence=1,
+        exception=_Interrupted,
+    )
+    with pytest.raises(_Interrupted):
+        install_linux_package(new, root, guard=guard)
+    assert guard.fired == 1
+    record = json.loads((root / TRANSACTION_MARKER).read_text())
+    assert record["phase"] == "units_publishing"
+    assert record["published_units"] == list(UNITS)
+    _rewrite_record(root, lambda item: item.update({"phase": "committed"}))
+    before = _full_snapshot(root)
+    for _ in range(2):
+        with pytest.raises(PackageError, match="transaction_state_invalid"):
+            _recover_interrupted(root)
+        # Full lstat snapshot preserved after EACH refusal.
+        assert _full_snapshot(root) == before
+    # OLD backup authority and the mixed final unit are preserved intact.
+    assert (root / _PAYLOAD_BACKUP_NAME).is_dir()
+    assert (root / "opt/happyranch/bin/happyranch-tsnet-sidecar").read_bytes() == b"sidecar-new"
+    assert (root / "etc/systemd/system" / UNITS[-1]).read_bytes() == old_last_unit
+
+
+def test_null_stage_identity_is_refused_and_owned_stage_preserved(
+    tmp_path: Path,
+) -> None:
+    """F2: a real preparing record with a null stage must not abandon its stage.
+
+    The writer always records the concrete allocated stage.  A null/missing
+    identity is an unreachable/incomplete record: recovery must refuse before
+    mutation and leave the owned stage and the full snapshot intact.
+    """
+    root, _package = _preparing_root(tmp_path, "null-stage")
+    record = json.loads((root / TRANSACTION_MARKER).read_text())
+    stage = Path(record["stage"])
+    assert stage.is_dir()
+    _rewrite_record(root, lambda item: item.update({"stage": None}))
+    before = _full_snapshot(root)
+    for _ in range(2):
+        with pytest.raises(PackageError, match="transaction_state_invalid"):
+            _recover_interrupted(root)
+        assert _full_snapshot(root) == before
+    # The real owned stage is neither removed nor abandoned.
+    assert stage.is_dir()
+    assert (root / TRANSACTION_MARKER).exists()
+
+
 @pytest.mark.parametrize("field", ["created_parents", "published_units"])
 def test_object_valued_record_elements_are_refused_not_typeerror(
     tmp_path: Path, field: str,

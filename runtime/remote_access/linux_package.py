@@ -957,18 +957,23 @@ def _load_record(root: Path, marker: Path) -> dict:
         raise PackageError("transaction_state_invalid")
     if any(unit not in UNITS for unit in published):
         raise PackageError("transaction_state_invalid")
+    # The writer always records the concrete allocated stage before any
+    # mutation.  A missing/null stage identity is an unreachable, incomplete
+    # record: accepting it would let recovery discard the marker while leaving
+    # the real owned stage orphaned.  The recorded string may legitimately name
+    # a stage whose path has already moved (payload publication renames it into
+    # place), so only the identity is validated here, never the path's presence.
     stage = record["stage"]
-    if stage is not None:
-        if not isinstance(stage, str) or not stage:
-            raise PackageError("transaction_state_invalid")
-        stage_path = Path(stage)
-        if stage_path.parent != Path(root):
-            raise PackageError("transaction_state_invalid")
-        prefix = f"{_STAGE_PREFIX}{attempt}-"
-        if not stage_path.name.startswith(prefix):
-            raise PackageError("transaction_state_invalid")
-        if _STAGE_SUFFIX_PATTERN.match(stage_path.name[len(prefix):]) is None:
-            raise PackageError("transaction_state_invalid")
+    if not isinstance(stage, str) or not stage:
+        raise PackageError("transaction_state_invalid")
+    stage_path = Path(stage)
+    if stage_path.parent != Path(root):
+        raise PackageError("transaction_state_invalid")
+    prefix = f"{_STAGE_PREFIX}{attempt}-"
+    if not stage_path.name.startswith(prefix):
+        raise PackageError("transaction_state_invalid")
+    if _STAGE_SUFFIX_PATTERN.match(stage_path.name[len(prefix):]) is None:
+        raise PackageError("transaction_state_invalid")
     if not _valid_inventory(record["new_payload"]):
         raise PackageError("transaction_state_invalid")
     new_units = record["new_units"]
@@ -1124,6 +1129,40 @@ def _classify_dropin(root: Path, record: dict) -> str:
     raise PackageError("transaction_state_invalid")
 
 
+def _assert_committed_active_new(root: Path, record: Mapping[str, object]) -> None:
+    """Refuse a committed record whose active installation is not complete NEW.
+
+    The committed phase is authoritative only when the active payload, every
+    published unit and the applicable enrollment drop-in equal the exact
+    identities the record intended to publish.  A contradictory record (for
+    example a real ``units_publishing`` record whose phase was changed to
+    ``committed`` while the final unit write never happened) must be refused
+    *before* cleanup deletes the recorded OLD backups, so a mixed installation
+    can never be silently promoted.  Commit validity is never inferred from
+    the mere absence of backups.
+    """
+    opt = root / "opt/happyranch"
+    if not _tree_matches(opt, record["new_payload"]):
+        raise PackageError("transaction_state_invalid")
+    units = root / "etc/systemd/system"
+    new_units = record["new_units"]
+    for unit in UNITS:
+        if not _file_matches(units / unit, new_units[unit]):
+            raise PackageError("transaction_state_invalid")
+    dropin = units / _DROPIN_SERVICE_DIR / _DROPIN_FILE_NAME
+    if record["new_dropin"] is not None:
+        if not _file_matches(dropin, record["new_dropin"]):
+            raise PackageError("transaction_state_invalid")
+        return
+    # No NEW drop-in was published: the unchanged-prior-drop-in branch must
+    # still match its recorded prior identity, or be genuinely absent.
+    if record["dropin_present"]:
+        if not _file_matches(dropin, record["backups"]["dropin"]):
+            raise PackageError("transaction_state_invalid")
+    elif dropin.exists() or dropin.is_symlink():
+        raise PackageError("transaction_state_invalid")
+
+
 def _restore_old(root: Path, record: dict, guard) -> None:
     """Restore the last-known-good (OLD) composition or conservatively refuse.
 
@@ -1212,9 +1251,16 @@ def _recover_interrupted(root: Path, guard=None) -> None:
         return
     record = _load_record(root, marker)
     _assert_record_paths_safe(root, record)
-    if record["phase"] in {"preparing", "committed"}:
-        # ``preparing`` never mutated OLD and ``committed`` is authoritative NEW:
-        # both are recovered by removing only exact recorded owned residue.
+    if record["phase"] == "committed":
+        # ``committed`` is authoritative NEW only when the active installation
+        # genuinely equals the recorded complete NEW identities; a
+        # contradictory record is refused before cleanup can delete OLD.
+        _assert_committed_active_new(root, record)
+        _cleanup_owned(root, record, guard)
+        return
+    if record["phase"] == "preparing":
+        # ``preparing`` never mutated OLD: recover by removing only exact
+        # recorded owned residue.
         _cleanup_owned(root, record, guard)
         return
     _restore_old(root, record, guard)
@@ -1376,7 +1422,10 @@ def install_linux_package(
         else:
             durable = _load_record(root, marker)
             _assert_record_paths_safe(root, durable)
-            if durable["phase"] in {"preparing", "committed"}:
+            if durable["phase"] == "committed":
+                _assert_committed_active_new(root, durable)
+                _cleanup_owned(root, durable, guard)
+            elif durable["phase"] == "preparing":
                 _cleanup_owned(root, durable, guard)
             else:
                 _restore_old(root, durable, guard)

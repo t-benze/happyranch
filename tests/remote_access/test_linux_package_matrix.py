@@ -29,6 +29,25 @@ record is unrecorded preparation residue: it is preserved and refused (M9),
 never mistaken for a coherent owned transaction.  A ``persistent`` ``E``
 raises on every matching occurrence while present and is cleared before the
 successful recovery.
+
+TASK8500 F4 corrections layered onto this same finite enumeration (no new
+proof framework):
+
+* publication partial destination writes now include the real
+  ``record_temp_create``/``record_temp_write`` record seams at every reachable
+  occurrence, in addition to the payload/unit/drop-in copies and the recovery
+  partial cases;
+* the finite prior-existence configurations cover each of the three prior
+  units absent *individually* (the first+last-absent-together fixture is not a
+  substitute) and a no-root upgrade with a genuine prior
+  drop-in/directory/sibling preservation branch;
+* the immediate post-commit oracle compares the complete active NEW
+  composition — payload tree, every unit, drop-in, modes/types and preserved
+  siblings — and permits only explicitly owned transaction residue (never a
+  broad prefix exclusion), before recovery/reinstall and again after direct
+  committed recovery; and
+* the misleading M1 committed control is renamed to what it actually tests and
+  a genuine committed-record/partial-cleanup positive control is added.
 """
 from __future__ import annotations
 
@@ -55,6 +74,7 @@ from runtime.remote_access.linux_package import (
     _inventory_tree,
     _recover_interrupted,
     _record_temp,
+    _transaction_paths,
     _tree_matches,
     build_linux_package,
     install_linux_package,
@@ -213,6 +233,18 @@ _CONFIGS = (
             enrollment=False, prior_dropin=False, prior_dropin_dir=False),
     _Config("upgrade-noroot-unitabsent", upgrade=True, system_service=False,
             enrollment=False, prior_units=(UNITS[1],)),
+    # Each of the three prior units absent individually.  The first+last
+    # absent-together configuration above is not a substitute for these.
+    _Config("upgrade-noroot-firstabsent", upgrade=True, system_service=False,
+            enrollment=False, prior_units=(UNITS[1], UNITS[2])),
+    _Config("upgrade-noroot-secondabsent", upgrade=True, system_service=False,
+            enrollment=False, prior_units=(UNITS[0], UNITS[2])),
+    _Config("upgrade-noroot-lastabsent", upgrade=True, system_service=False,
+            enrollment=False, prior_units=(UNITS[0], UNITS[1])),
+    # No-root upgrade with a genuine prior drop-in/directory/sibling: the
+    # no-new-dropin preservation branch must still be exercised and retained.
+    _Config("upgrade-noroot-priordropin", upgrade=True, system_service=False,
+            enrollment=False, prior_dropin=True, prior_dropin_dir=True),
     _Config("fresh-system", upgrade=False, system_service=True, enrollment=True),
     _Config("fresh-system-noenroll", upgrade=False, system_service=True, enrollment=False),
 )
@@ -247,8 +279,9 @@ def _shape_prior(root: Path, config: _Config) -> None:
             target.chmod((0o600, 0o640, 0o644)[index])
         elif target.exists() or target.is_symlink():
             target.unlink()
-    if not config.system_service:
-        return
+    # The prior drop-in branch is shaped for both install modes: a no-root
+    # upgrade may still carry an operator-managed prior drop-in that the new
+    # install never publishes but must preserve.
     dropin_dir = root / "etc/systemd/system/happyranch-tsnet-sidecar.service.d"
     dropin = dropin_dir / "10-enrollment-credential.conf"
     if config.prior_dropin:
@@ -343,7 +376,7 @@ def _publication_rule(config: _Config, exception: type[BaseException]) -> _Rule:
 
 
 _WRITE_PREFIXES = ("stage_payload", "stage_manifest", "unit_publish", "dropin_publish",
-                   "unit_backup", "dropin_backup")
+                   "unit_backup", "dropin_backup", "record_temp_create", "record_temp_write")
 
 
 def _is_write(operation: str) -> bool:
@@ -601,6 +634,44 @@ def _payload_is_new(root: Path, new_root: Path) -> bool:
     return opt.is_dir() and not opt.is_symlink() and _inventory_tree(opt) == _inventory_tree(expected)
 
 
+def _assert_complete_active_new(root: Path, expected: dict) -> None:
+    """Every artifact of a clean NEW install must already be present and exact.
+
+    This is the complete immediate committed oracle: it compares the payload
+    tree, every published unit, the drop-in (or its preserved prior bytes) and
+    every preserved sibling by lstat type, bytes, mode and uid/gid against the
+    independently produced clean NEW snapshot.  ``_payload_is_new`` covers only
+    ``opt/happyranch``, so it can hide a mixed unit/drop-in state.
+    """
+    state = _snapshot(root)
+    diverged = [relative for relative, value in expected.items() if state.get(relative) != value]
+    assert not diverged, f"complete active NEW mismatch at: {diverged}"
+
+
+def _owned_residue_prefixes(root: Path) -> tuple[str, ...]:
+    payload_backup, unit_backup, marker = _transaction_paths(root)
+    return tuple(
+        str(path.relative_to(root))
+        for path in (marker, _record_temp(root), payload_backup, unit_backup)
+    )
+
+
+def _assert_only_owned_residue(root: Path, expected: dict) -> None:
+    """Every non-NEW path must be an explicitly owned transaction artifact.
+
+    Only the exact recorded marker/temp/backup paths (or their descendants) are
+    tolerated; a broad ``.happyranch-*`` prefix exclusion is intentionally not
+    used, so an unrelated or foreign sibling still fails.
+    """
+    owned = _owned_residue_prefixes(root)
+    for relative in _snapshot(root):
+        if relative in expected:
+            continue
+        if any(relative == prefix or relative.startswith(prefix + "/") for prefix in owned):
+            continue
+        raise AssertionError(f"unexpected unowned residue {relative!r}")
+
+
 def _prior_artifact_retained(root: Path, relative: str, identity: dict,
                              backup_root: Path) -> bool:
     target = root / relative
@@ -658,11 +729,14 @@ def test_publication_operation_fault_matrix(tmp_path: Path, pub_case: _PubCase) 
     shutil.copytree(cache["template"], case, symlinks=True)
 
     pre_commit = pub_case.index < cache["commit"]
+    # An unrecorded orphan exists only when the interruption escapes the
+    # ordinary handler (K) before the first durable record; a caught OSError
+    # (E/P) triggers the product's own pre-record cleanup and returns to OLD.
     unrecorded = (
         pre_commit
         and pub_case.index < cache["first_record"]
         and pub_case.index >= 1
-        and pub_case.mode in ("K", "P")
+        and pub_case.mode == "K"
     )
     rule = _Rule(
         operation=pub_case.operation,
@@ -696,17 +770,25 @@ def test_publication_operation_fault_matrix(tmp_path: Path, pub_case: _PubCase) 
         if pre_commit:
             assert _snapshot(case) == cache["old"]
         else:
-            assert _payload_is_new(case, _WORK / config.name / "expected")
+            _assert_complete_active_new(case, cache["new"])
+            _assert_only_owned_residue(case, cache["new"])
     elif pre_commit:
         _assert_old_evidence(case, cache)
     else:
         # A K after the authoritative commit escapes ordinary cleanup; the
-        # committed NEW payload must already be authoritative.
-        assert _payload_is_new(case, _WORK / config.name / "expected")
+        # complete committed NEW composition (payload, every unit, drop-in,
+        # modes/types and preserved siblings) must already be authoritative,
+        # with only explicitly owned transaction residue remaining.
+        _assert_complete_active_new(case, cache["new"])
+        _assert_only_owned_residue(case, cache["new"])
 
     _recover_interrupted(case)
     if pre_commit:
         assert _snapshot(case) == cache["old"]
+    else:
+        # After direct committed recovery the complete active NEW state and
+        # only it must remain, before any reinstall can mask a mixed state.
+        assert _snapshot(case) == cache["new"]
     install_linux_package(new, case, system_service=config.system_service)
     assert _snapshot(case) == cache["new"]
     install_linux_package(new, case, system_service=config.system_service)
@@ -879,7 +961,13 @@ def test_m1_upgrade_uncommitted_recovers_to_old_then_new(tmp_path: Path) -> None
     assert (root / "opt/happyranch/bin/happyranch-tsnet-sidecar").read_bytes() == b"sidecar-NEW"
 
 
-def test_m1_committed_new_is_preserved_and_reentered(tmp_path: Path) -> None:
+def test_m1_interrupted_final_unit_write_restores_old(tmp_path: Path) -> None:
+    """An interrupted *final-unit write* is pre-commit, not a committed control.
+
+    The prior name implied committed authority; the real binding fires before
+    the authoritative commit, so recovery must restore OLD.  The genuine
+    committed positive control is the separate test below.
+    """
     old, new = _packages()
     root = tmp_path / "m1-committed" / "root"
     _build_base(root, _UPGRADE, old)
@@ -887,11 +975,43 @@ def test_m1_committed_new_is_preserved_and_reentered(tmp_path: Path) -> None:
     assert trigger.operation == f"unit_publish:{UNITS[-1]}"
     with pytest.raises(_Interrupted):
         install_linux_package(new, root, guard=_SeamGuard(armed=False, trigger=trigger))
+    # The record is real but pre-commit: recovery restores the complete OLD.
     _recover_interrupted(root)
+    assert (root / "opt/happyranch/bin/happyranch-tsnet-sidecar").read_bytes() == b"sidecar-OLD"
+    assert (root / "etc/systemd/system" / UNITS[-1]).read_bytes().startswith(b"OLD-unit-2-")
+    assert not list(root.glob(".happyranch-*"))
     install_linux_package(new, root)
     install_linux_package(new, root)
     assert (root / "opt/happyranch/bin/happyranch-tsnet-sidecar").read_bytes() == b"sidecar-NEW"
     assert not list(root.glob(".happyranch-*"))
+
+
+def test_m1_genuine_committed_record_survives_partial_cleanup(tmp_path: Path) -> None:
+    """A genuine committed record plus partial committed cleanup retains NEW.
+
+    Interrupting the final ``marker_remove`` cleanup step leaves the durable
+    ``committed`` record with the complete active NEW installation and only
+    explicitly owned residue; recovery validates that composition and finishes
+    the cleanup without deleting any active NEW artifact.
+    """
+    old, new = _packages()
+    root = tmp_path / "m1-genuine-committed" / "root"
+    _build_base(root, _UPGRADE, old)
+    rule = _Rule(operation="marker_remove", stage="before", occurrence=1,
+                 exception=_Interrupted)
+    with pytest.raises(_Interrupted):
+        install_linux_package(new, root, guard=_SeamGuard([rule]))
+    assert rule.raises == 1
+    assert json.loads((root / TRANSACTION_MARKER).read_text())["phase"] == "committed"
+    cache = _config_cache(_UPGRADE)
+    _assert_complete_active_new(root, cache["new"])
+    _assert_only_owned_residue(root, cache["new"])
+    _recover_interrupted(root)
+    assert _snapshot(root) == cache["new"]
+    install_linux_package(new, root)
+    assert _snapshot(root) == cache["new"]
+    install_linux_package(new, root)
+    assert _snapshot(root) == cache["new"]
 
 
 # M2: legacy schema-v1 compositions preserve and refuse.

@@ -260,11 +260,21 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 	// stopping records confirmed sidecar-absence admission and the connector
 	// child TERM.  It gates child cleanup only and never revives readiness.
 	stopping := false
-	stopChild := func() {
-		if !terminal {
-			terminal = true
-			_ = notifier.Notify("STOPPING=1", "STATUS=connector stopping")
+	// stoppingNotified is the single at-most-once latch for the terminal
+	// STOPPING notification.  It is deliberately independent of ``stopping``
+	// (child cleanup permission): a refused admission stop must not let a later
+	// spontaneous child exit emit a second STOPPING.
+	stoppingNotified := false
+	notifyStopping := func(status string) {
+		if stoppingNotified {
+			return
 		}
+		stoppingNotified = true
+		_ = notifier.Notify("STOPPING=1", status)
+	}
+	stopChild := func() {
+		terminal = true
+		notifyStopping("STATUS=connector stopping")
 		if stopping {
 			return
 		}
@@ -280,7 +290,9 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 	// observePreReady runs one pre-READY health observation bounded by the
 	// original absolute startup deadline.  A healthy result that completes
 	// after that deadline is never accepted, so a late query completion can
-	// never refresh or extend the startup window.
+	// never refresh or extend the startup window.  Cancellation is rechecked
+	// after the query returns: a completed-but-late delivery that races the
+	// supervisor context cancellation must never publish a positive receipt.
 	observePreReady := func() (sidecarObservation, bool) {
 		if !ready && !time.Now().Before(startupDeadlineAt) {
 			return sidecarUnknown, false
@@ -288,6 +300,9 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 		observationCtx, cancelObservation := context.WithDeadline(ctx, startupDeadlineAt)
 		defer cancelObservation()
 		observation := sidecarHealthy(observationCtx)
+		if ctx.Err() != nil {
+			return observation, false
+		}
 		if !ready && !time.Now().Before(startupDeadlineAt) {
 			return observation, false
 		}
@@ -338,6 +353,10 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 						continue
 					}
 					if observation == sidecarPresentHealthy {
+						if ctx.Err() != nil {
+							stopChild()
+							continue
+						}
 						if notifier.Notify("READY=1", "STATUS=composite healthy") != nil {
 							stopChild()
 							continue
@@ -364,18 +383,32 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 						// finishes.
 						continue
 					}
+					if ctx.Err() != nil {
+						stopChild()
+						continue
+					}
 					if notifier.Notify("READY=1", "STATUS=composite healthy") != nil {
 						stopChild()
 						continue
 					}
 					ready = true
 					resetStale()
-				} else if sidecarHealthy(ctx) != sidecarPresentHealthy {
-					stopChild()
-				} else if notifier.Notify("WATCHDOG=1") != nil {
-					stopChild()
 				} else {
-					resetStale()
+					// Post-READY watchdog: the query result is rechecked
+					// against cancellation before any positive publication,
+					// so a receipt that completes after cancellation can
+					// never refresh the watchdog window.
+					observation := sidecarHealthy(ctx)
+					switch {
+					case ctx.Err() != nil:
+						stopChild()
+					case observation != sidecarPresentHealthy:
+						stopChild()
+					case notifier.Notify("WATCHDOG=1") != nil:
+						stopChild()
+					default:
+						resetStale()
+					}
 				}
 			case "stopping", "failed":
 				stopChild()
@@ -384,9 +417,12 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 			}
 		case err := <-waited:
 			admissionRemoved := removeSidecarAdmission(context.Background(), sidecarHealthy, stopSidecar)
-			if !stopping {
-				_ = notifier.Notify("STOPPING=1", "STATUS=connector exited")
-			}
+			// The terminal STOPPING notification shares the single at-most-once
+			// latch with stopChild.  ``stopping`` only records child-cleanup
+			// permission, so a refused admission stop followed by a spontaneous
+			// child exit must not emit a second STOPPING.
+			terminal = true
+			notifyStopping("STATUS=connector exited")
 			if err == nil && stopping && admissionRemoved {
 				return 0
 			}
