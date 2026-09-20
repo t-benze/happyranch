@@ -978,6 +978,203 @@ def test_null_stage_identity_is_refused_and_owned_stage_preserved(
     assert (root / TRANSACTION_MARKER).exists()
 
 
+# ---------------------------------------------------------------------------
+# F1/F2 entry-path coverage: the shipping ``install_linux_package`` reentry
+# performs its own recovery, so every malformed/deceptive durable record must be
+# refused there as well as through direct ``_recover_interrupted``.  Each call
+# must return the same closed category and leave the complete lstat snapshot
+# (including the OLD backups) unchanged after EACH of two refusals.
+# ---------------------------------------------------------------------------
+
+
+def _false_committed_root(tmp_path: Path, name: str) -> tuple[Path, Path]:
+    """A real ``units_publishing`` record relabelled ``committed``.
+
+    The final unit write never happened, so the active installation is mixed
+    while the intent list already names every unit.
+    """
+    old = _distinct_unit_package(tmp_path, "1", b"old")
+    new = _distinct_unit_package(tmp_path, "2", b"new")
+    root = tmp_path / name / "root"
+    install_linux_package(old, root)
+    guard = _InstallerGuard(
+        operation=f"unit_publish:{UNITS[-1]}", stage="before", occurrence=1,
+        exception=_Interrupted,
+    )
+    with pytest.raises(_Interrupted):
+        install_linux_package(new, root, guard=guard)
+    assert guard.fired == 1
+    assert json.loads((root / TRANSACTION_MARKER).read_text())["phase"] == "units_publishing"
+    _rewrite_record(root, lambda item: item.update({"phase": "committed"}))
+    return root, new
+
+
+def _committed_partial_cleanup_root(
+    tmp_path: Path, name: str, *, enrollment: bool,
+) -> tuple[Path, Path]:
+    """A genuine ``committed`` record with only the final cleanup step missing.
+
+    Interrupting the real ``marker_remove`` leaves the durable committed record
+    plus explicitly owned residue, so the active NEW composition can be mutated
+    and validated exactly as the accepted committed oracle does.
+    """
+    root = _upgrade_root(tmp_path, system_service=True, enrollment=enrollment)
+    _old, new = _old_new(tmp_path)
+    guard = _InstallerGuard(
+        operation="marker_remove", stage="before", exception=_Interrupted,
+    )
+    with pytest.raises(_Interrupted):
+        install_linux_package(new, root, system_service=True, guard=guard)
+    assert guard.fired == 1
+    assert json.loads((root / TRANSACTION_MARKER).read_text())["phase"] == "committed"
+    return root, new
+
+
+def test_install_reentry_refuses_contradictory_committed_and_preserves_old(
+    tmp_path: Path,
+) -> None:
+    """F1 entry path: the shipping installer reentry refuses the impossible
+    commit before its own recovery can delete the OLD backups."""
+    root, new = _false_committed_root(tmp_path, "reentry-false-committed")
+    assert (root / _PAYLOAD_BACKUP_NAME).is_dir()
+    truth_backup = root / _UNIT_BACKUP_NAME
+    old_last_unit = (truth_backup / UNITS[-1]).read_bytes()
+    before = _full_snapshot(root)
+    for _ in range(2):
+        with pytest.raises(PackageError, match="transaction_state_invalid"):
+            install_linux_package(new, root)
+        # Complete lstat snapshot, including the OLD backups, after EACH call.
+        assert _full_snapshot(root) == before
+    assert (root / _PAYLOAD_BACKUP_NAME).is_dir()
+    assert truth_backup.is_dir()
+    assert (truth_backup / UNITS[-1]).read_bytes() == old_last_unit
+    assert (root / TRANSACTION_MARKER).exists()
+
+
+def test_install_reentry_refuses_null_stage_and_preserves_stage(tmp_path: Path) -> None:
+    """F2 entry path: a null stage must be refused before mutation by the
+    shipping installer reentry, leaving the real owned stage intact."""
+    root, package = _preparing_root(tmp_path, "reentry-null-stage")
+    stage = Path(json.loads((root / TRANSACTION_MARKER).read_text())["stage"])
+    assert stage.is_dir()
+    _rewrite_record(root, lambda item: item.update({"stage": None}))
+    before = _full_snapshot(root)
+    for _ in range(2):
+        with pytest.raises(PackageError, match="transaction_state_invalid"):
+            install_linux_package(package, root)
+        assert _full_snapshot(root) == before
+    assert stage.is_dir()
+    assert (root / TRANSACTION_MARKER).exists()
+
+
+def test_absent_stage_identity_is_refused_and_owned_stage_preserved(
+    tmp_path: Path,
+) -> None:
+    """F2: an absent stage key is refused by the actual loader on both the
+    direct-recovery and shipping-installer entry paths, with the owned stage and
+    complete snapshot preserved."""
+    root, package = _preparing_root(tmp_path, "absent-stage")
+    record = json.loads((root / TRANSACTION_MARKER).read_text())
+    stage = Path(record["stage"])
+    assert stage.is_dir()
+    _rewrite_record(root, lambda item: item.pop("stage"))
+    before = _full_snapshot(root)
+    for call in (
+        lambda: _recover_interrupted(root),
+        lambda: install_linux_package(package, root),
+    ):
+        with pytest.raises(PackageError, match="transaction_state_invalid"):
+            call()
+        assert _full_snapshot(root) == before
+    assert stage.is_dir()
+    assert (root / TRANSACTION_MARKER).exists()
+
+
+@pytest.mark.parametrize("divergence", [
+    "payload-bytes", "payload-mode", "payload-type",
+    "unit-bytes", "unit-mode", "unit-absent",
+])
+def test_committed_active_new_divergence_is_refused_unchanged(
+    tmp_path: Path, divergence: str,
+) -> None:
+    """F1: every active NEW category is validated before committed cleanup.
+
+    Starting from the same real impossible-commit state, one payload or unit
+    artifact is diverged in bytes, type or mode; the committed validator must
+    refuse before deleting the OLD backups and preserve the full snapshot.
+    """
+    root, _new = _false_committed_root(tmp_path, f"divergence-{divergence}")
+    payload_file = root / "opt/happyranch/bin/happyranch-tsnet-sidecar"
+    unit_file = root / "etc/systemd/system" / UNITS[0]
+    if divergence == "payload-bytes":
+        payload_file.write_bytes(b"tampered-payload")
+    elif divergence == "payload-mode":
+        payload_file.chmod(0o644)
+    elif divergence == "payload-type":
+        payload_file.unlink()
+        payload_file.symlink_to("happyranch-connector")
+    elif divergence == "unit-bytes":
+        unit_file.write_bytes(b"tampered-unit")
+    elif divergence == "unit-mode":
+        unit_file.chmod(0o644)
+    elif divergence == "unit-absent":
+        unit_file.unlink()
+    before = _full_snapshot(root)
+    for _ in range(2):
+        with pytest.raises(PackageError, match="transaction_state_invalid"):
+            _recover_interrupted(root)
+        assert _full_snapshot(root) == before
+    # The OLD backups still exist: no cleanup ran on a contradictory commit.
+    assert (root / _PAYLOAD_BACKUP_NAME).is_dir()
+    assert (root / _UNIT_BACKUP_NAME).is_dir()
+
+
+def test_committed_new_dropin_divergence_is_refused_unchanged(tmp_path: Path) -> None:
+    """F1: the published NEW drop-in identity is part of complete active NEW."""
+    root, _new = _committed_partial_cleanup_root(tmp_path, "dropin-new", enrollment=True)
+    record = json.loads((root / TRANSACTION_MARKER).read_text())
+    assert record["new_dropin"] is not None
+    dropin = (
+        root / "etc/systemd/system/happyranch-tsnet-sidecar.service.d"
+        / "10-enrollment-credential.conf"
+    )
+    dropin.write_bytes(b"tampered-new-dropin\n")
+    before = _full_snapshot(root)
+    for _ in range(2):
+        with pytest.raises(PackageError, match="transaction_state_invalid"):
+            _recover_interrupted(root)
+        assert _full_snapshot(root) == before
+
+
+def test_committed_preserved_prior_dropin_divergence_is_refused_unchanged(
+    tmp_path: Path,
+) -> None:
+    """F1: the unchanged-prior-drop-in branch is validated against its recorded
+    prior identity, not inferred from the absence of a new drop-in."""
+    root = _upgrade_root(tmp_path, system_service=True, enrollment=False)
+    dropin_dir = root / "etc/systemd/system/happyranch-tsnet-sidecar.service.d"
+    dropin_dir.mkdir(mode=0o710, exist_ok=True)
+    dropin = dropin_dir / "10-enrollment-credential.conf"
+    dropin.write_bytes(b"operator-managed-prior-dropin\n")
+    dropin.chmod(0o640)
+    _old, new = _old_new(tmp_path)
+    guard = _InstallerGuard(
+        operation="marker_remove", stage="before", exception=_Interrupted,
+    )
+    with pytest.raises(_Interrupted):
+        install_linux_package(new, root, system_service=True, guard=guard)
+    record = json.loads((root / TRANSACTION_MARKER).read_text())
+    assert record["phase"] == "committed"
+    assert record["new_dropin"] is None
+    assert record["dropin_present"] is True
+    dropin.write_bytes(b"tampered-preserved-prior-dropin\n")
+    before = _full_snapshot(root)
+    for _ in range(2):
+        with pytest.raises(PackageError, match="transaction_state_invalid"):
+            _recover_interrupted(root)
+        assert _full_snapshot(root) == before
+
+
 @pytest.mark.parametrize("field", ["created_parents", "published_units"])
 def test_object_valued_record_elements_are_refused_not_typeerror(
     tmp_path: Path, field: str,

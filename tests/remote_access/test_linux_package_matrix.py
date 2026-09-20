@@ -47,7 +47,10 @@ proof framework):
   broad prefix exclusion), before recovery/reinstall and again after direct
   committed recovery; and
 * the misleading M1 committed control is renamed to what it actually tests and
-  a genuine committed-record/partial-cleanup positive control is added.
+  a genuine committed-record/partial-cleanup positive control is added; and
+* every case asserts the exact operation/stage/occurrence and real destination
+  path it fired on (the randomly suffixed stage directory is matched by its
+  exact stage shape), so no whole family is mapped to a representative.
 """
 from __future__ import annotations
 
@@ -70,6 +73,7 @@ from runtime.remote_access.linux_package import (
     TRANSACTION_MARKER,
     UNITS,
     _PAYLOAD_BACKUP_NAME,
+    _STAGE_PREFIX,
     _UNIT_BACKUP_NAME,
     _inventory_tree,
     _recover_interrupted,
@@ -315,6 +319,10 @@ class _Rule:
         self.persistent = persistent
         self.seen = 0
         self.raises = 0
+        # The exact real path the fault fired on, so every case can prove the
+        # operation/stage/occurrence/path binding it claims.
+        self.fired_path: str | None = None
+        self.fired_seen: int | None = None
 
 
 class _SeamGuard:
@@ -337,6 +345,8 @@ class _SeamGuard:
         if rule.partial:
             Path(path).write_bytes(b"partial-new-bytes")
         rule.raises += 1
+        rule.fired_path = path
+        rule.fired_seen = rule.seen
         raise rule.exception(FAILURE)
 
     def _match(self, rule: _Rule, stage: str, operation: str, path: str) -> bool:
@@ -395,6 +405,21 @@ def _ranks(trace: list[tuple[str, str, str]]) -> dict[int, int]:
         seen[(stage, operation)] += 1
         ranks[index] = seen[(stage, operation)]
     return ranks
+
+
+def _path_binding_matches(expected_name: str, fired_path: str | None) -> bool:
+    """The fault fired on the destination the case actually names.
+
+    The allocated stage directory carries a fresh random suffix on every run,
+    so its basename is compared by exact stage shape instead; every other
+    operation name binds its literal destination basename.
+    """
+    if fired_path is None:
+        return False
+    fired_name = Path(fired_path).name
+    if expected_name.startswith(_STAGE_PREFIX):
+        return fired_name.startswith(_STAGE_PREFIX)
+    return fired_name == expected_name
 
 
 _WORK = _DISCOVERY_ROOT / "discovery"
@@ -749,6 +774,13 @@ def test_publication_operation_fault_matrix(tmp_path: Path, pub_case: _PubCase) 
     with pytest.raises((OSError, _Interrupted)):
         install_linux_package(new, case, system_service=config.system_service, guard=guard)
     assert rule.raises == 1
+    # Exact binding: the fault really hit the case's own operation/stage
+    # occurrence and the real destination path it names, never a sibling
+    # occurrence or a different artifact with the same operation name.  The
+    # guard keeps observing the product's own recovery seams after the
+    # injected failure, so ``seen`` may exceed the fire occurrence.
+    assert rule.fired_seen == pub_case.occurrence
+    assert _path_binding_matches(pub_case.relpath, rule.fired_path)
 
     if unrecorded:
         # M9: no durable ownership record yet; the unknown orphan is preserved
@@ -848,6 +880,10 @@ def test_recovery_operation_fault_matrix(tmp_path: Path, rr_case: _RRCase) -> No
         return
 
     assert recovery_rule.raises == 1
+    # Exact binding on the recovery route too: the case's own stage/operation
+    # occurrence and its real destination path, not a same-named sibling.
+    assert recovery_rule.fired_seen == rr_case.occurrence
+    assert _path_binding_matches(rr_case.relpath, recovery_rule.fired_path)
 
     # While faulted, every OLD byte/mode remains reachable in its active or
     # recorded backup location (the immediate-state oracle before recovery).

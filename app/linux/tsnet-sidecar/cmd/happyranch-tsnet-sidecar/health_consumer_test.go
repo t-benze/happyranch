@@ -2183,22 +2183,42 @@ func TestConsumerReadinessTerminalIndependentOfChildCleanupPermission(t *testing
 // Case 6: cancellation that races the delivery of an already-completed healthy
 // query must never publish a positive receipt.  The maintained real child-FD
 // and real-query gate holds delivery of the completed observation, cancels the
-// actual supervisor context, and only then releases it.  Both pre-READY
-// publication paths (the initial ready record and the later healthy-record
-// pre-READY gate) and the post-READY watchdog path are covered.
+// actual supervisor context, and only then releases it.  All three positive
+// publication boundaries are covered: the initial ready-record query, the
+// later healthy-record pre-READY gate, and the post-READY watchdog query.
 func TestConsumerCancellationAfterCompletedHealthyQuerySuppressesPositive(
 	t *testing.T,
 ) {
-	for _, mode := range []string{"ready", "watchdog"} {
+	for _, mode := range []string{"ready", "later", "watchdog"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newHR8466Fixture(t)
 			f.setPlan("ready", "healthy")
-			f.setState("healthy")
+			// The "later" path establishes child-ready while the first
+			// completed real observation is nonhealthy, so READY is withheld
+			// and the later healthy record exercises the second pre-READY
+			// publication boundary.
+			if mode == "later" {
+				f.setState("unhealthy")
+			} else {
+				f.setState("healthy")
+			}
 			h := startHR8466Supervisor(t, f, 10*time.Second, 10*time.Second)
 			defer h.teardown()
 
 			index := 0
-			if mode == "watchdog" {
+			switch mode {
+			case "later":
+				f.waitChildWaiting(t, 0)
+				f.releaseChild(0)
+				// The real initial query completed against a nonhealthy
+				// sidecar and must not publish READY.
+				f.waitShowComplete(t, "unhealthy", 1, hr8466NormalBarrier)
+				if got := h.count("READY=1"); got != 0 {
+					t.Fatalf("nonhealthy first observation published READY: %v", h.calls())
+				}
+				f.setState("healthy")
+				index = 1
+			case "watchdog":
 				f.waitChildWaiting(t, 0)
 				f.releaseChild(0)
 				h.waitCount("READY=1", 1, hr8466NormalBarrier)
@@ -2212,11 +2232,16 @@ func TestConsumerCancellationAfterCompletedHealthyQuerySuppressesPositive(
 			h.cancel()
 			h.releaseProbeGate()
 			h.waitCount("STOPPING=1", 1, hr8466NormalBarrier)
-			if mode == "ready" && h.count("READY=1") != 0 {
+			if mode != "watchdog" && h.count("READY=1") != 0 {
 				t.Fatalf("READY published after cancellation: %v", h.calls())
 			}
 			if mode == "watchdog" && h.count("WATCHDOG=1") != 0 {
 				t.Fatalf("WATCHDOG published after cancellation: %v", h.calls())
+			}
+			// The terminal decision is latched: exactly one STOPPING and no
+			// late positive receipt once the gated result is delivered.
+			if got := h.count("STOPPING=1"); got != 1 {
+				t.Fatalf("terminal STOPPING count=%d, want 1; calls=%v", got, h.calls())
 			}
 			if code := h.waitDone(hr8466AdmissionBound); code != 0 {
 				t.Fatalf("cancellation exit code=%d, want 0", code)
@@ -2262,8 +2287,10 @@ func TestConsumerRefusedStopThenSpontaneousExitNotifiesStoppingOnce(t *testing.T
 
 // Case 8: a failure-path assertion that aborts while the completed-query gate
 // is entered must still be torn down to a bounded, joined state.  Teardown
-// releases the entered gate idempotently, joins the supervisor within the
-// accepted bound, and a repeated teardown must not panic.
+// releases the entered gate idempotently, joins the supervisor and its single
+// Wait owner within the accepted bound, and a repeated release/teardown must
+// not block or panic.  A child ESRCH check alone is not treated as proof that
+// the supervisor completed.
 func TestConsumerFailurePathTeardownReleasesEnteredGateAndJoins(t *testing.T) {
 	f := newHR8466Fixture(t)
 	f.setPlan("ready")
@@ -2280,7 +2307,19 @@ func TestConsumerFailurePathTeardownReleasesEnteredGateAndJoins(t *testing.T) {
 	if !h.finished {
 		t.Fatalf("failure-path teardown did not join the supervisor within %s", hr8466AdmissionBound)
 	}
-	// Idempotent: the registered cleanup invokes teardown again.
+	// The supervisor's one owned Wait reaped the child; the product assertion
+	// boundary is untouched because teardown only records TEST_TEARDOWN_BEGIN.
+	h.verifyReaped()
+	if events := f.productEvents(); hr8466HasEvent(events, "TEST_TEARDOWN_BEGIN") {
+		t.Fatalf("teardown boundary leaked into product-observable events: %v", events)
+	}
+	// Idempotent: a repeated explicit release plus the registered cleanup's
+	// second teardown must not block or panic on the consumed gate.
+	h.probe.releaseGate()
+	h.releaseProbeGate()
 	h.teardown()
+	if !h.finished {
+		t.Fatal("repeated teardown lost the joined supervisor state")
+	}
 	assertHR8466NoFixtureLeak(t, f)
 }
