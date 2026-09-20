@@ -509,6 +509,21 @@ describe('15 — numeric honesty at the write site (Q8 is NOT solved)', () => {
     },
   );
 
+  test('15.7 the EMPTY field is refused too — the ninth grammar input, which cannot be typed', async () => {
+    mount();
+    // `''` is the one 15.7 input `user.type` cannot produce; it is the CLEARED
+    // field. Asserted separately so the grammar table is complete at 9 of 9.
+    await userEvent.clear(workers());
+    await userEvent.type(reasonBox(), 'why');
+    await userEvent.click(saveButton());
+    // The blank field gets its OWN specific message — `capacityModel.ts:107`
+    // separates `blank` from the malformed-grammar reason — so it is refused
+    // with field-associated copy and is never coerced to 0 or NaN.
+    expect(await screen.findByText(/Task session slots is required/i)).toBeInTheDocument();
+    expect(workers()).toHaveValue('');
+    expect(mutateAsync).not.toHaveBeenCalled();
+  });
+
   test('15.9 the refusal is presented as an editor limit, never a server maximum', async () => {
     mount();
     await userEvent.clear(workers());

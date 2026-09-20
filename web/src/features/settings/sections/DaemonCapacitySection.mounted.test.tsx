@@ -9,11 +9,13 @@
  * request list at the HTTP boundary — never from a DOM `disabled` attribute.
  * A `disabled` attribute is a render-time property, not an ordering guarantee.
  */
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { focusManager } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
+import { capacityObservation, capacityQueryKey } from '@/design-system/providers/_capacity-ordering';
 import { server } from '@/test/server';
 import { renderGuarded } from './capacityTestMount';
 
@@ -96,6 +98,21 @@ function deferred<T>() {
 }
 
 /**
+ * Hand every request its OWN undisturbed body.
+ *
+ * A gated fixture (`put: () => gate.promise`) returns the SAME `Response`
+ * object to every request that reaches it. The first delivery consumes that
+ * body; the second makes the interceptor construct a `Response` from a
+ * disturbed source and throws `TypeError: Response body object should not be
+ * disturbed or locked` as an UNHANDLED rejection — the suite still reports
+ * green tests while the run exits non-zero. Cloning on the way out means the
+ * fixture's own object is never consumed and each request gets a fresh body.
+ */
+async function fresh(source: Promise<Response> | Response): Promise<Response> {
+  return (await source).clone();
+}
+
+/**
  * Declare the venue. Every capacity request is captured; an `/api/` path this
  * venue did not declare is RECORDED and fails the exercise rather than quietly
  * succeeding.
@@ -119,7 +136,7 @@ function stubVenue(options: {
       captured.push({ method: 'GET', ifMatch: request.headers.get('if-match'), rawBody: '' });
       const index = getIndex;
       getIndex += 1;
-      return options.get ? options.get(index) : HttpResponse.json(snapshot());
+      return fresh(options.get ? options.get(index) : HttpResponse.json(snapshot()));
     }),
     http.put(CAPACITY, async ({ request }) => {
       captured.push({
@@ -129,7 +146,7 @@ function stubVenue(options: {
       });
       const index = putIndex;
       putIndex += 1;
-      return options.put ? options.put(index) : HttpResponse.json(snapshot({ revision: REV_B }));
+      return fresh(options.put ? options.put(index) : HttpResponse.json(snapshot({ revision: REV_B })));
     }),
     http.all('/api/*', ({ request }) => {
       undeclared.push(new URL(request.url).pathname);
@@ -343,49 +360,104 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     expect(savedCell()).not.toHaveTextContent('9');
   });
 
-  test('2.9 / 2.10 the receipt advances on an IDENTICAL refetch and NOT on a cached remount', async () => {
+  test('2.9 the receipt advances on a byte-IDENTICAL successful refetch', async () => {
     stubVenue();
     const view = mount();
     await ready();
     const first = screen.getByText(/Last received/).textContent;
     expect(first).toMatch(/this browser's clock/);
+    const observedFirst = capacityObservation(SLUG);
+    expect(observedFirst?.receiptAt).toEqual(expect.any(Number));
 
     // An identical payload: React Query structural sharing returns a
     // reference-identical object, so a component-observed data change would be
     // ABSENT here. The provider-owned receipt still advances.
     await new Promise((r) => setTimeout(r, 1100));
-    await view.client.refetchQueries({ queryKey: ['daemon-capacity', SLUG] });
+    const getsBefore = gets().length;
+    await view.client.refetchQueries({ queryKey: capacityQueryKey(SLUG) });
     await waitFor(() => {
       expect(screen.getByText(/Last received/).textContent).not.toBe(first);
     });
-    const second = screen.getByText(/Last received/).textContent;
-
-    // A cached remount issues NO request and invents NO receipt.
-    const getsBefore = gets().length;
-    view.rerender(<div />);
-    expect(gets()).toHaveLength(getsBefore);
-    expect(second).not.toBe(first);
+    // A genuine network response was issued, and the provider-owned receipt —
+    // not component state — is what moved.
+    expect(gets().length).toBe(getsBefore + 1);
+    const observedSecond = capacityObservation(SLUG);
+    expect(observedSecond!.receiptAt!).toBeGreaterThan(observedFirst!.receiptAt!);
+    expect(observedSecond!.issuedSeq).toBeGreaterThan(observedFirst!.issuedSeq);
   });
 
-  test('2.13 while a write is pending, a provider-level read is SUPPRESSED at the HTTP boundary', async () => {
+  test('2.10 a cached remount issues no request and invents no receipt', async () => {
+    stubVenue();
+    // The Organization panel we pass through owns one request of its own. It is
+    // declared EXPLICITLY so it stays an enumerated allowed path; the capacity
+    // fence below still fails closed on anything else.
+    server.use(http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [] })));
+    const user = userEvent.setup();
+    mount();
+    await ready();
+    const receipt = screen.getByText(/Last received/).textContent;
+    const observedBefore = capacityObservation(SLUG);
+    const getsBefore = gets().length;
+    expect(getsBefore).toBe(1);
+
+    // A REAL remount against the SAME QueryClient: the operator navigates to
+    // another Settings panel — which unmounts the capacity section — and back.
+    // Rerendering `<div />` would only have proved that an unmounted tree makes
+    // no request; it never remounts the section against the cache at all.
+    await user.click(screen.getByRole('link', { name: 'Organization' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: 'Capacity' })).not.toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('link', { name: 'Daemon / Capacity' }));
+    await screen.findByRole('heading', { name: 'Capacity' });
+    await waitFor(() => expect(workers()).toHaveValue('3'));
+
+    // Served from the cache: zero additional GETs at the HTTP boundary, the
+    // rendered receipt is byte-identical, and NO new observation was recorded.
+    expect(gets()).toHaveLength(getsBefore);
+    expect(screen.getByText(/Last received/).textContent).toBe(receipt);
+    expect(capacityObservation(SLUG)).toEqual(observedBefore);
+    expect(undeclared).toEqual([]);
+  });
+
+  test('2.13 a suppressed non-operator trigger issues NO read; a permitted one DOES — measured at the HTTP boundary', async () => {
     const gate = deferred<Response>();
     stubVenue({ put: () => gate.promise });
     const view = mount();
     await ready();
-    const before = gets().length;
     await setPair('5', '12');
     await saveWith();
     await screen.findByText('Saving for next restart…');
 
-    // A NON-OPERATOR read attempt, standing in for the reconnect /
-    // extra-cache-consumer trigger. The assertion is the captured request list
-    // and the provider observation — asserting the Refresh button is disabled
-    // would NOT satisfy this case.
-    await view.client.cancelQueries({ queryKey: ['daemon-capacity', SLUG] });
+    const before = gets().length;
+    const observedBefore = capacityObservation(SLUG);
+
+    // (a) SUPPRESSED. A real NON-OPERATOR trigger owned by React Query, not by
+    // this component: the window regains focus while the write is in flight.
+    // `AppProvider` ships `refetchOnWindowFocus: false`, so this trigger is
+    // suppressed BEFORE any request leaves. The assertion is the captured
+    // request list plus the provider-owned observation — `cancelQueries` would
+    // NOT satisfy this case (it is not a read attempt at all), and asserting
+    // that Refresh is `disabled` is case 2.5, not this one.
+    act(() => { focusManager.setFocused(false); });
+    act(() => { focusManager.setFocused(true); });
+    await new Promise((r) => setTimeout(r, 50));
     expect(gets()).toHaveLength(before);
+    expect(capacityObservation(SLUG)).toEqual(observedBefore);
+    expect(screen.getByText('Saving for next restart…')).toBeVisible();
+
+    // (b) MANDATORY SECOND HALF — the permitted path still exists. A second
+    // cache consumer WITHOUT this component's pending flag refetches the same
+    // key in the same window and DOES reach the network: suppression is
+    // per-observer, never per-key. This is exactly why 2.14-2.16 are required
+    // IN ADDITION TO this case — ordering safety cannot rest on suppression.
+    const permitted = view.client.refetchQueries({ queryKey: capacityQueryKey(SLUG) });
+    await waitFor(() => expect(gets()).toHaveLength(before + 1));
 
     gate.resolve(HttpResponse.json(snapshot({ revision: REV_B })));
     await screen.findByText(/Saved/);
+    await permitted;
+    expect(undeclared).toEqual([]);
   });
 
   test('2.14 a PERMITTED during-PUT read landing as a stale SUCCESS is DROPPED and never republishes', async () => {
@@ -393,7 +465,14 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     const getGate = deferred<Response>();
     stubVenue({
       get: (i) => (i === 0 ? HttpResponse.json(snapshot()) : getGate.promise),
-      put: () => putGate.promise,
+      // Only the FIRST write is gated. The later manual save is a separate
+      // request and gets its own response — reusing the gated one would hand
+      // the interceptor a consumed body.
+      put: (i) => (i === 0 ? putGate.promise : HttpResponse.json(snapshot({
+        persisted_yaml: { queue_workers: 6, host_global_session_cap: 12 },
+        next_start: { queue_workers: 6, host_global_session_cap: 12 },
+        restart_pending: true, revision: REV_C,
+      }))),
     });
     const view = mount();
     await ready();
@@ -442,6 +521,12 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       confirm_environment_shadow: false,
     });
     expect('revision' in body).toBe(false);
+
+    // Drain the final transition: the follow-up save is ACCEPTED and advances
+    // the surface. Leaving it in flight is what previously let a rejected
+    // response settle after the test had already returned.
+    await waitFor(() => expect(savedCell()).toHaveTextContent('6'));
+    expect(nextCell()).toHaveTextContent('6');
   });
 
   test('2.15 the same during-PUT read landing as an ERROR never downgrades the accepted state', async () => {

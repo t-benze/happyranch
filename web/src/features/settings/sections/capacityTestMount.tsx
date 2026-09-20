@@ -48,9 +48,18 @@ export function renderGuarded(ui: ReactNode, options: RenderGuardedOptions = {})
 
   resetCapacityOrdering();
   sessionStorage.setItem('happyranch.token', 'tok');
+  // Mirror the production `AppProvider` query defaults (AppProvider.tsx:50-58)
+  // so cache-lifetime behaviour under test is the behaviour that ships: a
+  // remount inside `staleTime` rereads the cache instead of refetching, and a
+  // window-focus event is not a read trigger. A venue with `staleTime: 0` /
+  // `gcTime: 0` would refetch on every remount and could never observe the
+  // cached-remount and focus-suppression cases at all.
   const client = options.client
     ?? new QueryClient({
-      defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+      defaultOptions: {
+        queries: { staleTime: 30_000, refetchOnWindowFocus: false, retry: false },
+        mutations: { retry: false },
+      },
     });
   const entries = options.entries ?? ['/'];
   const router = createMemoryRouter(
