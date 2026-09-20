@@ -621,6 +621,10 @@ def test_acknowledge_refuses_staged_admitted_without_admission_evidence(tmp_path
         store, outcome.notification_id, state="admitted",
         next_session_id="sess-reserved-next",
     )
+    _write_dispatch(
+        store, _dispatch(store).model_copy(update={"state": "admitted"})
+    )
+    store._db._conn.commit()
     before = _counts(store._db)
     refusal = _ack(
         store, row, publication_attempt=claimed.publication_attempt,

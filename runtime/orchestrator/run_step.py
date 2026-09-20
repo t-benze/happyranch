@@ -130,12 +130,72 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     # worker has already claimed this task_id (duplicate enqueue from a
     # multi-child fan-in race, or parent auto-resume colliding with a late
     # callback), the UPDATE matches zero rows and we return silently.
-    claimed = db.try_claim_for_step(
-        task_id,
-        expected_status=task.status,
-        expected_block_kind=task.block_kind,
-        new_count=next_count,
-    )
+    #
+    # THR-229 C3d3b mandatory fence: a TAGGED queue item carrying a v2
+    # continuation generation token is admitted ONLY by the atomic generation
+    # claim, which authenticates the exact token G.  A malformed/present-null,
+    # empty, stale or mismatched token refuses and NEVER falls back to the
+    # ordinary claim.  An UNTAGGED item still uses the ordinary claim, which
+    # itself refuses a pending v2 pointer (so a missed producer cannot dispatch
+    # a root awaiting a v2 continuation).
+    metadata_dict = metadata if isinstance(metadata, dict) else {}
+    tagged_admission = "authority_v2_generation" in metadata_dict
+    reserved_session_id: str | None = None
+    if tagged_admission:
+        admission_generation = metadata_dict.get("authority_v2_generation")
+        notification = None
+        if isinstance(admission_generation, str) and admission_generation:
+            notification = db.get_authority_policy_v2_recovery_notification(
+                admission_generation
+            )
+        if notification is None or notification.root_task_id != task_id:
+            logger.debug(
+                "run_step %s: tagged continuation generation absent/unknown — refuse",
+                task_id,
+            )
+            return
+        reserved_session_id = orch._build_session_id()
+        reservation = db.try_claim_v2_continuation_generation(
+            root_task_id=task_id,
+            manager_agent=notification.manager_agent,
+            manager_session_id=notification.manager_session_id,
+            result_id=notification.result_id,
+            generation_id=admission_generation,
+            next_session_id=reserved_session_id,
+        )
+        if reservation.status != "claimed":
+            logger.debug(
+                "run_step %s: generation admission refused (%s) — no ordinary claim",
+                task_id, reservation.reason,
+            )
+            return
+        next_count = reservation.orchestration_step_count or next_count
+        # The reserved session is now durable on the task; settle the admission
+        # bookkeeping BEFORE any external launch.  A settlement failure holds
+        # dispatch and permits only exact settlement retry — never a launch and
+        # never a repeat generation admission.
+        settlement = db.settle_v2_continuation_generation_admission(
+            root_task_id=task_id,
+            manager_agent=notification.manager_agent,
+            manager_session_id=notification.manager_session_id,
+            result_id=notification.result_id,
+            generation_id=admission_generation,
+            next_session_id=reserved_session_id,
+        )
+        if settlement.status not in ("settled", "already_settled_exact"):
+            logger.warning(
+                "run_step %s: admission settlement held (%s) — no launch",
+                task_id, settlement.reason,
+            )
+            return
+        claimed = True
+    else:
+        claimed = db.try_claim_for_step(
+            task_id,
+            expected_status=task.status,
+            expected_block_kind=task.block_kind,
+            new_count=next_count,
+        )
     if not claimed:
         logger.debug(
             "run_step %s: lost claim race (another worker is advancing it)",
@@ -187,7 +247,12 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         claimed_next_step_count=next_count,
     )
     try:
-        result, report = orch._run_agent(task_id, agent, prompt)
+        if reserved_session_id is None:
+            result, report = orch._run_agent(task_id, agent, prompt)
+        else:
+            result, report = orch._run_agent(
+                task_id, agent, prompt, runtime_session_id=reserved_session_id,
+            )
     except Exception as exc:
         note = f"agent invocation failed: {exc}"
         _fail(orch, task_id, note=note)

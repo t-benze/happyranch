@@ -807,6 +807,47 @@ discovery/claim/acknowledgement, with missing settlement and missing retained
 claim refusals; the methods stay dark and the provider launch remains the sole
 external-launch double.
 
+Checkpoint C3d3b (same unmerged draft PR) adds the real publication entry and the
+atomic generation admission plus its mandatory fallback fences. The publisher
+`runtime.orchestrator.authority.publish_authority_policy_v2_notifications`
+independently discovers every publishable generation, claims through the
+authenticated C3d3a public seam, and ONLY after a winning claim calls the real
+`TaskQueue.put_nowait(slug, root, metadata={"authority_v2_generation": G,
+"publication_attempt": P})` OUTSIDE any DB transaction, then authenticates and
+acknowledges the exact claim; a queue exception uses the bounded audited failure
+path, a failed claim performs NO queue call, and `P` is diagnostic while only `G`
+is admission authority. `Database.try_claim_v2_continuation_generation` is the
+non-bypassable fence: one synchronized `BEGIN IMMEDIATE` re-authenticates the
+complete post-final evidence, the settled final generation, the exact tagged token
+G, D `pending(G)`, N `publishing` OR `published` (a consumer can outrun
+acknowledgement), no prior reservation and the causal Pending owner; it atomically
+writes N `admitted` + `next_session_id`, D `admitted(G)`, the task to
+`in_progress` with a normal monotonic step increment and the reserved
+owner/session, and exactly one closed `generation_claimed` audit, rolling every
+field back on any failure. The separate
+`Database.settle_v2_continuation_generation_admission` CASes `admitted` ->
+`settled` with one closed `notification_settled` audit and grants no launch
+authority; only the uninterrupted winning owner that received the reservation
+launches with that exact runtime session, settlement audit failure holds dispatch,
+and a reopened/replayed path settles exact evidence or reads it back but never
+dispatches or repeats admission. Ordinary `Database.try_claim_for_step` now fences
+a pending v2 root-dispatch pointer (a root cannot win on status/block_kind alone),
+and `run_step` admits a tagged queue item ONLY through the generation claim: a
+malformed/present-null/empty/stale/mismatched token refuses without any ordinary
+fallback. The consumer-outruns-acknowledgement path now authenticates the exact
+admitted/settled reservation and claim/settlement evidence and appends only the
+exact `publish_returned(P)` observation, never regressing N/D/task. The real
+publication/admission venue is proven in `tests/test_authority_v2_shipping.py`
+over both fresh and full historical-migrated owned RuntimeDirs through the ACTUAL
+publisher -> real `TaskQueue` -> `Dispatcher`/`run_step` -> reserved-session
+`_run_agent` -> held external launch, and
+`tests/test_authority_v2_generation_admission.py` covers the atomic claim,
+settlement, duplicate/two-connection contention, generation negatives, the
+ordinary fence and the acknowledgement race. The automatic v2 authority
+continuation hook stays fail-closed, envelope spend and the full
+consumer/reaper/startup-recovery integration remain later units, and the feature
+remains unaccepted.
+
 The file-backed completion CLI preserves a supplied `manager_self_evaluation`
 member verbatim (including invalid/null values) so the daemon, rather than the
 client, validates it; an omitted member remains omitted. The shipping CLI to

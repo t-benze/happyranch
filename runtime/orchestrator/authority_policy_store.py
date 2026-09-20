@@ -29,6 +29,8 @@ from runtime.models import (
     AuthorityPolicyV2ControlReceipt,
     AuthorityPolicyV2Evaluation,
     AuthorityPolicyV2FinalizationOutcome,
+    AuthorityPolicyV2GenerationClaimOutcome,
+    AuthorityPolicyV2AdmissionSettlementOutcome,
     AuthorityPolicyV2HousekeepingOutcome,
     AuthorityPolicyV2HousekeepingTarget,
     AuthorityPolicyV2PairedControlRequest,
@@ -474,6 +476,31 @@ class AuthorityPolicyStore:
         return self._db.invalidate_authority_policy_v2_notification_generation(
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
+        )
+
+    # -- THR-229 checkpoint C3d3b: thin forwarders over the DB-owned atomic
+    # generation-admission claim and the separate admission-settlement
+    # transaction.  The facade still never begins, commits or rolls back, and
+    # neither call performs a queue call or an external launch.
+
+    def try_claim_v2_continuation_generation(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, generation_id: str | None, next_session_id: str,
+    ) -> AuthorityPolicyV2GenerationClaimOutcome:
+        return self._db.try_claim_v2_continuation_generation(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            generation_id=generation_id, next_session_id=next_session_id,
+        )
+
+    def settle_v2_continuation_generation_admission(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, generation_id: str | None, next_session_id: str,
+    ) -> AuthorityPolicyV2AdmissionSettlementOutcome:
+        return self._db.settle_v2_continuation_generation_admission(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            generation_id=generation_id, next_session_id=next_session_id,
         )
 
     def bind_legacy_session(

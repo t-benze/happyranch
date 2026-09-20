@@ -38,6 +38,8 @@ from runtime.models import (
     AuthorityPolicyV2ControlReceipt,
     AuthorityPolicyV2Evaluation,
     AuthorityPolicyV2FinalizationOutcome,
+    AuthorityPolicyV2GenerationClaimOutcome,
+    AuthorityPolicyV2AdmissionSettlementOutcome,
     AuthorityPolicyV2HousekeepingOutcome,
     AuthorityPolicyV2HousekeepingTarget,
     AuthorityPolicyV2PairedControlRequest,
@@ -87,7 +89,9 @@ from runtime.models import (
     AUTHORITY_POLICY_V2_RECOVERY_SETTLED_ACTION,
     AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
     AUTHORITY_POLICY_V2_RESULT_STAGE_CONTINUED,
+    AUTHORITY_POLICY_V2_RESULT_STAGE_GENERATION_CLAIMED,
     AUTHORITY_POLICY_V2_RESULT_STAGE_INVALIDATED,
+    AUTHORITY_POLICY_V2_RESULT_STAGE_NOTIFICATION_SETTLED,
     AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_CLAIMED,
     AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_FAILED,
     AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_RETURNED,
@@ -988,7 +992,7 @@ _AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
                  OR NOT (
                         OLD.state IS NEW.state
                      OR (OLD.state='needed' AND NEW.state IN ('publishing','invalidated'))
-                     OR (OLD.state='publishing' AND NEW.state IN ('published','needed','invalidated'))
+                     OR (OLD.state='publishing' AND NEW.state IN ('published','needed','admitted','invalidated'))
                      OR (OLD.state='published' AND NEW.state IN ('admitted','publishing','invalidated'))
                      OR (OLD.state='admitted' AND NEW.state IN ('settled','invalidated'))
                  )
@@ -4580,6 +4584,7 @@ class Database:
             raise
 
     @_synchronized
+    @_synchronized
     def try_claim_for_step(
         self,
         task_id: str,
@@ -4598,28 +4603,56 @@ class Database:
         child fan-in double-enqueued the parent). Without this CAS, both pass
         the check-then-update at run_step steps 1→3 and both spawn an agent
         subprocess. The conditional WHERE ensures only the first writer wins.
+
+        THR-229 C3d3b mandatory fallback fence: this ordinary claim is NOT
+        generation admission.  In the SAME ``BEGIN IMMEDIATE`` that would claim
+        the task, a root whose durable ``authority_policy_v2_root_dispatch``
+        pointer is ``pending`` (a live v2 continuation generation) refuses --
+        the task cannot win on status/block_kind alone.  An untagged or stale
+        queue item therefore can never adopt today's generation: the tagged
+        ``try_claim_v2_continuation_generation`` path is the only admission and
+        it authenticates the exact metadata token G.  Roots with no pending
+        pointer keep their unchanged ordinary behavior.
         """
         now = datetime.now(timezone.utc).isoformat()
-        if expected_block_kind is None:
-            cursor = self._conn.execute(
-                """UPDATE tasks
-                   SET status = ?, block_kind = NULL, note = NULL,
-                       orchestration_step_count = ?, updated_at = ?
-                   WHERE id = ? AND status = ? AND block_kind IS NULL""",
-                (TaskStatus.IN_PROGRESS.value, new_count, now,
-                 task_id, expected_status.value),
-            )
-        else:
-            cursor = self._conn.execute(
-                """UPDATE tasks
-                   SET status = ?, block_kind = NULL, note = NULL,
-                       orchestration_step_count = ?, updated_at = ?
-                   WHERE id = ? AND status = ? AND block_kind = ?""",
-                (TaskStatus.IN_PROGRESS.value, new_count, now,
-                 task_id, expected_status.value, expected_block_kind.value),
-            )
-        self._conn.commit()
-        return cursor.rowcount == 1
+        began = False
+        if not self._conn.in_transaction:
+            self._conn.execute("BEGIN IMMEDIATE")
+            began = True
+        try:
+            pending_generation = self._conn.execute(
+                """SELECT 1 FROM authority_policy_v2_root_dispatch
+                    WHERE root_task_id=? AND state='pending'""",
+                (task_id,),
+            ).fetchone()
+            if pending_generation is not None:
+                if began:
+                    self._conn.rollback()
+                return False
+            if expected_block_kind is None:
+                cursor = self._conn.execute(
+                    """UPDATE tasks
+                       SET status = ?, block_kind = NULL, note = NULL,
+                           orchestration_step_count = ?, updated_at = ?
+                       WHERE id = ? AND status = ? AND block_kind IS NULL""",
+                    (TaskStatus.IN_PROGRESS.value, new_count, now,
+                     task_id, expected_status.value),
+                )
+            else:
+                cursor = self._conn.execute(
+                    """UPDATE tasks
+                       SET status = ?, block_kind = NULL, note = NULL,
+                           orchestration_step_count = ?, updated_at = ?
+                       WHERE id = ? AND status = ? AND block_kind = ?""",
+                    (TaskStatus.IN_PROGRESS.value, new_count, now,
+                     task_id, expected_status.value, expected_block_kind.value),
+                )
+            self._conn.commit()
+            return cursor.rowcount == 1
+        except Exception:
+            if began:
+                self._conn.rollback()
+            raise
 
     @_synchronized
     def try_escalate(
@@ -11708,7 +11741,15 @@ class Database:
         )
         if claims is None:
             return None
-        if set(claims.keys()) != set(range(1, publication_attempt + 1)):
+        # COMPLETENESS WITHOUT AN INTEGER-SIZED ALLOCATION: ``by_attempt`` is a
+        # mapping whose keys are already unique and each authenticated to be in
+        # ``1..publication_attempt``.  A unique in-range key set with exactly
+        # ``publication_attempt`` members is therefore provably ``{1..P}`` --
+        # contiguous and duplicate-free -- without materializing a set/list of
+        # size P.  A huge (e.g. 2147483646) or otherwise impossible P can no
+        # longer request proportional memory; the work stays proportional to the
+        # retained audit events actually read.
+        if len(claims) != publication_attempt:
             return None
         return claims
 
@@ -12067,25 +12108,84 @@ class Database:
             "notification_id": notification_id,
             "generation_id": generation_id,
         }
-        if (
-            notification_id != dispatch.generation_id
-            or dispatch.state != "pending"
-        ):
+        if notification_id != dispatch.generation_id:
             return _pending("stale_claim", **base)
         state = notification.state
+        if state not in ("admitted", "settled") and dispatch.state != "pending":
+            return _pending("stale_claim", **base)
         if state in ("admitted", "settled"):
-            # The consumer outran acknowledgement.  Only a ``publish_returned``
-            # observation for the EXACT prior P is eligible, never a return to
-            # ``published``.  The complete required admission evidence cannot be
-            # authenticated before the real generation-admission producer lands,
-            # so this path refuses fail-closed with no mutation; the final real
-            # producer race proof belongs to the generation-admission unit.
+            # The consumer outran acknowledgement.  With the REAL generation
+            # admission producer now present, authenticate the exact admitted/
+            # settled reservation plus the durable generation_claimed (and, for
+            # settled, the notification_settled) audits, then append ONLY the
+            # exact ``publish_returned(P)`` observation for this prior P.  The
+            # notification is NEVER regressed to ``published`` and duplicate
+            # acknowledgement is either read-only-exact or one observation.
+            # Stale P/boot/G, a missing reservation or conflicting evidence
+            # refuse with zero mutation.
             if (
                 notification.publication_attempt != publication_attempt
                 or notification.publisher_boot_id != publisher_boot_id
+                or notification.next_session_id is None
+                or dispatch.state != "admitted"
             ):
                 return _pending("stale_claim", **base)
-            return _pending("admission_evidence_missing", **base)
+            retained_boot = self._authenticate_v2_retained_claim_boot_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+                result_id=result_id, envelope_id=envelope.envelope_id,
+                notification_id=notification_id, generation_id=generation_id,
+                publication_attempt=publication_attempt,
+                expected_boot=publisher_boot_id,
+            )
+            if retained_boot is None:
+                return _pending("evidence_drift", **base)
+            admission_claim = self._v2_admission_event_payload(
+                stage=AUTHORITY_POLICY_V2_RESULT_STAGE_GENERATION_CLAIMED,
+                attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+                result_id=result_id, envelope_id=envelope.envelope_id,
+                notification_id=notification_id, generation_id=generation_id,
+                next_session_id=notification.next_session_id,
+            )
+            if not self._authenticate_v2_admission_event_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                attempt_id=attempt.attempt_id, expected=admission_claim,
+            ):
+                return _pending("admission_evidence_missing", **base)
+            if state == "settled":
+                admission_settled = self._v2_admission_event_payload(
+                    stage=AUTHORITY_POLICY_V2_RESULT_STAGE_NOTIFICATION_SETTLED,
+                    attempt_id=attempt.attempt_id,
+                    candidate_id=candidate.candidate_id, result_id=result_id,
+                    envelope_id=envelope.envelope_id,
+                    notification_id=notification_id, generation_id=generation_id,
+                    next_session_id=notification.next_session_id,
+                )
+                if not self._authenticate_v2_admission_event_uncommitted(
+                    root_task_id=root_task_id, manager_agent=manager_agent,
+                    attempt_id=attempt.attempt_id, expected=admission_settled,
+                ):
+                    return _pending("admission_evidence_missing", **base)
+            observed = self._v2_publication_audit_payload(
+                stage=AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_RETURNED,
+                attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+                result_id=result_id, envelope_id=envelope.envelope_id,
+                notification_id=notification_id, generation_id=generation_id,
+                publication_attempt=publication_attempt,
+                publisher_boot_id=publisher_boot_id,
+            )
+            if not self._authenticate_v2_publication_event_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                attempt_id=attempt.attempt_id, expected=observed,
+            ):
+                self.insert_audit_log_uncommitted(
+                    root_task_id, manager_agent,
+                    AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION, observed,
+                )
+            return AuthorityPolicyV2PublicationAckOutcome(
+                status="publish_returned", state=state,
+                publication_attempt=publication_attempt, **base,
+            )
         if state not in ("publishing", "published"):
             return _pending("stale_claim", **base)
         if not self._authenticate_v2_publication_settlement_proof_uncommitted(
@@ -12528,6 +12628,396 @@ class Database:
             self._conn.rollback()
             return AuthorityPolicyV2InvalidationOutcome(
                 status="invalidation_pending", reason="invalidation_failed",
+            )
+
+    # -- THR-229 checkpoint C3d3b: atomic generation admission and the separate
+    # admission-settlement bookkeeping.  Claim is the non-bypassable fence for a
+    # pending v2 continuation generation: it authenticates the complete
+    # post-final evidence, the settled final generation, the exact tagged token
+    # G and the causal Pending owner, then atomically reserves the next runtime
+    # session and admits the generation.  Settlement is a separate transaction
+    # and grants no launch authority by itself.
+
+    def _v2_admission_event_payload(
+        self, *, stage: str, attempt_id: str, candidate_id: str, result_id: int,
+        envelope_id: str, notification_id: str, generation_id: str,
+        next_session_id: str,
+    ) -> dict:
+        """One closed generation-admission result-stage payload."""
+        return {
+            "stage": stage,
+            "attempt_id": attempt_id,
+            "candidate_id": candidate_id,
+            "result_id": result_id,
+            "envelope_id": envelope_id,
+            "notification_id": notification_id,
+            "generation_id": generation_id,
+            "next_session_id": next_session_id,
+        }
+
+    def _authenticate_v2_admission_event_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, attempt_id: str,
+        expected: dict,
+    ) -> bool:
+        """Exactly one authentic CLOSED generation-admission event.
+
+        Reuses the identity-scoped enumeration so a duplicate/foreign/malformed/
+        extra-key row can never hide behind a discriminator filter.  Missing or
+        conflicting evidence refuses; nothing is repaired by reinsertion.
+        """
+        related = self._v2_related_publication_events_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=attempt_id, stage=expected["stage"],
+            candidate_id=expected["candidate_id"], result_id=expected["result_id"],
+            envelope_id=expected["envelope_id"],
+            notification_id=expected["notification_id"],
+            generation_id=expected["generation_id"],
+        )
+        if related is None or len(related) != 1:
+            return False
+        payload = related[0]
+        if not isinstance(payload, dict) or set(payload.keys()) != set(expected.keys()):
+            return False
+        return self._v2_json_type_sensitive_equal(payload, expected)
+
+    def _authenticate_v2_admission_ready_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int,
+    ) -> tuple[str | None, dict | None]:
+        """Post-final evidence plus a settled, pointer-current, unadmitted G.
+
+        Requires N ``publishing`` OR ``published`` (a queue consumer may outrun
+        publication acknowledgement), D still ``pending(G)``, no prior reserved
+        session and the read-only settlement proof.  ``needed`` (not yet
+        published) refuses so admission is only reachable from a publication
+        claim; ``admitted``/``settled``/``invalidated`` refuse as already
+        attempted.
+        """
+        code, ctx = self._authenticate_v2_post_final_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+        )
+        if code is not None:
+            return (
+                "evidence_drift" if code == "evidence_drift" else "identity_mismatch"
+            ), None
+        assert ctx is not None
+        notification = ctx["notification"]
+        dispatch = ctx["dispatch"]
+        if (
+            dispatch.state != "pending"
+            or dispatch.generation_id != notification.notification_id
+        ):
+            return "evidence_drift", None
+        if notification.state not in ("publishing", "published"):
+            return "evidence_drift", None
+        if notification.next_session_id is not None:
+            return "evidence_drift", None
+        if not self._authenticate_v2_publication_settlement_proof_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            attempt=ctx["attempt"], candidate=ctx["candidate"],
+            envelope=ctx["envelope"], notification=notification,
+            result_row=ctx["result_row"],
+        ):
+            return "evidence_drift", None
+        return None, ctx
+
+    def _try_claim_v2_continuation_generation_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, generation_id: str | None, next_session_id: str,
+        now_dt: datetime,
+    ) -> AuthorityPolicyV2GenerationClaimOutcome:
+        def _pending(reason: str, **kw) -> AuthorityPolicyV2GenerationClaimOutcome:
+            return AuthorityPolicyV2GenerationClaimOutcome(
+                status="generation_pending", reason=reason, **kw,
+            )
+
+        if not isinstance(generation_id, str) or not generation_id:
+            return _pending("missing_generation")
+        if not isinstance(next_session_id, str) or not next_session_id:
+            return _pending("generation_failed")
+        code, ctx = self._authenticate_v2_admission_ready_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+        )
+        if code is not None:
+            return _pending(
+                "evidence_drift" if code == "evidence_drift" else "identity_mismatch"
+            )
+        assert ctx is not None
+        notification = ctx["notification"]
+        dispatch = ctx["dispatch"]
+        envelope = ctx["envelope"]
+        attempt = ctx["attempt"]
+        candidate = ctx["candidate"]
+        base = {
+            "attempt_id": attempt.attempt_id,
+            "notification_id": notification.notification_id,
+            "envelope_id": envelope.envelope_id,
+            "generation_id": notification.notification_id,
+        }
+        # Only the exact tagged generation may admit; a stale/absent/foreign or
+        # retired token never adopts today's generation.
+        if generation_id != notification.notification_id:
+            return _pending("stale_generation", **base)
+        task_row = self._conn.execute(
+            "SELECT * FROM tasks WHERE id=?", (root_task_id,)
+        ).fetchone()
+        if (
+            task_row is None
+            or task_row["cancelled_at"] is not None
+            or task_row["status"] != TaskStatus.PENDING.value
+            or task_row["block_kind"] is not None
+            or task_row["assigned_agent"] != manager_agent
+            or task_row["current_session_id"] != manager_session_id
+        ):
+            return _pending("owner_lost", **base)
+        new_count = int(task_row["orchestration_step_count"] or 0) + 1
+        # N: publishing|published -> admitted with the reserved session.
+        updated = notification.model_copy(update={
+            "state": "admitted", "next_session_id": next_session_id,
+            "updated_at": now_dt,
+        })
+        snapshot = updated.model_dump(mode="json")
+        canonical = authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8")
+        cursor = self._conn.execute(
+            """UPDATE authority_policy_v2_recovery_notifications
+                  SET state='admitted', next_session_id=?,
+                      canonical_payload_json=?, updated_at=?
+                WHERE notification_id=? AND state=? AND next_session_id IS NULL""",
+            (
+                next_session_id, canonical, snapshot["updated_at"],
+                notification.notification_id, notification.state,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return _pending("already_admitted", **base)
+        # D: pending(G) -> admitted(G).  Never a replacement generation.
+        d_updated = dispatch.model_copy(update={"state": "admitted", "updated_at": now_dt})
+        d_snapshot = d_updated.model_dump(mode="json")
+        d_canonical = authority_policy_v2_canonical_json_bytes(d_snapshot).decode("utf-8")
+        d_cursor = self._conn.execute(
+            """UPDATE authority_policy_v2_root_dispatch
+                  SET state='admitted', canonical_payload_json=?, updated_at=?
+                WHERE root_task_id=? AND generation_id=? AND state='pending'""",
+            (d_canonical, d_snapshot["updated_at"], root_task_id, generation_id),
+        )
+        if d_cursor.rowcount != 1:
+            return _pending("identity_mismatch", **base)
+        # Task: Pending/null block_kind/not cancelled/exact causal owner ->
+        # in_progress + monotonic step increment + reserved owner/session.
+        task_cursor = self._conn.execute(
+            """UPDATE tasks
+                  SET status=?, block_kind=NULL, note=NULL,
+                      orchestration_step_count=?, assigned_agent=?,
+                      current_session_id=?, updated_at=?
+                WHERE id=? AND status=? AND block_kind IS NULL
+                  AND cancelled_at IS NULL AND assigned_agent=?
+                  AND current_session_id=?""",
+            (
+                TaskStatus.IN_PROGRESS.value, new_count, manager_agent,
+                next_session_id, now_dt.isoformat(), root_task_id,
+                TaskStatus.PENDING.value, manager_agent, manager_session_id,
+            ),
+        )
+        if task_cursor.rowcount != 1:
+            return _pending("owner_lost", **base)
+        self.insert_audit_log_uncommitted(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            self._v2_admission_event_payload(
+                stage=AUTHORITY_POLICY_V2_RESULT_STAGE_GENERATION_CLAIMED,
+                attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+                result_id=result_id, envelope_id=envelope.envelope_id,
+                notification_id=notification.notification_id,
+                generation_id=generation_id, next_session_id=next_session_id,
+            ),
+        )
+        return AuthorityPolicyV2GenerationClaimOutcome(
+            status="claimed", attempt_id=attempt.attempt_id,
+            notification_id=notification.notification_id,
+            envelope_id=envelope.envelope_id, generation_id=generation_id,
+            next_session_id=next_session_id, orchestration_step_count=new_count,
+        )
+
+    @_synchronized
+    def try_claim_v2_continuation_generation(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, generation_id: str | None, next_session_id: str,
+    ) -> AuthorityPolicyV2GenerationClaimOutcome:
+        """ONE synchronized atomic generation-admission claim transaction.
+
+        Requires the exact tagged token G, a settled final generation with N
+        ``publishing``/``published`` and D ``pending(G)``, the causal Pending
+        owner/session and no prior reservation.  Atomically writes N admitted +
+        ``next_session_id``, D admitted(G), the task to in_progress with a normal
+        monotonic step increment and the reserved owner/session, and exactly one
+        closed ``generation_claimed`` audit.  Any failure rolls ALL fields back,
+        leaving the durable owner Pending and the generation re-admissible from a
+        duplicate publication.  No queue call and no external launch happen here;
+        a non-``claimed`` outcome forbids any ordinary claim/launch.
+        """
+        if self._conn.in_transaction:
+            return AuthorityPolicyV2GenerationClaimOutcome(
+                status="generation_pending", reason="transaction_owned",
+            )
+        now_dt = _now()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            outcome = self._try_claim_v2_continuation_generation_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                manager_session_id=manager_session_id, result_id=result_id,
+                generation_id=generation_id, next_session_id=next_session_id,
+                now_dt=now_dt,
+            )
+            if outcome.status == "generation_pending":
+                self._conn.rollback()
+                return outcome
+            self._conn.commit()
+            return outcome
+        except Exception:
+            self._conn.rollback()
+            return AuthorityPolicyV2GenerationClaimOutcome(
+                status="generation_pending", reason="generation_failed",
+            )
+
+    def _settle_v2_continuation_generation_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, generation_id: str | None, next_session_id: str,
+        now_dt: datetime,
+    ) -> AuthorityPolicyV2AdmissionSettlementOutcome:
+        def _pending(reason: str, **kw) -> AuthorityPolicyV2AdmissionSettlementOutcome:
+            return AuthorityPolicyV2AdmissionSettlementOutcome(
+                status="settlement_pending", reason=reason, **kw,
+            )
+
+        code, ctx = self._authenticate_v2_post_final_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+        )
+        if code is not None:
+            return _pending(
+                "evidence_drift" if code == "evidence_drift" else "identity_mismatch"
+            )
+        assert ctx is not None
+        notification = ctx["notification"]
+        dispatch = ctx["dispatch"]
+        envelope = ctx["envelope"]
+        attempt = ctx["attempt"]
+        candidate = ctx["candidate"]
+        base = {
+            "attempt_id": attempt.attempt_id,
+            "notification_id": notification.notification_id,
+            "generation_id": notification.notification_id,
+            "next_session_id": next_session_id,
+        }
+        if (
+            not isinstance(generation_id, str) or not generation_id
+            or not isinstance(next_session_id, str) or not next_session_id
+            or generation_id != notification.notification_id
+            or notification.next_session_id != next_session_id
+            or dispatch.generation_id != generation_id
+        ):
+            return _pending("identity_mismatch", **base)
+        expected_claim = self._v2_admission_event_payload(
+            stage=AUTHORITY_POLICY_V2_RESULT_STAGE_GENERATION_CLAIMED,
+            attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+            result_id=result_id, envelope_id=envelope.envelope_id,
+            notification_id=notification.notification_id,
+            generation_id=generation_id, next_session_id=next_session_id,
+        )
+        if not self._authenticate_v2_admission_event_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=attempt.attempt_id, expected=expected_claim,
+        ):
+            return _pending("evidence_drift", **base)
+        expected_settled = self._v2_admission_event_payload(
+            stage=AUTHORITY_POLICY_V2_RESULT_STAGE_NOTIFICATION_SETTLED,
+            attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+            result_id=result_id, envelope_id=envelope.envelope_id,
+            notification_id=notification.notification_id,
+            generation_id=generation_id, next_session_id=next_session_id,
+        )
+        if notification.state == "settled":
+            if self._authenticate_v2_admission_event_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                attempt_id=attempt.attempt_id, expected=expected_settled,
+            ):
+                return AuthorityPolicyV2AdmissionSettlementOutcome(
+                    status="already_settled_exact", **base,
+                )
+            return _pending("evidence_drift", **base)
+        if notification.state != "admitted" or dispatch.state != "admitted":
+            return _pending("not_settleable", **base)
+        task_row = self._conn.execute(
+            "SELECT * FROM tasks WHERE id=?", (root_task_id,)
+        ).fetchone()
+        if (
+            task_row is None
+            or task_row["cancelled_at"] is not None
+            or task_row["status"] != TaskStatus.IN_PROGRESS.value
+            or task_row["assigned_agent"] != manager_agent
+            or task_row["current_session_id"] != next_session_id
+        ):
+            return _pending("owner_lost", **base)
+        updated = notification.model_copy(update={"state": "settled", "updated_at": now_dt})
+        snapshot = updated.model_dump(mode="json")
+        canonical = authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8")
+        cursor = self._conn.execute(
+            """UPDATE authority_policy_v2_recovery_notifications
+                  SET state='settled', canonical_payload_json=?, updated_at=?
+                WHERE notification_id=? AND state='admitted' AND next_session_id=?""",
+            (
+                canonical, snapshot["updated_at"], notification.notification_id,
+                next_session_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return _pending("not_settleable", **base)
+        self.insert_audit_log_uncommitted(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            expected_settled,
+        )
+        return AuthorityPolicyV2AdmissionSettlementOutcome(
+            status="settled", **base,
+        )
+
+    @_synchronized
+    def settle_v2_continuation_generation_admission(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, generation_id: str | None, next_session_id: str,
+    ) -> AuthorityPolicyV2AdmissionSettlementOutcome:
+        """Separate exact admission-settlement bookkeeping transaction.
+
+        Requires the exact admitted N/G/reserved session and the durable claim
+        audit.  CASes ``admitted`` -> ``settled`` with exactly one closed
+        ``notification_settled`` audit.  It grants no launch authority and never
+        performs a second generation admission; a duplicate/reopened caller may
+        settle exact evidence (or read-only replay ``already_settled_exact``) but
+        must never dispatch.  Failure keeps the admitted + claim-audit evidence.
+        """
+        if self._conn.in_transaction:
+            return AuthorityPolicyV2AdmissionSettlementOutcome(
+                status="settlement_pending", reason="transaction_owned",
+            )
+        now_dt = _now()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            outcome = self._settle_v2_continuation_generation_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                manager_session_id=manager_session_id, result_id=result_id,
+                generation_id=generation_id, next_session_id=next_session_id,
+                now_dt=now_dt,
+            )
+            if outcome.status == "settlement_pending":
+                self._conn.rollback()
+                return outcome
+            self._conn.commit()
+            return outcome
+        except Exception:
+            self._conn.rollback()
+            return AuthorityPolicyV2AdmissionSettlementOutcome(
+                status="settlement_pending", reason="settlement_failed",
             )
 
     @_synchronized

@@ -2638,3 +2638,93 @@ def run_authority_hook(
         error=verdict.error,
     )
     return "escalate"
+
+
+def publish_authority_policy_v2_notifications(orch, queue, *, limit: int = 32) -> list[dict]:
+    """Real publication entry for pending v2 continuation generations.
+
+    Independently discovers EVERY ``needed``/``publishing``/``published``
+    recovery notification whose root dispatch pointer is ``pending(G)`` and has
+    no generation admission (including exact already-consumed recovery
+    receipts), then for each target:
+
+    1. claims publication through the authenticated C3d3a public store seam
+       (ONE ``BEGIN IMMEDIATE``; null lease alone is never proof and a live
+       lease is never stolen);
+    2. ONLY after a winning claim, calls the real ``TaskQueue.put_nowait``
+       OUTSIDE any DB transaction with
+       ``metadata={"authority_v2_generation": G, "publication_attempt": P}``;
+    3. authenticates and acknowledges the exact claim (``publishing`` ->
+       ``published`` + closed audit); if the consumer already admitted G, the
+       acknowledgement records only the exact ``publish_returned(P)``
+       observation and never regresses state.
+
+    ``P`` is diagnostic; only ``G`` is admission authority.  A failed claim
+    performs NO queue call.  A queue exception uses the existing bounded
+    audited failure path (the prior claim stays safely reclaimable).  An
+    acknowledgement/audit failure leaves the exact lease/state replayable.
+    This function performs no evaluation, no remint and no task mutation, and
+    returns bounded per-target receipts for the caller.
+    """
+    db = orch._db
+    receipts: list[dict] = []
+    try:
+        targets = db.list_authority_policy_v2_publication_targets()
+    except Exception as exc:  # discovery is read-only best effort
+        return [{"status": "discovery_failed", "error": type(exc).__name__}]
+    for target in targets[: max(0, limit)]:
+        claim = db.claim_authority_policy_v2_notification_publication(
+            root_task_id=target.root_task_id,
+            manager_agent=target.manager_agent,
+            manager_session_id=target.manager_session_id,
+            result_id=target.result_id,
+        )
+        if claim.status != "claimed":
+            receipts.append({
+                "status": claim.status,
+                "reason": claim.reason,
+                "notification_id": target.notification_id,
+            })
+            continue
+        try:
+            queue.put_nowait(
+                orch._slug,
+                target.root_task_id,
+                metadata={
+                    "authority_v2_generation": claim.generation_id,
+                    "publication_attempt": claim.publication_attempt,
+                },
+            )
+        except Exception as exc:
+            failure = db.record_authority_policy_v2_notification_publication_failure(
+                root_task_id=target.root_task_id,
+                manager_agent=target.manager_agent,
+                manager_session_id=target.manager_session_id,
+                result_id=target.result_id,
+                publication_attempt=claim.publication_attempt,
+                publisher_boot_id=claim.publisher_boot_id,
+            )
+            receipts.append({
+                "status": "publish_failed",
+                "reason": failure.reason,
+                "notification_id": target.notification_id,
+                "publication_attempt": claim.publication_attempt,
+                "error": type(exc).__name__,
+            })
+            continue
+        ack = db.acknowledge_authority_policy_v2_notification_publication(
+            root_task_id=target.root_task_id,
+            manager_agent=target.manager_agent,
+            manager_session_id=target.manager_session_id,
+            result_id=target.result_id,
+            publication_attempt=claim.publication_attempt,
+            publisher_boot_id=claim.publisher_boot_id,
+        )
+        receipts.append({
+            "status": ack.status,
+            "reason": ack.reason,
+            "notification_id": target.notification_id,
+            "generation_id": claim.generation_id,
+            "publication_attempt": claim.publication_attempt,
+        })
+    return receipts

@@ -1203,6 +1203,32 @@ AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_FAILED = "publish_failed"
 AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_RETURNED = "publish_returned"
 AUTHORITY_POLICY_V2_RESULT_STAGE_INVALIDATED = "invalidated"
 
+# THR-229 checkpoint C3d3b: bounded generation-admission vocabulary.  These
+# statuses/reasons are the closed outcome of the callable atomic generation
+# claim and the separate admission-settlement transaction.  ``claimed`` alone
+# carries the reserved ``next_session_id`` and never launches work by itself;
+# generation admission is the non-bypassable fence for a pending v2 generation.
+AUTHORITY_POLICY_V2_GENERATION_CLAIM_STATUSES = frozenset({
+    "claimed", "generation_pending",
+})
+AUTHORITY_POLICY_V2_GENERATION_CLAIM_PENDING_REASONS = frozenset({
+    "transaction_owned", "identity_mismatch", "evidence_drift", "owner_lost",
+    "not_admissible", "stale_generation", "missing_generation",
+    "already_admitted", "generation_failed",
+})
+AUTHORITY_POLICY_V2_ADMISSION_SETTLEMENT_STATUSES = frozenset({
+    "settled", "already_settled_exact", "settlement_pending",
+})
+AUTHORITY_POLICY_V2_ADMISSION_SETTLEMENT_PENDING_REASONS = frozenset({
+    "transaction_owned", "identity_mismatch", "evidence_drift", "owner_lost",
+    "not_settleable", "settlement_failed",
+})
+# Closed result-stage events appended by the generation-admission writers.
+# They reuse the existing ``authority_policy_v2_result_stage`` action, carry the
+# exact causal identity plus the reserved session, and never mint authority.
+AUTHORITY_POLICY_V2_RESULT_STAGE_GENERATION_CLAIMED = "generation_claimed"
+AUTHORITY_POLICY_V2_RESULT_STAGE_NOTIFICATION_SETTLED = "notification_settled"
+
 
 class AuthorityPolicyV2Attempt(BaseModel):
     """Immutable admitted attempt journal row for one v2 callback result.
@@ -2601,6 +2627,102 @@ class AuthorityPolicyV2InvalidationOutcome(BaseModel):
             or self.dispatch_state is None
         ):
             raise ValueError("a completed invalidation requires the exact identity")
+        return self
+
+
+class AuthorityPolicyV2GenerationClaimOutcome(BaseModel):
+    """Bounded outcome of the ONE atomic generation-admission claim transaction.
+
+    ``claimed`` carries the exact causal identity plus the reserved
+    ``next_session_id`` and the winning ``orchestration_step_count``; the caller
+    may then settle and launch with that exact session.  It is never by itself a
+    guarantee of external launch, and a non-``claimed`` status means NO
+    generation admission occurred (so no ordinary claim/launch may follow).
+    """
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    status: StrictStr
+    reason: StrictStr | None = None
+    attempt_id: StrictStr | None = None
+    notification_id: StrictStr | None = None
+    envelope_id: StrictStr | None = None
+    generation_id: StrictStr | None = None
+    next_session_id: StrictStr | None = None
+    orchestration_step_count: StrictInt | None = Field(
+        default=None, ge=0, le=9223372036854775807,
+    )
+
+    @field_validator("status")
+    @classmethod
+    def _v2_generation_claim_status_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_GENERATION_CLAIM_STATUSES:
+            raise ValueError("generation claim status is not a closed value")
+        return value
+
+    @field_validator("reason")
+    @classmethod
+    def _v2_generation_claim_reason_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_GENERATION_CLAIM_PENDING_REASONS:
+            raise ValueError("generation claim reason is not a closed value")
+        return value
+
+    @model_validator(mode="after")
+    def _v2_generation_claim_shape(self) -> AuthorityPolicyV2GenerationClaimOutcome:
+        if self.status == "generation_pending":
+            if self.reason is None:
+                raise ValueError("a pending generation claim requires a bounded reason")
+            if self.next_session_id is not None:
+                raise ValueError("a pending generation claim reserves no session")
+            return self
+        if self.reason is not None:
+            raise ValueError("a claimed generation carries no pending reason")
+        if (
+            self.attempt_id is None or self.notification_id is None
+            or self.envelope_id is None or self.generation_id is None
+            or self.next_session_id is None or self.orchestration_step_count is None
+        ):
+            raise ValueError("a claimed generation requires the exact reservation")
+        return self
+
+
+class AuthorityPolicyV2AdmissionSettlementOutcome(BaseModel):
+    """Bounded outcome of the separate admission-settlement transaction."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    status: StrictStr
+    reason: StrictStr | None = None
+    attempt_id: StrictStr | None = None
+    notification_id: StrictStr | None = None
+    generation_id: StrictStr | None = None
+    next_session_id: StrictStr | None = None
+
+    @field_validator("status")
+    @classmethod
+    def _v2_admission_settlement_status_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_ADMISSION_SETTLEMENT_STATUSES:
+            raise ValueError("admission settlement status is not a closed value")
+        return value
+
+    @field_validator("reason")
+    @classmethod
+    def _v2_admission_settlement_reason_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_ADMISSION_SETTLEMENT_PENDING_REASONS:
+            raise ValueError("admission settlement reason is not a closed value")
+        return value
+
+    @model_validator(mode="after")
+    def _v2_admission_settlement_shape(self) -> AuthorityPolicyV2AdmissionSettlementOutcome:
+        if self.status == "settlement_pending":
+            if self.reason is None:
+                raise ValueError("a pending settlement requires a bounded reason")
+            return self
+        if self.reason is not None:
+            raise ValueError("a completed settlement carries no pending reason")
+        if (
+            self.attempt_id is None or self.notification_id is None
+            or self.generation_id is None or self.next_session_id is None
+        ):
+            raise ValueError("a completed settlement requires the exact identity")
         return self
 
 
