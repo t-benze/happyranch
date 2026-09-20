@@ -596,3 +596,44 @@ def test_housekeeping_does_not_require_valid_assessment_or_decision(tmp_path):
     outcome = _refuse(store, row, attempt, code="evaluation_failed")
     assert outcome.status == "refused"
     assert _attempt_row(store, row["id"])["refusal_code"] == "evaluation_failed"
+
+
+def _delete_stage(store, stage: str) -> None:
+    store._db._conn.execute(
+        """DELETE FROM audit_log WHERE action='authority_policy_v2_result_stage'
+           AND json_extract(payload,'$.stage')=?""",
+        (stage,),
+    )
+    store._db._conn.commit()
+
+
+def test_housekeeping_does_not_require_the_missing_claim_audited_audit(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    _target_stage(store, row, "claim_audited")
+    _delete_stage(store, "claim_audited")
+    outcome = _refuse(store, row, attempt, code="claim_audit_missing")
+    assert outcome.status == "refused"
+    assert _attempt_row(store, row["id"])["finalization_state"] == "refused"
+
+
+def test_housekeeping_does_not_require_the_missing_evaluation_audit(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    _target_stage(store, row, "evaluation_audited")
+    _delete_stage(store, "evaluation_audited")
+    outcome = _refuse(store, row, attempt, code="evaluation_audit_missing")
+    assert outcome.status == "refused"
+    assert _attempt_row(store, row["id"])["stage"] == "evaluation_audited"
+    assert _attempt_row(store, row["id"])["refusal_code"] == "evaluation_audit_missing"
+
+
+def test_schema_or_permission_drift_can_still_finalize_refusal(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    _target_stage(store, row, "claim_audited")
+    # The authentic owner's next stage refused on frozen-evidence drift; the
+    # refusal cause must not block terminal housekeeping.
+    store._db._conn.execute("CREATE TABLE unrelated_drift_marker (id INTEGER)")
+    store._db._conn.commit()
+    outcome = _refuse(store, row, attempt, code="claim_failed")
+    assert outcome.status == "refused"
+    assert _attempt_row(store, row["id"])["finalization_state"] == "refused"
+    assert store._db.get_task(TASK_ID).status is TaskStatus.ESCALATED
