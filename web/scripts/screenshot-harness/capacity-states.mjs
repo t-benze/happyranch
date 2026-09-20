@@ -168,6 +168,141 @@ const STATES = [
   },
 ];
 
+/**
+ * 16.10 — computed contrast in a REAL browser.
+ *
+ * WCAG 2.x relative luminance and contrast ratio, measured against the element's
+ * EFFECTIVE background (the nearest ancestor with a non-transparent
+ * background-color), not an assumed page colour. Reported per state, viewport
+ * and theme; nothing here is asserted from a design token or a DOM presence.
+ */
+const CONTRAST_TARGETS = [
+  '#capacity-workers-help', '#capacity-cap-help',
+  '#capacity-workers-guidance', '#capacity-cap-guidance',
+  '#capacity-reason-help',
+  '#capacity-workers-error', '#capacity-cap-error',
+  '#capacity-reason-error', '#capacity-ack-error',
+];
+
+const CONTRAST_FN = (selectors) => {
+  const channel = (v) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  // This app's theme is authored in `oklch()`, and Chrome returns the computed
+  // value in that space — an `rgba(...)` regex parses NOTHING here. Resolve any
+  // CSS colour through a canvas so the measurement is on real sRGB pixels.
+  const ctx2d = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  ctx2d.globalCompositeOperation = 'copy';
+  const parse = (value) => {
+    if (!value || value === 'none') return null;
+    ctx2d.fillStyle = 'rgba(0, 0, 0, 0)';
+    ctx2d.fillStyle = value;
+    ctx2d.fillRect(0, 0, 1, 1);
+    const d = ctx2d.getImageData(0, 0, 1, 1).data;
+    return { r: d[0], g: d[1], b: d[2], a: d[3] / 255 };
+  };
+  const lum = (c) => 0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b);
+  const ratio = (a, b) => {
+    const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  const effectiveBackground = (node) => {
+    let el = node;
+    while (el) {
+      const bg = parse(getComputedStyle(el).backgroundColor);
+      if (bg && bg.a > 0) return bg;
+      el = el.parentElement;
+    }
+    return parse(getComputedStyle(document.body).backgroundColor) ?? { r: 255, g: 255, b: 255, a: 1 };
+  };
+  const out = [];
+  for (const selector of selectors) {
+    const el = document.querySelector(selector);
+    if (!el) { out.push({ selector, present: false }); continue; }
+    const style = getComputedStyle(el);
+    const fg = parse(style.color);
+    const bg = effectiveBackground(el);
+    if (!fg || !bg) { out.push({ selector, present: true, unmeasurable: style.color }); continue; }
+    const px = parseFloat(style.fontSize);
+    const bold = Number(style.fontWeight) >= 700;
+    // WCAG "large text": >=24px, or >=18.66px when bold.
+    const large = px >= 24 || (bold && px >= 18.66);
+    out.push({
+      selector,
+      present: true,
+      text: (el.textContent ?? '').trim().slice(0, 60),
+      color: style.color,
+      background: `rgb(${bg.r}, ${bg.g}, ${bg.b})`,
+      fontSizePx: px,
+      large,
+      ratio: Number(ratio(fg, bg).toFixed(2)),
+      threshold: large ? 3 : 4.5,
+      passesAA: ratio(fg, bg) >= (large ? 3 : 4.5),
+    });
+  }
+  return out;
+};
+
+/** 16.11 — walk the 16.6 tab order with a real focus ring measurement. */
+async function walkTabOrder(page) {
+  await page.focus('#capacity-workers');
+  const order = [];
+  for (let i = 0; i < 8; i += 1) {
+    order.push(await page.evaluate(() => {
+      const channel = (v) => {
+        const c = v / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      };
+      const ctx2d = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+      ctx2d.globalCompositeOperation = 'copy';
+      const parse = (value) => {
+        if (!value || value === 'none') return null;
+        ctx2d.fillStyle = 'rgba(0, 0, 0, 0)';
+        ctx2d.fillStyle = value;
+        ctx2d.fillRect(0, 0, 1, 1);
+        const d = ctx2d.getImageData(0, 0, 1, 1).data;
+        return { r: d[0], g: d[1], b: d[2], a: d[3] / 255 };
+      };
+      const lum = (c) => 0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b);
+      const ratio = (a, b) => {
+        const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+        return (hi + 0.05) / (lo + 0.05);
+      };
+      const el = document.activeElement;
+      if (!el || el === document.body) return { tag: null, focusRingVisible: false };
+      const style = getComputedStyle(el);
+      const width = parseFloat(style.outlineWidth) || 0;
+      const shadow = style.boxShadow && style.boxShadow !== 'none';
+      let surround = el.parentElement;
+      while (surround) {
+        const bg = parse(getComputedStyle(surround).backgroundColor);
+        if (bg && bg.a > 0) break;
+        surround = surround.parentElement;
+      }
+      const ringColor = parse(style.outlineColor);
+      const surroundBg = parse(getComputedStyle(surround ?? document.body).backgroundColor);
+      return {
+        tag: el.tagName,
+        id: el.id || null,
+        text: (el.textContent ?? '').trim().slice(0, 40) || null,
+        outlineStyle: style.outlineStyle,
+        outlineWidth: style.outlineWidth,
+        outlineColor: style.outlineColor,
+        boxShadow: style.boxShadow,
+        // A ring is VISIBLE when it has real width and a non-`none` style, or
+        // the control carries a focus box-shadow instead.
+        focusRingVisible: (width > 0 && style.outlineStyle !== 'none') || shadow,
+        ringContrast: ringColor && surroundBg && ringColor.a > 0
+          ? Number(ratio(ringColor, surroundBg).toFixed(2))
+          : null,
+      };
+    }));
+    await page.keyboard.press('Tab');
+  }
+  return order;
+}
+
 const VIEWPORTS = [
   { name: '1440x1000', width: 1440, height: 1000 },
   { name: '1280x900', width: 1280, height: 900 },
@@ -289,43 +424,48 @@ try {
             liveRegions: document.querySelectorAll('[aria-live]').length,
           };
         });
-        results.push({ state: state.name, viewport: viewport.name, theme, file, ...receipt });
+        const contrast = await page.evaluate(CONTRAST_FN, CONTRAST_TARGETS);
+        results.push({
+          state: state.name, viewport: viewport.name, theme, file, ...receipt, contrast,
+        });
         await page.close();
       }
       await context.close();
     }
   }
 
-  // Keyboard/focus pass in a real browser at the primary viewport.
-  const kbContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, colorScheme: 'light' });
-  await kbContext.route('**/*', (route) => (route.request().url().startsWith(origin)
-    ? route.continue()
-    : (blockedExternal.push(route.request().url()), route.abort())));
-  currentCapacity = () => snapshot();
-  const kbPage = await kbContext.newPage();
-  await kbPage.addInitScript(() => window.sessionStorage.setItem('happyranch.token', 'synthetic'));
-  await kbPage.goto(`${origin}/orgs/${SLUG}/settings/daemon-capacity`, { waitUntil: 'networkidle' });
-  await kbPage.waitForSelector('#capacity-workers');
-  await kbPage.focus('#capacity-workers');
-  const tabOrder = [];
-  for (let i = 0; i < 8; i += 1) {
-    const info = await kbPage.evaluate(() => {
-      const el = document.activeElement;
-      const style = el ? getComputedStyle(el) : null;
-      return {
-        tag: el?.tagName ?? null,
-        id: el?.id || null,
-        text: (el?.textContent ?? '').trim().slice(0, 40) || null,
-        outline: style?.outlineStyle ?? null,
-        outlineWidth: style?.outlineWidth ?? null,
-        boxShadow: style?.boxShadow ?? null,
-      };
-    });
-    tabOrder.push(info);
-    await kbPage.keyboard.press('Tab');
+  // 16.11 — keyboard/focus pass in a real browser at BOTH desktop widths and in
+  // BOTH themes. A single light/1440 pass could not see a ring that disappears
+  // in dark or a tab order that changes when the shell reflows.
+  const tabOrders = [];
+  for (const viewport of VIEWPORTS) {
+    for (const theme of THEMES) {
+      const kbContext = await browser.newContext({
+        viewport: { width: viewport.width, height: viewport.height },
+        colorScheme: theme,
+        deviceScaleFactor: 1,
+      });
+      await kbContext.route('**/*', (route) => (route.request().url().startsWith(origin)
+        ? route.continue()
+        : (blockedExternal.push(route.request().url()), route.abort())));
+      currentCapacity = () => snapshot();
+      const kbPage = await kbContext.newPage();
+      await kbPage.addInitScript((t) => {
+        window.sessionStorage.setItem('happyranch.token', 'synthetic');
+        window.localStorage.setItem('happyranch.theme', t);
+      }, theme);
+      await kbPage.goto(`${origin}/orgs/${SLUG}/settings/daemon-capacity`, { waitUntil: 'networkidle' });
+      await kbPage.waitForSelector('#capacity-workers');
+      const order = await walkTabOrder(kbPage);
+      await kbPage.focus('#capacity-workers');
+      await kbPage.screenshot({
+        path: join(outDir, `capacity-keyboard-focus-${viewport.name}-${theme}.png`),
+        fullPage: true,
+      });
+      tabOrders.push({ viewport: viewport.name, theme, order });
+      await kbContext.close();
+    }
   }
-  await kbPage.screenshot({ path: join(outDir, 'capacity-keyboard-focus-1440x1000-light.png'), fullPage: true });
-  await kbContext.close();
 
   const hashes = readdirSync(outDir).filter((f) => f.endsWith('.png')).sort().map((f) => ({
     file: f,
@@ -343,7 +483,14 @@ try {
     failClosedOk: undeclared.length === 0,
     horizontalOverflowStates: results.filter((r) => r.horizontalOverflow).map((r) => r.file),
     states: results,
-    tabOrder,
+    tabOrders,
+    // 16.10 / 16.11 roll-ups. Empty arrays are the passing result.
+    lowContrastFindings: results.flatMap((r) => (r.contrast ?? [])
+      .filter((c) => c.present && (c.unmeasurable !== undefined || !c.passesAA))
+      .map((c) => ({ file: r.file, ...c }))),
+    focusRingsMissing: tabOrders.flatMap((t) => t.order
+      .filter((o) => o.tag && !o.focusRingVisible)
+      .map((o) => ({ viewport: t.viewport, theme: t.theme, control: o.id ?? o.text }))),
     pngs: hashes,
   };
   writeFileSync(join(outDir, 'MANIFEST.json'), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -352,6 +499,8 @@ try {
   console.log(`undeclared /api/ paths: ${undeclared.length}`);
   console.log(`blocked external requests: ${blockedExternal.length}`);
   console.log(`horizontal overflow states: ${manifest.horizontalOverflowStates.length}`);
+  console.log(`low-contrast findings (16.10): ${manifest.lowContrastFindings.length}`);
+  console.log(`controls without a visible focus ring (16.11): ${manifest.focusRingsMissing.length}`);
   if (undeclared.length > 0) {
     console.error('FAIL: the venue was not fail-closed:', undeclared);
     process.exitCode = 1;

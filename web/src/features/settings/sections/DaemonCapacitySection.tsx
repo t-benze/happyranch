@@ -703,7 +703,7 @@ export function DaemonCapacitySection(): JSX.Element {
               aria-invalid={fieldErrors.queue_workers ? true : undefined}
               onChange={(event) => setWorkersText(event.target.value)}
             />
-            <p id="capacity-workers-guidance" className="text-text-muted text-sm">
+            <p id="capacity-workers-guidance" className="text-text-secondary text-sm">
               {snapshot ? `${snapshot.guidance.queue_workers} ` : ''}Guidance only, not an enforced range.
             </p>
             {fieldErrors.queue_workers && (
@@ -741,7 +741,7 @@ export function DaemonCapacitySection(): JSX.Element {
               aria-invalid={fieldErrors.host_global_session_cap ? true : undefined}
               onChange={(event) => setCapText(event.target.value)}
             />
-            <p id="capacity-cap-guidance" className="text-text-muted text-sm">
+            <p id="capacity-cap-guidance" className="text-text-secondary text-sm">
               {snapshot ? `${snapshot.guidance.host_global_session_cap} ` : ''}Guidance only, not an enforced range.
             </p>
             {fieldErrors.host_global_session_cap && (
