@@ -2534,10 +2534,14 @@ def test_unicode_route_case_validates_and_dry_materializes(
     persisting a Unicode slug through the HTTP route is blocked by the
     out-of-radius `runtime/infrastructure/artifact_store.py` ASCII name guard
     (``_NAME_RE = ^[A-Za-z0-9._-]+$``) because ``_artifact_key`` embeds the raw
-    slug. This test pins the exact bounded outcome (non-201, zero durable
-    residue) and the exact cause so the manager can authorize either an
-    artifact-store name-policy change or an approved key encoding.
+    slug. This test pins the exact bounded outcome (exact HTTP 500, the exact
+    ``InvalidArtifactName`` seam/exception, zero durable/artifact residue) so
+    an unrelated failure cannot satisfy it, and so the manager can authorize
+    either an artifact-store name-policy change or an approved key encoding.
     """
+    from fastapi.testclient import TestClient
+
+    from runtime.daemon.routes import custom_skills as routes
     from runtime.infrastructure.artifact_store import ArtifactStore, InvalidArtifactName
     from runtime.orchestrator._paths import OrgPaths
     from runtime.skills.custom import service
@@ -2557,20 +2561,54 @@ def test_unicode_route_case_validates_and_dry_materializes(
     assert result["frontmatter"]["name"] == "café-workflow"
     assert result["frontmatter"]["description"] == "unicode café route"
 
-    # The real HTTP route cannot persist the Unicode slug: the artifact key
-    # embeds the raw slug and ArtifactStore rejects non-ASCII segments. Assert
-    # the bounded outcome and zero durable residue.
+    # The exact deterministic artifact key the shipping route builds embeds
+    # the raw slug; that key is what ArtifactStore rejects.
+    key = routes._artifact_key("café-workflow", skill_md)
+    assert key == (
+        "custom-skills/café-workflow/"
+        + hashlib.sha256(skill_md.encode()).hexdigest()
+        + "/SKILL.md"
+    )
+
+    # The real HTTP route cannot persist the Unicode slug: `_write_artifact`
+    # -> `ArtifactStore.put` -> `validate_name` rejects the non-ASCII path
+    # segment and the route's generic handler re-raises after rollback. Assert
+    # the EXACT status (500, never a 4xx admission/divergence code and never
+    # 201) so an unrelated failure cannot satisfy this test.
     before = _residue_snapshot(org, None)
     fault = _fault_client(client)
     response = fault.post(
         BASE, json={"slug": "café-workflow", "name": "café-workflow", "skill_md": skill_md}
     )
-    assert response.status_code != 201, response.text
-    assert _residue_snapshot(org, None) == before
+    assert response.status_code == 500, response.text
+    assert response.text == "Internal Server Error"
 
-    key = f"custom-skills/café-workflow/{'0' * 64}/SKILL.md"
-    with pytest.raises(InvalidArtifactName):
-        ArtifactStore(OrgPaths(org.root).artifacts_dir).validate_name(key)
+    # Tie the HTTP failure to the exact shipping seam, exception class and
+    # message by re-driving the identical request on a client that re-raises.
+    strict = TestClient(client.app, raise_server_exceptions=True)
+    strict.headers.update(client.headers)
+    with pytest.raises(InvalidArtifactName) as excinfo:
+        strict.post(
+            BASE, json={"slug": "café-workflow", "name": "café-workflow", "skill_md": skill_md}
+        )
+    assert excinfo.value.__class__.__module__ == "runtime.infrastructure.artifact_store"
+    assert type(excinfo.value).__name__ == "InvalidArtifactName"
+    assert str(excinfo.value) == f"invalid_name: {key!r}"
+    assert ArtifactStore.__module__ == "runtime.infrastructure.artifact_store"
+
+    # The ArtifactStore validator alone reproduces the exact rejection.
+    store = ArtifactStore(OrgPaths(org.root).artifacts_dir)
+    with pytest.raises(InvalidArtifactName) as name_exc:
+        store.validate_name(key)
+    assert str(name_exc.value) == f"invalid_name: {key!r}"
+
+    # Complete durable + artifact rollback: zero residue anywhere, and in
+    # particular no artifact retained under the non-ASCII slug directory.
+    assert _residue_snapshot(org, None) == before
+    assert not any("café" in artifact for artifact in _artifact_keys(org))
+    assert not (
+        OrgPaths(org.root).artifacts_dir / "custom-skills" / "café-workflow"
+    ).exists()
 
 
 def test_excluded_key_first_invalid_and_append_preserve_dual_root_identity(
