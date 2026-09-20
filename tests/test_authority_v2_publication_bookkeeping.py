@@ -50,11 +50,15 @@ from tests.test_authority_v2_finalization_settlement import (
     _finalize,
     _insert_ordinary_completion,
     _reopen,
+    _seed_q,
     _settle,
 )
 
 BOOT_A = "boot-publication-a"
 BOOT_B = "boot-publication-b"
+# A shape-valid replacement generation token (APV2N- + 64 hex), matching the
+# real immutable D/N identity contract.
+REPLACEMENT_GENERATION = "APV2N-" + "b" * 64
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -68,6 +72,22 @@ def _finalized(tmp_path, *, boot=BOOT_A):
     assert outcome.status == "continued", outcome
     _insert_ordinary_completion(store, row["id"])
     assert _settle(store, row).status == "settled"
+    store.bind_v2_process_boot_id(boot)
+    return store, row, attempt, outcome
+
+
+def _finalized_recovery(tmp_path, *, boot=BOOT_A):
+    """A committed continuation whose proof is the exact settled recovery Q."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    _drive(store, row, attempt, "consumed_audited")
+    outcome = _finalize(store, row, attempt)
+    assert outcome.status == "continued", outcome
+    _seed_q(store, row["id"], state="callback_accepted")
+    settled = _settle(
+        store, row, recovery_session_id=SESSION_ID,
+        accepted_result_id=row["id"], accepted_result_session_id=SESSION_ID,
+    )
+    assert settled.status == "settled", settled
     store.bind_v2_process_boot_id(boot)
     return store, row, attempt, outcome
 
@@ -162,6 +182,181 @@ def _mutate_notification(store, notification_id, **updates):
         ),
     )
     store._db._conn.commit()
+
+
+def _delete_audits(store, predicate):
+    """Fixture-level removal of exact audit rows (evidence-loss simulation)."""
+    for row in [
+        row for row in store._db.get_audit_logs(TASK_ID) if predicate(row)
+    ]:
+        store._db._conn.execute("DELETE FROM audit_log WHERE id=?", (row["id"],))
+    store._db._conn.commit()
+
+
+def _delete_stage_event(store, stage):
+    _delete_audits(
+        store,
+        lambda row: (
+            row["action"] == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
+            and isinstance(row["payload"], dict)
+            and row["payload"].get("stage") == stage
+        ),
+    )
+
+
+def _delete_ordinary_completion(store, result_id):
+    _delete_audits(
+        store,
+        lambda row: (
+            row["action"] == "completion_report"
+            and isinstance(row["payload"], dict)
+            and "_recovery_session_id" not in row["payload"]
+            and row["payload"].get("_result_row_id") == result_id
+        ),
+    )
+
+
+def _append_stage_event(store, payload):
+    """Append one raw result-stage audit row (fixture-level conflict)."""
+    store._db._conn.execute(
+        """INSERT INTO audit_log (task_id, agent, action, payload, timestamp)
+           VALUES (?, ?, ?, ?, ?)""",
+        (
+            TASK_ID, MANAGER, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            json.dumps(payload) if not isinstance(payload, str) else payload,
+            "2026-09-20T00:00:00+00:00",
+        ),
+    )
+    store._db._conn.commit()
+
+
+def _cancel_task(store):
+    store._db._conn.execute(
+        "UPDATE tasks SET cancelled_at=? WHERE id=?",
+        ("2026-09-20T00:00:00+00:00", TASK_ID),
+    )
+    store._db._conn.commit()
+
+
+def _replace_owner_session(store, session_id="sess-replaced-owner"):
+    store._db._conn.execute(
+        "UPDATE tasks SET current_session_id=? WHERE id=?", (session_id, TASK_ID)
+    )
+    store._db._conn.commit()
+
+
+def _write_dispatch(store, dispatch):
+    snapshot = dispatch.model_dump(mode="json")
+    canonical = authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8")
+    store._db._conn.execute(
+        """UPDATE authority_policy_v2_root_dispatch
+              SET generation_id=?, envelope_id=?, state=?,
+                  expected_manager_agent=?, expected_manager_session_id=?,
+                  canonical_payload_json=?, updated_at=?
+            WHERE root_task_id=?""",
+        (
+            snapshot["generation_id"], snapshot["envelope_id"], snapshot["state"],
+            snapshot["expected_manager_agent"],
+            snapshot["expected_manager_session_id"], canonical,
+            snapshot["updated_at"], TASK_ID,
+        ),
+    )
+
+
+def _clone_row(store, table, pk_column, source_pk, overrides):
+    """Clone one fixture row under new identities (INSERT only, no updates)."""
+    conn = store._db._conn
+    columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+    source = conn.execute(
+        f"SELECT * FROM {table} WHERE {pk_column}=?", (source_pk,)
+    ).fetchone()
+    assert source is not None, (table, source_pk)
+    values = {column: source[column] for column in columns}
+    values.update(overrides)
+    cursor = conn.execute(
+        f"INSERT INTO {table} ({','.join(columns)}) "
+        f"VALUES ({','.join('?' for _ in columns)})",
+        [values[column] for column in columns],
+    )
+    return cursor.lastrowid
+
+
+def _point_dispatch_at_replacement(
+    store, notification, generation_id=None,
+):
+    """Fixture-level replacement root pointer (D names a REAL generation B).
+
+    The root-dispatch FK requires the pointer to name a real notification, so a
+    future replacement generation is staged by cloning the causal generation's
+    result/attempt/candidate/envelope/notification rows under new identities.
+    The cloned B is never authenticated as evidence; it exists only so the
+    genuine forward-only retired -> pending pointer transition can be exercised.
+    """
+    if generation_id is None:
+        generation_id = REPLACEMENT_GENERATION
+    conn = store._db._conn
+    envelope = conn.execute(
+        "SELECT * FROM authority_policy_v2_continue_envelopes WHERE envelope_id=?",
+        (notification.envelope_id,),
+    ).fetchone()
+    assert envelope is not None
+    session_id = "sess-replacement-b"
+    attempt_id = "APV2R-replacement-b"
+    candidate_id = "APV2C-replacement-b"
+    envelope_id = "APV2E-replacement-b"
+    # B owns its own causal result row so the original result's candidate/attempt
+    # lookups stay single-valued and unambiguous.
+    replacement_result_id = _clone_row(
+        store, "task_results", "id", notification.result_id,
+        {"id": None, "session_id": session_id},
+    )
+    _clone_row(
+        store, "authority_policy_v2_attempts", "attempt_id", envelope["attempt_id"],
+        {
+            "attempt_id": attempt_id, "manager_session_id": session_id,
+            "result_id": replacement_result_id,
+        },
+    )
+    _clone_row(
+        store, "authority_policy_v2_candidates", "candidate_id",
+        envelope["candidate_id"],
+        {
+            "candidate_id": candidate_id, "claim_key": "claim-replacement-b",
+            "manager_session_id": session_id, "attempt_id": attempt_id,
+            "result_id": replacement_result_id,
+        },
+    )
+    _clone_row(
+        store, "authority_policy_v2_continue_envelopes", "envelope_id",
+        envelope["envelope_id"],
+        {
+            "envelope_id": envelope_id, "candidate_id": candidate_id,
+            "claim_key": "claim-replacement-b", "manager_session_id": session_id,
+            "attempt_id": attempt_id, "result_id": replacement_result_id,
+        },
+    )
+    _clone_row(
+        store, "authority_policy_v2_recovery_notifications", "notification_id",
+        notification.notification_id,
+        {
+            "notification_id": generation_id, "envelope_id": envelope_id,
+            "candidate_id": candidate_id, "manager_session_id": session_id,
+            "result_id": replacement_result_id,
+        },
+    )
+    row = conn.execute(
+        "SELECT * FROM authority_policy_v2_root_dispatch WHERE root_task_id=?",
+        (TASK_ID,),
+    ).fetchone()
+    dispatch = store._db._authority_policy_v2_root_dispatch_from_row(row)
+    _write_dispatch(store, dispatch.model_copy(update={"state": "retired"}))
+    _write_dispatch(
+        store,
+        dispatch.model_copy(
+            update={"state": "pending", "generation_id": generation_id}
+        ),
+    )
+    conn.commit()
 
 
 class _TargetedFailingConn:
@@ -494,6 +689,14 @@ def test_publication_failure_rolls_back_and_prior_lease_stays_reclaimable(tmp_pa
 def test_invalidate_needed_generation_retires_exact_dispatch(tmp_path):
     store, row, attempt, outcome = _finalized(tmp_path)
     before_task = store._db.get_task(TASK_ID)
+    # A healthy exact causal owner/pointer is NOT invalidatable.
+    healthy = _invalidate(store, row)
+    assert healthy.status == "invalidation_pending"
+    assert healthy.reason == "not_invalidatable"
+    assert _notification(store, outcome).state == "needed"
+    assert _dispatch(store).state == "pending"
+    # A real permitted cause (cancelled causal task) permits exact invalidation.
+    _cancel_task(store)
     invalidated = _invalidate(store, row)
     assert invalidated.status == "invalidated", invalidated
     assert invalidated.notification_state == "invalidated"
@@ -513,6 +716,11 @@ def test_invalidate_needed_generation_retires_exact_dispatch(tmp_path):
 def test_invalidate_publishing_generation_is_terminal_and_not_publishable(tmp_path):
     store, row, attempt, outcome = _finalized(tmp_path)
     claimed = _claim(store, row)
+    healthy = _invalidate(store, row)
+    assert healthy.status == "invalidation_pending"
+    assert healthy.reason == "not_invalidatable"
+    assert _notification(store, outcome).state == "publishing"
+    _cancel_task(store)
     invalidated = _invalidate(store, row)
     assert invalidated.status == "invalidated"
     after = _claim(store, row)
@@ -539,6 +747,7 @@ def test_invalidation_refuses_transaction_owned(tmp_path):
 
 def test_invalidation_audit_failure_rolls_back_notification_and_dispatch(tmp_path):
     store, row, attempt, outcome = _finalized(tmp_path)
+    _cancel_task(store)
     before = _counts(store._db)
     real = store._db._conn
     store._db._conn = _TargetedFailingConn(real, audit_stage="invalidated")
@@ -592,8 +801,395 @@ def test_reopen_authenticates_publication_and_invalidation(tmp_path):
         publisher_boot_id=claimed.publisher_boot_id,
     )
     assert again.status == "published", again
+    _cancel_task(reopened)
     invalidated = reopened.invalidate_v2_notification_generation(
         root_task_id=TASK_ID, manager_agent=MANAGER,
         manager_session_id=SESSION_ID, result_id=row["id"],
     )
     assert invalidated.status == "invalidated"
+
+
+# ── C3d3a correction: settlement proof before publication ────────────────
+
+
+def test_claim_refuses_deleted_ordinary_completion(tmp_path):
+    store, row, attempt, outcome = _finalized(tmp_path)
+    _delete_ordinary_completion(store, row["id"])
+    before = _counts(store._db)
+    refusal = _claim(store, row)
+    assert refusal.status == "publication_pending"
+    assert refusal.reason == "evidence_drift"
+    assert _counts(store._db) == before
+    assert _notification(store, outcome).state == "needed"
+    assert _stage_events(store, "publish_claimed") == []
+
+
+def test_ack_refuses_completion_deleted_after_claim(tmp_path):
+    store, row, attempt, outcome = _finalized(tmp_path)
+    claimed = _claim(store, row)
+    _delete_ordinary_completion(store, row["id"])
+    before = _counts(store._db)
+    ack = _ack(
+        store, row, publication_attempt=claimed.publication_attempt,
+        publisher_boot_id=claimed.publisher_boot_id,
+    )
+    assert ack.status == "ack_pending"
+    assert ack.reason == "evidence_drift"
+    assert _counts(store._db) == before
+    assert _notification(store, outcome).state == "publishing"
+    assert _stage_events(store, "published") == []
+
+
+def test_failure_recording_refuses_completion_deleted(tmp_path):
+    store, row, attempt, outcome = _finalized(tmp_path)
+    claimed = _claim(store, row)
+    _delete_ordinary_completion(store, row["id"])
+    before = _counts(store._db)
+    failed = _failure(
+        store, row, publication_attempt=claimed.publication_attempt,
+        publisher_boot_id=claimed.publisher_boot_id,
+    )
+    assert failed.status == "failure_pending"
+    assert failed.reason == "evidence_drift"
+    assert _counts(store._db) == before
+    assert _notification(store, outcome).state == "publishing"
+    assert _stage_events(store, "publish_failed") == []
+
+
+# ── C3d3a correction: retained publication-stage evidence ────────────────
+
+
+def test_claim_refuses_deleted_retained_claim_audit(tmp_path):
+    store, row, attempt, outcome = _finalized(tmp_path)
+    first = _claim(store, row)
+    _delete_stage_event(store, "publish_claimed")
+    store.bind_v2_process_boot_id(BOOT_B)
+    before = _counts(store._db)
+    refusal = _claim(store, row)
+    assert refusal.status == "publication_pending"
+    assert refusal.reason == "evidence_drift"
+    assert _counts(store._db) == before
+    notification = _notification(store, outcome)
+    assert notification.publication_attempt == first.publication_attempt
+    assert notification.publisher_boot_id == BOOT_A
+    assert notification.lease_deadline == first.lease_deadline
+
+
+def test_failure_recording_refuses_deleted_retained_claim_audit(tmp_path):
+    store, row, attempt, outcome = _finalized(tmp_path)
+    claimed = _claim(store, row)
+    _delete_stage_event(store, "publish_claimed")
+    before = _counts(store._db)
+    failed = _failure(
+        store, row, publication_attempt=claimed.publication_attempt,
+        publisher_boot_id=claimed.publisher_boot_id,
+    )
+    assert failed.status == "failure_pending"
+    assert failed.reason == "evidence_drift"
+    assert _counts(store._db) == before
+    notification = _notification(store, outcome)
+    assert notification.publisher_boot_id == BOOT_A
+    assert notification.lease_deadline == claimed.lease_deadline
+    assert _stage_events(store, "publish_failed") == []
+
+
+def test_null_lease_without_audited_failure_is_not_reclaimable(tmp_path):
+    store, row, attempt, outcome = _finalized(tmp_path)
+    claimed = _claim(store, row)
+    # A cleared lease/boot WITHOUT the required publish_failed audit is not proof.
+    _mutate_notification(
+        store, outcome.notification_id,
+        publisher_boot_id=None, lease_deadline=None,
+    )
+    before = _counts(store._db)
+    refusal = _claim(store, row)
+    assert refusal.status == "publication_pending"
+    assert refusal.reason == "evidence_drift"
+    assert _counts(store._db) == before
+    assert _notification(store, outcome).publication_attempt == 1
+
+
+# ── C3d3a correction: reader classifies conflicts before filtering ───────
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "wrong_generation",
+        "missing_generation",
+        "null_generation",
+        "null_publication_attempt",
+        "missing_publication_attempt",
+        "null_attempt_id",
+        "missing_attempt_id",
+        "distinct_attempt_id",
+        "opaque_body",
+    ],
+)
+def test_ack_refuses_conflicting_claim_evidence(tmp_path, mutation):
+    store, row, attempt, outcome = _finalized(tmp_path)
+    claimed = _claim(store, row)
+    conflicting = dict(_stage_events(store, "publish_claimed")[0])
+    if mutation == "wrong_generation":
+        conflicting["generation_id"] = "APV2N-deadbeef"
+        _append_stage_event(store, conflicting)
+    elif mutation == "missing_generation":
+        conflicting.pop("generation_id")
+        _append_stage_event(store, conflicting)
+    elif mutation == "null_generation":
+        conflicting["generation_id"] = None
+        _append_stage_event(store, conflicting)
+    elif mutation == "null_publication_attempt":
+        conflicting["publication_attempt"] = None
+        _append_stage_event(store, conflicting)
+    elif mutation == "missing_publication_attempt":
+        conflicting.pop("publication_attempt")
+        _append_stage_event(store, conflicting)
+    elif mutation == "null_attempt_id":
+        conflicting["attempt_id"] = None
+        _append_stage_event(store, conflicting)
+    elif mutation == "missing_attempt_id":
+        conflicting.pop("attempt_id")
+        _append_stage_event(store, conflicting)
+    elif mutation == "distinct_attempt_id":
+        conflicting["attempt_id"] = "APV2R-conflicting-attempt"
+        _append_stage_event(store, conflicting)
+    else:
+        _append_stage_event(store, "[]")
+    before = _counts(store._db)
+    ack = _ack(
+        store, row, publication_attempt=claimed.publication_attempt,
+        publisher_boot_id=claimed.publisher_boot_id,
+    )
+    assert ack.status == "ack_pending"
+    assert ack.reason == "evidence_drift"
+    assert _counts(store._db) == before
+    assert _notification(store, outcome).state == "publishing"
+    assert _stage_events(store, "published") == []
+
+
+# ── C3d3a correction: invalidation requires an established cause ─────────
+
+
+@pytest.mark.parametrize("stage", ["needed", "publishing", "published"])
+def test_invalidation_refuses_healthy_exact_owner(tmp_path, stage):
+    store, row, attempt, outcome = _finalized(tmp_path)
+    claimed = None
+    if stage in ("publishing", "published"):
+        claimed = _claim(store, row)
+    if stage == "published":
+        assert _ack(
+            store, row, publication_attempt=claimed.publication_attempt,
+            publisher_boot_id=claimed.publisher_boot_id,
+        ).status == "published"
+    before = _counts(store._db)
+    refusal = _invalidate(store, row)
+    assert refusal.status == "invalidation_pending"
+    assert refusal.reason == "not_invalidatable"
+    assert _counts(store._db) == before
+    assert _notification(store, outcome).state == stage
+    assert _dispatch(store).state == "pending"
+    assert _stage_events(store, "invalidated") == []
+
+
+@pytest.mark.parametrize("field", ["assigned_agent", "current_session_id"])
+def test_invalidation_refuses_null_current_identity(tmp_path, field):
+    """A nulled owner/session field alone is NOT affirmative replacement proof."""
+    store, row, attempt, outcome = _finalized(tmp_path)
+    store._db._conn.execute(
+        f"UPDATE tasks SET {field}=NULL WHERE id=?", (TASK_ID,)
+    )
+    store._db._conn.commit()
+    before = _counts(store._db)
+    refusal = _invalidate(store, row)
+    assert refusal.status == "invalidation_pending"
+    assert refusal.reason == "not_invalidatable"
+    assert _counts(store._db) == before
+    assert _notification(store, outcome).state == "needed"
+    assert _dispatch(store).state == "pending"
+    assert _stage_events(store, "invalidated") == []
+
+
+@pytest.mark.parametrize("cause", ["cancelled_task", "replaced_owner", "replacement_pointer"])
+def test_invalidation_established_cause(tmp_path, cause):
+    store, row, attempt, outcome = _finalized(tmp_path)
+    if cause == "cancelled_task":
+        _cancel_task(store)
+    elif cause == "replaced_owner":
+        _replace_owner_session(store)
+    else:
+        _point_dispatch_at_replacement(store, _notification(store, outcome))
+    invalidated = _invalidate(store, row)
+    assert invalidated.status == "invalidated", invalidated
+    assert _notification(store, outcome).state == "invalidated"
+    dispatch = _dispatch(store)
+    if cause == "replacement_pointer":
+        assert dispatch.generation_id == REPLACEMENT_GENERATION
+        assert dispatch.state == "pending"
+    else:
+        assert dispatch.state == "retired"
+    replay = _invalidate(store, row)
+    assert replay.status == "already_invalidated"
+
+
+def test_invalidation_not_permitted_by_publication_failure_alone(tmp_path):
+    store, row, attempt, outcome = _finalized(tmp_path)
+    claimed = _claim(store, row)
+    assert _failure(
+        store, row, publication_attempt=claimed.publication_attempt,
+        publisher_boot_id=claimed.publisher_boot_id,
+    ).status == "failure_recorded"
+    before = _counts(store._db)
+    refusal = _invalidate(store, row)
+    assert refusal.status == "invalidation_pending"
+    assert refusal.reason == "not_invalidatable"
+    assert _counts(store._db) == before
+    assert _notification(store, outcome).state == "publishing"
+
+
+# ── C3d3a correction: reclaim/failure replay classify conflicting claims ──
+
+
+def test_reclaim_refuses_conflicting_claim_attempt(tmp_path):
+    """A duplicate retained claim with a null attempt id cannot be filtered out."""
+    store, row, attempt, outcome = _finalized(tmp_path)
+    first = _claim(store, row)
+    conflicting = dict(_stage_events(store, "publish_claimed")[0])
+    conflicting["attempt_id"] = None
+    _append_stage_event(store, conflicting)
+    store.bind_v2_process_boot_id(BOOT_B)
+    before = _counts(store._db)
+    refusal = _claim(store, row)
+    assert refusal.status == "publication_pending"
+    assert refusal.reason == "evidence_drift"
+    assert _counts(store._db) == before
+    notification = _notification(store, outcome)
+    assert notification.publication_attempt == first.publication_attempt
+    assert notification.publisher_boot_id == BOOT_A
+    assert _stage_events(store, "publish_claimed") != []
+
+
+def test_failure_replay_refuses_conflicting_claim_attempt(tmp_path):
+    """The exact failure replay also authenticates the retained claim set."""
+    store, row, attempt, outcome = _finalized(tmp_path)
+    claimed = _claim(store, row)
+    assert _failure(
+        store, row, publication_attempt=claimed.publication_attempt,
+        publisher_boot_id=claimed.publisher_boot_id,
+    ).status == "failure_recorded"
+    conflicting = dict(_stage_events(store, "publish_claimed")[0])
+    conflicting["attempt_id"] = "APV2R-conflicting-attempt"
+    _append_stage_event(store, conflicting)
+    before = _counts(store._db)
+    replay = _failure(
+        store, row, publication_attempt=claimed.publication_attempt,
+        publisher_boot_id=claimed.publisher_boot_id,
+    )
+    assert replay.status == "failure_pending"
+    assert replay.reason == "evidence_drift"
+    assert _counts(store._db) == before
+    assert _notification(store, outcome).state == "publishing"
+
+
+# ── C3d3a correction: settlement proof cannot be hidden by ordinary evidence ──
+
+
+def test_claim_refuses_ordinary_with_related_nonterminal_receipt(tmp_path):
+    """A genuine ordinary completion plus a related accepted Q still refuses.
+
+    The ordinary branch is available only while no potentially related receipt
+    blocks it, so replayed ordinary evidence cannot hide an unsettled Q.
+    """
+    store, row, attempt, outcome = _finalized(tmp_path)
+    _seed_q(store, row["id"], state="callback_accepted")
+    before = _counts(store._db)
+    refusal = _claim(store, row)
+    assert refusal.status == "publication_pending"
+    assert refusal.reason == "evidence_drift"
+    assert _counts(store._db) == before
+    assert _notification(store, outcome).state == "needed"
+    assert _stage_events(store, "publish_claimed") == []
+
+
+def test_claim_refuses_ordinary_with_conflicting_related_receipt(tmp_path):
+    """A related Q whose accepted result/session conflicts is never hidden."""
+    store, row, attempt, outcome = _finalized(tmp_path)
+    _seed_q(
+        store, row["id"], state="callback_consumed",
+        accepted_result_session="sess-other",
+    )
+    before = _counts(store._db)
+    refusal = _claim(store, row)
+    assert refusal.status == "publication_pending"
+    assert refusal.reason == "evidence_drift"
+    assert _counts(store._db) == before
+    assert _notification(store, outcome).state == "needed"
+
+
+def test_claim_allows_unrelated_established_terminal_receipt(tmp_path):
+    """An unrelated ESTABLISHED TERMINAL receipt never vetoes ordinary proof."""
+    store, row, attempt, outcome = _finalized(tmp_path)
+    _seed_q(
+        store, row["id"], state="callback_consumed",
+        recovery_session="sess-unrelated",
+        accepted_result_id=row["id"] + 999,
+        accepted_result_session="sess-other",
+    )
+    claimed = _claim(store, row)
+    assert claimed.status == "claimed", claimed
+    assert _notification(store, outcome).state == "publishing"
+
+
+# ── C3d3a correction: the exact recovery proof rejects other conflicts ────
+
+
+def test_claim_allows_exact_recovery_settlement(tmp_path):
+    """The exact real callback_consumed Q plus both settlement audits publishes."""
+    store, row, attempt, outcome = _finalized_recovery(tmp_path)
+    _seed_q(
+        store, row["id"], state="callback_consumed",
+        recovery_session="sess-unrelated",
+        accepted_result_id=row["id"] + 999,
+        accepted_result_session="sess-other",
+        origin_session="sess-unrelated-origin",
+    )
+    claimed = _claim(store, row)
+    assert claimed.status == "claimed", claimed
+    assert _notification(store, outcome).state == "publishing"
+
+
+def test_claim_refuses_recovery_with_second_related_receipt(tmp_path):
+    """An extra related receipt alongside the exact Q is a conflict, not hidden."""
+    store, row, attempt, outcome = _finalized_recovery(tmp_path)
+    _seed_q(
+        store, row["id"], state="callback_consumed",
+        recovery_session="sess-related-other",
+        accepted_result_id=row["id"],
+        accepted_result_session="sess-related-other",
+        origin_session="sess-related-origin-consumed",
+    )
+    before = _counts(store._db)
+    refusal = _claim(store, row)
+    assert refusal.status == "publication_pending"
+    assert refusal.reason == "evidence_drift"
+    assert _counts(store._db) == before
+    assert _notification(store, outcome).state == "needed"
+    assert _stage_events(store, "publish_claimed") == []
+
+
+def test_claim_refuses_recovery_with_unsettled_related_receipt(tmp_path):
+    """A related nonterminal Q alongside the exact Q still refuses."""
+    store, row, attempt, outcome = _finalized_recovery(tmp_path)
+    _seed_q(
+        store, row["id"], state="callback_accepted",
+        recovery_session="sess-related-other",
+        accepted_result_id=row["id"],
+        accepted_result_session="sess-related-other",
+        origin_session="sess-related-origin-accepted",
+    )
+    before = _counts(store._db)
+    refusal = _claim(store, row)
+    assert refusal.status == "publication_pending"
+    assert refusal.reason == "evidence_drift"
+    assert _counts(store._db) == before
+    assert _notification(store, outcome).state == "needed"

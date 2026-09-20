@@ -52,7 +52,7 @@ import pytest
 import uvicorn
 
 from runtime.daemon.app import create_app
-from runtime.models import TaskStatus
+from runtime.models import AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION, TaskStatus
 
 ORG = "isolated-org"
 TEAM = "engineering"
@@ -1506,5 +1506,205 @@ def test_shipping_historically_migrated_callable_finalization(tmp_path, monkeypa
     fixture.start()
     try:
         _drive_c3d2_finalization(fixture)
+    finally:
+        fixture.stop()
+
+
+# --------------------------------------------------------------------------
+# C3d3a: the real finalized+settled venue drives publication bookkeeping
+# --------------------------------------------------------------------------
+
+
+def _drive_c3d3a_publication(fixture: _ShippingFixture) -> str:
+    """Real launch -> CLI admission -> callable finalize/settle -> publication.
+
+    The external provider launch is held only at the process boundary, so the
+    durable admitted result/attempt/binding and the settlement evidence are
+    genuine and the publication discovery/claim/acknowledgement seams run
+    against that real persisted evidence.  The publication methods stay DARK:
+    no queue call, generation admission, launch or continuation is claimed, and
+    the fixture deliberately holds result consumption.  The provider launch
+    remains the sole external-launch double.
+    """
+    fixture.activate_v2_pair()
+    fixture.install_launch_hold()
+    root_id = fixture.create_and_enqueue_root()
+    captured = fixture.wait_for_launch()
+    session_id = captured["session_id"]
+    binding = _binding(fixture, root_id, session_id)
+    assert binding is not None and binding["mode"] == "v2"
+
+    body = _completion_body(binding, root_id)
+    payload = fixture.write_payload(body)
+    result = fixture.run_cli(payload)
+    assert result.returncode == 0, result.stderr
+    assert fixture.last_http()["status"] == 200
+
+    results, attempt, _audits = _admission_counts(fixture, root_id)
+    assert len(results) == 1 and attempt is not None
+    row_id = results[0]["id"]
+    db = fixture.org.db
+
+    from runtime.orchestrator.authority import _strict_permission_surface_digest
+
+    db.bind_authority_policy_v2_permission_surface_reader(
+        lambda agent: _strict_permission_surface_digest(
+            fixture.org.orchestrator, agent,
+        )
+    )
+    stage_kwargs = dict(
+        root_task_id=root_id, manager_agent=MANAGER, manager_session_id=session_id,
+        result_id=row_id, origin_boot_id=attempt.origin_boot_id,
+        owner_attempt_id=attempt.owner_attempt_id,
+    )
+    assert db.claim_authority_policy_v2_candidate(**stage_kwargs).status == "claimed"
+    assert db.audit_authority_policy_v2_candidate_claim(**stage_kwargs).status == "claim_audited"
+    assert db.evaluate_authority_policy_v2_candidate(**stage_kwargs).status == "evaluated"
+    assert db.audit_authority_policy_v2_candidate_evaluation(**stage_kwargs).status == "evaluation_audited"
+    assert db.consume_authority_policy_v2_candidate(**stage_kwargs).status == "consumed"
+    assert db.audit_authority_policy_v2_candidate_consumption(**stage_kwargs).status == "consumed_audited"
+    finalized = db.finalize_authority_policy_v2_continuation(**stage_kwargs)
+    assert finalized.status == "continued", finalized
+
+    notification = db.get_authority_policy_v2_recovery_notification(
+        finalized.notification_id
+    )
+    assert notification is not None and notification.state == "needed"
+
+    pub_kwargs = dict(
+        root_task_id=root_id, manager_agent=MANAGER,
+        manager_session_id=session_id, result_id=row_id,
+    )
+    # Bind the trusted daemon-process publisher identity up front; publication
+    # claim uses it as the retained publisher boot, never a caller boolean.
+    db.bind_authority_policy_v2_process_boot_id(attempt.origin_boot_id)
+    # Missing settlement evidence refuses with no publication write.
+    missing = db.claim_authority_policy_v2_notification_publication(**pub_kwargs)
+    assert missing.status == "publication_pending", missing
+    assert missing.reason == "evidence_drift"
+    assert db.get_authority_policy_v2_recovery_notification(
+        notification.notification_id
+    ).state == "needed"
+    assert [
+        a["payload"]["stage"]
+        for a in db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=root_id, manager_agent=MANAGER,
+        )
+    ] == [
+        "admitted", "claim_audited", "evaluation_audited", "consumed_audited",
+        "continued",
+    ]
+
+    # The REAL ordinary completion producer writes the attributed audit; the
+    # real ordinary settlement then authenticates it read-only (no Q, no write).
+    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+
+    result_row = db._conn.execute(
+        "SELECT * FROM task_results WHERE id=?", (row_id,)
+    ).fetchone()
+    report = completion_report_from_result_row(
+        root_id, dict(result_row), fallback_agent=MANAGER,
+    )
+    fixture.org.orchestrator._log_step_result(
+        root_id, types.SimpleNamespace(session_id=session_id), report,
+        result_row_id=row_id,
+    )
+    ordinary = db.settle_authority_policy_v2_continuation_receipt(**pub_kwargs)
+    assert ordinary.status == "settled", ordinary
+    assert ordinary.recovery is False and ordinary.receipt_settled is False
+
+    # Real exact recovery settlement against the durable Q identity.
+    db._conn.execute(
+        """INSERT INTO task_completion_recoveries
+           (task_id, agent, origin_session_id, recovery_session_id,
+            provider_session_id, claimed_at, expires_at, state,
+            accepted_result_id, accepted_result_session_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (root_id, MANAGER, "sess-origin", session_id, "provider-1",
+         "2026-01-01T00:00:00+00:00", "2999-01-01T00:00:00+00:00",
+         "callback_accepted", row_id, session_id),
+    )
+    db._conn.commit()
+    settled = db.settle_authority_policy_v2_continuation_receipt(
+        **pub_kwargs, recovery_session_id=session_id,
+        accepted_result_id=row_id, accepted_result_session_id=session_id,
+    )
+    assert settled.status == "settled", settled
+    assert settled.receipt_settled is True
+
+    # Discovery lists the finalized+settled generation (read-only).
+    targets = db.list_authority_policy_v2_publication_targets()
+    assert any(
+        t.notification_id == notification.notification_id for t in targets
+    ), targets
+
+    # Claim once under the bound daemon-process publisher identity.
+    claimed = db.claim_authority_policy_v2_notification_publication(**pub_kwargs)
+    assert claimed.status == "claimed", claimed
+    assert claimed.publication_attempt == 1
+    assert claimed.publisher_boot_id == attempt.origin_boot_id
+    assert db.get_authority_policy_v2_recovery_notification(
+        notification.notification_id
+    ).state == "publishing"
+    assert len([
+        a for a in db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=root_id, manager_agent=MANAGER,
+        ) if a["payload"]["stage"] == "publish_claimed"
+    ]) == 1
+
+    ack = db.acknowledge_authority_policy_v2_notification_publication(
+        **pub_kwargs, publication_attempt=claimed.publication_attempt,
+        publisher_boot_id=claimed.publisher_boot_id,
+    )
+    assert ack.status == "published", ack
+    retry_ack = db.acknowledge_authority_policy_v2_notification_publication(
+        **pub_kwargs, publication_attempt=claimed.publication_attempt,
+        publisher_boot_id=claimed.publisher_boot_id,
+    )
+    assert retry_ack.status == "published", retry_ack
+    assert db.get_authority_policy_v2_recovery_notification(
+        notification.notification_id
+    ).state == "published"
+
+    # Missing retained claim evidence refuses acknowledgement with no repair and
+    # no state regression.
+    db._conn.execute(
+        "DELETE FROM audit_log WHERE task_id=? AND action=? "
+        "AND json_extract(payload,'$.stage')='publish_claimed'",
+        (root_id, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION),
+    )
+    db._conn.commit()
+    before = db._conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+    broken = db.acknowledge_authority_policy_v2_notification_publication(
+        **pub_kwargs, publication_attempt=claimed.publication_attempt,
+        publisher_boot_id=claimed.publisher_boot_id,
+    )
+    assert broken.status == "ack_pending", broken
+    assert broken.reason == "evidence_drift"
+    assert db._conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == before
+    assert db.get_authority_policy_v2_recovery_notification(
+        notification.notification_id
+    ).state == "published"
+
+    # Release the held launch.  The ordinary un-wired consumer still fail-closes;
+    # this driver makes no claim about live continuation or enqueue.
+    fixture.release_launch()
+    fixture.join_workers()
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_continue_envelopes"
+    ).fetchone()[0] == 1
+    return root_id
+
+
+def test_shipping_real_callable_publication_bookkeeping(shipping):
+    _drive_c3d3a_publication(shipping)
+
+
+def test_shipping_historically_migrated_callable_publication(tmp_path, monkeypatch):
+    """The SAME publication-stage venue over a FULL historical migrated DB."""
+    fixture = _ShippingFixture(tmp_path, monkeypatch, seed_historical=True)
+    fixture.start()
+    try:
+        _drive_c3d3a_publication(fixture)
     finally:
         fixture.stop()

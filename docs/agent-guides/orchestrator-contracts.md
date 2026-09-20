@@ -767,6 +767,41 @@ the startup/reaper/run-step discovery wiring and the editable-pair
 editor/browser path remain unimplemented and these storage methods alone confer
 no launch authority.
 
+The C3d3a correction (same unmerged draft PR) hardens those publication seams
+before any production publisher exists. Every publication writer first requires
+a read-only SETTLEMENT PROOF: the real ordinary completion evidence for the
+exact causal result/session (only while no potentially related recovery receipt
+blocks it) OR the exact real `callback_consumed` Q for this root/agent/recovery
+session plus BOTH complete settlement audits. The exact-recovery branch requires
+the ONE potentially-related receipt to BE that exact Q, so a second related,
+malformed or nonterminal receipt is a conflict that a single exact Q can never
+hide, while an unrelated established-terminal receipt stays non-blocking; no
+transaction-owning settlement method is called and no Q is transitioned or
+fabricated. Reclaim, initial failure recording and the exact failure replay
+authenticate the exact retained `publish_claimed` event and every state-required
+`published`/`publish_failed` event BEFORE allocating a new attempt or clearing
+the lease, so missing, mutated, duplicated or conflicting retained evidence
+refuses with no repair-by-reinsertion and a null lease alone is never proof of a
+genuine audited failure; a stale caller cannot poison the winning publisher.
+Potentially related publication events are enumerated and classified BEFORE any
+attempt/generation/P discriminator filtering: a duplicate whose `attempt_id` is
+null/missing/mistyped or whose candidate/result/envelope/notification/generation
+reference is wrong or malformed is a related conflict rather than an unrelated
+row, an opaque non-object body is never ordinary absence, and a row whose every
+present causal reference is well-typed and provably different remains
+legitimately distinct prior `P` history. Invalidation now requires an affirmative
+durable cause read from current state under the same owned transaction — a
+cancelled task, a well-typed replacement owner/session, or a root pointer
+displaced onto a replacement generation B — so a null/malformed current identity
+field alone refuses, a healthy exact owner/pointer stays publishable and
+unchanged, and only the exact old G may be retired. The publication-stage
+shipping proof is extended in `tests/test_authority_v2_shipping.py`: the fresh
+and full historical-migrated real owned-RuntimeDir/two-agent subprocess
+CLI -> HTTP -> persisted-result venues drive finalized/exact-settled ->
+discovery/claim/acknowledgement, with missing settlement and missing retained
+claim refusals; the methods stay dark and the provider launch remains the sole
+external-launch double.
+
 The file-backed completion CLI preserves a supplied `manager_self_evaluation`
 member verbatim (including invalid/null values) so the daemon, rather than the
 client, validates it; an omitted member remains omitted. The shipping CLI to

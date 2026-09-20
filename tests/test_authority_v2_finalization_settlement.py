@@ -149,14 +149,15 @@ def _attempt_row(store, result_id):
 
 
 def _seed_q(store, result_id, *, state="callback_accepted", recovery_session=SESSION_ID,
-            accepted_result_id=None, accepted_result_session=SESSION_ID):
+            accepted_result_id=None, accepted_result_session=SESSION_ID,
+            origin_session="sess-origin"):
     store._db._conn.execute(
         """INSERT INTO task_completion_recoveries
            (task_id, agent, origin_session_id, recovery_session_id,
             provider_session_id, claimed_at, expires_at, state,
             accepted_result_id, accepted_result_session_id)
            VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (TASK_ID, MANAGER, "sess-origin", recovery_session, "prov-1",
+        (TASK_ID, MANAGER, origin_session, recovery_session, "prov-1",
          "2026-01-01T00:00:00+00:00", "2999-01-01T00:00:00+00:00", state,
          result_id if accepted_result_id is None else accepted_result_id,
          accepted_result_session),
