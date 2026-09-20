@@ -26,6 +26,7 @@ from runtime.models import (
     AuthorityPolicyV2Attempt,
     AuthorityPolicyV2Candidate,
     AuthorityPolicyV2ControlReceipt,
+    AuthorityPolicyV2Evaluation,
     AuthorityPolicyV2PairedControlRequest,
     AuthorityPolicyV2Pin,
     AuthorityPolicyV2Release,
@@ -223,6 +224,61 @@ class AuthorityPolicyStore:
             manager_session_id=manager_session_id, result_id=result_id,
             origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
         )
+
+    # -- THR-229 checkpoint C3c: thin forwarders over the DB-owned evaluation,
+    # evaluation-audit, consumption and consumed-audit stages plus the
+    # authenticated V reads.  The facade never begins, commits or rolls back.
+
+    def evaluate_v2_candidate(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str,
+    ) -> AuthorityPolicyV2StageOutcome:
+        return self._db.evaluate_authority_policy_v2_candidate(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+        )
+
+    def audit_v2_candidate_evaluation(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str,
+    ) -> AuthorityPolicyV2StageOutcome:
+        return self._db.audit_authority_policy_v2_candidate_evaluation(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+        )
+
+    def consume_v2_candidate(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str,
+    ) -> AuthorityPolicyV2StageOutcome:
+        return self._db.consume_authority_policy_v2_candidate(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+        )
+
+    def audit_v2_candidate_consumption(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str,
+    ) -> AuthorityPolicyV2StageOutcome:
+        return self._db.audit_authority_policy_v2_candidate_consumption(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+        )
+
+    def get_v2_evaluation(self, candidate_id: str) -> AuthorityPolicyV2Evaluation | None:
+        return self._db.get_authority_policy_v2_evaluation(candidate_id)
+
+    def get_v2_evaluation_for_result(
+        self, result_id: int,
+    ) -> AuthorityPolicyV2Evaluation | None:
+        return self._db.get_authority_policy_v2_evaluation_for_result(result_id)
+
+    def get_v2_candidate_audit(self, candidate_id: str, event: str) -> dict | None:
+        return self._db.get_authority_policy_v2_candidate_audit(candidate_id, event)
 
     def get_v2_candidate(self, candidate_id: str) -> AuthorityPolicyV2Candidate | None:
         return self._db.get_authority_policy_v2_candidate(candidate_id)

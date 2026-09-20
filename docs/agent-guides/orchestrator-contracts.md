@@ -443,6 +443,40 @@ commits or nests. The shipping
 authority hook remains fail-closed (ESCALATE) until the complete
 consumer/refusal/finalization path lands.
 
+Checkpoint C3c lands the four accepted pre-final evaluation and single
+consumption stages: `evaluate_authority_policy_v2_candidate`,
+`audit_authority_policy_v2_candidate_evaluation`,
+`consume_authority_policy_v2_candidate` and
+`audit_authority_policy_v2_candidate_consumption`. The Database owns each
+synchronized `BEGIN IMMEDIATE`/commit/rollback and each method refuses caller
+transaction nesting with the closed code `transaction_owned` BEFORE it would
+begin, roll back or invalidate the live owner, so the four R4 durable boundaries
+stay separate and the caller's pending work survives. The additive
+`authority_policy_v2_evaluations` (V) table stores exactly one immutable
+evaluation per candidate whose identity equals the candidate ID; it holds the
+derived clause-free outcome, the admitted assessment digest and either the
+bounded sanitized assessment evidence or the honest invalid-assessment
+diagnostic code. The attempt stage CHECK/transitions are completed to
+`admitted|claimed|claim_audited|evaluated|evaluation_audited|consumed|consumed_audited`,
+the candidate audit gains the `evaluated`/`consumed` closed events, and the
+candidate table gains a forward-only `created -> evaluated -> consumed`
+lifecycle guarded by a precise trigger: every identity/frozen-evidence column
+stays immutable and only the lifecycle stage may advance. The evaluation
+transaction re-reads the persisted sanitized `_manager_self_evaluation` carrier,
+validates its full bound identity and both assessments, derives the outcome ONCE
+through the existing pure `derive_authority_policy_v2_assessment_outcome` (a
+diagnostic carrier stays `invalid` and is never invented into a valid
+assessment), inserts one V and advances K/J atomically; the separate evaluation
+audit appends one candidate `evaluated` event plus the `evaluation_audited`
+result-stage evidence and advances J without re-deriving the outcome;
+consumption re-authenticates a0+a1+a2 and the stored V and CASes K/J to
+`consumed` exactly once with no second model call; the consumed audit appends
+one candidate `consumed` event plus `consumed_audited` evidence. Earlier
+committed stage evidence survives every later failure and the shipping authority
+hook remains fail-closed (ESCALATE) until the later THR-229
+refusal/reaper/recovery/finalize/settle/publish/admit/spend consumer and the
+editable-pair editor/browser path land and merge.
+
 The file-backed completion CLI preserves a supplied `manager_self_evaluation`
 member verbatim (including invalid/null values) so the daemon, rather than the
 client, validates it; an omitted member remains omitted. The shipping CLI to

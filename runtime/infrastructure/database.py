@@ -35,6 +35,7 @@ from runtime.models import (
     AuthorityPolicyV2Candidate,
     AuthorityPolicyV2CandidateAudit,
     AuthorityPolicyV2ControlReceipt,
+    AuthorityPolicyV2Evaluation,
     AuthorityPolicyV2PairedControlRequest,
     AuthorityPolicyV2Pin,
     AuthorityPolicyV2Release,
@@ -47,9 +48,19 @@ from runtime.models import (
     AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
     AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
     AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
     AUTHORITY_POLICY_V2_ATTEMPT_STAGE_TRANSITIONS,
     AUTHORITY_POLICY_V2_ATTEMPT_STAGES,
     AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
+    AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CONSUMED,
+    AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_EVALUATED,
+    AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_CREATED,
+    AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_CONSUMED,
+    AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_EVALUATED,
+    AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_TRANSITIONS,
     AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
     AUTHORITY_POLICY_V2_TEAM,
     authority_policy_v2_attempt_id,
@@ -480,7 +491,9 @@ _AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
                 activation_epoch INTEGER NOT NULL
                     CHECK(activation_epoch > 0 AND activation_epoch <= 2147483647),
                 selector_id TEXT NOT NULL,
-                stage TEXT NOT NULL CHECK(stage IN ('admitted','claimed','claim_audited')),
+                stage TEXT NOT NULL CHECK(stage IN
+                    ('admitted','claimed','claim_audited','evaluated',
+                     'evaluation_audited','consumed','consumed_audited')),
                 finalization_state TEXT NOT NULL
                     CHECK(finalization_state IN
                         ('unfinalized','continued','refused','owner_lost')),
@@ -563,6 +576,8 @@ _AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
                 schema_object_count INTEGER NOT NULL
                     CHECK(schema_object_count >= 0 AND schema_object_count <= 100000),
                 permission_surface_digest TEXT NOT NULL,
+                lifecycle_stage TEXT NOT NULL DEFAULT 'created'
+                    CHECK(lifecycle_stage IN ('created','evaluated','consumed')),
                 canonical_payload_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 UNIQUE(claim_key),
@@ -572,9 +587,48 @@ _AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
                 ON authority_policy_v2_candidates(result_id);
             CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_candidates_team_root
                 ON authority_policy_v2_candidates(team, root_task_id);
-            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_candidates_no_update
+            -- C3c: the candidate is no longer wholly immutable.  Every identity
+            -- and frozen-evidence column stays immutable; only the forward-only
+            -- lifecycle stage may advance created -> evaluated -> consumed.
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_candidates_lifecycle_guard
                 BEFORE UPDATE ON authority_policy_v2_candidates
-                BEGIN SELECT RAISE(ABORT, 'v2 candidate is immutable'); END;
+                WHEN (
+                    OLD.candidate_id IS NOT NEW.candidate_id
+                 OR OLD.claim_key IS NOT NEW.claim_key
+                 OR OLD.team IS NOT NEW.team
+                 OR OLD.root_task_id IS NOT NEW.root_task_id
+                 OR OLD.manager_agent IS NOT NEW.manager_agent
+                 OR OLD.manager_session_id IS NOT NEW.manager_session_id
+                 OR OLD.attempt_id IS NOT NEW.attempt_id
+                 OR OLD.result_id IS NOT NEW.result_id
+                 OR OLD.binding_id IS NOT NEW.binding_id
+                 OR OLD.contract_id IS NOT NEW.contract_id
+                 OR OLD.contract_version IS NOT NEW.contract_version
+                 OR OLD.contract_digest IS NOT NEW.contract_digest
+                 OR OLD.release_id IS NOT NEW.release_id
+                 OR OLD.policy_version IS NOT NEW.policy_version
+                 OR OLD.policy_digest IS NOT NEW.policy_digest
+                 OR OLD.activation_id IS NOT NEW.activation_id
+                 OR OLD.activation_epoch IS NOT NEW.activation_epoch
+                 OR OLD.selector_id IS NOT NEW.selector_id
+                 OR OLD.provider_id IS NOT NEW.provider_id
+                 OR OLD.executor_kind IS NOT NEW.executor_kind
+                 OR OLD.model_id IS NOT NEW.model_id
+                 OR OLD.causal_result_id IS NOT NEW.causal_result_id
+                 OR OLD.causal_result_digest IS NOT NEW.causal_result_digest
+                 OR OLD.origin_boot_id IS NOT NEW.origin_boot_id
+                 OR OLD.owner_attempt_id IS NOT NEW.owner_attempt_id
+                 OR OLD.schema_raw_digest IS NOT NEW.schema_raw_digest
+                 OR OLD.schema_inventory_digest IS NOT NEW.schema_inventory_digest
+                 OR OLD.schema_object_count IS NOT NEW.schema_object_count
+                 OR OLD.permission_surface_digest IS NOT NEW.permission_surface_digest
+                 OR OLD.created_at IS NOT NEW.created_at
+                 OR NOT (
+                        (OLD.lifecycle_stage='created' AND NEW.lifecycle_stage='evaluated')
+                     OR (OLD.lifecycle_stage='evaluated' AND NEW.lifecycle_stage='consumed')
+                 )
+                )
+                BEGIN SELECT RAISE(ABORT, 'v2 candidate identity is immutable and lifecycle is forward-only'); END;
             CREATE TRIGGER IF NOT EXISTS authority_policy_v2_candidates_no_delete
                 BEFORE DELETE ON authority_policy_v2_candidates
                 BEGIN SELECT RAISE(ABORT, 'v2 candidate cannot be deleted'); END;
@@ -627,7 +681,7 @@ _AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
                 root_task_id TEXT NOT NULL,
                 manager_agent TEXT NOT NULL,
                 manager_session_id TEXT NOT NULL,
-                event TEXT NOT NULL CHECK(event IN ('claimed')),
+                event TEXT NOT NULL CHECK(event IN ('claimed','evaluated','consumed')),
                 claim_key TEXT NOT NULL,
                 attempt_id TEXT NOT NULL,
                 result_id INTEGER NOT NULL,
@@ -645,6 +699,66 @@ _AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
             CREATE TRIGGER IF NOT EXISTS authority_policy_v2_candidate_audit_no_delete
                 BEFORE DELETE ON authority_policy_v2_candidate_audit
                 BEGIN SELECT RAISE(ABORT, 'v2 candidate audit is append-only'); END;
+
+            -- THR-229 checkpoint C3c: the persisted evaluation (V).  Exactly
+            -- one immutable evaluation per candidate (identity equals the
+            -- candidate identity) records the derived clause-free outcome ONCE
+            -- together with the bounded sanitized assessment or the honest
+            -- invalid-assessment diagnostic.  No lifecycle or authority is
+            -- encoded in an overloaded column: the evaluation outcome is its
+            -- own closed column.
+            CREATE TABLE IF NOT EXISTS authority_policy_v2_evaluations (
+                evaluation_id TEXT PRIMARY KEY
+                    REFERENCES authority_policy_v2_candidates(candidate_id) ON DELETE RESTRICT,
+                candidate_id TEXT NOT NULL
+                    REFERENCES authority_policy_v2_candidates(candidate_id) ON DELETE RESTRICT,
+                claim_key TEXT NOT NULL,
+                team TEXT NOT NULL,
+                root_task_id TEXT NOT NULL,
+                manager_agent TEXT NOT NULL,
+                manager_session_id TEXT NOT NULL,
+                attempt_id TEXT NOT NULL,
+                result_id INTEGER NOT NULL,
+                binding_id TEXT NOT NULL,
+                release_id TEXT NOT NULL,
+                activation_id TEXT NOT NULL,
+                activation_epoch INTEGER NOT NULL
+                    CHECK(activation_epoch > 0 AND activation_epoch <= 2147483647),
+                selector_id TEXT NOT NULL,
+                policy_version INTEGER NOT NULL
+                    CHECK(policy_version > 0 AND policy_version <= 2147483647),
+                policy_digest TEXT NOT NULL,
+                contract_digest TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                executor_kind TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                outcome TEXT NOT NULL CHECK(outcome IN
+                    ('escalate_applies','continue_applies','neither_apply',
+                     'uncertain','invalid')),
+                assessment_digest TEXT NOT NULL,
+                diagnostic_code TEXT CHECK(diagnostic_code IS NULL OR diagnostic_code IN
+                    ('missing_assessment','null_assessment','malformed_output',
+                     'binding_mismatch')),
+                what_to_escalate_json TEXT,
+                what_not_to_escalate_json TEXT,
+                canonical_payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(candidate_id),
+                CHECK((what_to_escalate_json IS NULL) =
+                      (what_not_to_escalate_json IS NULL)),
+                CHECK(what_to_escalate_json IS NOT NULL OR diagnostic_code IS NOT NULL),
+                CHECK(what_to_escalate_json IS NULL OR diagnostic_code IS NULL)
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_evaluations_result
+                ON authority_policy_v2_evaluations(result_id);
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_evaluations_team_root
+                ON authority_policy_v2_evaluations(team, root_task_id);
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_evaluations_no_update
+                BEFORE UPDATE ON authority_policy_v2_evaluations
+                BEGIN SELECT RAISE(ABORT, 'v2 evaluation is immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_evaluations_no_delete
+                BEFORE DELETE ON authority_policy_v2_evaluations
+                BEGIN SELECT RAISE(ABORT, 'v2 evaluation cannot be deleted'); END;
 """
 
 
@@ -6924,7 +7038,7 @@ class Database:
                 causal_result_digest, origin_boot_id, owner_attempt_id,
                 schema_raw_digest, schema_inventory_digest, schema_object_count,
                 permission_surface_digest,
-                canonical_payload_json, created_at)
+                lifecycle_stage, canonical_payload_json, created_at)
                VALUES (:candidate_id,:claim_key,:team,:root_task_id,:manager_agent,
                        :manager_session_id,:attempt_id,:result_id,:binding_id,
                        :contract_id,:contract_version,:contract_digest,:release_id,
@@ -6933,7 +7047,8 @@ class Database:
                        :model_id,:causal_result_id,:causal_result_digest,
                        :origin_boot_id,:owner_attempt_id,:schema_raw_digest,
                        :schema_inventory_digest,:schema_object_count,
-                       :permission_surface_digest,:canonical_payload_json,
+                       :permission_surface_digest,:lifecycle_stage,
+                       :canonical_payload_json,
                        :created_at)""",
             {
                 **candidate_snapshot,
@@ -7086,44 +7201,32 @@ class Database:
             )
             raise
 
-    def _audit_authority_policy_v2_candidate_claim_uncommitted(
+    def _authenticate_v2_candidate_evidence_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
-        result_id: int, origin_boot_id: str, owner_attempt_id: str, now: str,
-    ) -> AuthorityPolicyV2StageOutcome:
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
-        )
+        result_id: int, origin_boot_id: str, owner_attempt_id: str,
+    ) -> tuple[str | None, dict | None]:
+        """Re-read and authenticate the complete claim-stage K/P evidence.
 
-        def _refused(code: str, candidate_id: str | None = None) -> AuthorityPolicyV2StageOutcome:
-            return AuthorityPolicyV2StageOutcome(
-                status="refused", refusal_code=code, attempt_id=attempt_id,
-                candidate_id=candidate_id,
-            )
-
-        # Re-authenticate the complete claim-stage evidence at the SECOND
-        # boundary: the causal result row/body, the immutable launch binding,
-        # the authenticated pinned release/activation/selector prefix, the
-        # single a0 admitted audit and the current task ownership/cancellation.
-        # The already-persisted K/P row is NOT trusted on its own; a between-
-        # stage mutation/deletion/mixed identity refuses without inventing
-        # evidence or advancing J.
+        Shared by the claim-audit boundary and every C3c evaluation/consumption
+        boundary: the causal result row/body, the immutable launch binding, the
+        authenticated pinned release/activation/selector prefix, the single a0
+        admitted audit, the current task ownership/cancellation AND the full
+        candidate/pin cross-row joins with the frozen claim-time
+        schema/permission evidence.  A between-stage mutation, deletion or
+        mixed identity refuses; the already-persisted K/P row is never trusted
+        on its own.
+        """
         code, ctx = self._authenticate_v2_claim_evidence_uncommitted(
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
         )
         if code is not None:
-            return _refused(code)
+            return code, None
         assert ctx is not None
         attempt = ctx["attempt"]
         binding = ctx["binding"]
         release = ctx["release"]
-        if attempt.stage == AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED:
-            return _refused("already_audited")
-        if attempt.stage != AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED:
-            return _refused("claim_audit_missing")
 
         candidate_row = self._conn.execute(
             """SELECT * FROM authority_policy_v2_candidates
@@ -7132,27 +7235,22 @@ class Database:
             (root_task_id, manager_agent, manager_session_id, result_id),
         ).fetchone()
         if candidate_row is None:
-            return _refused("claim_audit_missing")
+            return "claim_audit_missing", None
         try:
             candidate = self._authority_policy_v2_candidate_from_row(candidate_row)
         except ValueError:
-            return _refused("identity_mismatch")
+            return "identity_mismatch", None
         pin_row = self._conn.execute(
             "SELECT * FROM authority_policy_v2_pins WHERE candidate_id=?",
             (candidate.candidate_id,),
         ).fetchone()
         if pin_row is None:
-            return _refused("claim_audit_missing", candidate.candidate_id)
+            return "claim_audit_missing", None
         try:
             pin = self._authority_policy_v2_pin_from_row(pin_row)
         except ValueError:
-            return _refused("identity_mismatch", candidate.candidate_id)
+            return "identity_mismatch", None
 
-        # Full cross-row candidate/pin/attempt/release/binding joins, including
-        # provider/executor/model/version/digest/boot/owner and the frozen
-        # evidence.  Column/preimage consistency (already checked by the two
-        # row readers) and the causal-row digest (row identity only) are NOT a
-        # substitute for these joins.
         if (
             candidate.team != attempt.team
             or candidate.root_task_id != root_task_id
@@ -7199,11 +7297,8 @@ class Database:
             or pin.schema_object_count != candidate.schema_object_count
             or pin.permission_surface_digest != candidate.permission_surface_digest
         ):
-            return _refused("identity_mismatch", candidate.candidate_id)
+            return "identity_mismatch", None
 
-        # Recheck the ORIGINAL frozen claim-time evidence under this owned
-        # transaction: no recapture-and-rebaseline after a change.  Missing or
-        # unreadable evidence can never authenticate.
         from runtime.models import (
             AuthorityPolicyV2PermissionSurface as _PermissionSurface,
             AuthorityPolicyV2SchemaIntegrity as _SchemaIntegrity,
@@ -7222,7 +7317,7 @@ class Database:
             object_count=candidate.schema_object_count,
         )
         if not recheck_authority_policy_v2_schema_integrity(frozen_schema, self):
-            return _refused("schema_drift", candidate.candidate_id)
+            return "schema_drift", None
         frozen_permission = _PermissionSurface(
             contract_version=V2_PERMISSION_SURFACE_CONTRACT,
             digest=candidate.permission_surface_digest,
@@ -7230,7 +7325,218 @@ class Database:
         if not recheck_authority_policy_v2_permission_surface(
             frozen_permission, self, manager_agent,
         ):
-            return _refused("evidence_drift", candidate.candidate_id)
+            return "evidence_drift", None
+        return None, {**ctx, "candidate": candidate, "pin": pin}
+
+    def _authenticate_v2_candidate_audit_uncommitted(
+        self, candidate: AuthorityPolicyV2Candidate, event: str,
+    ) -> bool:
+        """Require exactly one authentic closed candidate-audit event.
+
+        The event must carry the candidate/attempt/result/owner/boot identity
+        and a canonical payload that re-validates to the same closed event.  A
+        missing, duplicated, mutated or mismatched event refuses; a later
+        legitimate event on the same candidate never invalidates an earlier one.
+        """
+        rows = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_candidate_audit
+               WHERE candidate_id=? AND event=?""",
+            (candidate.candidate_id, event),
+        ).fetchall()
+        if len(rows) != 1:
+            return False
+        row = rows[0]
+        if (
+            row["team"] != candidate.team
+            or row["root_task_id"] != candidate.root_task_id
+            or row["manager_agent"] != candidate.manager_agent
+            or row["manager_session_id"] != candidate.manager_session_id
+            or row["claim_key"] != candidate.claim_key
+            or row["attempt_id"] != candidate.attempt_id
+            or row["result_id"] != candidate.result_id
+            or row["owner_attempt_id"] != candidate.owner_attempt_id
+            or row["origin_boot_id"] != candidate.origin_boot_id
+        ):
+            return False
+        try:
+            audit = AuthorityPolicyV2CandidateAudit.model_validate_json(
+                row["canonical_payload_json"]
+            )
+        except Exception:
+            return False
+        if (
+            audit.candidate_id != candidate.candidate_id
+            or audit.event != event
+            or audit.claim_key != candidate.claim_key
+            or audit.attempt_id != candidate.attempt_id
+            or audit.result_id != candidate.result_id
+            or audit.owner_attempt_id != candidate.owner_attempt_id
+            or audit.origin_boot_id != candidate.origin_boot_id
+            or audit.team != candidate.team
+            or audit.root_task_id != candidate.root_task_id
+            or audit.manager_agent != candidate.manager_agent
+            or audit.manager_session_id != candidate.manager_session_id
+        ):
+            return False
+        return True
+
+    def _insert_v2_candidate_audit_uncommitted(
+        self, candidate: AuthorityPolicyV2Candidate, event: str, *,
+        owner_attempt_id: str, origin_boot_id: str, now: str,
+    ) -> None:
+        """Append exactly one closed candidate-stage audit event (uncommitted)."""
+        audit = AuthorityPolicyV2CandidateAudit(
+            candidate_id=candidate.candidate_id,
+            team=candidate.team,
+            root_task_id=candidate.root_task_id,
+            manager_agent=candidate.manager_agent,
+            manager_session_id=candidate.manager_session_id,
+            event=event,
+            claim_key=candidate.claim_key,
+            attempt_id=candidate.attempt_id,
+            result_id=candidate.result_id,
+            owner_attempt_id=owner_attempt_id,
+            origin_boot_id=origin_boot_id,
+        )
+        audit_snapshot = audit.model_dump(mode="json")
+        self._conn.execute(
+            """INSERT INTO authority_policy_v2_candidate_audit
+               (candidate_id, team, root_task_id, manager_agent, manager_session_id,
+                event, claim_key, attempt_id, result_id, owner_attempt_id,
+                origin_boot_id, canonical_payload_json, created_at)
+               VALUES (:candidate_id,:team,:root_task_id,:manager_agent,
+                       :manager_session_id,:event,:claim_key,:attempt_id,:result_id,
+                       :owner_attempt_id,:origin_boot_id,:canonical_payload_json,
+                       :created_at)""",
+            {
+                **audit_snapshot,
+                "canonical_payload_json": authority_policy_v2_canonical_json_bytes(
+                    audit_snapshot
+                ).decode("utf-8"),
+            },
+        )
+
+    def _advance_v2_candidate_lifecycle_uncommitted(
+        self, candidate: AuthorityPolicyV2Candidate, new_stage: str,
+    ) -> None:
+        """Advance the candidate lifecycle in ONE consistent update."""
+        expected = AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_TRANSITIONS.get(
+            candidate.lifecycle_stage
+        )
+        if expected != new_stage:
+            raise ValueError("illegal v2 candidate lifecycle transition")
+        snapshot = candidate.model_dump(mode="json")
+        snapshot["lifecycle_stage"] = new_stage
+        self._conn.execute(
+            """UPDATE authority_policy_v2_candidates
+                  SET lifecycle_stage=?, canonical_payload_json=?
+                WHERE candidate_id=?""",
+            (
+                new_stage,
+                authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8"),
+                candidate.candidate_id,
+            ),
+        )
+
+    def _authority_policy_v2_evaluation_from_row(
+        self, row,
+    ) -> AuthorityPolicyV2Evaluation:
+        try:
+            evaluation = AuthorityPolicyV2Evaluation.model_validate_json(
+                row["canonical_payload_json"]
+            )
+        except Exception as exc:
+            raise ValueError("authority v2 evaluation has a corrupt canonical payload") from exc
+        if evaluation.evaluation_id != row["evaluation_id"]:
+            raise ValueError("authority v2 evaluation identity mismatch")
+        for column, value in evaluation.model_dump(mode="json").items():
+            if row[column] != value:
+                raise ValueError("authority v2 evaluation column/preimage mismatch")
+        return evaluation
+
+    def _authenticate_v2_evaluation_evidence_uncommitted(
+        self, *, candidate: AuthorityPolicyV2Candidate,
+        attempt: AuthorityPolicyV2Attempt, binding, release,
+    ) -> tuple[str | None, dict | None]:
+        """Authenticate the stored V evidence WITHOUT re-deriving the outcome.
+
+        Re-reads the immutable evaluation row and checks its canonical
+        column/preimage consistency plus its full joins to the authenticated
+        candidate/attempt/binding/release.  The outcome is never recomputed here.
+        """
+        row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_evaluations WHERE candidate_id=?",
+            (candidate.candidate_id,),
+        ).fetchone()
+        if row is None:
+            return "evaluation_missing", None
+        try:
+            evaluation = self._authority_policy_v2_evaluation_from_row(row)
+        except ValueError:
+            return "identity_mismatch", None
+        if (
+            evaluation.candidate_id != candidate.candidate_id
+            or evaluation.claim_key != candidate.claim_key
+            or evaluation.team != attempt.team
+            or evaluation.root_task_id != candidate.root_task_id
+            or evaluation.manager_agent != candidate.manager_agent
+            or evaluation.manager_session_id != candidate.manager_session_id
+            or evaluation.attempt_id != attempt.attempt_id
+            or evaluation.result_id != candidate.result_id
+            or evaluation.binding_id != attempt.binding_id
+            or evaluation.release_id != candidate.release_id
+            or evaluation.activation_id != attempt.activation_id
+            or evaluation.activation_epoch != attempt.activation_epoch
+            or evaluation.selector_id != candidate.selector_id
+            or evaluation.policy_version != release.version
+            or evaluation.policy_digest != release.policy_digest
+            or evaluation.contract_digest != attempt.contract_digest
+            or evaluation.provider_id != binding.provider_id
+            or evaluation.executor_kind != binding.executor_kind
+            or evaluation.model_id != binding.model_id
+            or evaluation.assessment_digest != attempt.assessment_digest
+        ):
+            return "identity_mismatch", None
+        return None, {"evaluation": evaluation}
+
+    def _audit_authority_policy_v2_candidate_claim_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str, now: str,
+    ) -> AuthorityPolicyV2StageOutcome:
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=manager_agent, manager_session_id=manager_session_id,
+            result_id=result_id, root_task_id=root_task_id,
+            team=AUTHORITY_POLICY_V2_TEAM,
+        )
+
+        def _refused(code: str, candidate_id: str | None = None) -> AuthorityPolicyV2StageOutcome:
+            return AuthorityPolicyV2StageOutcome(
+                status="refused", refusal_code=code, attempt_id=attempt_id,
+                candidate_id=candidate_id,
+            )
+
+        # Re-authenticate the complete claim-stage evidence at the SECOND
+        # boundary: the causal result row/body, the immutable launch binding,
+        # the authenticated pinned release/activation/selector prefix, the
+        # single a0 admitted audit, the current task ownership/cancellation AND
+        # the full K/P cross-row joins with the frozen claim-time
+        # schema/permission evidence.  The already-persisted K/P row is NOT
+        # trusted on its own; a between-stage mutation/deletion/mixed identity
+        # refuses without inventing evidence or advancing J.
+        code, ctx = self._authenticate_v2_candidate_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+        )
+        if code is not None:
+            return _refused(code)
+        assert ctx is not None
+        attempt = ctx["attempt"]
+        candidate = ctx["candidate"]
+        if attempt.stage == AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED:
+            return _refused("already_audited")
+        if attempt.stage != AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED:
+            return _refused("claim_audit_missing")
 
         existing_audit = self._conn.execute(
             """SELECT 1 FROM authority_policy_v2_candidate_audit
@@ -7364,6 +7670,632 @@ class Database:
             )
             raise
 
+    # -- THR-229 checkpoint C3c: the four pre-final evaluation and single
+    # consumption stages.  Each public method owns exactly ONE BEGIN
+    # IMMEDIATE/commit/rollback and re-authenticates the complete prior evidence
+    # (result/body, immutable binding, pinned history, K/P, required a0+a1 and,
+    # from consumption onward, the stored V and a2) rather than trusting the
+    # already-persisted rows.  The pure outcome is derived once, in the
+    # evaluation transaction only; audit/consumption authenticate the canonical
+    # stored evidence and never re-derive it.
+
+    def _evaluate_authority_policy_v2_candidate_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str, now: str,
+    ) -> AuthorityPolicyV2StageOutcome:
+        from runtime.models import AuthorityPolicyV2ManagerSelfEvaluation
+        from runtime.orchestrator.authority_policy import (
+            authority_policy_v2_persisted_assessment_outcome,
+        )
+
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=manager_agent, manager_session_id=manager_session_id,
+            result_id=result_id, root_task_id=root_task_id,
+            team=AUTHORITY_POLICY_V2_TEAM,
+        )
+
+        def _refused(code: str, candidate_id: str | None = None) -> AuthorityPolicyV2StageOutcome:
+            return AuthorityPolicyV2StageOutcome(
+                status="refused", refusal_code=code, attempt_id=attempt_id,
+                candidate_id=candidate_id,
+            )
+
+        code, ctx = self._authenticate_v2_candidate_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+        )
+        if code is not None:
+            return _refused(code)
+        assert ctx is not None
+        attempt = ctx["attempt"]
+        binding = ctx["binding"]
+        release = ctx["release"]
+        candidate = ctx["candidate"]
+        if candidate.lifecycle_stage != AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_CREATED:
+            return _refused("already_evaluated", candidate.candidate_id)
+        if attempt.stage != AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED:
+            if attempt.stage in (
+                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED,
+                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
+                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED,
+                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED,
+            ):
+                return _refused("already_evaluated", candidate.candidate_id)
+            return _refused("claim_audit_missing", candidate.candidate_id)
+        if not self._authenticate_v2_candidate_audit_uncommitted(
+            candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
+        ):
+            return _refused("claim_audit_missing", candidate.candidate_id)
+
+        try:
+            parsed = json.loads(ctx["result_row"]["decision_json"])
+        except Exception:
+            return _refused("identity_mismatch", candidate.candidate_id)
+        carrier = parsed.get("_manager_self_evaluation") if isinstance(parsed, dict) else None
+        if not isinstance(carrier, dict):
+            return _refused("identity_mismatch", candidate.candidate_id)
+
+        what_json: str | None = None
+        not_json: str | None = None
+        if "_error_code" not in carrier:
+            try:
+                assessment = AuthorityPolicyV2ManagerSelfEvaluation.model_validate(carrier)
+            except Exception:
+                return _refused("identity_mismatch", candidate.candidate_id)
+            if (
+                assessment.root_task_id != root_task_id
+                or assessment.manager_session_id != manager_session_id
+                or assessment.release_id != attempt.release_id
+                or assessment.policy_digest != release.policy_digest
+                or assessment.policy_version != release.version
+                or assessment.activation_id != attempt.activation_id
+                or assessment.activation_epoch != attempt.activation_epoch
+                or assessment.contract_id != attempt.contract_id
+                or assessment.contract_version != attempt.contract_version
+                or assessment.contract_digest != attempt.contract_digest
+                or assessment.provider_id != binding.provider_id
+                or assessment.executor_kind != binding.executor_kind
+                or assessment.model_id != binding.model_id
+            ):
+                return _refused("identity_mismatch", candidate.candidate_id)
+            what_json = authority_policy_v2_canonical_json_bytes(
+                carrier["what_to_escalate"]
+            ).decode("utf-8")
+            not_json = authority_policy_v2_canonical_json_bytes(
+                carrier["what_not_to_escalate"]
+            ).decode("utf-8")
+
+        # The pure accepted precedence is invoked exactly once, here.
+        outcome, diagnostic = authority_policy_v2_persisted_assessment_outcome(carrier)
+        evaluation = AuthorityPolicyV2Evaluation(
+            evaluation_id=candidate.candidate_id,
+            candidate_id=candidate.candidate_id,
+            claim_key=candidate.claim_key,
+            team=attempt.team,
+            root_task_id=root_task_id,
+            manager_agent=manager_agent,
+            manager_session_id=manager_session_id,
+            attempt_id=attempt.attempt_id,
+            result_id=result_id,
+            binding_id=attempt.binding_id,
+            release_id=attempt.release_id,
+            activation_id=attempt.activation_id,
+            activation_epoch=attempt.activation_epoch,
+            selector_id=attempt.selector_id,
+            policy_version=release.version,
+            policy_digest=release.policy_digest,
+            contract_digest=attempt.contract_digest,
+            provider_id=binding.provider_id,
+            executor_kind=binding.executor_kind,
+            model_id=binding.model_id,
+            outcome=outcome.value,
+            assessment_digest=attempt.assessment_digest,
+            diagnostic_code=diagnostic,
+            what_to_escalate_json=what_json,
+            what_not_to_escalate_json=not_json,
+        )
+        evaluation_snapshot = evaluation.model_dump(mode="json")
+        self._conn.execute(
+            """INSERT INTO authority_policy_v2_evaluations
+               (evaluation_id, candidate_id, claim_key, team, root_task_id,
+                manager_agent, manager_session_id, attempt_id, result_id,
+                binding_id, release_id, activation_id, activation_epoch,
+                selector_id, policy_version, policy_digest, contract_digest,
+                provider_id, executor_kind, model_id, outcome, assessment_digest,
+                diagnostic_code, what_to_escalate_json, what_not_to_escalate_json,
+                canonical_payload_json, created_at)
+               VALUES (:evaluation_id,:candidate_id,:claim_key,:team,:root_task_id,
+                       :manager_agent,:manager_session_id,:attempt_id,:result_id,
+                       :binding_id,:release_id,:activation_id,:activation_epoch,
+                       :selector_id,:policy_version,:policy_digest,:contract_digest,
+                       :provider_id,:executor_kind,:model_id,:outcome,
+                       :assessment_digest,:diagnostic_code,:what_to_escalate_json,
+                       :what_not_to_escalate_json,:canonical_payload_json,
+                       :created_at)""",
+            {
+                **evaluation_snapshot,
+                "canonical_payload_json": authority_policy_v2_canonical_json_bytes(
+                    evaluation_snapshot
+                ).decode("utf-8"),
+            },
+        )
+        self._advance_v2_candidate_lifecycle_uncommitted(
+            candidate, AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_EVALUATED,
+        )
+        self._advance_v2_attempt_stage_uncommitted(
+            attempt, AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED,
+        )
+        return AuthorityPolicyV2StageOutcome(
+            status="evaluated", attempt_id=attempt.attempt_id,
+            candidate_id=candidate.candidate_id, claim_key=candidate.claim_key,
+            stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED,
+        )
+
+    @_synchronized
+    def evaluate_authority_policy_v2_candidate(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str,
+    ) -> AuthorityPolicyV2StageOutcome:
+        """C3c first transaction: persist one V, advance K/J to ``evaluated``.
+
+        Derives the clause-free outcome exactly once from the persisted
+        sanitized assessment; a missing/null/malformed/mismatched diagnostic
+        carrier is retained honestly with the fail-closed ``invalid`` outcome.
+        The task and recovery receipt are unchanged, and no envelope,
+        notification or dispatch is created.
+        """
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=manager_agent, manager_session_id=manager_session_id,
+            result_id=result_id, root_task_id=root_task_id,
+            team=AUTHORITY_POLICY_V2_TEAM,
+        )
+        if self._conn.in_transaction:
+            return self._refuse_v2_stage(
+                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                code="transaction_owned",
+                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED, poison=False,
+            )
+        now = _now().isoformat()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            outcome = self._evaluate_authority_policy_v2_candidate_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                manager_session_id=manager_session_id, result_id=result_id,
+                origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+                now=now,
+            )
+            if outcome.status == "refused":
+                self._conn.rollback()
+                return self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code=outcome.refusal_code or "evaluation_failed",
+                    candidate_id=outcome.candidate_id,
+                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+                    origin_boot_id=origin_boot_id,
+                    poison=False if outcome.refusal_code in {
+                        "already_evaluated", "already_consumed",
+                    } else None,
+                )
+            self._conn.commit()
+            return outcome
+        except Exception:
+            self._conn.rollback()
+            self._refuse_v2_stage(
+                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                code="evaluation_failed",
+                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+                origin_boot_id=origin_boot_id,
+            )
+            raise
+
+    def _audit_evaluation_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str, now: str,
+    ) -> AuthorityPolicyV2StageOutcome:
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=manager_agent, manager_session_id=manager_session_id,
+            result_id=result_id, root_task_id=root_task_id,
+            team=AUTHORITY_POLICY_V2_TEAM,
+        )
+
+        def _refused(code: str, candidate_id: str | None = None) -> AuthorityPolicyV2StageOutcome:
+            return AuthorityPolicyV2StageOutcome(
+                status="refused", refusal_code=code, attempt_id=attempt_id,
+                candidate_id=candidate_id,
+            )
+
+        code, ctx = self._authenticate_v2_candidate_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+        )
+        if code is not None:
+            return _refused(code)
+        assert ctx is not None
+        attempt = ctx["attempt"]
+        binding = ctx["binding"]
+        release = ctx["release"]
+        candidate = ctx["candidate"]
+        if attempt.stage in (
+            AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
+            AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED,
+            AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED,
+        ):
+            return _refused("already_audited", candidate.candidate_id)
+        if attempt.stage != AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED:
+            return _refused("evaluation_missing", candidate.candidate_id)
+        if candidate.lifecycle_stage != AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_EVALUATED:
+            return _refused("identity_mismatch", candidate.candidate_id)
+        if not self._authenticate_v2_candidate_audit_uncommitted(
+            candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
+        ):
+            return _refused("claim_audit_missing", candidate.candidate_id)
+        code, _ = self._authenticate_v2_evaluation_evidence_uncommitted(
+            candidate=candidate, attempt=attempt, binding=binding, release=release,
+        )
+        if code is not None:
+            return _refused(code, candidate.candidate_id)
+        existing = self._conn.execute(
+            """SELECT 1 FROM authority_policy_v2_candidate_audit
+               WHERE candidate_id=? AND event=?""",
+            (candidate.candidate_id, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_EVALUATED),
+        ).fetchone()
+        if existing is not None:
+            return _refused("already_audited", candidate.candidate_id)
+        self._insert_v2_candidate_audit_uncommitted(
+            candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_EVALUATED,
+            owner_attempt_id=owner_attempt_id, origin_boot_id=origin_boot_id, now=now,
+        )
+        self.insert_audit_log_uncommitted(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            {
+                "stage": AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
+                "attempt_id": attempt.attempt_id,
+                "candidate_id": candidate.candidate_id,
+                "result_id": result_id,
+                "binding_id": attempt.binding_id,
+                "contract_id": attempt.contract_id,
+                "contract_version": attempt.contract_version,
+                "contract_digest": attempt.contract_digest,
+                "release_id": attempt.release_id,
+                "activation_id": attempt.activation_id,
+                "activation_epoch": attempt.activation_epoch,
+                "selector_id": attempt.selector_id,
+                "assessment_digest": attempt.assessment_digest,
+                "owner_attempt_id": owner_attempt_id,
+                "origin_boot_id": origin_boot_id,
+                "finalization_state": "unfinalized",
+            },
+        )
+        self._advance_v2_attempt_stage_uncommitted(
+            attempt, AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
+        )
+        return AuthorityPolicyV2StageOutcome(
+            status="evaluation_audited", attempt_id=attempt.attempt_id,
+            candidate_id=candidate.candidate_id, claim_key=candidate.claim_key,
+            stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
+        )
+
+    @_synchronized
+    def audit_authority_policy_v2_candidate_evaluation(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str,
+    ) -> AuthorityPolicyV2StageOutcome:
+        """C3c second transaction: append a2 plus the audited stage.
+
+        Re-authenticates the complete prior evidence INCLUDING the stored V and
+        a0+a1, then appends exactly one candidate ``evaluated`` event plus the
+        ``evaluation_audited`` result-stage evidence and advances J.  It never
+        re-derives the outcome to authenticate V.  A failure preserves V and the
+        evaluated K.
+        """
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=manager_agent, manager_session_id=manager_session_id,
+            result_id=result_id, root_task_id=root_task_id,
+            team=AUTHORITY_POLICY_V2_TEAM,
+        )
+        if self._conn.in_transaction:
+            return self._refuse_v2_stage(
+                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                code="transaction_owned",
+                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED, poison=False,
+            )
+        now = _now().isoformat()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            outcome = self._audit_evaluation_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                manager_session_id=manager_session_id, result_id=result_id,
+                origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+                now=now,
+            )
+            if outcome.status == "refused":
+                self._conn.rollback()
+                return self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code=outcome.refusal_code or "evaluation_audit_missing",
+                    candidate_id=outcome.candidate_id,
+                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED,
+                    origin_boot_id=origin_boot_id,
+                    poison=False if outcome.refusal_code in {
+                        "already_audited", "already_consumed",
+                    } else None,
+                )
+            self._conn.commit()
+            return outcome
+        except Exception:
+            self._conn.rollback()
+            self._refuse_v2_stage(
+                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                code="evaluation_audit_missing",
+                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED,
+                origin_boot_id=origin_boot_id,
+            )
+            raise
+
+    def _consume_authority_policy_v2_candidate_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str,
+    ) -> AuthorityPolicyV2StageOutcome:
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=manager_agent, manager_session_id=manager_session_id,
+            result_id=result_id, root_task_id=root_task_id,
+            team=AUTHORITY_POLICY_V2_TEAM,
+        )
+
+        def _refused(code: str, candidate_id: str | None = None) -> AuthorityPolicyV2StageOutcome:
+            return AuthorityPolicyV2StageOutcome(
+                status="refused", refusal_code=code, attempt_id=attempt_id,
+                candidate_id=candidate_id,
+            )
+
+        code, ctx = self._authenticate_v2_candidate_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+        )
+        if code is not None:
+            return _refused(code)
+        assert ctx is not None
+        attempt = ctx["attempt"]
+        binding = ctx["binding"]
+        release = ctx["release"]
+        candidate = ctx["candidate"]
+        if (
+            candidate.lifecycle_stage == AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_CONSUMED
+            or attempt.stage == AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED
+        ):
+            return _refused("already_consumed", candidate.candidate_id)
+        if attempt.stage != AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED:
+            return _refused("evaluation_audit_missing", candidate.candidate_id)
+        if candidate.lifecycle_stage != AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_EVALUATED:
+            return _refused("identity_mismatch", candidate.candidate_id)
+        if not self._authenticate_v2_candidate_audit_uncommitted(
+            candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
+        ):
+            return _refused("claim_audit_missing", candidate.candidate_id)
+        if not self._authenticate_v2_candidate_audit_uncommitted(
+            candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_EVALUATED,
+        ):
+            return _refused("evaluation_audit_missing", candidate.candidate_id)
+        code, _ = self._authenticate_v2_evaluation_evidence_uncommitted(
+            candidate=candidate, attempt=attempt, binding=binding, release=release,
+        )
+        if code is not None:
+            return _refused(code, candidate.candidate_id)
+        self._advance_v2_candidate_lifecycle_uncommitted(
+            candidate, AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_CONSUMED,
+        )
+        self._advance_v2_attempt_stage_uncommitted(
+            attempt, AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED,
+        )
+        return AuthorityPolicyV2StageOutcome(
+            status="consumed", attempt_id=attempt.attempt_id,
+            candidate_id=candidate.candidate_id, claim_key=candidate.claim_key,
+            stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED,
+        )
+
+    @_synchronized
+    def consume_authority_policy_v2_candidate(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str,
+    ) -> AuthorityPolicyV2StageOutcome:
+        """C3c third transaction: CAS K/J to ``consumed`` exactly once.
+
+        Re-authenticates the complete prior evidence and a0+a1+a2, requires the
+        evaluated candidate and J ``evaluation_audited`` and consumes the
+        persisted V with NO second model call and NO repeated pure derivation.
+        It mints no authority and does not change the task.
+        """
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=manager_agent, manager_session_id=manager_session_id,
+            result_id=result_id, root_task_id=root_task_id,
+            team=AUTHORITY_POLICY_V2_TEAM,
+        )
+        if self._conn.in_transaction:
+            return self._refuse_v2_stage(
+                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                code="transaction_owned",
+                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED, poison=False,
+            )
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            outcome = self._consume_authority_policy_v2_candidate_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                manager_session_id=manager_session_id, result_id=result_id,
+                origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+            )
+            if outcome.status == "refused":
+                self._conn.rollback()
+                return self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code=outcome.refusal_code or "consume_failed",
+                    candidate_id=outcome.candidate_id,
+                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
+                    origin_boot_id=origin_boot_id,
+                    poison=False if outcome.refusal_code in {
+                        "already_consumed",
+                    } else None,
+                )
+            self._conn.commit()
+            return outcome
+        except Exception:
+            self._conn.rollback()
+            self._refuse_v2_stage(
+                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                code="consume_failed",
+                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
+                origin_boot_id=origin_boot_id,
+            )
+            raise
+
+    def _audit_consumption_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str, now: str,
+    ) -> AuthorityPolicyV2StageOutcome:
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=manager_agent, manager_session_id=manager_session_id,
+            result_id=result_id, root_task_id=root_task_id,
+            team=AUTHORITY_POLICY_V2_TEAM,
+        )
+
+        def _refused(code: str, candidate_id: str | None = None) -> AuthorityPolicyV2StageOutcome:
+            return AuthorityPolicyV2StageOutcome(
+                status="refused", refusal_code=code, attempt_id=attempt_id,
+                candidate_id=candidate_id,
+            )
+
+        code, ctx = self._authenticate_v2_candidate_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+        )
+        if code is not None:
+            return _refused(code)
+        assert ctx is not None
+        attempt = ctx["attempt"]
+        binding = ctx["binding"]
+        release = ctx["release"]
+        candidate = ctx["candidate"]
+        if attempt.stage == AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED:
+            return _refused("already_audited", candidate.candidate_id)
+        if attempt.stage != AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED:
+            return _refused("consume_failed", candidate.candidate_id)
+        if candidate.lifecycle_stage != AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_CONSUMED:
+            return _refused("identity_mismatch", candidate.candidate_id)
+        if not self._authenticate_v2_candidate_audit_uncommitted(
+            candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
+        ):
+            return _refused("claim_audit_missing", candidate.candidate_id)
+        if not self._authenticate_v2_candidate_audit_uncommitted(
+            candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_EVALUATED,
+        ):
+            return _refused("evaluation_audit_missing", candidate.candidate_id)
+        code, _ = self._authenticate_v2_evaluation_evidence_uncommitted(
+            candidate=candidate, attempt=attempt, binding=binding, release=release,
+        )
+        if code is not None:
+            return _refused(code, candidate.candidate_id)
+        existing = self._conn.execute(
+            """SELECT 1 FROM authority_policy_v2_candidate_audit
+               WHERE candidate_id=? AND event=?""",
+            (candidate.candidate_id, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CONSUMED),
+        ).fetchone()
+        if existing is not None:
+            return _refused("already_audited", candidate.candidate_id)
+        self._insert_v2_candidate_audit_uncommitted(
+            candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CONSUMED,
+            owner_attempt_id=owner_attempt_id, origin_boot_id=origin_boot_id, now=now,
+        )
+        self.insert_audit_log_uncommitted(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            {
+                "stage": AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED,
+                "attempt_id": attempt.attempt_id,
+                "candidate_id": candidate.candidate_id,
+                "result_id": result_id,
+                "binding_id": attempt.binding_id,
+                "contract_id": attempt.contract_id,
+                "contract_version": attempt.contract_version,
+                "contract_digest": attempt.contract_digest,
+                "release_id": attempt.release_id,
+                "activation_id": attempt.activation_id,
+                "activation_epoch": attempt.activation_epoch,
+                "selector_id": attempt.selector_id,
+                "assessment_digest": attempt.assessment_digest,
+                "owner_attempt_id": owner_attempt_id,
+                "origin_boot_id": origin_boot_id,
+                "finalization_state": "unfinalized",
+            },
+        )
+        self._advance_v2_attempt_stage_uncommitted(
+            attempt, AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED,
+        )
+        return AuthorityPolicyV2StageOutcome(
+            status="consumed_audited", attempt_id=attempt.attempt_id,
+            candidate_id=candidate.candidate_id, claim_key=candidate.claim_key,
+            stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED,
+        )
+
+    @_synchronized
+    def audit_authority_policy_v2_candidate_consumption(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str,
+    ) -> AuthorityPolicyV2StageOutcome:
+        """C3c fourth transaction: append a3 and advance J to consumed_audited.
+
+        Re-authenticates the consumed K/P/V and a0+a1+a2, appends exactly one
+        candidate ``consumed`` event plus the ``consumed_audited`` result-stage
+        evidence and advances J in one transaction.  A failure preserves the
+        earlier consumed K and V, leaves a3 absent and J consumed; the shipping
+        hook remains fail-closed until the later finalization/refusal/recovery
+        unit.
+        """
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=manager_agent, manager_session_id=manager_session_id,
+            result_id=result_id, root_task_id=root_task_id,
+            team=AUTHORITY_POLICY_V2_TEAM,
+        )
+        if self._conn.in_transaction:
+            return self._refuse_v2_stage(
+                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                code="transaction_owned",
+                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED, poison=False,
+            )
+        now = _now().isoformat()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            outcome = self._audit_consumption_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                manager_session_id=manager_session_id, result_id=result_id,
+                origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+                now=now,
+            )
+            if outcome.status == "refused":
+                self._conn.rollback()
+                return self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code=outcome.refusal_code or "consume_failed",
+                    candidate_id=outcome.candidate_id,
+                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED,
+                    origin_boot_id=origin_boot_id,
+                    poison=False if outcome.refusal_code in {
+                        "already_audited", "already_consumed",
+                    } else None,
+                )
+            self._conn.commit()
+            return outcome
+        except Exception:
+            self._conn.rollback()
+            self._refuse_v2_stage(
+                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                code="consume_failed",
+                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED,
+                origin_boot_id=origin_boot_id,
+            )
+            raise
+
     @_synchronized
     def get_authority_policy_v2_candidate(
         self, candidate_id: str,
@@ -7431,6 +8363,58 @@ class Database:
             (candidate_id, event),
         ).fetchone()
         return None if row is None else dict(row)
+
+    # -- THR-229 checkpoint C3c: authenticated V reads.  They authenticate the
+    # canonical stored column/preimage evidence only; they never re-derive the
+    # outcome and never authorize a stage advance.
+
+    @_synchronized
+    def get_authority_policy_v2_evaluation(
+        self, candidate_id: str,
+    ) -> AuthorityPolicyV2Evaluation | None:
+        row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_evaluations WHERE candidate_id=?",
+            (candidate_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return self._authority_policy_v2_evaluation_from_row(row)
+        except ValueError:
+            return None
+
+    @_synchronized
+    def get_authority_policy_v2_evaluation_for_result(
+        self, result_id: int,
+    ) -> AuthorityPolicyV2Evaluation | None:
+        row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_evaluations WHERE result_id=?",
+            (result_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return self._authority_policy_v2_evaluation_from_row(row)
+        except ValueError:
+            return None
+
+    @_synchronized
+    def list_authority_policy_v2_evaluations(
+        self, *, root_task_id: str, manager_agent: str,
+    ) -> list[AuthorityPolicyV2Evaluation]:
+        rows = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_evaluations
+               WHERE root_task_id=? AND manager_agent=?
+               ORDER BY created_at, evaluation_id""",
+            (root_task_id, manager_agent),
+        ).fetchall()
+        evaluations = []
+        for row in rows:
+            try:
+                evaluations.append(self._authority_policy_v2_evaluation_from_row(row))
+            except ValueError:
+                continue
+        return evaluations
 
 
     @_synchronized

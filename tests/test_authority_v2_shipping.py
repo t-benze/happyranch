@@ -905,6 +905,56 @@ def _drive_c3b_claim(fixture: _ShippingFixture) -> tuple[str, str]:
         for a in _admission_counts(fixture, root_id)[2]
     ] == ["admitted", "claim_audited"]
 
+    # C3c: the four callable pre-final stage methods against the same genuine
+    # persisted transport evidence, still while the external launch is held.
+    # This proves the stages consume real result/assessment/binding evidence; it
+    # does NOT prove shipping-hook continuation or an actual Pending/enqueue
+    # (those remain later finalization/refusal/recovery work).
+    stage_kwargs = dict(
+        root_task_id=root_id, manager_agent=MANAGER, manager_session_id=session_id,
+        result_id=row_id, origin_boot_id=attempt.origin_boot_id,
+        owner_attempt_id=attempt.owner_attempt_id,
+    )
+    evaluated = db.evaluate_authority_policy_v2_candidate(**stage_kwargs)
+    assert evaluated.status == "evaluated", evaluated
+    evaluation = db.get_authority_policy_v2_evaluation(candidate.candidate_id)
+    assert evaluation is not None
+    assert evaluation.evaluation_id == candidate.candidate_id
+    assert evaluation.outcome == "continue_applies"
+    assert evaluation.diagnostic_code is None
+    assert evaluation.assessment_digest == attempt.assessment_digest
+    assert db.get_authority_policy_v2_candidate(candidate.candidate_id).lifecycle_stage == "evaluated"
+    assert db.get_authority_policy_v2_attempt_for_result(row_id).stage == "evaluated"
+
+    evaluation_audited = db.audit_authority_policy_v2_candidate_evaluation(**stage_kwargs)
+    assert evaluation_audited.status == "evaluation_audited", evaluation_audited
+    assert db.get_authority_policy_v2_attempt_for_result(row_id).stage == "evaluation_audited"
+
+    consumed = db.consume_authority_policy_v2_candidate(**stage_kwargs)
+    assert consumed.status == "consumed", consumed
+    assert db.get_authority_policy_v2_candidate(candidate.candidate_id).lifecycle_stage == "consumed"
+    assert db.get_authority_policy_v2_attempt_for_result(row_id).stage == "consumed"
+
+    consumed_audited = db.audit_authority_policy_v2_candidate_consumption(**stage_kwargs)
+    assert consumed_audited.status == "consumed_audited", consumed_audited
+    assert db.get_authority_policy_v2_attempt_for_result(row_id).stage == "consumed_audited"
+    assert db.get_authority_policy_v2_evaluation(candidate.candidate_id) == evaluation
+    assert [
+        a["event"] for a in db.list_authority_policy_v2_candidate_audits(
+            candidate.candidate_id
+        )
+    ] == ["claimed", "evaluated", "consumed"]
+    assert [
+        a["payload"]["stage"]
+        for a in _admission_counts(fixture, root_id)[2]
+    ] == [
+        "admitted", "claim_audited", "evaluation_audited", "consumed_audited",
+    ]
+    # Exactly one evaluation, one result, one attempt and no envelope.
+    assert len(db.list_authority_policy_v2_evaluations(
+        root_task_id=root_id, manager_agent=MANAGER,
+    )) == 1
+
     retry2 = fixture.run_cli(payload)
     assert retry2.returncode == 0, retry2.stderr
     assert fixture.last_http()["status"] == 200

@@ -45,7 +45,11 @@ import json
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from runtime.models import AuthorityPolicyV2Assessment
+from runtime.models import (
+    AUTHORITY_POLICY_V2_ASSESSMENT_OUTCOMES,
+    AUTHORITY_POLICY_V2_EVALUATION_DIAGNOSTIC_CODES,
+    AuthorityPolicyV2Assessment,
+)
 
 
 # These v2 values are deliberately advisory until a later, persisted v2
@@ -96,6 +100,47 @@ def derive_authority_policy_v2_assessment_outcome(
     ):
         return AuthorityPolicyV2AssessmentOutcome.CONTINUE_APPLIES
     return AuthorityPolicyV2AssessmentOutcome.NEITHER_APPLY
+
+
+if (
+    {item.value for item in AuthorityPolicyV2AssessmentOutcome}
+    != set(AUTHORITY_POLICY_V2_ASSESSMENT_OUTCOMES)
+):  # pragma: no cover - import-time contract guard
+    raise RuntimeError("v2 assessment outcome vocabulary diverged from models")
+
+
+def authority_policy_v2_persisted_assessment_outcome(
+    carrier: object,
+) -> tuple[AuthorityPolicyV2AssessmentOutcome, str | None]:
+    """Derive the accepted outcome ONCE from a persisted sanitized carrier.
+
+    Returns ``(outcome, diagnostic_code)``.  A valid sanitized
+    ``AuthorityPolicyV2ManagerSelfEvaluation`` snapshot yields its derived
+    outcome and ``None``.  The existing invalid-assessment diagnostic carrier
+    yields the fail-closed ``INVALID`` outcome together with its honest closed
+    error code; it never invents a valid assessment.  The pure precedence
+    helper above is invoked exactly once on every call, and identity
+    authentication of the carrier remains the caller's responsibility.
+    """
+    diagnostic: str | None = None
+    escalate_field: object = None
+    continue_field: object = None
+    if isinstance(carrier, dict) and "_error_code" in carrier:
+        raw_code = carrier.get("_error_code")
+        diagnostic = (
+            raw_code
+            if raw_code in AUTHORITY_POLICY_V2_EVALUATION_DIAGNOSTIC_CODES
+            else "malformed_output"
+        )
+    elif isinstance(carrier, dict):
+        escalate_field = carrier.get("what_to_escalate")
+        continue_field = carrier.get("what_not_to_escalate")
+    else:
+        diagnostic = "malformed_output"
+    outcome = derive_authority_policy_v2_assessment_outcome(
+        escalate_field, continue_field,
+    )
+    return outcome, diagnostic
 
 
 # Closed vocabulary of policy clause actions. The hook executes EXACTLY the

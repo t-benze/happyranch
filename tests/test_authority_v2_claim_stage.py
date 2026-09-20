@@ -154,16 +154,20 @@ def test_claim_then_audit_creates_candidate_pin_and_stages(tmp_path):
     assert after_claim["candidates"] == before["candidates"] + 1
     assert after_claim["pins"] == before["pins"] + 1
     assert after_claim["candidate_audit"] == before["candidate_audit"]
-    # No evaluation/envelope/notification/dispatch/queue allocation exists in
-    # this checkpoint (their tables are later stages and are not created here).
+    # C3c added the approved evaluations (V) table on this same unmerged PR, but
+    # the claim stage writes no evaluation row: V stays empty and no
+    # envelope/notification/dispatch table exists in this checkpoint.
     created_tables = {
         row[0] for row in store._db._conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )
     }
+    assert "authority_policy_v2_evaluations" in created_tables
+    assert store._db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_evaluations"
+    ).fetchone()[0] == 0
     assert not any(
-        table.startswith("authority_policy_v2_evaluation")
-        or table == "authority_policy_v2_continue_envelopes"
+        table == "authority_policy_v2_continue_envelopes"
         or table == "authority_policy_v2_recovery_notifications"
         for table in created_tables
     )

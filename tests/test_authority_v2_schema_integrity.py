@@ -41,6 +41,7 @@ _NO_INVENTION_TABLES = (
     "authority_policy_v2_candidates",
     "authority_policy_v2_pins",
     "authority_policy_v2_candidate_audit",
+    "authority_policy_v2_evaluations",
     "escalation_notifications",
     "tasks",
 )

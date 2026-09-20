@@ -928,18 +928,27 @@ class AuthorityPolicyV2SessionBinding(BaseModel):
 
 
 # THR-229 checkpoint C2: result-keyed immutable attempt journal.  The attempt
-# is created by the callback admission transaction.  THR-229 checkpoint C3b
-# completes the staged, unmerged definition admitted -> claimed ->
-# claim_audited; later evaluate/consume/finalize transitions remain subsequent
-# C work.  The extension is additive to this PR's own new table (the released
+# is created by the callback admission transaction.  THR-229 checkpoints C3b
+# and C3c complete the staged, unmerged definition admitted -> claimed ->
+# claim_audited -> evaluated -> evaluation_audited -> consumed ->
+# consumed_audited; later finalize/final/spend transitions remain subsequent C
+# work.  The extension is additive to this PR's own new table (the released
 # schema has no v2 attempt stage); the identity preimage is unchanged.
 AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED = "admitted"
 AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED = "claimed"
 AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED = "claim_audited"
+AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED = "evaluated"
+AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED = "evaluation_audited"
+AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED = "consumed"
+AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED = "consumed_audited"
 AUTHORITY_POLICY_V2_ATTEMPT_STAGES = frozenset({
     AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
     AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
     AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED,
 })
 # The only allowed stage transitions for this checkpoint.  Every writer checks
 # the exact expected prior stage before advancing; no skipped/replayed/resumed
@@ -949,25 +958,74 @@ AUTHORITY_POLICY_V2_ATTEMPT_STAGE_TRANSITIONS = {
         AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
     AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED:
         AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED:
+        AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED:
+        AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED:
+        AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED:
+        AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED,
 }
 AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_STATES = frozenset({
     "unfinalized", "continued", "refused", "owner_lost",
 })
 AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION = "authority_policy_v2_result_stage"
 
-# THR-229 checkpoint C3b: the closed candidate-audit event vocabulary.  This
-# checkpoint writes exactly the claim-stage event; later evaluation/consume/
+# THR-229 checkpoint C3b/C3c: the closed candidate-audit event vocabulary.
+# This checkpoint writes the claim/evaluate/consume stage events; later
 # final/spend stages extend this set additively under their own checkpoint.
 AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED = "claimed"
+AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_EVALUATED = "evaluated"
+AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CONSUMED = "consumed"
 AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENTS = frozenset({
     AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
+    AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_EVALUATED,
+    AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CONSUMED,
+})
+
+# THR-229 checkpoint C3c: the forward-only candidate (K) lifecycle.  Claim
+# creates K ``created``; the evaluation transaction advances it to
+# ``evaluated``; the consumption transaction advances ``evaluated`` ->
+# ``consumed``.  No stage may skip, repeat, or move backwards, and identity or
+# frozen evidence is never mutable.
+AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_CREATED = "created"
+AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_EVALUATED = "evaluated"
+AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_CONSUMED = "consumed"
+AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_STAGES = frozenset({
+    AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_CREATED,
+    AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_EVALUATED,
+    AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_CONSUMED,
+})
+AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_TRANSITIONS = {
+    AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_CREATED:
+        AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_EVALUATED,
+    AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_EVALUATED:
+        AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_CONSUMED,
+}
+
+# Closed diagnostic codes recorded on the persisted evaluation when the
+# sanitized manager assessment was absent/null/malformed or failed its bound
+# identity authentication.  These are honest evidence codes, never a valid
+# assessment invented from a diagnostic carrier.
+AUTHORITY_POLICY_V2_EVALUATION_DIAGNOSTIC_CODES = frozenset({
+    "missing_assessment", "null_assessment", "malformed_output", "binding_mismatch",
+})
+
+# The closed clause-free outcome vocabulary persisted on V.  This mirrors
+# ``AuthorityPolicyV2AssessmentOutcome`` in
+# ``runtime/orchestrator/authority_policy.py`` (asserted equal there) without a
+# circular import.
+AUTHORITY_POLICY_V2_ASSESSMENT_OUTCOMES = frozenset({
+    "escalate_applies", "continue_applies", "neither_apply", "uncertain", "invalid",
 })
 
 # Bounded, machine-readable stage outcome.  ``refused`` carries exactly one
 # closed refusal code; this checkpoint only returns the disposition for the
 # later refusal-housekeeping consumer and never mutates task/attempt state.
 AUTHORITY_POLICY_V2_STAGE_OUTCOME_STATUSES = frozenset({
-    "claimed", "claim_audited", "refused",
+    "claimed", "claim_audited", "evaluated", "evaluation_audited",
+    "consumed", "consumed_audited", "refused",
 })
 AUTHORITY_POLICY_V2_STAGE_REFUSAL_CODES = frozenset({
     "cancelled", "owner_lost", "identity_mismatch", "claim_failed",
@@ -978,6 +1036,10 @@ AUTHORITY_POLICY_V2_STAGE_REFUSAL_CODES = frozenset({
     # C3b correction: the frozen claim-time permission-surface evidence no
     # longer authenticates (or is missing/unreadable) at the second boundary.
     "evidence_drift",
+    # C3c: the four pre-final evaluation/consumption stage refusals.  Each is a
+    # bounded prior-stage/duplicate classification; none is authority.
+    "already_evaluated", "already_consumed", "evaluation_missing",
+    "evaluation_audit_missing", "evaluation_failed", "consume_failed",
 })
 
 
@@ -1195,6 +1257,11 @@ class AuthorityPolicyV2Candidate(BaseModel):
     schema_inventory_digest: StrictStr = ""
     schema_object_count: StrictInt = 0
     permission_surface_digest: StrictStr = ""
+    # C3c: the forward-only candidate lifecycle.  Claim creates ``created``;
+    # the evaluation transaction advances it to ``evaluated`` and consumption to
+    # ``consumed``.  Only this field (and the canonical payload that mirrors it)
+    # is ever mutable; identity and frozen evidence are not.
+    lifecycle_stage: StrictStr = AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_CREATED
     created_at: datetime = Field(default_factory=_now)
 
     @field_validator(
@@ -1265,6 +1332,13 @@ class AuthorityPolicyV2Candidate(BaseModel):
     @classmethod
     def _v2_candidate_identity_scalars(cls, value: str, info) -> str:
         return _validate_authority_policy_v2_text(value, info.field_name, 128)
+
+    @field_validator("lifecycle_stage")
+    @classmethod
+    def _v2_candidate_lifecycle_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_STAGES:
+            raise ValueError("candidate lifecycle_stage is not a closed value")
+        return value
 
     def preimage(self) -> dict[str, object]:
         return authority_policy_v2_candidate_claim_preimage(
@@ -1402,6 +1476,150 @@ class AuthorityPolicyV2Pin(BaseModel):
             raise ValueError("pin identity must equal the candidate claim identity")
         if self.release_id != f"APV2-{self.policy_digest}":
             raise ValueError("release_id must contain policy_digest")
+        return self
+
+
+class AuthorityPolicyV2Evaluation(BaseModel):
+    """Immutable persisted v2 evaluation (V); identity equals the candidate ID.
+
+    The evaluation stores the derived clause-free outcome ONCE and its bounded
+    authenticated assessment/diagnostic evidence.  It is written by the
+    evaluation transaction and is never recomputed by the audit, consumption or
+    consumed-audit stages: those stages authenticate the canonical stored
+    evidence and its joins instead.
+    """
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    evaluation_id: StrictStr
+    candidate_id: StrictStr
+    claim_key: StrictStr
+    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    root_task_id: StrictStr
+    manager_agent: StrictStr
+    manager_session_id: StrictStr
+    attempt_id: StrictStr
+    result_id: StrictInt = Field(ge=1, le=9223372036854775807)
+    binding_id: StrictStr
+    release_id: StrictStr
+    activation_id: StrictStr
+    activation_epoch: StrictInt = Field(ge=1, le=2147483647)
+    selector_id: StrictStr
+    policy_version: StrictInt = Field(ge=1, le=2147483647)
+    policy_digest: StrictStr
+    contract_digest: StrictStr
+    provider_id: StrictStr
+    executor_kind: StrictStr
+    model_id: StrictStr
+    outcome: StrictStr
+    assessment_digest: StrictStr
+    diagnostic_code: StrictStr | None = None
+    what_to_escalate_json: StrictStr | None = None
+    what_not_to_escalate_json: StrictStr | None = None
+    created_at: datetime = Field(default_factory=_now)
+
+    @field_validator("claim_key", "policy_digest", "contract_digest", "assessment_digest")
+    @classmethod
+    def _v2_evaluation_digests_are_lower_hex(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_digest(value, info.field_name)
+
+    @field_validator("evaluation_id", "candidate_id")
+    @classmethod
+    def _v2_evaluation_candidate_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2C-"):
+            raise ValueError("evaluation id must start with APV2C-")
+        _validate_authority_policy_v2_digest(value[len("APV2C-"):], "evaluation_id")
+        return value
+
+    @field_validator("attempt_id")
+    @classmethod
+    def _v2_evaluation_attempt_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2R-"):
+            raise ValueError("attempt_id must start with APV2R-")
+        _validate_authority_policy_v2_digest(value[len("APV2R-"):], "attempt_id")
+        return value
+
+    @field_validator("binding_id")
+    @classmethod
+    def _v2_evaluation_binding_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2B-"):
+            raise ValueError("binding_id must start with APV2B-")
+        _validate_authority_policy_v2_digest(value[len("APV2B-"):], "binding_id")
+        return value
+
+    @field_validator("release_id")
+    @classmethod
+    def _v2_evaluation_release_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2-"):
+            raise ValueError("release_id must start with APV2-")
+        _validate_authority_policy_v2_digest(value[len("APV2-"):], "release_id")
+        return value
+
+    @field_validator("activation_id")
+    @classmethod
+    def _v2_evaluation_activation_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2A-"):
+            raise ValueError("activation_id must start with APV2A-")
+        _validate_authority_policy_v2_digest(value[len("APV2A-"):], "activation_id")
+        return value
+
+    @field_validator("selector_id")
+    @classmethod
+    def _v2_evaluation_selector_ref(cls, value: str) -> str:
+        return _validate_authority_policy_v2_selector_ref(value, "selector_id")
+
+    @field_validator(
+        "manager_agent", "manager_session_id", "model_id", "provider_id",
+        "root_task_id",
+    )
+    @classmethod
+    def _v2_evaluation_identity_scalars(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_text(value, info.field_name, 128)
+
+    @field_validator("outcome")
+    @classmethod
+    def _v2_evaluation_outcome_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_ASSESSMENT_OUTCOMES:
+            raise ValueError("evaluation outcome is not a closed value")
+        return value
+
+    @field_validator("diagnostic_code")
+    @classmethod
+    def _v2_evaluation_diagnostic_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_EVALUATION_DIAGNOSTIC_CODES:
+            raise ValueError("evaluation diagnostic code is not a closed value")
+        return value
+
+    @field_validator("what_to_escalate_json", "what_not_to_escalate_json")
+    @classmethod
+    def _v2_evaluation_assessment_bytes_are_canonical(
+        cls, value: str | None, info,
+    ) -> str | None:
+        if value is None:
+            return None
+        try:
+            parsed = AuthorityPolicyV2Assessment.model_validate_json(value)
+        except Exception as exc:
+            raise ValueError("evaluation assessment evidence is not a valid assessment") from exc
+        if authority_policy_v2_canonical_json_bytes(
+            parsed.model_dump(mode="json")
+        ).decode("utf-8") != value:
+            raise ValueError("evaluation assessment evidence is not canonical")
+        return value
+
+    @model_validator(mode="after")
+    def _v2_evaluation_identity_matches(self) -> AuthorityPolicyV2Evaluation:
+        if self.evaluation_id != self.candidate_id:
+            raise ValueError("evaluation identity must equal the candidate identity")
+        if self.candidate_id != f"APV2C-{self.claim_key}":
+            raise ValueError("evaluation candidate_id must match the claim_key")
+        if self.release_id != f"APV2-{self.policy_digest}":
+            raise ValueError("release_id must contain policy_digest")
+        if (self.what_to_escalate_json is None) != (self.what_not_to_escalate_json is None):
+            raise ValueError("both assessment evidence values must be present or absent")
+        if self.what_to_escalate_json is None and self.diagnostic_code is None:
+            raise ValueError("an evaluation without assessment evidence requires a diagnostic")
+        if self.what_to_escalate_json is not None and self.diagnostic_code is not None:
+            raise ValueError("a valid evaluation carries no invalid-assessment diagnostic")
         return self
 
 
