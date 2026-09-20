@@ -630,6 +630,18 @@ func (p *hr8466ProbeLog) lastDuration() (time.Duration, sidecarObservation, bool
 	return p.durations[last], p.results[last], true
 }
 
+// resultAt returns the recorded duration and result of the observation at the
+// given zero-based position, so a test can reason about the pre-READY health
+// query independently of later admission re-observations.
+func (p *hr8466ProbeLog) resultAt(index int) (time.Duration, sidecarObservation, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if index < 0 || index >= len(p.durations) {
+		return 0, sidecarUnknown, false
+	}
+	return p.durations[index], p.results[index], true
+}
+
 func (p *hr8466ProbeLog) count() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1649,4 +1661,492 @@ func TestConsumerAdmissionTimeoutAndDetachedContext(t *testing.T) {
 		}
 		assertHR8466NoFixtureLeak(t, f)
 	})
+}
+
+// ---------------------------------------------------------------------------
+// seq264 terminal-readiness latch and absolute startup-deadline cases.
+//
+// The supervisor latches a terminal readiness decision independently of
+// permission to signal or reap the child: expiry, failure, cancellation or a
+// stop decision permanently ends READY/WATCHDOG even while sidecar admission
+// stays unknown and the child therefore cannot be cleaned up.
+// ---------------------------------------------------------------------------
+
+// assertHR8466NoReadyWatchdog holds a bounded window in which the terminal
+// latch must keep the notification counts frozen at the given values.
+func assertHR8466NoReadyWatchdog(t *testing.T, h *hr8466Supervisor, ready, watchdog int, window time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
+		if got := h.count("READY=1"); got != ready {
+			t.Fatalf("READY count=%d want %d; calls=%v", got, ready, h.calls())
+		}
+		if got := h.count("WATCHDOG=1"); got != watchdog {
+			t.Fatalf("WATCHDOG count=%d want %d; calls=%v", got, watchdog, h.calls())
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// assertHR8466TermAfterAbsence requires any product child TERM to follow a
+// completed confirmed-absence observation; readiness is never permission to
+// clean up the child.
+func assertHR8466TermAfterAbsence(t *testing.T, events []string) {
+	t.Helper()
+	term := firstHR8466Index(events, "term")
+	if term < 0 {
+		return
+	}
+	absent := firstHR8466Index(events, "show-done:absent")
+	if absent < 0 || absent > term {
+		t.Fatalf("product child TERM without a preceding completed absence observation: events=%v", events)
+	}
+}
+
+// assertHR8466HelpersReaped proves every recorded real query helper is gone.
+func assertHR8466HelpersReaped(t *testing.T, f *hr8466Fixture) {
+	t.Helper()
+	for _, line := range hr8466Events(f.entered) {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			t.Fatalf("empty entered pid receipt %q", line)
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil || pid <= 0 {
+			t.Fatalf("bad entered pid %q (err=%v)", line, err)
+		}
+		if err := syscall.Kill(pid, 0); err != syscall.ESRCH {
+			t.Fatalf("query helper pid %d not reaped: err=%v", pid, err)
+		}
+	}
+}
+
+// Case 1: an expired absolute startup deadline plus refused admission must not
+// let a later valid record with healthy sidecar data publish READY/WATCHDOG,
+// and terminal readiness must never become permission to clean up the child
+// while sidecar absence is unconfirmed.
+func TestConsumerExpiredStartupRefusedAdmissionRejectsLateReady(t *testing.T) {
+	t.Run("unknown-admission", func(t *testing.T) {
+		f := newHR8466Fixture(t)
+		f.setPlan("ready", "healthy")
+		f.setState("garbage")
+		h := startHR8466Supervisor(t, f, 250*time.Millisecond, 10*time.Second)
+		defer h.teardown()
+
+		f.waitChildWaiting(t, 0)
+		f.releaseChild(0)
+		f.waitChildEmitted(t, 0)
+		h.waitCount("STOPPING=1", 1, hr8466NormalBarrier)
+		// The expired-deadline admission observation completes as unknown.
+		h.waitProbes(2, hr8466NormalBarrier)
+		if got := h.count("READY=1"); got != 0 {
+			t.Fatalf("READY before the late record: calls=%v", h.calls())
+		}
+		if hr8466HasEvent(f.productEvents(), "term") {
+			t.Fatalf("child cleanup while admission was unknown: events=%v", f.productEvents())
+		}
+
+		// Late valid child record plus healthy sidecar data.
+		f.waitChildWaiting(t, 1)
+		f.setState("healthy")
+		f.releaseChild(1)
+		f.waitChildEmitted(t, 1)
+		assertHR8466NoReadyWatchdog(t, h, 0, 0, 300*time.Millisecond)
+		events := f.waitEvent(t, "show-done:absent", hr8466NormalBarrier)
+		assertHR8466TermAfterAbsence(t, events)
+		assertHR8466NoFixtureLeak(t, f)
+	})
+	t.Run("stop-failure", func(t *testing.T) {
+		f := newHR8466Fixture(t)
+		f.setPlan("ready", "healthy")
+		f.setState("unhealthy")
+		f.requireStopFailure()
+		h := startHR8466Supervisor(t, f, 250*time.Millisecond, 10*time.Second)
+		defer h.teardown()
+
+		f.waitChildWaiting(t, 0)
+		f.releaseChild(0)
+		f.waitChildEmitted(t, 0)
+		h.waitCount("STOPPING=1", 1, hr8466NormalBarrier)
+		f.waitEvent(t, "stop", hr8466NormalBarrier)
+		f.waitEvent(t, "stop-failed", hr8466NormalBarrier)
+		if got := h.count("READY=1"); got != 0 {
+			t.Fatalf("READY before the late record: calls=%v", h.calls())
+		}
+
+		f.waitChildWaiting(t, 1)
+		f.setState("healthy")
+		f.releaseChild(1)
+		f.waitChildEmitted(t, 1)
+		assertHR8466NoReadyWatchdog(t, h, 0, 0, 300*time.Millisecond)
+		deadline := time.Now().Add(hr8466NormalBarrier)
+		for hr8466EventCount(f.productEvents(), "stop-failed") < 2 {
+			if time.Now().After(deadline) {
+				t.Fatalf("late record did not trigger a completed refused admission: events=%v", f.productEvents())
+			}
+			time.Sleep(time.Millisecond)
+		}
+		if hr8466HasEvent(f.productEvents(), "term") {
+			t.Fatalf("child cleanup while admission was refused: events=%v", f.productEvents())
+		}
+		assertHR8466NoFixtureLeak(t, f)
+	})
+}
+
+// Case 2: after a real READY and WATCHDOG, a failed composite health with
+// refused admission latches STOPPING permanently.  A later valid record with
+// healthy sidecar data must never resume READY/WATCHDOG, and the still-present
+// sidecar must keep withholding child cleanup until absence is confirmed.
+func TestConsumerStoppingTerminalPreventsLateReadyAndWatchdog(t *testing.T) {
+	f := newHR8466Fixture(t)
+	f.setPlan("ready", "healthy", "healthy", "healthy")
+	h := startHR8466Supervisor(t, f, 10*time.Second, 10*time.Second)
+	defer h.teardown()
+
+	f.waitChildWaiting(t, 0)
+	f.setState("healthy")
+	f.releaseChild(0)
+	f.waitChildEmitted(t, 0)
+	h.waitCount("READY=1", 1, hr8466NormalBarrier)
+
+	f.waitChildWaiting(t, 1)
+	f.setState("healthy")
+	f.releaseChild(1)
+	f.waitChildEmitted(t, 1)
+	h.waitCount("WATCHDOG=1", 1, hr8466NormalBarrier)
+
+	// Failed composite health with admission refusal (unknown observation).
+	f.waitChildWaiting(t, 2)
+	f.setState("garbage")
+	f.releaseChild(2)
+	f.waitChildEmitted(t, 2)
+	h.waitCount("STOPPING=1", 1, hr8466NormalBarrier)
+	f.waitShowComplete(t, "garbage", 2, hr8466NormalBarrier)
+	if hr8466HasEvent(f.productEvents(), "term") {
+		t.Fatalf("child cleanup while admission was unknown: events=%v", f.productEvents())
+	}
+	before := h.count("WATCHDOG=1")
+
+	// Late valid record with healthy sidecar data must not revive readiness.
+	f.waitChildWaiting(t, 3)
+	f.setState("healthy")
+	f.releaseChild(3)
+	f.waitChildEmitted(t, 3)
+	assertHR8466NoReadyWatchdog(t, h, 1, before, 300*time.Millisecond)
+	events := f.waitEvent(t, "show-done:absent", hr8466NormalBarrier)
+	if got := h.count("READY=1"); got != 1 {
+		t.Fatalf("READY resumed after STOPPING: count=%d calls=%v", got, h.calls())
+	}
+	if got := h.count("WATCHDOG=1"); got != before {
+		t.Fatalf("WATCHDOG resumed after STOPPING: count=%d want=%d calls=%v", got, before, h.calls())
+	}
+	assertHR8466TermAfterAbsence(t, events)
+	if code := h.waitDone(hr8466AdmissionBound); code != 0 {
+		t.Fatalf("supervisor exit code=%d, want 0", code)
+	}
+	assertHR8466NoFixtureLeak(t, f)
+}
+
+// Case 3: a pre-READY health observation that enters before the original
+// absolute startup deadline but completes after it must never publish READY,
+// must not refresh the deadline, and must stay bounded; the query helper must
+// be reaped.  Both pre-READY query paths (initial ready record and later
+// healthy record) are exercised.
+func TestConsumerHealthQuerySpanningStartupDeadlineCannotReady(t *testing.T) {
+	const crossingStartup = 1500 * time.Millisecond
+	const crossingEntryBound = time.Second
+	const boundedStartup = 600 * time.Millisecond
+
+	t.Run("ready-record-path", func(t *testing.T) {
+		f := newHR8466Fixture(t)
+		f.setPlan("ready")
+		f.setState("healthy")
+		start := time.Now()
+		h := startHR8466Supervisor(t, f, crossingStartup, 10*time.Second)
+		defer h.teardown()
+
+		h.armProbeGate()
+		f.waitChildWaiting(t, 0)
+		f.releaseChild(0)
+		f.waitChildEmitted(t, 0)
+		index := h.waitProbeGateEntered(hr8466NormalBarrier)
+		duration, result, ok := h.probe.resultAt(index - 1)
+		if !ok || result != sidecarPresentHealthy {
+			t.Fatalf("gated pre-READY observation result=%d ok=%v, want healthy", result, ok)
+		}
+		if elapsed := time.Since(start); elapsed >= crossingStartup || elapsed >= crossingEntryBound {
+			t.Fatalf("gated pre-READY observation entered after its deadline: %s", elapsed)
+		}
+		if duration > crossingEntryBound {
+			t.Fatalf("gated pre-READY observation duration=%s", duration)
+		}
+		// Release the healthy result only after the original deadline.
+		time.Sleep(time.Until(start.Add(crossingStartup)) + 50*time.Millisecond)
+		h.releaseProbeGate()
+		h.waitCount("STOPPING=1", 1, hr8466NormalBarrier)
+		assertHR8466NoReadyWatchdog(t, h, 0, 0, 250*time.Millisecond)
+		assertHR8466HelpersReaped(t, f)
+		assertHR8466NoFixtureLeak(t, f)
+	})
+
+	t.Run("healthy-record-path", func(t *testing.T) {
+		f := newHR8466Fixture(t)
+		f.setPlan("ready", "healthy")
+		f.setState("absent")
+		start := time.Now()
+		h := startHR8466Supervisor(t, f, crossingStartup, 10*time.Second)
+		defer h.teardown()
+
+		f.waitChildWaiting(t, 0)
+		f.releaseChild(0)
+		f.waitChildEmitted(t, 0)
+		h.waitProbes(1, hr8466NormalBarrier) // ready-record observation: absent, no READY
+
+		h.armProbeGate()
+		f.waitChildWaiting(t, 1)
+		f.setState("healthy")
+		f.releaseChild(1)
+		f.waitChildEmitted(t, 1)
+		index := h.waitProbeGateEntered(hr8466NormalBarrier)
+		duration, result, ok := h.probe.resultAt(index - 1)
+		if !ok || result != sidecarPresentHealthy {
+			t.Fatalf("gated pre-READY observation result=%d ok=%v, want healthy", result, ok)
+		}
+		if elapsed := time.Since(start); elapsed >= crossingStartup || elapsed >= crossingEntryBound {
+			t.Fatalf("gated pre-READY observation entered after its deadline: %s", elapsed)
+		}
+		if duration > crossingEntryBound {
+			t.Fatalf("gated pre-READY observation duration=%s", duration)
+		}
+		time.Sleep(time.Until(start.Add(crossingStartup)) + 50*time.Millisecond)
+		h.releaseProbeGate()
+		h.waitCount("STOPPING=1", 1, hr8466NormalBarrier)
+		assertHR8466NoReadyWatchdog(t, h, 0, 0, 250*time.Millisecond)
+		assertHR8466HelpersReaped(t, f)
+		assertHR8466NoFixtureLeak(t, f)
+	})
+
+	t.Run("real-query-deadline", func(t *testing.T) {
+		f := newHR8466Fixture(t)
+		f.setPlan("ready")
+		f.setState("delay")
+		h := startHR8466Supervisor(t, f, boundedStartup, 10*time.Second)
+		defer h.teardown()
+
+		f.waitChildWaiting(t, 0)
+		f.releaseChild(0)
+		f.waitChildEmitted(t, 0)
+		h.waitProbes(1, hr8466NormalBarrier)
+		duration, result, ok := h.probe.resultAt(0)
+		if !ok || result != sidecarUnknown {
+			t.Fatalf("startup-bounded query result=%d ok=%v, want unknown", result, ok)
+		}
+		if duration < boundedStartup-150*time.Millisecond || duration >= 900*time.Millisecond {
+			t.Fatalf("startup-bounded query duration=%s, want the original deadline within the default 1s query bound", duration)
+		}
+		entered := hr8466Events(f.entered)
+		if len(entered) == 0 {
+			t.Fatal("startup-bounded query helper never entered")
+		}
+		fields := strings.Fields(entered[0])
+		if len(fields) == 0 {
+			t.Fatalf("empty entered pid receipt %q", entered[0])
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil || pid <= 0 {
+			t.Fatalf("bad entered pid %q (err=%v)", entered[0], err)
+		}
+		if err := syscall.Kill(pid, 0); err != syscall.ESRCH {
+			t.Fatalf("startup-bounded query helper pid %d not reaped: err=%v", pid, err)
+		}
+		h.waitCount("STOPPING=1", 1, hr8466AdmissionBound)
+		assertHR8466NoReadyWatchdog(t, h, 0, 0, 200*time.Millisecond)
+		assertHR8466NoFixtureLeak(t, f)
+	})
+}
+
+// Case 4: explicit child failed/stopping and parent cancellation are terminal;
+// later good records cannot revive notifications.  Valid immediate/delayed
+// composite readiness within the budget and post-READY watchdog refresh are
+// preserved as successful controls.
+func TestConsumerTerminalChildStatesBlockLateNotifications(t *testing.T) {
+	for _, terminalState := range []string{"failed", "stopping"} {
+		terminalState := terminalState
+		t.Run("child-"+terminalState, func(t *testing.T) {
+			f := newHR8466Fixture(t)
+			f.setPlan("ready", "healthy", terminalState, "healthy", "healthy")
+			f.setState("healthy")
+			h := startHR8466Supervisor(t, f, 10*time.Second, 10*time.Second)
+			defer h.teardown()
+
+			f.waitChildWaiting(t, 0)
+			f.releaseChild(0)
+			f.waitChildEmitted(t, 0)
+			h.waitCount("READY=1", 1, hr8466NormalBarrier)
+			f.waitChildWaiting(t, 1)
+			f.setState("healthy")
+			f.releaseChild(1)
+			f.waitChildEmitted(t, 1)
+			h.waitCount("WATCHDOG=1", 1, hr8466NormalBarrier)
+
+			f.setState("garbage")
+			f.waitChildWaiting(t, 2)
+			f.releaseChild(2)
+			f.waitChildEmitted(t, 2)
+			h.waitCount("STOPPING=1", 1, hr8466NormalBarrier)
+			f.waitShowComplete(t, "garbage", 1, hr8466NormalBarrier)
+			if hr8466HasEvent(f.productEvents(), "term") {
+				t.Fatalf("terminal child state cleaned up while admission was unknown: events=%v", f.productEvents())
+			}
+			beforeReady := h.count("READY=1")
+			beforeWatchdog := h.count("WATCHDOG=1")
+
+			f.waitChildWaiting(t, 3)
+			f.releaseChild(3)
+			f.waitChildEmitted(t, 3)
+			f.waitShowComplete(t, "garbage", 2, hr8466NormalBarrier)
+			f.waitChildWaiting(t, 4)
+			f.releaseChild(4)
+			f.waitChildEmitted(t, 4)
+			f.waitShowComplete(t, "garbage", 3, hr8466NormalBarrier)
+
+			if got := h.count("READY=1"); got != beforeReady {
+				t.Fatalf("READY after child %s: count=%d want=%d calls=%v", terminalState, got, beforeReady, h.calls())
+			}
+			if got := h.count("WATCHDOG=1"); got != beforeWatchdog {
+				t.Fatalf("WATCHDOG after child %s: count=%d want=%d calls=%v", terminalState, got, beforeWatchdog, h.calls())
+			}
+			if hr8466HasEvent(f.productEvents(), "term") {
+				t.Fatalf("child cleanup while admission was unknown: events=%v", f.productEvents())
+			}
+			assertHR8466NoFixtureLeak(t, f)
+		})
+	}
+
+	t.Run("parent-cancel", func(t *testing.T) {
+		f := newHR8466Fixture(t)
+		f.setPlan("ready", "healthy", "healthy")
+		f.setState("healthy")
+		h := startHR8466Supervisor(t, f, 10*time.Second, 10*time.Second)
+		defer h.teardown()
+
+		f.waitChildWaiting(t, 0)
+		f.releaseChild(0)
+		f.waitChildEmitted(t, 0)
+		h.waitCount("READY=1", 1, hr8466NormalBarrier)
+		f.waitChildWaiting(t, 1)
+		f.setState("healthy")
+		f.releaseChild(1)
+		f.waitChildEmitted(t, 1)
+		h.waitCount("WATCHDOG=1", 1, hr8466NormalBarrier)
+
+		f.setState("garbage")
+		h.cancel()
+		h.waitCount("STOPPING=1", 1, hr8466NormalBarrier)
+		before := h.count("WATCHDOG=1")
+
+		f.waitChildWaiting(t, 2)
+		f.releaseChild(2)
+		f.waitChildEmitted(t, 2)
+		f.waitShowComplete(t, "garbage", 2, hr8466NormalBarrier)
+		assertHR8466NoReadyWatchdog(t, h, 1, before, 250*time.Millisecond)
+		if hr8466HasEvent(f.productEvents(), "term") {
+			t.Fatalf("child cleanup while admission was unknown: events=%v", f.productEvents())
+		}
+		assertHR8466NoFixtureLeak(t, f)
+	})
+
+	t.Run("delayed-composite-readiness-and-watchdog-control", func(t *testing.T) {
+		f := newHR8466Fixture(t)
+		f.setPlan("ready", "healthy", "healthy")
+		f.setState("unhealthy")
+		h := startHR8466Supervisor(t, f, hr8466NormalBarrier, hr8466NormalBarrier)
+		defer h.teardown()
+
+		f.waitChildWaiting(t, 0)
+		f.releaseChild(0)
+		f.waitChildEmitted(t, 0)
+		h.waitProbes(1, hr8466NormalBarrier)
+		if got := h.count("READY=1"); got != 0 {
+			t.Fatalf("early READY with an unhealthy composite: calls=%v", h.calls())
+		}
+
+		f.waitChildWaiting(t, 1)
+		f.setState("healthy")
+		f.releaseChild(1)
+		f.waitChildEmitted(t, 1)
+		h.waitCount("READY=1", 1, hr8466NormalBarrier)
+
+		f.waitChildWaiting(t, 2)
+		f.setState("healthy")
+		f.releaseChild(2)
+		f.waitChildEmitted(t, 2)
+		h.waitCount("WATCHDOG=1", 1, hr8466NormalBarrier)
+		if got := h.count("READY=1"); got != 1 {
+			t.Fatalf("READY count=%d want 1; calls=%v", got, h.calls())
+		}
+		assertHR8466NoFixtureLeak(t, f)
+	})
+}
+
+// Case 5: terminal readiness and child-cleanup permission are separately
+// asserted.  STOPPING latches readiness immediately while a still-present
+// sidecar withholds child cleanup; only a completed confirmed-absence
+// observation then permits the product TERM.  No admission retry policy is
+// introduced.
+func TestConsumerReadinessTerminalIndependentOfChildCleanupPermission(t *testing.T) {
+	f := newHR8466Fixture(t)
+	f.setPlan("ready", "failed")
+	f.setState("healthy")
+	f.holdPresent()
+	h := startHR8466Supervisor(t, f, 10*time.Second, 10*time.Second)
+	defer h.teardown()
+
+	f.waitChildWaiting(t, 0)
+	f.releaseChild(0)
+	f.waitChildEmitted(t, 0)
+	h.waitCount("READY=1", 1, hr8466NormalBarrier)
+
+	f.waitChildWaiting(t, 1)
+	f.releaseChild(1)
+	f.waitChildEmitted(t, 1)
+	// Readiness is terminal immediately even though the sidecar stays present.
+	h.waitCount("STOPPING=1", 1, hr8466NormalBarrier)
+	events := f.waitStop(t)
+	stopIndex := firstHR8466Index(events, "stop")
+	deadline := time.Now().Add(hr8466NormalBarrier)
+	for {
+		events = f.productEvents()
+		completed := 0
+		for i := stopIndex + 1; i < len(events); i++ {
+			if events[i] == "show-done:healthy" {
+				completed++
+			}
+		}
+		if completed >= 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no completed still-present re-observation after stop: events=%v", events)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if hr8466HasEvent(events, "term") {
+		t.Fatalf("child cleanup before confirmed sidecar absence: events=%v", events)
+	}
+	if got := h.count("READY=1"); got != 1 {
+		t.Fatalf("READY count=%d want 1; calls=%v", got, h.calls())
+	}
+	if got := h.count("WATCHDOG=1"); got != 0 {
+		t.Fatalf("WATCHDOG count=%d want 0; calls=%v", got, h.calls())
+	}
+
+	// Confirmed absence now permits exactly the ordered child TERM.
+	f.setState("absent")
+	events = f.waitTerm(t)
+	assertHR8466TermAfterAbsence(t, events)
+	if code := h.waitDone(hr8466AdmissionBound); code != 0 {
+		t.Fatalf("admission exit code=%d, want 0", code)
+	}
+	assertHR8466NoFixtureLeak(t, f)
 }

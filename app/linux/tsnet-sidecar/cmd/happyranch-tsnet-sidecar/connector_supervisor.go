@@ -242,26 +242,65 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 	go scanChildHealth(reader, records, protocolErr)
 	waited := make(chan error, 1)
 	go func() { waited <- cmd.Wait() }()
-	// The initial deadline is intentionally absolute.  Waiting or partial
-	// progress must never buy another startup window.
+	// The initial deadline is intentionally absolute.  It is anchored once and
+	// never refreshed by waiting, partial progress, or a health observation
+	// that only completes after it.
+	startupDeadlineAt := time.Now().Add(startupDeadline)
 	timer := time.NewTimer(startupDeadline)
 	defer timer.Stop()
 	var sequence uint64
 	childReady := false
 	ready := false
+	// terminal latches the readiness decision independently of permission to
+	// signal or reap the child.  Expiry, failure, cancellation or any stop
+	// decision permanently ends READY/WATCHDOG publication, including while
+	// the sidecar is still present or its admission state stays unknown and
+	// the child therefore cannot yet be cleaned up.
+	terminal := false
+	// stopping records confirmed sidecar-absence admission and the connector
+	// child TERM.  It gates child cleanup only and never revives readiness.
 	stopping := false
 	stopChild := func() {
-		if !stopping {
+		if !terminal {
+			terminal = true
 			_ = notifier.Notify("STOPPING=1", "STATUS=connector stopping")
-			// The sidecar owns external admission.  Signal its MainPID and wait
-			// for systemd to observe it inactive before beginning connector
-			// child cleanup.  Both services retain their own MainPID ownership.
-			if !removeSidecarAdmission(context.Background(), sidecarHealthy, stopSidecar) {
-				return
-			}
-			stopping = true
-			_ = cmd.Process.Signal(syscall.SIGTERM)
 		}
+		if stopping {
+			return
+		}
+		// The sidecar owns external admission.  Signal its MainPID and wait
+		// for systemd to observe it inactive before beginning connector
+		// child cleanup.  Both services retain their own MainPID ownership.
+		if !removeSidecarAdmission(context.Background(), sidecarHealthy, stopSidecar) {
+			return
+		}
+		stopping = true
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+	}
+	// observePreReady runs one pre-READY health observation bounded by the
+	// original absolute startup deadline.  A healthy result that completes
+	// after that deadline is never accepted, so a late query completion can
+	// never refresh or extend the startup window.
+	observePreReady := func() (sidecarObservation, bool) {
+		if !ready && !time.Now().Before(startupDeadlineAt) {
+			return sidecarUnknown, false
+		}
+		observationCtx, cancelObservation := context.WithDeadline(ctx, startupDeadlineAt)
+		defer cancelObservation()
+		observation := sidecarHealthy(observationCtx)
+		if !ready && !time.Now().Before(startupDeadlineAt) {
+			return observation, false
+		}
+		return observation, true
+	}
+	resetStale := func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(staleAfter)
 	}
 	for {
 		select {
@@ -289,57 +328,54 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 					stopChild()
 				}
 			case "ready":
-				if childReady || ready || stopping {
+				if terminal || childReady || ready || stopping {
 					stopChild()
 				} else {
 					childReady = true
-					if sidecarHealthy(ctx) == sidecarPresentHealthy {
+					observation, withinStartup := observePreReady()
+					if !withinStartup {
+						stopChild()
+						continue
+					}
+					if observation == sidecarPresentHealthy {
 						if notifier.Notify("READY=1", "STATUS=composite healthy") != nil {
 							stopChild()
 							continue
 						}
 						ready = true
-						if !timer.Stop() {
-							select {
-							case <-timer.C:
-							default:
-							}
-						}
-						timer.Reset(staleAfter)
+						resetStale()
 					}
 				}
 			case "healthy":
-				if !childReady || stopping {
+				if terminal || !childReady || stopping {
 					stopChild()
-				} else if !ready && sidecarHealthy(ctx) != sidecarPresentHealthy {
-					// Connector-first startup: retain the original absolute
-					// deadline while the independently starting sidecar finishes.
-					continue
 				} else if !ready {
+					// Pre-READY composite gate.  Whichever service started
+					// first, the observation is bounded by and re-checked
+					// against the original absolute startup deadline.
+					observation, withinStartup := observePreReady()
+					if !withinStartup {
+						stopChild()
+						continue
+					}
+					if observation != sidecarPresentHealthy {
+						// Connector-first startup: retain the original absolute
+						// deadline while the independently starting sidecar
+						// finishes.
+						continue
+					}
 					if notifier.Notify("READY=1", "STATUS=composite healthy") != nil {
 						stopChild()
 						continue
 					}
 					ready = true
-					if !timer.Stop() {
-						select {
-						case <-timer.C:
-						default:
-						}
-					}
-					timer.Reset(staleAfter)
+					resetStale()
 				} else if sidecarHealthy(ctx) != sidecarPresentHealthy {
 					stopChild()
 				} else if notifier.Notify("WATCHDOG=1") != nil {
 					stopChild()
 				} else {
-					if !timer.Stop() {
-						select {
-						case <-timer.C:
-						default:
-						}
-					}
-					timer.Reset(staleAfter)
+					resetStale()
 				}
 			case "stopping", "failed":
 				stopChild()
