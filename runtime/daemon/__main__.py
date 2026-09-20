@@ -50,6 +50,25 @@ from runtime.runtime import RuntimeDir
 logger = logging.getLogger("happyranch.daemon")
 
 
+def _sweep_enqueue(
+    queue: TaskQueue, slug: str, task_id: str,
+    orchestrator: Orchestrator | None,
+) -> None:
+    """Startup-sweep enqueue through the common DB-aware boundary (C3d4a).
+
+    When the orchestrator/DB is available the target root's durable v2
+    generation is resolved at production time, so a ``pending(G)`` dispatch is
+    published rather than emitted as an untagged fallback.  No orchestrator means
+    there is no durable classifier to consult and the unchanged ordinary enqueue
+    is preserved.
+    """
+    if orchestrator is None:
+        queue.enqueue(slug, task_id)
+        return
+    from runtime.orchestrator.authority import enqueue_task_generation_aware
+    enqueue_task_generation_aware(orchestrator, queue, slug, task_id)
+
+
 def _sweep_on_startup(
     db: Database, queue: TaskQueue, slug: str,
     orchestrator: Orchestrator | None = None,
@@ -333,7 +352,7 @@ def _sweep_on_startup(
                     queued_slug == slug and queued_task_id == task_id
                     for queued_slug, queued_task_id, _ in queue._queue._queue
                 ):
-                    queue.enqueue(slug, task_id)
+                    _sweep_enqueue(queue, slug, task_id, orchestrator)
 
         # Branch 3 — parked on jobs (blocked_on_job). Re-enqueue only when all
         # blocking jobs are terminal (jobs finished while the daemon was down);
@@ -355,11 +374,11 @@ def _sweep_on_startup(
                     queued_slug == slug and queued_task_id == task_id
                     for queued_slug, queued_task_id, _ in queue._queue._queue
                 ):
-                    queue.enqueue(slug, task_id)
+                    _sweep_enqueue(queue, slug, task_id, orchestrator)
 
         # Branch 4 — pending: re-enqueue (lost the original POST enqueue).
         elif t.status == TaskStatus.PENDING:
-            queue.enqueue(slug, task_id)
+            _sweep_enqueue(queue, slug, task_id, orchestrator)
 
         # Branch 5 — escalated: leave alone (founder owns the transition).
         # Reached only because get_nonterminal_task_ids now yields escalated.

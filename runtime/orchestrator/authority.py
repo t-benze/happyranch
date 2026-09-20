@@ -2625,9 +2625,12 @@ def run_authority_hook(
             return "escalate"
         # Re-enqueue the root for its next manager decision step. Best-effort:
         # the run_step claim CAS keeps at-most-once admission if a replay lands.
+        # THR-229 C3d4a: route through the common DB-aware entry so a root whose
+        # durable pointer is pending(G) publishes its generation instead of
+        # emitting an untagged fallback.
         queue = getattr(orch, "_queue", None)
         if queue is not None:
-            queue.put_nowait(orch._slug, task.id)
+            enqueue_task_generation_aware(orch, queue, orch._slug, task.id)
         return "continue_same_root"
 
     # ESCALATE (fail-closed default): the existing escalation path proceeds.
@@ -2640,7 +2643,9 @@ def run_authority_hook(
     return "escalate"
 
 
-def publish_authority_policy_v2_notifications(orch, queue, *, limit: int = 32) -> list[dict]:
+def publish_authority_policy_v2_notifications(
+    orch, queue, *, limit: int = 32, root_task_id: str | None = None,
+) -> list[dict]:
     """Real publication entry for pending v2 continuation generations.
 
     Independently discovers EVERY ``needed``/``publishing``/``published``
@@ -2672,6 +2677,13 @@ def publish_authority_policy_v2_notifications(orch, queue, *, limit: int = 32) -
         targets = db.list_authority_policy_v2_publication_targets()
     except Exception as exc:  # discovery is read-only best effort
         return [{"status": "discovery_failed", "error": type(exc).__name__}]
+    if root_task_id is not None:
+        # Common-entry single-target use: publication stays the SAME
+        # authenticated claim -> raw put -> exact ack sequence; only the
+        # discovery scope narrows.  A pending root with NO publishable
+        # notification yields an EMPTY receipt list, which the caller must
+        # treat as a refusal (never an ordinary fallback).
+        targets = [t for t in targets if t.root_task_id == root_task_id]
     for target in targets[: max(0, limit)]:
         claim = db.claim_authority_policy_v2_notification_publication(
             root_task_id=target.root_task_id,
@@ -2728,3 +2740,99 @@ def publish_authority_policy_v2_notifications(orch, queue, *, limit: int = 32) -
             "publication_attempt": claim.publication_attempt,
         })
     return receipts
+
+
+# Closed bounded outcomes of the common DB-aware enqueue entry (THR-229 C3d4a).
+ENQUEUE_DISPATCH_ORDINARY = "ordinary"
+ENQUEUE_DISPATCH_PUBLISHED = "published"
+ENQUEUE_DISPATCH_REFUSED = "refused"
+ENQUEUE_DISPATCH_NO_QUEUE = "no_queue"
+
+
+def enqueue_task_generation_aware(
+    orch, queue, slug: str, task_id: str, *, metadata: dict | None = None,
+) -> str:
+    """Common DB-aware task enqueue entry (THR-229 checkpoint C3d4a).
+
+    Resolves the TARGET root's durable v2 generation at PRODUCTION time -- the
+    target's OWN ``authority_policy_v2_root_dispatch`` pointer, never request
+    metadata and never a parent's token -- and routes accordingly:
+
+    * ``absent``   -> the unchanged ordinary enqueue (metadata preserved);
+    * ``pending``  -> the EXISTING authenticated notification publisher for this
+      exact root (real claim -> raw ``TaskQueue`` put OUTSIDE any transaction ->
+      exact acknowledgement).  A claim that did not win, a queue failure whose
+      audited failure obligation was recorded, or a pending root with no
+      publishable notification all REFUSE: no ordinary untagged fallback is ever
+      emitted for a pending v2 generation;
+    * ``admitted`` -> refuse (the generation was already reserved/launched; an
+      ordinary enqueue must not relaunch it);
+    * ``retired``  -> ordinary enqueue (a spent old generation must not
+      blanket-block legitimate later work);
+    * ``malformed``/``unreadable`` -> refuse (never ordinary permission).
+
+    The publisher transport stays DISTINCT from this entry (it calls
+    ``queue.put_nowait`` directly), so routing a pending root through the common
+    entry cannot recurse.  Publication may repeat; generation admission may not
+    (the DB claim fence remains the non-bypassable backstop).  Returns one of
+    the bounded ``ENQUEUE_DISPATCH_*`` status strings.
+    """
+    if queue is None:
+        return ENQUEUE_DISPATCH_NO_QUEUE
+    db = getattr(orch, "_db", None)
+    if db is None or not hasattr(
+        db, "classify_authority_policy_v2_root_dispatch_for_enqueue"
+    ):
+        # No durable classifier available: fall back to the unchanged ordinary
+        # enqueue (mock/legacy test seams).  Production always carries a real
+        # Database, where classification below governs.
+        _ordinary_enqueue(queue, slug, task_id, metadata)
+        return ENQUEUE_DISPATCH_ORDINARY
+    try:
+        classification = db.classify_authority_policy_v2_root_dispatch_for_enqueue(
+            task_id
+        )
+    except Exception:
+        logger.exception("enqueue %s: v2 dispatch classification failed", task_id)
+        return ENQUEUE_DISPATCH_REFUSED
+    kind = getattr(classification, "kind", None)
+    if kind == "pending":
+        # Route the EXACT pending generation through the authenticated publisher.
+        # The publisher performs the claim -> raw put -> ack itself; a refusal or
+        # an empty target set means NO queue call and NO ordinary fallback.
+        receipts = publish_authority_policy_v2_notifications(
+            orch, queue, root_task_id=task_id,
+        )
+        published = any(
+            isinstance(r, dict) and r.get("status") in ("published", "published_exact")
+            for r in receipts
+        )
+        return ENQUEUE_DISPATCH_PUBLISHED if published else ENQUEUE_DISPATCH_REFUSED
+    if kind in ("admitted", "malformed", "unreadable"):
+        logger.warning(
+            "enqueue %s: v2 dispatch %s refuses ordinary enqueue", task_id, kind,
+        )
+        return ENQUEUE_DISPATCH_REFUSED
+    # ``absent`` and ``retired`` keep the unchanged ordinary path; an unexpected
+    # kind can never become ordinary permission.
+    if kind != "absent" and kind != "retired":
+        return ENQUEUE_DISPATCH_REFUSED
+    _ordinary_enqueue(queue, slug, task_id, metadata)
+    return ENQUEUE_DISPATCH_ORDINARY
+
+
+def _ordinary_enqueue(queue, slug: str, task_id: str, metadata: dict | None) -> None:
+    """Raw ordinary enqueue preserving the legacy call shape exactly.
+
+    Real ``TaskQueue`` exposes both ``put_nowait`` and ``enqueue``; a few test
+    doubles expose only one.  Prefer ``put_nowait`` and fall back to ``enqueue``
+    so the converged producers keep working with both without changing the
+    ordinary tuple/metadata shape.
+    """
+    put = getattr(queue, "put_nowait", None)
+    if put is None:
+        put = getattr(queue, "enqueue")
+    if metadata is None:
+        put(slug, task_id)
+    else:
+        put(slug, task_id, metadata=metadata)

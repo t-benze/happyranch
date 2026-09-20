@@ -1091,6 +1091,44 @@ post-effect failed-ack interruption refusal, the preserved task/child effect, th
 no-repeat consumer/child/enqueue count and the exact read-only replay over both
 fresh and full historical-migrated venues.
 
+Checkpoint C3d4a (same unmerged draft PR) adds the common DB-aware TASK enqueue
+boundary and converges the direct producers onto it.
+`Database.classify_authority_policy_v2_root_dispatch_for_enqueue` is a narrow
+synchronized read that distinguishes a provably ABSENT root-dispatch pointer
+(unchanged ordinary enqueue) from a live `pending(G)` generation (route through
+the authenticated publisher), an `admitted` generation (never relaunched by an
+ordinary enqueue), a `retired` pointer (legitimate later work stays ordinary),
+and every malformed/present-corrupt or unreadable state (fail closed) — the
+existing `get_authority_policy_v2_root_dispatch` collapses absent and malformed
+into one `None`, which is never ordinary enqueue permission.
+`runtime.orchestrator.authority.enqueue_task_generation_aware(orch, queue, slug,
+task_id, *, metadata=None)` resolves the TARGET root's OWN durable generation at
+production time and either ordinary-enqueues (absent/retired, preserving trigger
+metadata such as `job_terminal`/`triggering_job_id`), publishes through the
+existing `publish_authority_policy_v2_notifications(..., root_task_id=...)` seam
+(real claim -> raw `TaskQueue.put_nowait` outside any transaction -> exact ack),
+or refuses with ZERO queue calls (admitted/malformed/unreadable, a pending root
+whose claim did not win, or a pending root with no publishable notification).
+Request metadata can never manufacture or replace G, and a parent's G is never
+copied onto a child/successor; a publication may repeat but generation admission
+may not (the DB claim fence stays the non-bypassable backstop).
+`runtime.daemon.runner.enqueue_task` is that boundary, and the direct producers
+converge through it: the `run_step` successor/self-correction/delegate/feedback/
+chain/parent-wake/job-unblock/fanout sites, the `authority` v1 ordinary
+continuation producer, the `tasks` route successor/continue sites and the
+`__main__` startup sweep ordinary/parked enqueues. The raw `TaskQueue.put_nowait`
+remains the transport (including the authenticated publisher's own call and the
+separate dream/schedule/wake queues, which are different domains), and the
+run-step/DB claim remains the non-bypassable backstop. `tests/test_task_enqueue_
+boundary.py` covers the classification and every boundary outcome against the
+real Database/publisher seams; `tests/test_authority_v2_shipping.py` adds the
+delegate+failed-acknowledgement branch over both fresh and full
+historical-migrated venues with actual enqueue/body-entry counters that must not
+increase across reopen/refusal/replay. The full startup/accepted-recovery
+attempt/receipt/refusal discovery, reaper integration and automatic authority-hook
+orchestration remain the NEXT unit; the hook stays fail-closed/DARK and the
+editable-pair editor/browser path remains unimplemented.
+
 ## Inline Delegation Chains
 
 A manager can declare a multi-leg workflow in one `delegate` decision using `NextStep.then` and optional per-leg `expect_verdict` gates. The orchestrator auto-advances to the next leg when a child terminates completed with a matching verdict. Since THR-211, auto-advance may also fire from a child whose completion report has durably landed while its task row still reads `in_progress` (the completion-status-lag window) — the recognition is session-safe and at-most-once, and the chain gate consumes the exact authenticated `(task_id, assigned_agent, current_session_id)` report so a newer unrelated row can never advance or clear the chain; see `tests/test_thr211_completion_status_lag.py` for the session-bound regression cases.

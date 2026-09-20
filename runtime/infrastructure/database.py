@@ -40,6 +40,7 @@ from runtime.models import (
     AuthorityPolicyV2DecisionAckOutcome,
     AuthorityPolicyV2DecisionClaimOutcome,
     AuthorityPolicyV2DecisionRefusalOutcome,
+    AuthorityPolicyV2EnqueueDispatchClassification,
     AuthorityPolicyV2Evaluation,
     AuthorityPolicyV2FinalizationOutcome,
     AuthorityPolicyV2GenerationClaimOutcome,
@@ -15312,6 +15313,59 @@ class Database:
             return self._authority_policy_v2_root_dispatch_from_row(row)
         except ValueError:
             return None
+
+    @_synchronized
+    def classify_authority_policy_v2_root_dispatch_for_enqueue(
+        self, root_task_id: str,
+    ) -> AuthorityPolicyV2EnqueueDispatchClassification:
+        """PRODUCTION-time classification of one root's durable dispatch pointer.
+
+        ``get_authority_policy_v2_root_dispatch`` collapses a genuinely absent
+        row and a present-but-malformed row into the same ``None``.  The common
+        DB-aware enqueue boundary must not turn that ambiguity into ordinary
+        enqueue permission, so this narrow read distinguishes them:
+
+        * ``absent``    -- no row: the unchanged ordinary enqueue path;
+        * ``pending``   -- live generation G; the target must be published
+          through the authenticated notification publisher, never an ordinary
+          untagged fallback;
+        * ``admitted``  -- G already reserved/launched; an ordinary enqueue must
+          not relaunch it;
+        * ``retired``   -- an old spent generation; legitimate later work stays
+          ordinary (retirement never blanket-blocks);
+        * ``malformed`` -- a present row whose canonical/preimage check fails;
+        * ``unreadable``-- the read itself raised.
+
+        Read-only evidence; no mutation, no new authority semantics.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT * FROM authority_policy_v2_root_dispatch WHERE root_task_id=?",
+                (root_task_id,),
+            ).fetchone()
+        except Exception:
+            return AuthorityPolicyV2EnqueueDispatchClassification(
+                kind="unreadable",
+            )
+        if row is None:
+            return AuthorityPolicyV2EnqueueDispatchClassification(kind="absent")
+        try:
+            dispatch = self._authority_policy_v2_root_dispatch_from_row(row)
+        except ValueError:
+            return AuthorityPolicyV2EnqueueDispatchClassification(
+                kind="malformed",
+            )
+        if dispatch.state == "pending":
+            return AuthorityPolicyV2EnqueueDispatchClassification(
+                kind="pending", generation_id=dispatch.generation_id,
+            )
+        if dispatch.state == "admitted":
+            return AuthorityPolicyV2EnqueueDispatchClassification(
+                kind="admitted", generation_id=dispatch.generation_id,
+            )
+        return AuthorityPolicyV2EnqueueDispatchClassification(
+            kind="retired", generation_id=dispatch.generation_id,
+        )
 
     @_synchronized
     def get_task_results(self, task_id: str) -> list[dict]:

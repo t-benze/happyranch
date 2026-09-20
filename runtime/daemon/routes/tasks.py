@@ -1105,7 +1105,7 @@ async def resolve_escalation_in_process(
         # Post-tail specifics: kill jobs and enqueue the successor.
         _kill_jobs_for_terminating_task(org.orchestrator, task_id)
         if state.queue is not None:
-            state.queue.put_nowait(org.slug, successor_id)
+            enqueue_task(state, org.slug, successor_id)
         return TaskStatus.SUPERSEDED.value
 
     # --- continue ---
@@ -1139,7 +1139,7 @@ async def resolve_escalation_in_process(
     # Re-enqueue self. The manager's next step sees the rationale via the
     # escalation-resolved prompt header.
     if state.queue is not None:
-        state.queue.put_nowait(org.slug, task_id)
+        enqueue_task(state, org.slug, task_id)
     return new_status.value
 
 

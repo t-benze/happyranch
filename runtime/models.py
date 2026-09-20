@@ -1118,6 +1118,16 @@ AUTHORITY_POLICY_V2_NOTIFICATION_STATES = frozenset({
 AUTHORITY_POLICY_V2_DISPATCH_STATES = frozenset({
     "pending", "admitted", "retired",
 })
+# THR-229 checkpoint C3d4a: the closed PRODUCTION-time classification of one
+# target root's durable root-dispatch pointer.  This is not launch authority:
+# it distinguishes a provably ABSENT pointer (ordinary enqueue unchanged) from
+# a live ``pending`` generation (route through the authenticated notification
+# publisher), an ``admitted`` generation (never relaunched by an ordinary
+# enqueue) and a ``retired`` pointer (legitimate later work stays ordinary),
+# plus every malformed/conflicting or unreadable state that must fail closed.
+AUTHORITY_POLICY_V2_ENQUEUE_DISPATCH_KINDS = frozenset({
+    "absent", "pending", "admitted", "retired", "malformed", "unreadable",
+})
 # THR-229 checkpoint C3d3c1: the RESULT-KEYED spend/decision receipt.  A
 # consumed continuation envelope (E) carrying a non-null ``spending_result_id``
 # IS the result-keyed spending receipt for that exact reserved-session result;
@@ -2392,6 +2402,42 @@ class AuthorityPolicyV2RootDispatch(BaseModel):
     @classmethod
     def _v2_dispatch_identity_scalars(cls, value: str, info) -> str:
         return _validate_authority_policy_v2_text(value, info.field_name, 128)
+
+
+class AuthorityPolicyV2EnqueueDispatchClassification(BaseModel):
+    """Read-only PRODUCTION-time classification of one root's dispatch pointer.
+
+    ``kind`` is closed; only a live ``pending``/``admitted``/``retired`` pointer
+    carries its generation token.  ``absent`` means the root durably has NO
+    v2 generation and keeps the unchanged ordinary enqueue path; ``malformed``
+    (present row that fails the canonical/preimage check) and ``unreadable``
+    (the read itself failed) are NOT absence and must fail closed.  This record
+    is evidence only and grants no launch authority.
+    """
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    kind: StrictStr
+    generation_id: StrictStr | None = None
+
+    @field_validator("kind")
+    @classmethod
+    def _v2_enqueue_dispatch_kind_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_ENQUEUE_DISPATCH_KINDS:
+            raise ValueError("enqueue dispatch kind is not a closed value")
+        return value
+
+    @model_validator(mode="after")
+    def _v2_enqueue_dispatch_shape(
+        self,
+    ) -> AuthorityPolicyV2EnqueueDispatchClassification:
+        if self.kind in ("pending", "admitted", "retired"):
+            if not isinstance(self.generation_id, str) or not self.generation_id:
+                raise ValueError("a live/retired dispatch classification carries G")
+        elif self.generation_id is not None:
+            raise ValueError(
+                "an absent/malformed/unreadable classification carries no G"
+            )
+        return self
 
 
 class AuthorityPolicyV2FinalizationOutcome(BaseModel):

@@ -55,6 +55,28 @@ def is_root(task: "TaskRecord") -> bool:
     return task.parent_task_id is None
 
 
+def _enqueue_task_generation_aware(
+    orch: "Orchestrator", task_id: str, *, metadata: dict | None = None,
+) -> None:
+    """Route a producer's enqueue through the common DB-aware boundary.
+
+    THR-229 checkpoint C3d4a: every direct run_step producer uses this instead
+    of a bare ``queue.put_nowait``.  The boundary resolves the TARGET root's own
+    durable v2 generation at production time (never request metadata, never a
+    parent's token): a ``pending(G)`` target is published through the
+    authenticated notification publisher, ``admitted``/malformed/unreadable
+    targets refuse, and ``absent``/``retired`` targets keep the unchanged
+    ordinary enqueue with trigger metadata preserved.
+    """
+    queue = getattr(orch, "_queue", None)
+    if queue is None:
+        return
+    from runtime.orchestrator.authority import enqueue_task_generation_aware
+    enqueue_task_generation_aware(
+        orch, queue, orch._slug, task_id, metadata=metadata,
+    )
+
+
 def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
     # metadata: optional resume context (trigger, triggering_job_id); read by the CAS-win audit hook in Task 11.
     db = orch._db
@@ -1401,8 +1423,7 @@ def _consume_completion_report_body(
             # consumer.  Never cancel/alter live work just to make it eligible.
             return
         try:
-            if orch._queue is not None:
-                orch._queue.put_nowait(orch._slug, successor_id)
+            _enqueue_task_generation_aware(orch, successor_id)
         except Exception:
             # The committed successor remains pending. Startup recovery
             # idempotently re-enqueues pending tasks; never reopen predecessor.
@@ -1525,8 +1546,7 @@ def _consume_completion_report_body(
                 task_id, next_count, {"action": "feedback", "reason": feedback},
             )
             db.update_task(task_id, status=TaskStatus.PENDING, block_kind=None)
-            if orch._queue is not None:
-                orch._queue.put_nowait(orch._slug, task_id)
+            _enqueue_task_generation_aware(orch, task_id)
             return
 
         for i, child in enumerate(decision.children):
@@ -1625,8 +1645,7 @@ def _consume_completion_report_body(
                 task_id, next_count, {"action": "feedback", "reason": feedback},
             )
             db.update_task(task_id, status=TaskStatus.PENDING, block_kind=None)
-            if orch._queue is not None:
-                orch._queue.put_nowait(orch._slug, task_id)
+            _enqueue_task_generation_aware(orch, task_id)
             return
 
         # THR-078 seq15: MANDATORY retry-link.  When this parent has FAILED
@@ -1778,8 +1797,7 @@ def _consume_completion_report_body(
             )
             return
         logger.debug("run_step %s: try_delegate SUCCEEDED, child=%s", task_id, child_id)
-        if orch._queue is not None:
-            orch._queue.put_nowait(orch._slug, child_id)
+        _enqueue_task_generation_aware(orch, child_id)
         return
 
     # ---- 8. Unknown action ----
@@ -2044,8 +2062,7 @@ def _feedback_and_reenqueue(
         task_id, next_count, {"action": "feedback", "reason": feedback},
     )
     db.update_task(task_id, status=TaskStatus.PENDING, block_kind=None)
-    if orch._queue is not None:
-        orch._queue.put_nowait(orch._slug, task_id)
+    _enqueue_task_generation_aware(orch, task_id)
 
 
 def _is_reviewer_omission_error(err: str) -> bool:
@@ -3180,8 +3197,7 @@ def _advance_chain_for_completed_child(
         triggering_verdict=report.verdict,
         chain_origin_step_audit_id=chain.step_audit_id,
     )
-    if orch._queue is not None:
-        orch._queue.put_nowait(orch._slug, next_child_id)
+    _enqueue_task_generation_aware(orch, next_child_id)
     return "advance"
 
 
@@ -3601,7 +3617,7 @@ def _enqueue_parent_if_waiting(
             queued_slug == orch._slug and queued_task_id == parent.id
             for queued_slug, queued_task_id, _ in queued
         ):
-            queue.put_nowait(orch._slug, parent.id)
+            _enqueue_task_generation_aware(orch, parent.id)
 
     # Chain-advance branch: if the parent has an active chain and the just-
     # terminated subtask completed cleanly, try to auto-advance to the next
@@ -3785,13 +3801,11 @@ def _maybe_resume_blocked_task(
         if db.get_job_status(jid) not in _TERMINAL:
             return False  # silent — common steady state
 
-    # All terminal — enqueue.
-    queue = getattr(orch, "_queue", None)
-    if queue is not None:
-        queue.enqueue(
-            orch._slug, task_id,
-            metadata={"trigger": trigger, "triggering_job_id": triggering_job_id},
-        )
+    # All terminal — enqueue (trigger metadata preserved through the boundary).
+    _enqueue_task_generation_aware(
+        orch, task_id,
+        metadata={"trigger": trigger, "triggering_job_id": triggering_job_id},
+    )
     return True
 
 
@@ -4524,14 +4538,12 @@ def _spawn_fanout_children(
         cid = children_ids[i]
         has_pipeline = i in pipeline_indices
         if not has_pipeline:
-            if orch._queue is not None:
-                orch._queue.put_nowait(orch._slug, cid)
+            _enqueue_task_generation_aware(orch, cid)
             continue
         # Find the carrier's first leg id from the pre-allocated data.
         for cc in (carrier_chains_data or []):
             if cc["child_index"] == i:
-                if orch._queue is not None:
-                    orch._queue.put_nowait(orch._slug, cc["first_leg_id"])
+                _enqueue_task_generation_aware(orch, cc["first_leg_id"])
 
 
 def _inject_fanout_join_context(

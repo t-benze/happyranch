@@ -2872,6 +2872,18 @@ def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="he
     if conn_wrapper is not None:
         db._conn = conn_wrapper
 
+    # Observe ACTUAL enqueue calls on the real queue (never a child-row count):
+    # installed immediately before the reserved invocation resumes so it counts
+    # only that invocation's real effects.
+    enqueue_calls: list[tuple] = []
+    real_put_nowait = fixture.state.queue.put_nowait
+
+    def _counting_put_nowait(slug, task_id, *, metadata=None):
+        enqueue_calls.append((slug, task_id, metadata))
+        return real_put_nowait(slug, task_id, metadata=metadata)
+
+    fixture.state.queue.put_nowait = _counting_put_nowait  # type: ignore[assignment]
+
     # Resume ONLY the reserved invocation: its REAL run_step common consumer
     # performs the existing spend -> claim -> real normal effect -> applied.
     # No explicit storage spend handoff.
@@ -2938,11 +2950,17 @@ def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="he
             assert stages.count("decision_applied") == 0
             if action == "done":
                 assert db.get_task(root_id).status is TaskStatus.COMPLETED
+                assert enqueue_calls == [], enqueue_calls
             else:
                 children = [dict(row) for row in db._conn.execute(
                     "SELECT * FROM tasks WHERE parent_task_id=?", (root_id,),
                 ).fetchall()]
                 assert len(children) == 1, children
+                # The delegate+ack_failure branch: the real normal effect
+                # enqueued the child EXACTLY once before the fault.
+                assert len(enqueue_calls) == 1, enqueue_calls
+                assert enqueue_calls[0][1] == children[0]["id"]
+            enqueues_before_reopen = len(enqueue_calls)
             # A reopen refuses exactly once with the same causal identity and
             # never re-runs the consumer or regresses the committed effect.  The
             # REAL refusal writer runs (the injected boundary only affects the
@@ -3011,6 +3029,9 @@ def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="he
                 )
             assert entries == []
             assert "\n".join(reopened._conn.iterdump()) == before_replay
+            # No repeated real enqueue (or body entry) across reopen/refusal/
+            # replay; the committed child/effect is preserved.
+            assert len(enqueue_calls) == enqueues_before_reopen, enqueue_calls
             reopened.close()
             return root_id
 
@@ -3142,6 +3163,25 @@ def test_shipping_real_common_consumer_ack_failure_then_reopen(
         fixture.stop()
 
 
+def test_shipping_real_common_consumer_delegate_ack_failure_then_reopen(
+    tmp_path, monkeypatch,
+):
+    """Delegate + failed acknowledgement, fresh venue, with reopen refusal.
+
+    The real spend/claim -> real delegate child + observed enqueue -> real
+    ack-audit fault -> ``claimed`` -> quiescence -> distinct Database over the
+    SAME persisted file -> real interruption refusal -> exact read-only replay,
+    with the committed child preserved and the actual enqueue/body-entry
+    counters unchanged across reopen/refusal/replay.
+    """
+    fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2)
+    fixture.start()
+    try:
+        _drive_c3d3c2_dispatch(fixture, action="delegate", mode="ack_failure")
+    finally:
+        fixture.stop()
+
+
 def test_shipping_real_common_consumer_claim_failure_zero_entry(
     tmp_path, monkeypatch,
 ):
@@ -3201,6 +3241,20 @@ def test_shipping_historically_migrated_common_consumer_ack_failure_then_reopen(
     fixture.start()
     try:
         _drive_c3d3c2_dispatch(fixture, action="done", mode="ack_failure")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_delegate_ack_failure_then_reopen(
+    tmp_path, monkeypatch,
+):
+    """Delegate + failed acknowledgement over the full historical-migrated DB."""
+    fixture = _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=True, queue_workers=2,
+    )
+    fixture.start()
+    try:
+        _drive_c3d3c2_dispatch(fixture, action="delegate", mode="ack_failure")
     finally:
         fixture.stop()
 
