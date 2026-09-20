@@ -1083,7 +1083,7 @@ AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES = frozenset({
 AUTHORITY_POLICY_V2_HOUSEKEEPING_PENDING_CODE = "authority_v2_housekeeping_pending"
 AUTHORITY_POLICY_V2_HOUSEKEEPING_PENDING_REASONS = frozenset({
     "transaction_owned", "identity_mismatch", "owner_lost", "evidence_drift",
-    "schema_drift",
+    "schema_drift", "receipt_missing",
 })
 AUTHORITY_POLICY_V2_HOUSEKEEPING_OUTCOME_CODES = (
     AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES

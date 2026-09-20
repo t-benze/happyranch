@@ -514,16 +514,23 @@ reopen or advance), and the candidate-audit closed event set gains `refused`.
 `BEGIN IMMEDIATE` transaction over exact J/R, the current task and the optional
 exact recovery receipt Q, refusing caller transaction nesting with
 `transaction_owned` BEFORE it would begin, roll back or invalidate the live
-owner. It authenticates only immutable OWNERSHIP evidence (attempt/result/binding
-identity and the greatest durable stage) and never the failed CONTINUATION
-evidence whose absence caused the refusal (a missing stage audit or a corrupted
-assessment is not required and is never reconstructed). For the still-current
-causal owner (`in_progress`, null `block_kind`, not cancelled) it writes the
-closed refusal result-stage event, a candidate `refused` event if K exists, the
-normal `escalation` audit and the bounded `completion_report` refusal audit, then
-CASes the task to `escalated` and J to `refused`; if Q is `callback_accepted` and
-exactly matches task/agent/recovery session/accepted result/session it is settled
-to `callback_consumed` in the SAME transaction. Ordinary callbacks keep Q absent.
+owner. It authenticates the immutable ATTRIBUTION (exact causal result
+row/root/agent/session and the immutable launch binding, plus the attempt and any
+candidate reference) FIRST, before any terminal success or receipt
+classification, and never the failed CONTINUATION evidence whose absence caused
+the refusal (a missing stage audit, a drifted assessment/decision or a frozen
+schema/permission drift is not required and is never reconstructed). For the
+still-current causal owner (`in_progress`, null `block_kind`, not cancelled) it
+writes the closed refusal result-stage event, a candidate `refused` event if K
+exists, the normal `escalation` audit and the bounded `completion_report` refusal
+audit, then CASes the task to `escalated` and J to `refused`; if Q is
+`callback_accepted` and exactly matches
+task/agent/recovery session/accepted result/session it is settled to
+`callback_consumed` in the SAME transaction, and an explicit recovery assertion
+with no actual matching Q fails closed (`receipt_missing`) instead of
+manufacturing recovery-shaped evidence. Ordinary callbacks keep Q absent and
+genuine ordinary absence stays ordinary by minting only ordinary completion
+evidence.
 A cancelled/terminal/replaced owner preserves the winning task row exactly and
 records the old attempt `owner_lost`/`cancellation` disposition and audits,
 settling only an exact obsolete matching Q. No successor/new root, envelope,
@@ -535,10 +542,33 @@ old-boot attempt, or a server-written durable failed-stage obligation may
 finalize; a same-boot attempt with no token (a second Database instance) cannot
 prove the winner is dead and returns bounded `housekeeping_pending`. Owned-stage
 failure paths record that durable obligation before poisoning the token, and no
-process-local liveness is reconstructed on reopen. Already-finalized attempts
-return a read-only `already_refused` exact replay only when the existing exact
-refusal/completion evidence authenticates; deleted, duplicated, mutated or
-malformed terminal evidence is never repaired and mints no second audit. Callable
+process-local liveness is reconstructed on reopen. A failed refusal transaction
+is refusal-only: it rolls the WHOLE terminal transaction back, preserves the
+original exception truthfully, and — only when the caller presented the exact
+authentic live-owner token — poisons that token (prohibiting any later
+claim/evaluate/consume/audit advancement and final mint) and records the same
+bounded best-effort durable obligation; a process-local failure-ownership marker
+keeps safely attributable housekeeping retry possible even when the durable
+diagnostic could not be written, and it is never reconstructed from durable
+UUIDs. Malformed/foreign/nested/duplicate contenders are classified before
+poisoning and never poison or finalize a valid winner. Already-finalized attempts
+return a read-only `already_refused` exact replay only when the complete
+identity-scoped terminal evidence set authenticates as ONE closed set — the exact
+causal result/root/manager/session and immutable launch binding authenticated
+FIRST (never the failed continuation body/assessment), the refusal result-stage
+event, exactly one bounded completion audit (a duplicate/conflicting code is not
+filtered out of the uniqueness check), the normal escalation audit for the
+still-current-owner `refused` outcome (never required for the `owner_lost`
+outcome that preserves a different winning task), and the candidate `refused`
+audit when K exists; deleted, duplicated, mutated, conflicting or malformed
+terminal evidence is never repaired and mints no second audit. Receipt identity
+comes from a real Q: an explicit `recovery_session_id` with no actual matching Q
+fails closed with the bounded `receipt_missing` pending code and fabricates no
+recovery-shaped completion evidence, a genuine ordinary absence stays ordinary,
+and when the stored completion carries the exact recovery fields the replay
+additionally requires the exact `callback_consumed` Q with the exact
+task/agent/recovery-session/result/result-session tuple (a
+deleted/transition-only/replaced Q is missing evidence, never "ordinary"). Callable
 read-only discovery (`list_authority_policy_v2_unfinalized_attempts`,
 `get_authority_policy_v2_housekeeping_target`) surfaces unfinalized attempts
 including a failed claim with no K, and the durable J/R or recorded obligation

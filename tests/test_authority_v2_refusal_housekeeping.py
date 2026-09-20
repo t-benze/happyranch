@@ -637,3 +637,306 @@ def test_schema_or_permission_drift_can_still_finalize_refusal(tmp_path):
     assert outcome.status == "refused"
     assert _attempt_row(store, row["id"])["finalization_state"] == "refused"
     assert store._db.get_task(TASK_ID).status is TaskStatus.ESCALATED
+
+
+# ══ C3d1 correction regressions ═══════════════════════════════════════════
+# The five step19 production-method probes (manager findings) are converted
+# into expected-behavior regressions here: refusal-only failure recovery,
+# authenticated attribution before terminal replay, the complete
+# identity-scoped terminal evidence set, and receipt identity from a real Q.
+
+
+# -- 1. accepted refusal failure must be refusal-only -----------------------
+
+
+def test_failed_refusal_poisons_owner_and_blocks_claim_but_retries(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store.bind_v2_process_boot_id(attempt.origin_boot_id)
+    before_audits = _stage_audits(store)
+    before_candidates = _counts(store._db)["candidates"]
+
+    # An injected write failure on the task CAS rolls the WHOLE terminal
+    # transaction back and the original exception is preserved.
+    real = store._db._conn
+    store._db._conn = _FailingConn(real, "UPDATE tasks SET status")
+    with pytest.raises(RuntimeError):
+        _refuse(store, row, attempt)
+    store._db._conn = real
+
+    # J/R and every earlier independently committed stage are retained exactly.
+    assert _attempt_row(store, row["id"])["finalization_state"] == "unfinalized"
+    assert store._db.get_task(TASK_ID).status is TaskStatus.IN_PROGRESS
+    assert _stage_audits(store) == before_audits
+
+    # A later genuine claim by the (now poisoned) owner is prohibited and
+    # allocates NO new candidate K.
+    blocked = _claim(store, row, attempt)
+    assert blocked.status == "refused"
+    assert blocked.refusal_code == "owner_lost"
+    assert _counts(store._db)["candidates"] == before_candidates == 0
+
+    # Only safely attributable housekeeping may retry; it commits once, then
+    # every further call is read-only replay.
+    assert _refuse(store, row, attempt).status == "refused"
+    assert _refuse(store, row, attempt).status == "already_refused"
+
+
+def test_failed_refusal_storage_failure_keeps_same_process_housekeeping(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store.bind_v2_process_boot_id(attempt.origin_boot_id)
+    # The failure also prevents persisting the durable obligation: the harness
+    # promises no durable diagnostic when storage is unavailable.
+    real = store._db._conn
+    store._db._conn = _FailingConn(real, "INSERT INTO audit_log")
+    with pytest.raises(RuntimeError):
+        _refuse(store, row, attempt)
+    store._db._conn = real
+    obligations = [
+        a for a in store._db.get_audit_logs(TASK_ID)
+        if a["action"] == "authority_policy_v2_housekeeping_obligation"
+    ]
+    assert obligations == []
+    # The process-local failure-ownership marker still permits housekeeping,
+    # while the poisoned token still prohibits advancement.
+    assert _refuse(store, row, attempt).status == "refused"
+    assert _refuse(store, row, attempt).status == "already_refused"
+
+
+def test_failed_refusal_reopen_without_obligation_is_honest_pending(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store.bind_v2_process_boot_id(attempt.origin_boot_id)
+    real = store._db._conn
+    store._db._conn = _FailingConn(real, "INSERT INTO audit_log")
+    with pytest.raises(RuntimeError):
+        _refuse(store, row, attempt)
+    store._db._conn = real
+    # A reopened Database on the same boot has no process-local marker and no
+    # durable obligation, so it cannot reconstruct liveness from the durable
+    # UUIDs and returns bounded pending without touching task/Q/J.
+    reopened = _reopen(store, tmp_path, boot_id=attempt.origin_boot_id)
+    outcome = reopened.finalize_v2_attempt_refusal(
+        root_task_id=TASK_ID, manager_agent=MANAGER,
+        manager_session_id=SESSION_ID, result_id=row["id"],
+        refusal_code="interrupted_pre_final",
+        owner_attempt_id=attempt.owner_attempt_id,
+    )
+    assert outcome.status == "housekeeping_pending"
+    assert outcome.refusal_code == "owner_lost"
+    assert _attempt_row(store, row["id"])["finalization_state"] == "unfinalized"
+
+
+def test_nested_caller_transaction_is_preserved(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    conn = store._db._conn
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute(
+        "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+        "VALUES (?,?,?,?,?)",
+        (TASK_ID, MANAGER, "correction_pending_probe", "{}",
+         "2026-01-01T00:00:00+00:00"),
+    )
+    outcome = _refuse(store, row, attempt)
+    assert outcome.status == "housekeeping_pending"
+    assert outcome.refusal_code == "transaction_owned"
+    # The caller's transaction and its pending write are untouched.
+    assert conn.in_transaction
+    assert conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action='correction_pending_probe'"
+    ).fetchone()[0] == 1
+    conn.rollback()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action='correction_pending_probe'"
+    ).fetchone()[0] == 0
+    assert _attempt_row(store, row["id"])["finalization_state"] == "unfinalized"
+    assert store._db.get_task(TASK_ID).status is TaskStatus.IN_PROGRESS
+
+
+# -- 4. receipt identity comes from a real Q --------------------------------
+
+
+def test_explicit_recovery_without_receipt_fails_closed(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    before = _counts(store._db)
+    outcome = _refuse(store, row, attempt, recovery_session_id=SESSION_ID)
+    assert outcome.status == "housekeeping_pending"
+    assert outcome.refusal_code == "receipt_missing"
+    # No task/Q/J change and no fabricated recovery-shaped completion evidence.
+    assert _attempt_row(store, row["id"])["finalization_state"] == "unfinalized"
+    assert store._db.get_task(TASK_ID).status is TaskStatus.IN_PROGRESS
+    assert _counts(store._db) == before
+    assert [
+        a for a in store._db.get_audit_logs(TASK_ID)
+        if a["action"] == "completion_report"
+    ] == []
+
+
+def test_explicit_recovery_with_matching_receipt_settles_and_replays(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    _seed_receipt(store, row["id"])
+    outcome = _refuse(store, row, attempt, recovery_session_id=SESSION_ID)
+    assert outcome.status == "refused"
+    assert outcome.receipt_settled is True
+    assert _receipt(store)["state"] == "callback_consumed"
+    replay = _refuse(store, row, attempt)
+    assert replay.status == "already_refused"
+    assert replay.receipt_settled is True
+
+
+def test_terminal_replay_requires_consumed_q_for_recovery_evidence(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    _seed_receipt(store, row["id"])
+    assert _refuse(store, row, attempt).status == "refused"
+    # A transition-only/reverted Q is missing terminal settlement evidence, not
+    # an ordinary absence: never report read-only success.
+    store._db._conn.execute(
+        "UPDATE task_completion_recoveries SET state='callback_accepted' "
+        "WHERE task_id=? AND agent=?", (TASK_ID, MANAGER),
+    )
+    store._db._conn.commit()
+    before = _counts(store._db)
+    assert _refuse(store, row, attempt).status == "housekeeping_pending"
+    assert _counts(store._db) == before
+
+
+def test_terminal_replay_rejects_replaced_q(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    _seed_receipt(store, row["id"])
+    assert _refuse(store, row, attempt).status == "refused"
+    store._db._conn.execute(
+        "UPDATE task_completion_recoveries SET recovery_session_id='sess-other' "
+        "WHERE task_id=? AND agent=?", (TASK_ID, MANAGER),
+    )
+    store._db._conn.commit()
+    before = _counts(store._db)
+    assert _refuse(store, row, attempt).status == "housekeeping_pending"
+    assert _counts(store._db) == before
+
+
+# -- 2. authenticate immutable attribution before terminal success ----------
+
+
+def test_terminal_replay_rejects_drifted_result_session(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _refuse(store, row, attempt).status == "refused"
+    store._db._conn.execute(
+        "UPDATE task_results SET session_id=? WHERE id=?",
+        ("different-session", row["id"]),
+    )
+    store._db._conn.commit()
+    before = _counts(store._db)
+    outcome = _refuse(store, row, attempt)
+    assert outcome.status == "housekeeping_pending"
+    assert _counts(store._db) == before
+    assert _attempt_row(store, row["id"])["finalization_state"] == "refused"
+
+
+# -- 3. authenticate ALL required terminal evidence as one set --------------
+
+
+def test_terminal_replay_rejects_missing_escalation_audit(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _refuse(store, row, attempt).status == "refused"
+    store._db._conn.execute("DELETE FROM audit_log WHERE action='escalation'")
+    store._db._conn.commit()
+    before = _counts(store._db)
+    outcome = _refuse(store, row, attempt)
+    assert outcome.status == "housekeeping_pending"
+    assert _counts(store._db) == before
+    assert _attempt_row(store, row["id"])["finalization_state"] == "refused"
+
+
+def test_terminal_replay_rejects_conflicting_completion_code(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _refuse(store, row, attempt).status == "refused"
+    q = store._db._conn.execute(
+        "SELECT * FROM audit_log WHERE action='completion_report'"
+    ).fetchone()
+    payload = json.loads(q["payload"])
+    payload["refusal_code"] = "claim_failed"
+    store._db.insert_audit_log(q["task_id"], q["agent"], q["action"], payload)
+    before = _counts(store._db)
+    outcome = _refuse(store, row, attempt)
+    assert outcome.status == "housekeeping_pending"
+    assert _counts(store._db) == before
+
+
+def test_terminal_replay_rejects_duplicate_completion(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _refuse(store, row, attempt).status == "refused"
+    q = store._db._conn.execute(
+        "SELECT * FROM audit_log WHERE action='completion_report'"
+    ).fetchone()
+    store._db.insert_audit_log(
+        q["task_id"], q["agent"], q["action"], json.loads(q["payload"]),
+    )
+    before = _counts(store._db)
+    assert _refuse(store, row, attempt).status == "housekeeping_pending"
+    assert _counts(store._db) == before
+
+
+def test_terminal_replay_rejects_mutated_completion_recovery_fields(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    _seed_receipt(store, row["id"])
+    assert _refuse(store, row, attempt).status == "refused"
+    store._db._conn.execute(
+        "UPDATE audit_log SET payload=json_set(payload,'$._result_row_id',999) "
+        "WHERE action='completion_report'"
+    )
+    store._db._conn.commit()
+    before = _counts(store._db)
+    assert _refuse(store, row, attempt).status == "housekeeping_pending"
+    assert _counts(store._db) == before
+
+
+def test_terminal_replay_rejects_duplicate_refusal_stage(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _refuse(store, row, attempt).status == "refused"
+    q = store._db._conn.execute(
+        "SELECT * FROM audit_log WHERE action='authority_policy_v2_result_stage' "
+        "AND json_extract(payload,'$.stage')='refused'"
+    ).fetchone()
+    payload = json.loads(q["payload"])
+    payload["refusal_code"] = "claim_failed"
+    store._db.insert_audit_log(q["task_id"], q["agent"], q["action"], payload)
+    before = _counts(store._db)
+    assert _refuse(store, row, attempt).status == "housekeeping_pending"
+    assert _counts(store._db) == before
+
+
+def test_terminal_replay_k_present_authenticates_candidate_refused_audit(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    _target_stage(store, row, "claimed")
+    staged = store._db.get_authority_policy_v2_attempt_for_result(row["id"])
+    assert _refuse(store, row, staged).status == "refused"
+    candidate = store.get_v2_candidate_for_result(row["id"])
+    events = [
+        a["event"] for a in store.list_v2_candidate_audits(candidate.candidate_id)
+    ]
+    assert events[-1] == "refused"
+    before = _counts(store._db)
+    replay = _refuse(store, row, staged)
+    assert replay.status == "already_refused"
+    assert replay.candidate_id == candidate.candidate_id
+    assert _counts(store._db) == before
+
+
+def test_owner_lost_terminal_replay_needs_no_escalation_audit(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store._db.update_task(
+        TASK_ID, cancelled_at="2026-01-01T00:00:00+00:00",
+        status=TaskStatus.CANCELLED,
+    )
+    outcome = _refuse(store, row, attempt)
+    assert outcome.status == "owner_lost"
+    assert outcome.refusal_code == "cancelled"
+    # The owner_lost outcome preserves a different winning task and must never
+    # require (nor write) the still-current-owner escalation audit.
+    assert [
+        a for a in store._db.get_audit_logs(TASK_ID) if a["action"] == "escalation"
+    ] == []
+    replay = _refuse(store, row, attempt)
+    assert replay.status == "already_refused"
+    assert replay.refusal_code == "cancelled"
+    task = store._db.get_task(TASK_ID)
+    assert task.status is TaskStatus.CANCELLED
+    assert task.cancelled_at is not None

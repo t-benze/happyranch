@@ -1173,3 +1173,129 @@ def test_shipping_historically_migrated_callable_refusal(tmp_path, monkeypatch):
         _drive_c3d1_refusal(fixture)
     finally:
         fixture.stop()
+
+
+def _drive_c3d1_refusal_failure(fixture: _ShippingFixture) -> str:
+    """Real launch -> subprocess CLI admission -> failed refusal -> recovery.
+
+    The provider launch is held only at the external process boundary, so the
+    genuine admitted result/attempt share this in-process Database (the real
+    live-owner token).  An injected task-CAS write failure rolls the WHOLE
+    terminal transaction back, poisons the authentic owner token, prohibits any
+    later policy claim/advancement, and leaves only later successful
+    housekeeping plus read-only replay.  This is callable-housekeeping evidence:
+    the shipping hook stays fail-closed and no continuation/Pending/enqueue is
+    claimed.
+    """
+    from tests.test_authority_v2_refusal_housekeeping import _FailingConn
+
+    fixture.activate_v2_pair()
+    fixture.install_launch_hold()
+    root_id = fixture.create_and_enqueue_root()
+    captured = fixture.wait_for_launch()
+    session_id = captured["session_id"]
+    binding = _binding(fixture, root_id, session_id)
+    assert binding is not None and binding["mode"] == "v2"
+
+    body = _completion_body(binding, root_id)
+    payload = fixture.write_payload(body)
+    result = fixture.run_cli(payload)
+    assert result.returncode == 0, result.stderr
+    assert fixture.last_http()["status"] == 200
+
+    results, attempt, audits = _admission_counts(fixture, root_id)
+    assert len(results) == 1 and attempt is not None
+    assert attempt.stage == "admitted"
+    row_id = results[0]["id"]
+    db = fixture.org.db
+    # The genuine in-process live-owner token is present: this is the authentic
+    # uninterrupted owner, not an old-boot/second-connection contender.
+    assert db._v2_live_attempt_owners.get(attempt.attempt_id) == attempt.owner_attempt_id
+
+    real = db._conn
+    db._conn = _FailingConn(real, "UPDATE tasks SET status")
+    try:
+        with pytest.raises(RuntimeError):
+            db.finalize_authority_policy_v2_attempt_refusal(
+                root_task_id=root_id, manager_agent=MANAGER,
+                manager_session_id=session_id, result_id=row_id,
+                refusal_code="interrupted_pre_final",
+                owner_attempt_id=attempt.owner_attempt_id,
+            )
+    finally:
+        db._conn = real
+
+    # Exact retained prior rows after the rollback: J unfinalized, task
+    # in-progress, only the admitted stage audit, and one result/attempt.
+    retained = db.get_authority_policy_v2_attempt_for_result(row_id)
+    assert retained is not None and retained.finalization_state == "unfinalized"
+    assert db.get_task(root_id).status is TaskStatus.IN_PROGRESS
+    assert [
+        a["payload"]["stage"]
+        for a in db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=root_id, manager_agent=MANAGER,
+        )
+    ] == ["admitted"]
+
+    # Refusal-only failure: the poisoned owner cannot claim/evaluate/consume and
+    # allocates NO new candidate K.
+    blocked = db.claim_authority_policy_v2_candidate(
+        root_task_id=root_id, manager_agent=MANAGER, manager_session_id=session_id,
+        result_id=row_id, origin_boot_id=attempt.origin_boot_id,
+        owner_attempt_id=attempt.owner_attempt_id, max_revise_rounds=0,
+    )
+    assert blocked.status == "refused", blocked
+    assert blocked.refusal_code == "owner_lost", blocked
+    assert db.get_authority_policy_v2_candidate_for_result(row_id) is None
+
+    # Only later successful housekeeping may commit, exactly once.
+    outcome = db.finalize_authority_policy_v2_attempt_refusal(
+        root_task_id=root_id, manager_agent=MANAGER,
+        manager_session_id=session_id, result_id=row_id,
+        refusal_code="interrupted_pre_final",
+        owner_attempt_id=attempt.owner_attempt_id,
+    )
+    assert outcome.status == "refused", outcome
+    assert [
+        a["payload"]["stage"]
+        for a in db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=root_id, manager_agent=MANAGER,
+        )
+    ] == ["admitted", "refused"]
+    assert db.get_task(root_id).status is TaskStatus.ESCALATED
+
+    # Read-only exact replay, and the real CLI retry stays transport-success.
+    replay = db.finalize_authority_policy_v2_attempt_refusal(
+        root_task_id=root_id, manager_agent=MANAGER,
+        manager_session_id=session_id, result_id=row_id,
+        refusal_code="interrupted_pre_final",
+        owner_attempt_id=attempt.owner_attempt_id,
+    )
+    assert replay.status == "already_refused", replay
+    assert len(db.list_authority_policy_v2_result_stage_audits(
+        root_task_id=root_id, manager_agent=MANAGER,
+    )) == 2
+    retry = fixture.run_cli(payload)
+    assert retry.returncode == 0, retry.stderr
+    assert fixture.last_http()["status"] == 200
+    assert db.get_task(root_id).status is TaskStatus.ESCALATED
+    assert db.get_active_authority_continue_envelope(root_id) is None
+
+    fixture.release_launch()
+    fixture.join_workers()
+    assert db.get_task(root_id).status is TaskStatus.ESCALATED
+    return root_id
+
+
+def test_shipping_real_failed_refusal_only_housekeeping(shipping):
+    _drive_c3d1_refusal_failure(shipping)
+
+
+def test_shipping_historically_migrated_failed_refusal(tmp_path, monkeypatch):
+    """The SAME real venue over a FULL historical schema migrated forward."""
+    fixture = _ShippingFixture(tmp_path, monkeypatch, seed_historical=True)
+    fixture.start()
+    try:
+        _drive_c3d1_refusal_failure(fixture)
+    finally:
+        fixture.stop()
