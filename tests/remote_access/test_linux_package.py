@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath
 import re
 import runpy
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -26,6 +27,8 @@ from runtime.remote_access.cli import (
 from runtime.remote_access.linux_package import (
     CompositeServiceManager,
     PackageError,
+    TRANSACTION_MARKER,
+    _recover_interrupted,
     build_linux_package,
     credential_capability,
     install_linux_package,
@@ -1477,47 +1480,313 @@ def test_complete_evidence_structure_fails_closed_before_write(tmp_path: Path, m
     assert not root.exists()
 
 
-@pytest.mark.parametrize("phase", ["payload_retained", "payload_published", "units_publishing"])
-def test_interrupted_payload_publication_restores_last_known_good(tmp_path: Path, phase: str) -> None:
-    package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
+def _installer_snapshot(root: Path) -> dict[str, tuple]:
+    """Recursively snapshot existence/type/bytes/modes without following links."""
+    state: dict[str, tuple] = {}
+    for path in sorted(root.rglob("*")):
+        relative = str(path.relative_to(root))
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            state[relative] = ("link", os.readlink(path))
+        elif stat.S_ISDIR(metadata.st_mode):
+            state[relative] = ("dir", stat.S_IMODE(metadata.st_mode))
+        elif stat.S_ISREG(metadata.st_mode):
+            state[relative] = ("file", path.read_bytes(), stat.S_IMODE(metadata.st_mode))
+        else:
+            state[relative] = ("other", metadata.st_mode)
+    return state
+
+
+class _InstallerGuard:
+    """Occurrence-scoped installer fault injector with exact hit receipts.
+
+    ``stage``/``operation``/``path``/``occurrence`` select the exact real
+    filesystem mutation to fault.  ``partial`` performs a real truncated write
+    at the destination before raising; ``persistent`` re-fires on every match.
+    """
+
+    def __init__(self, *, operation: str, stage: str = "before", occurrence: int = 1,
+                 path: Path | None = None, partial: bool = False, persistent: bool = False,
+                 exception: type[BaseException] = OSError) -> None:
+        self.operation = operation
+        self.stage = stage
+        self.occurrence = occurrence
+        self.path = None if path is None else str(path)
+        self.partial = partial
+        self.persistent = persistent
+        self.exception = exception
+        self.hits: list[tuple[str, str, str]] = []
+        self.fired = 0
+
+    def __call__(self, stage: str, operation: str, path: str) -> None:
+        self.hits.append((stage, operation, path))
+        if stage != self.stage or operation != self.operation:
+            return
+        if self.path is not None and path != self.path:
+            return
+        self.fired += 1
+        if not self.persistent and self.fired != self.occurrence:
+            return
+        if self.partial:
+            Path(path).write_bytes(b"partial-new-bytes")
+        raise self.exception("injected")
+
+    def receipts(self) -> list[tuple[str, str, str]]:
+        return [
+            hit for hit in self.hits
+            if hit[0] == self.stage and hit[1] == self.operation
+            and (self.path is None or hit[2] == self.path)
+        ]
+
+
+def _distinct_package(tmp_path: Path, version: str, marker: bytes) -> Path:
+    sidecar, connector, wheel, inventory, notices = _inputs(tmp_path)
+    sidecar.write_bytes(b"sidecar-" + marker)
+    return build_linux_package(
+        tmp_path / f"pkg-{version}.tar", sidecar, connector, wheel, inventory, notices, version=version
+    )
+
+
+@pytest.mark.parametrize("phase", ["prepared", "payload_retained", "payload_published", "units_publishing"])
+def test_legacy_v1_transaction_marker_is_preserved_and_refused(tmp_path: Path, phase: str) -> None:
+    """M2: every formerly accepted schema-v1 composition lacks ownership facts."""
+    package = _distinct_package(tmp_path, "1", b"one")
     root = tmp_path / "root"
     install_linux_package(package, root)
-    before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
-    (root / "opt/happyranch").replace(root / ".happyranch-backup")
-    if phase != "payload_retained":
-        (root / "opt/happyranch").mkdir(parents=True)
-        (root / "opt/happyranch/broken").write_bytes(b"partial")
-    unit_backup = root / ".happyranch-units-backup"
-    unit_backup.mkdir(mode=0o700)
-    for name in ("happyranch-connector.service", "happyranch-tsnet-sidecar.service", "happyranch-managed.target"):
-        shutil.copy2(root / "etc/systemd/system" / name, unit_backup / name)
-    (root / ".happyranch-install-transaction.json").write_text(json.dumps({"phase": phase, "schema_version": 1}) + "\n")
-    install_linux_package(package, root)
-    after = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
-    assert after == before
-    assert not list(root.glob(".happyranch-*"))
+    marker = root / TRANSACTION_MARKER
+    marker.write_text(json.dumps({"phase": phase, "schema_version": 1}) + "\n")
+    marker.chmod(0o600)
+    before = _installer_snapshot(root)
+    for _ in range(2):
+        with pytest.raises(PackageError, match="transaction_state_invalid"):
+            install_linux_package(package, root)
+    assert _installer_snapshot(root) == before
 
 
-def test_interrupted_fresh_install_without_backup_recovers(tmp_path: Path) -> None:
-    package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
+@pytest.mark.parametrize("residue", ["empty-unit-backup", "orphan-stage", "payload-backup"])
+def test_unrecorded_preparation_residue_is_preserved_and_refused(tmp_path: Path, residue: str) -> None:
+    """M6/M9: no marker plus any owned-looking residue is ambiguous, never deleted."""
+    package = _distinct_package(tmp_path, "1", b"one")
     root = tmp_path / "root"
     root.mkdir()
-    (root / ".happyranch-units-backup").mkdir(mode=0o700)
-    (root / ".happyranch-install-transaction.json").write_text(
-        '{"phase":"payload_retained","schema_version":1}\n'
-    )
-    install_linux_package(package, root)
-    assert (root / "opt/happyranch/manifest.json").exists()
-    assert not list(root.glob(".happyranch-*"))
+    if residue == "empty-unit-backup":
+        (root / ".happyranch-units-backup").mkdir(mode=0o700)
+    elif residue == "orphan-stage":
+        stage = root / ".happyranch-stage-deadbeef"
+        stage.mkdir(mode=0o700)
+        (stage / "partial").write_bytes(b"x")
+    else:
+        backup = root / ".happyranch-backup"
+        backup.mkdir(mode=0o700)
+        (backup / "old").write_bytes(b"y")
+    before = _installer_snapshot(root)
+    with pytest.raises(PackageError, match="transaction_state_invalid"):
+        install_linux_package(package, root)
+    assert _installer_snapshot(root) == before
 
 
-def test_pre_marker_empty_unit_backup_is_recoverable(tmp_path: Path) -> None:
-    package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
+@pytest.mark.parametrize("operation", [
+    "payload_retain",
+    "payload_publish",
+    "unit_publish:happyranch-connector.service",
+    "unit_publish:happyranch-tsnet-sidecar.service",
+    "unit_publish:happyranch-managed.target",
+])
+def test_exact_operation_fault_restores_old_bytes_and_modes_then_reinstalls(
+    tmp_path: Path, operation: str,
+) -> None:
+    """B/I: real syscall-level injection at each publication seam restores OLD."""
+    old = _distinct_package(tmp_path, "1", b"old")
+    new = _distinct_package(tmp_path, "2", b"new")
     root = tmp_path / "root"
-    (root / ".happyranch-units-backup").mkdir(parents=True, mode=0o700)
-    install_linux_package(package, root)
-    assert (root / "opt/happyranch/manifest.json").exists()
+    install_linux_package(old, root)
+    before = _installer_snapshot(root)
+    guard = _InstallerGuard(operation=operation, stage="after")
+    with pytest.raises(OSError, match="injected"):
+        install_linux_package(new, root, guard=guard)
+    assert len(guard.receipts()) == 1
+    assert _installer_snapshot(root) == before
     assert not list(root.glob(".happyranch-*"))
+    # A transient fault cleared must allow coherent real reentry to NEW.
+    install_linux_package(new, root)
+    assert (root / "opt/happyranch/bin/happyranch-tsnet-sidecar").read_bytes() == b"sidecar-new"
+    assert not list(root.glob(".happyranch-*"))
+
+
+def test_pre_record_fault_cleans_only_owned_preparation(tmp_path: Path) -> None:
+    old = _distinct_package(tmp_path, "1", b"old")
+    new = _distinct_package(tmp_path, "2", b"new")
+    root = tmp_path / "root"
+    install_linux_package(old, root)
+    before = _installer_snapshot(root)
+    guard = _InstallerGuard(operation="stage_payload:share/happyranch.whl", stage="before")
+    with pytest.raises(OSError, match="injected"):
+        install_linux_package(new, root, guard=guard)
+    assert len(guard.receipts()) == 1
+    assert _installer_snapshot(root) == before
+    assert not list(root.glob(".happyranch-*"))
+
+
+def test_baseexception_interruption_is_recovered_by_real_reentry(tmp_path: Path) -> None:
+    """K proves process interruption (not caught by ordinary rollback) then recovery."""
+    old = _distinct_package(tmp_path, "1", b"old")
+    new = _distinct_package(tmp_path, "2", b"new")
+    root = tmp_path / "root"
+    install_linux_package(old, root)
+    before = _installer_snapshot(root)
+    guard = _InstallerGuard(operation="payload_publish", stage="after", exception=KeyboardInterrupt)
+    with pytest.raises(KeyboardInterrupt):
+        install_linux_package(new, root, guard=guard)
+    assert (root / TRANSACTION_MARKER).exists()
+    install_linux_package(new, root)
+    assert (root / "opt/happyranch/bin/happyranch-tsnet-sidecar").read_bytes() == b"sidecar-new"
+    assert not list(root.glob(".happyranch-*"))
+    assert before != _installer_snapshot(root)
+
+
+def test_direct_recovery_entry_restores_old_before_reinstall(tmp_path: Path) -> None:
+    old = _distinct_package(tmp_path, "1", b"old")
+    new = _distinct_package(tmp_path, "2", b"new")
+    root = tmp_path / "root"
+    install_linux_package(old, root)
+    before = _installer_snapshot(root)
+    guard = _InstallerGuard(
+        operation="unit_publish:happyranch-tsnet-sidecar.service", stage="after", exception=KeyboardInterrupt
+    )
+    with pytest.raises(KeyboardInterrupt):
+        install_linux_package(new, root, guard=guard)
+    _recover_interrupted(root)
+    assert _installer_snapshot(root) == before
+    assert not list(root.glob(".happyranch-*"))
+
+
+def test_partial_unit_write_is_classified_and_rolled_back(tmp_path: Path) -> None:
+    old = _distinct_package(tmp_path, "1", b"old")
+    new = _distinct_package(tmp_path, "2", b"new")
+    root = tmp_path / "root"
+    install_linux_package(old, root)
+    before = _installer_snapshot(root)
+    unit = "happyranch-connector.service"
+    guard = _InstallerGuard(operation=f"unit_publish:{unit}", stage="before", partial=True)
+    with pytest.raises(OSError, match="injected"):
+        install_linux_package(new, root, guard=guard)
+    assert len(guard.receipts()) == 1
+    assert _installer_snapshot(root) == before
+    assert not list(root.glob(".happyranch-*"))
+
+
+def test_fresh_install_rollback_removes_only_owned_paths(tmp_path: Path) -> None:
+    package = _distinct_package(tmp_path, "1", b"one")
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "unrelated.txt").write_bytes(b"keep")
+    guard = _InstallerGuard(operation="unit_publish:happyranch-managed.target", stage="before")
+    with pytest.raises(OSError, match="injected"):
+        install_linux_package(package, root, guard=guard)
+    assert (root / "unrelated.txt").read_bytes() == b"keep"
+    assert not (root / "opt").exists()
+    assert not (root / "etc").exists()
+    assert not list(root.glob(".happyranch-*"))
+
+
+def test_upgrade_rollback_preserves_prior_dropin_bytes_modes_and_sibling(tmp_path: Path) -> None:
+    old = _distinct_package(tmp_path, "1", b"old")
+    new = _distinct_package(tmp_path, "2", b"new")
+    root = tmp_path / "root"
+    _stage_system_credentials(root, enrollment=True)
+    install_linux_package(old, root, system_service=False)
+    dropin_dir = root / "etc/systemd/system/happyranch-tsnet-sidecar.service.d"
+    dropin_dir.mkdir(mode=0o710)
+    dropin = dropin_dir / "10-enrollment-credential.conf"
+    dropin.write_bytes(b"operator-managed-prior-dropin\n")
+    dropin.chmod(0o640)
+    sibling = dropin_dir / "99-other.conf"
+    sibling.write_bytes(b"foreign-sibling\n")
+    sibling.chmod(0o600)
+    before = _installer_snapshot(root)
+    guard = _InstallerGuard(operation="dropin_publish", stage="before", partial=True)
+    with pytest.raises(OSError, match="injected"):
+        install_linux_package(new, root, system_service=True, guard=guard)
+    assert len(guard.receipts()) == 1
+    assert _installer_snapshot(root) == before
+    assert dropin.read_bytes() == b"operator-managed-prior-dropin\n"
+    assert stat.S_IMODE(dropin.lstat().st_mode) == 0o640
+    assert sibling.read_bytes() == b"foreign-sibling\n"
+    assert not list(root.glob(".happyranch-*"))
+
+
+def test_persistent_committed_cleanup_fault_preserves_new_and_resumes(tmp_path: Path) -> None:
+    old = _distinct_package(tmp_path, "1", b"old")
+    new = _distinct_package(tmp_path, "2", b"new")
+    root = tmp_path / "root"
+    install_linux_package(old, root)
+    guard = _InstallerGuard(operation="backup_remove:unlink", stage="before", persistent=True)
+    with pytest.raises(OSError, match="injected"):
+        install_linux_package(new, root, guard=guard)
+    assert (root / TRANSACTION_MARKER).exists()
+    assert (root / "opt/happyranch/bin/happyranch-tsnet-sidecar").read_bytes() == b"sidecar-new"
+    # Fault cleared: real reentry completes committed cleanup and reinstalls NEW.
+    install_linux_package(new, root)
+    assert (root / "opt/happyranch/bin/happyranch-tsnet-sidecar").read_bytes() == b"sidecar-new"
+    assert not list(root.glob(".happyranch-*"))
+
+
+def test_corrupt_backup_is_refused_not_restored(tmp_path: Path) -> None:
+    """M5: a digest-mismatched backup never authorizes replacing OLD."""
+    old = _distinct_package(tmp_path, "1", b"old")
+    new = _distinct_package(tmp_path, "2", b"new")
+    root = tmp_path / "root"
+    install_linux_package(old, root)
+    guard = _InstallerGuard(operation="payload_publish", stage="after", exception=KeyboardInterrupt)
+    with pytest.raises(KeyboardInterrupt):
+        install_linux_package(new, root, guard=guard)
+    backup = root / ".happyranch-units-backup/happyranch-connector.service"
+    backup.write_bytes(b"corrupt-backup")
+    state = _installer_snapshot(root)
+    with pytest.raises(PackageError, match="transaction_state_invalid"):
+        install_linux_package(new, root)
+    assert _installer_snapshot(root) == state
+
+
+@pytest.mark.parametrize("mutation", ["bad-json", "non-object", "missing-key", "extra-key", "wrong-type", "unknown-phase", "wrong-root"])
+def test_malformed_or_foreign_record_is_refused_unchanged(tmp_path: Path, mutation: str) -> None:
+    package = _distinct_package(tmp_path, "1", b"one")
+    root = tmp_path / "root"
+    install_linux_package(package, root)
+    marker = root / TRANSACTION_MARKER
+    record = {
+        "schema_version": 2, "attempt_id": "a" * 32, "root": str(root), "phase": "prepared",
+        "payload_present": True, "units": {name: True for name in (
+            "happyranch-connector.service", "happyranch-tsnet-sidecar.service", "happyranch-managed.target")},
+        "dropin_present": False, "stage": None, "created_parents": [], "published_units": [],
+        "dropin_published": False,
+        "backups": {"units": {name: None for name in (
+            "happyranch-connector.service", "happyranch-tsnet-sidecar.service", "happyranch-managed.target")}, "dropin": None},
+    }
+    if mutation == "bad-json":
+        marker.write_text("{not json")
+    elif mutation == "non-object":
+        marker.write_text(json.dumps([1, 2, 3]))
+    elif mutation == "missing-key":
+        record.pop("attempt_id")
+        marker.write_text(json.dumps(record))
+    elif mutation == "extra-key":
+        record["unexpected"] = 1
+        marker.write_text(json.dumps(record))
+    elif mutation == "wrong-type":
+        record["payload_present"] = "yes"
+        marker.write_text(json.dumps(record))
+    elif mutation == "unknown-phase":
+        record["phase"] = "invented"
+        marker.write_text(json.dumps(record))
+    else:
+        record["root"] = str(root / "elsewhere")
+        marker.write_text(json.dumps(record))
+    marker.chmod(0o600)
+    before = _installer_snapshot(root)
+    with pytest.raises(PackageError, match="transaction_state_invalid"):
+        install_linux_package(package, root)
+    assert _installer_snapshot(root) == before
 
 
 def test_enrollment_source_retirement_is_atomic_reentrant_and_rolls_back(tmp_path: Path) -> None:

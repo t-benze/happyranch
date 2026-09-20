@@ -44,30 +44,108 @@ func runConnectorSupervisor(argv []string) int {
 }
 
 type sidecarObservation uint8
+
 const (
 	sidecarUnknown sidecarObservation = iota
 	sidecarAbsent
 	sidecarPresentUnhealthy
 	sidecarPresentHealthy
 )
+
 type sidecarHealthProbe func(context.Context) sidecarObservation
 type sidecarStop func(context.Context) bool
+
+// systemdSidecarPropertyNames is the exact closed set of named properties the
+// supervisor observes.  The query is keyed so a reordered, missing, duplicated,
+// or extra record can never be mistaken for readback of a different property.
+var systemdSidecarPropertyNames = []string{"ActiveState", "SubState", "Result", "MainPID"}
 
 func systemdSidecarState(parent context.Context) sidecarObservation {
 	ctx, cancel := context.WithTimeout(parent, time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "systemctl", "show", "happyranch-tsnet-sidecar.service",
-		"--property=ActiveState", "--property=SubState", "--property=Result", "--property=MainPID", "--value")
+		"--property=ActiveState", "--property=SubState", "--property=Result", "--property=MainPID")
 	cmd.Env = withoutNotifySocket(os.Environ())
 	result, err := cmd.Output()
-	if err != nil { return sidecarUnknown }
-	lines := strings.Split(strings.TrimSuffix(string(result), "\n"), "\n")
-	if len(lines) != 4 { return sidecarUnknown }
-	pid, pidErr := strconv.Atoi(lines[3])
-	if lines[0] == "inactive" && lines[1] == "dead" && pidErr == nil && pid == 0 { return sidecarAbsent }
-	if lines[0] == "active" && lines[1] == "running" && lines[2] == "success" && pidErr == nil && pid > 1 { return sidecarPresentHealthy }
-	if pidErr == nil && (pid == 0 || pid > 1) && (lines[0] == "active" || lines[0] == "activating" || lines[0] == "deactivating" || lines[0] == "failed") { return sidecarPresentUnhealthy }
+	if err != nil {
+		return sidecarUnknown
+	}
+	properties, ok := parseSystemdShowProperties(string(result))
+	if !ok {
+		return sidecarUnknown
+	}
+	activeState := properties["ActiveState"]
+	subState := properties["SubState"]
+	resultValue := properties["Result"]
+	pid, pidErr := strconv.ParseInt(properties["MainPID"], 10, 32)
+	if activeState == "inactive" && subState == "dead" && pidErr == nil && pid == 0 && resultValue != "" {
+		return sidecarAbsent
+	}
+	if activeState == "active" && subState == "running" && resultValue == "success" && pidErr == nil && pid > 1 {
+		return sidecarPresentHealthy
+	}
+	if pidErr == nil && (pid == 0 || pid > 1) && (activeState == "active" || activeState == "activating" || activeState == "deactivating" || activeState == "failed") && subState != "" && resultValue != "" {
+		return sidecarPresentUnhealthy
+	}
 	return sidecarUnknown
+}
+
+// parseSystemdShowProperties reads `systemctl show` named-property output.
+// Every line must be a known Key=Value record, each key exactly once, and all
+// four keys must be present with a nonempty value.  A single trailing newline
+// is the only tolerated framing; any garbage, blank line, unknown or empty
+// key, duplicate key, control character, or MainPID value carrying a second
+// `=` fails closed.
+func parseSystemdShowProperties(stdout string) (map[string]string, bool) {
+	if stdout == "" {
+		return nil, false
+	}
+	trimmed := strings.TrimSuffix(stdout, "\n")
+	if trimmed == "" {
+		return nil, false
+	}
+	properties := make(map[string]string, len(systemdSidecarPropertyNames))
+	for _, line := range strings.Split(trimmed, "\n") {
+		if line == "" {
+			return nil, false
+		}
+		for i := 0; i < len(line); i++ {
+			if line[i] < 0x20 || line[i] == 0x7f {
+				return nil, false
+			}
+		}
+		separator := strings.IndexByte(line, '=')
+		if separator < 0 {
+			return nil, false
+		}
+		key, value := line[:separator], line[separator+1:]
+		known := false
+		for _, candidate := range systemdSidecarPropertyNames {
+			if key == candidate {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return nil, false
+		}
+		if _, duplicate := properties[key]; duplicate {
+			return nil, false
+		}
+		if key == "MainPID" && strings.IndexByte(value, '=') >= 0 {
+			return nil, false
+		}
+		properties[key] = value
+	}
+	if len(properties) != len(systemdSidecarPropertyNames) {
+		return nil, false
+	}
+	for _, key := range systemdSidecarPropertyNames {
+		if properties[key] == "" {
+			return nil, false
+		}
+	}
+	return properties, true
 }
 
 func systemdStopSidecar(parent context.Context) bool {
@@ -93,7 +171,9 @@ func removeSidecarAdmission(ctx context.Context, healthy sidecarHealthProbe, sto
 	if state == sidecarAbsent {
 		return true
 	}
-	if state == sidecarUnknown { return false }
+	if state == sidecarUnknown {
+		return false
+	}
 	if !stop(ctx) {
 		return false
 	}
@@ -112,7 +192,9 @@ func removeSidecarAdmission(ctx context.Context, healthy sidecarHealthProbe, sto
 			if state == sidecarAbsent {
 				return true
 			}
-			if state == sidecarUnknown { return false }
+			if state == sidecarUnknown {
+				return false
+			}
 		}
 	}
 }

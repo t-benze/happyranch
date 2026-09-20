@@ -120,27 +120,281 @@ func TestRepeatedWaitingCannotExtendStartupDeadline(t *testing.T) {
 	}
 }
 
-func TestSystemdSidecarHealthRequiresCompleteAuthoritativeState(t *testing.T) {
+const healthySystemdShowOutput = "ActiveState=active\nSubState=running\nResult=success\nMainPID=42\n"
+
+// shellSingleQuote wraps a value for a POSIX shell single-quoted argument.
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+// shellPrintfEscape renders a byte string as a `printf '%b'` argument so a
+// fake systemctl can reproduce it exactly, including newlines and control
+// bytes, using only the shell builtin.
+func shellPrintfEscape(value string) string {
+	var escaped strings.Builder
+	for i := 0; i < len(value); i++ {
+		character := value[i]
+		switch {
+		case character == '\\':
+			escaped.WriteString(`\\`)
+		case character == '\n':
+			escaped.WriteString(`\n`)
+		case character == '\t':
+			escaped.WriteString(`\t`)
+		case character == '\r':
+			escaped.WriteString(`\r`)
+		case character < 0x20 || character == 0x7f:
+			fmt.Fprintf(&escaped, `\%03o`, character)
+		default:
+			escaped.WriteByte(character)
+		}
+	}
+	return escaped.String()
+}
+
+// fakeSystemctlShellPrintf builds a `#!/bin/sh` script that emits exactly
+// stdout on standard output.
+func fakeSystemctlShellPrintf(stdout string) string {
+	return "#!/bin/sh\nprintf '%b' " + shellSingleQuote(shellPrintfEscape(stdout)) + "\n"
+}
+
+// installFakeSystemctl writes a fake systemctl executable and puts only its
+// directory on PATH, exactly like a real systemd host would resolve it.
+func installFakeSystemctl(t *testing.T, script string) string {
+	t.Helper()
 	dir := t.TempDir()
 	command := filepath.Join(dir, "systemctl")
-	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf 'active\\nrunning\\nsuccess\\n42\\n'\n"), 0700); err != nil {
+	if err := os.WriteFile(command, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
-	if systemdSidecarState(context.Background()) != sidecarPresentHealthy {
-		t.Fatal("active sidecar was rejected")
+	return command
+}
+
+// observeSidecarState runs one observation against a fake systemctl emitting
+// exactly stdout.
+func observeSidecarState(t *testing.T, stdout string) sidecarObservation {
+	t.Helper()
+	installFakeSystemctl(t, fakeSystemctlShellPrintf(stdout))
+	return systemdSidecarState(context.Background())
+}
+
+func permutationsOf(values []string) [][]string {
+	if len(values) <= 1 {
+		return [][]string{append([]string(nil), values...)}
 	}
-	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf 'activating\\nstart\\nsuccess\\n42\\n'\n"), 0700); err != nil {
+	permutations := [][]string{}
+	for i := range values {
+		rest := make([]string, 0, len(values)-1)
+		rest = append(rest, values[:i]...)
+		rest = append(rest, values[i+1:]...)
+		for _, tail := range permutationsOf(rest) {
+			permutations = append(permutations, append([]string{values[i]}, tail...))
+		}
+	}
+	return permutations
+}
+
+func TestSystemdSidecarHealthRequiresCompleteAuthoritativeState(t *testing.T) {
+	if got := observeSidecarState(t, healthySystemdShowOutput); got != sidecarPresentHealthy {
+		t.Fatalf("active sidecar observation = %d, want sidecarPresentHealthy", got)
+	}
+	if got := observeSidecarState(t, "ActiveState=activating\nSubState=start\nResult=success\nMainPID=42\n"); got != sidecarPresentUnhealthy {
+		t.Fatalf("partial sidecar readiness observation = %d, want sidecarPresentUnhealthy", got)
+	}
+	if got := observeSidecarState(t, "garbage\n"); got != sidecarUnknown {
+		t.Fatalf("malformed state observation = %d, want sidecarUnknown", got)
+	}
+}
+
+func TestSystemdSidecarHealthAcceptsEveryHealthyPropertyOrder(t *testing.T) {
+	lines := []string{
+		"ActiveState=active",
+		"SubState=running",
+		"Result=success",
+		"MainPID=42",
+	}
+	permutations := permutationsOf(lines)
+	if len(permutations) != 24 {
+		t.Fatalf("permutation count = %d, want 24", len(permutations))
+	}
+	for _, permutation := range permutations {
+		stdout := strings.Join(permutation, "\n") + "\n"
+		if got := observeSidecarState(t, stdout); got != sidecarPresentHealthy {
+			t.Fatalf("permutation %v = %d, want sidecarPresentHealthy", permutation, got)
+		}
+	}
+}
+
+func TestSystemdSidecarHealthRejectsDuplicatedProperties(t *testing.T) {
+	order := []string{"ActiveState", "SubState", "Result", "MainPID"}
+	healthy := map[string]string{
+		"ActiveState": "active",
+		"SubState":    "running",
+		"Result":      "success",
+		"MainPID":     "42",
+	}
+	for _, key := range order {
+		for _, duplicate := range []string{healthy[key], "conflicting"} {
+			var stdout strings.Builder
+			for _, name := range order {
+				stdout.WriteString(name + "=" + healthy[name] + "\n")
+				if name == key {
+					stdout.WriteString(name + "=" + duplicate + "\n")
+				}
+			}
+			if got := observeSidecarState(t, stdout.String()); got != sidecarUnknown {
+				t.Fatalf("duplicate %s=%q observation = %d, want sidecarUnknown", key, duplicate, got)
+			}
+		}
+	}
+}
+
+func TestSystemdSidecarHealthRejectsMissingAndEmptyProperties(t *testing.T) {
+	order := []string{"ActiveState", "SubState", "Result", "MainPID"}
+	healthy := map[string]string{
+		"ActiveState": "active",
+		"SubState":    "running",
+		"Result":      "success",
+		"MainPID":     "42",
+	}
+	for _, key := range order {
+		var missing strings.Builder
+		for _, name := range order {
+			if name != key {
+				missing.WriteString(name + "=" + healthy[name] + "\n")
+			}
+		}
+		if got := observeSidecarState(t, missing.String()); got != sidecarUnknown {
+			t.Fatalf("missing %s observation = %d, want sidecarUnknown", key, got)
+		}
+		var empty strings.Builder
+		for _, name := range order {
+			value := healthy[name]
+			if name == key {
+				value = ""
+			}
+			empty.WriteString(name + "=" + value + "\n")
+		}
+		if got := observeSidecarState(t, empty.String()); got != sidecarUnknown {
+			t.Fatalf("empty %s observation = %d, want sidecarUnknown", key, got)
+		}
+	}
+}
+
+func TestSystemdSidecarHealthRejectsMalformedRecords(t *testing.T) {
+	cases := map[string]string{
+		"line missing separator":   "ActiveState=active\nSubState=running\nResult=success\nMainPID\n",
+		"empty key":                "ActiveState=active\nSubState=running\nResult=success\n=42\n",
+		"misspelled key":           "ActiveState=active\nSubState=running\nResult=success\nMainPid=42\n",
+		"extra unknown key":        "ActiveState=active\nSubState=running\nResult=success\nMainPID=42\nExtra=1\n",
+		"interior blank line":      "ActiveState=active\nSubState=running\n\nResult=success\nMainPID=42\n",
+		"old positional reply":     "active\nrunning\nsuccess\n42\n",
+		"control byte in value":    "ActiveState=active\nSubState=running\nResult=success\nMainPID=4\x002\n",
+		"second equals in MainPID": "ActiveState=active\nSubState=running\nResult=success\nMainPID=4=2\n",
+	}
+	for name, stdout := range cases {
+		if got := observeSidecarState(t, stdout); got != sidecarUnknown {
+			t.Fatalf("%s observation = %d, want sidecarUnknown", name, got)
+		}
+	}
+}
+
+func TestSystemdSidecarHealthMainPIDBoundaries(t *testing.T) {
+	// Rule 3 makes active/running/success/0 sidecarPresentUnhealthy (MainPID 0
+	// with an active state); this matches the truth table and Q6.  Every other
+	// non-healthy PID spelling must be unknown, never truncated into a PID.
+	unknown := []string{"1", "-1", "abc", " 42", "4.2", "9999999999999999999999"}
+	for _, mainPID := range unknown {
+		stdout := "ActiveState=active\nSubState=running\nResult=success\nMainPID=" + mainPID + "\n"
+		if got := observeSidecarState(t, stdout); got != sidecarUnknown {
+			t.Fatalf("MainPID=%q observation = %d, want sidecarUnknown", mainPID, got)
+		}
+	}
+	if got := observeSidecarState(t, "ActiveState=active\nSubState=running\nResult=success\nMainPID=0\n"); got != sidecarPresentUnhealthy {
+		t.Fatalf("MainPID=%q observation = %d, want sidecarPresentUnhealthy", "0", got)
+	}
+	for _, mainPID := range []string{"2", "42"} {
+		stdout := "ActiveState=active\nSubState=running\nResult=success\nMainPID=" + mainPID + "\n"
+		if got := observeSidecarState(t, stdout); got != sidecarPresentHealthy {
+			t.Fatalf("MainPID=%q observation = %d, want sidecarPresentHealthy", mainPID, got)
+		}
+	}
+}
+
+func TestSystemdSidecarHealthTruthTableRepresentatives(t *testing.T) {
+	cases := []struct {
+		activeState string
+		subState    string
+		result      string
+		mainPID     string
+		want        sidecarObservation
+	}{
+		{"inactive", "dead", "success", "0", sidecarAbsent},
+		{"inactive", "dead", "success", "2", sidecarUnknown},
+		{"inactive", "running", "success", "0", sidecarUnknown},
+		{"reloading", "start", "success", "2", sidecarUnknown},
+		{"active", "start", "success", "0", sidecarPresentUnhealthy},
+		{"active", "start", "success", "2", sidecarPresentUnhealthy},
+		{"activating", "start", "success", "0", sidecarPresentUnhealthy},
+		{"activating", "start", "success", "2", sidecarPresentUnhealthy},
+		{"deactivating", "stop", "success", "0", sidecarPresentUnhealthy},
+		{"deactivating", "stop", "success", "2", sidecarPresentUnhealthy},
+		{"failed", "failed", "success", "0", sidecarPresentUnhealthy},
+		{"failed", "failed", "success", "2", sidecarPresentUnhealthy},
+		{"active", "running", "exit-code", "2", sidecarPresentUnhealthy},
+	}
+	for _, tc := range cases {
+		stdout := "ActiveState=" + tc.activeState + "\nSubState=" + tc.subState + "\nResult=" + tc.result + "\nMainPID=" + tc.mainPID + "\n"
+		if got := observeSidecarState(t, stdout); got != tc.want {
+			t.Fatalf("ActiveState=%s SubState=%s Result=%s MainPID=%s observation = %d, want %d",
+				tc.activeState, tc.subState, tc.result, tc.mainPID, got, tc.want)
+		}
+	}
+}
+
+func TestSystemdSidecarHealthFailsClosedOnProbeFailure(t *testing.T) {
+	installFakeSystemctl(t, fakeSystemctlShellPrintf(healthySystemdShowOutput)+"exit 1\n")
+	if got := systemdSidecarState(context.Background()); got != sidecarUnknown {
+		t.Fatalf("nonzero exit with valid stdout observation = %d, want sidecarUnknown", got)
+	}
+	t.Setenv("PATH", t.TempDir())
+	if got := systemdSidecarState(context.Background()); got != sidecarUnknown {
+		t.Fatalf("unstartable systemctl observation = %d, want sidecarUnknown", got)
+	}
+	if got := observeSidecarState(t, ""); got != sidecarUnknown {
+		t.Fatalf("empty stdout observation = %d, want sidecarUnknown", got)
+	}
+}
+
+func TestSystemdSidecarHealthQueriesNamedPropertiesWithoutValueFlag(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "argv.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> " + shellSingleQuote(logPath) + "\n" +
+		strings.TrimPrefix(fakeSystemctlShellPrintf(healthySystemdShowOutput), "#!/bin/sh\n")
+	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if systemdSidecarState(context.Background()) != sidecarPresentUnhealthy {
-		t.Fatal("partial sidecar readiness was accepted")
+	t.Setenv("PATH", dir)
+	if got := systemdSidecarState(context.Background()); got != sidecarPresentHealthy {
+		t.Fatalf("healthy named state = %d, want sidecarPresentHealthy", got)
 	}
-	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf 'garbage\\n'\n"), 0700); err != nil {
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if systemdSidecarState(context.Background()) != sidecarUnknown {
-		t.Fatal("malformed state was not unknown")
+	argv := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "happyranch-tsnet-sidecar.service") {
+		t.Fatalf("argv %v did not name the sidecar service", argv)
+	}
+	for _, property := range []string{"--property=ActiveState", "--property=SubState", "--property=Result", "--property=MainPID"} {
+		if !strings.Contains(joined, property) {
+			t.Fatalf("argv %v did not request %s", argv, property)
+		}
+	}
+	if strings.Contains(joined, "--value") {
+		t.Fatalf("argv %v requested the unreliable positional --value form", argv)
 	}
 }
 
@@ -333,5 +587,91 @@ func TestWithoutNotifySocketPreventsHelperNotification(t *testing.T) {
 	env := withoutNotifySocket([]string{"PATH=/bin", "NOTIFY_SOCKET=/run/systemd/notify", "OTHER=value"})
 	if got := strings.Join(env, "\n"); got != "PATH=/bin\nOTHER=value" {
 		t.Fatalf("helper environment retained notification authority: %q", got)
+	}
+}
+
+func writeFixtureSystemctl(t *testing.T, dir, statePath, logPath, failStopPath string) {
+	t.Helper()
+	script := `#!/bin/sh
+if [ -n "$NOTIFY_SOCKET" ]; then echo notify_leak >> ` + logPath + `; exit 9; fi
+echo "$@" >> ` + logPath + `
+case "$1" in
+  show)
+    read -r state < ` + statePath + `
+    case "$state" in
+      absent) printf 'ActiveState=inactive\nSubState=dead\nResult=success\nMainPID=0\n' ;;
+      healthy) printf 'ActiveState=active\nSubState=running\nResult=success\nMainPID=42\n' ;;
+      unhealthy) printf 'ActiveState=failed\nSubState=failed\nResult=exit-code\nMainPID=42\n' ;;
+    esac ;;
+  stop)
+    if [ -f ` + failStopPath + ` ]; then exit 1; fi
+    echo absent > ` + statePath + ` ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readFixtureLog(t *testing.T, path string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+// TestAdmissionRemovalUsesRealNamedQueryAndStop wires the real named-property
+// probe and real stop through the real admission-removal consumer, using only
+// a per-case fail-closed systemctl fixture on PATH (never host forwarding).
+func TestAdmissionRemovalUsesRealNamedQueryAndStop(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state")
+	logPath := filepath.Join(dir, "log")
+	failStopPath := filepath.Join(dir, "fail-stop")
+	writeFixtureSystemctl(t, dir, statePath, logPath, failStopPath)
+	t.Setenv("PATH", dir)
+	t.Setenv("NOTIFY_SOCKET", "/run/systemd/notify")
+
+	// H4: confirmed absence is admitted with no stop and no child cleanup.
+	if err := os.WriteFile(statePath, []byte("absent\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if !removeSidecarAdmission(context.Background(), systemdSidecarState, systemdStopSidecar) {
+		t.Fatal("confirmed absence was not admitted")
+	}
+	log := readFixtureLog(t, logPath)
+	if strings.Contains(log, "stop") {
+		t.Fatalf("confirmed absence issued a stop: %q", log)
+	}
+	if strings.Contains(log, "notify_leak") {
+		t.Fatalf("NOTIFY_SOCKET leaked into the fixture command: %q", log)
+	}
+
+	// H5: present -> exactly one successful stop -> observed absence.
+	if err := os.WriteFile(statePath, []byte("healthy\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if !removeSidecarAdmission(context.Background(), systemdSidecarState, systemdStopSidecar) {
+		t.Fatal("healthy present sidecar was not removed")
+	}
+	log = readFixtureLog(t, logPath)
+	if strings.Count(log, "stop") != 1 {
+		t.Fatalf("expected exactly one stop, log=%q", log)
+	}
+
+	// H6: a stop failure fails closed and never claims absence.
+	if err := os.WriteFile(statePath, []byte("healthy\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(failStopPath, []byte("1"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if removeSidecarAdmission(context.Background(), systemdSidecarState, systemdStopSidecar) {
+		t.Fatal("stop failure was reported as removed admission")
 	}
 }
