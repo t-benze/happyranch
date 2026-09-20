@@ -412,23 +412,26 @@ def patch_metadata(skill_id: str, body: dict = Body(...), org: OrgDep = None, _:
         _mutable(row)
         if "description" in allowed:
             supplied = allowed["description"]
-            frontmatter = parse_skill_frontmatter(row["skill_md_cache"])
-            frontmatter_description = (
-                frontmatter.get("description") if isinstance(frontmatter, dict) else None
-            )
-            if (
-                row["validation_state"] == "valid"
-                and isinstance(frontmatter_description, str)
-                and bool(frontmatter_description)
-            ):
-                # Valid current with a frontmatter description: accept the equal
-                # value; a different value is 422 description_divergence.
-                if supplied != frontmatter_description:
-                    _error("description_divergence", 422)
+            if row["validation_state"] == "valid":
+                # Valid current: the frontmatter is the authoritative source
+                # when it carries a non-empty description; the equal value is
+                # accepted and a different one is 422 description_divergence.
+                # A valid legacy heading-first version has no frontmatter
+                # description, so it falls through to the stored comparison.
+                frontmatter = parse_skill_frontmatter(row["skill_md_cache"])
+                frontmatter_description = (
+                    frontmatter.get("description") if isinstance(frontmatter, dict) else None
+                )
+                if isinstance(frontmatter_description, str) and frontmatter_description.strip():
+                    if supplied != frontmatter_description:
+                        _error("description_divergence", 422)
+                elif supplied != row["description"]:
+                    _error("description_requires_valid_version", 422)
             else:
-                # Invalid or legacy/heading-first current version: accept only
-                # the unchanged stored catalog description. The invalid/legacy
-                # frontmatter is never parsed as a valid source.
+                # Invalid current: branch on stored validity BEFORE parsing.
+                # The invalid frontmatter is never parsed as a valid source, so
+                # even a supplied value equal to its parseable description is
+                # rejected when it differs from the unchanged stored value.
                 if supplied != row["description"]:
                     _error("description_requires_valid_version", 422)
         conn.execute("UPDATE custom_skills SET " + ", ".join(f"{key}=?" for key in allowed) + " WHERE id=?", (*allowed.values(),skill_id)); service.append_event(conn,skill_id,"version_saved","founder",row["version_id"]); conn.commit()

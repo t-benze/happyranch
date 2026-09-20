@@ -1520,3 +1520,58 @@ class TestSkillsCreateTransport:
         ).fetchall()
         assert [v["validation_state"] for v in versions] == ["valid", "valid"]
         assert {v["validator_version"] for v in versions} == {"THR-262/1.0.0"}
+
+    @staticmethod
+    def _bundled_example(tmp_path: Path) -> tuple[Path, dict]:
+        """Extract the shipped create-skill JSON example from the real source.
+
+        The bytes come from the release-owned ``runtime/skills/bundled`` tree,
+        never a duplicated lookalike fixture.
+        """
+        from runtime.skills.sources import bundled_skills_dir
+
+        text = (bundled_skills_dir() / "create-skill" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        opener = "```json\n"
+        start = text.index(opener) + len(opener)
+        end = text.index("\n```", start)
+        payload = text[start:end]
+        path = tmp_path / "bundled-create-skill-example.json"
+        path.write_text(payload, encoding="utf-8")
+        return path, json.loads(payload)
+
+    def test_bundled_create_skill_json_example_succeeds_through_shipped_route(
+        self, live_daemon, tmp_path, capsys,
+    ):
+        """R1: the shipped authoring example itself must pass the real route.
+
+        The example's explicit request description must equal its frontmatter
+        description (or be omitted), and the shipped CLI must derive/persist
+        the expected catalog description through the real agent route."""
+        org = live_daemon
+        example_path, expected = self._bundled_example(tmp_path)
+        # Guard the extracted shape before driving it.
+        assert expected["skill_md"].startswith("---\n")
+        assert "description:" in expected["skill_md"]
+        assert expected["description"] == "Summarize the workflow and when to use it"
+
+        self._run_create(example_path, "sess-cli")
+        assert "Skill created successfully." in capsys.readouterr().out
+
+        conn = getattr(org.db, "_conn", org.db)
+        row = conn.execute(
+            "SELECT current_version_id, description FROM custom_skills WHERE slug=?",
+            (expected["slug"],),
+        ).fetchone()
+        assert row is not None
+        assert row["description"] == "Summarize the workflow and when to use it"
+        version = conn.execute(
+            "SELECT validation_state, validator_version, skill_md_cache "
+            "FROM custom_skill_versions WHERE id=?",
+            (row["current_version_id"],),
+        ).fetchone()
+        assert version["validation_state"] == "valid"
+        assert version["validator_version"] == "THR-262/1.0.0"
+        # The shipped example bytes are persisted unchanged.
+        assert version["skill_md_cache"] == expected["skill_md"]

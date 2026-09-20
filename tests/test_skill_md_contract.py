@@ -201,6 +201,75 @@ def test_duplicate_key_message_names_first_duplicated_key():
     assert "hooks" in messages[FRONTMATTER_DUPLICATE_KEY]
 
 
+# ── R2: original root key identity/order survives YAML merge flattening ──
+
+def test_present_yaml_merge_key_is_admission_invalid_by_presence():
+    """``<<`` is a top-level key: flatten_mapping removes it from the parsed
+    mapping, so the guard must report it by its preserved root identity."""
+    empty_merge = "---\nname: my-workflow\ndescription: d\n<<: {}\n---\n"
+    assert _codes(empty_merge) == [ADMISSION_FIELD_NOT_ALLOWED]
+    messages = dict(skill_md_contract_violations(empty_merge, expected_slug="my-workflow"))
+    assert "<<" in messages[ADMISSION_FIELD_NOT_ALLOWED]
+    # A merge that contributes otherwise-allowed keys is not laundered.
+    assert _codes(
+        "---\nname: my-workflow\ndescription: d\n<<: {license: MIT}\n---\n"
+    ) == [ADMISSION_FIELD_NOT_ALLOWED]
+    # The bundled-source guard enforces the same presence rule.
+    assert [code for code, _ in frontmatter_admission_violations(empty_merge)] == [
+        ADMISSION_FIELD_NOT_ALLOWED
+    ]
+
+
+def test_merge_key_preserves_document_order_and_precedence():
+    """The preserved root order puts the merge key where the document put it,
+    and a malformed/duplicate document still short-circuits to structural."""
+    doc = (
+        "---\nname: my-workflow\ndescription: d\n"
+        "vendor-x: 1\n<<: {}\n---\n"
+    )
+    messages = [
+        message
+        for _, message in skill_md_contract_violations(doc, expected_slug="my-workflow")
+    ]
+    assert messages[0].find("vendor-x") != -1
+    assert messages[1].find("<<") != -1
+    # A genuine duplicate wins over the merge presence (structural precedence).
+    assert _codes(
+        "---\nname: my-workflow\nname: other\n<<: {}\n---\n"
+    ) == [FRONTMATTER_DUPLICATE_KEY]
+
+
+# ── R3: duplicate identity/presence separated from nullable key values ──
+
+def test_repeated_null_key_is_the_sole_duplicate_finding():
+    """A repeated ``null`` key stores ``None``; the duplicate must still be
+    detected and must not fall through to a last-wins admission finding."""
+    assert _codes("---\nnull: a\nnull: b\n---\n") == [FRONTMATTER_DUPLICATE_KEY]
+    # Distinct from "no duplicate": a single null key is admission-invalid by
+    # presence and falls through to the required-field group, never duplicate.
+    single = _codes("---\nnull: a\n---\n")
+    assert single == [
+        ADMISSION_FIELD_NOT_ALLOWED,
+        FRONTMATTER_MISSING_NAME,
+        FRONTMATTER_MISSING_DESCRIPTION,
+    ]
+
+
+def test_nested_mapping_duplicate_is_not_a_root_duplicate():
+    """A duplicate inside a nested sequence/metadata mapping is an invalid
+    metadata value, never a fabricated top-level duplicate key."""
+    assert _codes(
+        "---\nname: my-workflow\ndescription: d\nmetadata: [{a: x, a: y}]\n---\n"
+    ) == [FRONTMATTER_INVALID_METADATA]
+    assert _codes(
+        "---\nname: my-workflow\ndescription: d\nmetadata: {a: {b: x, b: y}}\n---\n"
+    ) == [FRONTMATTER_INVALID_METADATA]
+    # A genuine root duplicate is still detected with nested content present.
+    assert _codes(
+        "---\nname: my-workflow\ndescription: d\nname: other\nmetadata: [{a: x, a: y}]\n---\n"
+    ) == [FRONTMATTER_DUPLICATE_KEY]
+
+
 def test_exact_boundaries_are_accepted():
     assert _codes("---\nname: " + "a" * 64 + "\ndescription: d\n---\n", slug="a" * 64) == []
     assert _codes("---\nname: my-workflow\ndescription: " + "x" * 1024 + "\n---\n") == []

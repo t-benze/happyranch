@@ -95,12 +95,23 @@ describe('CustomSkillCreatePage (THR-262 description payload)', () => {
     expect(captured).not.toHaveProperty('description');
   });
 
-  test('a nonblank description is forwarded with the other fields unchanged', async () => {
+  test('a divergent nonblank description surfaces the candidate 422 error', async () => {
     let captured: Record<string, unknown> | null = null;
     server.use(
       http.post(API, async ({ request }) => {
         captured = (await request.json()) as Record<string, unknown>;
-        return HttpResponse.json(CREATE_RESULT, { status: 201 });
+        // The candidate daemon contract for a nonblank description that differs
+        // from the validated frontmatter: 422 divergent_description.
+        return HttpResponse.json(
+          {
+            detail: {
+              code: 'divergent_description',
+              detail:
+                'The supplied description does not match the validated frontmatter description',
+            },
+          },
+          { status: 422 },
+        );
       }),
     );
     mount();
@@ -114,5 +125,9 @@ describe('CustomSkillCreatePage (THR-262 description payload)', () => {
       description: 'explicit copy',
       skill_md: expect.stringContaining('description: from frontmatter'),
     });
+
+    // The page renders the error state instead of navigating on success.
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/Could not create this custom skill/i);
   });
 });

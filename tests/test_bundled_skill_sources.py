@@ -291,22 +291,60 @@ def test_bundled_duplicate_disallowed_key_with_empty_last_value_fails(
     assert "allowed-tools" in findings[0][2]
 
 
-def test_bundled_positive_fixtures_pass(tmp_path: Path) -> None:
-    """P2/P3/P4: name+description only; absent frontmatter; string metadata."""
-    root = tmp_path / "positives"
-    root.mkdir()
-    (root / "minimal").mkdir()
-    (root / "minimal" / "SKILL.md").write_text(
-        "---\nname: minimal\ndescription: d\n---\n", encoding="utf-8"
+def test_bundled_merge_key_is_rejected_in_copied_real_source(tmp_path: Path) -> None:
+    """R2: a present ``<<`` merge declaration is admission-invalid by presence
+    in the copied real source, exactly as the custom-skill route rejects it."""
+    root = _mutated_source(
+        tmp_path, lambda text: _insert_frontmatter_line(text, "<<: {}")
     )
-    (root / "heading").mkdir()
-    (root / "heading" / "SKILL.md").write_text("# Heading\n\nBody\n", encoding="utf-8")
-    (root / "metadata").mkdir()
-    (root / "metadata" / "SKILL.md").write_text(
-        "---\nname: metadata\ndescription: d\nmetadata: {a: \"b\"}\n---\n",
-        encoding="utf-8",
-    )
+    findings = _bundled_source_findings(root)
+    assert [code for _, code, _ in findings] == ["admission_field_not_allowed"]
+    assert "<<" in findings[0][2]
+
+
+def _frontmatter_rewrite(text: str, frontmatter: str) -> str:
+    """Replace the real source's frontmatter block with ``frontmatter``,
+    keeping the real body bytes after the closing fence."""
+    lines = text.split("\n")
+    closing = lines.index("---", 1)
+    return "\n".join(["---", frontmatter, "---", *lines[closing + 1:]])
+
+
+def _frontmatter_removed(text: str) -> str:
+    """Drop the real source's frontmatter entirely (absent-frontmatter case)."""
+    lines = text.split("\n")
+    closing = lines.index("---", 1)
+    return "\n".join(lines[closing + 1:])
+
+
+# P2/P3/P4: each positive case transforms a COPIED REAL create-skill source
+# (never a synthetic document) so the guard is exercised against the shipping
+# corpus shape. The real corpus itself is never mutated.
+_BUNDLED_POSITIVES = {
+    "P2-name-description-only": lambda text: _frontmatter_rewrite(
+        text, "name: create-skill\ndescription: d"
+    ),
+    "P3-absent-frontmatter": _frontmatter_removed,
+    "P4-string-metadata": lambda text: _insert_frontmatter_line(
+        text, 'metadata: {a: "b"}'
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_BUNDLED_POSITIVES))
+def test_bundled_positive_fixtures_pass(tmp_path: Path, case: str) -> None:
+    """P2/P3/P4 applied to a copied real source still pass the guard, and the
+    copied source keeps the real corpus body bytes (only the declared surface
+    changes)."""
+    real = (bundled_skills_dir() / "create-skill" / "SKILL.md").read_text(encoding="utf-8")
+    root = _mutated_source(tmp_path, _BUNDLED_POSITIVES[case])
     assert _bundled_source_findings(root) == []
+    mutated = (root / "SKILL.md").read_text(encoding="utf-8")
+    assert mutated != real
+    # The real corpus is untouched by any positive transformation.
+    assert (bundled_skills_dir() / "create-skill" / "SKILL.md").read_text(
+        encoding="utf-8"
+    ) == real
 
 
 def test_bundled_guard_radius_excludes_separately_tracked_copies() -> None:

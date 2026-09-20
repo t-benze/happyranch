@@ -71,7 +71,7 @@ persistence.
   "skill_md": "---\nname: my-workflow\ndescription: Summarize the workflow and when to use it\n---\n\nGuidance content here...",
   "version": "0.1.0",
   "policy_class": "standard_operational",
-  "description": "Optional one-line summary",
+  "description": "Summarize the workflow and when to use it",
   "references": {},
   "assets": {}
 }
