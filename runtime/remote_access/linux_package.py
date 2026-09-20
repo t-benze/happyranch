@@ -56,10 +56,12 @@ _RESIDUE_PREFIXES = (
     _STAGE_PREFIX,
     "happyranch-install-transaction",
 )
+_DROPIN_BYTES = b"[Service]\nLoadCredential=enrollment.key:/etc/happyranch/enrollment.key\n"
 _TRANSACTION_KEYS = frozenset({
     "schema_version", "attempt_id", "root", "phase", "payload_present",
     "units", "dropin_present", "stage", "created_parents",
     "published_units", "dropin_published", "backups",
+    "new_payload", "new_units", "new_dropin",
 })
 _TRANSACTION_PHASES = frozenset({
     "preparing", "prepared", "payload_retained", "payload_published",
@@ -454,8 +456,19 @@ def _unlink(path: Path, guard, operation: str) -> None:
 
 def _write_file(path: Path, raw: bytes, mode: int, guard, operation: str) -> None:
     _seam(guard, "before", operation, path)
-    with open(path, "wb") as handle:
-        handle.write(raw)
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        mode,
+    )
+    try:
+        view = memoryview(raw)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+    finally:
+        os.close(descriptor)
     _seam(guard, "after", operation, path)
     _seam(guard, "before", f"{operation}:chmod", path)
     os.chmod(path, mode)
@@ -487,6 +500,177 @@ def _backup_intact(path: Path, expected: object) -> bool:
         return False
 
 
+def _backup_present(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def _path_file_identity(path: Path) -> dict:
+    return {"sha256": _sha(path.read_bytes()), "mode": stat.S_IMODE(path.lstat().st_mode)}
+
+
+def _planned_payload_inventory(files: Mapping[str, bytes], system_service: bool) -> dict:
+    """Deterministic identity of the payload tree the stage will publish."""
+    root_mode = 0o755 if system_service else 0o700
+    entries: dict[str, dict] = {
+        "bin": {"type": "dir", "mode": 0o755 if system_service else 0o700},
+        "share": {"type": "dir", "mode": 0o700},
+    }
+    for name, raw in files.items():
+        if name.startswith("systemd/"):
+            continue
+        mode = 0o600 if name == "manifest.json" else (
+            int(PAYLOAD_MODES[name], 8) if system_service
+            else (0o700 if name.startswith("bin/") else 0o600)
+        )
+        entries[name] = {"type": "file", "mode": mode, "sha256": _sha(raw)}
+    return {"root_mode": root_mode, "entries": entries}
+
+
+def _inventory_tree(path: Path) -> dict:
+    """Recursively fingerprint a tree without following links."""
+    root_mode = stat.S_IMODE(path.lstat().st_mode)
+    entries: dict[str, dict] = {}
+    stack: list[tuple[Path, str]] = [(path, "")]
+    while stack:
+        base, prefix = stack.pop()
+        for entry in sorted(base.iterdir(), key=lambda item: item.name):
+            relative = f"{prefix}{entry.name}"
+            metadata = entry.lstat()
+            if stat.S_ISLNK(metadata.st_mode):
+                entries[relative] = {"type": "link", "target": os.readlink(entry)}
+            elif stat.S_ISDIR(metadata.st_mode):
+                entries[relative] = {"type": "dir", "mode": stat.S_IMODE(metadata.st_mode)}
+                stack.append((entry, f"{relative}/"))
+            elif stat.S_ISREG(metadata.st_mode):
+                entries[relative] = {
+                    "type": "file", "mode": stat.S_IMODE(metadata.st_mode),
+                    "sha256": _sha(entry.read_bytes()),
+                }
+            else:
+                entries[relative] = {"type": "other"}
+    return {"root_mode": root_mode, "entries": entries}
+
+
+def _tree_matches(path: Path, inventory: object) -> bool:
+    if not isinstance(inventory, dict):
+        return False
+    try:
+        metadata = path.lstat()
+        if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            return False
+        if stat.S_IMODE(metadata.st_mode) != inventory.get("root_mode"):
+            return False
+        return _inventory_tree(path) == inventory
+    except OSError:
+        return False
+
+
+def _file_matches(path: Path, identity: object) -> bool:
+    if not isinstance(identity, dict):
+        return False
+    try:
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            return False
+        return (
+            stat.S_IMODE(metadata.st_mode) == identity.get("mode")
+            and _sha(path.read_bytes()) == identity.get("sha256")
+        )
+    except OSError:
+        return False
+
+
+def _valid_file_identity(identity: object) -> bool:
+    return (
+        isinstance(identity, dict) and set(identity) == {"sha256", "mode"}
+        and isinstance(identity.get("sha256"), str) and len(identity["sha256"]) == 64
+        and type(identity.get("mode")) is int
+    )
+
+
+def _valid_inventory(inventory: object) -> bool:
+    if not isinstance(inventory, dict) or set(inventory) != {"root_mode", "entries"}:
+        return False
+    if type(inventory.get("root_mode")) is not int:
+        return False
+    entries = inventory.get("entries")
+    if not isinstance(entries, dict):
+        return False
+    for key, value in entries.items():
+        if (not isinstance(key, str) or not key or key.startswith("/")
+                or ".." in PurePosixPath(key).parts or not isinstance(value, dict)):
+            return False
+        kind = value.get("type")
+        if kind == "dir":
+            if set(value) != {"type", "mode"} or type(value.get("mode")) is not int:
+                return False
+        elif kind == "file":
+            if (set(value) != {"type", "mode", "sha256"}
+                    or type(value.get("mode")) is not int
+                    or not isinstance(value.get("sha256"), str)
+                    or len(value["sha256"]) != 64):
+                return False
+        elif kind == "link":
+            if set(value) != {"type", "target"} or not isinstance(value.get("target"), str):
+                return False
+        elif kind == "other":
+            if set(value) != {"type"}:
+                return False
+        else:
+            return False
+    return True
+
+
+def _assert_safe_target(root: Path, path: Path) -> None:
+    """Reject unsafe types/symlinks on the exact path or any ancestor below root."""
+    root, path = Path(root), Path(path)
+    try:
+        metadata = root.lstat()
+    except OSError as exc:
+        raise PackageError("transaction_state_invalid") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise PackageError("transaction_state_invalid")
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise PackageError("transaction_state_invalid") from exc
+    current = root
+    parts = relative.parts
+    for index, part in enumerate(parts):
+        current = current / part
+        try:
+            child = current.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise PackageError("transaction_state_invalid") from exc
+        if stat.S_ISLNK(child.st_mode):
+            raise PackageError("transaction_state_invalid")
+        if index != len(parts) - 1 and not stat.S_ISDIR(child.st_mode):
+            raise PackageError("transaction_state_invalid")
+
+
+def _record_paths(root: Path, record: Mapping[str, object]) -> list[Path]:
+    payload_backup, unit_backup, marker = _transaction_paths(root)
+    paths = [
+        root, marker, _record_temp(root), payload_backup, unit_backup,
+        root / "opt", root / "opt/happyranch",
+        root / "etc/systemd/system",
+        root / "etc/systemd/system" / _DROPIN_SERVICE_DIR,
+        root / "etc/systemd/system" / _DROPIN_SERVICE_DIR / _DROPIN_FILE_NAME,
+    ]
+    paths.extend(root / "etc/systemd/system" / unit for unit in UNITS)
+    stage = record.get("stage")
+    if stage is not None:
+        paths.append(Path(str(stage)))
+    return paths
+
+
+def _assert_record_paths_safe(root: Path, record: Mapping[str, object]) -> None:
+    for path in _record_paths(root, record):
+        _assert_safe_target(root, path)
+
+
 def _replace(source: Path, destination: Path, guard, operation: str) -> None:
     _seam(guard, "before", operation, destination)
     os.replace(source, destination)
@@ -494,7 +678,11 @@ def _replace(source: Path, destination: Path, guard, operation: str) -> None:
 
 
 def _ensure_dir(path: Path, mode: int, guard, operation: str) -> bool:
+    if path.is_symlink():
+        raise PackageError("transaction_state_invalid")
     if path.exists():
+        if not path.is_dir():
+            raise PackageError("transaction_state_invalid")
         return False
     _seam(guard, "before", f"{operation}:mkdir", path)
     path.mkdir()
@@ -525,13 +713,17 @@ def _write_record(root: Path, record: dict, guard) -> None:
     _seam(guard, "before", "record_temp_create", temporary)
     descriptor = os.open(
         temporary,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_CLOEXEC", 0),
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
         0o600,
     )
     _seam(guard, "after", "record_temp_create", temporary)
     try:
         _seam(guard, "before", "record_temp_write", temporary)
-        os.write(descriptor, raw)
+        view = memoryview(raw)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
         _seam(guard, "after", "record_temp_write", temporary)
         _seam(guard, "before", "record_temp_fsync", temporary)
         os.fsync(descriptor)
@@ -546,10 +738,35 @@ def _write_record(root: Path, record: dict, guard) -> None:
     _seam(guard, "after", "record_replace", marker)
 
 
+def _publish(root: Path, record: Mapping[str, object], guard, **changes: object) -> dict:
+    """Durably publish an updated record; the caller keeps the prior record on failure.
+
+    The returned mapping is the last successfully *published* authority, so an
+    exception handler never acts on an in-memory state whose record update did
+    not reach disk.
+    """
+    updated = {**record, **changes}
+    _write_record(root, updated, guard)
+    return updated
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise PackageError("transaction_state_invalid")
+        result[key] = value
+    return result
+
+
 def _load_record(root: Path, marker: Path) -> dict:
     """Strictly classify an existing record; any ambiguity is refused unchanged."""
     try:
-        record = json.loads(marker.read_text(encoding="utf-8"))
+        record = json.loads(
+            marker.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys
+        )
+    except PackageError:
+        raise
     except (OSError, ValueError) as exc:
         raise PackageError("transaction_state_invalid") from exc
     if not isinstance(record, dict) or set(record) != _TRANSACTION_KEYS:
@@ -560,7 +777,7 @@ def _load_record(root: Path, marker: Path) -> dict:
         raise PackageError("transaction_state_invalid")
     if record["root"] != str(root):
         raise PackageError("transaction_state_invalid")
-    if record["phase"] not in _TRANSACTION_PHASES:
+    if not isinstance(record["phase"], str) or record["phase"] not in _TRANSACTION_PHASES:
         raise PackageError("transaction_state_invalid")
     if any(type(record[key]) is not bool for key in ("payload_present", "dropin_present", "dropin_published")):
         raise PackageError("transaction_state_invalid")
@@ -579,16 +796,30 @@ def _load_record(root: Path, marker: Path) -> dict:
     published = record["published_units"]
     if not isinstance(published, list) or len(set(published)) != len(published):
         raise PackageError("transaction_state_invalid")
-    if any(unit not in UNITS for unit in published):
+    if any(not isinstance(unit, str) or unit not in UNITS for unit in published):
         raise PackageError("transaction_state_invalid")
     stage = record["stage"]
     if stage is not None:
         if not isinstance(stage, str) or not stage:
             raise PackageError("transaction_state_invalid")
-        if Path(stage).parent != root or not Path(stage).name.startswith(_STAGE_PREFIX):
+        stage_path = Path(stage)
+        if stage_path.parent != Path(root):
             raise PackageError("transaction_state_invalid")
+        if not stage_path.name.startswith(f"{_STAGE_PREFIX}{record['attempt_id']}-"):
+            raise PackageError("transaction_state_invalid")
+    if not _valid_inventory(record["new_payload"]):
+        raise PackageError("transaction_state_invalid")
+    new_units = record["new_units"]
+    if not isinstance(new_units, dict) or set(new_units) != set(UNITS):
+        raise PackageError("transaction_state_invalid")
+    if any(not _valid_file_identity(identity) for identity in new_units.values()):
+        raise PackageError("transaction_state_invalid")
+    if record["new_dropin"] is not None and not _valid_file_identity(record["new_dropin"]):
+        raise PackageError("transaction_state_invalid")
     backups = record["backups"]
-    if not isinstance(backups, dict) or set(backups) != {"units", "dropin"}:
+    if not isinstance(backups, dict) or set(backups) != {"payload", "units", "dropin"}:
+        raise PackageError("transaction_state_invalid")
+    if backups["payload"] is not None and not _valid_inventory(backups["payload"]):
         raise PackageError("transaction_state_invalid")
     backup_units = backups["units"]
     if not isinstance(backup_units, dict) or set(backup_units) != set(UNITS):
@@ -596,9 +827,7 @@ def _load_record(root: Path, marker: Path) -> dict:
     for entry in [*backup_units.values(), backups["dropin"]]:
         if entry is None:
             continue
-        if (not isinstance(entry, dict) or set(entry) != {"sha256", "mode"}
-                or not isinstance(entry["sha256"], str) or len(entry["sha256"]) != 64
-                or type(entry["mode"]) is not int):
+        if not _valid_file_identity(entry):
             raise PackageError("transaction_state_invalid")
     return record
 
@@ -623,25 +852,119 @@ def _cleanup_owned(root: Path, record: dict, guard) -> None:
     """Remove exact recorded owned residue, then the marker last."""
     payload_backup, unit_backup, marker = _transaction_paths(root)
     for path in (payload_backup, unit_backup):
-        if path.exists() or path.is_symlink():
+        _assert_safe_target(root, path)
+        if _backup_present(path):
             _remove_tree(path, guard, "backup_remove")
     temporary = _record_temp(root)
-    if temporary.exists():
+    _assert_safe_target(root, temporary)
+    if _backup_present(temporary):
         _unlink(temporary, guard, "record_temp_remove")
     stage = record.get("stage")
-    if stage is not None and Path(stage).exists():
-        _remove_tree(Path(stage), guard, "stage_remove")
+    if stage is not None:
+        stage_path = Path(stage)
+        _assert_safe_target(root, stage_path)
+        if _backup_present(stage_path):
+            _remove_tree(stage_path, guard, "stage_remove")
     _remove_created_parents(root, record, guard)
-    if marker.exists():
+    _assert_safe_target(root, marker)
+    if _backup_present(marker):
         _unlink(marker, guard, "marker_remove")
+
+
+def _classify_payload(root: Path, record: dict) -> str:
+    opt = root / "opt/happyranch"
+    payload_backup, _unit_backup, _marker = _transaction_paths(root)
+    old_payload = record["backups"]["payload"]
+    if record["payload_present"]:
+        if old_payload is None:
+            raise PackageError("transaction_state_invalid")
+        if _backup_present(payload_backup):
+            if not _tree_matches(payload_backup, old_payload):
+                raise PackageError("transaction_state_invalid")
+            return "already" if _tree_matches(opt, old_payload) else "restore"
+        if _tree_matches(opt, old_payload):
+            return "already"
+        raise PackageError("transaction_state_invalid")
+    if old_payload is not None or _backup_present(payload_backup):
+        raise PackageError("transaction_state_invalid")
+    if opt.is_symlink():
+        raise PackageError("transaction_state_invalid")
+    if not opt.exists():
+        return "nothing"
+    if _tree_matches(opt, record["new_payload"]):
+        return "remove"
+    raise PackageError("transaction_state_invalid")
+
+
+def _classify_units(root: Path, record: dict) -> dict[str, str]:
+    units = root / "etc/systemd/system"
+    _payload_backup, unit_backup, _marker = _transaction_paths(root)
+    actions: dict[str, str] = {}
+    for unit in UNITS:
+        target = units / unit
+        saved = unit_backup / unit
+        expected = record["backups"]["units"][unit]
+        if record["units"][unit]:
+            if expected is None:
+                raise PackageError("transaction_state_invalid")
+            if _backup_present(saved):
+                if not _backup_intact(saved, expected):
+                    raise PackageError("transaction_state_invalid")
+                actions[unit] = "already" if _file_matches(target, expected) else "restore"
+            elif _file_matches(target, expected):
+                actions[unit] = "already"
+            else:
+                raise PackageError("transaction_state_invalid")
+        else:
+            if expected is not None:
+                raise PackageError("transaction_state_invalid")
+            if target.is_symlink():
+                raise PackageError("transaction_state_invalid")
+            if not target.exists():
+                actions[unit] = "nothing"
+            elif unit in record["published_units"]:
+                actions[unit] = "remove"
+            else:
+                raise PackageError("transaction_state_invalid")
+    return actions
+
+
+def _classify_dropin(root: Path, record: dict) -> str:
+    units = root / "etc/systemd/system"
+    dropin = units / _DROPIN_SERVICE_DIR / _DROPIN_FILE_NAME
+    _payload_backup, unit_backup, _marker = _transaction_paths(root)
+    dropin_backup = unit_backup / _DROPIN_BACKUP_RELATIVE
+    expected = record["backups"]["dropin"]
+    if record["dropin_present"]:
+        if expected is None:
+            raise PackageError("transaction_state_invalid")
+        if _backup_present(dropin_backup):
+            if not _backup_intact(dropin_backup, expected):
+                raise PackageError("transaction_state_invalid")
+            return "already" if _file_matches(dropin, expected) else "restore"
+        if _file_matches(dropin, expected):
+            return "already"
+        raise PackageError("transaction_state_invalid")
+    if expected is not None or _backup_present(dropin_backup):
+        raise PackageError("transaction_state_invalid")
+    if dropin.is_symlink():
+        raise PackageError("transaction_state_invalid")
+    if not dropin.exists():
+        return "nothing"
+    if record["dropin_published"]:
+        return "remove"
+    raise PackageError("transaction_state_invalid")
 
 
 def _restore_old(root: Path, record: dict, guard) -> None:
     """Restore the last-known-good (OLD) composition or conservatively refuse.
 
-    Every precondition (recorded backups intact, coherent payload/drop-in
-    ownership) is classified BEFORE any mutation so that a refusal preserves
-    all bytes and modes unchanged.
+    Every precondition (recorded backups intact, verified identity of any
+    already-consumed backup, coherent payload/units/drop-in ownership) is
+    classified BEFORE any mutation so that a refusal preserves all bytes and
+    modes unchanged.  Restoring by atomic rename consumes a backup; the
+    recorded OLD identity lets a later retry recognize the already-restored
+    artifact instead of demanding the consumed backup again.
     """
     opt = root / "opt/happyranch"
     units = root / "etc/systemd/system"
@@ -649,72 +972,37 @@ def _restore_old(root: Path, record: dict, guard) -> None:
     payload_backup, unit_backup, _marker = _transaction_paths(root)
     dropin_backup = unit_backup / _DROPIN_BACKUP_RELATIVE
 
-    restores_payload = False
-    removes_payload = False
-    if record["payload_present"]:
-        if payload_backup.exists():
-            restores_payload = True
-        elif not opt.exists():
-            raise PackageError("transaction_state_invalid")
-    else:
-        if payload_backup.exists():
-            raise PackageError("transaction_state_invalid")
-        removes_payload = opt.exists() or opt.is_symlink()
+    payload_action = _classify_payload(root, record)
+    unit_actions = _classify_units(root, record)
+    dropin_action = _classify_dropin(root, record)
 
-    restores_units = False
-    removes_units: list[str] = []
-    for unit in UNITS:
-        saved = unit_backup / unit
-        if record["units"][unit]:
-            if not _backup_intact(saved, record["backups"]["units"][unit]):
-                raise PackageError("transaction_state_invalid")
-            restores_units = True
-        elif unit in record["published_units"]:
-            removes_units.append(unit)
-
-    restores_dropin = False
-    removes_dropin = False
-    if record["dropin_present"]:
-        expected = record["backups"]["dropin"]
-        if expected is None or not _backup_intact(dropin_backup, expected):
-            raise PackageError("transaction_state_invalid")
-        restores_dropin = True
-    else:
-        if record["backups"]["dropin"] is not None or dropin_backup.exists() or dropin_backup.is_symlink():
-            raise PackageError("transaction_state_invalid")
-        removes_dropin = record["dropin_published"] and (dropin.exists() or dropin.is_symlink())
-
-    record = dict(record)
     if record["phase"] != "rolling_back":
-        record["phase"] = "rolling_back"
-        _write_record(root, record, guard)
+        record = _publish(root, record, guard, phase="rolling_back")
 
-    if restores_payload:
+    if payload_action == "restore":
         if opt.exists() or opt.is_symlink():
             _remove_tree(opt, guard, "rollback_payload_remove")
         opt.parent.mkdir(parents=True, exist_ok=True)
         _replace(payload_backup, opt, guard, "rollback_payload_restore")
-    elif removes_payload:
+    elif payload_action == "remove":
         _remove_tree(opt, guard, "rollback_payload_remove")
 
-    if restores_units:
-        for unit in UNITS:
-            if not record["units"][unit]:
-                continue
-            target = units / unit
+    for unit in UNITS:
+        action = unit_actions[unit]
+        target = units / unit
+        if action == "restore":
             if target.exists() or target.is_symlink():
                 _unlink(target, guard, "rollback_unit_unlink")
             _replace(unit_backup / unit, target, guard, "rollback_unit_restore")
-    for unit in removes_units:
-        target = units / unit
-        if target.exists() or target.is_symlink():
-            _unlink(target, guard, "rollback_unit_unlink")
+        elif action == "remove":
+            if target.exists() or target.is_symlink():
+                _unlink(target, guard, "rollback_unit_unlink")
 
-    if restores_dropin:
+    if dropin_action == "restore":
         if not dropin.parent.exists():
             dropin.parent.mkdir(parents=True, exist_ok=True)
         _replace(dropin_backup, dropin, guard, "rollback_dropin_restore")
-    elif removes_dropin:
+    elif dropin_action == "remove":
         _unlink(dropin, guard, "rollback_dropin_unlink")
 
     _cleanup_owned(root, record, guard)
@@ -722,10 +1010,13 @@ def _restore_old(root: Path, record: dict, guard) -> None:
 
 def _cleanup_pre_record(root: Path, stage: Path | None, guard) -> None:
     temporary = _record_temp(root)
-    if temporary.exists():
+    if _backup_present(temporary):
         _unlink(temporary, guard, "record_temp_remove")
-    if stage is not None and Path(stage).exists():
-        _remove_tree(Path(stage), guard, "stage_remove")
+    if stage is not None:
+        stage_path = Path(stage)
+        _assert_safe_target(root, stage_path)
+        if _backup_present(stage_path):
+            _remove_tree(stage_path, guard, "stage_remove")
 
 
 def _recover_interrupted(root: Path, guard=None) -> None:
@@ -737,14 +1028,20 @@ def _recover_interrupted(root: Path, guard=None) -> None:
     owned transactions are recovered to OLD (uncommitted) or completed NEW
     (committed).
     """
-    if not root.exists():
+    if not root.exists() and not root.is_symlink():
         return
+    if root.is_symlink() or not root.is_dir():
+        raise PackageError("transaction_state_invalid")
     marker = root / TRANSACTION_MARKER
+    _assert_safe_target(root, marker)
     if not marker.exists():
+        if marker.is_symlink():
+            raise PackageError("transaction_state_invalid")
         if any(entry.name.startswith(_RESIDUE_PREFIXES) for entry in root.iterdir()):
             raise PackageError("transaction_state_invalid")
         return
     record = _load_record(root, marker)
+    _assert_record_paths_safe(root, record)
     if record["phase"] in {"preparing", "committed"}:
         # ``preparing`` never mutated OLD and ``committed`` is authoritative NEW:
         # both are recovered by removing only exact recorded owned residue.
@@ -781,23 +1078,37 @@ def install_linux_package(
     dropin = dropin_dir / _DROPIN_FILE_NAME
     credential_source = root / "etc/happyranch/enrollment.key"
     publishes_dropin = system_service and credential_source.is_file()
+    # Ownership/type preflight: no write or delete may follow a symlink or an
+    # unexpected type at any target or ancestor below the selected root.
+    for path in (
+        root, opt, units, dropin_dir, dropin,
+        *(units / unit for unit in UNITS),
+        root / TRANSACTION_MARKER, _record_temp(root),
+        root / _PAYLOAD_BACKUP_NAME, root / _UNIT_BACKUP_NAME,
+    ):
+        _assert_safe_target(root, path)
     payload_present = opt.exists()
     dropin_present = dropin.exists()
     unit_present = {name: (units / name).exists() for name in UNITS}
     created_parents = _planned_created_parents(root, include_dropin_dir=publishes_dropin)
+    new_payload = _planned_payload_inventory(files, system_service)
+    new_units = {
+        unit: {"sha256": _sha(files[f"systemd/{unit}"]), "mode": 0o600} for unit in UNITS
+    }
+    new_dropin = {"sha256": _sha(_DROPIN_BYTES), "mode": 0o600} if publishes_dropin else None
     checkpoint = fault or (lambda _name: None)
-    record: dict | None = None
+    attempt_id = secrets.token_hex(16)
     stage: Path | None = None
     try:
         _seam(guard, "before", "stage_create", root)
-        stage = Path(tempfile.mkdtemp(prefix=_STAGE_PREFIX, dir=root))
+        stage = Path(tempfile.mkdtemp(prefix=f"{_STAGE_PREFIX}{attempt_id}-", dir=root))
         _seam(guard, "after", "stage_create", stage)
         _seam(guard, "before", "stage_chmod", stage)
         stage.chmod(0o755 if system_service else 0o700)
         _seam(guard, "after", "stage_chmod", stage)
         record = {
             "schema_version": TRANSACTION_SCHEMA_VERSION,
-            "attempt_id": secrets.token_hex(16),
+            "attempt_id": attempt_id,
             "root": str(root),
             "phase": "preparing",
             "payload_present": payload_present,
@@ -807,9 +1118,12 @@ def install_linux_package(
             "created_parents": created_parents,
             "published_units": [],
             "dropin_published": False,
-            "backups": {"units": {name: None for name in UNITS}, "dropin": None},
+            "backups": {"payload": None, "units": {name: None for name in UNITS}, "dropin": None},
+            "new_payload": new_payload,
+            "new_units": new_units,
+            "new_dropin": new_dropin,
         }
-        _write_record(root, record, guard)
+        record = _publish(root, record, guard)
 
         for relative in ("opt", "etc", "etc/systemd", "etc/systemd/system"):
             _ensure_dir(root / relative, 0o755, guard, "parent")
@@ -824,6 +1138,8 @@ def install_linux_package(
             mode = int(PAYLOAD_MODES[name], 8) if system_service else (0o700 if name.startswith("bin/") else 0o600)
             _write_file(target, raw, mode, guard, f"stage_payload:{name}")
         _write_file(stage / "manifest.json", files["manifest.json"], 0o600, guard, "stage_manifest")
+        if not _tree_matches(stage, new_payload):
+            raise PackageError("transaction_state_invalid")
 
         unit_backup = root / _UNIT_BACKUP_NAME
         _ensure_dir(unit_backup, 0o700, guard, "unit_backup")
@@ -833,7 +1149,7 @@ def install_linux_package(
             if target.exists():
                 destination = unit_backup / unit
                 _copy_file(target, destination, guard, f"unit_backup:{unit}")
-                inventory_units[unit] = _backup_inventory(destination)
+                inventory_units[unit] = _path_file_identity(destination)
             else:
                 inventory_units[unit] = None
         inventory_dropin: dict | None = None
@@ -841,60 +1157,58 @@ def install_linux_package(
             _ensure_dir(unit_backup / _DROPIN_SERVICE_DIR, 0o700, guard, "dropin_backup_dir")
             destination = unit_backup / _DROPIN_BACKUP_RELATIVE
             _copy_file(dropin, destination, guard, "dropin_backup")
-            inventory_dropin = _backup_inventory(destination)
-        record["backups"] = {"units": inventory_units, "dropin": inventory_dropin}
-        record["phase"] = "prepared"
-        _write_record(root, record, guard)
+            inventory_dropin = _path_file_identity(destination)
+        # The complete OLD payload identity is recorded BEFORE the retain so a
+        # later restore can validate it and recognize an already-restored tree.
+        inventory_payload = _inventory_tree(opt) if payload_present else None
+        record = _publish(
+            root, record, guard, phase="prepared",
+            backups={"payload": inventory_payload, "units": inventory_units, "dropin": inventory_dropin},
+        )
 
         payload_backup = root / _PAYLOAD_BACKUP_NAME
         if payload_present:
             _replace(opt, payload_backup, guard, "payload_retain")
-        record["phase"] = "payload_retained"
-        _write_record(root, record, guard)
+        record = _publish(root, record, guard, phase="payload_retained")
         checkpoint("payload_old_retained")
 
         _replace(stage, opt, guard, "payload_publish")
-        record["phase"] = "payload_published"
-        _write_record(root, record, guard)
+        record = _publish(root, record, guard, phase="payload_published")
         checkpoint("payload_published")
 
-        record["phase"] = "units_publishing"
-        _write_record(root, record, guard)
+        record = _publish(root, record, guard, phase="units_publishing")
         for unit in UNITS:
             target = units / unit
             if not unit_present[unit] and (target.exists() or target.is_symlink()):
                 raise PackageError("transaction_state_invalid")
             # Publish the intent before the mutation so a torn write is still
             # classified as an owned NEW artifact by recovery.
-            record["published_units"] = [*record["published_units"], unit]
-            _write_record(root, record, guard)
+            record = _publish(
+                root, record, guard, published_units=[*record["published_units"], unit]
+            )
             _write_file(target, files[f"systemd/{unit}"], 0o600, guard, f"unit_publish:{unit}")
             checkpoint(f"unit_published:{unit}")
 
-        record["phase"] = "dropin_publishing"
-        _write_record(root, record, guard)
+        record = _publish(root, record, guard, phase="dropin_publishing")
         if publishes_dropin:
-            record["dropin_published"] = True
-            _write_record(root, record, guard)
-            _write_file(
-                dropin,
-                b"[Service]\nLoadCredential=enrollment.key:/etc/happyranch/enrollment.key\n",
-                0o600,
-                guard,
-                "dropin_publish",
-            )
+            record = _publish(root, record, guard, dropin_published=True)
+            _write_file(dropin, _DROPIN_BYTES, 0o600, guard, "dropin_publish")
 
-        record["phase"] = "committed"
-        _write_record(root, record, guard)
+        # The authoritative commit is the durable publication of the committed
+        # record: a failure before it restores OLD, a failure after it retains NEW.
+        record = _publish(root, record, guard, phase="committed")
         _cleanup_owned(root, record, guard)
     except Exception:
-        if record is not None and (root / TRANSACTION_MARKER).exists():
-            if record["phase"] in {"preparing", "committed"}:
-                _cleanup_owned(root, record, guard)
-            else:
-                _restore_old(root, record, guard)
-        else:
+        marker = root / TRANSACTION_MARKER
+        if not marker.exists() and not marker.is_symlink():
             _cleanup_pre_record(root, stage, guard)
+        else:
+            durable = _load_record(root, marker)
+            _assert_record_paths_safe(root, durable)
+            if durable["phase"] in {"preparing", "committed"}:
+                _cleanup_owned(root, durable, guard)
+            else:
+                _restore_old(root, durable, guard)
         raise
     return {"version": manifest["version"], "manifest_sha256": _sha(files["manifest.json"])}
 
