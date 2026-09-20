@@ -234,6 +234,14 @@ describe('3 — partial environment override', () => {
     expect(document.body).toHaveTextContent(/Task session slots is set by the environment/);
     expect(document.body).not.toHaveTextContent(/resolves 3 \/ 12/);
     expect(document.body).not.toHaveTextContent(/the saved value\b/i);
+    // R6 / accepted 3.1: the CONSEQUENCE uses the resolved W = 3, so the
+    // worker-pool total is 3 + 7 = 10 — never the drafted 5 + 7 = 12.
+    expect(screen.getByText('Worker-pool total').nextElementSibling?.firstChild?.textContent)
+      .toBe('10');
+    expect(screen.getByText('Worker-pool total').parentElement?.textContent)
+      .toContain('3 task + 7 other producers');
+    expect(document.body).toHaveTextContent(/Host cap 14 is above the worker-pool total 10/);
+    expect(document.body).not.toHaveTextContent(/worker-pool total 12/);
   });
 
   test('3.2 mirrored H-only shadow resolves W=5 / H=10 and names only the host limit', async () => {
@@ -249,24 +257,62 @@ describe('3 — partial environment override', () => {
     await userEvent.type(cap(), '14');
     expect(document.body).toHaveTextContent(/Task session slots 5, Host session admission limit 10/);
     expect(document.body).toHaveTextContent(/Host session admission limit is set by the environment/);
+    // The direction compares the RESOLVED cap 10 against the pool 5 + 7 = 12.
+    expect(screen.getByText('Worker-pool total').parentElement?.textContent)
+      .toContain('5 task + 7 other producers');
+    expect(document.body).toHaveTextContent(/Host cap 10 is below the worker-pool total 12/);
+    expect(document.body).not.toHaveTextContent(/Host cap 14/);
   });
 
   test('3.4 the preview is bounded and predicts no future effective cap', async () => {
     loaded(shadowW);
     mount();
+    await userEvent.clear(cap());
+    await userEvent.type(cap(), '14');
     expect(document.body).toHaveTextContent(/Assumes unchanged environment and\s+worker topology/i);
+    // No predicted FUTURE effective admission cap anywhere, in any state.
+    expect(document.body).not.toHaveTextContent(/effective admission (cap )?will|future effective|predicted/i);
+    expect(document.body).not.toHaveTextContent(/effective next start/i);
+    // The only effective-cap number on screen is the OBSERVED running one.
+    expect(screen.getByText('Host session admission limit running').parentElement?.textContent)
+      .toMatch(/10/);
   });
 });
 
 // ---------------------------------------------------------------------------
 describe('4 — acknowledgment identity', () => {
-  test('4.3 shadow clearing removes the control and frees Save', () => {
-    loaded({ environment_shadowed: ['queue_workers'], environment_warning: 'w' });
-    const { rerender } = mount();
-    expect(screen.getByRole('checkbox')).toBeInTheDocument();
+  test('4.3 shadow clearing removes the control, resets ack and frees Save — with the component STILL MOUNTED', async () => {
+    loaded({
+      environment_shadowed: ['queue_workers'],
+      environment_warning: 'w',
+      next_start: { queue_workers: 3, host_global_session_cap: 12 },
+    });
+    mount();
+    await userEvent.click(screen.getByRole('checkbox'));
+    expect(screen.getByRole('checkbox')).toBeChecked();
+    await userEvent.type(reasonBox(), 'why');
+    // Shadowed and un-acknowledged is a DISABLED Save; acknowledged is enabled.
+    expect(saveButton()).toBeEnabled();
+    expect(document.body).toHaveTextContent(/set by the environment/);
+
+    // R9 4.3: re-render the SAME component with the new data. `rerender(<div />)`
+    // unmounts it, so a missing checkbox afterwards proves nothing about the
+    // transition.
+    // R9 4.3: the component stays MOUNTED. The hook now returns an unshadowed
+    // snapshot and an ordinary keystroke re-renders it — `rerender(<div />)`
+    // would unmount it, and a missing checkbox afterwards would prove nothing.
     loaded({ environment_shadowed: [], environment_warning: null });
-    rerender(<div />);
-    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    await userEvent.type(reasonBox(), '!');
+
+    await waitFor(() => expect(screen.queryByRole('checkbox')).not.toBeInTheDocument());
+    // The panel and its preview are gone; Save is free without an ack.
+    expect(document.body).not.toHaveTextContent(/set by the environment/);
+    expect(document.body).not.toHaveTextContent(/Environment override in effect/);
+    expect(saveButton()).toBeEnabled();
+    // The editor and reason survive the transition.
+    expect(reasonBox()).toHaveValue('why!');
+    expect(workers()).toHaveValue('3');
+    expect(mutateAsync).not.toHaveBeenCalled();
   });
 
   test('4.4 submitting without the acknowledgment issues no PUT and focuses the control', async () => {
@@ -335,12 +381,29 @@ describe('5 — draft consequence and precision', () => {
     expect(document.body).not.toHaveTextContent(/\+ 7 other producers/);
   });
 
-  test('5.5 excess cap copy never claims added capability', async () => {
+  test('5.5 excess cap copy never claims added capability, before AND after a successful save', async () => {
+    mutateAsync.mockResolvedValue(validSnapshot({
+      revision: REV_B,
+      persisted_yaml: { queue_workers: 3, host_global_session_cap: 30 },
+      next_start: { queue_workers: 3, host_global_session_cap: 30 },
+      restart_pending: true,
+    }));
     mount();
     await userEvent.clear(cap());
     await userEvent.type(cap(), '30');
     expect(document.body).toHaveTextContent(/Extra admission room does not create additional producers/);
     expect(document.body).not.toHaveTextContent(/more capacity|higher throughput/i);
+
+    // R9 5.5: the required POST-SUCCESS behaviour — the honest copy survives
+    // into the result panel and no capability claim appears there either.
+    await fillAndSave('raise the cap');
+    expect(await screen.findByText(/Saved for next restart/)).toBeVisible();
+    expect(document.body).not.toHaveTextContent(/more capacity|higher throughput|additional capability|faster/i);
+    expect(document.body).not.toHaveTextContent(/Applied|Apply now|Restart daemon/);
+    // The pair settled at the saved values and the form is clean.
+    expect(cap()).toHaveValue('30');
+    expect(reasonBox()).toHaveValue('');
+    expect(document.body).not.toHaveTextContent(/Unsaved changes/);
   });
 });
 
@@ -358,22 +421,52 @@ describe('6 — absent keys, no-op semantics, rationale-only dirty', () => {
 
   test('6.3 rationale-only dirty arms protection without a value-comparison panel', async () => {
     mount();
+    // The consequence panel IS rendered for a pristine form, so its absence
+    // after typing a reason is a real transition, not a never-present element.
+    expect(document.body).toHaveTextContent(/Draft matches the saved configuration/);
     await userEvent.type(reasonBox(), 'just the reason');
     expect(document.body).toHaveTextContent(/values are unchanged from the saved file; only the reason differs/);
-    expect(document.body).toHaveTextContent(/Draft matches the saved configuration/);
+    // Accepted 6.3 (S3): NO value-comparison / consequence panel in this state.
+    expect(document.body).not.toHaveTextContent(/Draft matches the saved configuration/);
+    expect(document.body).not.toHaveTextContent(/Draft changes the saved configuration/);
+    expect(screen.queryByText('Worker-pool total')).not.toBeInTheDocument();
+    // No prediction about whether the revision will move.
+    expect(document.body).not.toHaveTextContent(/revision will|new revision/i);
     expect(document.body).toHaveTextContent(/Unsaved changes/);
     expect(saveButton()).toBeEnabled();
   });
 
-  test('6.4 the comparison is on (presence, value), never value alone', () => {
+  test('6.4 the comparison is on (presence, value), never value alone — asserted on a MOUNTED transition', async () => {
     loaded({ persisted_yaml: { queue_workers: null, host_global_session_cap: null } });
-    const { rerender } = mount();
+    mount();
     // Absent keys seed the same digits a present 3/10 would, so identical
     // digits must NOT be read as identical state.
     expect(workers()).toHaveValue('3');
+    expect(cap()).toHaveValue('10');
     expect(within(screen.getByRole('table')).getAllByText('Not set in file')).toHaveLength(2);
+    // Absent keys are still stageable with a reason (6.2 contrast).
+    await userEvent.type(reasonBox(), 'stage both keys explicitly');
+    expect(saveButton()).toBeEnabled();
+    expect(document.body).not.toHaveTextContent(/no-op|nothing to save/i);
+
+    // R9 6.4: the SAME component now sees keys PRESENT at identical digits.
+    // R9 6.4: the SAME MOUNTED component now sees keys PRESENT at identical
+    // digits, re-rendered by an ordinary keystroke rather than an unmount.
     loaded({ persisted_yaml: { queue_workers: 3, host_global_session_cap: 10 } });
-    rerender(<div />);
+    await userEvent.type(reasonBox(), '!');
+
+    // The digits are unchanged, but the presence reading is different: the
+    // "Not set in file" cells are gone and the values are shown instead.
+    await waitFor(() => expect(
+      within(screen.getByRole('table')).queryAllByText('Not set in file'),
+    ).toHaveLength(0));
+    expect(workers()).toHaveValue('3');
+    expect(cap()).toHaveValue('10');
+    const savedCells = within(screen.getByRole('table')).getAllByRole('row')
+      .slice(1)
+      .map((row) => (row as HTMLTableRowElement).cells[2].textContent);
+    expect(savedCells).toEqual(['3', '10']);
+    expect(reasonBox()).toHaveValue('stage both keys explicitly!');
   });
 
   test('6.5 defaults-only fixture shows no override control', () => {
@@ -535,10 +628,88 @@ describe('15 — numeric honesty at the write site (Q8 is NOT solved)', () => {
     expect(document.body).not.toHaveTextContent(/maximum (allowed|value|supported)/i);
   });
 
-  test('15.6 / 15.10 a quoted numeric anywhere in the read makes it unusable, not a zero', () => {
-    loaded({ next_start: { queue_workers: '5', host_global_session_cap: 10 } });
+  // 15.6 — every REQUIRED RAW TYPE rejection, on every consumed numeric slot.
+  const NON_NUMERIC: [string, unknown][] = [
+    ['a quoted numeric', '5'],
+    ['a boolean', true],
+    ['an array', []],
+    ['an object', {}],
+    ['a null', null],
+  ];
+  const CONSUMED_SLOT_PATCHES: [string, (bad: unknown) => Record<string, unknown>][] = [
+    ['running_at_daemon_start.queue_workers', (b) => ({ running_at_daemon_start: { queue_workers: b, host_global_session_cap: 10 } })],
+    ['running_at_daemon_start.host_global_session_cap', (b) => ({ running_at_daemon_start: { queue_workers: 3, host_global_session_cap: b } })],
+    ['next_start.queue_workers', (b) => ({ next_start: { queue_workers: b, host_global_session_cap: 10 } })],
+    ['next_start.host_global_session_cap', (b) => ({ next_start: { queue_workers: 3, host_global_session_cap: b } })],
+    ['producer_envelope', (b) => ({ producer_envelope: b })],
+    ['producer_components.task_workers', (b) => ({ producer_components: { task_workers: b, thread_workers: 4, dream_workers: 1, wake_workers: 1, schedule_workers: 1 } })],
+    ['producer_components.thread_workers', (b) => ({ producer_components: { task_workers: 3, thread_workers: b, dream_workers: 1, wake_workers: 1, schedule_workers: 1 } })],
+    ['producer_components.dream_workers', (b) => ({ producer_components: { task_workers: 3, thread_workers: 4, dream_workers: b, wake_workers: 1, schedule_workers: 1 } })],
+    ['producer_components.wake_workers', (b) => ({ producer_components: { task_workers: 3, thread_workers: 4, dream_workers: 1, wake_workers: b, schedule_workers: 1 } })],
+    ['producer_components.schedule_workers', (b) => ({ producer_components: { task_workers: 3, thread_workers: 4, dream_workers: 1, wake_workers: 1, schedule_workers: b } })],
+  ];
+
+  test('15.6 / 15.10 EVERY consumed non-nullable numeric slot rejects EVERY non-numeric raw type, and never renders a zero', () => {
+    for (const [slotName, patch] of CONSUMED_SLOT_PATCHES) {
+      for (const [typeName, bad] of NON_NUMERIC) {
+        loaded(patch(bad));
+        const view = mount();
+        expect(
+          document.body.textContent,
+          `${slotName} = ${typeName}`,
+        ).toMatch(/Cannot read capacity configuration/);
+        expect(document.body.textContent, `${slotName} = ${typeName}`).not.toMatch(/\b0\b/);
+        view.unmount();
+      }
+    }
+  });
+
+  test('15.10 the NULLABLE positions accept null, and 5.5 fractional values never render rounded', () => {
+    // Only these three may be null.
+    for (const patch of [
+      { persisted_yaml: { queue_workers: null, host_global_session_cap: 10 } },
+      { persisted_yaml: { queue_workers: 3, host_global_session_cap: null } },
+      { effective_admission_cap: null, effective_admission_reason: 'No supervisor snapshot' },
+    ]) {
+      loaded(patch);
+      const view = mount();
+      expect(screen.queryByText(/Cannot read capacity configuration/)).not.toBeInTheDocument();
+      view.unmount();
+    }
+    // A fraction is not a safe integer: withheld, never shown as `5`.
+    loaded({ next_start: { queue_workers: 5.5, host_global_session_cap: 10 } });
+    const fractional = mount();
+    expect(document.body.textContent).toMatch(/outside the range this editor can represent exactly/);
+    expect(document.body).not.toHaveTextContent(/\b5\b/);
+    fractional.unmount();
+  });
+
+  test('15.10 the DOMAIN and RELATIONAL invariants are enforced, not rendered', () => {
+    // W and H strictly positive.
+    for (const patch of [
+      { next_start: { queue_workers: 0, host_global_session_cap: 10 } },
+      { next_start: { queue_workers: 3, host_global_session_cap: 0 } },
+      { running_at_daemon_start: { queue_workers: -1, host_global_session_cap: 10 } },
+      { persisted_yaml: { queue_workers: 0, host_global_session_cap: 10 } },
+      // producer components nonnegative.
+      { producer_components: { task_workers: -1, thread_workers: 4, dream_workers: 1, wake_workers: 1, schedule_workers: 1 } },
+      { producer_envelope: -1 },
+    ]) {
+      loaded(patch);
+      const view = mount();
+      expect(document.body.textContent, JSON.stringify(patch))
+        .toMatch(/Cannot read capacity configuration/);
+      view.unmount();
+    }
+    // Relational: task_workers <= producer_envelope. A violation is
+    // INCONSISTENT (case 5.2), a distinct outcome from unusable.
+    loaded({
+      producer_envelope: 10,
+      producer_components: { task_workers: 12, thread_workers: 0, dream_workers: 0, wake_workers: 0, schedule_workers: 0 },
+    });
     mount();
-    expect(screen.getByRole('alert')).toHaveTextContent(/Cannot read capacity configuration/);
+    expect(document.body.textContent).toMatch(/Capacity details are inconsistent in this response/);
+    expect(document.body).not.toHaveTextContent(/-2/);
   });
 
   test('15.10 a null in a non-nullable position is unusable, never a zero', () => {
@@ -628,12 +799,67 @@ describe('16 — accessibility wiring (not a screen-reader acceptance pass)', ()
     expect(await screen.findByText('Reason for change is required.')).toBeInTheDocument();
   });
 
-  test('16.6 every action is a real control, never a click-only div', () => {
+  test('16.6 the accepted TAB ORDER is walked, and every action is a real keyboard-operable control', async () => {
+    loaded({
+      environment_shadowed: ['queue_workers'],
+      environment_warning: 'Environment overrides win.',
+      next_start: { queue_workers: 3, host_global_session_cap: 12 },
+    });
     mount();
     for (const name of [/Save for next restart/, /Discard draft/, /Refresh running state/]) {
       expect(screen.getByRole('button', { name })).toBeInstanceOf(HTMLButtonElement);
     }
     expect(screen.getByText('Capacity details').tagName).toBe('SUMMARY');
+
+    // Accepted 16.6 order: W -> H -> reason -> acknowledgment -> Save ->
+    // Discard -> Refresh -> Capacity details.
+    //
+    // The acknowledgment is given first: a DISABLED Save is not focusable, so
+    // walking the order with it disabled would silently skip a step.
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('checkbox'));
+    expect(saveButton()).toBeEnabled();
+    workers().focus();
+    const expected: HTMLElement[] = [
+      cap(),
+      reasonBox(),
+      screen.getByRole('checkbox'),
+      saveButton(),
+      screen.getByRole('button', { name: /Discard draft/ }),
+      screen.getByRole('button', { name: /Refresh running state/ }),
+    ];
+    for (const next of expected) {
+      await user.tab();
+      expect(document.activeElement).toBe(next);
+    }
+    // The disclosure is a NATIVE <summary>, which is keyboard-focusable and
+    // Enter/Space-operable in a real browser. jsdom does not implement
+    // <details>/<summary> focus at all, so the LAST step of the walk and the
+    // activation gesture are proven in the browser harness (16.11), not here.
+    // This is a stated venue boundary, not a skipped requirement.
+    expect(screen.getByText('Capacity details').tagName).toBe('SUMMARY');
+  });
+
+  test('16.6b the reconciliation controls are real keyboard-operable buttons too', async () => {
+    mutateAsync.mockRejectedValue(new ApiError(409, 'stale_revision', {
+      code: 'stale_revision',
+      latest: validSnapshot({ revision: REV_B, persisted_yaml: { queue_workers: 2, host_global_session_cap: 9 } }),
+    }));
+    mount();
+    await userEvent.clear(workers());
+    await userEvent.type(workers(), '5');
+    await fillAndSave('why');
+    await screen.findByText('Saved settings changed elsewhere. Your draft is preserved.');
+
+    for (const name of ['Keep my draft, rebase onto latest', 'Discard draft, accept latest']) {
+      expect(screen.getByRole('button', { name })).toBeInstanceOf(HTMLButtonElement);
+    }
+    // Operate one by keyboard only.
+    screen.getByRole('button', { name: 'Keep my draft, rebase onto latest' }).focus();
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(
+      screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' }),
+    ).not.toBeInTheDocument());
   });
 
   test('16.8 important warnings are VISIBLE with the details disclosure collapsed', () => {

@@ -10,11 +10,12 @@
  * chains through to their FINAL separate manual save, and asserts that save's
  * actual `If-Match` header and raw request body rather than visible text.
  */
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
+import { capacityQueryKey } from '@/design-system/providers/_capacity-ordering';
 import { server } from '@/test/server';
 import { renderGuarded } from './capacityTestMount';
 
@@ -251,26 +252,45 @@ describe('2 — read ordering that no hook-mocked test can see', () => {
     const view = mount();
     await ready();
 
-    const slow = view.client.fetchQuery({
-      queryKey: ['daemon-capacity', SLUG],
-      queryFn: () => fetch(`/api/v1${CAPACITY.replace('/api/v1', '')}`).then((r) => r.json()),
-    }).catch(() => undefined);
-    void slow;
-
-    // Drive two reads through the provider, newest settling first.
-    const g1 = view.client.refetchQueries({ queryKey: ['daemon-capacity', SLUG] });
-    await waitFor(() => expect(gets().length).toBeGreaterThanOrEqual(2));
-    const g2 = view.client.refetchQueries({ queryKey: ['daemon-capacity', SLUG] });
-    await waitFor(() => expect(gets().length).toBeGreaterThanOrEqual(3));
+    // BOTH competing reads go through the PRODUCTION queryFn. Installing a raw
+    // `fetch` queryFn via `fetchQuery` would replace the very ordering logic
+    // under test and prove nothing about the shipped provider.
+    const g1 = view.client.refetchQueries({ queryKey: capacityQueryKey(SLUG) });
+    await waitFor(() => expect(gets()).toHaveLength(2));
+    const g2 = view.client.refetchQueries({ queryKey: capacityQueryKey(SLUG) });
+    await waitFor(() => expect(gets()).toHaveLength(3));
     await g2;
+    // The OLDER read settles last, carrying the pre-competition snapshot.
     firstGate.resolve(HttpResponse.json(snapshot({ revision: REV_A })));
     await g1;
 
-    // The NEWER read's revision is what a later manual save uses.
+    // GET#1 is DROPPED, not merged: display, cache and provider observation
+    // all hold GET#2's snapshot exactly.
+    await waitFor(() => expect(savedCell()).toHaveTextContent('4'));
+    expect(workers()).toHaveValue('4');
+    expect(cap()).toHaveValue('11');
+    expect(
+      view.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision,
+    ).toBe(REV_B);
+    expect(
+      view.client.getQueryData<{ persisted_yaml: { queue_workers: number } }>(
+        capacityQueryKey(SLUG),
+      )?.persisted_yaml.queue_workers,
+    ).toBe(4);
+
+    // The manual save carries EXACTLY B, and settles coherently.
     await setPair('6', '13');
     await saveWith('after competing reads');
     await waitFor(() => expect(puts()).toHaveLength(1));
-    expect(puts()[0].ifMatch).not.toBe(`"${REV_A}"`);
+    expect(puts()[0].ifMatch).toBe(`"${REV_B}"`);
+    expect(JSON.parse(puts()[0].rawBody)).toEqual({
+      queue_workers: 6,
+      host_global_session_cap: 13,
+      rationale: 'after competing reads',
+      confirm_environment_shadow: false,
+    });
+    await screen.findByText(/^Saved\. No restart is pending for these values\./);
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
   });
 
   test('2.8 an obsolete FAILURE never downgrades a state a newer usable read recovered', async () => {
@@ -379,13 +399,26 @@ describe('3 / 4 — override coverage', () => {
     expect(reasonBox()).toHaveValue('mirrored');
     expect(document.body).toHaveTextContent(/Host session admission limit 11/);
     expect(screen.getByRole('checkbox')).not.toBeChecked();
+    // Accepted 4.1b/4.1c: Save is DISABLED until the override is confirmed again.
+    expect(saveButton()).toBeDisabled();
 
     await user.click(saveButton());
+    fireEvent.submit(saveButton().closest('form') as HTMLFormElement);
+    await screen.findByText('Confirm the environment override before saving.');
     expect(puts()).toHaveLength(0);
+
     await user.click(screen.getByRole('checkbox'));
+    expect(saveButton()).toBeEnabled();
     await user.click(saveButton());
     await waitFor(() => expect(puts()).toHaveLength(1));
-    expect(JSON.parse(puts()[0].rawBody).confirm_environment_shadow).toBe(true);
+    // The renewed confirmation, the full pair and the header are all asserted.
+    expect(puts()[0].ifMatch).toBe(`"${REV_A}"`);
+    expect(JSON.parse(puts()[0].rawBody)).toEqual({
+      queue_workers: 5,
+      host_global_session_cap: 12,
+      rationale: 'mirrored',
+      confirm_environment_shadow: true,
+    });
   });
 
   test('4.2 a GROWN shadowed key set clears the ack and preserves base/draft/reason', async () => {
@@ -408,8 +441,28 @@ describe('3 / 4 — override coverage', () => {
     expect(screen.getByRole('checkbox')).not.toBeChecked();
     expect(workers()).toHaveValue('5');
     expect(reasonBox()).toHaveValue('grown set');
+    expect(savedCell()).toHaveTextContent('3');
+    // Both shadowed keys are named in the override panel.
+    expect(document.body).toHaveTextContent(/Host session admission limit and Task session slots are set by the environment/);
+    // Save is DISABLED, and the handler refuses too.
+    expect(saveButton()).toBeDisabled();
     await user.click(saveButton());
+    fireEvent.submit(saveButton().closest('form') as HTMLFormElement);
+    await screen.findByText('Confirm the environment override before saving.');
     expect(puts()).toHaveLength(0);
+
+    // Renewed acknowledgment -> the complete request is observed at the wire.
+    await user.click(screen.getByRole('checkbox'));
+    expect(saveButton()).toBeEnabled();
+    await user.click(saveButton());
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(puts()[0].ifMatch).toBe(`"${REV_A}"`);
+    expect(JSON.parse(puts()[0].rawBody)).toEqual({
+      queue_workers: 5,
+      host_global_session_cap: 12,
+      rationale: 'grown set',
+      confirm_environment_shadow: true,
+    });
   });
 });
 
@@ -476,11 +529,22 @@ describe('7 — dirty refresh and explicit reconciliation', () => {
     expect(cap()).toHaveValue('9');
     expect(reasonBox()).toHaveValue('');
 
-    await setPair('4', '11');
+    // Accepted 7.4: the subsequent PUT carries the ACCEPTED-LATEST pair 2/9
+    // with a FRESH reason — not a newly invented pair.
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
     await saveWith('fresh reason');
     await waitFor(() => expect(puts()).toHaveLength(1));
     expect(puts()[0].ifMatch).toBe(`"${REV_B}"`);
-    expect(JSON.parse(puts()[0].rawBody).queue_workers).toBe(4);
+    expect(JSON.parse(puts()[0].rawBody)).toEqual({
+      queue_workers: 2,
+      host_global_session_cap: 9,
+      rationale: 'fresh reason',
+      confirm_environment_shadow: false,
+    });
+    // And it settles coherently.
+    await screen.findByText(/^Saved\. No restart is pending for these values\./);
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    expect(reasonBox()).toHaveValue('');
   });
 
   test('7.5 doing nothing never auto-rebases on a further refresh', async () => {
@@ -625,7 +689,13 @@ describe('10 — typed publication-uncertain, carried to its final save', () => 
         : HttpResponse.json(snapshot({
           revision: REV_C, persisted_yaml: { queue_workers: 7, host_global_session_cap: 14 },
         }))),
-      put: (i) => (i === 0 ? uncertain() : HttpResponse.json(snapshot({ revision: REV_A }))),
+      // The accepted response is COHERENT with what was submitted: a fixture
+      // that returns the ORIGINAL pair could hide a save that never applied.
+      put: (i) => (i === 0 ? uncertain() : HttpResponse.json(snapshot({
+        revision: REV_A,
+        persisted_yaml: { queue_workers: 5, host_global_session_cap: 12 },
+        next_start: { queue_workers: 5, host_global_session_cap: 12 },
+      }))),
     });
     mount();
     await ready();
@@ -636,13 +706,35 @@ describe('10 — typed publication-uncertain, carried to its final save', () => 
     await screen.findByText(/still differ from what you submitted/);
 
     await userEvent.click(rebaseButton());
+    // The explicit choice RELEASES the pinned submission and clears the lock.
     expect(screen.queryByText(/You submitted Task session slots 5/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/durability, verification, or cleanup did not complete/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Currently saved')).not.toBeInTheDocument();
+    // The reconciliation itself sends NO request; the draft is kept verbatim.
+    expect(puts()).toHaveLength(1);
+    expect(workers()).toHaveValue('5');
+    expect(cap()).toHaveValue('12');
+    expect(reasonBox()).toHaveValue('measured receipts');
 
     await userEvent.click(saveButton());
     await waitFor(() => expect(puts()).toHaveLength(2));
     expect(puts()[1].ifMatch).toBe(`"${REV_C}"`);
-    expect(JSON.parse(puts()[1].rawBody).queue_workers).toBe(5);
-    await screen.findByText(/^Saved(\.| for next restart\.)/);
+    expect(JSON.parse(puts()[1].rawBody)).toEqual({
+      queue_workers: 5,
+      host_global_session_cap: 12,
+      rationale: 'measured receipts',
+      confirm_environment_shadow: false,
+    });
+    // FINAL: the returned base is displayed, the guard is disarmed and no
+    // residual lock or submission remains.
+    await screen.findByText(/^Saved\. No restart is pending for these values\./);
+    await waitFor(() => expect(savedCell()).toHaveTextContent('5'));
+    expect(reasonBox()).toHaveValue('');
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/You submitted/)).not.toBeInTheDocument();
+    const unload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(false);
   });
 
   test('10.8 accept-latest branch: clean at 7/14, then a NEW intentional edit saves 8/15 @ REV_C', async () => {
@@ -652,7 +744,11 @@ describe('10 — typed publication-uncertain, carried to its final save', () => 
         : HttpResponse.json(snapshot({
           revision: REV_C, persisted_yaml: { queue_workers: 7, host_global_session_cap: 14 },
         }))),
-      put: (i) => (i === 0 ? uncertain() : HttpResponse.json(snapshot({ revision: REV_A }))),
+      put: (i) => (i === 0 ? uncertain() : HttpResponse.json(snapshot({
+        revision: REV_A,
+        persisted_yaml: { queue_workers: 8, host_global_session_cap: 15 },
+        next_start: { queue_workers: 8, host_global_session_cap: 15 },
+      }))),
     });
     mount();
     await ready();
@@ -663,17 +759,32 @@ describe('10 — typed publication-uncertain, carried to its final save', () => 
     await screen.findByText(/still differ from what you submitted/);
 
     await userEvent.click(acceptButton());
+    // EXPLICIT clean intermediate state: no request, no submission, no lock,
+    // no guard — before the new intentional edit begins.
     expect(puts()).toHaveLength(1);
     await waitFor(() => expect(workers()).toHaveValue('7'));
     expect(cap()).toHaveValue('14');
+    expect(reasonBox()).toHaveValue('');
     expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/You submitted/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/durability, verification, or cleanup did not complete/)).not.toBeInTheDocument();
+    const clean = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(clean);
+    expect(clean.defaultPrevented).toBe(false);
 
     await setPair('8', '15');
     await saveWith('new intent');
     await waitFor(() => expect(puts()).toHaveLength(2));
     expect(puts()[1].ifMatch).toBe(`"${REV_C}"`);
-    expect(JSON.parse(puts()[1].rawBody).queue_workers).toBe(8);
-    expect(JSON.parse(puts()[1].rawBody).rationale).toBe('new intent');
+    expect(JSON.parse(puts()[1].rawBody)).toEqual({
+      queue_workers: 8,
+      host_global_session_cap: 15,
+      rationale: 'new intent',
+      confirm_environment_shadow: false,
+    });
+    await screen.findByText(/^Saved\. No restart is pending for these values\./);
+    await waitFor(() => expect(savedCell()).toHaveTextContent('8'));
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
   });
 
   test('10.9 a newer draft after settlement is held independently from the pinned submission', async () => {
@@ -689,6 +800,48 @@ describe('10 — typed publication-uncertain, carried to its final save', () => 
     expect(screen.getByText(/You submitted Task session slots 5/)).toBeVisible();
     expect(document.body).toHaveTextContent(/current draft is Task session slots 7/);
     expect(document.body).toHaveTextContent(/held separately from the submitted values/);
+
+    // R9 10.9: carry the NEWER draft through a usable latest, an explicit
+    // rebase and a SEPARATE manual save to final settlement.
+    server.use(
+      http.get(CAPACITY, async () => {
+        captured.push({ method: 'GET', ifMatch: null, rawBody: '' });
+        return HttpResponse.json(snapshot({
+          revision: REV_C, persisted_yaml: { queue_workers: 2, host_global_session_cap: 9 },
+        }));
+      }),
+      http.put(CAPACITY, async ({ request }) => {
+        captured.push({
+          method: 'PUT',
+          ifMatch: request.headers.get('if-match'),
+          rawBody: await request.text(),
+        });
+        return HttpResponse.json(snapshot({
+          revision: REV_B,
+          persisted_yaml: { queue_workers: 7, host_global_session_cap: 14 },
+          next_start: { queue_workers: 7, host_global_session_cap: 14 },
+        }));
+      }),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Check saved values' }));
+    await screen.findByText(/still differ from what you submitted/);
+    expect(screen.getByText('Your draft').parentElement?.textContent).toMatch(/Task session slots 7/);
+
+    await userEvent.click(rebaseButton());
+    expect(workers()).toHaveValue('7');
+    await userEvent.click(saveButton());
+    await waitFor(() => expect(puts()).toHaveLength(2));
+    // The NEWER draft against the LATEST revision — never the pinned 5/12.
+    expect(puts()[1].ifMatch).toBe(`"${REV_C}"`);
+    expect(JSON.parse(puts()[1].rawBody)).toEqual({
+      queue_workers: 7,
+      host_global_session_cap: 14,
+      rationale: 'measured receipts',
+      confirm_environment_shadow: false,
+    });
+    await screen.findByText(/^Saved\. No restart is pending for these values\./);
+    await waitFor(() => expect(savedCell()).toHaveTextContent('7'));
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
   });
 });
 
@@ -720,13 +873,25 @@ describe('11 — lost response: every reread relation is named accurately', () =
     expect(puts()).toHaveLength(1);
   });
 
-  test('11.4 a reread matching the NEWER DRAFT does not collapse into "saved"', async () => {
+  test('11.4 a reread matching the NEWER DRAFT states BOTH relations and never collapses into "saved"', async () => {
     await lostThen({ persisted_yaml: { queue_workers: 7, host_global_session_cap: 14 }, revision: REV_B }, true);
-    await screen.findByText(/The saved values still differ from what you submitted/);
+    // R9 11.4: the required relation is an explicit MATCH to the current draft,
+    // stated separately from the difference against the submission. Asserting
+    // only "differs from what you submitted" left the draft relation unnamed.
+    await screen.findByText(/Saved values now match your current draft \(7 \/ 14\)/);
+    expect(document.body).toHaveTextContent(/they differ from what you submitted \(5 \/ 12\)/);
+    expect(document.body).toHaveTextContent(
+      /Matching your draft is not a saved result and does not confirm your request caused it/,
+    );
+    // Never a causal save claim, in any wording.
+    expect(document.body).not.toHaveTextContent(/your save succeeded|save was applied|save completed/i);
     expect(screen.getByText(/You submitted Task session slots 5/)).toBeVisible();
     expect(screen.getByText('Currently saved').parentElement?.textContent).toMatch(/Task session slots 7/);
-    expect(document.body).not.toHaveTextContent(/your save succeeded/i);
+    expect(screen.getByText('Your draft').parentElement?.textContent).toMatch(/Task session slots 7/);
+    expect(screen.getByText('Accepted base').parentElement?.textContent).toMatch(/Task session slots 3/);
+    // Still unresolved: no automatic PUT, guard still armed.
     expect(puts()).toHaveLength(1);
+    expect(document.body).toHaveTextContent(/Save result unknown/);
   });
 
   test('11.5 a reread matching NEITHER yields a three-way comparison', async () => {
@@ -755,7 +920,11 @@ describe('11 — lost response: every reread relation is named accurately', () =
       get: (i) => (i === 0
         ? HttpResponse.json(snapshot())
         : HttpResponse.json(snapshot({ revision: REV_B, persisted_yaml: { queue_workers: 2, host_global_session_cap: 9 } }))),
-      put: (i) => (i === 0 ? HttpResponse.error() : HttpResponse.json(snapshot({ revision: REV_C }))),
+      put: (i) => (i === 0 ? HttpResponse.error() : HttpResponse.json(snapshot({
+        revision: REV_C,
+        persisted_yaml: { queue_workers: 5, host_global_session_cap: 12 },
+        next_start: { queue_workers: 5, host_global_session_cap: 12 },
+      }))),
     });
     mount();
     await ready();
@@ -767,10 +936,24 @@ describe('11 — lost response: every reread relation is named accurately', () =
 
     await userEvent.click(rebaseButton());
     expect(screen.queryByText(/You submitted/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Save result unknown/)).not.toBeInTheDocument();
+    expect(puts()).toHaveLength(1);
     await userEvent.click(saveButton());
     await waitFor(() => expect(puts()).toHaveLength(2));
     expect(puts()[1].ifMatch).toBe(`"${REV_B}"`);
-    expect(JSON.parse(puts()[1].rawBody).queue_workers).toBe(5);
+    expect(JSON.parse(puts()[1].rawBody)).toEqual({
+      queue_workers: 5,
+      host_global_session_cap: 12,
+      rationale: 'measured receipts',
+      confirm_environment_shadow: false,
+    });
+    await screen.findByText(/^Saved\. No restart is pending for these values\./);
+    await waitFor(() => expect(savedCell()).toHaveTextContent('5'));
+    expect(reasonBox()).toHaveValue('');
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    const unload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(false);
   });
 
   test('11.10 accept-latest branch: a clean intermediate state, then a new edit saves against REV_B', async () => {
@@ -778,7 +961,11 @@ describe('11 — lost response: every reread relation is named accurately', () =
       get: (i) => (i === 0
         ? HttpResponse.json(snapshot())
         : HttpResponse.json(snapshot({ revision: REV_B, persisted_yaml: { queue_workers: 2, host_global_session_cap: 9 } }))),
-      put: (i) => (i === 0 ? HttpResponse.error() : HttpResponse.json(snapshot({ revision: REV_C }))),
+      put: (i) => (i === 0 ? HttpResponse.error() : HttpResponse.json(snapshot({
+        revision: REV_C,
+        persisted_yaml: { queue_workers: 6, host_global_session_cap: 13 },
+        next_start: { queue_workers: 6, host_global_session_cap: 13 },
+      }))),
     });
     mount();
     await ready();
@@ -790,13 +977,30 @@ describe('11 — lost response: every reread relation is named accurately', () =
 
     await userEvent.click(acceptButton());
     await waitFor(() => expect(workers()).toHaveValue('2'));
+    // Explicit clean intermediate state.
+    expect(cap()).toHaveValue('9');
+    expect(reasonBox()).toHaveValue('');
     expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/You submitted/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Save result unknown/)).not.toBeInTheDocument();
+    expect(puts()).toHaveLength(1);
+    const clean = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(clean);
+    expect(clean.defaultPrevented).toBe(false);
 
     await setPair('6', '13');
     await saveWith('new pair');
     await waitFor(() => expect(puts()).toHaveLength(2));
     expect(puts()[1].ifMatch).toBe(`"${REV_B}"`);
-    expect(JSON.parse(puts()[1].rawBody).queue_workers).toBe(6);
+    expect(JSON.parse(puts()[1].rawBody)).toEqual({
+      queue_workers: 6,
+      host_global_session_cap: 13,
+      rationale: 'new pair',
+      confirm_environment_shadow: false,
+    });
+    await screen.findByText(/^Saved\. No restart is pending for these values\./);
+    await waitFor(() => expect(savedCell()).toHaveTextContent('6'));
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
   });
 
   test('11.11 absent-key reread beside a pinned submission names three records distinctly', async () => {
@@ -839,9 +1043,29 @@ describe('18 — external-restart reads make no causal claim', () => {
     await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
     await waitFor(() => expect(gets().length).toBeGreaterThan(1));
 
-    // running == saved == next, so the badge is the honest equality statement.
+    // Accepted 18.5 requires the equality STATEMENT itself, not merely the
+    // existing "No restart pending" badge.
+    expect(screen.getByText(/Running configuration matches the expected values/)).toBeVisible();
+    expect(document.body).toHaveTextContent(
+      /it does not mean a restart happened or that anything on this page caused it/,
+    );
     expect(screen.getByText('No restart pending')).toBeVisible();
-    expect(document.body.textContent ?? '').not.toMatch(/restart (occurred|succeeded)/i);
+    expect(document.body.textContent ?? '').not.toMatch(/restart (occurred|succeeded|completed)/i);
+    expect(document.body.textContent ?? '').not.toMatch(/\bRestart daemon\b/);
+  });
+
+  test('18.5b a DIFFERING startup pair makes no equality statement', async () => {
+    stubVenue({
+      get: () => HttpResponse.json(snapshot({
+        running_at_daemon_start: { queue_workers: 4, host_global_session_cap: 11 },
+        next_start: { queue_workers: 3, host_global_session_cap: 10 },
+        restart_pending: true,
+      })),
+    });
+    mount();
+    await ready();
+    expect(screen.queryByText(/Running configuration matches the expected values/)).not.toBeInTheDocument();
+    expect(screen.getByText('Restart pending')).toBeVisible();
   });
 });
 
@@ -876,20 +1100,43 @@ describe('16 / 17 — focus and navigation (L5)', () => {
     await waitFor(() => expect(document.activeElement).toBe(link));
   });
 
-  test('17.3 browser Back with a dirty draft is intercepted the same way', async () => {
-    stubVenue();
+  test('17.3 browser Back with a dirty draft: Stay keeps every field BYTE-IDENTICAL, and a confirmed departure completes', async () => {
+    stubVenue({
+      get: () => HttpResponse.json(snapshot({
+        environment_shadowed: ['queue_workers'],
+        environment_warning: 'Environment overrides win.',
+        next_start: { queue_workers: 3, host_global_session_cap: 10 },
+      })),
+    });
     const view = renderGuarded(<AppRoutes />, {
       entries: [`/orgs/${SLUG}/settings/organization`, `/orgs/${SLUG}/settings/daemon-capacity`],
       index: 1,
     });
     await ready();
+    await setPair('5', '12');
     await userEvent.type(reasonBox(), 'unsaved');
+    await userEvent.click(screen.getByRole('checkbox'));
 
+    // (a) STAY — every retained field is byte-identical and the ack survives.
     view.router.navigate(-1);
     await screen.findByText('Discard unsaved capacity changes?');
     await userEvent.click(screen.getByRole('button', { name: 'Stay on page' }));
-    await waitFor(() => expect(screen.queryByText('Discard unsaved capacity changes?')).not.toBeInTheDocument());
+    await waitFor(() => expect(view.router.state.location.pathname)
+      .toBe(`/orgs/${SLUG}/settings/daemon-capacity`));
+    expect(workers()).toHaveValue('5');
+    expect(cap()).toHaveValue('12');
     expect(reasonBox()).toHaveValue('unsaved');
+    expect(screen.getByRole('checkbox')).toBeChecked();
+    expect(puts()).toHaveLength(0);
+
+    // (b) CONFIRMED DEPARTURE — the navigation actually completes.
+    view.router.navigate(-1);
+    await screen.findByText('Discard unsaved capacity changes?');
+    await userEvent.click(screen.getByRole('button', { name: 'Discard and continue' }));
+    await waitFor(() => expect(view.router.state.location.pathname)
+      .toBe(`/orgs/${SLUG}/settings/organization`));
+    expect(screen.queryByLabelText('Reason for change')).not.toBeInTheDocument();
+    expect(puts()).toHaveLength(0);
   });
 
   test('17.4 navigating to Runtime Health is intercepted identically and implies no new panel', async () => {
@@ -901,10 +1148,21 @@ describe('16 / 17 — focus and navigation (L5)', () => {
     view.router.navigate(`/orgs/${SLUG}/health`);
     await screen.findByText('Discard unsaved capacity changes?');
     await userEvent.click(screen.getByRole('button', { name: 'Stay on page' }));
-    await waitFor(() => expect(screen.queryByText('Discard unsaved capacity changes?')).not.toBeInTheDocument());
+    await waitFor(() => expect(view.router.state.location.pathname)
+      .toBe(`/orgs/${SLUG}/settings/daemon-capacity`));
     // Still on capacity, and no admission/residue panel was implied.
     expect(reasonBox()).toHaveValue('unsaved');
     expect(document.body).not.toHaveTextContent(/admission diagnostics|residue/i);
+
+    // CONFIRMED DEPARTURE reaches the ordinary Runtime Health page, which is
+    // an existing general-diagnostics route — no new capacity panel there.
+    view.router.navigate(`/orgs/${SLUG}/health`);
+    await screen.findByText('Discard unsaved capacity changes?');
+    await userEvent.click(screen.getByRole('button', { name: 'Discard and continue' }));
+    await waitFor(() => expect(view.router.state.location.pathname).toBe(`/orgs/${SLUG}/health`));
+    expect(screen.queryByLabelText('Reason for change')).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/admission diagnostics|residue|provider ceiling/i);
+    expect(puts()).toHaveLength(0);
   });
 
   test('17.6 rationale-only dirty AND an unresolved unknown outcome both arm the guard', async () => {
@@ -926,5 +1184,259 @@ describe('16 / 17 — focus and navigation (L5)', () => {
     await setPair('3', '10');
     view.router.navigate(`/orgs/${SLUG}/settings/organization`);
     await screen.findByText('Discard unsaved capacity changes?');
+  });
+});
+
+// ---------------------------------------------------------------------------
+/**
+ * Independent-review regressions R1-R8.
+ *
+ * Each case below reproduces a scenario the independent reviewer's scratch
+ * probes (F1-F10) drove through this exact production boundary, and asserts the
+ * ACCEPTED final behaviour — not the broken observation the probe recorded.
+ */
+describe('R1-R8 — independent-review boundary regressions', () => {
+  test('R2 (F2) repeated REFUSED Save clicks never unlock a second PUT, and the unresolved banner survives every refusal', async () => {
+    stubVenue({ put: () => HttpResponse.error() });
+    const view = mount();
+    await ready();
+    await setPair('5', '12');
+    await saveWith();
+    await screen.findByText(/Save result unknown/);
+    expect(puts()).toHaveLength(1);
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await userEvent.click(saveButton());
+      await screen.findByText(/Reconcile the saved values before saving again/);
+      // The refusal appears BESIDE the unresolved state, never instead of it:
+      // a banner change is not an outcome and must not clear the write lock.
+      expect(screen.getByText(/Save result unknown/)).toBeVisible();
+      await waitFor(() => expect(view.client.isMutating()).toBe(0));
+      expect(puts()).toHaveLength(1);
+    }
+    // The pinned submission is still the immutable record of what was SENT.
+    expect(screen.getByText(/You submitted Task session slots 5, Host session admission limit 12/)).toBeVisible();
+  });
+
+  test('R2 (F5) an ordinary Discard resets the EDITOR only; the unresolved publication, guard and lock all survive until an explicit reconciliation', async () => {
+    stubVenue({
+      get: (i) => (i === 0
+        ? HttpResponse.json(snapshot())
+        : HttpResponse.json(snapshot({
+          revision: REV_B, persisted_yaml: { queue_workers: 2, host_global_session_cap: 9 },
+        }))),
+      put: (i) => (i === 0 ? HttpResponse.error() : HttpResponse.json(snapshot({ revision: REV_C }))),
+    });
+    const view = mount();
+    await ready();
+    await setPair('5', '12');
+    await saveWith('measured receipts');
+    await screen.findByText(/Save result unknown/);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Discard draft' }));
+    // The editor IS reset.
+    expect(workers()).toHaveValue('3');
+    expect(cap()).toHaveValue('10');
+    expect(reasonBox()).toHaveValue('');
+    // The publication outcome is NOT resolved by resetting fields.
+    expect(screen.getByText(/Save result unknown/)).toBeVisible();
+    expect(screen.getByText(/You submitted Task session slots 5, Host session admission limit 12/)).toBeVisible();
+    const unload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(true);
+
+    await userEvent.click(saveButton());
+    await screen.findByText(/Reconcile the saved values before saving again/);
+    await waitFor(() => expect(view.client.isMutating()).toBe(0));
+    expect(puts()).toHaveLength(1);
+
+    // Only an explicit reconciliation clears it — and it sends no request.
+    await userEvent.click(screen.getByRole('button', { name: 'Check saved values' }));
+    await screen.findByText(/The saved values still differ from what you submitted/);
+    expect(puts()).toHaveLength(1);
+    await userEvent.click(acceptButton());
+    await waitFor(() => expect(workers()).toHaveValue('2'));
+    expect(screen.queryByText(/Save result unknown/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    expect(puts()).toHaveLength(1);
+
+    // A separate, independent manual save now works and carries REV_B.
+    await setPair('4', '11');
+    await saveWith('after reconciliation');
+    await waitFor(() => expect(puts()).toHaveLength(2));
+    expect(puts()[1].ifMatch).toBe(`"${REV_B}"`);
+    expect(JSON.parse(puts()[1].rawBody)).toEqual({
+      queue_workers: 4,
+      host_global_session_cap: 11,
+      rationale: 'after reconciliation',
+      confirm_environment_shadow: false,
+    });
+    await screen.findByText(/^Saved\./);
+  });
+
+  test('R3 (F3) a FAILED Check never promotes cached values into a reconciliation target, and a later usable reread does', async () => {
+    stubVenue({
+      get: (i) => {
+        if (i === 0) return HttpResponse.json(snapshot());
+        if (i === 1) return HttpResponse.error();
+        return HttpResponse.json(snapshot({
+          revision: REV_B, persisted_yaml: { queue_workers: 7, host_global_session_cap: 14 },
+        }));
+      },
+      put: (i) => (i === 0 ? uncertain() : HttpResponse.json(snapshot({ revision: REV_C }))),
+    });
+    const view = mount();
+    await ready();
+    await setPair('5', '12');
+    await saveWith();
+    await screen.findByText(/durability, verification, or cleanup did not complete/);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Check saved values' }));
+    await waitFor(() => expect(
+      view.client.getQueryState(capacityQueryKey(SLUG))?.status,
+    ).toBe('error'));
+
+    // `refetch()` resolved with the PREVIOUS cached data beside an error. That
+    // is not a successful reread: nothing may be offered for reconciliation.
+    expect(screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Discard draft, accept latest' })).not.toBeInTheDocument();
+    await screen.findByText(/Could not refresh\. Current state unverified\./);
+    // Still unresolved, nothing advanced, retry offered.
+    expect(screen.getByText(/durability, verification, or cleanup did not complete/)).toBeVisible();
+    expect(screen.getByText(/You submitted Task session slots 5/)).toBeVisible();
+    expect(savedCell()).toHaveTextContent('3');
+    fireEvent.submit(saveButton().closest('form') as HTMLFormElement);
+    await waitFor(() => expect(view.client.isMutating()).toBe(0));
+    expect(puts()).toHaveLength(1);
+
+    // A genuinely successful, usable reread DOES become the reconciliation
+    // target, and only then can a write be built.
+    await userEvent.click(screen.getByRole('button', { name: 'Check saved values' }));
+    await screen.findByText(/The saved values still differ from what you submitted/);
+    expect(screen.getByText('Currently saved').parentElement?.textContent).toMatch(/Task session slots 7/);
+    await userEvent.click(rebaseButton());
+    await userEvent.click(saveButton());
+    await waitFor(() => expect(puts()).toHaveLength(2));
+    expect(puts()[1].ifMatch).toBe(`"${REV_B}"`);
+  });
+
+  test('R4 (F6) a NEWER successful check SUPERSEDES an older conflict snapshot — rebase branch', async () => {
+    stubVenue({
+      get: (i) => HttpResponse.json(i === 0 ? snapshot() : snapshot({
+        revision: REV_C, persisted_yaml: { queue_workers: 7, host_global_session_cap: 14 },
+      })),
+      put: (i) => (i === 0
+        ? conflict(REV_B, 2, 9)
+        : HttpResponse.json(snapshot({ revision: REV_C }))),
+    });
+    mount();
+    await ready();
+    await setPair('5', '12');
+    await saveWith();
+    await screen.findByText(/Saved settings changed elsewhere/);
+    expect(screen.getByText('Currently saved').parentElement?.textContent).toMatch(/Task session slots 2/);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Check saved values' }));
+    await screen.findByText(/still differ from what you submitted/);
+    // The newer observation replaces the stale 409 body by OBSERVATION ORDER,
+    // not by origin slot: a real server would reject REV_B's If-Match again.
+    expect(screen.getByText('Currently saved').parentElement?.textContent).toMatch(/Task session slots 7/);
+    expect(screen.getByText('Currently saved').parentElement?.textContent).not.toMatch(/Task session slots 2/);
+
+    await userEvent.click(rebaseButton());
+    await userEvent.click(saveButton());
+    await waitFor(() => expect(puts()).toHaveLength(2));
+    expect(puts()[1].ifMatch).toBe(`"${REV_C}"`);
+    expect(JSON.parse(puts()[1].rawBody)).toEqual({
+      queue_workers: 5,
+      host_global_session_cap: 12,
+      rationale: 'measured receipts',
+      confirm_environment_shadow: false,
+    });
+    await screen.findByText(/^Saved\./);
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+  });
+
+  test('R4 (F6) the same supersession holds for DISCARD-AND-ACCEPT-LATEST', async () => {
+    stubVenue({
+      get: (i) => HttpResponse.json(i === 0 ? snapshot() : snapshot({
+        revision: REV_C, persisted_yaml: { queue_workers: 7, host_global_session_cap: 14 },
+      })),
+      put: (i) => (i === 0
+        ? conflict(REV_B, 2, 9)
+        : HttpResponse.json(snapshot({ revision: REV_C }))),
+    });
+    mount();
+    await ready();
+    await setPair('5', '12');
+    await saveWith();
+    await screen.findByText(/Saved settings changed elsewhere/);
+    await userEvent.click(screen.getByRole('button', { name: 'Check saved values' }));
+    await screen.findByText(/still differ from what you submitted/);
+
+    await userEvent.click(acceptButton());
+    // Accept-latest must restore the NEWEST observation, never the obsolete B.
+    await waitFor(() => expect(workers()).toHaveValue('7'));
+    expect(cap()).toHaveValue('14');
+    expect(reasonBox()).toHaveValue('');
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    expect(puts()).toHaveLength(1);
+
+    await setPair('8', '15');
+    await saveWith('fresh reason');
+    await waitFor(() => expect(puts()).toHaveLength(2));
+    expect(puts()[1].ifMatch).toBe(`"${REV_C}"`);
+    expect(JSON.parse(puts()[1].rawBody)).toEqual({
+      queue_workers: 8,
+      host_global_session_cap: 15,
+      rationale: 'fresh reason',
+      confirm_environment_shadow: false,
+    });
+  });
+
+  test.each([
+    ['an unsafe integer', '9007199254740993'],
+    ['non-numeric text', 'abc'],
+    ['a blank field', ''],
+  ])('R5 (F4) %s with NO rationale is still unsaved work across unload, in-app navigation and a changed-revision read', async (_label, text) => {
+    stubVenue({
+      get: (i) => HttpResponse.json(i === 0 ? snapshot() : snapshot({
+        revision: REV_B, persisted_yaml: { queue_workers: 2, host_global_session_cap: 9 },
+      })),
+    });
+    const view = mount();
+    await ready();
+    const user = userEvent.setup();
+    await user.clear(workers());
+    if (text.length > 0) await user.type(workers(), text);
+    expect(workers()).toHaveValue(text);
+    expect(reasonBox()).toHaveValue('');
+
+    // 17.1 — the reload warning is installed for raw unsaved text.
+    const unload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(true);
+    expect(document.body).toHaveTextContent(/Unsaved changes/);
+
+    // 14.x — a changed-revision read must NOT treat the editor as clean and
+    // overwrite the exact text the operator entered.
+    await user.click(screen.getByRole('button', { name: /Refresh running state/ }));
+    await screen.findByText('Configuration changed elsewhere.');
+    expect(workers()).toHaveValue(text);
+
+    // 17.2 — an in-app route change is intercepted, and Stay keeps the text.
+    act(() => { void view.router.navigate(`/orgs/${SLUG}/settings`); });
+    await screen.findByRole('dialog');
+    await user.click(screen.getByRole('button', { name: 'Stay on page' }));
+    // Radix dialog teardown is flaky to assert by DOM removal under jsdom, so
+    // the BEHAVIOURAL contract is asserted instead: still on the capacity
+    // route, with the exact entered text byte-identical.
+    await waitFor(() => expect(view.router.state.location.pathname)
+      .toBe(`/orgs/${SLUG}/settings/daemon-capacity`));
+    expect(workers()).toHaveValue(text);
+
+    // An explicit correction/discard is the only thing that clears it.
+    await user.click(screen.getByRole('button', { name: 'Discard draft' }));
+    expect(workers()).toHaveValue('3');
   });
 });

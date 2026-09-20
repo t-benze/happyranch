@@ -116,146 +116,14 @@ export const REASON_MAX_LENGTH = 1000;
 // ---------------------------------------------------------------------------
 // Read-site guards — classify, never repair
 // ---------------------------------------------------------------------------
+//
+// The classifier itself now lives with the capacity provider
+// (`@/design-system/providers/_capacity-ordering`) so the PROVIDER and the VIEW
+// share ONE definition of "usable" (R7). It is re-exported here under its
+// established names so every existing consumer and test keeps its import.
 
-/** A consumed numeric is usable only if it survived JSON.parse as a safe integer. */
-export function isSafeCapacityNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value);
-}
-
-function isNullableSafe(value: unknown): boolean {
-  return value === null || isSafeCapacityNumber(value);
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
-}
-
-export type SnapshotClassification =
-  | { status: 'usable'; snapshot: DaemonCapacitySnapshot }
-  /** Shape/type defect, or a representation the editor cannot show exactly. */
-  | { status: 'unusable'; reason: 'shape' | 'representation' }
-  /** Structurally fine, but internally contradictory arithmetic. */
-  | { status: 'inconsistent'; snapshot: DaemonCapacitySnapshot };
-
-const PRODUCER_COMPONENT_KEYS = [
-  'task_workers',
-  'thread_workers',
-  'dream_workers',
-  'wake_workers',
-  'schedule_workers',
-] as const;
-
-/**
- * Classify a snapshot that arrived from the wire (a GET body, a PUT success
- * body, a 409 `latest`, or a reread after an uncertain outcome). The same rule
- * applies at every entry point — an unusable value never enters accepted base
- * or cache as usable data.
- */
-export function classifySnapshot(raw: unknown): SnapshotClassification {
-  if (!isObject(raw)) return { status: 'unusable', reason: 'shape' };
-
-  const shapeOk =
-    typeof raw.revision === 'string' && raw.revision.length > 0
-    && typeof raw.running_provenance === 'string'
-    && typeof raw.effective_admission_reason === 'string'
-    && typeof raw.authorization === 'string'
-    && typeof raw.restart_required === 'boolean'
-    && typeof raw.restart_pending === 'boolean'
-    && (raw.environment_warning === null || typeof raw.environment_warning === 'string')
-    && isStringArray(raw.environment_shadowed)
-    && isStringArray(raw.warnings)
-    && isObject(raw.running_at_daemon_start)
-    && isObject(raw.persisted_yaml)
-    && isObject(raw.next_start)
-    && isObject(raw.producer_components)
-    && isObject(raw.guidance)
-    && typeof (raw.guidance as Record<string, unknown>).queue_workers === 'string'
-    && typeof (raw.guidance as Record<string, unknown>).host_global_session_cap === 'string'
-    && typeof (raw.guidance as Record<string, unknown>).enforced === 'boolean';
-  if (!shapeOk) return { status: 'unusable', reason: 'shape' };
-
-  const running = raw.running_at_daemon_start as Record<string, unknown>;
-  const persisted = raw.persisted_yaml as Record<string, unknown>;
-  const next = raw.next_start as Record<string, unknown>;
-  const components = raw.producer_components as Record<string, unknown>;
-
-  // Domain matrix (15.10): persisted_yaml.* and effective_admission_cap are the
-  // only nullable numerics; everything else must be present. A null in a
-  // non-nullable position is an unusable read, NEVER a zero.
-  const presentOk =
-    ('queue_workers' in persisted) && ('host_global_session_cap' in persisted)
-    && running.queue_workers !== undefined && running.host_global_session_cap !== undefined
-    && next.queue_workers !== undefined && next.host_global_session_cap !== undefined
-    && raw.producer_envelope !== undefined
-    && 'effective_admission_cap' in raw
-    && PRODUCER_COMPONENT_KEYS.every((key) => components[key] !== undefined);
-  if (!presentOk) return { status: 'unusable', reason: 'shape' };
-
-  // Anything non-numeric (a quoted "3", a boolean, an array) is a shape defect.
-  const numericSlots: unknown[] = [
-    running.queue_workers, running.host_global_session_cap,
-    next.queue_workers, next.host_global_session_cap,
-    raw.producer_envelope,
-    ...PRODUCER_COMPONENT_KEYS.map((key) => components[key]),
-  ];
-  const nullableSlots: unknown[] = [
-    persisted.queue_workers, persisted.host_global_session_cap, raw.effective_admission_cap,
-  ];
-  if (numericSlots.some((slot) => typeof slot !== 'number')) {
-    return { status: 'unusable', reason: 'shape' };
-  }
-  if (nullableSlots.some((slot) => slot !== null && typeof slot !== 'number')) {
-    return { status: 'unusable', reason: 'shape' };
-  }
-
-  // Representation: a value that did not survive JSON.parse as a safe integer
-  // cannot be displayed exactly, so it is withheld rather than shown rounded.
-  if (!numericSlots.every(isSafeCapacityNumber)) {
-    return { status: 'unusable', reason: 'representation' };
-  }
-  if (!nullableSlots.every(isNullableSafe)) {
-    return { status: 'unusable', reason: 'representation' };
-  }
-
-  const snapshot = raw as unknown as DaemonCapacitySnapshot;
-
-  // Domain: W and H strictly positive; producer components nonnegative.
-  const positives = [
-    snapshot.running_at_daemon_start.queue_workers,
-    snapshot.running_at_daemon_start.host_global_session_cap,
-    snapshot.next_start.queue_workers,
-    snapshot.next_start.host_global_session_cap,
-  ];
-  if (positives.some((value) => value <= 0)) return { status: 'unusable', reason: 'shape' };
-  if (PRODUCER_COMPONENT_KEYS.some((key) => snapshot.producer_components[key] < 0)) {
-    return { status: 'unusable', reason: 'shape' };
-  }
-  if (snapshot.producer_envelope < 0) return { status: 'unusable', reason: 'shape' };
-  if (
-    snapshot.persisted_yaml.queue_workers !== null
-    && snapshot.persisted_yaml.queue_workers <= 0
-  ) {
-    return { status: 'unusable', reason: 'shape' };
-  }
-  if (
-    snapshot.persisted_yaml.host_global_session_cap !== null
-    && snapshot.persisted_yaml.host_global_session_cap <= 0
-  ) {
-    return { status: 'unusable', reason: 'shape' };
-  }
-
-  // Relational invariant: task workers are part of the producer envelope. A
-  // violation is a server inconsistency, not a number to render negatively.
-  if (snapshot.producer_components.task_workers > snapshot.producer_envelope) {
-    return { status: 'inconsistent', snapshot };
-  }
-
-  return { status: 'usable', snapshot };
-}
+export { isSafeCapacityNumber, classifyCapacitySnapshot as classifySnapshot } from '@/design-system/providers/_capacity-ordering';
+export type { CapacityClassification as SnapshotClassification } from '@/design-system/providers/_capacity-ordering';
 
 // ---------------------------------------------------------------------------
 // Base, presence and acknowledgment identity
@@ -341,7 +209,14 @@ export const CAPACITY_FIELD_LABELS: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 export type ConsequenceResult =
-  | { status: 'ok'; workerPoolTotal: number; nonTaskContribution: number; direction: 'below' | 'aligned' | 'above' }
+  | {
+    status: 'ok';
+    /** The per-key values the daemon would actually use next start (R6). */
+    resolved: CapacityPair;
+    workerPoolTotal: number;
+    nonTaskContribution: number;
+    direction: 'below' | 'aligned' | 'above';
+  }
   /** Server inconsistency: a negative non-task contribution. */
   | { status: 'inconsistent' }
   /** Derived sum left the exactly-representable range. */
@@ -353,6 +228,13 @@ export type ConsequenceResult =
  * contribution and the derived SUM are guarded: individually safe inputs can
  * still sum outside the safe range, and an inconsistent response can make the
  * contribution negative.
+ *
+ * R6: the arithmetic runs on the RESOLVED per-key next-start pair, not the raw
+ * draft. A shadowed key never reaches the daemon from this editor, so a draft
+ * W of 5 under an environment-resolved W of 3 contributes 3 to the pool, and
+ * the direction compares the RESOLVED cap against that resolved total. Using
+ * the draft here claimed a consequence the environment override makes false
+ * (accepted case 3.1). No future `effective_admission_cap` is predicted.
  */
 export function draftConsequence(
   snapshot: DaemonCapacitySnapshot,
@@ -363,15 +245,16 @@ export function draftConsequence(
   if (!Number.isSafeInteger(nonTaskContribution)) return { status: 'unrepresentable' };
   if (nonTaskContribution < 0) return { status: 'inconsistent' };
 
-  const workerPoolTotal = draft.queue_workers + nonTaskContribution;
+  const resolved = resolvedNextStart(snapshot, draft).pair;
+  const workerPoolTotal = resolved.queue_workers + nonTaskContribution;
   if (!Number.isSafeInteger(workerPoolTotal)) return { status: 'unrepresentable' };
 
-  const direction = draft.host_global_session_cap < workerPoolTotal
+  const direction = resolved.host_global_session_cap < workerPoolTotal
     ? 'below'
-    : draft.host_global_session_cap > workerPoolTotal
+    : resolved.host_global_session_cap > workerPoolTotal
       ? 'above'
       : 'aligned';
-  return { status: 'ok', workerPoolTotal, nonTaskContribution, direction };
+  return { status: 'ok', resolved, workerPoolTotal, nonTaskContribution, direction };
 }
 
 export function consequenceMessage(direction: 'below' | 'aligned' | 'above', cap: number, total: number): string {

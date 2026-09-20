@@ -157,7 +157,28 @@ The Settings surface ships as a full page (`web/src/features/settings/SettingsPa
   representation limit and is not an API maximum. A server numeric that did not
   survive `JSON.parse` as a safe integer is withheld rather than displayed
   rounded — see the capacity note in `runtime-and-configuration.md` for the
-  residual limitation this does NOT close.
+  residual limitation this does NOT close. "Usable" means the same thing at
+  every entry point: one capacity-local classifier decides it, and the provider
+  applies it before a read observation is called usable or a write result
+  enters the capacity cache, so a response the editor rejects can never become
+  accepted cached data.
+  Three refusals are load-bearing and are enforced at the request handler, not
+  only on the control. A refresh that FAILED leaves the last usable values on
+  screen under a `Last known` label with the receipt of the response that
+  actually produced them, keeps the draft, reason and acknowledgment, and
+  blocks the write until a genuinely successful, usable read recovers — a
+  refetch result that merely carries cached data beside an error is not a
+  success. An unresolved publication outcome (typed `config_publication_uncertain`,
+  or a lost response / unclassified failure) is held as its own state: repeated
+  refused Save clicks and an ordinary Discard change the banner and reset the
+  editor but never resolve it, because neither establishes what the daemon
+  persisted. And `latest` observations are ordered by the order this editor
+  accepted them, so a newer verified read supersedes an older 409 body for both
+  rebase and accept-latest; an accepted write then clears the reconciliation
+  state its own response made obsolete and finishes in a coherent clean state.
+  Draft consequence arithmetic uses the RESOLVED per-key next-start values, so
+  an environment-shadowed key contributes the environment's value rather than
+  the draft the environment will shadow.
 - **Assistant** — assistant status, setup/recovery, and assistant executor binding.
 - **Org** (editable, Phase 2) — org-level settings: session timeout override, dreaming schedule (enabled, schedule time/timezone, catch-up-on-startup, agent mode, include/exclude agent names), browser-managed threads config (enabled and invocation timeout), and **working_hours** (THR-035: the Work-Hours Config UI — feature on/off switch, org-level eligibility selector, and the raw per-tier schedule blocks `default` / `teams` / `overrides`).
 - **Executors** — effective machine executor registry, custom CLI lifecycle, and recovery.

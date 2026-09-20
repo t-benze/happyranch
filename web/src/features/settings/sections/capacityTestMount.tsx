@@ -26,6 +26,15 @@ export interface RenderGuardedOptions {
   entries?: string[];
   index?: number;
   client?: QueryClient;
+  /**
+   * Reset the module-scoped capacity ordering ledger before mounting.
+   *
+   * Default `true` so each case starts from a clean sequence. A SECOND
+   * consumer mounted against an ALREADY-RUNNING client must pass `false`:
+   * resetting the ledger there would erase the very ordering history the
+   * during-write cases exist to observe (accepted 2.13).
+   */
+  resetOrdering?: boolean;
 }
 
 /**
@@ -46,7 +55,7 @@ export function renderGuarded(ui: ReactNode, options: RenderGuardedOptions = {})
     }
   } as typeof Request;
 
-  resetCapacityOrdering();
+  if (options.resetOrdering !== false) resetCapacityOrdering();
   sessionStorage.setItem('happyranch.token', 'tok');
   // Mirror the production `AppProvider` query defaults (AppProvider.tsx:50-58)
   // so cache-lifetime behaviour under test is the behaviour that ships: a
@@ -67,5 +76,18 @@ export function renderGuarded(ui: ReactNode, options: RenderGuardedOptions = {})
     { initialEntries: entries, initialIndex: options.index ?? entries.length - 1 },
   );
   const view = render(<RouterProvider router={router} />);
-  return { ...view, client, router };
+  return {
+    ...view,
+    client,
+    router,
+    /**
+     * Re-render the SAME mounted tree.
+     *
+     * `rerender(<SomethingElse />)` replaces the router provider and UNMOUNTS
+     * the component, so a control missing afterwards proves nothing about a
+     * transition. This keeps the component mounted while the hook mock supplies
+     * new data (accepted 4.3 / 6.4).
+     */
+    rerenderSame: () => view.rerender(<RouterProvider router={router} />),
+  };
 }

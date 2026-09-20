@@ -252,7 +252,80 @@ describe('draftConsequence — guard the contribution AND the derived sum', () =
       { queue_workers: 5, host_global_session_cap: 12 },
     );
     expect(result).toEqual({
-      status: 'ok', workerPoolTotal: 9, nonTaskContribution: 4, direction: 'above',
+      status: 'ok',
+      resolved: { queue_workers: 5, host_global_session_cap: 12 },
+      workerPoolTotal: 9,
+      nonTaskContribution: 4,
+      direction: 'above',
+    });
+  });
+
+  // R6 — the arithmetic runs on the RESOLVED per-key next-start pair. A draft
+  // value the environment shadows never reaches the daemon, so it must not
+  // appear in the pool total, in the "N task" explanation, or in the direction.
+  test('3.1 a W-only override resolves the pool from the ENVIRONMENT W, not the draft', () => {
+    const result = draftConsequence(
+      snap({
+        environment_shadowed: ['queue_workers'],
+        next_start: { queue_workers: 3, host_global_session_cap: 12 },
+        producer_envelope: 10,
+        producer_components: {
+          task_workers: 3, thread_workers: 4, dream_workers: 1, wake_workers: 1, schedule_workers: 1,
+        },
+      }),
+      { queue_workers: 5, host_global_session_cap: 14 },
+    );
+    // Accepted 3.1: resolved W = 3, pool 3 + 7 = 10, cap 14 is ABOVE it.
+    expect(result).toEqual({
+      status: 'ok',
+      resolved: { queue_workers: 3, host_global_session_cap: 14 },
+      workerPoolTotal: 10,
+      nonTaskContribution: 7,
+      direction: 'above',
+    });
+  });
+
+  test('3.2 an H-only override compares the RESOLVED cap, not the drafted cap', () => {
+    const result = draftConsequence(
+      snap({
+        environment_shadowed: ['host_global_session_cap'],
+        next_start: { queue_workers: 3, host_global_session_cap: 8 },
+        producer_envelope: 10,
+        producer_components: {
+          task_workers: 3, thread_workers: 4, dream_workers: 1, wake_workers: 1, schedule_workers: 1,
+        },
+      }),
+      { queue_workers: 5, host_global_session_cap: 40 },
+    );
+    // Drafted cap 40 would read "above"; the environment resolves 8, which is
+    // BELOW the resolved pool of 5 + 7 = 12.
+    expect(result).toEqual({
+      status: 'ok',
+      resolved: { queue_workers: 5, host_global_session_cap: 8 },
+      workerPoolTotal: 12,
+      nonTaskContribution: 7,
+      direction: 'below',
+    });
+  });
+
+  test('both keys shadowed resolve the whole comparison from the environment', () => {
+    const result = draftConsequence(
+      snap({
+        environment_shadowed: ['queue_workers', 'host_global_session_cap'],
+        next_start: { queue_workers: 3, host_global_session_cap: 10 },
+        producer_envelope: 10,
+        producer_components: {
+          task_workers: 3, thread_workers: 4, dream_workers: 1, wake_workers: 1, schedule_workers: 1,
+        },
+      }),
+      { queue_workers: 99, host_global_session_cap: 99 },
+    );
+    expect(result).toEqual({
+      status: 'ok',
+      resolved: { queue_workers: 3, host_global_session_cap: 10 },
+      workerPoolTotal: 10,
+      nonTaskContribution: 7,
+      direction: 'aligned',
     });
   });
 

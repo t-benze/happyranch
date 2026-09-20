@@ -9,7 +9,7 @@
  * request list at the HTTP boundary — never from a DOM `disabled` attribute.
  * A `disabled` attribute is a render-time property, not an ordering guarantee.
  */
-import { act, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { focusManager } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
@@ -420,7 +420,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     expect(undeclared).toEqual([]);
   });
 
-  test('2.13 a suppressed non-operator trigger issues NO read; a permitted one DOES — measured at the HTTP boundary', async () => {
+  test('2.13 what is ACTUALLY suppressed, measured at the HTTP boundary — a globally disabled focus trigger, NOT a pending-specific one', async () => {
     const gate = deferred<Response>();
     stubVenue({ put: () => gate.promise });
     const view = mount();
@@ -432,13 +432,15 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     const before = gets().length;
     const observedBefore = capacityObservation(SLUG);
 
-    // (a) SUPPRESSED. A real NON-OPERATOR trigger owned by React Query, not by
-    // this component: the window regains focus while the write is in flight.
-    // `AppProvider` ships `refetchOnWindowFocus: false`, so this trigger is
-    // suppressed BEFORE any request leaves. The assertion is the captured
-    // request list plus the provider-owned observation — `cancelQueries` would
-    // NOT satisfy this case (it is not a read attempt at all), and asserting
-    // that Refresh is `disabled` is case 2.5, not this one.
+    // (a) The ONE trigger this app really does suppress. A non-operator trigger
+    // owned by React Query: the window regains focus while the write is in
+    // flight. `AppProvider` ships `refetchOnWindowFocus: false`, so the trigger
+    // is disabled BEFORE any request leaves.
+    //
+    // HONESTY FENCE, and the reason this case is worded conditionally: this is
+    // a GLOBAL default, not pending-specific behaviour. The implementation has
+    // NO suppression keyed on `save.isPending`, and this observation must never
+    // be presented as one. Asserting `Refresh` is `disabled` is case 2.5.
     act(() => { focusManager.setFocused(false); });
     act(() => { focusManager.setFocused(true); });
     await new Promise((r) => setTimeout(r, 50));
@@ -446,28 +448,53 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     expect(capacityObservation(SLUG)).toEqual(observedBefore);
     expect(screen.getByText('Saving for next restart…')).toBeVisible();
 
-    // (b) MANDATORY SECOND HALF — the permitted path still exists. A second
-    // cache consumer WITHOUT this component's pending flag refetches the same
-    // key in the same window and DOES reach the network: suppression is
-    // per-observer, never per-key. This is exactly why 2.14-2.16 are required
-    // IN ADDITION TO this case — ordering safety cannot rest on suppression.
+    // (b) The REAL provider refetch attempt during the pending window. Because
+    // no pending-specific suppression exists, it DOES reach the network. The
+    // accepted case allows exactly this: its zero-request clause is conditional
+    // on an implementation that suppresses reads while a write is pending.
     const permitted = view.client.refetchQueries({ queryKey: capacityQueryKey(SLUG) });
     await waitFor(() => expect(gets()).toHaveLength(before + 1));
+    const afterProviderAttempt = gets().length;
+
+    // (c) MANDATORY SECOND HALF — a genuinely SEPARATE stale capacity observer
+    // mounted in the same window, on the SAME QueryClient, WITHOUT resetting
+    // the ordering ledger. It carries none of this component's pending state,
+    // and it DOES issue its own GET: suppression in React Query is
+    // per-observer, never per-key. This is exactly why the during-PUT ordering
+    // fence (2.14-2.16) is required IN ADDITION TO any suppression.
+    await permitted;
+    await view.client.invalidateQueries({
+      queryKey: capacityQueryKey(SLUG), refetchType: 'none',
+    });
+    const second = renderGuarded(<AppRoutes />, {
+      client: view.client,
+      entries: [`/orgs/${SLUG}/settings/daemon-capacity`],
+      resetOrdering: false,
+    });
+    await waitFor(() => expect(gets().length).toBeGreaterThan(afterProviderAttempt));
+    second.unmount();
 
     gate.resolve(HttpResponse.json(snapshot({ revision: REV_B })));
     await screen.findByText(/Saved/);
-    await permitted;
     expect(undeclared).toEqual([]);
   });
 
-  test('2.14 a PERMITTED during-PUT read landing as a stale SUCCESS is DROPPED and never republishes', async () => {
+  /**
+   * Drive the accepted during-PUT ordering scenario to its FINAL settled state.
+   *
+   * The write is gated; a permitted non-operator read is issued WHILE it is in
+   * flight; the write settles with the accepted 5/12 @ REV_B; then the obsolete
+   * read settles with `lateRead`. Returns everything the caller needs to assert
+   * the final surface, the provider receipt and the cache.
+   */
+  async function duringPutOrdering(lateRead: () => Response) {
     const putGate = deferred<Response>();
     const getGate = deferred<Response>();
     stubVenue({
       get: (i) => (i === 0 ? HttpResponse.json(snapshot()) : getGate.promise),
-      // Only the FIRST write is gated. The later manual save is a separate
-      // request and gets its own response — reusing the gated one would hand
-      // the interceptor a consumed body.
+      // Only the FIRST write is gated. Later saves are separate requests and
+      // get their own responses — reusing the gated one would hand the
+      // interceptor a consumed body.
       put: (i) => (i === 0 ? putGate.promise : HttpResponse.json(snapshot({
         persisted_yaml: { queue_workers: 6, host_global_session_cap: 12 },
         next_start: { queue_workers: 6, host_global_session_cap: 12 },
@@ -480,32 +507,103 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     await saveWith();
     await screen.findByText('Saving for next restart…');
 
-    // Issued DURING the write — a higher issue seq than the write's issue, so a
+    // Issued DURING the write — a higher ISSUE seq than the write's issue, so a
     // naive issue-keyed filter would let it through.
-    const stale = view.client.refetchQueries({ queryKey: ['daemon-capacity', SLUG] });
+    const stale = view.client.refetchQueries({ queryKey: capacityQueryKey(SLUG) });
     await waitFor(() => expect(gets().length).toBeGreaterThan(1));
 
-    // The write settles FIRST with the accepted 5/12 @ REV_B…
     putGate.resolve(HttpResponse.json(snapshot({
       persisted_yaml: { queue_workers: 5, host_global_session_cap: 12 },
       next_start: { queue_workers: 5, host_global_session_cap: 12 },
       restart_pending: true, revision: REV_B,
     })));
     await screen.findByText(/Saved for next restart/);
-    const receiptAfterSave = screen.getByText(/Last received/).textContent;
+    const receiptAfterSave = capacityObservation(SLUG)?.receiptAt ?? null;
+    const renderedReceipt = screen.getAllByText(/Last received/)[0].textContent;
+    expect(receiptAfterSave).not.toBeNull();
 
-    // …THEN the older read settles with the PRE-SAVE 3/10 @ REV_A.
-    getGate.resolve(HttpResponse.json(snapshot({ revision: REV_A })));
-    await stale;
+    getGate.resolve(lateRead());
+    await stale.catch(() => undefined);
+    return { view, receiptAfterSave, renderedReceipt };
+  }
 
-    // FINAL: the accepted snapshot survives. No revert, no badge flicker.
+  /** Every assertion the accepted 2.14/2.15 FINAL state requires. */
+  async function expectAcceptedPostSaveState(
+    view: ReturnType<typeof mount>,
+    receiptAfterSave: number | null,
+    renderedReceipt: string | null | undefined,
+  ) {
+    // Displayed surface: accepted pair, revision and badge; no flicker back.
     await waitFor(() => expect(savedCell()).toHaveTextContent('5'));
     expect(nextCell()).toHaveTextContent('5');
+    expect(runningCell()).toHaveTextContent('3');
     expect(screen.getByText('Restart pending')).toBeVisible();
+    // The load-error branch must NOT replace the saved surface.
+    expect(screen.queryByText(/No values are displayed/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Could not load daemon capacity/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Could not refresh/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Last known')).not.toBeInTheDocument();
+    // Editor: draft equals base, reason cleared, no guard, no residual lock.
+    expect(workers()).toHaveValue('5');
+    expect(cap()).toHaveValue('12');
+    expect(reasonBox()).toHaveValue('');
     expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
-    // The dropped read does NOT advance the receipt — no fabricated
-    // re-confirmation of the accepted snapshot.
-    expect(screen.getByText(/Last received/).textContent).toBe(receiptAfterSave);
+    expect(screen.queryByText(/Reconcile the saved values/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+    expect(screen.queryByText(/You submitted/)).not.toBeInTheDocument();
+    expect(saveButton()).toBeEnabled();
+    // PROVIDER receipt and CACHE, not just a formatted string.
+    expect(capacityObservation(SLUG)?.receiptAt ?? null).toBe(receiptAfterSave);
+    expect(capacityObservation(SLUG)?.outcome).toBe('usable');
+    expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_B);
+    expect(
+      view.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision,
+    ).toBe(REV_B);
+    expect(screen.getAllByText(/Last received/)[0].textContent).toBe(renderedReceipt);
+  }
+
+  /**
+   * 2.16 — recovery CONTINUING from a settled 2.14/2.15 outcome. A read issued
+   * AFTER the write settled publishes normally, the receipt ADVANCES, and a
+   * separate manual save carries the recovered revision.
+   */
+  async function expectLaterRecovery(receiptAfterSave: number | null) {
+    server.use(
+      http.get(CAPACITY, async ({ request }) => {
+        captured.push({ method: 'GET', ifMatch: request.headers.get('if-match'), rawBody: '' });
+        return HttpResponse.json(snapshot({
+          persisted_yaml: { queue_workers: 5, host_global_session_cap: 12 },
+          next_start: { queue_workers: 5, host_global_session_cap: 12 },
+          restart_pending: true, revision: REV_C,
+        }));
+      }),
+    );
+    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+    await waitFor(() => expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_C));
+    // Ordering safety was not bought by refusing later reads forever.
+    expect(capacityObservation(SLUG)?.outcome).toBe('usable');
+    expect((capacityObservation(SLUG)?.receiptAt ?? 0)).toBeGreaterThanOrEqual(receiptAfterSave ?? 0);
+    expect(capacityObservation(SLUG)?.receiptAt).not.toBe(receiptAfterSave);
+
+    const putsBefore = puts().length;
+    await setPair('7', '12');
+    await saveWith('after recovery');
+    await waitFor(() => expect(puts()).toHaveLength(putsBefore + 1));
+    const final = puts()[putsBefore];
+    expect(final.ifMatch).toBe(`"${REV_C}"`);
+    expect(JSON.parse(final.rawBody)).toEqual({
+      queue_workers: 7,
+      host_global_session_cap: 12,
+      rationale: 'after recovery',
+      confirm_environment_shadow: false,
+    });
+  }
+
+  test('2.14 / 2.16 a permitted during-PUT read landing as a stale SUCCESS is dropped, then a later read recovers', async () => {
+    const { view, receiptAfterSave, renderedReceipt } = await duringPutOrdering(
+      () => HttpResponse.json(snapshot({ revision: REV_A })),
+    );
+    await expectAcceptedPostSaveState(view, receiptAfterSave, renderedReceipt);
 
     // The FINAL separate manual save carries the ACCEPTED revision, read from
     // the captured header — never from component state.
@@ -521,79 +619,30 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       confirm_environment_shadow: false,
     });
     expect('revision' in body).toBe(false);
-
-    // Drain the final transition: the follow-up save is ACCEPTED and advances
-    // the surface. Leaving it in flight is what previously let a rejected
-    // response settle after the test had already returned.
+    // Drain the final transition rather than leaving a response in flight.
     await waitFor(() => expect(savedCell()).toHaveTextContent('6'));
     expect(nextCell()).toHaveTextContent('6');
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
   });
 
-  test('2.15 the same during-PUT read landing as an ERROR never downgrades the accepted state', async () => {
-    const putGate = deferred<Response>();
-    const getGate = deferred<Response>();
-    stubVenue({
-      get: (i) => (i === 0 ? HttpResponse.json(snapshot()) : getGate.promise),
-      put: () => putGate.promise,
-    });
-    const view = mount();
-    await ready();
-    await setPair('5', '12');
-    await saveWith();
-    await screen.findByText('Saving for next restart…');
-
-    const stale = view.client.refetchQueries({ queryKey: ['daemon-capacity', SLUG] });
-    await waitFor(() => expect(gets().length).toBeGreaterThan(1));
-    putGate.resolve(HttpResponse.json(snapshot({
-      persisted_yaml: { queue_workers: 5, host_global_session_cap: 12 },
-      next_start: { queue_workers: 5, host_global_session_cap: 12 },
-      restart_pending: true, revision: REV_B,
-    })));
-    await screen.findByText(/Saved for next restart/);
-    const receiptAfterSave = screen.getByText(/Last received/).textContent;
-
-    // The obsolete read fails.
-    getGate.resolve(new HttpResponse(null, { status: 500 }));
-    await stale.catch(() => undefined);
-
-    // The load-error branch does NOT appear and the saved surface survives.
-    expect(screen.queryByText(/No values are displayed/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Could not load daemon capacity/)).not.toBeInTheDocument();
-    await waitFor(() => expect(savedCell()).toHaveTextContent('5'));
-    expect(saveButton()).toBeEnabled();
-    expect(screen.getByText(/Last received/).textContent).toBe(receiptAfterSave);
+  test.each([
+    ['a network failure', () => HttpResponse.error()],
+    ['an HTTP 500', () => new HttpResponse(null, { status: 500 })],
+    ['a raw `not json` 200 body', () => new HttpResponse('not json', {
+      headers: { 'content-type': 'application/json' },
+    })],
+  ])('2.15 / 2.16 the same during-PUT read landing as %s never downgrades the accepted state, and recovery still works', async (_label, late) => {
+    const { view, receiptAfterSave, renderedReceipt } = await duringPutOrdering(late as () => Response);
+    await expectAcceptedPostSaveState(view, receiptAfterSave, renderedReceipt);
+    await expectLaterRecovery(receiptAfterSave);
   });
 
-  test('2.16 a later usable read still publishes — ordering safety is not bought by refusing reads forever', async () => {
-    stubVenue({
-      get: (i) => (i === 0
-        ? HttpResponse.json(snapshot())
-        : HttpResponse.json(snapshot({
-          persisted_yaml: { queue_workers: 5, host_global_session_cap: 12 },
-          next_start: { queue_workers: 5, host_global_session_cap: 12 },
-          restart_pending: true, revision: REV_C,
-        }))),
-      put: () => HttpResponse.json(snapshot({
-        persisted_yaml: { queue_workers: 5, host_global_session_cap: 12 },
-        next_start: { queue_workers: 5, host_global_session_cap: 12 },
-        restart_pending: true, revision: REV_B,
-      })),
-    });
-    mount();
-    await ready();
-    await setPair('5', '12');
-    await saveWith();
-    await screen.findByText(/Saved for next restart/);
-
-    // A read issued AFTER the write settled publishes normally.
-    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
-    await waitFor(() => expect(gets().length).toBeGreaterThan(1));
-
-    // The next manual save carries REV_C — never REV_B, never REV_A.
-    await setPair('7', '12');
-    await saveWith('after recovery');
-    await waitFor(() => expect(puts()).toHaveLength(2));
-    expect(puts()[1].ifMatch).toBe(`"${REV_C}"`);
+  test('2.16 recovery CONTINUES the 2.14 stale-success predecessor to a genuine receipt advance and a separate manual save', async () => {
+    const { view, receiptAfterSave, renderedReceipt } = await duringPutOrdering(
+      () => HttpResponse.json(snapshot({ revision: REV_A })),
+    );
+    await expectAcceptedPostSaveState(view, receiptAfterSave, renderedReceipt);
+    await expectLaterRecovery(receiptAfterSave);
   });
 });
 
@@ -604,6 +653,56 @@ describe('4 — acknowledgment identity at the real boundary', () => {
     environment_warning: 'Environment overrides win.',
     next_start: { queue_workers: resolvedW, host_global_session_cap: 12 },
     effective_admission_cap: cap,
+  });
+
+  test('3.1 / 3.4 the W-only override resolves the consequence BEFORE and AFTER a successful save', async () => {
+    const shadowW = {
+      environment_shadowed: ['queue_workers'],
+      environment_warning: 'Environment overrides win.',
+      next_start: { queue_workers: 3, host_global_session_cap: 12 },
+    };
+    stubVenue({
+      get: () => HttpResponse.json(snapshot(shadowW)),
+      put: () => HttpResponse.json(snapshot({
+        ...shadowW,
+        revision: REV_B,
+        persisted_yaml: { queue_workers: 5, host_global_session_cap: 14 },
+        next_start: { queue_workers: 3, host_global_session_cap: 14 },
+      })),
+    });
+    mount();
+    await ready();
+    await setPair('5', '14');
+
+    // PRE-SAVE: resolved W = 3, H = 14; pool 3 + 7 = 10 — never the drafted 5.
+    expect(document.body).toHaveTextContent(/Task session slots 3, Host session admission limit 14/);
+    expect(document.body).toHaveTextContent(/Task session slots is set by the environment/);
+    expect(screen.getByText('Worker-pool total').nextElementSibling?.firstChild?.textContent).toBe('10');
+    expect(screen.getByText('Worker-pool total').parentElement?.textContent)
+      .toContain('3 task + 7 other producers');
+    expect(document.body).not.toHaveTextContent(/worker-pool total 12/);
+    // 3.4: no predicted FUTURE effective admission cap anywhere.
+    expect(document.body).toHaveTextContent(/Assumes unchanged environment and\s+worker topology/);
+    expect(document.body).not.toHaveTextContent(/future effective|effective admission (cap )?will/i);
+
+    await userEvent.click(screen.getByRole('checkbox'));
+    await saveWith('raise task slots');
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(JSON.parse(puts()[0].rawBody)).toEqual({
+      queue_workers: 5,
+      host_global_session_cap: 14,
+      rationale: 'raise task slots',
+      confirm_environment_shadow: true,
+    });
+
+    // POST-SAVE: the result panel resolves the SAME W = 3 / H = 14 pair and
+    // names only the shadowed key. No "Applied", no restart claim.
+    await screen.findByText(/^Saved\. No restart is pending for these values\./);
+    expect(document.body).toHaveTextContent(/Saved value overridden: Task session slots is set by the environment/);
+    expect(document.body).toHaveTextContent(/Expected next start: Task session slots 3, Host session admission limit 14/);
+    expect(document.body).not.toHaveTextContent(/Applied|Apply now|Restart daemon/);
+    expect(savedCell()).toHaveTextContent('5');
+    expect(nextCell()).toHaveTextContent('3');
   });
 
   test('4.1 an identical context refresh PRESERVES the acknowledgment', async () => {
@@ -889,13 +988,76 @@ describe('13 / 14 — denied and unusable reads', () => {
     expect(screen.queryByLabelText(/Task session slots/)).not.toBeInTheDocument();
   });
 
-  test('14.1 a dirty draft meeting a quoted-numeric refresh keeps base/draft/reason and blocks the write', async () => {
+  const SHADOW_W = {
+    environment_shadowed: ['queue_workers'],
+    environment_warning: 'Environment overrides win; a restart alone will not make YAML win.',
+    next_start: { queue_workers: 3, host_global_session_cap: 10 },
+  };
+
+  /** Every rendered receipt string on screen. There is more than one venue. */
+  function receiptStrings(): string[] {
+    return screen.getAllByText(/Last received/).map((node) => node.textContent ?? '');
+  }
+
+  test('14.1 an unusable refresh keeps base/draft/reason/ack, labels the retained values "Last known", and blocks save AND rebase', async () => {
     stubVenue({
       get: (i) => (i === 0
-        ? HttpResponse.json(snapshot())
+        ? HttpResponse.json(snapshot(SHADOW_W))
         : HttpResponse.json(snapshot({
+          ...SHADOW_W,
           persisted_yaml: { queue_workers: '3', host_global_session_cap: 10 },
         }))),
+    });
+    mount();
+    await ready();
+    await setPair('5', '12');
+    await userEvent.type(reasonBox(), 'why');
+    await userEvent.click(screen.getByRole('checkbox'));
+    expect(screen.getByRole('checkbox')).toBeChecked();
+    const before = capacityObservation(SLUG)?.receiptAt ?? null;
+
+    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+    await screen.findByText(/Cannot read capacity configuration/);
+
+    // Editor state survives in full.
+    expect(workers()).toHaveValue('5');
+    expect(cap()).toHaveValue('12');
+    expect(reasonBox()).toHaveValue('why');
+    expect(screen.getByRole('checkbox')).toBeChecked();
+
+    // R9 14.1: the prior observations are actually RETAINED and LABELLED, not
+    // merely described by a sentence — the running cards and the four-column
+    // table still render the last usable values under "Last known".
+    expect(screen.getByText('Last known')).toBeVisible();
+    expect(screen.queryByText('Running now')).not.toBeInTheDocument();
+    expect(runningCell()).toHaveTextContent('3');
+    expect(savedCell()).toHaveTextContent('3');
+    expect(receiptStrings().length).toBeGreaterThan(0);
+
+    // The unusable read is neither a saveable base nor a rebase target.
+    expect(saveButton()).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' })).not.toBeInTheDocument();
+
+    // Handler-level refusal, proven at the HTTP boundary.
+    const form = saveButton().closest('form') as HTMLFormElement;
+    fireEvent.submit(form);
+    await screen.findByText(/could not be read, so nothing was sent/);
+    expect(puts()).toHaveLength(0);
+    // S5-R5: an unusable BODY still arrived on a genuine successful network
+    // response, so the browser receipt advances — but the OBSERVATION is not
+    // usable, so nothing was accepted from it (R7).
+    expect(capacityObservation(SLUG)?.receiptAt ?? null).not.toBe(before);
+    expect(capacityObservation(SLUG)?.outcome).toBe('unusable');
+    expect(capacityObservation(SLUG)?.sourceRevision).toBeNull();
+  });
+
+  test('14.2 a refresh missing revision is unusable in exactly the same way', async () => {
+    stubVenue({
+      get: (i) => {
+        if (i === 0) return HttpResponse.json(snapshot());
+        const { revision: _revision, ...withoutRevision } = snapshot();
+        return HttpResponse.json(withoutRevision);
+      },
     });
     mount();
     await ready();
@@ -904,33 +1066,85 @@ describe('13 / 14 — denied and unusable reads', () => {
     await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
 
     await screen.findByText(/Cannot read capacity configuration/);
+    expect(screen.getByText('Last known')).toBeVisible();
+    expect(savedCell()).toHaveTextContent('3');
     expect(workers()).toHaveValue('5');
-    expect(cap()).toHaveValue('12');
-    expect(reasonBox()).toHaveValue('why');
     expect(saveButton()).toBeDisabled();
-    expect(document.body).toHaveTextContent(/Last known/);
-
-    const putsBefore = puts().length;
-    await userEvent.click(saveButton()).catch(() => undefined);
-    expect(puts()).toHaveLength(putsBefore);
+    expect(puts()).toHaveLength(0);
   });
 
-  test('14.3 a failed refresh retains last-known values and does NOT advance the receipt', async () => {
+  test('14.3 / 14.4 R1 — a FAILED refresh preserves last-known values, receipt, editor and ack, refuses the PUT at handler AND control, and only a usable reread reconciles', async () => {
     stubVenue({
-      get: (i) => (i === 0 ? HttpResponse.json(snapshot()) : HttpResponse.error()),
+      get: (i) => {
+        if (i === 0) return HttpResponse.json(snapshot(SHADOW_W));
+        if (i === 1) return HttpResponse.error();
+        return HttpResponse.json(snapshot({
+          ...SHADOW_W,
+          revision: REV_B,
+          persisted_yaml: { queue_workers: 2, host_global_session_cap: 9 },
+        }));
+      },
     });
-    mount();
+    const view = mount();
     await ready();
-    const receipt = screen.getByText(/Last received/).textContent;
     await setPair('5', '12');
-    await new Promise((r) => setTimeout(r, 1100));
-    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
-    await waitFor(() => expect(gets().length).toBeGreaterThan(1));
+    await userEvent.type(reasonBox(), 'intent');
+    await userEvent.click(screen.getByRole('checkbox'));
+    const receiptBefore = receiptStrings();
+    const observedBefore = capacityObservation(SLUG)?.receiptAt ?? null;
+    expect(observedBefore).not.toBeNull();
 
-    // The failed refresh is not a genuine successful response, so the receipt
-    // must not move.
-    expect(screen.getByText(/Last received/).textContent).toBe(receipt);
+    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+    await waitFor(() => expect(
+      view.client.getQueryState(capacityQueryKey(SLUG))?.status,
+    ).toBe('error'));
+    expect(capacityObservation(SLUG)?.outcome).toBe('failed');
+
+    // The warning is the accepted 14.3 wording, and the retained values are
+    // explicitly labelled rather than presented as confirmed.
+    await screen.findByText(/Could not refresh\. Current state unverified\./);
+    expect(screen.getByText('Last known')).toBeVisible();
+    expect(runningCell()).toHaveTextContent('3');
+    expect(savedCell()).toHaveTextContent('3');
+    // The receipt belongs to the last GENUINE successful response and does not
+    // advance for a failure (S2 / S5-R5).
+    expect(receiptStrings()).toEqual(expect.arrayContaining(receiptBefore));
+    expect(capacityObservation(SLUG)?.receiptAt ?? null).toBe(observedBefore);
+
+    // Editor, reason and acknowledgment all survive.
     expect(workers()).toHaveValue('5');
+    expect(cap()).toHaveValue('12');
+    expect(reasonBox()).toHaveValue('intent');
+    expect(screen.getByRole('checkbox')).toBeChecked();
+
+    // R1: refused at the control AND at the handler — measured at the wire.
+    expect(saveButton()).toBeDisabled();
+    await userEvent.click(saveButton());
+    fireEvent.submit(saveButton().closest('form') as HTMLFormElement);
+    await screen.findByText(/could not be read, so nothing was sent/);
+    await waitFor(() => expect(view.client.isMutating()).toBe(0));
+    expect(puts()).toHaveLength(0);
+
+    // 14.4: a usable recovery NEVER silently rebases — it requires an explicit
+    // choice, and only then does a write become possible.
+    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+    await waitFor(() => expect(gets()).toHaveLength(3));
+    await screen.findByText('Configuration changed elsewhere.');
+    expect(workers()).toHaveValue('5');
+    expect(reasonBox()).toHaveValue('intent');
+    expect(screen.queryByText(/Could not refresh/)).not.toBeInTheDocument();
+    expect(capacityObservation(SLUG)?.receiptAt ?? null).not.toBe(observedBefore);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Keep my draft, rebase onto latest' }));
+    await userEvent.click(saveButton());
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(puts()[0].ifMatch).toBe(`"${REV_B}"`);
+    expect(JSON.parse(puts()[0].rawBody)).toEqual({
+      queue_workers: 5,
+      host_global_session_cap: 12,
+      rationale: 'intent',
+      confirm_environment_shadow: true,
+    });
   });
 
   test('14.4 a usable recovery after an unusable read NEVER silently rebases', async () => {
@@ -974,6 +1188,10 @@ describe('19 — cache scoping and route geometry', () => {
       http.get(`/api/v1/orgs/${BETA}/dashboard/summary`, () => HttpResponse.json({
         counts: {}, recent_tasks: [], escalations: [], agents: [],
       })),
+      // Alpha is mounted first now, so its app-shell path is declared too.
+      http.get(`/api/v1/orgs/${SLUG}/dashboard/summary`, () => HttpResponse.json({
+        counts: {}, recent_tasks: [], escalations: [], agents: [],
+      })),
       http.get(CAPACITY, () => HttpResponse.json(snapshot())),
       http.get(`/api/v1/orgs/${BETA}/settings/daemon-capacity`, () => HttpResponse.json(snapshot({
         revision: BETA_REV,
@@ -991,18 +1209,38 @@ describe('19 — cache scoping and route geometry', () => {
       }),
     );
 
-    const view = mount(`/orgs/${BETA}/settings/daemon-capacity`);
-    await screen.findByRole('heading', { name: 'Capacity' }, { timeout: 5000 });
+    // R9 19.3: exercise the ACTUAL alpha -> beta transition. Mounting beta
+    // directly never caches alpha, so it cannot prove that alpha's snapshot is
+    // not served to beta. Alpha is mounted, cached, and navigated AWAY from.
+    const view = mount();
+    await ready();
+    expect(savedCell()).toHaveTextContent('3');
+    await waitFor(() => expect(view.client.getQueryData(['daemon-capacity', SLUG])).toBeDefined());
+
+    act(() => { void view.router.navigate(`/orgs/${BETA}/settings/daemon-capacity`); });
     await waitFor(() => expect(workers()).toHaveValue('7'));
-    // Beta's own revision, not alpha's.
+    // Beta's own values and revision, with NO alpha value on screen anywhere.
     expect(savedCell()).toHaveTextContent('7');
+    expect(nextCell()).toHaveTextContent('7');
+    expect(runningCell()).toHaveTextContent('7');
+    expect(
+      view.client.getQueryData<{ revision: string }>(['daemon-capacity', BETA])?.revision,
+    ).toBe(BETA_REV);
+    expect(
+      view.client.getQueryData<{ revision: string }>(['daemon-capacity', SLUG])?.revision,
+    ).toBe(REV_A);
+    expect(document.body).not.toHaveTextContent(REV_A);
+    expect(document.body).toHaveTextContent(BETA_REV);
 
     await setPair('9', '21');
     await saveWith('beta change');
     await waitFor(() => expect(betaPuts).toHaveLength(1));
+    // The save carries BETA's If-Match, never alpha's.
     expect(betaPuts[0].ifMatch).toBe(`"${BETA_REV}"`);
+    expect(betaPuts[0].ifMatch).not.toBe(`"${REV_A}"`);
     expect(view.client.getQueryData(['daemon-capacity', BETA])).toBeDefined();
-    expect(view.client.getQueryData(['daemon-capacity', SLUG])).toBeUndefined();
+    expect(view.client.getQueryData(['daemon-capacity', SLUG])).toBeDefined();
+    expect(puts()).toHaveLength(0);
     expect(undeclared, `undeclared paths: ${undeclared.join(', ')}`).toEqual([]);
   });
 
@@ -1064,5 +1302,283 @@ describe('17 — in-app navigation guard (L5)', () => {
     await userEvent.click(within(content).getByRole('link', { name: 'Organization' }));
     await waitFor(() => expect(screen.queryByLabelText('Reason for change')).not.toBeInTheDocument());
     expect(screen.queryByText('Discard unsaved capacity changes?')).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+/**
+ * 15 / R7 — raw numeric envelopes at the MOUNTED boundary.
+ *
+ * Every fixture here is a RAW JSON STRING. An object literal is rounded by
+ * `JSON.stringify` before it ever reaches the transport, so an object fixture
+ * cannot deliver an unsafe token at all and the case would be vacuous.
+ */
+describe('15 / R7 — raw numeric envelopes, editor to wire and back', () => {
+  const UNSAFE = '9007199254740993';
+  const ROUNDED = 9007199254740992;
+
+  /** A raw JSON body with ONE slot replaced by an unsafe integer token. */
+  function rawWithUnsafe(slot: string, overrides: Record<string, unknown> = {}): Response {
+    const replacement = slot.replace(/:\d+$/, `:${UNSAFE}`);
+    const text = JSON.stringify(snapshot(overrides)).replace(slot, replacement);
+    expect(text).toContain(`${UNSAFE}`);
+    expect(() => JSON.parse(text)).not.toThrow();
+    return new HttpResponse(text, { headers: { 'content-type': 'application/json' } });
+  }
+
+  test('15.2 MAX_SAFE_INTEGER typed into the MOUNTED editor reaches the wire verbatim', async () => {
+    stubVenue({ put: () => HttpResponse.json(snapshot({ revision: REV_B })) });
+    mount();
+    await ready();
+    await setPair('9007199254740991', '12');
+    await saveWith('boundary');
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    // The captured RAW body text — not a re-serialized object.
+    expect(puts()[0].rawBody).toContain('"queue_workers":9007199254740991');
+    expect(puts()[0].rawBody).not.toMatch(/e\+|9007199254740992/);
+    expect(JSON.parse(puts()[0].rawBody).queue_workers).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
+  test('15.1 the boundary+1 is refused at the editor: no PUT, and the entered TEXT is unchanged', async () => {
+    stubVenue();
+    mount();
+    await ready();
+    await setPair(UNSAFE, '12');
+    await saveWith('too big');
+    await screen.findByText(/outside the range this editor can represent exactly/);
+    expect(workers()).toHaveValue(UNSAFE);
+    expect(document.body).not.toHaveTextContent(String(ROUNDED));
+    expect(puts()).toHaveLength(0);
+  });
+
+  test('15.4 a raw GET carrying an unsafe token is withheld, never seeded and never rendered rounded', async () => {
+    stubVenue({
+      get: (i) => (i === 0
+        ? HttpResponse.json(snapshot())
+        : rawWithUnsafe('"queue_workers":3', { revision: REV_B })),
+    });
+    const view = mount();
+    await ready();
+    await setPair('5', '12');
+    await userEvent.type(reasonBox(), 'why');
+    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+
+    await screen.findByText(/Latest capacity values are outside the range this editor can represent exactly/);
+    expect(document.body).not.toHaveTextContent(String(ROUNDED));
+    // Last known is retained and labelled; the editor is untouched.
+    expect(screen.getByText('Last known')).toBeVisible();
+    expect(savedCell()).toHaveTextContent('3');
+    expect(workers()).toHaveValue('5');
+    expect(reasonBox()).toHaveValue('why');
+    // The observation is NOT usable and no rebase is offered against it.
+    expect(capacityObservation(SLUG)?.outcome).toBe('unusable');
+    expect(capacityObservation(SLUG)?.sourceRevision).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' })).not.toBeInTheDocument();
+    expect(saveButton()).toBeDisabled();
+    fireEvent.submit(saveButton().closest('form') as HTMLFormElement);
+    await waitFor(() => expect(view.client.isMutating()).toBe(0));
+    expect(puts()).toHaveLength(0);
+  });
+
+  test('R7 (F9) 15.5 a raw PUT SUCCESS carrying an unsafe token never enters accepted cache or base as usable', async () => {
+    stubVenue({
+      put: () => rawWithUnsafe('"effective_admission_cap":10', { revision: REV_B }),
+    });
+    const view = mount();
+    await ready();
+    const acceptedBefore = view.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG));
+    expect(acceptedBefore?.revision).toBe(REV_A);
+    const receiptBefore = capacityObservation(SLUG)?.receiptAt ?? null;
+
+    await setPair('5', '12');
+    await saveWith();
+    await screen.findByText(/Save result unknown/);
+
+    // The component says unknown AND the provider agrees: the response is not
+    // an accepted observation, the receipt does not advance, and the capacity
+    // CACHE still holds the last genuinely usable snapshot.
+    expect(capacityObservation(SLUG)?.outcome).toBe('unusable');
+    expect(capacityObservation(SLUG)?.receiptAt ?? null).toBe(receiptBefore);
+    expect(capacityObservation(SLUG)?.sourceRevision).toBeNull();
+    const cached = view.client.getQueryData<Record<string, unknown>>(capacityQueryKey(SLUG));
+    expect(cached?.revision).toBe(REV_A);
+    expect(cached?.effective_admission_cap).toBe(10);
+    expect(cached?.effective_admission_cap).not.toBe(ROUNDED);
+    // Base did not advance and the rounded stand-in is nowhere on screen.
+    expect(savedCell()).toHaveTextContent('3');
+    expect(document.body).not.toHaveTextContent(String(ROUNDED));
+    // Unresolved: the next Save is refused, not silently retried.
+    await userEvent.click(saveButton());
+    await screen.findByText(/Reconcile the saved values before saving again/);
+    expect(puts()).toHaveLength(1);
+  });
+
+  test('15.5 a raw 409 LATEST carrying an unsafe token offers no rebase and fabricates no number', async () => {
+    const latestText = JSON.stringify({
+      detail: { code: 'stale_revision', latest: snapshot({ revision: REV_B }) },
+    }).replace('"queue_workers":3', `"queue_workers":${UNSAFE}`);
+    expect(latestText).toContain(UNSAFE);
+    stubVenue({
+      put: () => new HttpResponse(latestText, {
+        status: 409, headers: { 'content-type': 'application/json' },
+      }),
+    });
+    mount();
+    await ready();
+    await setPair('5', '12');
+    await saveWith();
+    await screen.findByText(/Latest saved values are outside the range this editor can represent exactly/);
+    expect(document.body).not.toHaveTextContent(String(ROUNDED));
+    expect(screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' })).not.toBeInTheDocument();
+    expect(workers()).toHaveValue('5');
+    expect(savedCell()).toHaveTextContent('3');
+    expect(puts()).toHaveLength(1);
+  });
+
+  test('15.5 a raw UNCERTAIN-REREAD carrying an unsafe token is not a usable observation', async () => {
+    stubVenue({
+      get: (i) => (i === 0
+        ? HttpResponse.json(snapshot())
+        : rawWithUnsafe('"producer_envelope":10', { revision: REV_B })),
+      put: () => HttpResponse.json(
+        { detail: { code: 'config_publication_uncertain', artifact_state: 'absent' } },
+        { status: 503 },
+      ),
+    });
+    mount();
+    await ready();
+    await setPair('5', '12');
+    await saveWith();
+    await screen.findByText(/durability, verification, or cleanup did not complete/);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Check saved values' }));
+    await waitFor(() => expect(gets().length).toBeGreaterThan(1));
+    expect(capacityObservation(SLUG)?.outcome).toBe('unusable');
+    expect(screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' })).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(String(ROUNDED));
+    expect(screen.getByText(/You submitted Task session slots 5/)).toBeVisible();
+    expect(puts()).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('R8 — an accepted write finishes a coherent clean state', () => {
+  test('R8 (F10) an accepted PUT fences the obsolete during-PUT latest and leaves no residual lock', async () => {
+    const gate = deferred<Response>();
+    stubVenue({
+      get: (i) => HttpResponse.json(i === 0 ? snapshot() : snapshot({
+        revision: REV_C,
+        persisted_yaml: { queue_workers: 9, host_global_session_cap: 9 },
+        next_start: { queue_workers: 9, host_global_session_cap: 9 },
+      })),
+      put: () => gate.promise,
+    });
+    const view = mount();
+    await ready();
+    await setPair('5', '12');
+    await saveWith();
+    await screen.findByText('Saving for next restart…');
+
+    // A permitted read lands DURING the write and is recorded as `latest`.
+    await view.client.refetchQueries({ queryKey: capacityQueryKey(SLUG) });
+    await screen.findByText('Configuration changed elsewhere.');
+
+    gate.resolve(HttpResponse.json(snapshot({
+      revision: REV_B,
+      persisted_yaml: { queue_workers: 5, host_global_session_cap: 12 },
+      next_start: { queue_workers: 5, host_global_session_cap: 12 },
+      restart_pending: true,
+    })));
+    await screen.findByText('Saved for next restart. Running limits are unchanged.');
+
+    // The whole transition completes: the obsolete observation and every lock
+    // it implied are gone, and the surface is clean.
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Currently saved')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/You submitted/)).not.toBeInTheDocument();
+    expect(workers()).toHaveValue('5');
+    expect(cap()).toHaveValue('12');
+    expect(reasonBox()).toHaveValue('');
+    expect(savedCell()).toHaveTextContent('5');
+    expect(saveButton()).toBeEnabled();
+    const unload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(false);
+
+    // A separate follow-up save is possible and uses the ACCEPTED revision.
+    await setPair('6', '12');
+    await saveWith('follow-up');
+    await waitFor(() => expect(puts()).toHaveLength(2));
+    expect(puts()[1].ifMatch).toBe(`"${REV_B}"`);
+  });
+
+  test("R8 the write's OWN response is never an external change — no phantom reconciliation after a save", async () => {
+    stubVenue({
+      // The GET fixture keeps returning the PRE-SAVE revision, so any path that
+      // treats the write's own published snapshot as a read observation shows
+      // up immediately as a phantom "changed elsewhere".
+      get: () => HttpResponse.json(snapshot()),
+      put: () => HttpResponse.json(snapshot({
+        revision: REV_B,
+        persisted_yaml: { queue_workers: 5, host_global_session_cap: 12 },
+        next_start: { queue_workers: 5, host_global_session_cap: 12 },
+        restart_pending: true,
+      })),
+    });
+    mount();
+    await ready();
+    await setPair('5', '12');
+    await saveWith('raising task slots');
+    await screen.findByText('Saved for next restart. Running limits are unchanged.');
+
+    // The provider labels the observation as a WRITE, and the view must not
+    // read it as an external change: the cache write inside the mutation's
+    // onSuccess notifies this query's observer while the editor is still
+    // dirty, which is exactly the ordering that manufactured a phantom
+    // reconciliation panel in a real browser.
+    expect(capacityObservation(SLUG)?.origin).toBe('write');
+    expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_B);
+    expect(screen.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Currently saved')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' })).not.toBeInTheDocument();
+    expect(savedCell()).toHaveTextContent('5');
+    expect(gets()).toHaveLength(1);
+    expect(puts()).toHaveLength(1);
+  });
+
+  test('R8 a GENUINELY NEWER read settling AFTER the accepted write is still protected', async () => {
+    stubVenue({
+      get: (i) => HttpResponse.json(i === 0 ? snapshot() : snapshot({
+        revision: REV_C,
+        persisted_yaml: { queue_workers: 9, host_global_session_cap: 9 },
+        next_start: { queue_workers: 9, host_global_session_cap: 9 },
+      })),
+      put: () => HttpResponse.json(snapshot({
+        revision: REV_B,
+        persisted_yaml: { queue_workers: 5, host_global_session_cap: 12 },
+        next_start: { queue_workers: 5, host_global_session_cap: 12 },
+        restart_pending: true,
+      })),
+    });
+    mount();
+    await ready();
+    await setPair('5', '12');
+    await saveWith();
+    await screen.findByText(/Saved for next restart/);
+
+    // A read issued AFTER the write settles is NOT obsolete: it publishes, and
+    // because the form is clean it is adopted rather than discarded.
+    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+    await waitFor(() => expect(savedCell()).toHaveTextContent('9'));
+    expect(workers()).toHaveValue('9');
+    expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_C);
+
+    await setPair('4', '9');
+    await saveWith('after newer read');
+    await waitFor(() => expect(puts()).toHaveLength(2));
+    expect(puts()[1].ifMatch).toBe(`"${REV_C}"`);
   });
 });

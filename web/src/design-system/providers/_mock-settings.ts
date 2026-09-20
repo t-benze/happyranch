@@ -43,7 +43,9 @@ function okCapacity<T>(data: T, revision: string): CapacityQueryLike<T> {
     observation: {
       issuedSeq: 1,
       settledSeq: 2,
-      outcome: 'usable',
+      // The mock serves a fixture read, never a write result.
+      origin: 'read' as const,
+      outcome: 'usable' as const,
       receiptAt: 0,
       sourceRevision: revision,
     },

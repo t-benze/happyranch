@@ -17,14 +17,14 @@ import type {
 import type { SettingsApi, QueryLike } from './DataContext';
 import {
   acceptCapacityWrite,
-  capacityLedger,
   capacityObservation,
   capacityQueryKey,
-  hasCapacitySnapshotShape,
+  isUsableCapacitySnapshot,
   isDroppedCapacityRead,
   nextCapacitySeq,
   publishCapacityRead,
   publishCapacityReadFailure,
+  recordUnusableCapacityWrite,
   type CapacityQueryLike,
 } from './_capacity-ordering';
 
@@ -132,14 +132,21 @@ function useUpdateDaemonCapacity() {
       // fences later reads, but it never becomes an accepted observation and
       // never reaches the cache — the caller classifies it as an unknown
       // outcome instead.
-      capacityLedger(slug).baseAcceptedSeq = settledSeq;
-      if (hasCapacitySnapshotShape(data)) {
+      if (isUsableCapacitySnapshot(data)) {
         acceptCapacityWrite(slug, settledSeq, data, Date.now());
+      } else {
+        // R7: acceptance uses the SAME capacity-local semantic classifier the
+        // view applies. A body whose numerics did not survive JSON.parse as
+        // safe integers — or that violates the domain/relational matrix — is
+        // not a usable result, so it never becomes an accepted observation and
+        // never advances the receipt. It still fences later reads.
+        recordUnusableCapacityWrite(slug, settledSeq);
       }
       return data;
     },
     onSuccess: (data) => {
-      if (hasCapacitySnapshotShape(data)) qc.setQueryData(key, data);
+      // Only a usable snapshot may enter the capacity cache (accepted 15.5).
+      if (isUsableCapacitySnapshot(data)) qc.setQueryData(key, data);
     },
   });
 }

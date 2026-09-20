@@ -37,6 +37,18 @@ export interface CapacityObservation {
   settledSeq: number;
   outcome: 'usable' | 'unusable' | 'failed';
   /**
+   * Which request produced this observation.
+   *
+   * A snapshot published by our OWN accepted write is not an external change,
+   * and the view must be able to tell the difference: the cache write inside
+   * the mutation's `onSuccess` notifies the query observer, so in a real
+   * browser the read-acceptance effect can run with the write's snapshot
+   * BEFORE the submit handler's continuation accepts it. Without this field the
+   * view manufactures a phantom "changed elsewhere" against the very revision
+   * it just saved.
+   */
+  origin: 'read' | 'write';
+  /**
    * Browser receipt of the last genuine successful network response, or null
    * when none has been received. Never a server observation age.
    */
@@ -109,15 +121,21 @@ export function publishCapacityRead(
   now: number,
 ): void {
   const ledger = capacityLedger(slug);
+  const classified = classifyCapacitySnapshot(snapshot);
   ledger.highestPublishedReadSeq = issuedSeq;
   ledger.observation = {
     issuedSeq,
     settledSeq,
-    outcome: hasCapacitySnapshotShape(snapshot) ? 'usable' : 'unusable',
+    origin: 'read',
+    // R7: an observation is `usable` only when the SAME capacity-local semantic
+    // classifier the view applies accepts it. A representation/shape/domain
+    // defect — or an internally inconsistent topology — is observed and
+    // reported, never published as usable data.
+    outcome: classified.status === 'usable' ? 'usable' : 'unusable',
     // A genuine successful network response always advances the receipt, even
     // when the payload is byte-identical to the previous one (S5-R5).
     receiptAt: now,
-    sourceRevision: hasCapacitySnapshotShape(snapshot) ? snapshot.revision : null,
+    sourceRevision: classified.status === 'usable' ? classified.snapshot.revision : null,
   };
 }
 
@@ -136,6 +154,7 @@ export function publishCapacityReadFailure(
   ledger.observation = {
     issuedSeq,
     settledSeq,
+    origin: 'read',
     outcome: 'failed',
     receiptAt: ledger.observation?.receiptAt ?? null,
     sourceRevision: null,
@@ -159,9 +178,30 @@ export function acceptCapacityWrite(
   ledger.observation = {
     issuedSeq: settledSeq,
     settledSeq,
+    origin: 'write',
     outcome: 'usable',
     receiptAt: now,
     sourceRevision: snapshot.revision,
+  };
+}
+
+/**
+ * Record a write that SETTLED but whose body is not a usable capacity snapshot.
+ *
+ * The write still fences later reads (its settlement is real), but it never
+ * becomes an accepted observation, never advances the receipt and never reaches
+ * the cache — the caller classifies it as an unknown outcome (R7 / case 15.5).
+ */
+export function recordUnusableCapacityWrite(slug: string, settledSeq: number): void {
+  const ledger = capacityLedger(slug);
+  ledger.baseAcceptedSeq = settledSeq;
+  ledger.observation = {
+    issuedSeq: settledSeq,
+    settledSeq,
+    origin: 'write',
+    outcome: 'unusable',
+    receiptAt: ledger.observation?.receiptAt ?? null,
+    sourceRevision: null,
   };
 }
 
@@ -176,29 +216,169 @@ export function resetCapacityOrdering(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Transport-shape guard
+// Capacity semantic / representation classification
 // ---------------------------------------------------------------------------
+//
+// R7 repair: the provider used to decide "is this a capacity snapshot?" with a
+// weak container-shape predicate while the view applied a much stronger
+// semantic guard. A PUT body carrying a raw unsafe integer therefore passed the
+// provider, entered the capacity cache and published a `usable` observation
+// while the view reported the result unknown. There is now ONE capacity-local
+// classifier, and both the provider and the view consult it, so "usable" means
+// the same thing at every entry point (accepted case 15.5).
+//
+// This lives beside the ordering ledger rather than in the feature module so
+// the provider can import it without a features -> providers dependency; the
+// feature model re-exports it under its established name.
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+/** A consumed numeric is usable only if it survived JSON.parse as a safe integer. */
+export function isSafeCapacityNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value);
+}
+
+function isNullableSafe(value: unknown): boolean {
+  return value === null || isSafeCapacityNumber(value);
+}
+
+export type CapacityClassification =
+  | { status: 'usable'; snapshot: DaemonCapacitySnapshot }
+  /** Shape/type defect, or a representation the editor cannot show exactly. */
+  | { status: 'unusable'; reason: 'shape' | 'representation' }
+  /** Structurally fine, but internally contradictory arithmetic. */
+  | { status: 'inconsistent'; snapshot: DaemonCapacitySnapshot };
+
+const PRODUCER_COMPONENT_KEYS = [
+  'task_workers',
+  'thread_workers',
+  'dream_workers',
+  'wake_workers',
+  'schedule_workers',
+] as const;
+
 /**
- * Minimal structural check used to classify an observation's outcome. Semantic
- * guards (numeric representation, domain and relational invariants) live with
- * the capacity view in `features/settings/sections/capacityModel.ts`; this one
- * only answers "did the transport hand us a capacity snapshot at all?".
+ * Classify a snapshot that arrived from the wire (a GET body, a PUT success
+ * body, a 409 `latest`, or a reread after an uncertain outcome). The same rule
+ * applies at every entry point — an unusable value never enters accepted base
+ * or cache as usable data.
  */
-export function hasCapacitySnapshotShape(
+export function classifyCapacitySnapshot(raw: unknown): CapacityClassification {
+  if (!isObject(raw)) return { status: 'unusable', reason: 'shape' };
+
+  const shapeOk =
+    typeof raw.revision === 'string' && raw.revision.length > 0
+    && typeof raw.running_provenance === 'string'
+    && typeof raw.effective_admission_reason === 'string'
+    && typeof raw.authorization === 'string'
+    && typeof raw.restart_required === 'boolean'
+    && typeof raw.restart_pending === 'boolean'
+    && (raw.environment_warning === null || typeof raw.environment_warning === 'string')
+    && isStringArray(raw.environment_shadowed)
+    && isStringArray(raw.warnings)
+    && isObject(raw.running_at_daemon_start)
+    && isObject(raw.persisted_yaml)
+    && isObject(raw.next_start)
+    && isObject(raw.producer_components)
+    && isObject(raw.guidance)
+    && typeof (raw.guidance as Record<string, unknown>).queue_workers === 'string'
+    && typeof (raw.guidance as Record<string, unknown>).host_global_session_cap === 'string'
+    && typeof (raw.guidance as Record<string, unknown>).enforced === 'boolean';
+  if (!shapeOk) return { status: 'unusable', reason: 'shape' };
+
+  const running = raw.running_at_daemon_start as Record<string, unknown>;
+  const persisted = raw.persisted_yaml as Record<string, unknown>;
+  const next = raw.next_start as Record<string, unknown>;
+  const components = raw.producer_components as Record<string, unknown>;
+
+  // Domain matrix (15.10): persisted_yaml.* and effective_admission_cap are the
+  // only nullable numerics; everything else must be present. A null in a
+  // non-nullable position is an unusable read, NEVER a zero.
+  const presentOk =
+    ('queue_workers' in persisted) && ('host_global_session_cap' in persisted)
+    && running.queue_workers !== undefined && running.host_global_session_cap !== undefined
+    && next.queue_workers !== undefined && next.host_global_session_cap !== undefined
+    && raw.producer_envelope !== undefined
+    && 'effective_admission_cap' in raw
+    && PRODUCER_COMPONENT_KEYS.every((key) => components[key] !== undefined);
+  if (!presentOk) return { status: 'unusable', reason: 'shape' };
+
+  // Anything non-numeric (a quoted "3", a boolean, an array) is a shape defect.
+  const numericSlots: unknown[] = [
+    running.queue_workers, running.host_global_session_cap,
+    next.queue_workers, next.host_global_session_cap,
+    raw.producer_envelope,
+    ...PRODUCER_COMPONENT_KEYS.map((key) => components[key]),
+  ];
+  const nullableSlots: unknown[] = [
+    persisted.queue_workers, persisted.host_global_session_cap, raw.effective_admission_cap,
+  ];
+  if (numericSlots.some((slot) => typeof slot !== 'number')) {
+    return { status: 'unusable', reason: 'shape' };
+  }
+  if (nullableSlots.some((slot) => slot !== null && typeof slot !== 'number')) {
+    return { status: 'unusable', reason: 'shape' };
+  }
+
+  // Representation: a value that did not survive JSON.parse as a safe integer
+  // cannot be displayed exactly, so it is withheld rather than shown rounded.
+  if (!numericSlots.every(isSafeCapacityNumber)) {
+    return { status: 'unusable', reason: 'representation' };
+  }
+  if (!nullableSlots.every(isNullableSafe)) {
+    return { status: 'unusable', reason: 'representation' };
+  }
+
+  const snapshot = raw as unknown as DaemonCapacitySnapshot;
+
+  // Domain: W and H strictly positive; producer components nonnegative.
+  const positives = [
+    snapshot.running_at_daemon_start.queue_workers,
+    snapshot.running_at_daemon_start.host_global_session_cap,
+    snapshot.next_start.queue_workers,
+    snapshot.next_start.host_global_session_cap,
+  ];
+  if (positives.some((value) => value <= 0)) return { status: 'unusable', reason: 'shape' };
+  if (PRODUCER_COMPONENT_KEYS.some((key) => snapshot.producer_components[key] < 0)) {
+    return { status: 'unusable', reason: 'shape' };
+  }
+  if (snapshot.producer_envelope < 0) return { status: 'unusable', reason: 'shape' };
+  if (
+    snapshot.persisted_yaml.queue_workers !== null
+    && snapshot.persisted_yaml.queue_workers <= 0
+  ) {
+    return { status: 'unusable', reason: 'shape' };
+  }
+  if (
+    snapshot.persisted_yaml.host_global_session_cap !== null
+    && snapshot.persisted_yaml.host_global_session_cap <= 0
+  ) {
+    return { status: 'unusable', reason: 'shape' };
+  }
+
+  // Relational invariant: task workers are part of the producer envelope. A
+  // violation is a server inconsistency, not a number to render negatively.
+  if (snapshot.producer_components.task_workers > snapshot.producer_envelope) {
+    return { status: 'inconsistent', snapshot };
+  }
+
+  return { status: 'usable', snapshot };
+}
+
+/**
+ * The single provider-side acceptance predicate. Only a fully classified
+ * `usable` snapshot may become an accepted observation or enter the capacity
+ * cache; `inconsistent` and `unusable` results are observed and reported, never
+ * accepted (R7 / accepted case 15.5).
+ */
+export function isUsableCapacitySnapshot(
   value: unknown,
 ): value is DaemonCapacitySnapshot {
-  if (!isObject(value)) return false;
-  return typeof value.revision === 'string' && value.revision.length > 0
-    && isObject(value.persisted_yaml)
-    && isObject(value.next_start)
-    && isObject(value.running_at_daemon_start)
-    && isObject(value.producer_components)
-    && isObject(value.guidance)
-    && Array.isArray(value.warnings)
-    && Array.isArray(value.environment_shadowed);
+  return classifyCapacitySnapshot(value).status === 'usable';
 }
