@@ -182,6 +182,28 @@ The Settings surface ships as a full page (`web/src/features/settings/SettingsPa
   Draft consequence arithmetic uses the RESOLVED per-key next-start values, so
   an environment-shadowed key contributes the environment's value rather than
   the draft the environment will shadow.
+  Leaving the panel with an unsaved draft — or with an unresolved publication
+  outcome — is intercepted by a confirmation dialog. **Stay on page** keeps the
+  route, keeps the values, reason and acknowledgment byte-identical, and
+  returns focus to the control that had it before the dialog opened;
+  **Discard and continue** completes the navigation. The panel carries its own
+  focus-ring and primary-action tone treatment, selected from existing tokens at
+  the call site rather than by changing a shared primitive or token definition,
+  because the shared ring token is translucent enough to fall below the accepted
+  3:1 ring threshold on this screen's surfaces. That treatment covers the
+  confirmation dialog too, including the dialog Close control the shared
+  primitive renders: the dialog is PORTALLED, so it inherits nothing from the
+  panel wrapper and is styled and measured explicitly.
+  `scripts/screenshot-harness/capacity-states.mjs` gates both — it walks and
+  operates the full keyboard control set (including the acknowledgment,
+  Check saved values, rebase / accept-latest, the details disclosure and the
+  dialog's own controls) at both desktop widths in both themes, measures every
+  focus ring after cumulative opacity, and self-tests its own computed-visibility
+  predicate against positive and negative clipping controls. Because the shell
+  scrolls internally, a state whose evidence is a top-of-panel banner — the
+  retained-receipt / unverified-read / unrepresentable-value notices — declares
+  that banner as its capture subject, and a subject that is not inside the
+  captured frame fails the run.
 - **Assistant** — assistant status, setup/recovery, and assistant executor binding.
 - **Org** (editable, Phase 2) — org-level settings: session timeout override, dreaming schedule (enabled, schedule time/timezone, catch-up-on-startup, agent mode, include/exclude agent names), browser-managed threads config (enabled and invocation timeout), and **working_hours** (THR-035: the Work-Hours Config UI — feature on/off switch, org-level eligibility selector, and the raw per-tier schedule blocks `default` / `teams` / `overrides`).
 - **Executors** — effective machine executor registry, custom CLI lifecycle, and recovery.

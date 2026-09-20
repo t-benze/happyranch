@@ -69,6 +69,39 @@ const FOCUS_RING = 'focus-visible:ring-accent-default';
 const FOCUS_RING_RAW = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-default';
 
 /**
+ * The same capacity-local ring, reaching the PORTALLED leave dialog.
+ *
+ * The leave-confirmation dialog renders through a Radix portal, so it sits
+ * outside this panel's wrapper and never inherited `FOCUS_RING` above. Its two
+ * footer buttons are ours and take `FOCUS_RING` directly. Its Close control is
+ * NOT: `DialogContent` renders that button itself, as a direct child of the
+ * portalled content element, with the shared translucent `focus:ring-ring`.
+ *
+ * `DialogContent` forwards `className` onto exactly that content element, so
+ * the call site can still reach its own dialog's Close through a child
+ * selector — no shared primitive, token or variant is touched, and no other
+ * consumer of `Dialog` is affected. `> button` is the Close alone: this
+ * dialog's other buttons live inside `DialogFooter`'s div.
+ *
+ * Two properties are needed, not one:
+ *  - the ring COLOUR, for the same reason as `FOCUS_RING` — measured 1.45:1
+ *    light / 2.98:1 dark against the dialog surface, below the accepted 3:1;
+ *  - the element OPACITY. The Close carries `opacity-70`, which composites the
+ *    whole control — its box-shadow ring included — at 70% over the dialog
+ *    surface. A full-opacity ring token still lands at ~2.43:1 light while that
+ *    is in force, so restoring full opacity for the focused state is part of
+ *    the fix rather than a cosmetic extra.
+ *
+ * The specificity works out in our favour: this compiles to
+ * `.<class> > button:focus-visible` (0,2,1), which outranks the primitive's own
+ * `.focus\:ring-ring:focus` (0,2,0). Pointer focus keeps the primitive's
+ * behaviour untouched. `scripts/screenshot-harness/capacity-states.mjs` walks
+ * and GATES all three dialog controls in a real browser at both widths in both
+ * themes, so this comment cannot drift from the shipped result.
+ */
+const DIALOG_FOCUS_RING = '[&>button:focus-visible]:ring-accent-default [&>button:focus-visible]:opacity-100';
+
+/**
  * Capacity-local primary-action tone (accepted 16.10 control-label contrast).
  *
  * The shared `default` Button variant paints `--color-text-inverse` on
@@ -1405,7 +1438,7 @@ export function DaemonCapacitySection(): JSX.Element {
           if (!open && blocker.state === 'blocked') blocker.reset();
         }}
       >
-        <DialogContent aria-label="discard capacity draft confirmation">
+        <DialogContent aria-label="discard capacity draft confirmation" className={DIALOG_FOCUS_RING}>
           <DialogHeader>
             <DialogTitle>Discard unsaved capacity changes?</DialogTitle>
             <DialogDescription>
@@ -1417,6 +1450,7 @@ export function DaemonCapacitySection(): JSX.Element {
             <Button
               size="sm"
               variant="ghost"
+              className={FOCUS_RING}
               onClick={() => {
                 if (blocker.state === 'blocked') blocker.reset();
                 const restore = restoreFocusRef.current;
@@ -1428,7 +1462,7 @@ export function DaemonCapacitySection(): JSX.Element {
             </Button>
             <Button
               size="sm"
-              className={PRIMARY_TONE}
+              className={`${PRIMARY_TONE} ${FOCUS_RING}`}
               onClick={() => {
                 restoreFocusRef.current = null;
                 if (blocker.state === 'blocked') blocker.proceed();

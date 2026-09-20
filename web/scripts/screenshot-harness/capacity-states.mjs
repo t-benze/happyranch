@@ -231,6 +231,9 @@ const STATES = [
   },
   {
     name: 'stale-failed-refresh',
+    // The subject of this capture is the RETAINED-RECEIPT banner, which sits at
+    // the top of the panel while `prep` clicks a control near the bottom.
+    frame: { sel: 'p[role="alert"]', label: 'refresh-failed retained-receipt banner' },
     get: (index) => (index === 0 ? OK(snapshot()) : FAIL(503, {})),
     prep: async (page) => {
       await page.fill('#capacity-workers', '5');
@@ -241,6 +244,7 @@ const STATES = [
   },
   {
     name: 'malformed-after-draft',
+    frame: { sel: 'p[role="alert"]', label: 'unusable-read retained-receipt banner' },
     get: (index) => (index === 0
       ? OK(snapshot())
       : OK(snapshot({ persisted_yaml: { queue_workers: '3', host_global_session_cap: 10 } }))),
@@ -289,6 +293,7 @@ const STATES = [
   },
   {
     name: 'representation-unavailable',
+    frame: { sel: 'p[role="alert"]', label: 'unrepresentable-value retained-receipt banner' },
     get: () => OK(snapshot({
       persisted_yaml: { queue_workers: 9007199254740992, host_global_session_cap: 10 },
     })),
@@ -313,6 +318,277 @@ const STATES = [
 ];
 
 /**
+ * Accepted 16.6 / 16.7 / 16.11 — the STATEFUL keyboard matrix.
+ *
+ * 16.11 requires the 16.6 control set in a real browser at both widths in both
+ * themes, and 16.6 names Rebase, Accept latest, Check saved values, the
+ * acknowledgment and the details disclosure explicitly. The previous pass
+ * walked seven controls on the ordinary form only, so five of those were never
+ * reached: each one exists only in a state the ordinary form is not in.
+ *
+ * Every scenario therefore reaches its controls the way an operator would —
+ * through an actual allowed synthetic GET/PUT response and the app's own
+ * transition — rather than by seeding a fixture that starts at the end state.
+ * `operate` then drives the control from the KEYBOARD and asserts the state
+ * change it is supposed to cause; an operation that does not happen fails the
+ * run, so a control cannot pass by being merely focusable.
+ *
+ * `case19.2`'s 1440 keyboard coverage is subsumed here, not retired: the
+ * `ordinary` scenario is its result and the manifest still names it.
+ */
+const DIRTY_DRAFT = async (page) => {
+  await page.fill('#capacity-workers', '5');
+  await page.fill('#capacity-cap', '12');
+  await page.fill('#capacity-reason', 'Raising task slots for the new team.');
+};
+
+const KEYBOARD_SCENARIOS = [
+  {
+    // The accepted 16.6 order on the ordinary form:
+    // W -> H -> reason -> Save -> Discard -> Refresh -> Capacity details.
+    name: 'ordinary',
+    get: () => OK(snapshot()),
+    start: '#capacity-workers',
+    required: [
+      { key: 'workers', id: 'capacity-workers' },
+      { key: 'cap', id: 'capacity-cap' },
+      { key: 'reason', id: 'capacity-reason' },
+      { key: 'save', text: 'Save for next restart' },
+      { key: 'discard', text: 'Discard draft' },
+      { key: 'refresh', text: 'Refresh running state' },
+      { key: 'details', text: 'Capacity details' },
+    ],
+    operate: async (page) => {
+      const hit = await tabTo(page, { text: 'Capacity details' });
+      if (!hit) return { action: 'keyboard-open Capacity details', ok: false, detail: 'never reached' };
+      const before = await page.evaluate(() => document.querySelector('details')?.open ?? null);
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(200);
+      const after = await page.evaluate(() => document.querySelector('details')?.open ?? null);
+      return {
+        action: 'keyboard-open Capacity details', before, after, ok: before === false && after === true,
+      };
+    },
+  },
+  {
+    // The acknowledgment sits between the reason and Save in the accepted
+    // order, and only exists while the environment shadows a key.
+    name: 'override-ack',
+    get: () => OK(snapshot({
+      environment_shadowed: ['queue_workers'],
+      environment_warning: 'The environment sets this value; a restart alone will not make the saved file win.',
+      next_start: { queue_workers: 3, host_global_session_cap: 12 },
+    })),
+    // `saveDisabled` includes `(shadowed && !ack)` (4.1b), and a DISABLED
+    // control is not in the tab ring at all. So in this state Save genuinely
+    // does not exist for the keyboard until the acknowledgment is confirmed —
+    // that is correct product behaviour, not a gate defect. The accepted 16.6
+    // order is W -> H -> reason -> ack -> Save -> ..., so the acknowledgment
+    // must be KEYBOARD-operated first and the full order walked afterwards
+    // (`operateFirst`). The draft is typed the way an operator would, so Save
+    // is walked as a real enabled control rather than a re-enabled stub.
+    prep: DIRTY_DRAFT,
+    operateFirst: true,
+    start: '#capacity-workers',
+    required: [
+      { key: 'workers', id: 'capacity-workers' },
+      { key: 'cap', id: 'capacity-cap' },
+      { key: 'reason', id: 'capacity-reason' },
+      { key: 'ack', type: 'checkbox' },
+      { key: 'save', text: 'Save for next restart' },
+      { key: 'discard', text: 'Discard draft' },
+      { key: 'refresh', text: 'Refresh running state' },
+      { key: 'details', text: 'Capacity details' },
+    ],
+    operate: async (page) => {
+      const hit = await tabTo(page, { type: 'checkbox' });
+      if (!hit) return { action: 'keyboard-toggle acknowledgment', ok: false, detail: 'never reached' };
+      const before = await page.evaluate(() => document.querySelector('#capacity-override input[type=checkbox]')?.checked ?? null);
+      await page.keyboard.press('Space');
+      await page.waitForTimeout(200);
+      const after = await page.evaluate(() => document.querySelector('#capacity-override input[type=checkbox]')?.checked ?? null);
+      return {
+        action: 'keyboard-toggle acknowledgment', before, after, ok: before === false && after === true,
+      };
+    },
+  },
+  {
+    // "Check saved values" is only offered after a genuinely UNCERTAIN write
+    // outcome, so it is reached through a real refused PUT, not a fixture.
+    // The follow-up read is a real, usable GET, so the control's own effect is
+    // observable.
+    name: 'unknown-check',
+    get: (index) => (index === 0
+      ? OK(snapshot())
+      : OK(snapshot({
+        persisted_yaml: { queue_workers: 5, host_global_session_cap: 12 },
+        next_start: { queue_workers: 5, host_global_session_cap: 12 },
+        revision: REV_B,
+      }))),
+    put: () => FAIL(500, {}),
+    prep: async (page) => {
+      await DIRTY_DRAFT(page);
+      await page.click('button[type="submit"]');
+      await page.waitForSelector('text=Save result unknown.', { timeout: 15000 });
+    },
+    start: '#capacity-workers',
+    required: [
+      { key: 'workers', id: 'capacity-workers' },
+      { key: 'save', text: 'Save for next restart' },
+      { key: 'refresh', text: 'Refresh running state' },
+      { key: 'check', text: 'Check saved values' },
+    ],
+    operate: async (page) => {
+      const hit = await tabTo(page, { text: 'Check saved values' });
+      if (!hit) return { action: 'keyboard-activate Check saved values', ok: false, detail: 'never reached' };
+      const before = await page.evaluate(() => document.querySelector('#capacity-outcome')?.innerText ?? null);
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(600);
+      const after = await page.evaluate(() => document.querySelector('#capacity-outcome')?.innerText ?? null);
+      return {
+        action: 'keyboard-activate Check saved values',
+        beforeLength: before?.length ?? null,
+        afterLength: after?.length ?? null,
+        // The uncertainty must actually resolve into a different surface.
+        ok: typeof before === 'string' && typeof after === 'string' && before !== after,
+      };
+    },
+  },
+  {
+    // Rebase / Accept latest exist only after a real 409, and 16.7 requires
+    // focus to land deterministically on the reconciled region once a choice
+    // is made.
+    name: 'conflict-rebase',
+    get: () => OK(snapshot()),
+    put: () => FAIL(409, {
+      detail: {
+        code: 'stale_revision',
+        latest: snapshot({
+          revision: REV_B,
+          persisted_yaml: { queue_workers: 2, host_global_session_cap: 9 },
+        }),
+      },
+    }),
+    prep: async (page) => {
+      await DIRTY_DRAFT(page);
+      await page.click('button[type="submit"]');
+      await page.waitForSelector('text=Keep my draft, rebase onto latest', { timeout: 15000 });
+    },
+    start: '#capacity-workers',
+    required: [
+      { key: 'workers', id: 'capacity-workers' },
+      { key: 'save', text: 'Save for next restart' },
+      { key: 'rebase', text: 'Keep my draft, rebase onto latest' },
+      { key: 'accept', text: 'Discard draft, accept latest' },
+    ],
+    operate: async (page) => {
+      const hit = await tabTo(page, { text: 'Keep my draft, rebase onto latest' });
+      if (!hit) return { action: 'keyboard-activate rebase onto latest', ok: false, detail: 'never reached' };
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(400);
+      const state = await page.evaluate(() => ({
+        focusedId: document.activeElement?.id ?? null,
+        focusedTag: document.activeElement?.tagName ?? null,
+        stillOffering: document.body.textContent.includes('Keep my draft, rebase onto latest'),
+        workers: document.querySelector('#capacity-workers')?.value ?? null,
+      }));
+      return {
+        action: 'keyboard-activate rebase onto latest',
+        ...state,
+        // 16.7: focus moves to the reconciled region, is never lost to <body>,
+        // and the choice actually clears the reconciliation offer. The draft
+        // text is kept verbatim by a rebase.
+        ok: state.focusedId === 'capacity-outcome'
+          && state.focusedTag !== 'BODY'
+          && state.stillOffering === false
+          && state.workers === '5',
+      };
+    },
+  },
+  {
+    // The PORTALLED leave-confirmation dialog. It is a capacity-owned surface
+    // that lives outside the panel wrapper, which is exactly why its focus
+    // rings were never in these rollups. Reached the way an operator reaches
+    // it: a real draft, then a real keyboard activation of a real navigation
+    // control.
+    name: 'leave-dialog',
+    get: () => OK(snapshot()),
+    prep: async (page) => {
+      await page.fill('#capacity-workers', '5');
+      await page.fill('#capacity-cap', '12');
+      await page.fill('#capacity-reason', 'retained exact draft');
+      const link = page.getByRole('link', { name: 'Organization', exact: true });
+      await link.focus();
+      await page.keyboard.press('Enter');
+      await page.locator('[role="dialog"][aria-label="discard capacity draft confirmation"]').waitFor({ timeout: 15000 });
+      await page.waitForTimeout(250);
+    },
+    start: '[role="dialog"][aria-label="discard capacity draft confirmation"] button',
+    required: [
+      { key: 'stay', text: 'Stay on page' },
+      { key: 'discard-continue', text: 'Discard and continue' },
+      { key: 'dialog-close', ariaLabel: 'Close' },
+    ],
+    screenshot: true,
+    operate: async (page) => {
+      // Stay: route unchanged, draft retained EXACTLY, focus returned to the
+      // navigation trigger that opened the dialog (16.7).
+      const urlBefore = page.url();
+      const stay = await tabTo(page, { text: 'Stay on page' });
+      if (!stay) return { action: 'keyboard Stay then confirmed departure', ok: false, detail: 'Stay never reached' };
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(400);
+      const afterStay = await page.evaluate(() => ({
+        activeTag: document.activeElement?.tagName ?? null,
+        activeText: (document.activeElement?.textContent ?? '').trim(),
+        activeHref: document.activeElement?.getAttribute('href') ?? null,
+        workers: document.querySelector('#capacity-workers')?.value ?? null,
+        cap: document.querySelector('#capacity-cap')?.value ?? null,
+        reason: document.querySelector('#capacity-reason')?.value ?? null,
+        ack: document.querySelector('#capacity-override input[type=checkbox]')?.checked ?? null,
+        // Scoped by accessible name on purpose: the always-mounted assistant
+        // dock also carries `role="dialog"`, so a bare `[role="dialog"]` query
+        // is never false and would report the leave dialog as still open.
+        dialogOpen: document.querySelector('[role="dialog"][aria-label="discard capacity draft confirmation"]') !== null,
+      }));
+      // Reopen and confirm departure really completes.
+      const link = page.getByRole('link', { name: 'Organization', exact: true });
+      await link.focus();
+      await page.keyboard.press('Enter');
+      await page.locator('[role="dialog"][aria-label="discard capacity draft confirmation"]').waitFor({ timeout: 15000 });
+      await page.waitForTimeout(200);
+      const leave = await tabTo(page, { text: 'Discard and continue' });
+      if (!leave) return { action: 'keyboard Stay then confirmed departure', ok: false, detail: 'Discard and continue never reached' };
+      await page.keyboard.press('Enter');
+      let departed = false;
+      try {
+        await page.waitForURL('**/settings/organization', { timeout: 15000 });
+        departed = true;
+      } catch { departed = false; }
+      return {
+        action: 'keyboard Stay then confirmed departure',
+        urlBefore,
+        urlAfter: page.url(),
+        ...afterStay,
+        departed,
+        ok: afterStay.dialogOpen === false
+          // Route unchanged by Stay.
+          && urlBefore.endsWith('/settings/daemon-capacity')
+          // Draft retained byte-identically.
+          && afterStay.workers === '5'
+          && afterStay.cap === '12'
+          && afterStay.reason === 'retained exact draft'
+          // Focus returned to the navigation trigger, not lost to <body>.
+          && afterStay.activeTag === 'A'
+          && afterStay.activeText === 'Organization'
+          // Reopening and confirming really departs.
+          && departed,
+      };
+    },
+  },
+];
+
+/**
  * 16.10 — computed contrast in a REAL browser.
  *
  * WCAG 2.x relative luminance and contrast ratio, measured against the element's
@@ -320,6 +596,95 @@ const STATES = [
  * background-color), not an assumed page colour. Reported per state, viewport
  * and theme; nothing here is asserted from a design token or a DOM presence.
  */
+/**
+ * The ONE computed-visibility predicate, installed on the page.
+ *
+ * It used to be defined inside the per-state receipt's `evaluate` closure,
+ * which meant a self-test could only ever check a COPY of it. It is installed
+ * here instead, and both the per-state receipt and the clipping controls below
+ * read it off `window`, so the controls exercise the exact function the
+ * acceptance gate calls. A missing install throws rather than silently
+ * degrading to "everything is visible".
+ */
+const INSTALL_VISIBILITY = () => {
+  /**
+   * Computed visibility INCLUDING ancestor clipping.
+   *
+   * A `<details>` drawer, an `overflow:hidden` container or a
+   * zero-height ancestor keeps its children in the DOM and in the box
+   * model while hiding them. Each ancestor's own clip rect is
+   * intersected with the node's, so an element clipped out of view
+   * reports invisible rather than "present".
+   */
+  const visible = (node) => {
+    if (!node) return null;
+    const rect = node.getBoundingClientRect();
+    const style = getComputedStyle(node);
+    if (!(rect.width > 0 && rect.height > 0)) return false;
+    if (style.visibility === 'hidden' || style.display === 'none') return false;
+    if (!(Number(style.opacity) > 0)) return false;
+    let el = node.parentElement;
+    while (el) {
+      const s = getComputedStyle(el);
+      if (s.visibility === 'hidden' || s.display === 'none') return false;
+      if (Number(s.opacity) === 0) return false;
+      if (el.tagName === 'DETAILS' && !el.open) return false;
+      // A GENUINE clip only. `overflow:auto|scroll` content that is
+      // merely below the current scroll position is reachable and is
+      // NOT a visibility failure; treating it as one turns every page
+      // longer than the viewport into a false finding.
+      //
+      // `hidden` and `clip` ARE the genuine clips, and the clip-rect
+      // test below has to run no matter how much content overflows.
+      // This predicate used to add `scrollHeight <= clientHeight + 1`
+      // to each condition, i.e. it only looked for a clip when nothing
+      // was overflowing — which is precisely when there is nothing to
+      // clip. Overflowing clipped content skipped the check entirely
+      // and was reported VISIBLE. Exact counterexample, reproduced in
+      // Chrome by `clipping-controls.mjs` alongside this file:
+      // `display:flow-root; overflow:clip; height:1px`, warning at
+      // y38-74, ancestor at y8-9, scrollHeight 66 / clientHeight 1 —
+      // reportedVisible true while entirely outside the clip.
+      //
+      // Content that is genuinely REACHABLE is still protected, by
+      // `visibleInView` below: it calls `scrollIntoView` first, which
+      // scrolls an `overflow:hidden` container to reveal its content,
+      // so the only thing that fails here is a node still lying
+      // entirely outside its clipping ancestor's box afterwards.
+      // `overflow:clip` cannot be scrolled at all, which is why the
+      // counterexample above stays outside.
+      const clipsY = s.overflowY === 'hidden' || s.overflowY === 'clip';
+      const clipsX = s.overflowX === 'hidden' || s.overflowX === 'clip';
+      if ((clipsX || clipsY) && (el.clientWidth === 0 || el.clientHeight === 0)) return false;
+      const clip = el.getBoundingClientRect();
+      if (clipsY && !(rect.bottom > clip.top && rect.top < clip.bottom)) return false;
+      if (clipsX && !(rect.right > clip.left && rect.left < clip.right)) return false;
+      el = el.parentElement;
+    }
+    return true;
+  };
+  /**
+   * Measure visibility with the element SCROLLED INTO VIEW.
+   *
+   * The shell's content area scrolls, so copy below the current scroll
+   * position is reachable, not hidden. Measuring it where it happens to
+   * sit turns every page longer than the viewport into a false
+   * "clipped" finding. Scrolling first leaves only the failures the
+   * accepted criterion is about: a COLLAPSED container (a closed
+   * `<details>`), a zero-size box, `display`/`visibility`/`opacity`
+   * hiding, or content a non-scrollable `overflow:hidden` ancestor
+   * genuinely clips away.
+   */
+  const visibleInView = (node) => {
+    if (!node) return null;
+    node.scrollIntoView({ block: 'center', inline: 'nearest' });
+    return visible(node);
+  };
+
+  window.__capacityVisible = visible;
+  window.__capacityVisibleInView = visibleInView;
+};
+
 const CONTRAST_FN = () => {
   const channel = (v) => {
     const c = v / 255;
@@ -356,8 +721,17 @@ const CONTRAST_FN = () => {
   // error, warning, acknowledgment, reconciliation and result copy alike —
   // rather than a hand-picked selector list that can silently omit the very
   // state under test.
-  const panel = document.querySelector('#capacity-panel-heading')?.closest('div');
-  const candidates = panel ? [...panel.querySelectorAll('*')].filter((node) => {
+  //
+  // The leave-confirmation dialog is a PORTAL: Radix renders it as a sibling
+  // of the app root, not inside the capacity wrapper, so scoping to the panel
+  // alone silently dropped every string and control in it out of the rollups.
+  // That is exactly why its focus failure was invisible to this gate. It is a
+  // capacity-owned surface, so it is measured with the rest of the panel.
+  const roots = [
+    document.querySelector('#capacity-panel-heading')?.closest('div'),
+    document.querySelector('[role="dialog"][aria-label="discard capacity draft confirmation"]'),
+  ].filter((node) => node !== null && node !== undefined);
+  const candidates = roots.flatMap((panel) => [...panel.querySelectorAll('*')].filter((node) => {
     if (node.matches('script, style, svg, path, canvas')) return false;
     const own = [...node.childNodes]
       .filter((n) => n.nodeType === Node.TEXT_NODE)
@@ -367,7 +741,7 @@ const CONTRAST_FN = () => {
     if (own.length === 0) return false;
     const rect = node.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
-  }) : [];
+  }));
 
   /**
    * Accepted 16.10, as extended by the review AND by the manager's TASK-8562
@@ -652,6 +1026,18 @@ const RING_PROBE = () => {
   const el = document.activeElement;
   if (!el || el === document.body) return null;
   const style = getComputedStyle(el);
+  // Is this control part of the bounded capacity surface?
+  //
+  // The tab ring continues into the app shell (theme toggle, sidebar links).
+  // Those are PRE-EXISTING shared chrome this bounded leg does not own and may
+  // not restyle, so gating them here would be scope expansion, not coverage.
+  // They are still recorded and reported — just in the non-gated bucket, the
+  // same split the contrast rollups already use. The capacity panel and its
+  // PORTALLED dialog are both in scope.
+  const capacityRoot = document.querySelector('#capacity-panel-heading')?.closest('div') ?? null;
+  const dialogRoot = document.querySelector('[role="dialog"][aria-label="discard capacity draft confirmation"]');
+  const inScope = Boolean((capacityRoot && capacityRoot.contains(el))
+    || (dialogRoot && dialogRoot.contains(el)));
   let surround = el.parentElement;
   while (surround) {
     const bg = parse(getComputedStyle(surround).backgroundColor);
@@ -683,9 +1069,28 @@ const RING_PROBE = () => {
     ? ringLayers[ringLayers.length - 1].colour
     : (outlineReal ? parse(style.outlineColor) : null);
 
+  // `opacity` composites the WHOLE element — its box-shadow ring included —
+  // over whatever is behind it. A ring authored at full alpha on a control
+  // carrying `opacity-70` reaches the screen at 0.7, and reading the authored
+  // colour alone would score a ring nobody can actually see as passing. The
+  // dialog's primitive-owned Close is exactly that case.
+  let cumulativeOpacity = Number(style.opacity);
+  for (let a = el.parentElement; a; a = a.parentElement) {
+    cumulativeOpacity *= Number(getComputedStyle(a).opacity);
+  }
+  const painted = ringSource
+    ? { ...ringSource, a: ringSource.a * cumulativeOpacity }
+    : null;
+
   return {
     tag: el.tagName,
+    inScope,
     id: el.id || null,
+    // The acknowledgment checkbox has no id, no aria-label and no text of its
+    // own (its label text is a sibling span), so the rollups need this to name
+    // it at all. The dialog's Close is identified by its aria-label.
+    type: el.getAttribute('type'),
+    ariaLabel: el.getAttribute('aria-label'),
     text: (el.textContent ?? '').trim().slice(0, 40) || null,
     focusVisible: el.matches(':focus-visible'),
     outline: `${style.outlineStyle} ${style.outlineWidth} ${style.outlineColor}`,
@@ -694,32 +1099,101 @@ const RING_PROBE = () => {
     // The honest predicate: keyboard focus is actually matched AND something
     // actually paints.
     focusRingVisible: el.matches(':focus-visible') && (outlineReal || ringLayers.length > 0),
+    cumulativeOpacity: Number(cumulativeOpacity.toFixed(4)),
     // The translucent ring composited over what is behind it, against that
-    // same background — what a person actually has to see.
-    ringContrast: ringSource
+    // same background — what a person actually has to see, AFTER the element's
+    // own cumulative opacity has been applied.
+    ringContrast: painted
+      ? Number(ratio(over(painted, surroundBg), surroundBg).toFixed(2))
+      : null,
+    // The same measurement ignoring cumulative opacity, kept so a reviewer can
+    // see how much of the authored ring the opacity is eating.
+    ringContrastAuthored: ringSource
       ? Number(ratio(over(ringSource, surroundBg), surroundBg).toFixed(2))
       : null,
   };
 };
 
 /**
- * Tab in from the document start so focus is keyboard-driven, stop on the first
- * capacity control, then record the panel's tab order.
+ * Let the focused control's transitions settle before the ring is read.
+ *
+ * The dialog's Close carries `transition-opacity`, so the frame immediately
+ * after `Tab` still reports its RESTING opacity — the focus treatment is
+ * mid-flight. Reading there scores the ring at the opacity it is leaving
+ * rather than the one it lands on. This is the same reason `TONE_SETTLE_MS`
+ * exists for the primary action's colour transition.
  */
-async function walkTabOrder(page, steps = 7) {
+const FOCUS_SETTLE_MS = 250;
+
+/** Does a RING_PROBE reading identify the control this requirement names? */
+function matchesControl(probe, want) {
+  if (!probe) return false;
+  if (want.id) return probe.id === want.id;
+  if (want.ariaLabel) return probe.ariaLabel === want.ariaLabel;
+  if (want.type) return probe.tag === 'INPUT' && probe.type === want.type;
+  return (probe.text ?? '').startsWith(want.text);
+}
+
+/** How a control appears in a finding, whatever identifies it. */
+const controlName = (probe) => probe.id
+  ?? probe.ariaLabel
+  ?? (probe.text || null)
+  ?? (probe.type ? `${probe.tag.toLowerCase()}[type=${probe.type}]` : probe.tag);
+
+/**
+ * Tab in from the document start so focus is keyboard-DRIVEN (a programmatic
+ * `.focus()` does not match `:focus-visible`, and a ring measured that way is
+ * not evidence), stop on the named first control, then record a reading for
+ * every control the tab ring reaches.
+ *
+ * Accepted 16.6/16.11 are about a CONTROL SET, not a fixed step count. The
+ * previous version walked exactly seven steps from `#capacity-workers`, which
+ * could only ever see the ordinary form: the acknowledgment, Check saved
+ * values, Rebase, Accept latest and the dialog's own controls were never
+ * reached, so their rings were never measured. The walk now runs until every
+ * required control for the scenario has been seen, and reports by name any it
+ * never reached — a MISSING control fails the run rather than shortening it.
+ */
+async function walkControls(page, { start, required, maxSteps = 40 }) {
   await page.evaluate(() => document.body.focus());
   let reached = false;
-  for (let i = 0; i < 80 && !reached; i += 1) {
+  for (let i = 0; i < 120 && !reached; i += 1) {
     await page.keyboard.press('Tab');
-    reached = await page.evaluate(() => document.activeElement?.id === 'capacity-workers');
+    reached = await page.evaluate(
+      (sel) => document.activeElement?.matches(sel) ?? false,
+      start,
+    );
   }
-  if (!reached) throw new Error('never tabbed to #capacity-workers');
+  if (!reached) throw new Error(`never tabbed to ${start}`);
   const order = [];
-  for (let i = 0; i < steps; i += 1) {
-    order.push(await page.evaluate(RING_PROBE));
-    if (i < steps - 1) await page.keyboard.press('Tab');
+  const seen = new Set();
+  for (let i = 0; i < maxSteps; i += 1) {
+    await page.waitForTimeout(FOCUS_SETTLE_MS);
+    const probe = await page.evaluate(RING_PROBE);
+    if (probe) {
+      order.push(probe);
+      for (const want of required) {
+        if (matchesControl(probe, want)) seen.add(want.key);
+      }
+    }
+    if (seen.size === required.length) break;
+    await page.keyboard.press('Tab');
   }
-  return order;
+  return {
+    order,
+    missing: required.filter((want) => !seen.has(want.key)).map((want) => want.key),
+  };
+}
+
+/** Keyboard-focus a control by walking the tab ring to it — never `.focus()`. */
+async function tabTo(page, predicate, limit = 40) {
+  for (let i = 0; i < limit; i += 1) {
+    await page.waitForTimeout(60);
+    const probe = await page.evaluate(RING_PROBE);
+    if (matchesControl(probe, predicate)) return probe;
+    await page.keyboard.press('Tab');
+  }
+  return null;
 }
 
 /**
@@ -807,6 +1281,11 @@ const api = [
     },
   },
   { path: `/api/v1/orgs/${SLUG}/dashboard/summary`, json: { counts: {}, recent_tasks: [], escalations: [], agents: [] } },
+  // The leave-dialog keyboard scenario CONFIRMS a departure, so the Settings
+  // Organization panel really mounts and really reads its roster. Declaring it
+  // keeps the venue fail-closed and explicit rather than letting a genuine
+  // app request land in the undeclared bucket.
+  { path: `/api/v1/orgs/${SLUG}/agents`, json: { agents: [] } },
   // REQUIRED OVERRIDE of harness.mjs's fail-OPEN unmatched-/api/ default.
   {
     path: /^\/api\//,
@@ -837,6 +1316,17 @@ const browser = await chromium.launch({
   args: ['--no-sandbox', '--disable-dev-shm-usage'],
 });
 const results = [];
+/**
+ * 19.1 framing receipts. The app shell scrolls INTERNALLY, so a `fullPage`
+ * screenshot is still only the viewport, and a `prep` that clicks a control
+ * near the bottom silently scrolls the panel's top — and its retained-receipt
+ * / error / recovery banner — out of the captured frame. A state may therefore
+ * declare the subject its capture is EVIDENCE OF; the subject is scrolled into
+ * view before the shot and its rect is asserted to lie inside the viewport.
+ * A declared subject that cannot be framed FAILS the run rather than shipping
+ * a screenshot that does not show what it claims to show.
+ */
+const framedSubjects = [];
 
 try {
   for (const viewport of VIEWPORTS) {
@@ -861,6 +1351,7 @@ try {
         putIndex = 0;
         requestLog = [];
         const page = await context.newPage();
+        await page.addInitScript(INSTALL_VISIBILITY);
         await page.addInitScript((t) => {
           window.sessionStorage.setItem('happyranch.token', 'synthetic');
           window.localStorage.setItem('happyranch.theme', t);
@@ -891,67 +1382,35 @@ try {
         if (state.prep) await state.prep(page);
         await page.waitForTimeout(250);
 
+        if (state.frame) {
+          const subject = page.locator(state.frame.sel).first();
+          await subject.scrollIntoViewIfNeeded();
+          await page.waitForTimeout(150);
+          const box = await subject.boundingBox();
+          const inFrame = box !== null
+            && box.x >= 0 && box.y >= 0
+            && box.x + box.width <= viewport.width
+            && box.y + box.height <= viewport.height;
+          framedSubjects.push({
+            state: state.name,
+            viewport: viewport.name,
+            theme,
+            label: state.frame.label,
+            selector: state.frame.sel,
+            inFrame,
+            box,
+          });
+        }
+
         const file = `capacity-${state.name}-${viewport.name}-${theme}.png`;
         await page.screenshot({ path: join(outDir, file), fullPage: true });
 
         // Computed visibility + contrast receipts for the a11y cases, taken in
         // a REAL browser rather than from DOM presence.
         const receipt = await page.evaluate(() => {
-          /**
-           * Computed visibility INCLUDING ancestor clipping.
-           *
-           * A `<details>` drawer, an `overflow:hidden` container or a
-           * zero-height ancestor keeps its children in the DOM and in the box
-           * model while hiding them. Each ancestor's own clip rect is
-           * intersected with the node's, so an element clipped out of view
-           * reports invisible rather than "present".
-           */
-          const visible = (node) => {
-            if (!node) return null;
-            const rect = node.getBoundingClientRect();
-            const style = getComputedStyle(node);
-            if (!(rect.width > 0 && rect.height > 0)) return false;
-            if (style.visibility === 'hidden' || style.display === 'none') return false;
-            if (!(Number(style.opacity) > 0)) return false;
-            let el = node.parentElement;
-            while (el) {
-              const s = getComputedStyle(el);
-              if (s.visibility === 'hidden' || s.display === 'none') return false;
-              if (Number(s.opacity) === 0) return false;
-              if (el.tagName === 'DETAILS' && !el.open) return false;
-              // A GENUINE clip only. `overflow:auto|scroll` content that is
-              // merely below the current scroll position is reachable and is
-              // NOT a visibility failure; treating it as one turns every page
-              // longer than the viewport into a false finding.
-              const clipsY = (s.overflowY === 'hidden' || s.overflowY === 'clip')
-                && el.scrollHeight <= el.clientHeight + 1;
-              const clipsX = (s.overflowX === 'hidden' || s.overflowX === 'clip')
-                && el.scrollWidth <= el.clientWidth + 1;
-              if ((clipsX || clipsY) && (el.clientWidth === 0 || el.clientHeight === 0)) return false;
-              const clip = el.getBoundingClientRect();
-              if (clipsY && !(rect.bottom > clip.top && rect.top < clip.bottom)) return false;
-              if (clipsX && !(rect.right > clip.left && rect.left < clip.right)) return false;
-              el = el.parentElement;
-            }
-            return true;
-          };
-          /**
-           * Measure visibility with the element SCROLLED INTO VIEW.
-           *
-           * The shell's content area scrolls, so copy below the current scroll
-           * position is reachable, not hidden. Measuring it where it happens to
-           * sit turns every page longer than the viewport into a false
-           * "clipped" finding. Scrolling first leaves only the failures the
-           * accepted criterion is about: a COLLAPSED container (a closed
-           * `<details>`), a zero-size box, `display`/`visibility`/`opacity`
-           * hiding, or content a non-scrollable `overflow:hidden` ancestor
-           * genuinely clips away.
-           */
-          const visibleInView = (node) => {
-            if (!node) return null;
-            node.scrollIntoView({ block: 'center', inline: 'nearest' });
-            return visible(node);
-          };
+          const visible = window.__capacityVisible;
+          const visibleInView = window.__capacityVisibleInView;
+          if (!visible || !visibleInView) throw new Error('visibility predicate was not installed');
           const alerts = [...document.querySelectorAll('[role="alert"]')];
           const importantText = [...document.querySelectorAll(
             '[role="alert"], [role="status"], #capacity-workers-help, #capacity-cap-help,'
@@ -1023,37 +1482,164 @@ try {
   // BOTH themes. A single light/1440 pass could not see a ring that disappears
   // in dark or a tab order that changes when the shell reflows.
   const tabOrders = [];
+  const keyboardOperations = [];
   for (const viewport of VIEWPORTS) {
     for (const theme of THEMES) {
-      const kbContext = await browser.newContext({
-        viewport: { width: viewport.width, height: viewport.height },
-        colorScheme: theme,
-        deviceScaleFactor: 1,
-      });
-      await kbContext.route('**/*', (route) => (route.request().url().startsWith(origin)
-        ? route.continue()
-        : (blockedExternal.push(route.request().url()), route.abort())));
-      active = { name: 'keyboard', get: () => ({ status: 200, json: snapshot() }) };
-      getIndex = 0;
-      putIndex = 0;
-      const kbPage = await kbContext.newPage();
-      await kbPage.addInitScript((t) => {
-        window.sessionStorage.setItem('happyranch.token', 'synthetic');
-        window.localStorage.setItem('happyranch.theme', t);
-      }, theme);
-      await kbPage.goto(`${origin}/orgs/${SLUG}/settings/daemon-capacity`, { waitUntil: 'networkidle' });
-      await kbPage.waitForSelector('#capacity-workers');
-      const order = await walkTabOrder(kbPage, 7);
-      // Still keyboard-focused on the LAST control of the walk; re-focusing
-      // programmatically here would erase the ring from the screenshot.
-      await kbPage.screenshot({
-        path: join(outDir, `capacity-keyboard-focus-${viewport.name}-${theme}.png`),
-        fullPage: true,
-      });
-      tabOrders.push({ viewport: viewport.name, theme, order });
-      await kbContext.close();
+      for (const scenario of KEYBOARD_SCENARIOS) {
+        const kbContext = await browser.newContext({
+          viewport: { width: viewport.width, height: viewport.height },
+          colorScheme: theme,
+          deviceScaleFactor: 1,
+        });
+        await kbContext.route('**/*', (route) => (route.request().url().startsWith(origin)
+          ? route.continue()
+          : (blockedExternal.push(route.request().url()), route.abort())));
+        // The scenario's OWN allowed responses drive it into the state whose
+        // controls are being walked. `active` is the same fail-closed fixture
+        // seam the capture states use, so an undeclared write here is still a
+        // recorded fail-closed receipt.
+        active = { name: `keyboard:${scenario.name}`, get: scenario.get, put: scenario.put };
+        getIndex = 0;
+        putIndex = 0;
+        requestLog = [];
+        const kbPage = await kbContext.newPage();
+        await kbPage.addInitScript((t) => {
+          window.sessionStorage.setItem('happyranch.token', 'synthetic');
+          window.localStorage.setItem('happyranch.theme', t);
+        }, theme);
+        await kbPage.goto(`${origin}/orgs/${SLUG}/settings/daemon-capacity`, { waitUntil: 'networkidle' });
+        await kbPage.waitForSelector('#capacity-workers');
+        if (scenario.prep) await scenario.prep(kbPage);
+        // Some controls in the accepted 16.6 order only ENTER the tab ring once
+        // an earlier control has been operated — `Save for next restart` is
+        // `disabled` while a shadowed key is unacknowledged (4.1b), and a
+        // disabled control is not focusable. Those scenarios declare
+        // `operateFirst`, so the keyboard operation runs BEFORE the walk and the
+        // walk then sees the control set an operator would really have. The
+        // operation is still a real Tab-and-press, and its assertion is still
+        // gated; only its position in the scenario moves.
+        let operated = scenario.operateFirst && scenario.operate
+          ? await scenario.operate(kbPage)
+          : null;
+        const { order, missing } = await walkControls(kbPage, {
+          start: scenario.start,
+          required: scenario.required,
+        });
+        // Still keyboard-focused on the LAST control of the walk; re-focusing
+        // programmatically here would erase the ring from the screenshot.
+        if (scenario.name === 'ordinary' || scenario.screenshot) {
+          await kbPage.screenshot({
+            path: join(outDir, `capacity-keyboard-${scenario.name}-${viewport.name}-${theme}.png`),
+            fullPage: true,
+          });
+        }
+        tabOrders.push({
+          scenario: scenario.name, viewport: viewport.name, theme, order, missing,
+        });
+        if (!scenario.operateFirst && scenario.operate) {
+          operated = await scenario.operate(kbPage);
+        }
+        if (operated) {
+          keyboardOperations.push({
+            scenario: scenario.name, viewport: viewport.name, theme, ...operated,
+          });
+        }
+        await kbContext.close();
+      }
     }
   }
+
+  // 16.8 — controls for the computed-visibility predicate itself.
+  //
+  // The gate is only as good as this predicate, and a predicate defect is
+  // invisible in a run where nothing happens to be clipped: every state
+  // reports "visible" and the run goes green. These controls run the EXACT
+  // function installed on every capture page (`window.__capacityVisibleInView`,
+  // from `INSTALL_VISIBILITY`) against synthetic fixtures whose correct answer
+  // is known, so a false-green predicate fails the run on its own.
+  //
+  // Both directions matter. The negatives prove genuine clipping is caught —
+  // including the exact `display:flow-root; overflow:clip; height:1px`
+  // counterexample that the old `scrollHeight <= clientHeight + 1` conjunct
+  // let through. The positives prove the repair did NOT turn every scrollable
+  // container into a false finding: content reachable by scrolling, content
+  // below the fold, and content that merely overlaps its clip edge must all
+  // still report visible.
+  const clippingControls = await (async () => {
+    const ctlContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    await ctlContext.route('**/*', (route) => (route.request().url().startsWith(origin)
+      ? route.continue()
+      : (blockedExternal.push(route.request().url()), route.abort())));
+    const ctlPage = await ctlContext.newPage();
+    await ctlPage.addInitScript(INSTALL_VISIBILITY);
+    // Served from the venue's own origin, so the fail-closed external guard is
+    // not tripped by the control fixtures themselves.
+    await ctlPage.goto(`${origin}/orgs/${SLUG}/settings/daemon-capacity`, { waitUntil: 'domcontentloaded' });
+    const out = await ctlPage.evaluate(() => {
+      const visibleInView = window.__capacityVisibleInView;
+      if (!visibleInView) throw new Error('visibility predicate was not installed');
+      const host = document.createElement('div');
+      host.id = 'clipping-controls';
+      document.body.appendChild(host);
+      const CASES = [
+        // --- negatives: MUST report not-visible -------------------------
+        {
+          name: 'overflow-clip-overflowing-counterexample', expect: false,
+          html: '<div style="display:flow-root;overflow:clip;height:1px;width:100px"><p data-t style="margin-top:30px">Hidden warning</p></div>',
+        },
+        {
+          name: 'overflow-hidden-zero-height-ancestor', expect: false,
+          html: '<div style="overflow:hidden;height:0;width:100px"><p data-t>Hidden warning</p></div>',
+        },
+        {
+          name: 'closed-details', expect: false,
+          html: '<details><summary>More</summary><p data-t>Hidden warning</p></details>',
+        },
+        {
+          name: 'visibility-hidden-ancestor', expect: false,
+          html: '<div style="visibility:hidden"><p data-t>Hidden warning</p></div>',
+        },
+        {
+          name: 'opacity-zero-ancestor', expect: false,
+          html: '<div style="opacity:0"><p data-t>Hidden warning</p></div>',
+        },
+        // --- positives: MUST report visible ------------------------------
+        {
+          name: 'ordinary-visible-text', expect: true,
+          html: '<p data-t>Ordinary warning</p>',
+        },
+        {
+          name: 'overflow-hidden-reachable-by-scrolling', expect: true,
+          html: '<div style="overflow:hidden;height:40px;width:200px"><div style="height:300px"></div><p data-t>Reachable warning</p></div>',
+        },
+        {
+          name: 'overflow-auto-below-the-fold', expect: true,
+          html: '<div style="overflow:auto;height:40px;width:200px"><div style="height:300px"></div><p data-t>Scrollable warning</p></div>',
+        },
+        {
+          name: 'overflow-hidden-partially-overlapping-clip', expect: true,
+          html: '<div style="overflow:hidden;height:10px;width:200px"><p data-t style="margin:0">Partly visible warning</p></div>',
+        },
+        {
+          name: 'open-details', expect: true,
+          html: '<details open><summary>More</summary><p data-t>Disclosed warning</p></details>',
+        },
+      ];
+      const results = [];
+      for (const c of CASES) {
+        host.innerHTML = c.html;
+        const node = host.querySelector('[data-t]');
+        const reported = visibleInView(node);
+        results.push({ name: c.name, expect: c.expect, reported, ok: reported === c.expect });
+      }
+      host.remove();
+      return results;
+    });
+    await ctlContext.close();
+    return out;
+  })();
+  const clippingControlFailures = clippingControls.filter((c) => !c.ok);
+  console.log(`clipping-predicate controls: ${clippingControls.length}, failures: ${clippingControlFailures.length}`);
 
   const hashes = readdirSync(outDir).filter((f) => f.endsWith('.png')).sort().map((f) => ({
     file: f,
@@ -1108,9 +1694,14 @@ try {
     // 19.2 — the case is MAPPED, not retired. It shares 16.11's evidence, and
     // this roll-up names exactly which walks are its result. Empty means the
     // sharing is no longer legitimate, and the gate fails the run.
+    // It is now the `ordinary` scenario's walk specifically, so widening the
+    // matrix cannot quietly leave 19.2 asserted by some other scenario.
     case192KeyboardPass1440: tabOrders
-      .filter((t) => t.viewport === '1440x1000' && (t.order ?? []).length > 0)
-      .map((t) => ({ viewport: t.viewport, theme: t.theme, controls: t.order.length })),
+      .filter((t) => t.scenario === 'ordinary' && t.viewport === '1440x1000'
+        && (t.order ?? []).length > 0 && (t.missing ?? []).length === 0)
+      .map((t) => ({
+        scenario: t.scenario, viewport: t.viewport, theme: t.theme, controls: t.order.length,
+      })),
     // Accepted 16.10 is a requirement on ENABLED control labels. Both buckets
     // are measured and GATED at authored colour; the split exists so that an
     // inactive, `disabled:opacity-50`-dimmed label can never be read as
@@ -1159,18 +1750,74 @@ try {
     ))].filter((id) => !DECLARED_CONTRAST_EXEMPTIONS.some((e) => e.id === id)),
     contrastSamplesMeasured: results.reduce((n, r) => n + (r.contrast ?? []).length, 0),
     focusRingsMissing: tabOrders.flatMap((t) => t.order
-      .filter((o) => o && (!o.focusVisible || !o.focusRingVisible))
+      .filter((o) => o && o.inScope && (!o.focusVisible || !o.focusRingVisible))
       .map((o) => ({
-        viewport: t.viewport, theme: t.theme, control: o.id ?? o.text,
+        scenario: t.scenario, viewport: t.viewport, theme: t.theme, control: controlName(o),
         focusVisible: o.focusVisible, boxShadow: o.boxShadow, outline: o.outline,
       }))),
     // GATED, not merely reported: accepted 16.10 forbids a low-contrast focus
     // ring, and a ring that paints but cannot be seen does not meet it.
+    // `ringContrast` is measured AFTER cumulative opacity, so a full-opacity
+    // token painted through a translucent control is scored as what reaches
+    // the screen.
     lowContrastFocusRings: tabOrders.flatMap((t) => t.order
-      .filter((o) => o && o.focusRingVisible && o.ringContrast !== null && o.ringContrast < 3)
+      .filter((o) => o && o.inScope && o.focusRingVisible
+        && o.ringContrast !== null && o.ringContrast < 3)
       .map((o) => ({
-        viewport: t.viewport, theme: t.theme, control: o.id ?? o.text, ratio: o.ringContrast,
+        scenario: t.scenario, viewport: t.viewport, theme: t.theme, control: controlName(o),
+        ratio: o.ringContrast, ratioAuthored: o.ringContrastAuthored,
+        cumulativeOpacity: o.cumulativeOpacity,
       }))),
+    // Controls the tab ring passes through that belong to the shared app shell,
+    // NOT to this bounded capacity radius. Reported in full and deliberately
+    // NOT gated: restyling shell chrome is outside this leg's authority, so a
+    // finding here would be scope expansion rather than coverage. Enumerated
+    // by exact identity so it cannot be used to quietly park a capacity
+    // control outside the gate.
+    focusRingsOutsideThisScope: (() => {
+      const seen = new Map();
+      for (const t of tabOrders) {
+        for (const o of t.order) {
+          if (!o || o.inScope) continue;
+          if (!(o.focusRingVisible && o.ringContrast !== null && o.ringContrast < 3)) continue;
+          const key = `${t.theme}|${controlName(o)}|${o.ringContrast}`;
+          if (!seen.has(key)) {
+            seen.set(key, {
+              theme: t.theme, control: controlName(o), ratio: o.ringContrast, occurrences: 0,
+            });
+          }
+          seen.get(key).occurrences += 1;
+        }
+      }
+      return [...seen.values()].sort((a, b) => a.ratio - b.ratio);
+    })(),
+    // 16.6/16.11 — a required control the keyboard walk never reached. Named,
+    // so a shortened walk cannot pass as a complete one.
+    keyboardControlGaps: tabOrders
+      .filter((t) => (t.missing ?? []).length > 0)
+      .map((t) => ({
+        scenario: t.scenario, viewport: t.viewport, theme: t.theme, missing: t.missing,
+      })),
+    // Non-vacuity: every scenario must actually have been walked at every
+    // viewport and theme. A scenario that silently produced nothing would
+    // otherwise contribute no findings and read as a pass.
+    keyboardCoverageGaps: PARTIAL_RUN ? [] : VIEWPORTS.flatMap(
+      (v) => THEMES.flatMap((th) => KEYBOARD_SCENARIOS.map((sc) => {
+        const walk = tabOrders.find(
+          (t) => t.scenario === sc.name && t.viewport === v.name && t.theme === th,
+        );
+        return (walk && (walk.order ?? []).length > 0)
+          ? null
+          : { scenario: sc.name, viewport: v.name, theme: th, reason: 'no keyboard walk recorded' };
+      })),
+    ).filter(Boolean),
+    // 16.6/16.7 — every control was not merely focusable but actually
+    // OPERATED from the keyboard, and caused the state change it should.
+    keyboardOperations,
+    keyboardOperationFailures: keyboardOperations.filter((op) => op.ok !== true),
+    // 16.8 — the predicate's own controls, both directions, GATED below.
+    clippingControls,
+    clippingControlFailures,
     visibilityFailures: results
       .filter((r) => !r.allAlertsVisible || (r.hiddenImportantText ?? []).length > 0)
       .map((r) => ({
@@ -1178,6 +1825,10 @@ try {
         allAlertsVisible: r.allAlertsVisible,
         hiddenImportantText: r.hiddenImportantText,
       })),
+    // 19.1 / 14.1-14.3 — the retained-receipt, error and recovery banners are
+    // provably INSIDE the captured frame, not merely present in the DOM.
+    framedSubjects,
+    subjectsNotFramed: framedSubjects.filter((f) => !f.inFrame),
     statesCaptured: SELECTED_STATES.map((st) => st.name),
     // R8: a success banner must not coexist with unsaved/changed-elsewhere or
     // a still-pinned submission.
@@ -1268,7 +1919,13 @@ try {
         ? ['no 1440x1000 tab-order walk'] : []],
     ['controls without a visible focus ring (16.11)', manifest.focusRingsMissing],
     ['low-contrast focus rings (16.10)', manifest.lowContrastFocusRings],
+    ['required keyboard controls never reached (16.6/16.11)', manifest.keyboardControlGaps],
+    ['keyboard scenario coverage gaps (16.11)', manifest.keyboardCoverageGaps],
+    ['keyboard operations that did not take effect (16.6/16.7)', manifest.keyboardOperationFailures],
+    ['clipping-predicate control failures (16.8)', clippingControlFailures],
     ['computed visibility failures (16.8)', manifest.visibilityFailures],
+    ['declared capture subjects outside the captured frame (19.1/14.1-14.3)',
+      manifest.subjectsNotFramed],
     ['incoherent post-save surface (R8)', manifest.incoherentPostSaveStates],
   ].filter(([, findings]) => findings.length > 0);
   if (gate.length > 0) {
