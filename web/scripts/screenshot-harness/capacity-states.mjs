@@ -26,10 +26,16 @@
  *   16.10 computed contrast for EVERY capacity helper, error, warning, ack,
  *         reconciliation, status and control string — a shared token's origin
  *         does not put a capacity requirement out of scope — plus the
- *         :focus-visible ring. The only ungated samples are the enumerated,
- *         identity-pinned exceptions in `DECLARED_CONTRAST_EXEMPTIONS`, each
- *         of which names the EXCLUDED change its repair needs; an exemption id
- *         the declaration does not cover fails the run.
+ *         :focus-visible ring. There are now ZERO exemptions: the last one,
+ *         `shared-button-primitive-accent-label`, was removed once the primary
+ *         action's tone was corrected capacity-locally, so every measured
+ *         sample is gated. The declaration machinery is kept, empty, so a newly
+ *         introduced exemption id still FAILS the run instead of quietly
+ *         widening the gate. The ENABLED primary action is additionally
+ *         measured in its real resting / hover / active states by driving a
+ *         real pointer (`primaryActionTone`), because the variant's hover step
+ *         is a different colour from its resting one and a resting-only
+ *         reading would not see it.
  *   16.11 the 16.6 tab order walked by real keystrokes at both widths in both
  *         themes, with the ring measured where it actually paints.
  *   19.2  NOT retired. Its assertion — a REAL-BROWSER KEYBOARD PASS AT
@@ -146,10 +152,13 @@ const STATES = [
     settle: 'loading',
     get: () => ({ hold: true }),
   },
-  { name: 'ordinary', get: () => OK(snapshot()) },
+  // `primaryAction`: this state's Save control is ENABLED, so it carries the
+  // real resting/hover/active tone measurement for accepted 16.10.
+  { name: 'ordinary', get: () => OK(snapshot()), primaryAction: 'button[type="submit"]' },
   {
     name: 'dirty-consequence',
     get: () => OK(snapshot()),
+    primaryAction: 'button[type="submit"]',
     prep: async (page) => {
       await page.fill('#capacity-workers', '5');
       await page.fill('#capacity-cap', '12');
@@ -365,27 +374,48 @@ const CONTRAST_FN = () => {
    * correction: EVERY capacity helper, error, warning, acknowledgment,
    * reconciliation, status and control string is gated. A shared token's
    * ORIGIN does not put a capacity requirement out of scope — capacity-local
-   * class use of an existing darker token is authorized and is how the muted
-   * copy was repaired.
+   * class use of an existing darker token is authorized and is how BOTH the
+   * muted copy and, in TASK-8564, the primary-action label were repaired.
    *
-   * The ONLY thing that is not gated is an ENUMERATED, identity-pinned
-   * exception whose repair genuinely requires an EXCLUDED change (a shared
-   * design-system primitive or a shared token definition). There is no
-   * category waiver: anything that is not one of these exact elements fails
-   * the run, so a NEW low-contrast string can never silently join the
-   * "reported" bucket.
+   * The list is now EMPTY. The one exception that used to live here,
+   * `shared-button-primitive-accent-label`, claimed that the white-on-accent
+   * button label could only reach AA by editing the shared primitive or the
+   * shared token definitions. That was wrong: the call site can select darker
+   * EXISTING accent tokens through `className`, which is what
+   * `PRIMARY_TONE` in `DaemonCapacitySection.tsx` now does. With no exemption
+   * left, every measured sample below is gated.
+   *
+   * The machinery is deliberately kept rather than deleted: an id emitted by
+   * this function that the module-level declaration does not carry still FAILS
+   * the run, so a future exemption cannot be introduced silently.
    */
-  const CONTRAST_EXEMPTIONS = [{
-    id: 'shared-button-primitive-accent-label',
-    match: 'button.pasture-button-type',
-    reason: 'SHARED Button primitive. Its label is --color-text-inverse on '
-      + '--color-accent-default (3.96:1 light). Reaching AA requires editing the '
-      + 'shared primitive or the shared accent token, both EXCLUDED from this '
-      + 'capacity radius. Surfaced as a concrete need, never as a met criterion.',
-  }];
+  const CONTRAST_EXEMPTIONS = [];
   const exemptionFor = (el) => CONTRAST_EXEMPTIONS.find(
     (e) => el.matches(e.match) || el.closest(e.match) !== null,
   ) ?? null;
+
+  /**
+   * Honest active/inactive classification.
+   *
+   * A disabled control is painted through `disabled:opacity-50`, so what a
+   * person actually sees is dimmer than the authored colour measured here.
+   * WCAG 1.4.3 places no contrast requirement on an inactive component, and
+   * this run does NOT relax anything for one — every sample stays gated at its
+   * authored colour. The flag exists so an inactive, dimmed label can never be
+   * read as evidence that the ENABLED label passes: the enabled label's real
+   * resting / hover / active evidence is `primaryActionTone`, measured with a
+   * real pointer.
+   */
+  const INACTIVE_HOSTS = 'button[disabled], input[disabled], select[disabled], '
+    + 'textarea[disabled], fieldset[disabled], [aria-disabled="true"]';
+  const cumulativeOpacity = (el) => {
+    let o = 1;
+    for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+      const v = Number(getComputedStyle(n).opacity);
+      if (Number.isFinite(v)) o *= v;
+    }
+    return Number(o.toFixed(3));
+  };
 
   const out = [];
   for (const el of candidates) {
@@ -394,11 +424,14 @@ const CONTRAST_FN = () => {
       : `${el.tagName.toLowerCase()}.${(el.className || '').toString().split(/\s+/).slice(0, 2).join('.')}`;
     const style = getComputedStyle(el);
     const exempt = exemptionFor(el);
+    const inactiveHost = el.closest(INACTIVE_HOSTS);
+    const isControlLabel = el.closest('button, [role="button"]') !== null;
     const fg = parse(style.color);
     const bg = effectiveBackground(el);
     if (!fg || !bg) {
       out.push({
         selector, present: true, unmeasurable: style.color, gated: exempt === null,
+        inactive: inactiveHost !== null, isControlLabel,
       });
       continue;
     }
@@ -417,6 +450,15 @@ const CONTRAST_FN = () => {
       gated: exempt === null,
       exemptionId: exempt?.id ?? null,
       exemptionReason: exempt?.reason ?? null,
+      // Honest classification, NOT a relaxation — see INACTIVE_HOSTS above.
+      // `ratio` below is always the AUTHORED colour; `cumulativeOpacity`
+      // records how much of it actually reaches the screen.
+      inactive: inactiveHost !== null,
+      inactiveHost: inactiveHost
+        ? `${inactiveHost.tagName.toLowerCase()}${inactiveHost.id ? `#${inactiveHost.id}` : ''}`
+        : null,
+      cumulativeOpacity: cumulativeOpacity(el),
+      isControlLabel,
       present: true,
       text: (el.textContent ?? '').trim().slice(0, 60),
       color: style.color,
@@ -437,15 +479,118 @@ const CONTRAST_FN = () => {
  * in a particular state. `CONTRAST_FN` carries the enforcing copy; this list is
  * reconciled against the ids it actually emitted, and a drift between the two
  * FAILS the run rather than quietly widening the waiver.
+ *
+ * EMPTY as of TASK-8564. `shared-button-primitive-accent-label` was removed
+ * because the control label it covered now meets the criterion through a
+ * capacity-local existing-token override; nothing replaced it, and no sample
+ * moved into another reported-but-ungated bucket.
  */
-const DECLARED_CONTRAST_EXEMPTIONS = [{
-  id: 'shared-button-primitive-accent-label',
-  match: 'button.pasture-button-type',
-  criterion: '16.10 control label contrast',
-  excludedChangeRequired: 'edit the shared design-system Button primitive, or the '
-    + 'shared --color-accent-default / --color-text-inverse token pair',
-  status: 'NOT MET — surfaced to the manager as a concrete need',
-}];
+const DECLARED_CONTRAST_EXEMPTIONS = [];
+
+/**
+ * 16.10 for the ENABLED primary action, in its REAL interaction states.
+ *
+ * A resting-only reading is not enough here. The Button variant's hover and
+ * active steps are a DIFFERENT colour from its resting one, and the shared
+ * default (`hover:bg-primary/90`) composites lighter than the resting fill, so
+ * the hover state can fail a criterion the resting state passes. This probe
+ * therefore drives a real pointer and reads the computed colours back out of
+ * the browser in each phase.
+ *
+ * Three things keep it from being vacuous:
+ *   - it records `disabled`, so an inactive control cannot be reported as
+ *     enabled-label evidence, and the gate requires a real ENABLED reading at
+ *     every viewport/theme;
+ *   - `transition-colors` animates the fill, so each phase settles before it
+ *     is read — a mid-transition sample would report an interpolated colour;
+ *   - the button is released OFF-target and the request log is compared before
+ *     and after, so the probe cannot fire the form submit it is hovering.
+ */
+const TONE_SAMPLE = (selector) => {
+  const channel = (v) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  const ctx2d = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  ctx2d.globalCompositeOperation = 'copy';
+  const parse = (value) => {
+    if (!value || value === 'none') return null;
+    ctx2d.fillStyle = 'rgba(0, 0, 0, 0)';
+    ctx2d.fillStyle = value;
+    ctx2d.fillRect(0, 0, 1, 1);
+    const d = ctx2d.getImageData(0, 0, 1, 1).data;
+    return { r: d[0], g: d[1], b: d[2], a: d[3] / 255 };
+  };
+  const lum = (c) => 0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b);
+  const ratio = (a, b) => {
+    const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  const el = document.querySelector(selector);
+  if (!el) return { present: false };
+  const style = getComputedStyle(el);
+  const fg = parse(style.color);
+  let bg = parse(style.backgroundColor);
+  // A variant whose fill carries alpha (the shared `bg-primary/90` hover) is
+  // composited over what is actually behind it, not over an assumed canvas.
+  if (bg && bg.a < 1) {
+    let behind = null;
+    for (let n = el.parentElement; n && !behind; n = n.parentElement) {
+      const c = parse(getComputedStyle(n).backgroundColor);
+      if (c && c.a > 0) behind = c;
+    }
+    behind = behind ?? parse(getComputedStyle(document.body).backgroundColor)
+      ?? { r: 255, g: 255, b: 255, a: 1 };
+    bg = {
+      r: bg.r * bg.a + behind.r * (1 - bg.a),
+      g: bg.g * bg.a + behind.g * (1 - bg.a),
+      b: bg.b * bg.a + behind.b * (1 - bg.a),
+      a: 1,
+    };
+  }
+  if (!fg || !bg) return { present: true, unmeasurable: `${style.color} / ${style.backgroundColor}` };
+  const px = parseFloat(style.fontSize);
+  const bold = Number(style.fontWeight) >= 700;
+  const large = px >= 24 || (bold && px >= 18.66);
+  return {
+    present: true,
+    disabled: el.disabled === true || el.getAttribute('aria-disabled') === 'true',
+    text: (el.textContent ?? '').trim().slice(0, 60),
+    classList: [...el.classList].join(' '),
+    color: style.color,
+    backgroundColor: style.backgroundColor,
+    fontSizePx: px,
+    large,
+    ratio: Number(ratio(fg, bg).toFixed(2)),
+    threshold: large ? 3 : 4.5,
+    passesAA: ratio(fg, bg) >= (large ? 3 : 4.5),
+  };
+};
+
+/** `transition-colors` is 150ms in this system; settle well past it. */
+const TONE_SETTLE_MS = 450;
+
+async function measurePrimaryActionTone(page, selector) {
+  const handle = await page.$(selector);
+  if (handle === null) return { selector, present: false, phases: [] };
+  const read = async (phase) => ({ phase, ...(await page.evaluate(TONE_SAMPLE, selector)) });
+  // Park the pointer somewhere harmless first, so "rest" really is rest.
+  await page.mouse.move(2, 2);
+  await page.waitForTimeout(TONE_SETTLE_MS);
+  const rest = await read('rest');
+  await handle.hover();
+  await page.waitForTimeout(TONE_SETTLE_MS);
+  const hover = await read('hover');
+  await page.mouse.down();
+  await page.waitForTimeout(TONE_SETTLE_MS);
+  const active = await read('active');
+  // Release AWAY from the control: a mouseup over the button would be a click,
+  // which on a submit button would fire a write this state never declared.
+  await page.mouse.move(2, 2);
+  await page.mouse.up();
+  await page.waitForTimeout(TONE_SETTLE_MS);
+  return { selector, present: true, phases: [rest, hover, active] };
+}
 
 /**
  * 16.11 — walk the 16.6 tab order and measure the REAL focus ring.
@@ -845,6 +990,17 @@ try {
           };
         });
         const contrast = await page.evaluate(CONTRAST_FN);
+        // Everything above is a still frame. The primary action additionally
+        // needs its POINTER states measured, and that has to happen after the
+        // screenshot so the capture is not a hover frame.
+        let primaryActionTone = null;
+        if (state.primaryAction) {
+          const requestsBefore = requestLog.length;
+          primaryActionTone = await measurePrimaryActionTone(page, state.primaryAction);
+          // A probe that fired the control it was measuring would have written
+          // through this state. Zero is the passing value and it is gated.
+          primaryActionTone.requestsDuringProbe = requestLog.length - requestsBefore;
+        }
         results.push({
           state: state.name,
           viewport: viewport.name,
@@ -855,6 +1011,7 @@ try {
           requests: [...requestLog],
           ...receipt,
           contrast,
+          primaryActionTone,
         });
         await page.close();
       }
@@ -924,11 +1081,11 @@ try {
     lowContrastFindings: results.flatMap((r) => (r.contrast ?? [])
       .filter((c) => c.present && c.gated && (c.unmeasurable !== undefined || !c.passesAA))
       .map((c) => ({ file: r.file, ...c }))),
-    // REPORTED, never waived: the ENUMERATED exceptions only. Each entry names
-    // the exact element identity and the excluded change its repair needs.
-    // This is a concrete need surfaced to the manager, NOT a met criterion and
-    // NOT a category/shared-token waiver — anything outside the enumerated set
-    // is gated above and fails the run.
+    // The ENUMERATED-exception bucket. It is now structurally EMPTY, because
+    // `CONTRAST_EXEMPTIONS` is empty and therefore every measured sample is
+    // gated above. It is kept, not deleted, so that if an exemption is ever
+    // reintroduced the samples it covers are still enumerated here by exact
+    // identity instead of vanishing from the evidence.
     contrastOutsideThisScope: (() => {
       const seen = new Map();
       for (const r of results) {
@@ -954,6 +1111,45 @@ try {
     case192KeyboardPass1440: tabOrders
       .filter((t) => t.viewport === '1440x1000' && (t.order ?? []).length > 0)
       .map((t) => ({ viewport: t.viewport, theme: t.theme, controls: t.order.length })),
+    // Accepted 16.10 is a requirement on ENABLED control labels. Both buckets
+    // are measured and GATED at authored colour; the split exists so that an
+    // inactive, `disabled:opacity-50`-dimmed label can never be read as
+    // evidence that the enabled label passes. `cumulativeOpacity` records how
+    // much of the authored colour actually reaches the screen.
+    controlLabelSamples: (() => {
+      const bucket = (wantInactive) => {
+        const seen = new Map();
+        for (const r of results) {
+          for (const c of (r.contrast ?? [])) {
+            if (!c.present || !c.isControlLabel || Boolean(c.inactive) !== wantInactive) continue;
+            const key = `${r.theme}|${c.selector}|${c.text}|${c.color}|${c.background}`;
+            if (!seen.has(key)) {
+              seen.set(key, {
+                theme: r.theme, selector: c.selector, sample: c.text,
+                color: c.color, background: c.background, ratio: c.ratio,
+                threshold: c.threshold, passesAA: c.passesAA,
+                cumulativeOpacity: c.cumulativeOpacity, occurrences: 0,
+              });
+            }
+            seen.get(key).occurrences += 1;
+          }
+        }
+        return [...seen.values()].sort((a, b) => a.ratio - b.ratio);
+      };
+      return { enabled: bucket(false), inactive: bucket(true) };
+    })(),
+    // The ENABLED primary action measured with a real pointer in its resting,
+    // hover and active states. GATED below, both for its ratios and for its
+    // own non-vacuity.
+    primaryActionTone: results
+      .filter((r) => r.primaryActionTone !== null && r.primaryActionTone !== undefined)
+      .map((r) => ({
+        state: r.state, viewport: r.viewport, theme: r.theme, file: r.file,
+        selector: r.primaryActionTone.selector,
+        present: r.primaryActionTone.present,
+        requestsDuringProbe: r.primaryActionTone.requestsDuringProbe ?? null,
+        phases: r.primaryActionTone.phases ?? [],
+      })),
     contrastExemptionsDeclared: DECLARED_CONTRAST_EXEMPTIONS,
     // Any exemption id the page emitted that this file does not declare. A
     // non-empty list means the enforcing copy and the declared inventory have
@@ -1010,6 +1206,47 @@ try {
   console.log(`focus rings below 3:1 against their surround (16.10/16.11): ${manifest.lowContrastFocusRings.length}`);
   console.log(`visibility failures (16.8): ${manifest.visibilityFailures.length}`);
 
+  // --- 16.10 primary action, derived gate inputs ----------------------------
+  // A phase that fails its threshold, is unmeasurable, or was read off a
+  // DISABLED control (which is not enabled-label evidence).
+  const primaryToneFindings = manifest.primaryActionTone.flatMap((t) => (t.present
+    ? t.phases
+      .filter((ph) => ph.present !== true || ph.unmeasurable !== undefined
+        || ph.disabled === true || ph.passesAA !== true)
+      .map((ph) => ({
+        state: t.state, viewport: t.viewport, theme: t.theme, phase: ph.phase,
+        disabled: ph.disabled ?? null, color: ph.color ?? null,
+        background: ph.backgroundColor ?? null, ratio: ph.ratio ?? null,
+        threshold: ph.threshold ?? null, unmeasurable: ph.unmeasurable ?? null,
+      }))
+    : [{ state: t.state, viewport: t.viewport, theme: t.theme, phase: 'all', missing: t.selector }]));
+  // Non-vacuity: every viewport x theme must carry a real ENABLED reading in
+  // all three phases, otherwise a silently-absent probe would "pass".
+  const primaryToneCoverageGaps = PARTIAL_RUN ? [] : VIEWPORTS.flatMap((v) => THEMES.map((th) => {
+    const got = manifest.primaryActionTone.filter(
+      (t) => t.viewport === v.name && t.theme === th && t.present
+        && (t.phases ?? []).length === 3
+        && t.phases.every((ph) => ph.present === true && ph.disabled === false
+          && typeof ph.ratio === 'number'),
+    );
+    return got.length === 0
+      ? { viewport: v.name, theme: th, reason: 'no enabled 3-phase primary-action tone reading' }
+      : null;
+  })).filter(Boolean);
+  // A probe that wrote through the surface it was measuring is not evidence.
+  const primaryToneProbeWrites = manifest.primaryActionTone
+    .filter((t) => (t.requestsDuringProbe ?? 0) !== 0)
+    .map((t) => ({
+      state: t.state, viewport: t.viewport, theme: t.theme,
+      requestsDuringProbe: t.requestsDuringProbe,
+    }));
+
+  console.log(`primary-action tone readings: ${manifest.primaryActionTone.length}`);
+  console.log(`enabled control-label samples: ${manifest.controlLabelSamples.enabled.length}`);
+  console.log(`inactive control-label samples: ${manifest.controlLabelSamples.inactive.length}`);
+  console.log(`primary-action tone findings (16.10): ${primaryToneFindings.length}`);
+  console.log(`primary-action tone coverage gaps: ${primaryToneCoverageGaps.length}`);
+
   // ACCEPTANCE GATE. Every one of these is an accepted criterion, so every one
   // of them FAILS the evidence run. Reporting a failed criterion as a residual
   // is what made the previous run unusable as acceptance evidence.
@@ -1018,6 +1255,12 @@ try {
     ['horizontal overflow', manifest.horizontalOverflowStates],
     ['low-contrast text (16.10)', manifest.lowContrastFindings],
     ['undeclared contrast exemptions', manifest.undeclaredContrastExemptions],
+    // The exemption list is empty now; a non-empty one would mean a sample was
+    // moved out of the gated set, which this leg is not allowed to do.
+    ['declared contrast exemptions (must be none)', DECLARED_CONTRAST_EXEMPTIONS],
+    ['low-contrast primary-action states (16.10)', primaryToneFindings],
+    ['primary-action tone coverage gaps (16.10)', primaryToneCoverageGaps],
+    ['primary-action tone probe wrote through the surface', primaryToneProbeWrites],
     // 19.2 is asserted by its ABSENCE of a result, so the gate entry is
     // inverted: a missing 1440x1000 keyboard pass is the failure.
     ['19.2 keyboard pass at 1440x1000 missing',

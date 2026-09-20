@@ -68,6 +68,34 @@ const FOCUS_RING = 'focus-visible:ring-accent-default';
 /** Same ring for a bare element that has no design-system primitive under it. */
 const FOCUS_RING_RAW = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-default';
 
+/**
+ * Capacity-local primary-action tone (accepted 16.10 control-label contrast).
+ *
+ * The shared `default` Button variant paints `--color-text-inverse` on
+ * `--color-accent-default`. Measured in a real browser that is 3.96:1 in light
+ * — under the accepted 4.5:1 control-label threshold — and its
+ * `hover:bg-primary/90` composites LIGHTER still, so the hover state is worse
+ * than the resting one. The shared primitive and the shared token definitions
+ * are out of scope for this bounded screen, exactly as with `FOCUS_RING` above,
+ * so the tone is corrected HERE on this panel's primary actions only, by
+ * selecting darker EXISTING accent tokens through `className`. `cn()` is
+ * `twMerge`, so these win the `bg-*` / `hover:bg-*` / `active:bg-*` groups over
+ * the variant's defaults; nothing outside this panel changes.
+ *
+ * Resting tone is `--color-accent-hover`; the pointer states step to
+ * `--color-accent-text`, which keeps this system's own directional hover
+ * semantics — darker in light, brighter in dark. Browser-computed against
+ * `--color-text-inverse`: light 5.07:1 resting / 6.58:1 hover+active, dark
+ * 9.22:1 resting / 10.50:1 hover+active, all above the 4.5:1 threshold.
+ * `scripts/screenshot-harness/capacity-states.mjs` measures and GATES those
+ * three phases with a real pointer at both desktop widths in both themes, so
+ * this comment cannot drift from the shipped result without failing the run.
+ *
+ * The focus ring is untouched: it paints OUTSIDE the control, on the page
+ * canvas, so `FOCUS_RING` keeps its already-measured behaviour.
+ */
+const PRIMARY_TONE = 'bg-accent-hover hover:bg-accent-text active:bg-accent-text';
+
 const REPRESENTATION_UNAVAILABLE =
   'Outside the range this editor can represent exactly.';
 const READ_UNUSABLE =
@@ -1165,7 +1193,12 @@ export function DaemonCapacitySection(): JSX.Element {
         )}
 
         <div className="border-border-default mt-5 flex flex-wrap items-center gap-3 border-t pt-5">
-          <Button type="submit" className={FOCUS_RING} disabled={saveDisabled} loading={pending}>
+          <Button
+            type="submit"
+            className={`${PRIMARY_TONE} ${FOCUS_RING}`}
+            disabled={saveDisabled}
+            loading={pending}
+          >
             {pending ? 'Saving…' : 'Save for next restart'}
           </Button>
           <Button type="button" variant="outline" className={FOCUS_RING} disabled={pending} onClick={discardDraft}>
@@ -1364,6 +1397,7 @@ export function DaemonCapacitySection(): JSX.Element {
             </Button>
             <Button
               size="sm"
+              className={PRIMARY_TONE}
               onClick={() => {
                 restoreFocusRef.current = null;
                 if (blocker.state === 'blocked') blocker.proceed();
