@@ -14,6 +14,7 @@ from runtime.daemon.auth import _require_human, require_token
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.skills.custom import service
 from runtime.skills.eligibility import EligibilityRecipient, EligibilityRule, SkillEligibilityState, resolve_custom_skill_eligibility
+from runtime.skills.skill_md import parse_skill_frontmatter
 
 router = APIRouter(prefix="/custom-skills", dependencies=[require_token()])
 agent_custom_skills_router = APIRouter(prefix="/custom-skills")
@@ -81,6 +82,8 @@ def _persist_validated_version(
     parent_id: int | None = None, task_id: str | None = None,
     session_id: str | None = None, brief_digest: str | None = None,
     event: str = "version_saved",
+    requested_description: str | None = None,
+    validator_version: str = "THR-262/1.0.0",
 ) -> tuple[int, str, str, str, int | None]:
     """Append one validated version inside the caller's BEGIN IMMEDIATE block.
 
@@ -89,8 +92,13 @@ def _persist_validated_version(
     a byte-identical body (UNIQUE (skill_id, content_hash)) fails the insert
     and is rejected as 409 version_content_exists with zero residue and no
     artifact write — a concurrent duplicate can never delete a committed
-    artifact. Duplicate-content translation is scoped strictly to that version
-    INSERT:
+    artifact. THR-262 replay precedence: an exact byte-identical replay of any
+    valid/invalid/historical version is 409 even when the request supplies a
+    divergent or explicit-blank description, because the INSERT runs before the
+    valid-candidate divergence check. That check then runs after the INSERT and
+    before ``_write_artifact``/pointer/events, so a divergent valid candidate
+    is a pre-artifact 422 with zero residue. Duplicate-content translation is
+    scoped strictly to that version INSERT:
     an integrity failure from ANY later stage (current-pointer update or
     either event append) is NOT a duplicate — it propagates to the generic
     handler below, which compensates only the artifact (and empty directories)
@@ -100,6 +108,14 @@ def _persist_validated_version(
     back the transaction, leaving no durable version/event/current-pointer/
     artifact residue. The append-only uniqueness invariant is preserved,
     never relaxed.
+
+    Description handling (THR-262): a VALID candidate projects its validated
+    frontmatter ``description`` onto ``custom_skills.description`` inside this
+    same transaction. ``requested_description`` distinguishes an omitted/JSON-
+    null request key (``None`` → derive, no comparison) from an explicitly
+    supplied string (including ``""``/whitespace, which is compared and
+    divergent → 422 ``divergent_description``). An INVALID candidate runs no
+    divergence check and never projects.
 
     Current-pointer selection (THR-210 PR 1, founder-approved): a VALID
     version always advances ``current_version_id``. An INVALID candidate is
@@ -129,7 +145,7 @@ def _persist_validated_version(
                 conn, skill_id=skill_id, skill_md=skill_md, actor_kind=actor_kind,
                 actor=actor, artifact_key=key, validation=validation,
                 task_id=task_id, session_id=session_id, brief_digest=brief_digest,
-                parent_id=parent_id,
+                parent_id=parent_id, validator_version=validator_version,
             )
         except sqlite3.IntegrityError as exc:
             # Only the version INSERT can violate the append-only uniqueness
@@ -143,6 +159,22 @@ def _persist_validated_version(
                     "detail": "A version with this exact content already exists for this skill",
                 },
             ) from exc
+        frontmatter = validation.get("frontmatter") if isinstance(validation, dict) else None
+        projected_description = (
+            frontmatter.get("description") if isinstance(frontmatter, dict) else None
+        )
+        if validation["ok"] and requested_description is not None:
+            if requested_description != projected_description:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "divergent_description",
+                        "detail": (
+                            "The supplied description does not match the validated "
+                            "frontmatter description"
+                        ),
+                    },
+                )
         _write_artifact(org, key, skill_md)
         artifact_written = True
         current_row = conn.execute(
@@ -157,6 +189,11 @@ def _persist_validated_version(
             "UPDATE custom_skills SET current_version_id=? WHERE id=?",
             (new_current, skill_id),
         )
+        if validation["ok"] and projected_description is not None:
+            conn.execute(
+                "UPDATE custom_skills SET description=? WHERE id=?",
+                (projected_description, skill_id),
+            )
         service.append_event(conn, skill_id, event, actor, version, task_id=task_id, session_id=session_id)
         service.append_event(conn, skill_id, "validated", actor, version, task_id=task_id, session_id=session_id)
         return version, content_hash, state, key, new_current
@@ -226,6 +263,10 @@ def create_agent_custom_skill(slug: str, session_id: str, org: OrgDep, request: 
         if org.sessions.get_active(task_id, agent) != session_id: _error("session_not_current", 403)
         if org.sessions.is_recovery_session(task_id, agent, session_id): _error("recovery_purpose_forbidden", 403)
         skill_slug, skill_md = body.get("slug", ""), body.get("skill_md", "")
+        # THR-262: omitted (or JSON-null) request description derives from the
+        # validated frontmatter; an explicitly supplied string (including "")
+        # is compared on a valid candidate. ``None`` here means "not supplied".
+        requested_description = body.get("description")
         if not skill_slug or not body.get("name") or not skill_md: _error("invalid_request", 422)
         validation_result = service.validate_package(
             org, slug=skill_slug, name=body["name"], skill_md=skill_md,
@@ -252,14 +293,16 @@ def create_agent_custom_skill(slug: str, session_id: str, org: OrgDep, request: 
                     skill_md=skill_md, actor_kind="agent", actor=agent,
                     validation=validation_result, parent_id=existing["current_version_id"],
                     task_id=task_id, session_id=session_id, brief_digest=digest,
+                    requested_description=requested_description,
                 )
             else:
-                skill_id = f"custom:{uuid.uuid4()}"; conn.execute("INSERT INTO custom_skills (id,org_slug,slug,name,description,origin_kind,origin_agent,created_at,created_by) VALUES (?,?,?,?,?,'agent',?,?,?)", (skill_id, slug, skill_slug, body["name"], body.get("description", ""), agent, service.now(), agent))
+                skill_id = f"custom:{uuid.uuid4()}"; conn.execute("INSERT INTO custom_skills (id,org_slug,slug,name,description,origin_kind,origin_agent,created_at,created_by) VALUES (?,?,?,?,?,'agent',?,?,?)", (skill_id, slug, skill_slug, body["name"], requested_description if requested_description is not None else "", agent, service.now(), agent))
                 version, digest_hash, validation, key, current = _persist_validated_version(
                     conn, org=org, slug=skill_slug, skill_id=skill_id,
                     skill_md=skill_md, actor_kind="agent", actor=agent,
                     validation=validation_result, task_id=task_id,
                     session_id=session_id, brief_digest=digest, event="created",
+                    requested_description=requested_description,
                 )
             _commit_compensating_artifact(conn, org, key)
         except Exception: conn.rollback(); raise
@@ -311,6 +354,7 @@ def catalog(
 @router.post("", status_code=201)
 def create_human(slug: str, body: dict = Body(...), org: OrgDep = None, _: None = Depends(_require_human)):
     skill_slug, skill_md = body.get("slug", ""), body.get("skill_md", "")
+    requested_description = body.get("description")
     if not skill_slug or not body.get("name") or not skill_md: _error("invalid_request", 422)
     validation_result = service.validate_package(
         org, slug=skill_slug, name=body["name"], skill_md=skill_md,
@@ -326,11 +370,12 @@ def create_human(slug: str, body: dict = Body(...), org: OrgDep = None, _: None 
         _error("slug_permanently_reserved" if existing["purged_at"] else "slug_exists", 409)
     skill_id = f"custom:{uuid.uuid4()}"; conn.execute("BEGIN IMMEDIATE")
     try:
-        conn.execute("INSERT INTO custom_skills (id,org_slug,slug,name,description,origin_kind,created_at,created_by) VALUES (?,?,?,?,?,'human',?,?)", (skill_id,slug,skill_slug,body["name"],body.get("description", ""),service.now(),"founder"))
+        conn.execute("INSERT INTO custom_skills (id,org_slug,slug,name,description,origin_kind,created_at,created_by) VALUES (?,?,?,?,?,'human',?,?)", (skill_id,slug,skill_slug,body["name"],requested_description if requested_description is not None else "",service.now(),"founder"))
         version, content_hash, validation, key, current = _persist_validated_version(
             conn, org=org, slug=skill_slug, skill_id=skill_id,
             skill_md=skill_md, actor_kind="human", actor="founder",
             validation=validation_result, event="created",
+            requested_description=requested_description,
         )
         _commit_compensating_artifact(conn, org, key)
     except Exception: conn.rollback(); raise
@@ -357,11 +402,35 @@ def detail(skill_id: str, org: OrgDep, _: None = Depends(_require_human)):
 def patch_metadata(skill_id: str, body: dict = Body(...), org: OrgDep = None, _: None = Depends(_require_human)):
     allowed = {key: body[key] for key in ("name", "description") if key in body}
     if not allowed: _error("invalid_request", 422)
-    row = service.current(org.db, skill_id)
-    if row is None: _error("not_found", 404)
-    _mutable(row)
     conn=getattr(org.db,"_conn",org.db); conn.execute("BEGIN IMMEDIATE")
     try:
+        # THR-262: re-read the current pointer inside the transaction so a
+        # description patch is evaluated against the authoritative current
+        # version, never a stale pre-transaction read.
+        row = service.current(conn, skill_id)
+        if row is None: _error("not_found", 404)
+        _mutable(row)
+        if "description" in allowed:
+            supplied = allowed["description"]
+            frontmatter = parse_skill_frontmatter(row["skill_md_cache"])
+            frontmatter_description = (
+                frontmatter.get("description") if isinstance(frontmatter, dict) else None
+            )
+            if (
+                row["validation_state"] == "valid"
+                and isinstance(frontmatter_description, str)
+                and bool(frontmatter_description)
+            ):
+                # Valid current with a frontmatter description: accept the equal
+                # value; a different value is 422 description_divergence.
+                if supplied != frontmatter_description:
+                    _error("description_divergence", 422)
+            else:
+                # Invalid or legacy/heading-first current version: accept only
+                # the unchanged stored catalog description. The invalid/legacy
+                # frontmatter is never parsed as a valid source.
+                if supplied != row["description"]:
+                    _error("description_requires_valid_version", 422)
         conn.execute("UPDATE custom_skills SET " + ", ".join(f"{key}=?" for key in allowed) + " WHERE id=?", (*allowed.values(),skill_id)); service.append_event(conn,skill_id,"version_saved","founder",row["version_id"]); conn.commit()
     except Exception: conn.rollback(); raise
     return dict(service.current(org.db,skill_id))
@@ -372,6 +441,7 @@ def add_version(skill_id: str, body: dict = Body(...), org: OrgDep = None, _: No
     if row is None: _error("not_found",404)
     _mutable(row)
     skill_md=body.get("skill_md", "")
+    requested_description=body.get("description")
     if not skill_md: _error("invalid_request",422)
     validation_result = service.validate_package(
         org, slug=row["slug"], name=row["name"], skill_md=skill_md,
@@ -384,6 +454,7 @@ def add_version(skill_id: str, body: dict = Body(...), org: OrgDep = None, _: No
             conn, org=org, slug=row["slug"], skill_id=skill_id,
             skill_md=skill_md, actor_kind="human", actor="founder",
             validation=validation_result, parent_id=row["version_id"],
+            requested_description=requested_description,
         )
         _commit_compensating_artifact(conn, org, key)
     except Exception: conn.rollback(); raise

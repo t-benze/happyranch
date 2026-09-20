@@ -12,8 +12,41 @@ from runtime.orchestrator.workspace_adapters import (
     _compute_dir_hash,
     materialize_workspace_skills,
 )
+from runtime.skills.skill_md import frontmatter_admission_violations
 from runtime.skills.sources import bundled_skills_dir
 from runtime.skills.system_contracts import list_system_contracts
+
+
+def _bundled_source_findings(root: Path) -> list[tuple[Path, str, str]]:
+    """Structural-first admission findings for every ``**/SKILL.md`` under root.
+
+    Read-only over release-owned sources: the same allowed top-level key set the
+    custom-skill validator enforces. A source with no frontmatter has no
+    top-level keys and passes this allowed-set-only check.
+    """
+    findings: list[tuple[Path, str, str]] = []
+    for source in sorted(root.rglob("SKILL.md")):
+        text = source.read_text(encoding="utf-8")
+        for code, message in frontmatter_admission_violations(text):
+            findings.append((source, code, message))
+    return findings
+
+
+def _insert_frontmatter_line(text: str, line: str) -> str:
+    lines = text.split("\n")
+    for index in range(1, len(lines)):
+        if lines[index] == "---":
+            lines.insert(index, line)
+            return "\n".join(lines)
+    raise AssertionError("source has no closing frontmatter fence")
+
+
+def _mutated_source(tmp_path: Path, transform) -> Path:
+    root = tmp_path / "sources"
+    shutil.copytree(bundled_skills_dir() / "create-skill", root)
+    skill = root / "SKILL.md"
+    skill.write_text(transform(skill.read_text(encoding="utf-8")), encoding="utf-8")
+    return root
 
 
 @pytest.fixture(autouse=True)
@@ -186,3 +219,100 @@ def test_frozen_release_data_contains_skills_and_assistant_knowledge(tmp_path: P
             if member.is_file():
                 assert f"runtime/skills/bundled/{member.relative_to(bundled_skills_dir())}" in shipped
         assert not any(key.startswith("protocol/") for key in shipped)
+
+
+# ── THR-262 bundled-source admission guard (C3b) ────────────────────────
+#
+# The guard parses every release-owned runtime/skills/bundled/**/SKILL.md and
+# enforces the SAME closed top-level key set the custom-skill validator uses.
+# The real corpus is never edited: each regression below copies one real
+# bundled source tree to tmp_path and mutates exactly one file. Separately
+# tracked SKILL.md copies under runtime/skills/{manage-agent,manage-repo,
+# reflection}/, skills/happyranch/ and tests/fixtures/** are NOT this source
+# directory and are excluded from this particular guard (O-1).
+
+
+def test_real_bundled_corpus_uses_only_the_admission_allowlist() -> None:
+    """P1: the unmodified real corpus passes (smoke only)."""
+    assert _bundled_source_findings(bundled_skills_dir()) == []
+
+
+@pytest.mark.parametrize("line,code,key", [
+    ("vendor-x: 1", "admission_field_not_allowed", "vendor-x"),          # N1
+    ("future-field: \"\"", "admission_field_not_allowed", "future-field"),  # N2
+    ("allowed-tools: []", "admission_field_not_allowed", "allowed-tools"),  # N3
+    ("hooks: {}", "admission_field_not_allowed", "hooks"),               # N4
+])
+def test_bundled_disallowed_top_level_key_fails(
+    tmp_path: Path, line: str, code: str, key: str
+) -> None:
+    root = _mutated_source(tmp_path, lambda text: _insert_frontmatter_line(text, line))
+    findings = _bundled_source_findings(root)
+    assert len(findings) == 1, findings
+    source, actual_code, message = findings[0]
+    assert actual_code == code
+    assert source.name == "SKILL.md" and source.parent == root
+    assert key in message
+
+
+def test_bundled_malformed_frontmatter_fails_without_admission_findings(
+    tmp_path: Path,
+) -> None:
+    """N5: malformed-first; no admission finding follows a structural one."""
+    root = _mutated_source(
+        tmp_path, lambda text: text.replace("name: create-skill", "name: [unterminated")
+    )
+    findings = _bundled_source_findings(root)
+    assert [code for _, code, _ in findings] == ["skill_md_malformed_frontmatter"]
+
+
+def test_bundled_duplicate_name_fails_not_last_wins(tmp_path: Path) -> None:
+    """N6: duplicate-aware; never last-wins."""
+    root = _mutated_source(
+        tmp_path, lambda text: _insert_frontmatter_line(text, "name: create-skill")
+    )
+    findings = _bundled_source_findings(root)
+    assert [code for _, code, _ in findings] == ["frontmatter_duplicate_key"]
+    assert findings[0][2].find("name") != -1
+
+
+def test_bundled_duplicate_disallowed_key_with_empty_last_value_fails(
+    tmp_path: Path,
+) -> None:
+    """N7: a duplicate empty grant cannot become a valid empty grant."""
+    root = _mutated_source(
+        tmp_path,
+        lambda text: _insert_frontmatter_line(
+            _insert_frontmatter_line(text, "allowed-tools: []"), "allowed-tools: []"
+        ),
+    )
+    findings = _bundled_source_findings(root)
+    assert [code for _, code, _ in findings] == ["frontmatter_duplicate_key"]
+    assert "allowed-tools" in findings[0][2]
+
+
+def test_bundled_positive_fixtures_pass(tmp_path: Path) -> None:
+    """P2/P3/P4: name+description only; absent frontmatter; string metadata."""
+    root = tmp_path / "positives"
+    root.mkdir()
+    (root / "minimal").mkdir()
+    (root / "minimal" / "SKILL.md").write_text(
+        "---\nname: minimal\ndescription: d\n---\n", encoding="utf-8"
+    )
+    (root / "heading").mkdir()
+    (root / "heading" / "SKILL.md").write_text("# Heading\n\nBody\n", encoding="utf-8")
+    (root / "metadata").mkdir()
+    (root / "metadata" / "SKILL.md").write_text(
+        "---\nname: metadata\ndescription: d\nmetadata: {a: \"b\"}\n---\n",
+        encoding="utf-8",
+    )
+    assert _bundled_source_findings(root) == []
+
+
+def test_bundled_guard_radius_excludes_separately_tracked_copies() -> None:
+    """O-1: the guard's source directory is exactly the release-owned tree."""
+    root = bundled_skills_dir().resolve()
+    assert root.name == "bundled" and root.parent.name == "skills"
+    for excluded in ("manage-agent", "manage-repo", "reflection"):
+        other = (root.parent / excluded).resolve()
+        assert other != root and not other.is_relative_to(root)

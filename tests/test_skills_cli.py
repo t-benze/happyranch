@@ -1407,3 +1407,116 @@ class TestManageAgentManageRepoCli:
         # Catalog PASSES (status=enabled, no approval gate)
         assert data["catalog_gate"]["passed"] is True
         assert data["is_exposed"] is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THR-262 C1/C4: real CLI transport — headingless initial create + append
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestSkillsCreateTransport:
+    """Drive the shipped ``cmd_skills_create`` against a real loopback daemon.
+
+    The CLI builds its own token-free HTTP request; the server derives
+    org/task/agent from the verified session binding. The same verb performs
+    the initial create and, for an existing same-owner slug, the append.
+    """
+
+    @pytest.fixture
+    def live_daemon(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        import socket
+        import threading
+        import time
+
+        import uvicorn
+
+        from runtime.config import Settings
+        from runtime.daemon import paths as paths_mod
+        from runtime.daemon.app import create_app
+        from runtime.daemon.state import DaemonState
+        from runtime.models import TaskRecord
+        from runtime.runtime import RuntimeDir, port_file
+
+        home = tmp_path / ".happyranch"
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(home))
+        paths_mod.ensure_daemon_home()
+        paths_mod.ensure_token()
+        runtime_dir = RuntimeDir.init(tmp_path / "runtime")
+        org_root = runtime_dir.orgs_dir / "alpha"
+        (org_root / "org").mkdir(parents=True)
+        (org_root / "org" / "teams.yaml").write_text(
+            "teams:\n  engineering:\n    manager: engineering_head\n"
+            "    workers: [dev_agent]\n"
+        )
+        state = DaemonState.from_runtime(runtime_dir, Settings())
+        app = create_app(state)
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        server = uvicorn.Server(
+            uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="off")
+        )
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            with socket.socket() as connect:
+                if connect.connect_ex(("127.0.0.1", port)) == 0:
+                    break
+            time.sleep(0.05)
+        else:  # pragma: no cover - environment failure
+            raise RuntimeError("uvicorn did not start")
+        port_file().write_text(str(port))
+        org = state.orgs["alpha"]
+        org.db.insert_task(TaskRecord(id="TASK-CLI", brief="create a custom skill"))
+        org.sessions.set_active("TASK-CLI", "dev_agent", "sess-cli", org_slug="alpha")
+        yield org
+        server.should_exit = True
+        thread.join(timeout=5)
+
+    @staticmethod
+    def _package(tmp_path: Path, slug: str, description: str) -> Path:
+        path = tmp_path / f"{slug}-{description}.json"
+        path.write_text(json.dumps({
+            "slug": slug,
+            "name": "CLI Skill",
+            "skill_md": f"---\nname: {slug}\ndescription: {description}\n---\n",
+        }))
+        return path
+
+    @staticmethod
+    def _run_create(package: Path, session_id: str) -> None:
+        import argparse
+
+        from cli.commands.skills import cmd_skills_create
+
+        cmd_skills_create(argparse.Namespace(
+            from_file=str(package), session_id=session_id, org="alpha",
+        ))
+
+    def test_initial_create_then_same_owner_append(self, live_daemon, tmp_path, capsys):
+        org = live_daemon
+        conn = getattr(org.db, "_conn", org.db)
+
+        self._run_create(self._package(tmp_path, "cli-skill", "cli-one"), "sess-cli")
+        assert "Skill created successfully." in capsys.readouterr().out
+        row = conn.execute(
+            "SELECT id, current_version_id, description FROM custom_skills WHERE slug='cli-skill'"
+        ).fetchone()
+        assert row is not None and row["description"] == "cli-one"
+        first_version = row["current_version_id"]
+
+        self._run_create(self._package(tmp_path, "cli-skill", "cli-two"), "sess-cli")
+        assert "Skill created successfully." in capsys.readouterr().out
+        row = conn.execute(
+            "SELECT current_version_id, description FROM custom_skills WHERE slug='cli-skill'"
+        ).fetchone()
+        assert row["current_version_id"] != first_version
+        assert row["description"] == "cli-two"
+
+        versions = conn.execute(
+            "SELECT validation_state, validator_version FROM custom_skill_versions "
+            "WHERE skill_id=(SELECT id FROM custom_skills WHERE slug='cli-skill') ORDER BY id"
+        ).fetchall()
+        assert [v["validation_state"] for v in versions] == ["valid", "valid"]
+        assert {v["validator_version"] for v in versions} == {"THR-262/1.0.0"}

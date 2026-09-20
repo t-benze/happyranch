@@ -961,7 +961,7 @@ class TestSkillsValidation:
 class TestValidationGuard:
     """Unit tests for the _validate_skill_package function (business logic)."""
 
-    _VALID_MD = "---\nname: My Skill\ndescription: test\n---\n\n# My Skill\n\nA test skill.\n"
+    _VALID_MD = "---\nname: my-skill\ndescription: test\n---\n"
 
     def test_valid_skill_passes_all_checks(self, tmp_home, app, org_state):
         """A well-formed frontmatter-first skill passes validation."""
@@ -1064,10 +1064,10 @@ class TestValidationGuard:
         assert result["ok"] is False
         assert "skill_md_no_frontmatter" in result["reason_codes"]
 
-    def test_heading_first_body_is_valid_for_new_authoring(self, tmp_home, app, org_state):
-        """THR-210 PR 2: a heading-first SKILL.md (column-zero Markdown
-        heading) is now accepted for NEW authoring — it validates OK and
-        is materializable, no longer legacy-only."""
+    def test_heading_first_body_is_retired_for_new_authoring(self, tmp_home, app, org_state):
+        """THR-262 retires the heading-first grammar for NEW authoring: a
+        column-zero Markdown heading with no frontmatter is classified
+        skill_md_no_frontmatter, never accepted."""
         from runtime.daemon.routes.skills import _validate_skill_package
 
         result = _validate_skill_package(
@@ -1079,8 +1079,8 @@ class TestValidationGuard:
             policy_class="standard_operational",
             skill_md="# My Skill\n\nGuidance content here.\n",
         )
-        assert result["ok"] is True
-        assert result["errors"] == []
+        assert result["ok"] is False
+        assert "skill_md_no_frontmatter" in result["reason_codes"]
 
     def test_leading_whitespace_before_heading_is_not_silently_healed(self, tmp_home, app, org_state):
         """The documented column-zero contract (no BOM/whitespace tolerance,
@@ -1100,8 +1100,9 @@ class TestValidationGuard:
         assert result["ok"] is False
         assert "skill_md_no_frontmatter" in result["reason_codes"]
 
-    def test_missing_post_frontmatter_heading_fails(self, tmp_home, app, org_state):
-        """Frontmatter without a following Markdown heading fails validation."""
+    def test_frontmatter_body_heading_is_retired(self, tmp_home, app, org_state):
+        """THR-262 retires the post-frontmatter body-heading requirement: a
+        frontmatter-only document (no body heading, empty body) is accepted."""
         from runtime.daemon.routes.skills import _validate_skill_package
 
         result = _validate_skill_package(
@@ -1111,10 +1112,10 @@ class TestValidationGuard:
             name="My Skill",
             version="1.0.0",
             policy_class="standard_operational",
-            skill_md="---\nname: My Skill\n---\njust some text without a heading",
+            skill_md="---\nname: my-skill\ndescription: test\n---\n",
         )
-        assert result["ok"] is False
-        assert "skill_md_no_heading" in result["reason_codes"]
+        assert result["ok"] is True
+        assert result["errors"] == []
 
     def test_malformed_frontmatter_fails(self, tmp_home, app, org_state):
         """Malformed YAML inside the frontmatter fence fails validation."""

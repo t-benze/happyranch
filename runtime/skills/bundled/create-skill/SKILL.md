@@ -68,7 +68,7 @@ persistence.
 {
   "slug": "my-workflow",
   "name": "My Workflow",
-  "skill_md": "---\nname: My Workflow\ndescription: Optional one-line summary\n---\n\n# My Workflow\n\nGuidance content here...",
+  "skill_md": "---\nname: my-workflow\ndescription: Summarize the workflow and when to use it\n---\n\nGuidance content here...",
   "version": "0.1.0",
   "policy_class": "standard_operational",
   "description": "Optional one-line summary",
@@ -84,21 +84,26 @@ persistence.
   `create-skill`) or release-managed skill (`hr:reflection`,
   `hr:manage-agent`, `hr:manage-repo`, `hr:frontend-development`,
   `hr:product-manager-prd`).
-- `name` — human-readable name.
-- `skill_md` — the SKILL.md body as a string. It must be one of the two
-  supported authoring shapes: (a) **heading-first** — the body starts at
-  column zero with a Markdown ATX heading (1–6 `#` markers followed by
-  whitespace or end of line) — or
-  (b) **YAML-frontmatter-first** — a valid opening `---` YAML fence at
-  column zero containing a YAML mapping, a closing `---` fence, then a
-  Markdown heading (the same ATX boundary). Leading BOM/whitespace before
-  either shape is not accepted (no silent healing). Example below.
+- `name` — human-readable catalog label.
+- `skill_md` — the SKILL.md document as a string. It MUST start with a
+  column-zero `---` YAML frontmatter fence, contain a YAML mapping with the
+  required `name` and `description` fields, and close the fence with `---`.
+  The body after the fence is optional; the former body-heading requirement
+  is retired. `name` must be 1–64 lower-case letters, digits or hyphens with
+  no leading/trailing hyphen and no `--`, and must equal `slug`; `description`
+  must be a non-empty line of at most 1024 characters. The only permitted
+  top-level frontmatter keys are `name`, `description`, `license`,
+  `compatibility` and `metadata`; any other key (including `allowed-tools` and
+  `hooks`) is rejected by local admission policy, whatever its value.
 
 ### Optional fields
 
 - `version` — defaults to `"0.1.0"`.
 - `policy_class` — must be `"standard_operational"` (the only supported class).
-- `description` — one-line summary.
+- `description` — optional one-line catalog summary. When omitted (or JSON
+  `null`) the catalog description is derived from the validated frontmatter
+  `description`; when supplied it must equal that value or the request is
+  rejected with 422 `divergent_description`.
 - `references` — map of filename → content for reference files.
 - `assets` — map of filename → content for asset files.
 
@@ -106,17 +111,16 @@ persistence.
 
 The server runs deterministic validation before persistence. Validation checks:
 
-1. `skill_md` matches the supported authoring grammar (THR-210 PR 2): either
-   a column-zero Markdown ATX heading (1–6 `#` markers followed by whitespace
-   or end of line; heading-first) or a valid opening `---`
-   fence, a YAML mapping inside, a closing `---` fence, then a Markdown
-   heading (the same ATX boundary). Malformed, unclosed, non-mapping, or
-   missing-heading bodies — and bodies with neither a column-zero heading nor
-   frontmatter, including hash-prefixed lines that are not ATX headings — are
-   classified invalid under the authoring contract and persisted as
-   immutable validation/provenance evidence; they are not accepted as valid
-   or materializable versions.
-2. Required metadata (`slug`, `name`, `skill_md`) is present and non-empty.
+1. `skill_md` matches the THR-262 authoring contract: a column-zero opening
+   `---` fence, a YAML mapping, a closing `---` fence, and only the five
+   permitted top-level keys. Structural problems (empty document, missing or
+   unclosed fence, malformed YAML, non-mapping frontmatter, duplicate
+   top-level key) are evaluated first, then admission, then the required and
+   optional field checks, in that order. Any finding marks the candidate
+   invalid and persists it as immutable validation/provenance evidence; it is
+   never accepted as a valid or materializable version.
+2. Required metadata (`slug`, `name`, `skill_md`) is present and non-empty, and
+   the frontmatter `name` equals `slug`.
 3. `slug` does not collide with any protected slug (system contracts +
    release-managed skills, loaded from the canonical release registry).
 4. `policy_class` is `standard_operational` (no `system_contract` or
@@ -124,16 +128,19 @@ The server runs deterministic validation before persistence. Validation checks:
 5. References and assets filenames are safe (no path traversal, no
    absolute paths).
 
-On document-contract failure (THR-210 PR 1), the candidate is NOT silently
+On validation failure (THR-262), the candidate is NOT silently
 discarded: it is appended as immutable validation/provenance evidence — one
 invalid version row with deterministic findings, your task/session provenance,
 and its content-addressed artifact — and the skill (or first-version creation)
 is returned as created with `validation_state: invalid`. The invalid candidate
 never displaces an existing valid current version and is never eligible or
 materialized; an initial invalid creation darkens the skill as
-`current_version_invalid` until a valid successor advances it. Requests
+`current_version_invalid` until a valid successor advances it. A VALID
+candidate projects its frontmatter `description` onto the catalog record in
+the same transaction; an invalid candidate never does. Requests
 rejected before persistence (missing metadata, protected-slug collision,
-unknown/cross-org session, identity spoofing) leave zero artifact, package,
+unknown/cross-org session, identity spoofing, a supplied description that
+differs from the validated frontmatter) leave zero artifact, package,
 ledger-event, materialization, or operational-session residue.
 
 ## Provenance and atomicity
@@ -144,7 +151,7 @@ The server records, in the SAME durable transaction as the package:
   SessionTracker context, never from body claims).
 - Nonempty task-brief digest (the task's current brief at submission time).
 - Canonical content hash (SHA-256 of the assembled package manifest).
-- Validator version (e.g. `"THR-055/1.0.0"`) and structured findings.
+- Validator version (`"THR-262/1.0.0"` for new rows) and structured findings.
 
 If any provenance field cannot be populated (e.g., the task has no brief),
 the entire transaction rolls back with zero residue.

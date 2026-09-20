@@ -16,13 +16,28 @@ _FORBIDDEN_IDENTITY = (
     "org_slug", "actor", "eligibility", "permission", "permissions",
 )
 
-# Supported authoring contract (founder-approved, THR-169): YAML
-# frontmatter first, then a Markdown heading.
-_FM_BODY = "---\nname: Test skill\ndescription: test\n---\n\n# Test\n\nOne\n"
+# Supported authoring contract (THR-262 / seq27): YAML frontmatter is
+# required; the body heading is retired and the body may be empty. The
+# frontmatter `name` must equal the logical slug and `description` must be a
+# non-empty string (the catalog description is projected from it).
+def _fm_body(slug: str, description: str = "test") -> str:
+    return f"---\nname: {slug}\ndescription: {description}\n---\n"
 
 
-def _body(slug: str = "test-skill", skill_md: str = _FM_BODY) -> dict:
-    return {"slug": slug, "name": "Test skill", "description": "test", "skill_md": skill_md}
+_FM_BODY = _fm_body("test-skill")
+
+
+def _body(slug: str = "test-skill", skill_md: str | None = None) -> dict:
+    """Build a create/append body.
+
+    With no explicit ``skill_md`` the request supplies an explicit
+    description equal to the derived frontmatter description. With an explicit
+    ``skill_md`` the request omits the optional description entirely (THR-262
+    omitted-key derivation) so a caller-supplied body cannot diverge from it.
+    """
+    if skill_md is None:
+        return {"slug": slug, "name": "Test skill", "description": "test", "skill_md": _fm_body(slug)}
+    return {"slug": slug, "name": "Test skill", "skill_md": skill_md}
 
 
 def _custom_counts(org, conn=None) -> dict[str, int]:
@@ -113,7 +128,7 @@ def _residue_snapshot(org, skill_id: str, conn=None) -> dict:
     }
 
 
-def _create(client, slug: str = "test-skill", skill_md: str = _FM_BODY) -> dict:
+def _create(client, slug: str = "test-skill", skill_md: str | None = None) -> dict:
     response = client.post(BASE, json=_body(slug, skill_md))
     assert response.status_code == 201, response.text
     return response.json()
@@ -253,7 +268,7 @@ def test_eligibility_rejections_are_atomic(client_with_runtime):
     rules = [{"scope_type": "org", "scope_target": None, "effect": "allow"}]
     preview = client.post(f"{BASE}/{skill_id}/eligibility/preview", json=rules)
     assert preview.status_code == 200 and preview.json()["revision"] == revision
-    advanced = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": "---\nname: Test skill\n---\n\n# Test\n\nTwo\n"})
+    advanced = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": _fm_body("test-skill", "two")})
     assert advanced.status_code == 201
     conn = getattr(org.db, "_conn", org.db)
     before = (
@@ -633,10 +648,10 @@ def test_b2_recover_deletes_only_corrupt_version_with_audit(
     from runtime.skills.canonical_store import CanonicalSkillStore, _make_writable_for_removal
 
     client, org = client_with_runtime
-    created = _create(client, slug="recoverable-b2", skill_md="---\nname: Recover\n---\n\n# Recover\n\nOriginal\n")
+    created = _create(client, slug="recoverable-b2", skill_md=_fm_body("recoverable-b2", "original"))
     current = client.post(
         f"{BASE}/{created['skill_id']}/versions",
-        json={"skill_md": "---\nname: Recover\n---\n\n# Recover\n\nCurrent\n"},
+        json={"skill_md": _fm_body("recoverable-b2", "current")},
     )
     assert current.status_code == 201, current.text
     content_hash = current.json()["content_hash"]
@@ -688,10 +703,10 @@ def test_b2_recover_refuses_corrupt_historical_version_after_current_advances(
     from runtime.skills.canonical_store import CanonicalSkillStore, _make_writable_for_removal
 
     client, org = client_with_runtime
-    created = _create(client, slug="stale-recoverable-b2", skill_md="---\nname: Recover\n---\n\n# Recover\n\nVersion A\n")
+    created = _create(client, slug="stale-recoverable-b2", skill_md=_fm_body("stale-recoverable-b2", "version a"))
     current = client.post(
         f"{BASE}/{created['skill_id']}/versions",
-        json={"skill_md": "---\nname: Recover\n---\n\n# Recover\n\nVersion B\n"},
+        json={"skill_md": _fm_body("stale-recoverable-b2", "version b")},
     )
     assert current.status_code == 201, current.text
     monkeypatch.setenv("HAPPYRANCH_CANONICAL_STORE_ROOT", str(org.root / "canonical-store"))
@@ -888,7 +903,7 @@ def test_custom_skill_flow_never_writes_lifecycle_tables(client_with_runtime):
     )]
     created = _create(client)
     skill_id = created["skill_id"]
-    version = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": "---\nname: Test skill\n---\n\n# Test\n\nTwo\n"}).json()
+    version = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": _fm_body("test-skill", "two")}).json()
     assert client.post(f"{BASE}/{skill_id}/retire", json={}).status_code == 200
     assert client.post(f"{BASE}/{skill_id}/restore").status_code == 200
     rules = [{"scope_type": "org", "scope_target": None, "effect": "allow"}]
@@ -906,29 +921,24 @@ _INVALID_BODIES = [
     ("---\nname: x\n# no closing fence\n", "skill_md_unclosed_frontmatter"),
     ("---\n- a\n- b\n---\n# Test\n\nOne\n", "skill_md_frontmatter_not_mapping"),
     ("---\njust a string\n---\n# Test\n\nOne\n", "skill_md_frontmatter_not_mapping"),
-    ("---\nname: x\n---\nplain text without a heading\n", "skill_md_no_heading"),
-    ("---\nname: x\n---\n\n", "skill_md_no_heading"),
+    ("---\nname: x\n---\nplain text without a heading\n", "frontmatter_name_slug_mismatch"),
+    ("---\nname: x\n---\n\n", "frontmatter_name_slug_mismatch"),
     ("plain text without frontmatter", "skill_md_no_frontmatter"),
     # malformed heading-LIKE candidates: hash-prefixed but NOT ATX headings
     # (1-6 hashes followed by whitespace/EOL) — invalid evidence, same rules
     ("#not-a-heading\n", "skill_md_no_frontmatter"),
     ("####### Too many hashes\n", "skill_md_no_frontmatter"),
-    # the post-frontmatter body heading uses the identical ATX boundary
-    ("---\nname: x\n---\n#not-a-heading\n", "skill_md_no_heading"),
-    ("---\nname: x\n---\n####### Seven hashes\n", "skill_md_no_heading"),
-]
-
-# THR-210 PR 2: heading-first SKILL.md bodies with a column-zero Markdown
-# heading are now ACCEPTED for new authoring (same grammar the frontmatter
-# path requires for its body heading).
-_VALID_HEADING_FIRST_BODIES = [
-    "# Heading-first body\n\nBody text.\n",
-    "## Heading-first level two\n\nBody text.\n",
-    "# Heading without trailing newline",
-    "#\n",                                         # ATX boundary: 1 hash + EOL
-    "###### Level-six heading\n\nBody text.\n",   # ATX boundary: 6 hashes + space
-    "######\n",                                    # ATX boundary: 6 hashes + EOL
-    "#\tTab-separated heading\n\nBody text.\n",   # ATX: whitespace after hashes
+    # THR-262 retires the body-heading grammar for new writes: heading-first
+    # documents (and post-frontmatter body headings) are no longer accepted.
+    ("---\nname: x\n---\n#not-a-heading\n", "frontmatter_name_slug_mismatch"),
+    ("---\nname: x\n---\n####### Seven hashes\n", "frontmatter_name_slug_mismatch"),
+    ("# Heading-first body\n\nBody text.\n", "skill_md_no_frontmatter"),
+    ("## Heading-first level two\n\nBody text.\n", "skill_md_no_frontmatter"),
+    ("# Heading without trailing newline", "skill_md_no_frontmatter"),
+    ("#\n", "skill_md_no_frontmatter"),
+    ("###### Level-six heading\n\nBody text.\n", "skill_md_no_frontmatter"),
+    ("######\n", "skill_md_no_frontmatter"),
+    ("#\tTab-separated heading\n\nBody text.\n", "skill_md_no_frontmatter"),
 ]
 
 
@@ -999,7 +1009,7 @@ def test_add_version_accepts_frontmatter_first_successor(client_with_runtime):
     client, org = client_with_runtime
     created = _create(client)
     skill_id = created["skill_id"]
-    successor = "---\nname: Test skill\ndescription: test\n---\n\n# Test\n\nTwo\n"
+    successor = _fm_body("test-skill", "updated")
     response = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": successor})
     assert response.status_code == 201, response.text
     payload = response.json()
@@ -1024,27 +1034,36 @@ def test_add_version_accepts_frontmatter_first_successor(client_with_runtime):
     assert stored["skill_md_cache"] == successor
 
 
-@pytest.mark.parametrize("successor", _VALID_HEADING_FIRST_BODIES)
-def test_add_version_accepts_heading_first_successor_advancing_current(
+@pytest.mark.parametrize("successor", [
+    "# Heading-first body\n\nBody text.\n",
+    "## Heading-first level two\n\nBody text.\n",
+    "# Heading without trailing newline",
+    "#\n",
+    "###### Level-six heading\n\nBody text.\n",
+    "######\n",
+    "#\tTab-separated heading\n\nBody text.\n",
+])
+def test_add_version_appends_heading_first_successor_as_invalid_evidence(
     client_with_runtime, successor,
 ):
-    """THR-210 PR 2: a heading-first successor (H1/H2, column-zero heading)
-    is now VALID for new authoring — it advances current_version_id
-    normally (A/D), appends the usual version_saved+validated events, stores
-    its content-addressed artifact, and detail resolves it as valid."""
+    """THR-262 retires the heading-first grammar for new writes. A heading-first
+    successor is appended as immutable invalid evidence (201) with its
+    content-addressed artifact and the usual events, but NEVER displaces the
+    retained valid current pointer. The old THR-210 PR-2 acceptance is
+    superseded by the accepted seq27 field policy; this is the same
+    invalid-evidence retention contract as any other invalid successor."""
     client, org = client_with_runtime
     created = _create(client)
     skill_id, prior_revision = created["skill_id"], created["version_id"]
     response = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": successor})
     assert response.status_code == 201, response.text
     payload = response.json()
-    assert payload["validation_state"] == "valid"
+    assert payload["validation_state"] == "invalid"
+    assert payload["current_version_id"] == prior_revision
     conn = getattr(org.db, "_conn", org.db)
-    # pointer advanced to the new valid version
-    assert payload["current_version_id"] == payload["version_id"]
     assert conn.execute(
         "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
-    ).fetchone()["current_version_id"] == payload["version_id"]
+    ).fetchone()["current_version_id"] == prior_revision
     events = [
         r["event_type"]
         for r in conn.execute(
@@ -1053,26 +1072,26 @@ def test_add_version_accepts_heading_first_successor_advancing_current(
         )
     ]
     assert events == ["created", "validated", "version_saved", "validated"]
-    # content-addressed artifact stored; detail resolves the new valid version
     digest = hashlib.sha256(successor.encode()).hexdigest()
     assert f"custom-skills/test-skill/{digest}/SKILL.md" in _artifact_keys(org)
     detail = client.get(f"{BASE}/{skill_id}").json()
     assert detail["validation_state"] == "valid"
-    assert detail["version_id"] == payload["version_id"]
+    assert detail["version_id"] == prior_revision
 
 
 def test_heading_first_replay_conflicts_as_version_content_exists(client_with_runtime, monkeypatch):
-    """THR-210 PR 3: a byte-identical heading-first body replay conflicts
-    with the append-only UNIQUE (skill_id, content_hash) invariant as HTTP
-    409 `version_content_exists` — zero artifact rewrite (instrumented
-    no-write seam stays empty; artifact bytes/metadata unchanged), zero new
-    version row, zero new event row, zero current_version_id change."""
+    """THR-262 replay precedence: a byte-identical heading-first (invalid
+    evidence) body replay conflicts with the append-only UNIQUE
+    (skill_id, content_hash) invariant as HTTP 409 `version_content_exists` —
+    zero artifact rewrite (instrumented no-write seam stays empty; artifact
+    bytes/metadata unchanged), zero new version row, zero new event row, zero
+    current_version_id change. Replay 409 precedes any divergence handling."""
     client, org = client_with_runtime
     created = _create(client)
     skill_id = created["skill_id"]
     heading_first = "# Heading-first body\n\nBody text.\n"
     first = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": heading_first})
-    assert first.status_code == 201 and first.json()["validation_state"] == "valid"
+    assert first.status_code == 201 and first.json()["validation_state"] == "invalid"
     before = _residue_snapshot(org, skill_id)
     before_bytes = _artifact_bytes_state(org)
     write_calls = _no_write_artifact_seam(monkeypatch)
@@ -1084,20 +1103,18 @@ def test_heading_first_replay_conflicts_as_version_content_exists(client_with_ru
     assert _artifact_bytes_state(org) == before_bytes
 
 
-def test_heading_first_initial_creation_is_valid_and_materializable(
+def test_frontmatter_initial_creation_is_valid_and_materializable(
     client_with_runtime, monkeypatch,
 ):
-    """THR-210 PR 2: a heading-first body on INITIAL creation is a valid
-    first version (B over PR 2), becomes the current pointer, is eligible,
-    and materializes through the canonical store — it is no longer treated
-    as legacy-only evidence."""
+    """THR-262 C1: a frontmatter-first body on INITIAL creation is a valid
+    first version, becomes the current pointer, is eligible, and materializes
+    through the canonical store."""
     from runtime.skills.canonical_store import CanonicalSkillStore
     from runtime.orchestrator.workspace_adapters import _build_custom_skill_canonical_specs
 
     client, org = client_with_runtime
     _add_agent(org)
-    heading_first = "# Heading-first create\n\nBody text.\n"
-    created = _create(client, slug="heading-create", skill_md=heading_first)
+    created = _create(client, slug="heading-create")
     assert created["validation_state"] == "valid"
     skill_id = created["skill_id"]
     conn = getattr(org.db, "_conn", org.db)
@@ -1120,17 +1137,17 @@ def test_heading_first_initial_creation_is_valid_and_materializable(
     assert spec["content_hash"] == created["content_hash"]
 
 
-def test_agent_create_accepts_heading_first_body_with_provenance(client_with_runtime):
-    """Agent path under PR 2: heading-first body creates a VALID first
+def test_agent_create_accepts_frontmatter_body_with_provenance(client_with_runtime):
+    """Agent path (THR-262 C1): a frontmatter-first body creates a VALID first
     version with verified task/session provenance and advances the pointer."""
     client, org = client_with_runtime
     org.db.insert_task(TaskRecord(id="TASK-HF2", brief="create a custom skill"))
     org.sessions.set_active("TASK-HF2", "dev_agent", "sess-hf2", org_slug="alpha")
     client.headers.pop("Authorization", None)
-    heading_first = "# Agent heading-first\n\nBody.\n"
+    agent_body = _fm_body("agent-heading", "agent created")
     response = client.post(
         f"{BASE}/agent-create", params={"session_id": "sess-hf2"},
-        json={"slug": "agent-heading", "name": "Agent Heading", "skill_md": heading_first},
+        json={"slug": "agent-heading", "name": "Agent Heading", "skill_md": agent_body},
     )
     assert response.status_code == 201, response.text
     payload = response.json()
@@ -1158,10 +1175,7 @@ def test_malformed_heading_like_successor_never_eligible_or_materializable(
 
     client, org = client_with_runtime
     _add_agent(org)
-    created = _create(
-        client, slug="heading-like-b2",
-        skill_md="---\nname: M\n---\n\n# M\n\nOne\n",
-    )
+    created = _create(client, slug="heading-like-b2")
     skill_id, v1 = created["skill_id"], created["version_id"]
     rules = [{"scope_type": "org", "scope_target": None, "effect": "allow"}]
     assert client.put(
@@ -1226,8 +1240,8 @@ def test_malformed_heading_like_initial_candidate_is_invalid_evidence(client_wit
     assert explain.json()["hidden_reason"] == "current_version_invalid"
     digest = hashlib.sha256(malformed.encode()).hexdigest()
     assert f"custom-skills/bad-heading-like/{digest}/SKILL.md" in _artifact_keys(org)
-    # a true ATX heading-first successor is valid and advances the pointer
-    valid_md = "# Now a real heading\n\nBody.\n"
+    # a conforming frontmatter successor is valid and advances the pointer
+    valid_md = _fm_body("bad-heading-like", "now valid")
     advanced = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": valid_md})
     assert advanced.status_code == 201, advanced.text
     assert advanced.json()["validation_state"] == "valid"
@@ -1304,7 +1318,7 @@ def test_create_with_invalid_first_version_creates_skill_with_evidence(client_wi
     digest = hashlib.sha256(invalid_md.encode()).hexdigest()
     assert f"custom-skills/bad-create/{digest}/SKILL.md" in _artifact_keys(org)
     # a later VALID successor advances the pointer (D over the B shape)
-    valid_md = "---\nname: Bad\n---\n\n# Bad\n\nNow valid\n"
+    valid_md = _fm_body("bad-create", "now valid")
     advanced = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": valid_md})
     assert advanced.status_code == 201, advanced.text
     assert advanced.json()["validation_state"] == "valid"
@@ -1446,7 +1460,7 @@ def test_agent_update_replay_conflicts_as_version_content_exists(client_with_run
     )
     assert first.status_code == 201, first.text
     skill_id = first.json()["skill"]["id"]
-    body_b = "---\nname: Replay\n---\n\n# Replay\n\nTwo\n"
+    body_b = _fm_body("replay-update", "two")
     updated = client.post(
         f"{BASE}/agent-create", params={"session_id": "sess-r2"},
         json=_body("replay-update", body_b),
@@ -1483,7 +1497,7 @@ def test_replay_of_noncurrent_historical_version_conflicts_without_residue(clien
     client, org = client_with_runtime
     created = _create(client)
     skill_id = created["skill_id"]
-    successor = "---\nname: Test skill\ndescription: test\n---\n\n# Test\n\nTwo\n"
+    successor = _fm_body("test-skill", "two")
     advanced = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": successor})
     assert advanced.status_code == 201 and advanced.json()["validation_state"] == "valid"
     v2 = advanced.json()["version_id"]
@@ -1516,7 +1530,7 @@ def test_invalid_append_then_valid_successor_advances_current_with_lineage(clien
     invalid = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": invalid_md})
     assert invalid.status_code == 201, invalid.text
     v2 = invalid.json()["version_id"]
-    valid_md = "---\nname: Lineage\n---\n\n# Lineage\n\nNow valid\n"
+    valid_md = _fm_body("lineage-skill", "now valid")
     valid = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": valid_md})
     assert valid.status_code == 201, valid.text
     assert valid.json()["validation_state"] == "valid"
@@ -1591,7 +1605,7 @@ def test_legacy_invalid_current_and_history_read_without_silent_healing(client_w
     ]
     assert rows_before == rows_after[: len(rows_before)]
     # valid successor advances from the legacy invalid current (D over C)
-    valid_md = "---\nname: Legacy\n---\n\n# Legacy\n\nHealed by valid successor\n"
+    valid_md = _fm_body("legacy-history", "healed by valid successor")
     advanced = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": valid_md})
     assert advanced.status_code == 201, advanced.text
     assert advanced.json()["validation_state"] == "valid"
@@ -1609,10 +1623,7 @@ def test_invalid_successor_keeps_prior_valid_eligible_and_materializable(client_
 
     client, org = client_with_runtime
     _add_agent(org)
-    created = _create(
-        client, slug="materializable-b2",
-        skill_md="---\nname: M\n---\n\n# M\n\nOne\n",
-    )
+    created = _create(client, slug="materializable-b2")
     skill_id, v1 = created["skill_id"], created["version_id"]
     rules = [{"scope_type": "org", "scope_target": None, "effect": "allow"}]
     assert client.put(
@@ -2020,13 +2031,20 @@ def test_pr1_era_heading_first_invalid_evidence_is_not_rewritten_or_healed(
             "WHERE skill_id=? ORDER BY id", (skill_id,)
         )
     ]
-    # a NEW heading-first successor is valid and advances the pointer
-    successor = "# New heading-first\n\nAccepted under PR 2.\n"
+    # a NEW heading-first successor is now invalid evidence too (THR-262
+    # retires the heading grammar), retaining the PR-1-era invalid current.
+    heading_successor = "# New heading-first\n\nRetired under THR-262.\n"
+    appended = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": heading_successor})
+    assert appended.status_code == 201, appended.text
+    assert appended.json()["validation_state"] == "invalid"
+    assert appended.json()["current_version_id"] == v_pr1
+    # a conforming frontmatter successor advances the pointer
+    successor = _fm_body("pr1-heading-evidence", "conforming successor")
     advanced = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": successor})
     assert advanced.status_code == 201, advanced.text
     assert advanced.json()["validation_state"] == "valid"
     assert advanced.json()["current_version_id"] == advanced.json()["version_id"]
-    # the PR-1-era evidence row is byte-identical after the append
+    # the PR-1-era evidence row is byte-identical after the appends
     rows_after = [
         dict(r) for r in conn.execute(
             "SELECT id, validation_state, content_hash, skill_md_cache, "
@@ -2035,4 +2053,285 @@ def test_pr1_era_heading_first_invalid_evidence_is_not_rewritten_or_healed(
         )
     ]
     assert rows_before == rows_after[: len(rows_before)]
-    assert rows_after[len(rows_before)]["validation_state"] == "valid"
+    assert [r["validation_state"] for r in rows_after[len(rows_before):]] == [
+        "invalid",
+        "valid",
+    ]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THR-262 / seq27 description projection, replay precedence and PATCH
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _catalog_description(client, skill_id):
+    return client.get(f"{BASE}/{skill_id}").json()["description"]
+
+
+def test_omitted_and_json_null_request_description_derive(client_with_runtime):
+    """C4: an omitted (or JSON-null) request description derives from the
+    validated frontmatter description; the catalog record is projected."""
+    client, _org = client_with_runtime
+    omitted = client.post(
+        BASE, json={"slug": "derive-omitted", "name": "Omitted",
+                    "skill_md": _fm_body("derive-omitted", "omitted-desc")},
+    )
+    assert omitted.status_code == 201, omitted.text
+    assert omitted.json()["validation_state"] == "valid"
+    assert _catalog_description(client, omitted.json()["skill_id"]) == "omitted-desc"
+
+    nulled = client.post(
+        BASE, json={"slug": "derive-null", "name": "Nulled", "description": None,
+                    "skill_md": _fm_body("derive-null", "null-desc")},
+    )
+    assert nulled.status_code == 201, nulled.text
+    assert nulled.json()["validation_state"] == "valid"
+    assert _catalog_description(client, nulled.json()["skill_id"]) == "null-desc"
+
+
+def test_matching_explicit_description_is_accepted(client_with_runtime):
+    """C4: an explicitly supplied description equal to the validated
+    frontmatter description is accepted."""
+    client, _org = client_with_runtime
+    response = client.post(
+        BASE, json={"slug": "match-desc", "name": "Match", "description": "same",
+                    "skill_md": _fm_body("match-desc", "same")},
+    )
+    assert response.status_code == 201, response.text
+    assert _catalog_description(client, response.json()["skill_id"]) == "same"
+
+
+@pytest.mark.parametrize("supplied", ["", "   ", "different"])
+def test_divergent_explicit_description_is_422_with_zero_residue(
+    client_with_runtime, supplied,
+):
+    """C4: an explicit API string (including ''/whitespace) that differs from
+    the validated frontmatter description is a pre-persistence 422 with no
+    artifact/version/event/metadata residue."""
+    client, org = client_with_runtime
+    before = _residue_snapshot(org, None)
+    response = client.post(
+        BASE, json={"slug": "divergent-desc", "name": "Divergent",
+                    "description": supplied,
+                    "skill_md": _fm_body("divergent-desc", "authoritative")},
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "divergent_description"
+    assert _residue_snapshot(org, None) == before
+
+
+def test_valid_append_advances_pointer_and_projects_description_together(
+    client_with_runtime,
+):
+    """C4: a valid append updates the catalog description in the same
+    transaction that advances current_version_id; the display label is
+    independent of the slug/projection."""
+    client, org = client_with_runtime
+    created = _create(client, slug="projection-skill")
+    skill_id = created["skill_id"]
+    conn = getattr(org.db, "_conn", org.db)
+    assert _catalog_description(client, skill_id) == "test"
+    response = client.post(
+        f"{BASE}/{skill_id}/versions",
+        json={"skill_md": _fm_body("projection-skill", "projected-two")},
+    )
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["validation_state"] == "valid"
+    row = conn.execute(
+        "SELECT current_version_id, description, name FROM custom_skills WHERE id=?",
+        (skill_id,),
+    ).fetchone()
+    assert row["current_version_id"] == payload["version_id"]
+    assert row["description"] == "projected-two"
+    assert row["name"] == "Test skill"
+
+
+def test_invalid_append_never_projects_description_or_advances_pointer(
+    client_with_runtime,
+):
+    """C5: an invalid append retains the prior valid pointer and leaves the
+    projected catalog description untouched."""
+    client, org = client_with_runtime
+    created = _create(client, slug="no-project-invalid")
+    skill_id, v1 = created["skill_id"], created["version_id"]
+    conn = getattr(org.db, "_conn", org.db)
+    invalid = client.post(
+        f"{BASE}/{skill_id}/versions",
+        json={"skill_md": "---\nname: no-project-invalid\n---\n"},
+    )
+    assert invalid.status_code == 201, invalid.text
+    assert invalid.json()["validation_state"] == "invalid"
+    row = conn.execute(
+        "SELECT current_version_id, description FROM custom_skills WHERE id=?",
+        (skill_id,),
+    ).fetchone()
+    assert row["current_version_id"] == v1
+    assert row["description"] == "test"
+
+
+def test_replay_409_precedes_divergent_description(client_with_runtime, monkeypatch):
+    """C4/C5: an exact byte-identical replay with a divergent request
+    description is 409 version_content_exists, not 422 divergent_description."""
+    client, org = client_with_runtime
+    created = _create(client, slug="replay-divergent")
+    skill_id = created["skill_id"]
+    body = _fm_body("replay-divergent", "replayed")
+    first = client.post(
+        f"{BASE}/{skill_id}/versions", json={"skill_md": body, "description": "replayed"}
+    )
+    assert first.status_code == 201, first.text
+    before = _residue_snapshot(org, skill_id)
+    write_calls = _no_write_artifact_seam(monkeypatch)
+    replay = client.post(
+        f"{BASE}/{skill_id}/versions", json={"skill_md": body, "description": "divergent"}
+    )
+    assert replay.status_code == 409, replay.text
+    assert replay.json()["detail"]["code"] == "version_content_exists"
+    assert write_calls == []
+    assert _residue_snapshot(org, skill_id) == before
+
+
+def test_first_invalid_creation_uses_request_fallback_and_stays_dark(
+    client_with_runtime,
+):
+    """C5: an invalid FIRST creation keeps the request-metadata description
+    fallback, becomes the current (dark) pointer, and projects nothing."""
+    client, org = client_with_runtime
+    response = client.post(
+        BASE,
+        json={"slug": "first-invalid-desc", "name": "First Invalid",
+              "description": "requested fallback",
+              "skill_md": "#not-a-heading\n"},
+    )
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["validation_state"] == "invalid"
+    conn = getattr(org.db, "_conn", org.db)
+    row = conn.execute(
+        "SELECT current_version_id, description FROM custom_skills WHERE id=?",
+        (payload["skill_id"],),
+    ).fetchone()
+    assert row["current_version_id"] == payload["version_id"]
+    assert row["description"] == "requested fallback"
+
+
+def test_new_rows_record_thr262_validator_version(client_with_runtime):
+    """C5/D5: new rows record the THR-262/1.0.0 validator marker."""
+    client, org = client_with_runtime
+    created = _create(client, slug="marker-skill")
+    conn = getattr(org.db, "_conn", org.db)
+    row = conn.execute(
+        "SELECT validator_version FROM custom_skill_versions WHERE id=?",
+        (created["version_id"],),
+    ).fetchone()
+    assert row["validator_version"] == "THR-262/1.0.0"
+
+
+def test_patch_description_valid_current_equal_accepted_differing_422(
+    client_with_runtime,
+):
+    """C6: on a valid current version with a frontmatter description, PATCH
+    accepts the equal value and rejects a different one with
+    description_divergence. The display name stays independently editable."""
+    client, _org = client_with_runtime
+    created = _create(client, slug="patch-valid", skill_md=_fm_body("patch-valid", "fm-desc"))
+    skill_id = created["skill_id"]
+    equal = client.patch(f"{BASE}/{skill_id}", json={"description": "fm-desc"})
+    assert equal.status_code == 200, equal.text
+    assert equal.json()["description"] == "fm-desc"
+    differing = client.patch(f"{BASE}/{skill_id}", json={"description": "other"})
+    assert differing.status_code == 422, differing.text
+    assert differing.json()["detail"]["code"] == "description_divergence"
+    renamed = client.patch(f"{BASE}/{skill_id}", json={"name": "Renamed Label"})
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["name"] == "Renamed Label"
+    assert renamed.json()["description"] == "fm-desc"
+
+
+def test_patch_description_invalid_current_accepts_only_unchanged_stored(
+    client_with_runtime,
+):
+    """C6: a current version that is invalid (or legacy heading-first with no
+    frontmatter description) accepts only the unchanged stored description;
+    any differing value is 422 description_requires_valid_version."""
+    client, _org = client_with_runtime
+    created = client.post(
+        BASE,
+        json={"slug": "patch-invalid", "name": "Patch Invalid",
+              "description": "stored", "skill_md": "#not-a-heading\n"},
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["validation_state"] == "invalid"
+    skill_id = created.json()["skill_id"]
+    same = client.patch(f"{BASE}/{skill_id}", json={"description": "stored"})
+    assert same.status_code == 200, same.text
+    changed = client.patch(f"{BASE}/{skill_id}", json={"description": "changed"})
+    assert changed.status_code == 422, changed.text
+    assert changed.json()["detail"]["code"] == "description_requires_valid_version"
+
+
+def test_patch_description_legacy_valid_heading_first_uses_stored_value(
+    client_with_runtime,
+):
+    """C6: a valid legacy heading-first current version has no frontmatter
+    description, so PATCH accepts only the unchanged stored catalog value and
+    never parses the legacy body as a valid source."""
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.skills.custom import service as custom_service
+
+    client, org = client_with_runtime
+    conn = getattr(org.db, "_conn", org.db)
+    skill_id = "custom:legacy-patch"
+    content = "# Legacy heading-first\n\nNo frontmatter here.\n"
+    artifact_key = ArtifactStore(OrgPaths(org.root).artifacts_dir).put(
+        "custom-skills/legacy-patch/legacy/SKILL.md", content.encode(),
+    ).name
+    conn.execute(
+        "INSERT INTO custom_skills (id,org_slug,slug,name,description,origin_kind,created_at,created_by) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (skill_id, "alpha", "legacy-patch", "Legacy Patch", "legacy stored", "human", custom_service.now(), "founder"),
+    )
+    conn.execute(
+        """INSERT INTO custom_skill_versions
+           (skill_id,content_hash,content_artifact_key,skill_md_cache,validation_state,
+            validator_version,validation_findings,created_at,author_kind,author_identity)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (skill_id, hashlib.sha256(content.encode()).hexdigest(), artifact_key, content,
+         "valid", "THR-055/1.0.0", "[]", custom_service.now(), "human", "founder"),
+    )
+    version_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("UPDATE custom_skills SET current_version_id=? WHERE id=?", (version_id, skill_id))
+    conn.commit()
+
+    same = client.patch(f"{BASE}/{skill_id}", json={"description": "legacy stored"})
+    assert same.status_code == 200, same.text
+    differing = client.patch(f"{BASE}/{skill_id}", json={"description": "Legacy heading-first"})
+    assert differing.status_code == 422, differing.text
+    assert differing.json()["detail"]["code"] == "description_requires_valid_version"
+
+
+def test_agent_same_owner_append_projects_description(client_with_runtime):
+    """C4: the real agent route (initial create and same-owner append) derives
+    and projects the frontmatter description on a valid append."""
+    client, org = client_with_runtime
+    org.db.insert_task(TaskRecord(id="TASK-APPEND", brief="append a custom skill"))
+    org.sessions.set_active("TASK-APPEND", "dev_agent", "sess-append", org_slug="alpha")
+    client.headers.pop("Authorization", None)
+    first = client.post(
+        f"{BASE}/agent-create", params={"session_id": "sess-append"},
+        json={"slug": "agent-append", "name": "Agent Append",
+              "skill_md": _fm_body("agent-append", "agent-one")},
+    )
+    assert first.status_code == 201, first.text
+    skill_id = first.json()["skill"]["id"]
+    assert first.json()["skill"]["description"] == "agent-one"
+    second = client.post(
+        f"{BASE}/agent-create", params={"session_id": "sess-append"},
+        json={"slug": "agent-append", "name": "Agent Append",
+              "skill_md": _fm_body("agent-append", "agent-two")},
+    )
+    assert second.status_code == 201, second.text
+    assert second.json()["version"]["validation_state"] == "valid"
+    assert second.json()["skill"]["description"] == "agent-two"
+    assert second.json()["skill"]["current_version_id"] == second.json()["version"]["id"]

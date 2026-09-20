@@ -73,11 +73,26 @@ const REASON_COPY: Record<string, string> = {
   missing_version: 'The skill guide is missing a version.',
   skill_md_no_heading: 'The skill guide needs a top-level heading.',
   skill_md_no_frontmatter:
-    'The skill guide must start with YAML frontmatter or a Markdown heading.',
+    'The skill guide must start with YAML frontmatter.',
   skill_md_unclosed_frontmatter:
     'The skill guide frontmatter is missing its closing fence.',
   skill_md_malformed_frontmatter: 'The skill guide frontmatter is not valid YAML.',
   skill_md_frontmatter_not_mapping: 'The skill guide frontmatter must be a mapping.',
+  frontmatter_duplicate_key: 'The skill guide frontmatter repeats a field.',
+  admission_field_not_allowed:
+    'The skill guide frontmatter uses a field that is not supported here.',
+  frontmatter_missing_name: 'The skill guide frontmatter needs a name.',
+  frontmatter_invalid_name:
+    'The skill guide name must be lower-case letters, digits or hyphens, and match the slug.',
+  frontmatter_name_slug_mismatch: 'The skill guide name must match the slug.',
+  frontmatter_missing_description: 'The skill guide frontmatter needs a description.',
+  frontmatter_invalid_description:
+    'The skill guide description must be a non-empty line of at most 1024 characters.',
+  frontmatter_invalid_license: 'The skill guide license must be text.',
+  frontmatter_invalid_compatibility:
+    'The skill guide compatibility field must be 1-500 characters of text.',
+  frontmatter_invalid_metadata:
+    'The skill guide metadata must be text keys mapped to text values.',
   invalid_references_type: 'The references section is not formatted correctly.',
   invalid_reference_value: 'A reference entry has an invalid value.',
   invalid_reference_filename: 'A reference points to an invalid file name.',

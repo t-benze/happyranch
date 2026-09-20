@@ -66,7 +66,7 @@ describe('reasonCodeLabel', () => {
   });
   test('maps the SKILL.md authoring-contract codes to plain language', () => {
     expect(reasonCodeLabel('skill_md_no_frontmatter')).toBe(
-      'The skill guide must start with YAML frontmatter or a Markdown heading.',
+      'The skill guide must start with YAML frontmatter.',
     );
     expect(reasonCodeLabel('skill_md_unclosed_frontmatter')).toBe(
       'The skill guide frontmatter is missing its closing fence.',
@@ -79,6 +79,34 @@ describe('reasonCodeLabel', () => {
     );
     expect(reasonCodeLabel('skill_md_no_heading')).toBe(
       'The skill guide needs a top-level heading.',
+    );
+  });
+  test('maps the THR-262 admission/field codes to copy-gate-safe language', () => {
+    const codes = [
+      'frontmatter_duplicate_key',
+      'admission_field_not_allowed',
+      'frontmatter_missing_name',
+      'frontmatter_invalid_name',
+      'frontmatter_name_slug_mismatch',
+      'frontmatter_missing_description',
+      'frontmatter_invalid_description',
+      'frontmatter_invalid_license',
+      'frontmatter_invalid_compatibility',
+      'frontmatter_invalid_metadata',
+    ];
+    for (const code of codes) {
+      const line = reasonCodeLabel(code);
+      expect(line.length).toBeGreaterThan(0);
+      // No raw enum jargon, no forbidden token family, no user-facing "active".
+      expect(line).not.toContain(code);
+      expect(line).not.toMatch(/materializ|admit|permission|approve|grant|\bpending\b/i);
+      expect(line).not.toMatch(/\bactive\b/i);
+    }
+    expect(reasonCodeLabel('frontmatter_name_slug_mismatch')).toBe(
+      'The skill guide name must match the slug.',
+    );
+    expect(reasonCodeLabel('admission_field_not_allowed')).toBe(
+      'The skill guide frontmatter uses a field that is not supported here.',
     );
   });
   test('materialization / contract-predicate codes avoid forbidden tokens', () => {
