@@ -2630,7 +2630,10 @@ def run_authority_hook(
         # emitting an untagged fallback.
         queue = getattr(orch, "_queue", None)
         if queue is not None:
-            enqueue_task_generation_aware(orch, queue, orch._slug, task.id)
+            enqueue_task_generation_aware(
+                orch, queue, orch._slug, task.id,
+                ordinary_enqueue=lambda: queue.put_nowait(orch._slug, task.id),
+            )
         return "continue_same_root"
 
     # ESCALATE (fail-closed default): the existing escalation path proceeds.
@@ -2751,6 +2754,7 @@ ENQUEUE_DISPATCH_NO_QUEUE = "no_queue"
 
 def enqueue_task_generation_aware(
     orch, queue, slug: str, task_id: str, *, metadata: dict | None = None,
+    ordinary_enqueue=None,
 ) -> str:
     """Common DB-aware task enqueue entry (THR-229 checkpoint C3d4a).
 
@@ -2776,22 +2780,33 @@ def enqueue_task_generation_aware(
     entry cannot recurse.  Publication may repeat; generation admission may not
     (the DB claim fence remains the non-bypassable backstop).  Returns one of
     the bounded ``ENQUEUE_DISPATCH_*`` status strings.
+
+    ``ordinary_enqueue`` optionally supplies the caller's EXACT legacy ordinary
+    call shape (e.g. ``put_nowait(slug, task_id)`` with no metadata kwarg for a
+    producer that never carried metadata).  Each converged producer preserves its
+    original call so the tuple/metadata shape and any queue-double contract are
+    unchanged; the default uses the shared legacy ``enqueue`` shape.
     """
     if queue is None:
         return ENQUEUE_DISPATCH_NO_QUEUE
+
+    def _ordinary() -> None:
+        if ordinary_enqueue is not None:
+            ordinary_enqueue()
+        else:
+            _ordinary_enqueue(queue, slug, task_id, metadata)
+
     db = getattr(orch, "_db", None)
-    if db is None or not hasattr(
-        db, "classify_authority_policy_v2_root_dispatch_for_enqueue"
-    ):
-        # No durable classifier available: fall back to the unchanged ordinary
-        # enqueue (mock/legacy test seams).  Production always carries a real
-        # Database, where classification below governs.
-        _ordinary_enqueue(queue, slug, task_id, metadata)
+    # Only a genuine durable ``Database`` carries the classification read.  A
+    # duck-typed/mock orchestrator (a test double or an org with no durable
+    # authority state) is NOT permission to consult or bypass durable v2 state,
+    # so it keeps the unchanged ordinary path.
+    classifier = _durable_dispatch_classifier(db)
+    if classifier is None:
+        _ordinary()
         return ENQUEUE_DISPATCH_ORDINARY
     try:
-        classification = db.classify_authority_policy_v2_root_dispatch_for_enqueue(
-            task_id
-        )
+        classification = classifier(task_id)
     except Exception:
         logger.exception("enqueue %s: v2 dispatch classification failed", task_id)
         return ENQUEUE_DISPATCH_REFUSED
@@ -2817,21 +2832,44 @@ def enqueue_task_generation_aware(
     # kind can never become ordinary permission.
     if kind != "absent" and kind != "retired":
         return ENQUEUE_DISPATCH_REFUSED
-    _ordinary_enqueue(queue, slug, task_id, metadata)
+    _ordinary()
     return ENQUEUE_DISPATCH_ORDINARY
+
+
+def _durable_dispatch_classifier(db):
+    """The real ``Database`` v2 dispatch classifier, or ``None``.
+
+    ``getattr(db, name)`` is deliberately NOT used alone: a bare ``MagicMock``
+    (or any duck-typed orchestrator) auto-creates that attribute and would make
+    the boundary either consult fabricated authority evidence or mis-classify
+    its return as a refusal.  Only an actual ``Database`` instance -- a real
+    durable target root -- may drive the classification.
+    """
+    if db is None:
+        return None
+    from runtime.infrastructure.database import Database
+    if not isinstance(db, Database):
+        return None
+    classifier = getattr(
+        db, "classify_authority_policy_v2_root_dispatch_for_enqueue", None,
+    )
+    return classifier if callable(classifier) else None
 
 
 def _ordinary_enqueue(queue, slug: str, task_id: str, metadata: dict | None) -> None:
     """Raw ordinary enqueue preserving the legacy call shape exactly.
 
-    Real ``TaskQueue`` exposes both ``put_nowait`` and ``enqueue``; a few test
-    doubles expose only one.  Prefer ``put_nowait`` and fall back to ``enqueue``
-    so the converged producers keep working with both without changing the
-    ordinary tuple/metadata shape.
+    The common legacy entry (``runner.enqueue_task``, startup sweep) used
+    ``TaskQueue.enqueue``; real ``TaskQueue`` makes ``enqueue``/``put_nowait``
+    equivalent, and a few test doubles expose only one, so prefer ``enqueue``
+    and fall back to ``put_nowait``.  Producers whose original call was
+    ``put_nowait`` pass their exact shape through ``ordinary_enqueue`` instead.
     """
-    put = getattr(queue, "put_nowait", None)
-    if put is None:
-        put = getattr(queue, "enqueue")
+    put = getattr(queue, "enqueue", None)
+    if not callable(put):
+        put = getattr(queue, "put_nowait", None)
+    if not callable(put):
+        raise AttributeError("queue exposes neither enqueue nor put_nowait")
     if metadata is None:
         put(slug, task_id)
     else:

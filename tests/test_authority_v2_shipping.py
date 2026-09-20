@@ -258,6 +258,13 @@ class _ShippingFixture:
         self.release_event = threading.Event()
         self.launch_event = threading.Event()
         self.captured: dict = {}
+        # THR-229 C3d4a Part A: sequential multi-launch venue.  `captured`
+        # stays the LATEST launch for the older single-launch drivers, while
+        # `launch_history` records every held launch so a later lifecycle case
+        # can wait for a SPECIFIC task's launch (delegated child then parent
+        # wake) without an elapsed-sleep inference or a shared single slot.
+        self.launch_history: list[dict] = []
+        self.launch_cv = threading.Condition()
         self.state = None
         self.org = None
         self.rt = None
@@ -425,6 +432,9 @@ class _ShippingFixture:
             kwargs["pre_launch_integrity_validator"]()
             kwargs["recovery_launch_validator"]()
             fixture.captured = dict(kwargs)
+            with fixture.launch_cv:
+                fixture.launch_history.append(dict(kwargs))
+                fixture.launch_cv.notify_all()
             fixture.launch_event.set()
             session = kwargs["session_id"]
             deadline = time.monotonic() + _LAUNCH_HOLD_SECONDS
@@ -444,6 +454,29 @@ class _ShippingFixture:
         self.monkeypatch.setattr(
             self.org.orchestrator, "_launch_agent_with_scratch", _held_launch,
         )
+
+    def wait_for_launch_for(
+        self, task_id: str, *, after: int = 0, timeout: float = _LAUNCH_HOLD_SECONDS,
+    ) -> dict:
+        """Wait (condition-barrier, no elapsed-sleep proof) for a launch of
+        ``task_id`` recorded after index ``after``.  Returns the launch kwargs."""
+        deadline = time.monotonic() + timeout
+        with self.launch_cv:
+            while True:
+                for index in range(after, len(self.launch_history)):
+                    entry = self.launch_history[index]
+                    if entry.get("task_id") == task_id:
+                        return entry
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AssertionError(
+                        f"no held launch recorded for {task_id} after {after}"
+                    )
+                self.launch_cv.wait(timeout=min(remaining, 0.5))
+
+    def launch_count(self) -> int:
+        with self.launch_cv:
+            return len(self.launch_history)
 
     def wait_for_launch(self, *, timeout: float = _LAUNCH_HOLD_SECONDS) -> dict:
         assert self.launch_event.wait(timeout=timeout), "agent launch was never reached"
@@ -3281,5 +3314,317 @@ def test_shipping_historically_migrated_common_consumer_blocked_result(
     fixture.start()
     try:
         _drive_c3d3c2_dispatch(fixture, action="blocked")
+    finally:
+        fixture.stop()
+
+
+# --------------------------------------------------------------------------
+# Part A (THR-229 C3d4a): real later lifecycle after terminal generation A
+# --------------------------------------------------------------------------
+
+
+def _stage_generation_a(fixture: _ShippingFixture, *, action: str = "delegate") -> dict:
+    """Drive a REAL v2 generation A to its admitted state (causal launch held).
+
+    The same real staging calls as ``_drive_c3d3c2_dispatch`` -- real isolated
+    API pair activation, real enqueue, real subprocess CLI/HTTP admission, the
+    real Database stage writers, real publication and real generation
+    admission -- but this helper does NOT release the causal launch so a
+    later-lifecycle driver can continue the venue.
+    """
+    fixture.activate_v2_pair()
+    fixture.install_launch_hold()
+    root_id = fixture.create_and_enqueue_root()
+    captured = fixture.wait_for_launch()
+    session_id = captured["session_id"]
+    binding = _binding(fixture, root_id, session_id)
+    assert binding is not None and binding["mode"] == "v2"
+
+    body = _completion_body(binding, root_id)
+    result = fixture.run_cli(fixture.write_payload(body))
+    assert result.returncode == 0, result.stderr
+    assert fixture.last_http()["status"] == 200
+
+    results, attempt, _audits = _admission_counts(fixture, root_id)
+    assert len(results) == 1 and attempt is not None
+    causal_id = results[0]["id"]
+    db = fixture.org.db
+
+    from runtime.orchestrator.authority import (
+        _strict_permission_surface_digest,
+        publish_authority_policy_v2_notifications,
+    )
+
+    db.bind_authority_policy_v2_permission_surface_reader(
+        lambda agent: _strict_permission_surface_digest(
+            fixture.org.orchestrator, agent,
+        )
+    )
+    stage_kwargs = dict(
+        root_task_id=root_id, manager_agent=MANAGER, manager_session_id=session_id,
+        result_id=causal_id, origin_boot_id=attempt.origin_boot_id,
+        owner_attempt_id=attempt.owner_attempt_id,
+    )
+    assert db.claim_authority_policy_v2_candidate(**stage_kwargs).status == "claimed"
+    assert db.audit_authority_policy_v2_candidate_claim(**stage_kwargs).status == "claim_audited"
+    assert db.evaluate_authority_policy_v2_candidate(**stage_kwargs).status == "evaluated"
+    assert db.audit_authority_policy_v2_candidate_evaluation(**stage_kwargs).status == "evaluation_audited"
+    assert db.consume_authority_policy_v2_candidate(**stage_kwargs).status == "consumed"
+    assert db.audit_authority_policy_v2_candidate_consumption(**stage_kwargs).status == "consumed_audited"
+    finalized = db.finalize_authority_policy_v2_continuation(**stage_kwargs)
+    assert finalized.status == "continued", finalized
+    generation = finalized.notification_id
+
+    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+
+    result_row = db._conn.execute(
+        "SELECT * FROM task_results WHERE id=?", (causal_id,)
+    ).fetchone()
+    report = completion_report_from_result_row(
+        root_id, dict(result_row), fallback_agent=MANAGER,
+    )
+    fixture.org.orchestrator._log_step_result(
+        root_id, types.SimpleNamespace(session_id=session_id), report,
+        result_row_id=causal_id,
+    )
+    pub_kwargs = dict(
+        root_task_id=root_id, manager_agent=MANAGER,
+        manager_session_id=session_id, result_id=causal_id,
+    )
+    assert db.settle_authority_policy_v2_continuation_receipt(**pub_kwargs).status == "settled"
+    db.bind_authority_policy_v2_process_boot_id(attempt.origin_boot_id)
+
+    receipts = publish_authority_policy_v2_notifications(
+        fixture.org.orchestrator, fixture.state.queue,
+    )
+    assert receipts and receipts[0]["status"] in ("published", "publish_returned"), receipts
+
+    reserved = None
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        admitted = db.get_authority_policy_v2_recovery_notification(generation)
+        if (
+            admitted is not None and admitted.state == "settled"
+            and admitted.next_session_id
+        ):
+            reserved = admitted.next_session_id
+            if fixture.captured.get("session_id") == reserved:
+                break
+        time.sleep(0.05)
+    assert reserved is not None, "generation was never admitted"
+    assert fixture.captured["session_id"] == reserved
+
+    reserved_binding = _binding(fixture, root_id, reserved)
+    assert reserved_binding is not None and reserved_binding["mode"] == "v2"
+    reserved_body = _reserved_decision_body(reserved_binding, root_id, action)
+    reserved_payload = fixture.write_payload(
+        reserved_body, name=f"completion-reserved-{action}.json",
+    )
+    reserved_result = fixture.run_cli(reserved_payload)
+    assert reserved_result.returncode == 0, reserved_result.stderr
+    assert fixture.last_http()["status"] == 200
+    r2_row = db.get_task_results(root_id)[-1]
+    assert r2_row["session_id"] == reserved
+    assert r2_row["id"] != causal_id
+    return {
+        "root_id": root_id, "session_id": session_id, "causal_id": causal_id,
+        "attempt": attempt, "generation": generation, "reserved": reserved,
+        "envelope_id": finalized.envelope_id, "r2": r2_row["id"],
+    }
+
+
+def _apply_generation_a_delegate(fixture: _ShippingFixture, staged: dict) -> str:
+    """Release ONLY the reserved generation-A invocation and return the child.
+
+    Its REAL ``run_step`` consumes the persisted R2 through the real common
+    consumer, spends/claims/applies the decision and performs the delegate
+    effect: a real child row plus a real enqueue."""
+    db = fixture.org.db
+    fixture.release_session(staged["reserved"])
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        envelope = db.get_authority_policy_v2_continue_envelope(staged["envelope_id"])
+        if envelope.decision_state == "applied":
+            break
+        time.sleep(0.05)
+    envelope = db.get_authority_policy_v2_continue_envelope(staged["envelope_id"])
+    assert envelope.decision_state == "applied", envelope
+    # Generation A is terminal: the spend retired the old admitted pointer, so a
+    # later legitimate enqueue must not be blanket-blocked.
+    dispatch = db.get_authority_policy_v2_root_dispatch(staged["root_id"])
+    assert dispatch.state == "retired", dispatch
+    children = [dict(row) for row in db._conn.execute(
+        "SELECT * FROM tasks WHERE parent_task_id=?", (staged["root_id"],),
+    ).fetchall()]
+    assert len(children) == 1, children
+    assert children[0]["assigned_agent"] == WORKER
+    return children[0]["id"]
+
+
+def _count_inner_enqueues(fixture: _ShippingFixture) -> list[tuple]:
+    """Count EVERY real enqueue exactly once at the inner asyncio queue.
+
+    Both ``TaskQueue.enqueue`` and ``TaskQueue.put_nowait`` funnel through the
+    inner ``asyncio.Queue.put_nowait``, so wrapping that one hop counts the
+    actual producer/queue calls without double counting or recursion."""
+    calls: list[tuple] = []
+    inner = fixture.state.queue._queue
+    real_put = inner.put_nowait
+
+    def _counting(item):
+        calls.append(tuple(item))
+        return real_put(item)
+
+    fixture.monkeypatch.setattr(inner, "put_nowait", _counting)
+    return calls
+
+
+def _drive_later_lifecycle(fixture: _ShippingFixture) -> dict:
+    """Part A: a legitimate normal lifecycle AFTER terminal generation A.
+
+    Generation A (delegate) applies through the real spend/claim/apply path,
+    producing a real v1 delegated child.  The child then runs the full real
+    supported lifecycle -- producer -> queue -> ``Dispatcher.run_step`` ->
+    ``_run_agent`` session publication -> real subprocess CLI/HTTP completion
+    -> persisted result -> real common consumer -> real normal effect (the
+    parent-wake enqueue).  The root is then relaunched through the ordinary
+    producer path, proving a RETIRED generation-A pointer no longer blocks
+    legitimate later work.  No owner/session/task status is patched by hand and
+    the normal effect is not substituted.
+    """
+    staged = _stage_generation_a(fixture, action="delegate")
+    db = fixture.org.db
+    child_id = _apply_generation_a_delegate(fixture, staged)
+
+    # The real delegated child is launched through the ordinary queue/run_step
+    # path and `_run_agent` publishes its durable invocation identity.
+    child_launch = fixture.wait_for_launch_for(child_id)
+    child_session = child_launch["session_id"]
+    published = db.get_task(child_id)
+    assert published.current_session_id == child_session
+    assert fixture.org.sessions.get_active(child_id, WORKER) == child_session
+    # A legitimately later v1 invocation carries NO v2 launch binding.
+    assert _binding(fixture, child_id, child_session) is None
+
+    calls = _count_inner_enqueues(fixture)
+    child_body = {
+        "task_id": child_id, "session_id": child_session, "agent": WORKER,
+        "status": "completed", "confidence": 90,
+        "summary": "later child completion", "decision": {"action": "done"},
+    }
+    ran = fixture.run_cli(fixture.write_payload(child_body, name="child-later.json"))
+    assert ran.returncode == 0, ran.stderr
+    assert fixture.last_http()["status"] == 200
+    child_results = db.get_task_results(child_id)
+    assert len(child_results) == 1, child_results
+    child_result_id = child_results[0]["id"]
+
+    # A CHANGED report for the same invocation adds ZERO durable/consumer
+    # effect: the first admitted result remains the only one, no second child
+    # is created and no enqueue happens (the route is idempotent per session).
+    changed_body = dict(child_body)
+    changed_body["summary"] = "changed later completion body"
+    changed = fixture.run_cli(
+        fixture.write_payload(changed_body, name="child-later-changed.json")
+    )
+    assert fixture.last_http()["status"] == 200
+    assert len(db.get_task_results(child_id)) == 1
+    assert [c for c in calls if c[1] == staged["root_id"]] == []
+
+    # Release ONLY the child invocation: its REAL run_step consumes the
+    # persisted later result and performs the prescribed normal effect once.
+    before_launches = fixture.launch_count()
+    fixture.release_session(child_session)
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        if db.get_task(child_id).status is TaskStatus.COMPLETED and any(
+            t == staged["root_id"] for _, t, _ in calls
+        ):
+            break
+        time.sleep(0.05)
+    assert db.get_task(child_id).status is TaskStatus.COMPLETED
+    wake = [c for c in calls if c[1] == staged["root_id"]]
+    assert len(wake) == 1, calls
+    # The exact consumed later result is retained; the retired pointer is
+    # unchanged and no v2 evidence row was rewritten.
+    assert db.get_task(child_id).status is TaskStatus.COMPLETED
+    assert db.get_authority_policy_v2_root_dispatch(staged["root_id"]).state == "retired"
+
+    # The real producer re-launched the root through the ordinary path (a new
+    # session published by `_run_agent`), not a manually patched owner.
+    parent_launch = fixture.wait_for_launch_for(
+        staged["root_id"], after=before_launches,
+    )
+    assert parent_launch["session_id"] != staged["session_id"]
+    assert parent_launch["session_id"] != staged["reserved"]
+    assert db.get_task(staged["root_id"]).current_session_id == parent_launch["session_id"]
+    return {
+        "root_id": staged["root_id"], "child_id": child_id,
+        "child_result_id": child_result_id,
+        "parent_session": parent_launch["session_id"],
+    }
+
+
+def _drive_later_lifecycle_invalid(fixture: _ShippingFixture) -> None:
+    """Invalid later provenance (wrong owner/session) has ZERO effects.
+
+    After terminal generation A and the real delegated child launch, a
+    completion claiming a session the daemon never spawned is refused and
+    leaves the child, its results and every enqueue counter untouched.
+    """
+    staged = _stage_generation_a(fixture, action="delegate")
+    db = fixture.org.db
+    child_id = _apply_generation_a_delegate(fixture, staged)
+    child_launch = fixture.wait_for_launch_for(child_id)
+    assert child_launch["session_id"]
+    calls = _count_inner_enqueues(fixture)
+
+    before_results = len(db.get_task_results(child_id))
+    bad_body = {
+        "task_id": child_id, "session_id": "sess-never-spawned",
+        "agent": WORKER, "status": "completed", "confidence": 90,
+        "summary": "invalid later completion", "decision": {"action": "done"},
+    }
+    refused = fixture.run_cli(fixture.write_payload(bad_body, name="child-bad.json"))
+    assert refused.returncode != 0
+    assert fixture.last_http()["status"] == 409
+    # ZERO consumer/task/child/enqueue effects.
+    assert len(db.get_task_results(child_id)) == before_results == 0
+    assert db.get_task(child_id).status is TaskStatus.IN_PROGRESS
+    assert [c for c in calls if c[1] == staged["root_id"]] == []
+
+
+def test_shipping_real_later_lifecycle_after_terminal_generation(tmp_path, monkeypatch):
+    """Fresh venue: real post-terminal later lifecycle (Part A)."""
+    fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=3)
+    fixture.start()
+    try:
+        result = _drive_later_lifecycle(fixture)
+        assert result["child_result_id"] > 0
+        assert result["parent_session"]
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_later_lifecycle(tmp_path, monkeypatch):
+    """Full historical-migrated venue: same real later lifecycle (Part A)."""
+    fixture = _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=True, queue_workers=3,
+    )
+    fixture.start()
+    try:
+        result = _drive_later_lifecycle(fixture)
+        assert result["child_result_id"] > 0
+        assert result["parent_session"]
+    finally:
+        fixture.stop()
+
+
+def test_shipping_real_later_lifecycle_invalid_has_zero_effects(tmp_path, monkeypatch):
+    """Invalid later provenance (unbound/wrong-owner session) is a no-op."""
+    fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=3)
+    fixture.start()
+    try:
+        _drive_later_lifecycle_invalid(fixture)
     finally:
         fixture.stop()

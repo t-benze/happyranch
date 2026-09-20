@@ -290,3 +290,39 @@ def test_runner_enqueue_task_ordinary_tuple_shape_unchanged(tmp_path):
     state = _StubState(_PublishOrch(db), queue)
     runner.enqueue_task(state, "test-org", "TASK-PLAIN")
     assert queue.items == [("test-org", "TASK-PLAIN", None)]
+
+
+# --------------------------------------------------------------------------
+# Ordinary-path call-shape preservation (regression guard)
+# --------------------------------------------------------------------------
+
+def test_boundary_non_database_orchestrator_keeps_ordinary_legacy_shape():
+    """A mock/duck-typed orchestrator with NO real ``Database`` is not
+    permission to consult durable v2 state: the unchanged legacy ``enqueue``
+    shape is used (this is the regression that broke the blocked-job resume /
+    revisit producers)."""
+    from unittest.mock import MagicMock
+
+    queue = MagicMock()
+    status = enqueue_task_generation_aware(
+        _PublishOrch(MagicMock()), queue, "test-org", "TASK-PLAIN",
+    )
+    assert status == ENQUEUE_DISPATCH_ORDINARY
+    queue.enqueue.assert_called_once_with("test-org", "TASK-PLAIN")
+    queue.put_nowait.assert_not_called()
+
+
+def test_boundary_caller_supplied_legacy_shape_is_used(tmp_path):
+    """A producer's exact original call (``put_nowait`` with no metadata kwarg)
+    is preserved rather than rewritten by the common entry."""
+    from unittest.mock import MagicMock
+
+    db = _plain_root(tmp_path)
+    queue = MagicMock()
+    status = enqueue_task_generation_aware(
+        _PublishOrch(db), queue, "test-org", "TASK-PLAIN",
+        ordinary_enqueue=lambda: queue.put_nowait("test-org", "TASK-PLAIN"),
+    )
+    assert status == ENQUEUE_DISPATCH_ORDINARY
+    queue.put_nowait.assert_called_once_with("test-org", "TASK-PLAIN")
+    queue.enqueue.assert_not_called()

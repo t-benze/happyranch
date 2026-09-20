@@ -57,6 +57,7 @@ def is_root(task: "TaskRecord") -> bool:
 
 def _enqueue_task_generation_aware(
     orch: "Orchestrator", task_id: str, *, metadata: dict | None = None,
+    legacy: str = "put_nowait",
 ) -> None:
     """Route a producer's enqueue through the common DB-aware boundary.
 
@@ -67,13 +68,26 @@ def _enqueue_task_generation_aware(
     authenticated notification publisher, ``admitted``/malformed/unreadable
     targets refuse, and ``absent``/``retired`` targets keep the unchanged
     ordinary enqueue with trigger metadata preserved.
+
+    ``legacy`` preserves each producer's EXACT original ordinary call shape:
+    ``put_nowait(slug, task_id)`` (the direct producers, no metadata kwarg) or
+    ``enqueue(slug, task_id, metadata=...)`` (the blocked-job resume producer).
+    The boundary's publish/refuse decisions are identical either way.
     """
     queue = getattr(orch, "_queue", None)
     if queue is None:
         return
     from runtime.orchestrator.authority import enqueue_task_generation_aware
+    if legacy == "enqueue":
+        if metadata is None:
+            raw = lambda: queue.enqueue(orch._slug, task_id)
+        else:
+            raw = lambda: queue.enqueue(orch._slug, task_id, metadata=metadata)
+    else:
+        raw = lambda: queue.put_nowait(orch._slug, task_id)
     enqueue_task_generation_aware(
         orch, queue, orch._slug, task_id, metadata=metadata,
+        ordinary_enqueue=raw,
     )
 
 
@@ -3802,9 +3816,11 @@ def _maybe_resume_blocked_task(
             return False  # silent — common steady state
 
     # All terminal — enqueue (trigger metadata preserved through the boundary).
+    # This producer's legacy shape is ``queue.enqueue(..., metadata=...)``.
     _enqueue_task_generation_aware(
         orch, task_id,
         metadata={"trigger": trigger, "triggering_job_id": triggering_job_id},
+        legacy="enqueue",
     )
     return True
 

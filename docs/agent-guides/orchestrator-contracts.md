@@ -1102,7 +1102,7 @@ and every malformed/present-corrupt or unreadable state (fail closed) — the
 existing `get_authority_policy_v2_root_dispatch` collapses absent and malformed
 into one `None`, which is never ordinary enqueue permission.
 `runtime.orchestrator.authority.enqueue_task_generation_aware(orch, queue, slug,
-task_id, *, metadata=None)` resolves the TARGET root's OWN durable generation at
+task_id, *, metadata=None, ordinary_enqueue=None)` resolves the TARGET root's OWN durable generation at
 production time and either ordinary-enqueues (absent/retired, preserving trigger
 metadata such as `job_terminal`/`triggering_job_id`), publishes through the
 existing `publish_authority_policy_v2_notifications(..., root_task_id=...)` seam
@@ -1112,6 +1112,13 @@ whose claim did not win, or a pending root with no publishable notification).
 Request metadata can never manufacture or replace G, and a parent's G is never
 copied onto a child/successor; a publication may repeat but generation admission
 may not (the DB claim fence stays the non-bypassable backstop).
+Only a genuine durable `Database` drives the classification (a mock/duck-typed
+orchestrator is not permission to consult or bypass durable state and keeps
+the unchanged ordinary path), and each converged producer preserves its EXACT
+original ordinary call shape through the optional `ordinary_enqueue` callable
+(the direct producers' `put_nowait(slug, task_id)`, the blocked-job resume's
+`enqueue(..., metadata=...)` and the runner/startup `enqueue`), so queue/drain/
+dispatcher forwarding and `task_done` accounting are unchanged.
 `runtime.daemon.runner.enqueue_task` is that boundary, and the direct producers
 converge through it: the `run_step` successor/self-correction/delegate/feedback/
 chain/parent-wake/job-unblock/fanout sites, the `authority` v1 ordinary
@@ -1124,7 +1131,12 @@ boundary.py` covers the classification and every boundary outcome against the
 real Database/publisher seams; `tests/test_authority_v2_shipping.py` adds the
 delegate+failed-acknowledgement branch over both fresh and full
 historical-migrated venues with actual enqueue/body-entry counters that must not
-increase across reopen/refusal/replay. The full startup/accepted-recovery
+increase across reopen/refusal/replay, plus the real post-terminal LATER lifecycle
+over both venues (a real delegated child launch -> `_run_agent` session publication
+-> real subprocess CLI/HTTP completion -> persisted result -> real common consumer
+-> real parent-wake effect, then the ordinary re-launch of the root through the
+retired pointer), with an unbound/wrong-owner zero-effect negative and a
+changed-body no-extra-effect negative. The full startup/accepted-recovery
 attempt/receipt/refusal discovery, reaper integration and automatic authority-hook
 orchestration remain the NEXT unit; the hook stays fail-closed/DARK and the
 editable-pair editor/browser path remains unimplemented.
