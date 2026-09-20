@@ -317,7 +317,35 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 		}
 		timer.Reset(staleAfter)
 	}
+	// finishChildExit handles the child's single owned Wait exactly once.  It
+	// is shared by the priority check and the blocking select so the terminal
+	// child-exit path can never be starved by a cancellation wakeup.
+	finishChildExit := func(err error) int {
+		admissionRemoved := removeSidecarAdmission(context.Background(), sidecarHealthy, stopSidecar)
+		// The terminal STOPPING notification shares the single at-most-once
+		// latch with stopChild.  ``stopping`` only records child-cleanup
+		// permission, so a refused admission stop followed by a spontaneous
+		// child exit must not emit a second STOPPING.
+		terminal = true
+		notifyStopping("STATUS=connector exited")
+		if err == nil && stopping && admissionRemoved {
+			return 0
+		}
+		return 1
+	}
 	for {
+		// A completed child Wait is the terminal event for this supervisor.
+		// Give it priority over another cancellation wakeup: when the sidecar
+		// admission state stays unknown, a canceled supervisor can otherwise
+		// re-run the bounded admission probe on every select pass and delay
+		// observing its own already-exited child past the accepted
+		// admission+teardown bound.  The probe is still retried while the
+		// child is alive, so confirmed absence before child TERM is preserved.
+		select {
+		case err := <-waited:
+			return finishChildExit(err)
+		default:
+		}
 		select {
 		case <-ctx.Done():
 			stopChild()
@@ -416,17 +444,7 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 				stopChild()
 			}
 		case err := <-waited:
-			admissionRemoved := removeSidecarAdmission(context.Background(), sidecarHealthy, stopSidecar)
-			// The terminal STOPPING notification shares the single at-most-once
-			// latch with stopChild.  ``stopping`` only records child-cleanup
-			// permission, so a refused admission stop followed by a spontaneous
-			// child exit must not emit a second STOPPING.
-			terminal = true
-			notifyStopping("STATUS=connector exited")
-			if err == nil && stopping && admissionRemoved {
-				return 0
-			}
-			return 1
+			return finishChildExit(err)
 		}
 	}
 }
