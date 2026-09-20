@@ -244,61 +244,125 @@ const CONTRAST_FN = (selectors) => {
   return out;
 };
 
-/** 16.11 — walk the 16.6 tab order with a real focus ring measurement. */
+/**
+ * 16.11 — walk the 16.6 tab order and measure the REAL focus ring.
+ *
+ * Two corrections a first pass got wrong, both of which produced a vacuous
+ * "every control has a ring":
+ *
+ *   1. `page.focus()` is PROGRAMMATIC focus. Chrome does not match
+ *      `:focus-visible` for it, so the ring variables stay at their
+ *      transparent defaults and nothing is measured. The walk therefore starts
+ *      at `document.body` and Tabs in, so every reading is keyboard-driven.
+ *   2. This design system draws the ring with `box-shadow`, and an UNFOCUSED
+ *      control still reports `box-shadow: rgba(0,0,0,0) 0 0 0 0`. Treating
+ *      `boxShadow !== 'none'` as a visible ring scores the absent ring as
+ *      present. A layer counts only when it has non-zero alpha AND non-zero
+ *      spread or blur.
+ */
+const RING_PROBE = () => {
+  const channel = (v) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  const ctx2d = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  ctx2d.globalCompositeOperation = 'copy';
+  const parse = (value) => {
+    if (!value || value === 'none') return null;
+    ctx2d.fillStyle = 'rgba(0, 0, 0, 0)';
+    ctx2d.fillStyle = value;
+    ctx2d.fillRect(0, 0, 1, 1);
+    const d = ctx2d.getImageData(0, 0, 1, 1).data;
+    return { r: d[0], g: d[1], b: d[2], a: d[3] / 255 };
+  };
+  const lum = (c) => 0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b);
+  const ratio = (a, b) => {
+    const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  /** Composite a translucent ring over what is actually behind it. */
+  const over = (fg, bg) => ({
+    r: fg.r * fg.a + bg.r * (1 - fg.a),
+    g: fg.g * fg.a + bg.g * (1 - fg.a),
+    b: fg.b * fg.a + bg.b * (1 - fg.a),
+    a: 1,
+  });
+  // Split a computed box-shadow into layers without breaking on rgb() commas.
+  const layers = (value) => {
+    if (!value || value === 'none') return [];
+    const out = [];
+    let depth = 0; let cur = '';
+    for (const ch of value) {
+      if (ch === '(') depth += 1;
+      if (ch === ')') depth -= 1;
+      if (ch === ',' && depth === 0) { out.push(cur.trim()); cur = ''; } else cur += ch;
+    }
+    if (cur.trim()) out.push(cur.trim());
+    return out;
+  };
+
+  const el = document.activeElement;
+  if (!el || el === document.body) return null;
+  const style = getComputedStyle(el);
+  let surround = el.parentElement;
+  while (surround) {
+    const bg = parse(getComputedStyle(surround).backgroundColor);
+    if (bg && bg.a > 0) break;
+    surround = surround.parentElement;
+  }
+  const surroundBg = parse(getComputedStyle(surround ?? document.body).backgroundColor)
+    ?? { r: 255, g: 255, b: 255, a: 1 };
+
+  const outlineWidth = parseFloat(style.outlineWidth) || 0;
+  const outlineReal = outlineWidth > 0 && style.outlineStyle !== 'none';
+
+  // A ring layer must actually paint: visible alpha AND a non-zero spread/blur.
+  const ringLayers = layers(style.boxShadow).map((layer) => {
+    const colour = parse((/(rgba?\([^)]*\)|#[0-9a-f]{3,8})/i.exec(layer) ?? [])[0]);
+    const lengths = (layer.match(/-?[\d.]+px/g) ?? []).map(parseFloat);
+    const paints = !!colour && colour.a > 0.05 && lengths.some((n) => Math.abs(n) > 0);
+    return { layer, colour, paints };
+  }).filter((l) => l.paints);
+
+  const ringSource = ringLayers.length > 0
+    ? ringLayers[ringLayers.length - 1].colour
+    : (outlineReal ? parse(style.outlineColor) : null);
+
+  return {
+    tag: el.tagName,
+    id: el.id || null,
+    text: (el.textContent ?? '').trim().slice(0, 40) || null,
+    focusVisible: el.matches(':focus-visible'),
+    outline: `${style.outlineStyle} ${style.outlineWidth} ${style.outlineColor}`,
+    boxShadow: style.boxShadow,
+    paintedRingLayers: ringLayers.map((l) => l.layer),
+    // The honest predicate: keyboard focus is actually matched AND something
+    // actually paints.
+    focusRingVisible: el.matches(':focus-visible') && (outlineReal || ringLayers.length > 0),
+    // The translucent ring composited over what is behind it, against that
+    // same background — what a person actually has to see.
+    ringContrast: ringSource
+      ? Number(ratio(over(ringSource, surroundBg), surroundBg).toFixed(2))
+      : null,
+  };
+};
+
+/**
+ * Tab in from the document start so focus is keyboard-driven, stop on the first
+ * capacity control, then record the panel's tab order.
+ */
 async function walkTabOrder(page) {
-  await page.focus('#capacity-workers');
-  const order = [];
-  for (let i = 0; i < 8; i += 1) {
-    order.push(await page.evaluate(() => {
-      const channel = (v) => {
-        const c = v / 255;
-        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-      };
-      const ctx2d = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
-      ctx2d.globalCompositeOperation = 'copy';
-      const parse = (value) => {
-        if (!value || value === 'none') return null;
-        ctx2d.fillStyle = 'rgba(0, 0, 0, 0)';
-        ctx2d.fillStyle = value;
-        ctx2d.fillRect(0, 0, 1, 1);
-        const d = ctx2d.getImageData(0, 0, 1, 1).data;
-        return { r: d[0], g: d[1], b: d[2], a: d[3] / 255 };
-      };
-      const lum = (c) => 0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b);
-      const ratio = (a, b) => {
-        const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
-        return (hi + 0.05) / (lo + 0.05);
-      };
-      const el = document.activeElement;
-      if (!el || el === document.body) return { tag: null, focusRingVisible: false };
-      const style = getComputedStyle(el);
-      const width = parseFloat(style.outlineWidth) || 0;
-      const shadow = style.boxShadow && style.boxShadow !== 'none';
-      let surround = el.parentElement;
-      while (surround) {
-        const bg = parse(getComputedStyle(surround).backgroundColor);
-        if (bg && bg.a > 0) break;
-        surround = surround.parentElement;
-      }
-      const ringColor = parse(style.outlineColor);
-      const surroundBg = parse(getComputedStyle(surround ?? document.body).backgroundColor);
-      return {
-        tag: el.tagName,
-        id: el.id || null,
-        text: (el.textContent ?? '').trim().slice(0, 40) || null,
-        outlineStyle: style.outlineStyle,
-        outlineWidth: style.outlineWidth,
-        outlineColor: style.outlineColor,
-        boxShadow: style.boxShadow,
-        // A ring is VISIBLE when it has real width and a non-`none` style, or
-        // the control carries a focus box-shadow instead.
-        focusRingVisible: (width > 0 && style.outlineStyle !== 'none') || shadow,
-        ringContrast: ringColor && surroundBg && ringColor.a > 0
-          ? Number(ratio(ringColor, surroundBg).toFixed(2))
-          : null,
-      };
-    }));
+  await page.evaluate(() => document.body.focus());
+  let reached = false;
+  for (let i = 0; i < 80 && !reached; i += 1) {
     await page.keyboard.press('Tab');
+    reached = await page.evaluate(() => document.activeElement?.id === 'capacity-workers');
+  }
+  if (!reached) throw new Error('never tabbed to #capacity-workers');
+  const order = [];
+  for (let i = 0; i < 7; i += 1) {
+    order.push(await page.evaluate(RING_PROBE));
+    if (i < 6) await page.keyboard.press('Tab');
   }
   return order;
 }
@@ -457,7 +521,8 @@ try {
       await kbPage.goto(`${origin}/orgs/${SLUG}/settings/daemon-capacity`, { waitUntil: 'networkidle' });
       await kbPage.waitForSelector('#capacity-workers');
       const order = await walkTabOrder(kbPage);
-      await kbPage.focus('#capacity-workers');
+      // Still keyboard-focused on the LAST control of the walk; re-focusing
+      // programmatically here would erase the ring from the screenshot.
       await kbPage.screenshot({
         path: join(outDir, `capacity-keyboard-focus-${viewport.name}-${theme}.png`),
         fullPage: true,
@@ -489,8 +554,17 @@ try {
       .filter((c) => c.present && (c.unmeasurable !== undefined || !c.passesAA))
       .map((c) => ({ file: r.file, ...c }))),
     focusRingsMissing: tabOrders.flatMap((t) => t.order
-      .filter((o) => o.tag && !o.focusRingVisible)
-      .map((o) => ({ viewport: t.viewport, theme: t.theme, control: o.id ?? o.text }))),
+      .filter((o) => o && (!o.focusVisible || !o.focusRingVisible))
+      .map((o) => ({
+        viewport: t.viewport, theme: t.theme, control: o.id ?? o.text,
+        focusVisible: o.focusVisible, boxShadow: o.boxShadow, outline: o.outline,
+      }))),
+    // Reported, not gated: a ring can paint and still be hard to see.
+    lowContrastFocusRings: tabOrders.flatMap((t) => t.order
+      .filter((o) => o && o.focusRingVisible && o.ringContrast !== null && o.ringContrast < 3)
+      .map((o) => ({
+        viewport: t.viewport, theme: t.theme, control: o.id ?? o.text, ratio: o.ringContrast,
+      }))),
     pngs: hashes,
   };
   writeFileSync(join(outDir, 'MANIFEST.json'), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -501,6 +575,7 @@ try {
   console.log(`horizontal overflow states: ${manifest.horizontalOverflowStates.length}`);
   console.log(`low-contrast findings (16.10): ${manifest.lowContrastFindings.length}`);
   console.log(`controls without a visible focus ring (16.11): ${manifest.focusRingsMissing.length}`);
+  console.log(`focus rings below 3:1 against their surround (16.11, reported): ${manifest.lowContrastFocusRings.length}`);
   if (undeclared.length > 0) {
     console.error('FAIL: the venue was not fail-closed:', undeclared);
     process.exitCode = 1;
