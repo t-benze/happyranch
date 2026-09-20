@@ -241,7 +241,9 @@ describe('THR-209 — Pinned section', () => {
     } else {
       await userEvent.click(row);
     }
-    await screen.findByRole('heading', { name: target.subject });
+    await screen.findByRole('heading', {
+      name: `${target.subject} ${target.status === 'open' ? 'active' : 'archived'}`,
+    });
     expect(screen.getByRole('button', { name: pinned ? 'Unpin' : 'Pin' })).toBeInTheDocument();
     expect(postPin).not.toHaveBeenCalled();
   });
