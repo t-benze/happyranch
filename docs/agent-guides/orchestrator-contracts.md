@@ -675,6 +675,32 @@ v2-only `_result_row_id`/`_result_session_id` attribution at the completion seam
 earlier manager completion no longer blocks a valid current result and an
 identical old-session body can never stand in for the current event.
 
+C3d2 evidence-classification correction (same unmerged draft PR). Every
+potentially related completion/settled audit row is enumerated from FIELD
+PRESENCE before any closed typed comparison. A present recovery marker,
+result-session or settled causal identity (attempt/candidate/envelope/
+notification/generation/result/session) that matches the exact current
+result/session OR is malformed (`null`/bool/int/list/string) makes the row
+related; a non-object body is opaque and never ordinary absence; only a row
+whose every present identity is well-typed and provably a DIFFERENT value is
+independently unrelated. A recovery-shaped completion row is one carrying the
+`_recovery_session_id` key OR the settlement-only `result_id`/`session_id` keys
+(never the ordinary `CompletionReport` producer payload), so removing the
+marker key cannot turn a settlement completion into ordinary absence while the
+legitimate ordinary producer audit and the recovery-owned evidence still
+coexist. Exact settlement and replay refuse read-only on a
+malformed/conflicting/duplicate related row with zero Q/audit/allocation
+change. The ordinary settlement branch no longer vetoes on the mere existence
+of ANY root/manager receipt: a receipt blocks ordinary completion only when a
+recovery/origin/accepted-result session or accepted-result identity matches the
+current result/session or is malformed, or its state is nonterminal/unknown; an
+unrelated ESTABLISHED TERMINAL receipt
+(`callback_consumed`/`superseded`/`expired`/`restart_settled`) whose every
+identity is well-typed and disjoint neither supplies current authority nor
+vetoes ordinary completion and remains byte-for-byte unchanged. Explicit
+recovery without an exact Q still fails `receipt_missing`/`identity_mismatch`;
+no Q, audit, synthetic settlement or historical row is rewritten.
+
 The file-backed completion CLI preserves a supplied `manager_self_evaluation`
 member verbatim (including invalid/null values) so the daemon, rather than the
 client, validates it; an omitted member remains omitted. The shipping CLI to

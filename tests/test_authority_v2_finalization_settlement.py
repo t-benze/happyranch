@@ -30,13 +30,22 @@ import pytest
 
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
-from runtime.models import CompletionReport, NextStep, TaskStatus
+from runtime.models import CompletionReport, NextStep, TaskRecord, TaskStatus
+from runtime.orchestrator.active_authority_policy import (
+    load_session_policy_binding,
+    persist_session_policy_binding,
+    resolve_active_team_policy_snapshot,
+)
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 from tests.test_authority_v2_attempt_admission import (
     MANAGER,
     SESSION_ID,
     TASK_ID,
+    TEAM,
+    _activate_v2,
+    _admit,
     _admitted as _admitted_core,
+    _carrier_and_admission,
     _store,
 )
 from tests.test_authority_v2_evaluation_stage import (
@@ -1300,3 +1309,506 @@ def test_settlement_ordinary_refuses_recovery_shaped_current_without_q(tmp_path)
     outcome = _settle(store, row)
     assert outcome.status == "settlement_pending", outcome
     assert outcome.reason == "completion_evidence_missing"
+
+
+# ── C3d2 evidence-classification correction: presence BEFORE filtering ────
+#
+# The manager's five step22 production-method observations are converted into
+# asserting RED-at-9ed5c894 / GREEN regressions.  Every potentially related row
+# is classified from FIELD PRESENCE: a present identity field that matches the
+# exact causal identity OR is malformed is never ordinary absence, and only a
+# row whose every present identity is well-typed and provably DIFFERENT is
+# independently established as unrelated.
+
+_MARKER_MISSING = object()
+
+
+def _insert_raw_audit(store, action, raw_payload, *, agent=MANAGER):
+    """Insert one audit row with a raw (possibly non-object) JSON payload."""
+    store._db._conn.execute(
+        "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+        "VALUES (?,?,?,?,?)",
+        (TASK_ID, agent, action, raw_payload, "2026-01-01T00:00:00+00:00"),
+    )
+    store._db._conn.commit()
+
+
+def _replace_audit_payload(store, action, raw_payload, *, index=0):
+    rows = _audit_rows(store, action)
+    store._db._conn.execute(
+        "UPDATE audit_log SET payload=? WHERE id=?", (raw_payload, rows[index]["id"]),
+    )
+    store._db._conn.commit()
+
+
+# Observation 1: duplicate settled completion with a null/malformed recovery
+# marker and the exact integer result reference must not vanish.
+@pytest.mark.parametrize(
+    "marker",
+    [_MARKER_MISSING, None, True, False, 7, ["x"], {"k": 1}, "sess-foreign"],
+)
+def test_settlement_exact_retry_rejects_malformed_recovery_marker(tmp_path, marker):
+    store, row, _ = _drive_finalized(tmp_path)
+    _settled_exact(store, row)
+
+    def mutate(payload):
+        if marker is _MARKER_MISSING:
+            payload.pop("_recovery_session_id", None)
+        else:
+            payload["_recovery_session_id"] = marker
+
+    _duplicate_audit_payload(store, "completion_report", mutate)
+    _assert_exact_retry_refuses(store, row)
+
+
+# Observation 2: a malformed completion before initial accepted-Q settlement
+# must refuse (never add two audits and consume Q).
+@pytest.mark.parametrize(
+    "marker", [_MARKER_MISSING, None, True, 7, ["x"], "sess-foreign"],
+)
+def test_settlement_initial_rejects_malformed_recovery_marker(tmp_path, marker):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _seed_q(store, row["id"])
+    garbled = {
+        "_result_row_id": row["id"], "result_id": row["id"],
+        "session_id": SESSION_ID, "status": "garbled",
+    }
+    if marker is not _MARKER_MISSING:
+        garbled["_recovery_session_id"] = marker
+    _insert_audit(store, "completion_report", garbled)
+    before = _counts(store._db)
+
+    outcome = _settle_recovery(store, row)
+    assert outcome.status == "settlement_pending", outcome
+    assert _q(store)["state"] == "callback_accepted"
+    assert _counts(store._db) == before
+    assert _attempt_row(store, row["id"])["finalization_state"] == "continued"
+
+
+# Observation 3: duplicate recovery-settled row whose result references are
+# mistyped while every other exact identity survives must refuse.
+_SETTLED_IDENTITY_MUTATIONS = [
+    ("_result_row_id", "str"), ("result_id", "str"),
+    ("attempt_id", None), ("attempt_id", 12), ("candidate_id", ["x"]),
+    ("envelope_id", True), ("notification_id", []), ("generation_id", {"a": 1}),
+    ("recovery_session_id", None), ("recovery_session_id", 5),
+    ("manager_session_id", False),
+]
+
+
+@pytest.mark.parametrize("field,kind", _SETTLED_IDENTITY_MUTATIONS)
+def test_settlement_exact_retry_rejects_malformed_settled_identities(
+    tmp_path, field, kind,
+):
+    store, row, _ = _drive_finalized(tmp_path)
+    _settled_exact(store, row)
+
+    def mutate(payload):
+        payload[field] = "1" if kind == "str" else kind
+
+    _duplicate_audit_payload(store, RECOVERY_SETTLED, mutate)
+    _assert_exact_retry_refuses(store, row)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["_result_row_id", "attempt_id", "candidate_id", "envelope_id",
+     "notification_id", "generation_id", "recovery_session_id"],
+)
+def test_settlement_exact_retry_rejects_missing_settled_identity(tmp_path, field):
+    store, row, _ = _drive_finalized(tmp_path)
+    _settled_exact(store, row)
+    _duplicate_audit_payload(
+        store, RECOVERY_SETTLED, lambda payload: payload.pop(field, None),
+    )
+    _assert_exact_retry_refuses(store, row)
+
+
+# Observation 3 (exact production probe): BOTH result references stringified
+# while attempt/candidate/envelope/generation/session stay exact.
+def test_settlement_exact_retry_rejects_mistyped_settled_result_refs(tmp_path):
+    store, row, _ = _drive_finalized(tmp_path)
+    _settled_exact(store, row)
+    _duplicate_audit_payload(
+        store, RECOVERY_SETTLED,
+        lambda p: p.update(
+            _result_row_id=str(p["_result_row_id"]), result_id=str(p["result_id"]),
+        ),
+    )
+    _assert_exact_retry_refuses(store, row)
+
+
+# Observation 4 (exact production probe): an ordinary duplicate whose
+# ``_result_row_id`` is stringified while the exact ``_result_session_id``
+# survives is still current-result evidence.
+def test_settlement_ordinary_refuses_mistyped_result_ref_with_exact_session(tmp_path):
+    store, row, _ = _drive_finalized(tmp_path)
+    _insert_ordinary_completion(store, row["id"])
+    _duplicate_audit_payload(
+        store, "completion_report",
+        lambda p: p.update(_result_row_id=str(p["_result_row_id"])),
+    )
+    before = _counts(store._db)
+    outcome = _settle(store, row)
+    assert outcome.status == "settlement_pending", outcome
+    assert outcome.reason == "completion_evidence_missing", outcome
+    assert _counts(store._db) == before
+
+
+# Completion-row partial/conflicting identity: a removed or malformed result
+# reference with an exact recovery/session identity must still refuse.
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda p: p.pop("_result_row_id", None),
+        lambda p: p.update(_result_row_id=999999),
+        lambda p: p.update(_result_row_id="1", _recovery_session_id="sess-other"),
+        lambda p: p.update(result_id="1", _result_row_id=999999),
+        lambda p: (p.pop("_result_row_id", None), p.pop("result_id", None)),
+    ],
+)
+def test_settlement_exact_retry_rejects_conflicting_completion_identities(
+    tmp_path, mutate,
+):
+    store, row, _ = _drive_finalized(tmp_path)
+    _settled_exact(store, row)
+    _duplicate_audit_payload(store, "completion_report", mutate)
+    _assert_exact_retry_refuses(store, row)
+
+
+# Observation 4 (and the raw non-object body matrix): opaque bodies are never
+# ordinary absence.
+@pytest.mark.parametrize("raw", ['"garbled"', "[1, 2]", "42"])
+def test_settlement_exact_retry_rejects_opaque_duplicate_bodies(tmp_path, raw):
+    store, row, _ = _drive_finalized(tmp_path)
+    _settled_exact(store, row)
+    _insert_raw_audit(store, "completion_report", raw)
+    _assert_exact_retry_refuses(store, row)
+    _insert_raw_audit(store, RECOVERY_SETTLED, raw)
+    _assert_exact_retry_refuses(store, row)
+
+
+@pytest.mark.parametrize("raw", ['"garbled"', "[1, 2]", "42", "null"])
+@pytest.mark.parametrize("action", ["completion_report", RECOVERY_SETTLED])
+def test_settlement_exact_retry_rejects_lone_opaque_body(tmp_path, action, raw):
+    store, row, _ = _drive_finalized(tmp_path)
+    _settled_exact(store, row)
+    _replace_audit_payload(store, action, raw)
+    _assert_exact_retry_refuses(store, row)
+
+
+@pytest.mark.parametrize(
+    "action,raw",
+    [("completion_report", '"garbled"'), ("completion_report", "[1]"),
+     (RECOVERY_SETTLED, "42"), (RECOVERY_SETTLED, "null")],
+)
+def test_settlement_initial_rejects_opaque_evidence(tmp_path, action, raw):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _seed_q(store, row["id"])
+    _insert_raw_audit(store, action, raw)
+    before = _counts(store._db)
+    outcome = _settle_recovery(store, row)
+    assert outcome.status == "settlement_pending", outcome
+    assert _q(store)["state"] == "callback_accepted"
+    assert _counts(store._db) == before
+
+
+# Positive coexistence: the legitimate ordinary producer audit and the
+# recovery-owned settlement evidence must both survive without a false duplicate.
+def test_settlement_exact_retry_accepts_ordinary_plus_recovery_evidence(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _insert_ordinary_completion(store, row["id"])
+    _seed_q(store, row["id"])
+    assert _settle_recovery(store, row).status == "settled"
+    before = _counts(store._db)
+    retry = _settle_recovery(store, row)
+    assert retry.status == "already_settled_exact", retry
+    assert _counts(store._db) == before
+    assert len(_payload_audits(store, "completion_report")) == 2
+
+
+# Independent unrelated history still succeeds read-only (unchanged retry).
+def test_settlement_exact_retry_ignores_malformed_foreign_completion(tmp_path):
+    store, row, _ = _drive_finalized(tmp_path)
+    _settled_exact(store, row)
+    _insert_audit(store, "completion_report", {
+        "_recovery_session_id": "sess-history", "_result_row_id": 987654,
+        "result_id": 987654, "session_id": "sess-history", "status": "completed",
+    })
+    before = _counts(store._db)
+    retry = _settle_recovery(store, row)
+    assert retry.status == "already_settled_exact", retry
+    assert _counts(store._db) == before
+
+
+# ── C3d2 receipt classification: unrelated terminal history is not a veto ──
+
+
+def _insert_q(
+    store, *, recovery_session, origin_session="sess-origin",
+    state="callback_consumed", accepted_result_id=None,
+    accepted_result_session=None, settled=True,
+):
+    store._db._conn.execute(
+        """INSERT INTO task_completion_recoveries
+           (task_id, agent, origin_session_id, recovery_session_id,
+            provider_session_id, claimed_at, expires_at, state,
+            accepted_result_id, accepted_result_session_id, settled_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (TASK_ID, MANAGER, origin_session, recovery_session, "prov-1",
+         "2026-01-01T00:00:00+00:00", "2999-01-01T00:00:00+00:00", state,
+         accepted_result_id, accepted_result_session,
+         "2026-01-01T00:05:00+00:00" if settled else None),
+    )
+    store._db._conn.commit()
+
+
+def _q_rows(store):
+    return store._db._conn.execute(
+        "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=? ORDER BY id",
+        (TASK_ID, MANAGER),
+    ).fetchall()
+
+
+def _prepare_ordinary_current(store, row):
+    _insert_ordinary_completion(store, row["id"])
+
+
+def test_settlement_ordinary_accepts_unrelated_terminal_receipt(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _prepare_ordinary_current(store, row)
+    _insert_q(
+        store, recovery_session="sess-hist",
+        accepted_result_id=row["id"] + 1000,
+        accepted_result_session="sess-hist",
+    )
+    before = _counts(store._db)
+    q_before = [tuple(r) for r in _q_rows(store)]
+    audit_before = _audit_rows(store, RECOVERY_SETTLED)
+    outcome = _settle(store, row)
+    assert outcome.status == "settled", outcome
+    assert outcome.recovery is False and outcome.receipt_settled is False
+    assert _counts(store._db) == before
+    assert [tuple(r) for r in _q_rows(store)] == q_before
+    assert _audit_rows(store, RECOVERY_SETTLED) == audit_before
+
+
+def test_settlement_ordinary_accepts_unrelated_terminal_receipt_after_reopen(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _prepare_ordinary_current(store, row)
+    _insert_q(
+        store, recovery_session="sess-hist", origin_session="sess-origin",
+        accepted_result_id=row["id"] + 1000,
+        accepted_result_session="sess-hist",
+    )
+    before = _counts(store._db)
+    store._db._conn.commit()
+    store._db.close()
+    reopened = _reopen(tmp_path)
+    reopened_row = _result_row(reopened, row["id"])
+    outcome = _settle(reopened, reopened_row)
+    assert outcome.status == "settled", outcome
+    assert _counts(reopened._db) == before
+
+
+@pytest.mark.parametrize(
+    "overrides,state",
+    [
+        # exact current recovery session (accepted result is foreign)
+        ({"recovery_session": SESSION_ID, "accepted_result": "FOREIGN",
+          "accepted_result_session": "sess-r"}, "callback_consumed"),
+        # exact current accepted result (sessions are disjoint)
+        ({"recovery_session": "sess-r", "accepted_result": "CURRENT",
+          "accepted_result_session": "sess-r"}, "callback_consumed"),
+        # exact current accepted-result session (accepted result is foreign)
+        ({"recovery_session": "sess-r", "accepted_result": "FOREIGN",
+          "accepted_result_session": SESSION_ID}, "superseded"),
+        # exact current origin session (accepted result is foreign)
+        ({"recovery_session": "sess-r", "origin_session": SESSION_ID,
+          "accepted_result": "FOREIGN", "accepted_result_session": "sess-r"},
+         "expired"),
+        # nonterminal states cannot be established as unrelated
+        ({"recovery_session": "sess-r", "accepted_result": "FOREIGN",
+          "accepted_result_session": "sess-r"}, "claimed"),
+        ({"recovery_session": "sess-r", "accepted_result": "FOREIGN",
+          "accepted_result_session": "sess-r"}, "callback_accepted"),
+        # unknown state fails closed
+        ({"recovery_session": "sess-r", "accepted_result": "FOREIGN",
+          "accepted_result_session": "sess-r"}, "unknown_state"),
+    ],
+)
+def test_settlement_ordinary_refuses_related_receipt(tmp_path, overrides, state):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _prepare_ordinary_current(store, row)
+    overrides = dict(overrides)
+    accepted = overrides.pop("accepted_result")
+    overrides["accepted_result_id"] = (
+        row["id"] if accepted == "CURRENT" else row["id"] + 1000
+    )
+    _insert_q(
+        store, state=state,
+        settled=(state not in {"claimed", "callback_accepted"}),
+        **overrides,
+    )
+    before = _counts(store._db)
+    outcome = _settle(store, row)
+    assert outcome.status == "settlement_pending", outcome
+    assert outcome.reason == "identity_mismatch", outcome
+    assert _counts(store._db) == before
+
+
+def test_settlement_ordinary_refuses_duplicate_related_receipts(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _prepare_ordinary_current(store, row)
+    _insert_q(
+        store, recovery_session="sess-r1", origin_session="sess-o1",
+        accepted_result_id=row["id"], accepted_result_session="sess-r1",
+    )
+    _insert_q(
+        store, recovery_session="sess-r2", origin_session="sess-o2",
+        accepted_result_id=row["id"], accepted_result_session="sess-r2",
+    )
+    outcome = _settle(store, row)
+    assert outcome.status == "settlement_pending", outcome
+    assert outcome.reason == "identity_mismatch", outcome
+
+
+def test_settlement_ordinary_refuses_malformed_related_receipt(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _prepare_ordinary_current(store, row)
+    store._db._conn.execute(
+        """INSERT INTO task_completion_recoveries
+           (task_id, agent, origin_session_id, recovery_session_id,
+            provider_session_id, claimed_at, expires_at, state,
+            accepted_result_id, accepted_result_session_id, settled_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (TASK_ID, MANAGER, "sess-o", "sess-r", "prov-1",
+         "2026-01-01T00:00:00+00:00", "2999-01-01T00:00:00+00:00",
+         "callback_consumed", str(row["id"]), "sess-r",
+         "2026-01-01T00:05:00+00:00"),
+    )
+    store._db._conn.commit()
+    outcome = _settle(store, row)
+    assert outcome.status == "settlement_pending", outcome
+    assert outcome.reason == "identity_mismatch", outcome
+
+
+def test_settlement_explicit_recovery_with_unrelated_history_refuses(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _insert_q(
+        store, recovery_session="sess-hist",
+        accepted_result_id=row["id"] + 1000,
+        accepted_result_session="sess-hist",
+    )
+    before = _counts(store._db)
+    outcome = _settle_recovery(store, row)
+    assert outcome.status == "settlement_pending", outcome
+    assert outcome.reason == "receipt_missing", outcome
+    assert _counts(store._db) == before
+    assert _q(store)["state"] == "callback_consumed"
+
+
+def test_settlement_ordinary_refuses_exact_current_consumed_receipt(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _prepare_ordinary_current(store, row)
+    _insert_q(
+        store, recovery_session=SESSION_ID, origin_session="sess-origin",
+        accepted_result_id=row["id"], accepted_result_session=SESSION_ID,
+    )
+    outcome = _settle(store, row)
+    assert outcome.status == "settlement_pending", outcome
+    assert outcome.reason == "identity_mismatch", outcome
+
+
+# Realistic chronology: a genuine terminal consumed recovery receipt produced
+# through the supported claim -> publish -> admit -> consume seams for a
+# different origin/recovery session, followed by a later ordinary manager result
+# on the same root, must not veto that ordinary completion.
+def _drive_realistic_terminal_history(tmp_path):
+    store = _store(tmp_path)
+    _activate_v2(store)
+    store._db.insert_task(TaskRecord(
+        id=TASK_ID, status=TaskStatus.IN_PROGRESS, assigned_agent=MANAGER,
+        team=TEAM, brief="historical recovery chronology", orchestration_step_count=1,
+    ))
+    store._db.update_task(TASK_ID, current_session_id="sess-origin")
+    assert store._db.claim_task_completion_recovery(
+        task_id=TASK_ID, agent=MANAGER, origin_session_id="sess-origin",
+        recovery_session_id="sess-hist-recovery", provider_session_id="prov-1",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2999-01-01T00:00:00+00:00",
+    )
+    assert store._db.publish_task_completion_recovery_binding(
+        task_id=TASK_ID, agent=MANAGER, origin_session_id="sess-origin",
+        recovery_session_id="sess-hist-recovery",
+    )
+    assert store._db.admit_task_completion_callback(
+        task_id=TASK_ID, agent=MANAGER, session_id="sess-hist-recovery",
+        output_summary="historical recovery result", confidence_score=70,
+        decision_json=json.dumps({"action": "escalate", "reason": "historical"}),
+    )
+    historical = store._db.get_latest_task_result(
+        TASK_ID, MANAGER, "sess-hist-recovery",
+    )
+    store._db.update_task(TASK_ID, status=TaskStatus.COMPLETED)
+    assert store._db.mark_task_completion_recovery_callback_consumed(
+        task_id=TASK_ID, agent=MANAGER, session_id="sess-hist-recovery",
+        result_row_id=historical["id"], settled_at="2026-01-01T00:05:00+00:00",
+    )
+    receipt = _q(store)
+    assert receipt["state"] == "callback_consumed"
+    assert receipt["recovery_session_id"] == "sess-hist-recovery"
+    assert receipt["accepted_result_id"] == historical["id"]
+
+    store._db.update_task(
+        TASK_ID, status=TaskStatus.IN_PROGRESS, current_session_id=SESSION_ID,
+    )
+    snapshot = resolve_active_team_policy_snapshot(
+        store=store, team=TEAM, agent_name=MANAGER, eligible=True,
+    )
+    assert snapshot is not None and snapshot.family == "v2"
+    persist_session_policy_binding(
+        db=store._db, task_id=TASK_ID, session_id=SESSION_ID, agent_name=MANAGER,
+        snapshot=snapshot, provider_id="codex", executor_kind="codex",
+        model_id="default",
+    )
+    binding = load_session_policy_binding(
+        db=store._db, task_id=TASK_ID, session_id=SESSION_ID, agent_name=MANAGER,
+    )
+    carrier, admission = _carrier_and_admission(binding)
+    assert _admit(store, carrier, admission) is True
+    row = store._db.get_latest_task_result(TASK_ID, MANAGER, SESSION_ID)
+    attempt = store._db.get_authority_policy_v2_attempt_for_result(row["id"])
+    assert attempt is not None and attempt.result_id != historical["id"]
+    return store, row, attempt, historical
+
+
+def test_settlement_ordinary_succeeds_after_real_terminal_history(tmp_path):
+    store, row, attempt, historical = _drive_realistic_terminal_history(tmp_path)
+    _drive(store, row, attempt, "consumed_audited")
+    assert _finalize(store, row, attempt).status == "continued"
+    _prepare_ordinary_current(store, row)
+    before = _counts(store._db)
+    q_before = [tuple(r) for r in _q_rows(store)]
+    audit_before = _audit_rows(store, RECOVERY_SETTLED)
+
+    outcome = _settle(store, row)
+    assert outcome.status == "settled", outcome
+    assert outcome.recovery is False and outcome.receipt_settled is False
+    assert _counts(store._db) == before
+    assert [tuple(r) for r in _q_rows(store)] == q_before
+    assert _audit_rows(store, RECOVERY_SETTLED) == audit_before
+
+
+def test_settlement_ordinary_refuses_old_body_without_current_audit(tmp_path):
+    store, row, attempt = _drive_finalized(tmp_path)
+    _insert_ordinary_completion(store, row["id"])
+    _mutate_audit_payload(
+        store, "completion_report",
+        lambda payload: payload.__setitem__("_result_row_id", row["id"] + 1000),
+    )
+    before = _counts(store._db)
+    outcome = _settle(store, row)
+    assert outcome.status == "settlement_pending", outcome
+    assert outcome.reason == "completion_evidence_missing", outcome
+    assert _counts(store._db) == before

@@ -9875,24 +9875,152 @@ class Database:
 
     def _v2_identity_scoped_audits(
         self, root_task_id: str, manager_agent: str, action: str,
-        *, attempt_id: str | None = None,
+        *, attempt_id: str | None = None, include_opaque: bool = False,
     ) -> list[dict] | None:
         """Enumerate identity-scoped audit rows BEFORE any payload filtering.
 
         Enumerating by action/agent (and attempt where known) first means a
         second row with a DIFFERENT discriminator/code cannot hide from the
         cardinality check that follows.
+
+        With ``include_opaque`` a row whose ``payload`` is not a JSON object is
+        retained rather than silently dropped: a non-object body can never be
+        independently established as unrelated, so the caller's closed typed
+        comparison must fail closed on it instead of observing an apparent
+        absence.
         """
         try:
-            return [
-                row for row in self.get_audit_logs(root_task_id)
-                if row.get("action") == action
-                and row.get("agent") == manager_agent
-                and isinstance(row.get("payload"), dict)
-                and (attempt_id is None or row["payload"].get("attempt_id") == attempt_id)
-            ]
+            rows = []
+            for row in self.get_audit_logs(root_task_id):
+                if row.get("action") != action or row.get("agent") != manager_agent:
+                    continue
+                payload = row.get("payload")
+                if not isinstance(payload, dict):
+                    if include_opaque:
+                        rows.append(row)
+                    continue
+                if attempt_id is not None and payload.get("attempt_id") != attempt_id:
+                    continue
+                rows.append(row)
+            return rows
         except Exception:
             return None
+
+    @classmethod
+    def _v2_identity_observation(cls, payload, field: str, expected, kind: str) -> str:
+        """Classify one identity field against the expected causal identity.
+
+        ``absent`` (field not carried), ``match`` (well-typed and equal),
+        ``distinct`` (well-typed and provably different) or ``malformed``
+        (present but not the expected JSON type).  A malformed presence is never
+        ordinary absence.
+        """
+        if not isinstance(payload, dict) or field not in payload:
+            return "absent"
+        value = payload[field]
+        well_typed = cls._v2_is_int(value) if kind == "int" else isinstance(value, str)
+        if not well_typed:
+            return "malformed"
+        return "match" if value == expected else "distinct"
+
+    @classmethod
+    def _v2_result_reference_state(cls, payload, fields, result_id: int) -> str:
+        """Resolve a row's result reference across ``fields`` (presence-based).
+
+        ``none``: the row carries no result reference at all.  ``related``: some
+        present reference matches the exact result or is malformed/conflicting.
+        ``distinct``: every present reference is a well-typed integer for a
+        different result.
+        """
+        present = [
+            field for field in fields
+            if isinstance(payload, dict) and field in payload
+        ]
+        if not present:
+            return "none"
+        states = [
+            cls._v2_identity_observation(payload, field, result_id, "int")
+            for field in present
+        ]
+        if any(state in ("match", "malformed") for state in states):
+            return "related"
+        return "distinct"
+
+    @classmethod
+    def _v2_session_reference_related(cls, payload, fields, session_id: str) -> bool:
+        """True when a present session reference matches or is malformed.
+
+        A row whose every present session reference is a well-typed string for a
+        DIFFERENT session is independently established as unrelated.
+        """
+        for field in fields:
+            if not isinstance(payload, dict) or field not in payload:
+                continue
+            value = payload[field]
+            if not isinstance(value, str) or value == session_id:
+                return True
+        # Every present session reference is well-typed and distinct, or the row
+        # carries no session reference at all: independently unrelated.
+        return False
+
+    @classmethod
+    def _v2_completion_row_is_recovery_related(
+        cls, payload, *, result_id: int, manager_session_id: str,
+    ) -> bool:
+        """Presence-based relatedness for a recovery-shaped completion row.
+
+        A row is recovery-shaped when it carries the ``_recovery_session_id``
+        key OR the settlement-completion-only ``result_id``/``session_id`` keys,
+        which the legitimate ordinary producer payload (a ``CompletionReport``
+        plus ``_result_row_id``/``_result_session_id``) never contains.  Removing
+        the recovery marker key does therefore not turn a settlement completion
+        into ordinary absence.
+        """
+        if not isinstance(payload, dict):
+            return True
+        recovery_shaped = (
+            "_recovery_session_id" in payload
+            or "result_id" in payload
+            or "session_id" in payload
+        )
+        if not recovery_shaped:
+            return False
+        ref_state = cls._v2_result_reference_state(
+            payload, ("_result_row_id", "result_id"), result_id,
+        )
+        if ref_state == "related":
+            return True
+        return cls._v2_session_reference_related(
+            payload,
+            ("_recovery_session_id", "_result_session_id", "session_id"),
+            manager_session_id,
+        )
+
+    @classmethod
+    def _v2_completion_row_is_ordinary_related(
+        cls, payload, *, result_id: int, manager_session_id: str,
+    ) -> bool:
+        """Presence-based relatedness for an ordinary producer completion row."""
+        if not isinstance(payload, dict):
+            return True
+        if (
+            "_recovery_session_id" in payload
+            or "result_id" in payload
+            or "session_id" in payload
+        ):
+            # Recovery-shaped evidence is classified separately and is never
+            # ordinary authority.
+            return False
+        ref_state = cls._v2_result_reference_state(
+            payload, ("_result_row_id", "result_id"), result_id,
+        )
+        if ref_state == "related":
+            return True
+        if ref_state == "distinct":
+            return False
+        return cls._v2_session_reference_related(
+            payload, ("_result_session_id", "session_id"), manager_session_id,
+        )
 
     def _v2_closed_audit_matches(self, rows, expected: dict) -> bool:
         if rows is None or len(rows) != 1:
@@ -10772,43 +10900,64 @@ class Database:
     ) -> list[dict]:
         """Potentially recovery-settlement-related completion rows.
 
-        Enumerated BEFORE discriminator filtering: a row that carries a real
-        string recovery discriminator and references either the exact current
-        result or the exact current recovery session is identity-related and can
-        never hide from the cardinality check.  Ordinary (non-recovery)
+        Enumerated BEFORE discriminator filtering and classified from FIELD
+        PRESENCE.  A recovery-shaped completion row (the ``_recovery_session_id``
+        key OR the settlement-only ``result_id``/``session_id`` keys) is
+        identity-related whenever any present result reference matches the exact
+        current result or is malformed, or any present recovery/session
+        reference matches the exact current session or is malformed.  A
+        null/bool/list/string recovery marker with the exact integer result
+        reference, or a stringified result reference with the exact session, can
+        therefore never hide from the cardinality check.  Ordinary (non-recovery)
         completion evidence and unrelated genuine historical sessions are a
         different evidence class and are not counted here.
         """
         related = []
         for row in rows:
-            payload = row["payload"]
-            marker = payload.get("_recovery_session_id")
-            if not isinstance(marker, str):
-                continue
-            if marker == manager_session_id:
-                related.append(row)
-                continue
-            row_id = payload.get("_result_row_id")
-            if self._v2_is_int(row_id) and row_id == result_id:
+            if self._v2_completion_row_is_recovery_related(
+                row["payload"], result_id=result_id,
+                manager_session_id=manager_session_id,
+            ):
                 related.append(row)
         return related
 
-    def _v2_settled_rows(self, rows, *, result_id: int) -> list[dict]:
+    def _v2_settled_rows(
+        self, rows, *, attempt, candidate, envelope, notification,
+    ) -> list[dict]:
         """Potentially settlement-related settled rows (before filtering).
 
-        Either exact settlement-owned result reference (``_result_row_id`` or the
-        closed payload ``result_id``) makes a row identity-related, so a
-        duplicate/conflicting row can never be filtered away.
+        The settled payload carries one closed causal tuple.  A row is related
+        when ANY present identity field matches the exact authenticated
+        attempt/candidate/envelope/notification/generation/result/session or is
+        malformed/conflicting; only a row whose every present identity is
+        well-typed and provably a DIFFERENT value is unrelated.  A row with no
+        causal identity at all cannot be established as unrelated.
         """
+        identities = (
+            ("_result_row_id", candidate.result_id, "int"),
+            ("result_id", candidate.result_id, "int"),
+            ("attempt_id", attempt.attempt_id, "str"),
+            ("candidate_id", candidate.candidate_id, "str"),
+            ("envelope_id", envelope.envelope_id, "str"),
+            ("notification_id", notification.notification_id, "str"),
+            ("generation_id", notification.notification_id, "str"),
+            ("recovery_session_id", candidate.manager_session_id, "str"),
+            ("manager_session_id", candidate.manager_session_id, "str"),
+        )
         related = []
         for row in rows:
             payload = row["payload"]
-            row_id = payload.get("_result_row_id")
-            if self._v2_is_int(row_id) and row_id == result_id:
+            if not isinstance(payload, dict):
                 related.append(row)
                 continue
-            payload_result = payload.get("result_id")
-            if self._v2_is_int(payload_result) and payload_result == result_id:
+            states = [
+                self._v2_identity_observation(payload, field, expected, kind)
+                for field, expected, kind in identities
+            ]
+            if not any(state != "absent" for state in states):
+                related.append(row)
+                continue
+            if any(state in ("match", "malformed") for state in states):
                 related.append(row)
         return related
 
@@ -10829,6 +10978,7 @@ class Database:
         """
         completion = self._v2_identity_scoped_audits(
             root_task_id, manager_agent, "completion_report",
+            include_opaque=True,
         )
         if completion is None:
             return False
@@ -10848,11 +10998,14 @@ class Database:
             return False
         settled = self._v2_identity_scoped_audits(
             root_task_id, manager_agent, AUTHORITY_POLICY_V2_RECOVERY_SETTLED_ACTION,
-            attempt_id=None,
+            attempt_id=None, include_opaque=True,
         )
         if settled is None:
             return False
-        related_settled = self._v2_settled_rows(settled, result_id=result_id)
+        related_settled = self._v2_settled_rows(
+            settled, attempt=attempt, candidate=candidate, envelope=envelope,
+            notification=notification,
+        )
         if len(related_settled) != 1:
             return False
         expected_settled = self._v2_settlement_settled_payload(
@@ -10865,20 +11018,23 @@ class Database:
 
     def _authenticate_v2_settlement_pre_state_uncommitted(
         self, *, root_task_id: str, manager_agent: str, result_id: int,
-        manager_session_id: str,
+        manager_session_id: str, attempt, candidate, envelope, notification,
     ) -> bool:
         """True only when NO settlement-owned terminal evidence exists yet.
 
         Initial ``callback_accepted`` settlement writes the completion and
         recovery-settled audits atomically; contradictory or partially present
         terminal evidence refuses without synthesizing, replacing or adding
-        evidence.  Only recovery-settlement-owned rows (a real recovery
-        discriminator / the settled action) are considered; the ordinary v2
-        producer audit and unrelated historical sessions are not
+        evidence.  Rows are enumerated BEFORE discriminator filtering and a
+        non-object body is retained, so a malformed/conflicting/duplicate row
+        can never be filtered away into an apparent clean pre-state.  Only
+        recovery-settlement-owned rows are considered; the ordinary v2 producer
+        audit and unrelated genuine historical sessions are not
         settlement-owned.
         """
         completion = self._v2_identity_scoped_audits(
             root_task_id, manager_agent, "completion_report",
+            include_opaque=True,
         )
         if completion is None:
             return False
@@ -10888,11 +11044,14 @@ class Database:
             return False
         settled = self._v2_identity_scoped_audits(
             root_task_id, manager_agent, AUTHORITY_POLICY_V2_RECOVERY_SETTLED_ACTION,
-            attempt_id=None,
+            attempt_id=None, include_opaque=True,
         )
         if settled is None:
             return False
-        return not self._v2_settled_rows(settled, result_id=result_id)
+        return not self._v2_settled_rows(
+            settled, attempt=attempt, candidate=candidate, envelope=envelope,
+            notification=notification,
+        )
 
     def _v2_settlement_completion_payload(
         self, *, root_task_id: str, manager_agent: str, result_row,
@@ -10974,6 +11133,7 @@ class Database:
         result_id = result_row["id"]
         rows = self._v2_identity_scoped_audits(
             root_task_id, manager_agent, "completion_report",
+            include_opaque=True,
         )
         if rows is None:
             return False
@@ -10983,15 +11143,13 @@ class Database:
             # A recovery-shaped receipt for this exact result/session is never
             # ordinary authority, even when no Q currently matches it.
             return False
-        current = []
-        for row in rows:
-            payload = row["payload"]
-            if "_recovery_session_id" in payload:
-                continue
-            row_id = payload.get("_result_row_id")
-            if not self._v2_is_int(row_id) or row_id != result_id:
-                continue
-            current.append(row)
+        current = [
+            row for row in rows
+            if self._v2_completion_row_is_ordinary_related(
+                row["payload"], result_id=result_id,
+                manager_session_id=result_row["session_id"],
+            )
+        ]
         if len(current) != 1:
             return False
         expected = self._v2_ordinary_completion_payload(
@@ -11001,6 +11159,45 @@ class Database:
         if expected is None:
             return False
         return self._v2_json_type_sensitive_equal(current[0]["payload"], expected)
+
+    # A recovery receipt is an established unrelated terminal history only in
+    # one of these durable end states.  Any other (nonterminal or unknown) state
+    # is handled conservatively and still fails closed.
+    _V2_TERMINAL_RECEIPT_STATES = frozenset({
+        "callback_consumed", "superseded", "expired", "restart_settled",
+    })
+
+    def _v2_receipt_blocks_ordinary(
+        self, receipt, *, result_id: int, manager_session_id: str,
+    ) -> bool:
+        """Whether one recovery receipt still vetoes the current ordinary result.
+
+        A receipt is potentially related to the current ordinary completion when
+        any of its ``recovery_session_id`` / ``origin_session_id`` /
+        ``accepted_result_session_id`` identities matches the current session, or
+        its ``accepted_result_id`` matches the current result.  A malformed
+        identity value and any nonterminal/unknown state cannot be established as
+        unrelated.  Only a receipt that is an ESTABLISHED TERMINAL history with
+        every identity well-typed and provably disjoint is non-blocking.
+        """
+        state = receipt["state"]
+        if not isinstance(state, str) or state not in self._V2_TERMINAL_RECEIPT_STATES:
+            return True
+        origin = receipt["origin_session_id"]
+        recovery = receipt["recovery_session_id"]
+        if not isinstance(origin, str) or not isinstance(recovery, str):
+            return True
+        if origin == manager_session_id or recovery == manager_session_id:
+            return True
+        accepted_session = receipt["accepted_result_session_id"]
+        if accepted_session is not None:
+            if not isinstance(accepted_session, str) or accepted_session == manager_session_id:
+                return True
+        accepted_result = receipt["accepted_result_id"]
+        if accepted_result is not None:
+            if not self._v2_is_int(accepted_result) or accepted_result == result_id:
+                return True
+        return False
 
     @_synchronized
     def settle_authority_policy_v2_continuation_receipt(
@@ -11094,6 +11291,8 @@ class Database:
                     if not self._authenticate_v2_settlement_pre_state_uncommitted(
                         root_task_id=root_task_id, manager_agent=manager_agent,
                         result_id=result_id, manager_session_id=manager_session_id,
+                        attempt=attempt, candidate=candidate, envelope=envelope,
+                        notification=notification,
                     ):
                         self._conn.rollback()
                         return _pending("identity_mismatch", **base)
@@ -11155,8 +11354,18 @@ class Database:
                 self._conn.rollback()
                 return _pending("identity_mismatch", **base)
 
-            # Ordinary absence: no recovery assertion and no Q.
-            if receipts:
+            # Ordinary absence: no recovery assertion.  An unrelated
+            # ESTABLISHED TERMINAL receipt/history neither supplies current
+            # authority nor vetoes current ordinary completion, but any
+            # potentially related (exact or partially matching/conflicting),
+            # malformed, nonterminal or unknown-state receipt still fails closed.
+            if any(
+                self._v2_receipt_blocks_ordinary(
+                    receipt, result_id=result_id,
+                    manager_session_id=manager_session_id,
+                )
+                for receipt in receipts
+            ):
                 self._conn.rollback()
                 return _pending("identity_mismatch", **base)
             if not self._authenticate_v2_ordinary_completion_evidence_uncommitted(
