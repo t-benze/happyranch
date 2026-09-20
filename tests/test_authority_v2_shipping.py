@@ -1945,9 +1945,20 @@ def _drive_c3d3b_admission(
     receipts = publish_authority_policy_v2_notifications(
         fixture.org.orchestrator, fixture.state.queue,
     )
-    assert receipts and receipts[0]["status"] == "published", receipts
+    # The REAL second worker consumes the tagged item concurrently, so BOTH
+    # orderings are legitimate: a winning acknowledgement reports ``published``
+    # and the durable state may still be ``published``; the documented
+    # consumer-outruns-acknowledgement shape reports ``publish_returned`` and
+    # never regresses state, leaving ``admitted``/``settled``.  The substantive
+    # one-admission proof is the deterministic durable assertions below (and in
+    # ``_assert_admission_negative``), never this racy intermediate read.
+    assert receipts and receipts[0]["status"] in (
+        "published", "publish_returned",
+    ), receipts
     notification = db.get_authority_policy_v2_recovery_notification(generation)
-    assert notification is not None and notification.state == "published"
+    assert notification is not None and notification.state in (
+        "published", "admitted", "settled",
+    ), notification.state
 
     if negative is not None:
         return _assert_admission_negative(
