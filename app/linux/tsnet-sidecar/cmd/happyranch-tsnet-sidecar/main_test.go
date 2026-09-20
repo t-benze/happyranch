@@ -625,6 +625,12 @@ func readFixtureLog(t *testing.T, path string) string {
 // TestAdmissionRemovalUsesRealNamedQueryAndStop wires the real named-property
 // probe and real stop through the real admission-removal consumer, using only
 // a per-case fail-closed systemctl fixture on PATH (never host forwarding).
+//
+// This is the command-level admission case.  The real supervisor-level
+// consumer assertions (child TERM/cleanup ordering after observed absence,
+// notification suppression, the real 5s timeout and the detached admission
+// context) live in health_consumer_test.go so a seam name is never mistaken
+// for executed coverage.
 func TestAdmissionRemovalUsesRealNamedQueryAndStop(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "state")
