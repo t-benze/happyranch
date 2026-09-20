@@ -182,7 +182,8 @@ def test_four_stages_advance_k_and_j_and_persist_one_evaluation(tmp_path):
     assert _lifecycle(store, candidate.candidate_id) == "evaluated"
     assert _stage(store, row["id"]) == "evaluated"
     assert _audit_events(store, candidate.candidate_id) == ["claimed"]
-    # Task and recovery receipt are unchanged; no envelope/notification exists.
+    # Task and recovery receipt are unchanged; C3d2's three additive tables now
+    # exist but the evaluation stage mints no continuation row in any of them.
     task = store._db.get_task(TASK_ID)
     assert task.status is TaskStatus.IN_PROGRESS
     assert task.current_session_id == SESSION_ID
@@ -191,13 +192,15 @@ def test_four_stages_advance_k_and_j_and_persist_one_evaluation(tmp_path):
             "SELECT name FROM sqlite_master WHERE type='table'"
         )
     }
-    assert not any(
-        name in tables for name in (
-            "authority_policy_v2_continue_envelopes",
-            "authority_policy_v2_recovery_notifications",
-            "authority_policy_v2_root_dispatch",
-        )
-    )
+    for name in (
+        "authority_policy_v2_continue_envelopes",
+        "authority_policy_v2_recovery_notifications",
+        "authority_policy_v2_root_dispatch",
+    ):
+        assert name in tables
+        assert store._db._conn.execute(
+            f'SELECT COUNT(*) FROM "{name}"'
+        ).fetchone()[0] == 0
     after_eval = _counts(store._db)
     assert after_eval["evaluations"] == before["evaluations"] + 1
     assert after_eval["candidates"] == before["candidates"]

@@ -25,14 +25,19 @@ from runtime.models import (
     AuthorityPolicyV2ActivationControlRequest,
     AuthorityPolicyV2Attempt,
     AuthorityPolicyV2Candidate,
+    AuthorityPolicyV2ContinueEnvelope,
     AuthorityPolicyV2ControlReceipt,
     AuthorityPolicyV2Evaluation,
+    AuthorityPolicyV2FinalizationOutcome,
     AuthorityPolicyV2HousekeepingOutcome,
     AuthorityPolicyV2HousekeepingTarget,
     AuthorityPolicyV2PairedControlRequest,
     AuthorityPolicyV2Pin,
+    AuthorityPolicyV2RecoveryNotification,
     AuthorityPolicyV2Release,
+    AuthorityPolicyV2RootDispatch,
     AuthorityPolicyV2SessionBinding,
+    AuthorityPolicyV2SettlementOutcome,
     AuthorityPolicyV2StageOutcome,
 )
 
@@ -349,6 +354,72 @@ class AuthorityPolicyStore:
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
         )
+
+    # -- THR-229 checkpoint C3d2: thin forwarders over the DB-owned final
+    # continuation transaction, the separate exact post-final receipt-settlement
+    # contract and the authenticated E/N/D reads.  The facade never begins,
+    # commits or rolls back: the Database owns the single BEGIN IMMEDIATE
+    # boundary, and publication/admission/spend writers remain later units.
+
+    def finalize_v2_continuation(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str,
+        max_revise_rounds: int = 0,
+    ) -> AuthorityPolicyV2FinalizationOutcome:
+        return self._db.finalize_authority_policy_v2_continuation(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+            max_revise_rounds=max_revise_rounds,
+        )
+
+    def settle_v2_continuation_receipt(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, recovery_session_id: str | None = None,
+        accepted_result_id: int | None = None,
+        accepted_result_session_id: str | None = None,
+    ) -> AuthorityPolicyV2SettlementOutcome:
+        return self._db.settle_authority_policy_v2_continuation_receipt(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            recovery_session_id=recovery_session_id,
+            accepted_result_id=accepted_result_id,
+            accepted_result_session_id=accepted_result_session_id,
+        )
+
+    def get_v2_continue_envelope(
+        self, envelope_id: str,
+    ) -> AuthorityPolicyV2ContinueEnvelope | None:
+        return self._db.get_authority_policy_v2_continue_envelope(envelope_id)
+
+    def get_v2_continue_envelope_for_candidate(
+        self, candidate_id: str,
+    ) -> AuthorityPolicyV2ContinueEnvelope | None:
+        return self._db.get_authority_policy_v2_continue_envelope_for_candidate(
+            candidate_id
+        )
+
+    def get_v2_continue_envelope_for_root(
+        self, root_task_id: str,
+    ) -> AuthorityPolicyV2ContinueEnvelope | None:
+        return self._db.get_authority_policy_v2_continue_envelope_for_root(root_task_id)
+
+    def get_v2_recovery_notification(
+        self, notification_id: str,
+    ) -> AuthorityPolicyV2RecoveryNotification | None:
+        return self._db.get_authority_policy_v2_recovery_notification(notification_id)
+
+    def get_v2_recovery_notification_for_envelope(
+        self, envelope_id: str,
+    ) -> AuthorityPolicyV2RecoveryNotification | None:
+        return self._db.get_authority_policy_v2_recovery_notification_for_envelope(
+            envelope_id
+        )
+
+    def get_v2_root_dispatch(
+        self, root_task_id: str,
+    ) -> AuthorityPolicyV2RootDispatch | None:
+        return self._db.get_authority_policy_v2_root_dispatch(root_task_id)
 
     def bind_legacy_session(
         self,

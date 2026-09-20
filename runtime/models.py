@@ -989,11 +989,17 @@ AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CONSUMED = "consumed"
 # candidate (K) when a pre-final attempt is durably refused.  It is append-only
 # like the other events and carries no authority.
 AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_REFUSED = "refused"
+# THR-229 checkpoint C3d2: the final continuation event written on the consumed
+# candidate by the ONE final continuation transaction.  It is append-only and
+# carries no authority by itself: the active envelope plus the pending
+# notification/dispatch pointer are the durable continuation evidence.
+AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_FINAL = "final"
 AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENTS = frozenset({
     AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
     AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_EVALUATED,
     AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CONSUMED,
     AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_REFUSED,
+    AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_FINAL,
 })
 
 # THR-229 checkpoint C3c: the forward-only candidate (K) lifecycle.  Claim
@@ -1052,6 +1058,9 @@ AUTHORITY_POLICY_V2_STAGE_REFUSAL_CODES = frozenset({
     # bounded prior-stage/duplicate classification; none is authority.
     "already_evaluated", "already_consumed", "evaluation_missing",
     "evaluation_audit_missing", "evaluation_failed", "consume_failed",
+    # C3d2: the ONE final continuation transaction failed as a whole; the
+    # winning owner is poisoned and only C3d1 refusal housekeeping may proceed.
+    "final_commit_failed",
 })
 
 # THR-229 checkpoint C3d1: the terminal pre-final refusal lifecycle.  A refusal
@@ -1091,6 +1100,59 @@ AUTHORITY_POLICY_V2_HOUSEKEEPING_OUTCOME_CODES = (
 )
 AUTHORITY_POLICY_V2_HOUSEKEEPING_OUTCOME_STATUSES = frozenset({
     "refused", "owner_lost", "already_refused", "housekeeping_pending",
+})
+
+# THR-229 checkpoint C3d2: the durable continuation envelope (E), recovery
+# notification (N) and root-dispatch generation pointer (D).  These are the
+# three already-authorized remaining additive tables.  E is inserted ACTIVE by
+# the final continuation transaction and repeats/authenticates the complete
+# pinned tuple; N is the continuation generation G (its APV2N identity) and
+# carries the accepted lifecycle states; D is keyed by root and admits only one
+# non-retired generation.  Later publication/admission/spend transition writers
+# are separate units and are NOT implemented here; only the closed state
+# vocabularies and lifecycle guards are defined.
+AUTHORITY_POLICY_V2_ENVELOPE_STATES = frozenset({"active", "consumed"})
+AUTHORITY_POLICY_V2_NOTIFICATION_STATES = frozenset({
+    "needed", "publishing", "published", "admitted", "settled", "invalidated",
+})
+AUTHORITY_POLICY_V2_DISPATCH_STATES = frozenset({
+    "pending", "admitted", "retired",
+})
+# Closed non-semantic audit actions written by the final continuation
+# transaction and the receipt-settlement transaction.  ``af`` in the accepted
+# R4 notation is the final candidate/task/hook audit set plus the closed
+# ``continued`` result-stage event.
+AUTHORITY_POLICY_V2_RESULT_STAGE_CONTINUED = "continued"
+AUTHORITY_POLICY_V2_FINAL_TASK_AUDIT_ACTION = "authority_policy_v2_final_task"
+AUTHORITY_POLICY_V2_FINAL_HOOK_AUDIT_ACTION = "authority_policy_v2_final_hook"
+AUTHORITY_POLICY_V2_RECOVERY_SETTLED_ACTION = "authority_policy_v2_recovery_settled"
+
+# Bounded outcome of the ONE final continuation transaction.  ``continued`` is
+# a just-committed continuation; ``already_continued`` is a read-only exact
+# replay of the committed final evidence.  ``finalization_pending`` means the
+# transaction could not establish safe finalization (or failed) and the prior
+# consumed residue is preserved; only refusal/settlement housekeeping may
+# proceed, never a remint or re-evaluation.
+AUTHORITY_POLICY_V2_FINALIZATION_OUTCOME_STATUSES = frozenset({
+    "continued", "already_continued", "finalization_pending",
+})
+AUTHORITY_POLICY_V2_FINALIZATION_PENDING_REASONS = frozenset({
+    "transaction_owned", "identity_mismatch", "owner_lost", "evidence_drift",
+    "schema_drift", "already_finalized", "finalization_failed",
+})
+
+# Bounded outcome of the separate exact post-final receipt-settlement
+# transaction/read.  ``settled`` just committed the exact recovery settlement
+# (or verified real ordinary completion evidence); ``already_settled_exact`` is
+# a read-only exact replay of an existing settlement; ``settlement_pending``
+# means the evidence was unsafe or the transaction failed and the prior
+# Pending/E/N/D/J + callback_accepted residue is preserved.
+AUTHORITY_POLICY_V2_SETTLEMENT_OUTCOME_STATUSES = frozenset({
+    "settled", "already_settled_exact", "settlement_pending",
+})
+AUTHORITY_POLICY_V2_SETTLEMENT_PENDING_REASONS = frozenset({
+    "transaction_owned", "identity_mismatch", "owner_lost", "evidence_drift",
+    "receipt_missing", "completion_evidence_missing", "settlement_failed",
 })
 
 
@@ -1880,6 +1942,364 @@ class AuthorityPolicyV2HousekeepingOutcome(BaseModel):
                 raise ValueError("a terminal housekeeping outcome requires a refusal code")
         elif self.refusal_code is None:
             raise ValueError("a pending housekeeping outcome requires a bounded reason")
+        return self
+
+
+# THR-229 checkpoint C3d2: the three remaining approved additive values.
+#
+# The envelope (E) is inserted ACTIVE by the final continuation transaction and
+# repeats/authenticates the complete pinned candidate tuple (the same immutable
+# identity the candidate/pin/evaluation committed).  Its identity is exactly
+# ``APV2E-`` + H({"candidate_id": C, "kind": "continue_envelope"}) and it is
+# unique by candidate.  Only the forward-only active -> consumed lifecycle may
+# advance (the later spend unit owns that transition); identity and the
+# authenticated tuple are immutable.
+
+
+class AuthorityPolicyV2ContinueEnvelope(BaseModel):
+    """Durable active continuation envelope (E) for one consumed candidate."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    envelope_id: StrictStr
+    candidate_id: StrictStr
+    claim_key: StrictStr
+    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    root_task_id: StrictStr
+    manager_agent: StrictStr
+    manager_session_id: StrictStr
+    attempt_id: StrictStr
+    result_id: StrictInt = Field(ge=1, le=9223372036854775807)
+    binding_id: StrictStr
+    contract_id: Literal[AUTHORITY_POLICY_V2_CONTRACT_ID]
+    contract_version: Literal[AUTHORITY_POLICY_V2_CONTRACT_VERSION]
+    contract_digest: StrictStr
+    release_id: StrictStr
+    policy_version: StrictInt = Field(ge=1, le=2147483647)
+    policy_digest: StrictStr
+    activation_id: StrictStr
+    activation_epoch: StrictInt = Field(ge=1, le=2147483647)
+    selector_id: StrictStr
+    provider_id: StrictStr
+    executor_kind: StrictStr
+    model_id: StrictStr
+    causal_result_id: StrictInt = Field(ge=1, le=9223372036854775807)
+    causal_result_digest: StrictStr
+    # The persisted evaluation (V) outcome this envelope authenticates.  Only
+    # the accepted continuation outcome may mint an envelope.
+    evaluation_outcome: Literal["continue_applies"]
+    origin_boot_id: StrictStr
+    owner_attempt_id: StrictStr
+    lifecycle_state: StrictStr = "active"
+    spending_result_id: StrictInt | None = Field(
+        default=None, ge=1, le=9223372036854775807,
+    )
+    created_at: datetime = Field(default_factory=_now)
+
+    @field_validator(
+        "claim_key", "contract_digest", "policy_digest", "causal_result_digest",
+    )
+    @classmethod
+    def _v2_envelope_digests_are_lower_hex(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_digest(value, info.field_name)
+
+    @field_validator("envelope_id")
+    @classmethod
+    def _v2_envelope_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2E-"):
+            raise ValueError("envelope_id must start with APV2E-")
+        _validate_authority_policy_v2_digest(value[len("APV2E-"):], "envelope_id")
+        return value
+
+    @field_validator("candidate_id")
+    @classmethod
+    def _v2_envelope_candidate_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2C-"):
+            raise ValueError("candidate_id must start with APV2C-")
+        _validate_authority_policy_v2_digest(value[len("APV2C-"):], "candidate_id")
+        return value
+
+    @field_validator("attempt_id")
+    @classmethod
+    def _v2_envelope_attempt_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2R-"):
+            raise ValueError("attempt_id must start with APV2R-")
+        _validate_authority_policy_v2_digest(value[len("APV2R-"):], "attempt_id")
+        return value
+
+    @field_validator("binding_id")
+    @classmethod
+    def _v2_envelope_binding_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2B-"):
+            raise ValueError("binding_id must start with APV2B-")
+        _validate_authority_policy_v2_digest(value[len("APV2B-"):], "binding_id")
+        return value
+
+    @field_validator("release_id")
+    @classmethod
+    def _v2_envelope_release_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2-"):
+            raise ValueError("release_id must start with APV2-")
+        _validate_authority_policy_v2_digest(value[len("APV2-"):], "release_id")
+        return value
+
+    @field_validator("activation_id")
+    @classmethod
+    def _v2_envelope_activation_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2A-"):
+            raise ValueError("activation_id must start with APV2A-")
+        _validate_authority_policy_v2_digest(value[len("APV2A-"):], "activation_id")
+        return value
+
+    @field_validator("selector_id")
+    @classmethod
+    def _v2_envelope_selector_ref(cls, value: str) -> str:
+        return _validate_authority_policy_v2_selector_ref(value, "selector_id")
+
+    @field_validator(
+        "manager_agent", "manager_session_id", "model_id", "origin_boot_id",
+        "owner_attempt_id", "provider_id", "root_task_id",
+    )
+    @classmethod
+    def _v2_envelope_identity_scalars(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_text(value, info.field_name, 128)
+
+    @field_validator("lifecycle_state")
+    @classmethod
+    def _v2_envelope_state_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_ENVELOPE_STATES:
+            raise ValueError("envelope lifecycle_state is not a closed value")
+        return value
+
+    @model_validator(mode="after")
+    def _v2_envelope_identity_is_frozen(self) -> AuthorityPolicyV2ContinueEnvelope:
+        if self.candidate_id != f"APV2C-{self.claim_key}":
+            raise ValueError("envelope candidate_id must match the claim_key")
+        if self.envelope_id != authority_policy_v2_envelope_id(self.candidate_id):
+            raise ValueError("envelope_id does not match the frozen envelope preimage")
+        if self.attempt_id != authority_policy_v2_attempt_id(
+            manager_agent=self.manager_agent, manager_session_id=self.manager_session_id,
+            result_id=self.result_id, root_task_id=self.root_task_id, team=self.team,
+        ):
+            raise ValueError("envelope attempt_id does not match the attempt preimage")
+        if self.result_id != self.causal_result_id:
+            raise ValueError("envelope causal_result_id must be the admitted result id")
+        if self.causal_result_digest != authority_policy_v2_causal_result_digest(
+            self.result_id
+        ):
+            raise ValueError("envelope causal_result_digest is not the row-identity digest")
+        if self.release_id != f"APV2-{self.policy_digest}":
+            raise ValueError("envelope release_id must contain policy_digest")
+        if self.contract_digest != authority_policy_v2_contract_digest():
+            raise ValueError("envelope contract_digest does not match the v2 contract")
+        if (self.lifecycle_state == "consumed") != (self.spending_result_id is not None):
+            raise ValueError("a consumed envelope requires exactly one spending result")
+        return self
+
+
+class AuthorityPolicyV2RecoveryNotification(BaseModel):
+    """Durable continuation notification (N); its identity is generation G."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    notification_id: StrictStr
+    envelope_id: StrictStr
+    candidate_id: StrictStr
+    result_id: StrictInt = Field(ge=1, le=9223372036854775807)
+    root_task_id: StrictStr
+    manager_agent: StrictStr
+    manager_session_id: StrictStr
+    selector_id: StrictStr
+    state: StrictStr = "needed"
+    publication_attempt: StrictInt = Field(default=0, ge=0, le=2147483647)
+    publisher_boot_id: StrictStr | None = None
+    lease_deadline: StrictStr | None = None
+    next_session_id: StrictStr | None = None
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+    @field_validator("notification_id")
+    @classmethod
+    def _v2_notification_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2N-"):
+            raise ValueError("notification_id must start with APV2N-")
+        _validate_authority_policy_v2_digest(value[len("APV2N-"):], "notification_id")
+        return value
+
+    @field_validator("envelope_id")
+    @classmethod
+    def _v2_notification_envelope_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2E-"):
+            raise ValueError("envelope_id must start with APV2E-")
+        _validate_authority_policy_v2_digest(value[len("APV2E-"):], "envelope_id")
+        return value
+
+    @field_validator("candidate_id")
+    @classmethod
+    def _v2_notification_candidate_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2C-"):
+            raise ValueError("candidate_id must start with APV2C-")
+        _validate_authority_policy_v2_digest(value[len("APV2C-"):], "candidate_id")
+        return value
+
+    @field_validator("selector_id")
+    @classmethod
+    def _v2_notification_selector_ref(cls, value: str) -> str:
+        return _validate_authority_policy_v2_selector_ref(value, "selector_id")
+
+    @field_validator("manager_agent", "manager_session_id", "root_task_id")
+    @classmethod
+    def _v2_notification_identity_scalars(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_text(value, info.field_name, 128)
+
+    @field_validator("state")
+    @classmethod
+    def _v2_notification_state_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_NOTIFICATION_STATES:
+            raise ValueError("notification state is not a closed value")
+        return value
+
+    @field_validator("publisher_boot_id", "lease_deadline", "next_session_id")
+    @classmethod
+    def _v2_notification_optional_scalars(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return None
+        return _validate_authority_policy_v2_text(value, info.field_name, 128)
+
+    @model_validator(mode="after")
+    def _v2_notification_identity_is_frozen(self) -> AuthorityPolicyV2RecoveryNotification:
+        if self.notification_id != authority_policy_v2_notification_id(self.envelope_id):
+            raise ValueError("notification_id does not match the frozen notification preimage")
+        if (self.publisher_boot_id is None) != (self.lease_deadline is None):
+            raise ValueError("publisher boot and lease are present or absent together")
+        if self.state == "needed":
+            if (
+                self.publication_attempt != 0
+                or self.publisher_boot_id is not None
+                or self.next_session_id is not None
+            ):
+                raise ValueError("a needed notification carries no publication state")
+        if self.state in ("admitted", "settled") and self.next_session_id is None:
+            raise ValueError("an admitted/settled notification requires a reserved session")
+        return self
+
+
+class AuthorityPolicyV2RootDispatch(BaseModel):
+    """Durable root dispatch pointer (D) keyed by root; one live generation G."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    root_task_id: StrictStr
+    generation_id: StrictStr
+    envelope_id: StrictStr
+    state: StrictStr = "pending"
+    expected_manager_agent: StrictStr
+    expected_manager_session_id: StrictStr
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+    @field_validator("generation_id")
+    @classmethod
+    def _v2_dispatch_generation_shape(cls, value: str) -> str:
+        if not value.startswith("APV2N-"):
+            raise ValueError("generation_id must start with APV2N-")
+        _validate_authority_policy_v2_digest(value[len("APV2N-"):], "generation_id")
+        return value
+
+    @field_validator("envelope_id")
+    @classmethod
+    def _v2_dispatch_envelope_shape(cls, value: str) -> str:
+        if not value.startswith("APV2E-"):
+            raise ValueError("envelope_id must start with APV2E-")
+        _validate_authority_policy_v2_digest(value[len("APV2E-"):], "envelope_id")
+        return value
+
+    @field_validator("state")
+    @classmethod
+    def _v2_dispatch_state_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_DISPATCH_STATES:
+            raise ValueError("dispatch state is not a closed value")
+        return value
+
+    @field_validator(
+        "expected_manager_agent", "expected_manager_session_id", "root_task_id",
+    )
+    @classmethod
+    def _v2_dispatch_identity_scalars(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_text(value, info.field_name, 128)
+
+
+class AuthorityPolicyV2FinalizationOutcome(BaseModel):
+    """Bounded outcome of the ONE final continuation transaction."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    status: StrictStr
+    attempt_id: StrictStr
+    reason: StrictStr | None = None
+    candidate_id: StrictStr | None = None
+    envelope_id: StrictStr | None = None
+    notification_id: StrictStr | None = None
+    generation_id: StrictStr | None = None
+    finalization_state: StrictStr | None = None
+
+    @field_validator("status")
+    @classmethod
+    def _v2_finalization_status_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_FINALIZATION_OUTCOME_STATUSES:
+            raise ValueError("finalization status is not a closed value")
+        return value
+
+    @field_validator("reason")
+    @classmethod
+    def _v2_finalization_reason_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_FINALIZATION_PENDING_REASONS:
+            raise ValueError("finalization reason is not a closed value")
+        return value
+
+    @model_validator(mode="after")
+    def _v2_finalization_shape(self) -> AuthorityPolicyV2FinalizationOutcome:
+        if self.status == "finalization_pending":
+            if self.reason is None:
+                raise ValueError("a pending finalization requires a bounded reason")
+        elif self.reason is not None:
+            raise ValueError("a non-pending finalization carries no reason")
+        return self
+
+
+class AuthorityPolicyV2SettlementOutcome(BaseModel):
+    """Bounded outcome of the separate exact post-final settlement contract."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    status: StrictStr
+    attempt_id: StrictStr
+    reason: StrictStr | None = None
+    candidate_id: StrictStr | None = None
+    envelope_id: StrictStr | None = None
+    notification_id: StrictStr | None = None
+    generation_id: StrictStr | None = None
+    recovery: bool = False
+    receipt_settled: bool = False
+
+    @field_validator("status")
+    @classmethod
+    def _v2_settlement_status_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_SETTLEMENT_OUTCOME_STATUSES:
+            raise ValueError("settlement status is not a closed value")
+        return value
+
+    @field_validator("reason")
+    @classmethod
+    def _v2_settlement_reason_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_SETTLEMENT_PENDING_REASONS:
+            raise ValueError("settlement reason is not a closed value")
+        return value
+
+    @model_validator(mode="after")
+    def _v2_settlement_shape(self) -> AuthorityPolicyV2SettlementOutcome:
+        if self.status == "settlement_pending":
+            if self.reason is None:
+                raise ValueError("a pending settlement requires a bounded reason")
+        elif self.reason is not None:
+            raise ValueError("a settled outcome carries no pending reason")
+        if self.status == "already_settled_exact" and not self.receipt_settled:
+            raise ValueError("already_settled_exact requires the settled receipt")
         return self
 
 

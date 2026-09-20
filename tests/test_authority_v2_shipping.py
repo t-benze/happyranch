@@ -1299,3 +1299,174 @@ def test_shipping_historically_migrated_failed_refusal(tmp_path, monkeypatch):
         _drive_c3d1_refusal_failure(fixture)
     finally:
         fixture.stop()
+
+
+def _drive_c3d2_finalization(fixture: _ShippingFixture) -> str:
+    """Real launch -> subprocess CLI admission -> real pre-final stages ->
+    callable final continuation -> exact recovery settlement.
+
+    The external provider launch is held only at the process boundary, so the
+    durable admitted result/attempt/binding are genuine and the finalize/settle
+    seams run against that real persisted evidence.  The fixture deliberately
+    holds result CONSUMPTION (the real ordinary run-step consumer does not run
+    while the launch is held) so the intermediate Pending/E/N/D state can be
+    asserted; that limit is explicit.  This is callable finalization/settlement
+    proof, NOT live consumer continuation, an actual enqueue, or full C04, and
+    the shipping authority hook is NOT patched to claim Pending/enqueue.
+    """
+    fixture.activate_v2_pair()
+    fixture.install_launch_hold()
+    root_id = fixture.create_and_enqueue_root()
+    captured = fixture.wait_for_launch()
+    session_id = captured["session_id"]
+    binding = _binding(fixture, root_id, session_id)
+    assert binding is not None and binding["mode"] == "v2"
+
+    body = _completion_body(binding, root_id)
+    payload = fixture.write_payload(body)
+    result = fixture.run_cli(payload)
+    assert result.returncode == 0, result.stderr
+    assert fixture.last_http()["status"] == 200
+
+    results, attempt, _audits = _admission_counts(fixture, root_id)
+    assert len(results) == 1 and attempt is not None
+    row_id = results[0]["id"]
+    db = fixture.org.db
+
+    from runtime.orchestrator.authority import _strict_permission_surface_digest
+
+    db.bind_authority_policy_v2_permission_surface_reader(
+        lambda agent: _strict_permission_surface_digest(
+            fixture.org.orchestrator, agent,
+        )
+    )
+    stage_kwargs = dict(
+        root_task_id=root_id, manager_agent=MANAGER, manager_session_id=session_id,
+        result_id=row_id, origin_boot_id=attempt.origin_boot_id,
+        owner_attempt_id=attempt.owner_attempt_id,
+    )
+    assert db.claim_authority_policy_v2_candidate(**stage_kwargs).status == "claimed"
+    assert db.audit_authority_policy_v2_candidate_claim(**stage_kwargs).status == "claim_audited"
+    assert db.evaluate_authority_policy_v2_candidate(**stage_kwargs).status == "evaluated"
+    assert db.audit_authority_policy_v2_candidate_evaluation(**stage_kwargs).status == "evaluation_audited"
+    assert db.consume_authority_policy_v2_candidate(**stage_kwargs).status == "consumed"
+    assert db.audit_authority_policy_v2_candidate_consumption(**stage_kwargs).status == "consumed_audited"
+
+    finalized = db.finalize_authority_policy_v2_continuation(**stage_kwargs)
+    assert finalized.status == "continued", finalized
+    candidate = db.get_authority_policy_v2_candidate_for_result(row_id)
+    envelope = db.get_authority_policy_v2_continue_envelope_for_candidate(
+        candidate.candidate_id
+    )
+    assert envelope is not None and envelope.lifecycle_state == "active"
+    notification = db.get_authority_policy_v2_recovery_notification_for_envelope(
+        envelope.envelope_id
+    )
+    assert notification is not None and notification.state == "needed"
+    dispatch = db.get_authority_policy_v2_root_dispatch(root_id)
+    assert dispatch is not None and dispatch.state == "pending"
+    assert dispatch.generation_id == notification.notification_id
+    task = db.get_task(root_id)
+    assert task.status is TaskStatus.PENDING
+    assert task.block_kind is None
+    assert task.assigned_agent == MANAGER
+    assert task.current_session_id == session_id
+    assert [
+        a["payload"]["stage"]
+        for a in db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=root_id, manager_agent=MANAGER,
+        )
+    ] == [
+        "admitted", "claim_audited", "evaluation_audited", "consumed_audited",
+        "continued",
+    ]
+    assert db.get_active_authority_continue_envelope(root_id) is None
+    active_v2 = db.get_authority_policy_v2_continue_envelope_for_root(root_id)
+    assert active_v2 is not None and active_v2.envelope_id == envelope.envelope_id
+
+    # Exact successful causal replay is read-only and allocates no second E/N/D.
+    replay = db.finalize_authority_policy_v2_continuation(**stage_kwargs)
+    assert replay.status == "already_continued", replay
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_continue_envelopes"
+    ).fetchone()[0] == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_recovery_notifications"
+    ).fetchone()[0] == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_root_dispatch"
+    ).fetchone()[0] == 1
+
+    # Genuine recovery settlement against the REAL exact receipt identity.
+    db._conn.execute(
+        """INSERT INTO task_completion_recoveries
+           (task_id, agent, origin_session_id, recovery_session_id,
+            provider_session_id, claimed_at, expires_at, state,
+            accepted_result_id, accepted_result_session_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (root_id, MANAGER, "sess-origin", session_id, "provider-1",
+         "2026-01-01T00:00:00+00:00", "2999-01-01T00:00:00+00:00",
+         "callback_accepted", row_id, session_id),
+    )
+    db._conn.commit()
+    settled = db.settle_authority_policy_v2_continuation_receipt(
+        root_task_id=root_id, manager_agent=MANAGER, manager_session_id=session_id,
+        result_id=row_id, recovery_session_id=session_id,
+        accepted_result_id=row_id, accepted_result_session_id=session_id,
+    )
+    assert settled.status == "settled", settled
+    assert settled.receipt_settled is True
+    receipt = db._conn.execute(
+        "SELECT state FROM task_completion_recoveries WHERE task_id=? AND agent=?",
+        (root_id, MANAGER),
+    ).fetchone()
+    assert receipt["state"] == "callback_consumed"
+    retry_settle = db.settle_authority_policy_v2_continuation_receipt(
+        root_task_id=root_id, manager_agent=MANAGER, manager_session_id=session_id,
+        result_id=row_id, recovery_session_id=session_id,
+        accepted_result_id=row_id, accepted_result_session_id=session_id,
+    )
+    assert retry_settle.status == "already_settled_exact", retry_settle
+    assert db.get_task(root_id).status is TaskStatus.PENDING
+
+    # The unchanged CLI retry is still transport-success; a changed causal
+    # payload still refuses.  Neither spends the envelope or mints another
+    # candidate.
+    retry = fixture.run_cli(payload)
+    assert retry.returncode == 0, retry.stderr
+    assert fixture.last_http()["status"] == 200
+    changed = dict(body)
+    changed["decision"] = {"action": "escalate", "reason": "changed after final"}
+    refused = fixture.run_cli(fixture.write_payload(changed, "changed-c3d2.json"))
+    assert refused.returncode != 0
+    assert fixture.last_http()["status"] == 409
+    assert len(db.get_task_results(root_id)) == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_candidates"
+    ).fetchone()[0] == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_continue_envelopes"
+    ).fetchone()[0] == 1
+
+    # Release the held launch.  The ordinary un-wired consumer still fail-closes
+    # (ESCALATE); this driver makes no claim about live continuation/enqueue.
+    fixture.release_launch()
+    fixture.join_workers()
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_continue_envelopes"
+    ).fetchone()[0] == 1
+    return root_id
+
+
+def test_shipping_real_callable_finalization_and_settlement(shipping):
+    _drive_c3d2_finalization(shipping)
+
+
+def test_shipping_historically_migrated_callable_finalization(tmp_path, monkeypatch):
+    """The SAME real venue over a FULL historical schema migrated forward."""
+    fixture = _ShippingFixture(tmp_path, monkeypatch, seed_historical=True)
+    fixture.start()
+    try:
+        _drive_c3d2_finalization(fixture)
+    finally:
+        fixture.stop()

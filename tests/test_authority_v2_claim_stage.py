@@ -155,8 +155,10 @@ def test_claim_then_audit_creates_candidate_pin_and_stages(tmp_path):
     assert after_claim["pins"] == before["pins"] + 1
     assert after_claim["candidate_audit"] == before["candidate_audit"]
     # C3c added the approved evaluations (V) table on this same unmerged PR, but
-    # the claim stage writes no evaluation row: V stays empty and no
-    # envelope/notification/dispatch table exists in this checkpoint.
+    # the claim stage writes no evaluation row: V stays empty.  C3d2 has since
+    # added the three remaining approved additive tables (envelope/notification/
+    # root-dispatch), but the claim stage mints NO continuation: every one stays
+    # empty and no E/N/D row exists after claim.
     created_tables = {
         row[0] for row in store._db._conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
@@ -166,11 +168,15 @@ def test_claim_then_audit_creates_candidate_pin_and_stages(tmp_path):
     assert store._db._conn.execute(
         "SELECT COUNT(*) FROM authority_policy_v2_evaluations"
     ).fetchone()[0] == 0
-    assert not any(
-        table == "authority_policy_v2_continue_envelopes"
-        or table == "authority_policy_v2_recovery_notifications"
-        for table in created_tables
-    )
+    for table in (
+        "authority_policy_v2_continue_envelopes",
+        "authority_policy_v2_recovery_notifications",
+        "authority_policy_v2_root_dispatch",
+    ):
+        assert table in created_tables
+        assert store._db._conn.execute(
+            f'SELECT COUNT(*) FROM "{table}"'
+        ).fetchone()[0] == 0
     # Task/current session/receipt preserved.
     task = store._db.get_task(TASK_ID)
     assert task.status is TaskStatus.IN_PROGRESS

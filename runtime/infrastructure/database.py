@@ -34,14 +34,19 @@ from runtime.models import (
     AuthorityPolicyV2Attempt,
     AuthorityPolicyV2Candidate,
     AuthorityPolicyV2CandidateAudit,
+    AuthorityPolicyV2ContinueEnvelope,
     AuthorityPolicyV2ControlReceipt,
     AuthorityPolicyV2Evaluation,
+    AuthorityPolicyV2FinalizationOutcome,
     AuthorityPolicyV2HousekeepingOutcome,
     AuthorityPolicyV2HousekeepingTarget,
     AuthorityPolicyV2PairedControlRequest,
     AuthorityPolicyV2Pin,
+    AuthorityPolicyV2RecoveryNotification,
     AuthorityPolicyV2Release,
+    AuthorityPolicyV2RootDispatch,
     AuthorityPolicyV2SessionBinding,
+    AuthorityPolicyV2SettlementOutcome,
     AuthorityPolicyV2StageOutcome,
     AuthorityFenceResult,
     AuthorityRedactionClass,
@@ -61,16 +66,21 @@ from runtime.models import (
     AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
     AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CONSUMED,
     AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_EVALUATED,
+    AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_FINAL,
     AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_REFUSED,
     AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_CREATED,
     AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_CONSUMED,
     AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_EVALUATED,
     AUTHORITY_POLICY_V2_CANDIDATE_LIFECYCLE_TRANSITIONS,
     AUTHORITY_POLICY_V2_ESCALATION_DECISION_ACTION,
+    AUTHORITY_POLICY_V2_FINAL_HOOK_AUDIT_ACTION,
+    AUTHORITY_POLICY_V2_FINAL_TASK_AUDIT_ACTION,
     AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION,
     AUTHORITY_POLICY_V2_HOUSEKEEPING_PENDING_CODE,
     AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES,
+    AUTHORITY_POLICY_V2_RECOVERY_SETTLED_ACTION,
     AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+    AUTHORITY_POLICY_V2_RESULT_STAGE_CONTINUED,
     AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED,
     AUTHORITY_POLICY_V2_TEAM,
     authority_policy_v2_attempt_id,
@@ -78,8 +88,10 @@ from runtime.models import (
     authority_policy_v2_candidate_claim_preimage,
     authority_policy_v2_causal_result_digest,
     authority_policy_v2_contract_digest,
+    authority_policy_v2_envelope_id,
     authority_policy_v2_initializer_selector_id,
     authority_policy_v2_initializer_selector_preimage,
+    authority_policy_v2_notification_id,
     authority_policy_v2_selector_id,
     authority_policy_v2_sha256,
     BlockKind,
@@ -725,7 +737,7 @@ _AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
                 root_task_id TEXT NOT NULL,
                 manager_agent TEXT NOT NULL,
                 manager_session_id TEXT NOT NULL,
-                event TEXT NOT NULL CHECK(event IN ('claimed','evaluated','consumed','refused')),
+                event TEXT NOT NULL CHECK(event IN ('claimed','evaluated','consumed','refused','final')),
                 claim_key TEXT NOT NULL,
                 attempt_id TEXT NOT NULL,
                 result_id INTEGER NOT NULL,
@@ -803,6 +815,196 @@ _AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
             CREATE TRIGGER IF NOT EXISTS authority_policy_v2_evaluations_no_delete
                 BEFORE DELETE ON authority_policy_v2_evaluations
                 BEGIN SELECT RAISE(ABORT, 'v2 evaluation cannot be deleted'); END;
+
+            -- THR-229 checkpoint C3d2: the three remaining approved additive
+            -- tables.  E is the active continuation envelope (unique by
+            -- candidate, immutable authenticated tuple, forward-only
+            -- active -> consumed); N is the continuation notification whose
+            -- APV2N identity is the immutable generation G (unique by envelope
+            -- and exact causal tuple, closed lifecycle); D is the root-dispatch
+            -- pointer keyed by root that admits only one non-retired generation
+            -- and preserves the expected causal owner/session.  Publication,
+            -- admission and spend transition writers are later units.
+            CREATE TABLE IF NOT EXISTS authority_policy_v2_continue_envelopes (
+                envelope_id TEXT PRIMARY KEY,
+                candidate_id TEXT NOT NULL UNIQUE
+                    REFERENCES authority_policy_v2_candidates(candidate_id) ON DELETE RESTRICT,
+                claim_key TEXT NOT NULL,
+                team TEXT NOT NULL,
+                root_task_id TEXT NOT NULL,
+                manager_agent TEXT NOT NULL,
+                manager_session_id TEXT NOT NULL,
+                attempt_id TEXT NOT NULL
+                    REFERENCES authority_policy_v2_attempts(attempt_id) ON DELETE RESTRICT,
+                result_id INTEGER NOT NULL
+                    REFERENCES task_results(id) ON DELETE RESTRICT,
+                binding_id TEXT NOT NULL,
+                contract_id TEXT NOT NULL,
+                contract_version TEXT NOT NULL,
+                contract_digest TEXT NOT NULL,
+                release_id TEXT NOT NULL,
+                policy_version INTEGER NOT NULL
+                    CHECK(policy_version > 0 AND policy_version <= 2147483647),
+                policy_digest TEXT NOT NULL,
+                activation_id TEXT NOT NULL,
+                activation_epoch INTEGER NOT NULL
+                    CHECK(activation_epoch > 0 AND activation_epoch <= 2147483647),
+                selector_id TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                executor_kind TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                causal_result_id INTEGER NOT NULL,
+                causal_result_digest TEXT NOT NULL,
+                evaluation_outcome TEXT NOT NULL
+                    CHECK(evaluation_outcome IN ('continue_applies')),
+                origin_boot_id TEXT NOT NULL,
+                owner_attempt_id TEXT NOT NULL,
+                lifecycle_state TEXT NOT NULL DEFAULT 'active'
+                    CHECK(lifecycle_state IN ('active','consumed')),
+                spending_result_id INTEGER,
+                canonical_payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                CHECK((lifecycle_state='consumed') = (spending_result_id IS NOT NULL))
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_continue_envelopes_team_root
+                ON authority_policy_v2_continue_envelopes(team, root_task_id);
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_continue_envelopes_lifecycle_guard
+                BEFORE UPDATE ON authority_policy_v2_continue_envelopes
+                WHEN (
+                    OLD.envelope_id IS NOT NEW.envelope_id
+                 OR OLD.candidate_id IS NOT NEW.candidate_id
+                 OR OLD.claim_key IS NOT NEW.claim_key
+                 OR OLD.team IS NOT NEW.team
+                 OR OLD.root_task_id IS NOT NEW.root_task_id
+                 OR OLD.manager_agent IS NOT NEW.manager_agent
+                 OR OLD.manager_session_id IS NOT NEW.manager_session_id
+                 OR OLD.attempt_id IS NOT NEW.attempt_id
+                 OR OLD.result_id IS NOT NEW.result_id
+                 OR OLD.binding_id IS NOT NEW.binding_id
+                 OR OLD.contract_id IS NOT NEW.contract_id
+                 OR OLD.contract_version IS NOT NEW.contract_version
+                 OR OLD.contract_digest IS NOT NEW.contract_digest
+                 OR OLD.release_id IS NOT NEW.release_id
+                 OR OLD.policy_version IS NOT NEW.policy_version
+                 OR OLD.policy_digest IS NOT NEW.policy_digest
+                 OR OLD.activation_id IS NOT NEW.activation_id
+                 OR OLD.activation_epoch IS NOT NEW.activation_epoch
+                 OR OLD.selector_id IS NOT NEW.selector_id
+                 OR OLD.provider_id IS NOT NEW.provider_id
+                 OR OLD.executor_kind IS NOT NEW.executor_kind
+                 OR OLD.model_id IS NOT NEW.model_id
+                 OR OLD.causal_result_id IS NOT NEW.causal_result_id
+                 OR OLD.causal_result_digest IS NOT NEW.causal_result_digest
+                 OR OLD.evaluation_outcome IS NOT NEW.evaluation_outcome
+                 OR OLD.origin_boot_id IS NOT NEW.origin_boot_id
+                 OR OLD.owner_attempt_id IS NOT NEW.owner_attempt_id
+                 OR OLD.created_at IS NOT NEW.created_at
+                 OR NOT (
+                        (OLD.lifecycle_state='active' AND OLD.spending_result_id IS NULL
+                         AND NEW.lifecycle_state='active' AND NEW.spending_result_id IS NULL)
+                     OR (OLD.lifecycle_state='active' AND OLD.spending_result_id IS NULL
+                         AND NEW.lifecycle_state='consumed' AND NEW.spending_result_id IS NOT NULL)
+                     OR (OLD.lifecycle_state='consumed' AND OLD.spending_result_id IS NOT NULL
+                         AND NEW.lifecycle_state='consumed'
+                         AND NEW.spending_result_id IS OLD.spending_result_id)
+                 )
+                )
+                BEGIN SELECT RAISE(ABORT, 'v2 continuation envelope identity is immutable and lifecycle is forward-only'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_continue_envelopes_no_delete
+                BEFORE DELETE ON authority_policy_v2_continue_envelopes
+                BEGIN SELECT RAISE(ABORT, 'v2 continuation envelope cannot be deleted'); END;
+
+            CREATE TABLE IF NOT EXISTS authority_policy_v2_recovery_notifications (
+                notification_id TEXT PRIMARY KEY,
+                envelope_id TEXT NOT NULL UNIQUE
+                    REFERENCES authority_policy_v2_continue_envelopes(envelope_id) ON DELETE RESTRICT,
+                candidate_id TEXT NOT NULL,
+                result_id INTEGER NOT NULL
+                    REFERENCES task_results(id) ON DELETE RESTRICT,
+                root_task_id TEXT NOT NULL,
+                manager_agent TEXT NOT NULL,
+                manager_session_id TEXT NOT NULL,
+                selector_id TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'needed' CHECK(state IN
+                    ('needed','publishing','published','admitted','settled','invalidated')),
+                publication_attempt INTEGER NOT NULL DEFAULT 0
+                    CHECK(publication_attempt >= 0 AND publication_attempt <= 2147483647),
+                publisher_boot_id TEXT,
+                lease_deadline TEXT,
+                next_session_id TEXT,
+                canonical_payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(result_id, candidate_id, root_task_id, manager_session_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_recovery_notifications_root
+                ON authority_policy_v2_recovery_notifications(root_task_id, manager_agent, manager_session_id);
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_recovery_notifications_lifecycle_guard
+                BEFORE UPDATE ON authority_policy_v2_recovery_notifications
+                WHEN (
+                    OLD.notification_id IS NOT NEW.notification_id
+                 OR OLD.envelope_id IS NOT NEW.envelope_id
+                 OR OLD.candidate_id IS NOT NEW.candidate_id
+                 OR OLD.result_id IS NOT NEW.result_id
+                 OR OLD.root_task_id IS NOT NEW.root_task_id
+                 OR OLD.manager_agent IS NOT NEW.manager_agent
+                 OR OLD.manager_session_id IS NOT NEW.manager_session_id
+                 OR OLD.selector_id IS NOT NEW.selector_id
+                 OR OLD.created_at IS NOT NEW.created_at
+                 OR NOT (
+                        OLD.state IS NEW.state
+                     OR (OLD.state='needed' AND NEW.state IN ('publishing','invalidated'))
+                     OR (OLD.state='publishing' AND NEW.state IN ('published','needed','invalidated'))
+                     OR (OLD.state='published' AND NEW.state IN ('admitted','publishing','invalidated'))
+                     OR (OLD.state='admitted' AND NEW.state IN ('settled','invalidated'))
+                 )
+                )
+                BEGIN SELECT RAISE(ABORT, 'v2 recovery notification identity is immutable and lifecycle is forward-only'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_recovery_notifications_no_delete
+                BEFORE DELETE ON authority_policy_v2_recovery_notifications
+                BEGIN SELECT RAISE(ABORT, 'v2 recovery notification cannot be deleted'); END;
+
+            CREATE TABLE IF NOT EXISTS authority_policy_v2_root_dispatch (
+                root_task_id TEXT PRIMARY KEY,
+                generation_id TEXT NOT NULL UNIQUE
+                    REFERENCES authority_policy_v2_recovery_notifications(notification_id) ON DELETE RESTRICT,
+                envelope_id TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN ('pending','admitted','retired')),
+                expected_manager_agent TEXT NOT NULL,
+                expected_manager_session_id TEXT NOT NULL,
+                canonical_payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_root_dispatch_generation
+                ON authority_policy_v2_root_dispatch(generation_id);
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_root_dispatch_lifecycle_guard
+                BEFORE UPDATE ON authority_policy_v2_root_dispatch
+                WHEN (
+                    OLD.root_task_id IS NOT NEW.root_task_id
+                 OR OLD.created_at IS NOT NEW.created_at
+                 OR (
+                        OLD.generation_id IS NEW.generation_id
+                        AND (
+                            OLD.envelope_id IS NOT NEW.envelope_id
+                         OR OLD.expected_manager_agent IS NOT NEW.expected_manager_agent
+                         OR OLD.expected_manager_session_id IS NOT NEW.expected_manager_session_id
+                         OR NOT (
+                                (OLD.state='pending' AND NEW.state IN ('pending','admitted','retired'))
+                             OR (OLD.state='admitted' AND NEW.state IN ('admitted','retired'))
+                             OR (OLD.state='retired' AND NEW.state='retired')
+                         )
+                        )
+                    )
+                 OR (
+                        OLD.generation_id IS NOT NEW.generation_id
+                        AND NOT (OLD.state='retired' AND NEW.state='pending')
+                    )
+                )
+                BEGIN SELECT RAISE(ABORT, 'v2 root dispatch admits one live generation and is forward-only'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_root_dispatch_no_delete
+                BEFORE DELETE ON authority_policy_v2_root_dispatch
+                BEGIN SELECT RAISE(ABORT, 'v2 root dispatch cannot be deleted'); END;
 """
 
 
@@ -9509,6 +9711,1238 @@ class Database:
         except ValueError:
             return None
 
+    # -- THR-229 checkpoint C3d2: the ONE final continuation transaction
+    # (active E + final audits + N needed + D pending(G) + task Pending + J
+    # continued) and the SEPARATE exact post-final receipt-settlement
+    # transaction/read.  Both are Database-owned synchronized BEGIN IMMEDIATE
+    # transactions; the store is a thin forwarder.  Publication, generation
+    # admission and envelope spend writers are later units and are NOT
+    # implemented here.
+
+    def _authority_policy_v2_envelope_from_row(
+        self, row,
+    ) -> AuthorityPolicyV2ContinueEnvelope:
+        try:
+            envelope = AuthorityPolicyV2ContinueEnvelope.model_validate_json(
+                row["canonical_payload_json"]
+            )
+        except Exception as exc:
+            raise ValueError("authority v2 envelope has a corrupt canonical payload") from exc
+        if envelope.envelope_id != row["envelope_id"]:
+            raise ValueError("authority v2 envelope identity mismatch")
+        for column, value in envelope.model_dump(mode="json").items():
+            if row[column] != value:
+                raise ValueError("authority v2 envelope column/preimage mismatch")
+        return envelope
+
+    def _authority_policy_v2_notification_from_row(
+        self, row,
+    ) -> AuthorityPolicyV2RecoveryNotification:
+        try:
+            notification = AuthorityPolicyV2RecoveryNotification.model_validate_json(
+                row["canonical_payload_json"]
+            )
+        except Exception as exc:
+            raise ValueError("authority v2 notification has a corrupt canonical payload") from exc
+        if notification.notification_id != row["notification_id"]:
+            raise ValueError("authority v2 notification identity mismatch")
+        for column, value in notification.model_dump(mode="json").items():
+            if row[column] != value:
+                raise ValueError("authority v2 notification column/preimage mismatch")
+        return notification
+
+    def _authority_policy_v2_root_dispatch_from_row(
+        self, row,
+    ) -> AuthorityPolicyV2RootDispatch:
+        try:
+            dispatch = AuthorityPolicyV2RootDispatch.model_validate_json(
+                row["canonical_payload_json"]
+            )
+        except Exception as exc:
+            raise ValueError("authority v2 root dispatch has a corrupt canonical payload") from exc
+        if dispatch.root_task_id != row["root_task_id"]:
+            raise ValueError("authority v2 root dispatch identity mismatch")
+        for column, value in dispatch.model_dump(mode="json").items():
+            if row[column] != value:
+                raise ValueError("authority v2 root dispatch column/preimage mismatch")
+        return dispatch
+
+    def _v2_finalization_reason_for(self, code: str | None) -> str:
+        if code == "transaction_owned":
+            return "transaction_owned"
+        if code in ("owner_lost", "cancelled"):
+            return "owner_lost"
+        if code == "schema_drift":
+            return "schema_drift"
+        if code in ("evidence_drift", "identity_mismatch"):
+            return code
+        return "identity_mismatch"
+
+    def _v2_final_result_stage_payload(
+        self, attempt_row, candidate_id: str, envelope_id: str,
+        notification_id: str, generation_id: str,
+    ) -> dict:
+        return {
+            "stage": AUTHORITY_POLICY_V2_RESULT_STAGE_CONTINUED,
+            "attempt_id": attempt_row["attempt_id"],
+            "candidate_id": candidate_id,
+            "result_id": attempt_row["result_id"],
+            "binding_id": attempt_row["binding_id"],
+            "contract_id": attempt_row["contract_id"],
+            "contract_version": attempt_row["contract_version"],
+            "contract_digest": attempt_row["contract_digest"],
+            "release_id": attempt_row["release_id"],
+            "activation_id": attempt_row["activation_id"],
+            "activation_epoch": attempt_row["activation_epoch"],
+            "selector_id": attempt_row["selector_id"],
+            "assessment_digest": attempt_row["assessment_digest"],
+            "owner_attempt_id": attempt_row["owner_attempt_id"],
+            "origin_boot_id": attempt_row["origin_boot_id"],
+            "envelope_id": envelope_id,
+            "notification_id": notification_id,
+            "generation_id": generation_id,
+            "finalization_state": "continued",
+        }
+
+    def _v2_final_task_payload(
+        self, attempt_row, candidate_id: str, envelope_id: str,
+        notification_id: str, generation_id: str,
+    ) -> dict:
+        return {
+            "stage": AUTHORITY_POLICY_V2_RESULT_STAGE_CONTINUED,
+            "attempt_id": attempt_row["attempt_id"],
+            "candidate_id": candidate_id,
+            "result_id": attempt_row["result_id"],
+            "envelope_id": envelope_id,
+            "notification_id": notification_id,
+            "generation_id": generation_id,
+            "root_task_id": attempt_row["root_task_id"],
+        }
+
+    def _v2_final_hook_payload(
+        self, attempt_row, candidate_id: str, envelope_id: str,
+        notification_id: str, generation_id: str,
+    ) -> dict:
+        return {
+            "stage": AUTHORITY_POLICY_V2_RESULT_STAGE_CONTINUED,
+            "attempt_id": attempt_row["attempt_id"],
+            "candidate_id": candidate_id,
+            "result_id": attempt_row["result_id"],
+            "envelope_id": envelope_id,
+            "notification_id": notification_id,
+            "generation_id": generation_id,
+            "outcome": "continue_applies",
+        }
+
+    def _v2_identity_scoped_audits(
+        self, root_task_id: str, manager_agent: str, action: str,
+        *, attempt_id: str | None = None,
+    ) -> list[dict] | None:
+        """Enumerate identity-scoped audit rows BEFORE any payload filtering.
+
+        Enumerating by action/agent (and attempt where known) first means a
+        second row with a DIFFERENT discriminator/code cannot hide from the
+        cardinality check that follows.
+        """
+        try:
+            return [
+                row for row in self.get_audit_logs(root_task_id)
+                if row.get("action") == action
+                and row.get("agent") == manager_agent
+                and isinstance(row.get("payload"), dict)
+                and (attempt_id is None or row["payload"].get("attempt_id") == attempt_id)
+            ]
+        except Exception:
+            return None
+
+    def _v2_closed_audit_matches(self, rows, expected: dict) -> bool:
+        if rows is None or len(rows) != 1:
+            return False
+        payload = rows[0]["payload"]
+        if set(payload.keys()) != set(expected.keys()):
+            return False
+        return all(payload.get(key) == value for key, value in expected.items())
+
+    def _authenticate_v2_final_result_stage_uncommitted(
+        self, attempt_row, candidate_id: str, envelope_id: str,
+        notification_id: str, generation_id: str,
+    ) -> bool:
+        expected = self._v2_final_result_stage_payload(
+            attempt_row, candidate_id, envelope_id, notification_id, generation_id,
+        )
+        rows = self._v2_identity_scoped_audits(
+            attempt_row["root_task_id"], attempt_row["manager_agent"],
+            AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            attempt_id=attempt_row["attempt_id"],
+        )
+        if rows is None:
+            return False
+        continued = [
+            row for row in rows
+            if row["payload"].get("stage") == AUTHORITY_POLICY_V2_RESULT_STAGE_CONTINUED
+        ]
+        return self._v2_closed_audit_matches(continued, expected)
+
+    def _authenticate_v2_final_task_audit_uncommitted(
+        self, attempt_row, candidate_id: str, envelope_id: str,
+        notification_id: str, generation_id: str,
+    ) -> bool:
+        expected = self._v2_final_task_payload(
+            attempt_row, candidate_id, envelope_id, notification_id, generation_id,
+        )
+        rows = self._v2_identity_scoped_audits(
+            attempt_row["root_task_id"], attempt_row["manager_agent"],
+            AUTHORITY_POLICY_V2_FINAL_TASK_AUDIT_ACTION,
+            attempt_id=attempt_row["attempt_id"],
+        )
+        return self._v2_closed_audit_matches(rows, expected)
+
+    def _authenticate_v2_final_hook_audit_uncommitted(
+        self, attempt_row, candidate_id: str, envelope_id: str,
+        notification_id: str, generation_id: str,
+    ) -> bool:
+        expected = self._v2_final_hook_payload(
+            attempt_row, candidate_id, envelope_id, notification_id, generation_id,
+        )
+        rows = self._v2_identity_scoped_audits(
+            attempt_row["root_task_id"], attempt_row["manager_agent"],
+            AUTHORITY_POLICY_V2_FINAL_HOOK_AUDIT_ACTION,
+            attempt_id=attempt_row["attempt_id"],
+        )
+        return self._v2_closed_audit_matches(rows, expected)
+
+    def _authenticate_v2_final_rows_uncommitted(
+        self, *, attempt: AuthorityPolicyV2Attempt, attempt_row,
+        candidate: AuthorityPolicyV2Candidate,
+        evaluation: AuthorityPolicyV2Evaluation,
+    ) -> tuple[str | None, dict | None]:
+        """Authenticate E/N/D plus the complete final audit set read-only.
+
+        Does not require the task to still be in progress, so it also serves the
+        exact post-final causal replay.  Missing/corrupt/mixed evidence refuses.
+        """
+        if (
+            evaluation.outcome != "continue_applies"
+            or evaluation.diagnostic_code is not None
+        ):
+            return "evidence_drift", None
+        envelope_row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_continue_envelopes WHERE candidate_id=?",
+            (candidate.candidate_id,),
+        ).fetchone()
+        if envelope_row is None:
+            return "evidence_drift", None
+        try:
+            envelope = self._authority_policy_v2_envelope_from_row(envelope_row)
+        except ValueError:
+            return "identity_mismatch", None
+        if (
+            envelope.candidate_id != candidate.candidate_id
+            or envelope.claim_key != candidate.claim_key
+            or envelope.team != candidate.team
+            or envelope.root_task_id != candidate.root_task_id
+            or envelope.manager_agent != candidate.manager_agent
+            or envelope.manager_session_id != candidate.manager_session_id
+            or envelope.attempt_id != attempt.attempt_id
+            or envelope.result_id != candidate.result_id
+            or envelope.binding_id != candidate.binding_id
+            or envelope.contract_id != candidate.contract_id
+            or envelope.contract_version != candidate.contract_version
+            or envelope.contract_digest != candidate.contract_digest
+            or envelope.release_id != candidate.release_id
+            or envelope.policy_version != candidate.policy_version
+            or envelope.policy_digest != candidate.policy_digest
+            or envelope.activation_id != candidate.activation_id
+            or envelope.activation_epoch != candidate.activation_epoch
+            or envelope.selector_id != candidate.selector_id
+            or envelope.provider_id != candidate.provider_id
+            or envelope.executor_kind != candidate.executor_kind
+            or envelope.model_id != candidate.model_id
+            or envelope.causal_result_id != candidate.causal_result_id
+            or envelope.causal_result_digest != candidate.causal_result_digest
+            or envelope.evaluation_outcome != evaluation.outcome
+        ):
+            return "identity_mismatch", None
+        notification_row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_recovery_notifications WHERE envelope_id=?",
+            (envelope.envelope_id,),
+        ).fetchone()
+        if notification_row is None:
+            return "evidence_drift", None
+        try:
+            notification = self._authority_policy_v2_notification_from_row(
+                notification_row
+            )
+        except ValueError:
+            return "identity_mismatch", None
+        if (
+            notification.envelope_id != envelope.envelope_id
+            or notification.candidate_id != candidate.candidate_id
+            or notification.result_id != candidate.result_id
+            or notification.root_task_id != candidate.root_task_id
+            or notification.manager_agent != candidate.manager_agent
+            or notification.manager_session_id != candidate.manager_session_id
+            or notification.selector_id != candidate.selector_id
+        ):
+            return "identity_mismatch", None
+        generation_id = notification.notification_id
+        dispatch_row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_root_dispatch WHERE root_task_id=?",
+            (candidate.root_task_id,),
+        ).fetchone()
+        if dispatch_row is None:
+            return "evidence_drift", None
+        try:
+            dispatch = self._authority_policy_v2_root_dispatch_from_row(dispatch_row)
+        except ValueError:
+            return "identity_mismatch", None
+        if (
+            dispatch.generation_id != generation_id
+            or dispatch.envelope_id != envelope.envelope_id
+            or dispatch.expected_manager_agent != candidate.manager_agent
+            or dispatch.expected_manager_session_id != candidate.manager_session_id
+        ):
+            return "already_finalized", None
+        if not self._authenticate_v2_candidate_audit_uncommitted(
+            candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_FINAL,
+        ):
+            return "evidence_drift", None
+        if not self._authenticate_v2_final_result_stage_uncommitted(
+            attempt_row, candidate.candidate_id, envelope.envelope_id,
+            notification.notification_id, generation_id,
+        ):
+            return "evidence_drift", None
+        if not self._authenticate_v2_final_task_audit_uncommitted(
+            attempt_row, candidate.candidate_id, envelope.envelope_id,
+            notification.notification_id, generation_id,
+        ):
+            return "evidence_drift", None
+        if not self._authenticate_v2_final_hook_audit_uncommitted(
+            attempt_row, candidate.candidate_id, envelope.envelope_id,
+            notification.notification_id, generation_id,
+        ):
+            return "evidence_drift", None
+        return None, {
+            "envelope": envelope, "notification": notification,
+            "dispatch": dispatch, "evaluation": evaluation,
+            "generation_id": generation_id,
+        }
+
+    def _insert_v2_continue_envelope_uncommitted(
+        self, envelope: AuthorityPolicyV2ContinueEnvelope,
+    ) -> None:
+        snapshot = envelope.model_dump(mode="json")
+        self._conn.execute(
+            """INSERT INTO authority_policy_v2_continue_envelopes
+               (envelope_id, candidate_id, claim_key, team, root_task_id,
+                manager_agent, manager_session_id, attempt_id, result_id,
+                binding_id, contract_id, contract_version, contract_digest,
+                release_id, policy_version, policy_digest, activation_id,
+                activation_epoch, selector_id, provider_id, executor_kind,
+                model_id, causal_result_id, causal_result_digest,
+                evaluation_outcome, origin_boot_id, owner_attempt_id,
+                lifecycle_state, spending_result_id, canonical_payload_json,
+                created_at)
+               VALUES (:envelope_id,:candidate_id,:claim_key,:team,:root_task_id,
+                       :manager_agent,:manager_session_id,:attempt_id,:result_id,
+                       :binding_id,:contract_id,:contract_version,:contract_digest,
+                       :release_id,:policy_version,:policy_digest,:activation_id,
+                       :activation_epoch,:selector_id,:provider_id,:executor_kind,
+                       :model_id,:causal_result_id,:causal_result_digest,
+                       :evaluation_outcome,:origin_boot_id,:owner_attempt_id,
+                       :lifecycle_state,:spending_result_id,:canonical_payload_json,
+                       :created_at)""",
+            {
+                **snapshot,
+                "canonical_payload_json": authority_policy_v2_canonical_json_bytes(
+                    snapshot
+                ).decode("utf-8"),
+            },
+        )
+
+    def _insert_v2_recovery_notification_uncommitted(
+        self, notification: AuthorityPolicyV2RecoveryNotification,
+    ) -> None:
+        snapshot = notification.model_dump(mode="json")
+        self._conn.execute(
+            """INSERT INTO authority_policy_v2_recovery_notifications
+               (notification_id, envelope_id, candidate_id, result_id,
+                root_task_id, manager_agent, manager_session_id, selector_id,
+                state, publication_attempt, publisher_boot_id, lease_deadline,
+                next_session_id, canonical_payload_json, created_at, updated_at)
+               VALUES (:notification_id,:envelope_id,:candidate_id,:result_id,
+                       :root_task_id,:manager_agent,:manager_session_id,
+                       :selector_id,:state,:publication_attempt,:publisher_boot_id,
+                       :lease_deadline,:next_session_id,:canonical_payload_json,
+                       :created_at,:updated_at)""",
+            {
+                **snapshot,
+                "canonical_payload_json": authority_policy_v2_canonical_json_bytes(
+                    snapshot
+                ).decode("utf-8"),
+            },
+        )
+
+    def _upsert_v2_root_dispatch_pending_uncommitted(
+        self, dispatch: AuthorityPolicyV2RootDispatch, *,
+        prior_generation_id: str | None,
+    ) -> None:
+        snapshot = dispatch.model_dump(mode="json")
+        if prior_generation_id is None:
+            canonical = authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8")
+            self._conn.execute(
+                """INSERT INTO authority_policy_v2_root_dispatch
+                   (root_task_id, generation_id, envelope_id, state,
+                    expected_manager_agent, expected_manager_session_id,
+                    canonical_payload_json, created_at, updated_at)
+                   VALUES (:root_task_id,:generation_id,:envelope_id,:state,
+                           :expected_manager_agent,:expected_manager_session_id,
+                           :canonical_payload_json,:created_at,:updated_at)""",
+                {**snapshot, "canonical_payload_json": canonical},
+            )
+            return
+        # The CAS replaces only the live generation; the row's immutable
+        # ``created_at`` is preserved so the canonical preimage stays consistent
+        # with the persisted columns.
+        existing = self._conn.execute(
+            "SELECT created_at FROM authority_policy_v2_root_dispatch WHERE root_task_id=?",
+            (dispatch.root_task_id,),
+        ).fetchone()
+        if existing is not None:
+            snapshot["created_at"] = existing["created_at"]
+        canonical = authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8")
+        cursor = self._conn.execute(
+            """UPDATE authority_policy_v2_root_dispatch
+                  SET generation_id=?, envelope_id=?, state='pending',
+                      expected_manager_agent=?, expected_manager_session_id=?,
+                      canonical_payload_json=?, updated_at=?
+                WHERE root_task_id=? AND state='retired' AND generation_id=?""",
+            (
+                dispatch.generation_id, dispatch.envelope_id,
+                dispatch.expected_manager_agent, dispatch.expected_manager_session_id,
+                canonical, snapshot["updated_at"], dispatch.root_task_id,
+                prior_generation_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("v2 root dispatch CAS lost")
+
+    def _finalize_v2_continuation_replay_uncommitted(
+        self, attempt: AuthorityPolicyV2Attempt, attempt_row,
+    ) -> AuthorityPolicyV2FinalizationOutcome:
+        def _pending(reason: str, **kw) -> AuthorityPolicyV2FinalizationOutcome:
+            return AuthorityPolicyV2FinalizationOutcome(
+                status="finalization_pending", reason=reason,
+                attempt_id=attempt.attempt_id, **kw,
+            )
+
+        candidate_row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_candidates WHERE result_id=?",
+            (attempt.result_id,),
+        ).fetchone()
+        if candidate_row is None:
+            return _pending("evidence_drift")
+        try:
+            candidate = self._authority_policy_v2_candidate_from_row(candidate_row)
+        except ValueError:
+            return _pending("identity_mismatch")
+        if (
+            candidate.attempt_id != attempt.attempt_id
+            or candidate.root_task_id != attempt.root_task_id
+            or candidate.manager_agent != attempt.manager_agent
+            or candidate.manager_session_id != attempt.manager_session_id
+        ):
+            return _pending("identity_mismatch")
+        evaluation_row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_evaluations WHERE candidate_id=?",
+            (candidate.candidate_id,),
+        ).fetchone()
+        if evaluation_row is None:
+            return _pending("evidence_drift")
+        try:
+            evaluation = self._authority_policy_v2_evaluation_from_row(evaluation_row)
+        except ValueError:
+            return _pending("identity_mismatch")
+        code, ctx = self._authenticate_v2_final_rows_uncommitted(
+            attempt=attempt, attempt_row=attempt_row, candidate=candidate,
+            evaluation=evaluation,
+        )
+        if code is not None:
+            return _pending(code, candidate_id=candidate.candidate_id)
+        assert ctx is not None
+        return AuthorityPolicyV2FinalizationOutcome(
+            status="already_continued", attempt_id=attempt.attempt_id,
+            candidate_id=candidate.candidate_id,
+            envelope_id=ctx["envelope"].envelope_id,
+            notification_id=ctx["notification"].notification_id,
+            generation_id=ctx["generation_id"],
+            finalization_state="continued",
+        )
+
+    def _finalize_v2_continuation_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str,
+        max_revise_rounds: int, now: str,
+    ) -> AuthorityPolicyV2FinalizationOutcome:
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=manager_agent, manager_session_id=manager_session_id,
+            result_id=result_id, root_task_id=root_task_id,
+            team=AUTHORITY_POLICY_V2_TEAM,
+        )
+
+        def _pending(reason: str, candidate_id: str | None = None) -> AuthorityPolicyV2FinalizationOutcome:
+            return AuthorityPolicyV2FinalizationOutcome(
+                status="finalization_pending", reason=reason,
+                attempt_id=attempt_id, candidate_id=candidate_id,
+            )
+
+        row = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_attempts
+               WHERE root_task_id=? AND manager_agent=?
+                 AND manager_session_id=? AND result_id=?""",
+            (root_task_id, manager_agent, manager_session_id, result_id),
+        ).fetchone()
+        if row is None:
+            return _pending("identity_mismatch")
+        try:
+            attempt = self._authority_policy_v2_attempt_from_row(row)
+        except ValueError:
+            return _pending("identity_mismatch")
+        if attempt.attempt_id != attempt_id:
+            return _pending("identity_mismatch")
+        attempt_row = dict(row)
+
+        if attempt.finalization_state == "continued":
+            return self._finalize_v2_continuation_replay_uncommitted(
+                attempt, attempt_row,
+            )
+        if attempt.finalization_state != "unfinalized":
+            return _pending("already_finalized")
+        if attempt.stage != AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED:
+            return _pending("evidence_drift")
+
+        code, ctx = self._authenticate_v2_candidate_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+            max_revise_rounds=max_revise_rounds,
+        )
+        if code is not None:
+            return _pending(self._v2_finalization_reason_for(code))
+        assert ctx is not None
+        attempt = ctx["attempt"]
+        candidate = ctx["candidate"]
+        binding = ctx["binding"]
+        release = ctx["release"]
+        attempt_row = ctx["row"]
+
+        # BOTH halves of EVERY required prior stage: the candidate
+        # claimed/evaluated/consumed events AND their sibling closed
+        # admitted/claim_audited/evaluation_audited/consumed_audited result-stage
+        # audits.  No audit is trusted from the caller.
+        if not self._authenticate_v2_candidate_audit_uncommitted(
+            candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
+        ):
+            return _pending("evidence_drift", candidate.candidate_id)
+        if not self._authenticate_v2_candidate_audit_uncommitted(
+            candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_EVALUATED,
+        ):
+            return _pending("evidence_drift", candidate.candidate_id)
+        if not self._authenticate_v2_candidate_audit_uncommitted(
+            candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CONSUMED,
+        ):
+            return _pending("evidence_drift", candidate.candidate_id)
+        if not self._authenticate_v2_prior_result_stages_uncommitted(
+            attempt_row,
+            (
+                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
+                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED,
+            ),
+            candidate.candidate_id,
+        ):
+            return _pending("evidence_drift", candidate.candidate_id)
+
+        # The persisted V outcome is authoritative; it is never re-derived and
+        # no second evaluator is invoked.
+        eval_code, eval_ctx = self._authenticate_v2_evaluation_evidence_uncommitted(
+            candidate=candidate, attempt=attempt, binding=binding, release=release,
+        )
+        if eval_code is not None:
+            return _pending("evidence_drift", candidate.candidate_id)
+        assert eval_ctx is not None
+        evaluation = eval_ctx["evaluation"]
+        if (
+            evaluation.outcome != "continue_applies"
+            or evaluation.diagnostic_code is not None
+        ):
+            return _pending("evidence_drift", candidate.candidate_id)
+
+        # Never replace a live v1/v2 envelope and never mint a second v2
+        # envelope for the same candidate.
+        if self._conn.execute(
+            "SELECT 1 FROM authority_continue_envelopes "
+            "WHERE root_task_id=? AND state='active'",
+            (root_task_id,),
+        ).fetchone() is not None:
+            return _pending("already_finalized", candidate.candidate_id)
+        if self._conn.execute(
+            "SELECT 1 FROM authority_policy_v2_continue_envelopes WHERE candidate_id=?",
+            (candidate.candidate_id,),
+        ).fetchone() is not None:
+            return _pending("already_finalized", candidate.candidate_id)
+
+        envelope_id = authority_policy_v2_envelope_id(candidate.candidate_id)
+        notification_id = authority_policy_v2_notification_id(envelope_id)
+        generation_id = notification_id
+
+        dispatch_row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_root_dispatch WHERE root_task_id=?",
+            (root_task_id,),
+        ).fetchone()
+        prior_generation_id: str | None = None
+        if dispatch_row is not None:
+            try:
+                prior_dispatch = self._authority_policy_v2_root_dispatch_from_row(
+                    dispatch_row
+                )
+            except ValueError:
+                return _pending("identity_mismatch", candidate.candidate_id)
+            if prior_dispatch.state != "retired":
+                return _pending("already_finalized", candidate.candidate_id)
+            if prior_dispatch.generation_id == generation_id:
+                return _pending("already_finalized", candidate.candidate_id)
+            prior_generation_id = prior_dispatch.generation_id
+
+        envelope = AuthorityPolicyV2ContinueEnvelope(
+            envelope_id=envelope_id,
+            candidate_id=candidate.candidate_id,
+            claim_key=candidate.claim_key,
+            team=candidate.team,
+            root_task_id=candidate.root_task_id,
+            manager_agent=candidate.manager_agent,
+            manager_session_id=candidate.manager_session_id,
+            attempt_id=attempt.attempt_id,
+            result_id=candidate.result_id,
+            binding_id=candidate.binding_id,
+            contract_id=candidate.contract_id,
+            contract_version=candidate.contract_version,
+            contract_digest=candidate.contract_digest,
+            release_id=candidate.release_id,
+            policy_version=candidate.policy_version,
+            policy_digest=candidate.policy_digest,
+            activation_id=candidate.activation_id,
+            activation_epoch=candidate.activation_epoch,
+            selector_id=candidate.selector_id,
+            provider_id=candidate.provider_id,
+            executor_kind=candidate.executor_kind,
+            model_id=candidate.model_id,
+            causal_result_id=candidate.causal_result_id,
+            causal_result_digest=candidate.causal_result_digest,
+            evaluation_outcome=evaluation.outcome,
+            origin_boot_id=attempt.origin_boot_id,
+            owner_attempt_id=attempt.owner_attempt_id,
+        )
+        notification = AuthorityPolicyV2RecoveryNotification(
+            notification_id=notification_id,
+            envelope_id=envelope_id,
+            candidate_id=candidate.candidate_id,
+            result_id=candidate.result_id,
+            root_task_id=candidate.root_task_id,
+            manager_agent=candidate.manager_agent,
+            manager_session_id=candidate.manager_session_id,
+            selector_id=candidate.selector_id,
+            state="needed",
+            publication_attempt=0,
+            publisher_boot_id=None,
+            lease_deadline=None,
+            next_session_id=None,
+        )
+        dispatch = AuthorityPolicyV2RootDispatch(
+            root_task_id=candidate.root_task_id,
+            generation_id=generation_id,
+            envelope_id=envelope_id,
+            state="pending",
+            expected_manager_agent=candidate.manager_agent,
+            expected_manager_session_id=candidate.manager_session_id,
+        )
+
+        self._insert_v2_continue_envelope_uncommitted(envelope)
+        self._insert_v2_recovery_notification_uncommitted(notification)
+        self._upsert_v2_root_dispatch_pending_uncommitted(
+            dispatch, prior_generation_id=prior_generation_id,
+        )
+
+        self._insert_v2_candidate_audit_uncommitted(
+            candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_FINAL,
+            owner_attempt_id=attempt.owner_attempt_id,
+            origin_boot_id=attempt.origin_boot_id, now=now,
+        )
+        self.insert_audit_log_uncommitted(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            self._v2_final_result_stage_payload(
+                attempt_row, candidate.candidate_id, envelope_id, notification_id,
+                generation_id,
+            ),
+        )
+        self.insert_audit_log_uncommitted(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_FINAL_TASK_AUDIT_ACTION,
+            self._v2_final_task_payload(
+                attempt_row, candidate.candidate_id, envelope_id, notification_id,
+                generation_id,
+            ),
+        )
+        self.insert_audit_log_uncommitted(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_FINAL_HOOK_AUDIT_ACTION,
+            self._v2_final_hook_payload(
+                attempt_row, candidate.candidate_id, envelope_id, notification_id,
+                generation_id,
+            ),
+        )
+
+        cursor = self._conn.execute(
+            """UPDATE tasks SET status=?, block_kind=NULL, updated_at=?
+               WHERE id=? AND cancelled_at IS NULL AND status=?
+                 AND block_kind IS NULL AND assigned_agent=?
+                 AND current_session_id=?""",
+            (
+                TaskStatus.PENDING.value, now, root_task_id,
+                TaskStatus.IN_PROGRESS.value, manager_agent, manager_session_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return _pending("owner_lost", candidate.candidate_id)
+        self._update_v2_attempt_finalization_uncommitted(attempt, "continued", None)
+        self._clear_v2_refusal_failure_authority(attempt.attempt_id)
+        return AuthorityPolicyV2FinalizationOutcome(
+            status="continued", attempt_id=attempt.attempt_id,
+            candidate_id=candidate.candidate_id, envelope_id=envelope_id,
+            notification_id=notification_id, generation_id=generation_id,
+            finalization_state="continued",
+        )
+
+    @_synchronized
+    def finalize_authority_policy_v2_continuation(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str,
+        max_revise_rounds: int = 0,
+    ) -> AuthorityPolicyV2FinalizationOutcome:
+        """ONE final continuation transaction: E/N/D + final audits + Pending.
+
+        Requires J unfinalized/``consumed_audited``, consumed K, exact P/V,
+        authenticated a0..a3 (both halves), the persisted continue outcome, the
+        original uninterrupted process-local winning owner and an eligible
+        current root/task.  It inserts active E, final candidate/task/hook and
+        closed ``continued`` result-stage audits, N needed, D pending(G),
+        changes the task to Pending/null block_kind preserving the causal
+        owner/session, and CASes J to ``continued``.  No receipt settlement and
+        no queue call happen here.  A genuine failure poisons only the authentic
+        winning owner and selects C3d1 refusal-only housekeeping.
+        """
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=manager_agent, manager_session_id=manager_session_id,
+            result_id=result_id, root_task_id=root_task_id,
+            team=AUTHORITY_POLICY_V2_TEAM,
+        )
+        if self._conn.in_transaction:
+            return AuthorityPolicyV2FinalizationOutcome(
+                status="finalization_pending", reason="transaction_owned",
+                attempt_id=attempt_id,
+            )
+        authentic_owner = self._v2_contender_is_authentic_owner(
+            attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+            origin_boot_id=origin_boot_id,
+        )
+        now = _now().isoformat()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            outcome = self._finalize_v2_continuation_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                manager_session_id=manager_session_id, result_id=result_id,
+                origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+                max_revise_rounds=max_revise_rounds, now=now,
+            )
+            if outcome.status == "finalization_pending":
+                self._conn.rollback()
+                return outcome
+            self._conn.commit()
+            return outcome
+        except Exception:
+            self._conn.rollback()
+            if authentic_owner:
+                # Safe same-process fallback: the process-local marker keeps
+                # safely attributable refusal housekeeping possible even when
+                # the durable obligation diagnostic cannot be written.
+                self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
+            self._refuse_v2_stage(
+                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                code="final_commit_failed",
+                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED,
+                origin_boot_id=origin_boot_id if not authentic_owner else None,
+                poison=authentic_owner,
+            )
+            raise
+
+    # -- THR-229 checkpoint C3d2: the separate exact post-final receipt
+    # settlement transaction/read.  It authenticates the complete final
+    # J/K/P/V/E/N/D evidence and attribution BEFORE any settlement write.
+
+    def _authenticate_v2_settlement_final_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int,
+    ) -> tuple[str | None, dict | None]:
+        attempt_row = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_attempts
+               WHERE root_task_id=? AND manager_agent=?
+                 AND manager_session_id=? AND result_id=?""",
+            (root_task_id, manager_agent, manager_session_id, result_id),
+        ).fetchone()
+        if attempt_row is None:
+            return "identity_mismatch", None
+        try:
+            attempt = self._authority_policy_v2_attempt_from_row(attempt_row)
+        except ValueError:
+            return "identity_mismatch", None
+        if attempt.finalization_state != "continued":
+            return "identity_mismatch", None
+        candidate_row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_candidates WHERE result_id=?",
+            (result_id,),
+        ).fetchone()
+        if candidate_row is None:
+            return "evidence_drift", None
+        try:
+            candidate = self._authority_policy_v2_candidate_from_row(candidate_row)
+        except ValueError:
+            return "identity_mismatch", None
+        evaluation_row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_evaluations WHERE candidate_id=?",
+            (candidate.candidate_id,),
+        ).fetchone()
+        if evaluation_row is None:
+            return "evidence_drift", None
+        try:
+            evaluation = self._authority_policy_v2_evaluation_from_row(evaluation_row)
+        except ValueError:
+            return "identity_mismatch", None
+        code, ctx = self._authenticate_v2_final_rows_uncommitted(
+            attempt=attempt, attempt_row=dict(attempt_row), candidate=candidate,
+            evaluation=evaluation,
+        )
+        if code is not None:
+            # Map the final-row classification into the bounded settlement
+            # pending vocabulary (a mismatched live generation is unsafe
+            # evidence, never a new settlement).
+            return ("evidence_drift" if code == "evidence_drift" else "identity_mismatch"), None
+        assert ctx is not None
+        if ctx["notification"].state != "needed" or ctx["dispatch"].state != "pending":
+            return "identity_mismatch", None
+        task = self._conn.execute(
+            "SELECT * FROM tasks WHERE id=?", (root_task_id,)
+        ).fetchone()
+        if (
+            task is None
+            or task["cancelled_at"] is not None
+            or task["status"] != TaskStatus.PENDING.value
+            or task["block_kind"] is not None
+            or task["assigned_agent"] != manager_agent
+            or task["current_session_id"] != manager_session_id
+        ):
+            return "identity_mismatch", None
+        result_row = self._conn.execute(
+            "SELECT * FROM task_results WHERE id=?", (result_id,)
+        ).fetchone()
+        if result_row is None:
+            return "evidence_drift", None
+        return None, {**ctx, "attempt": attempt, "candidate": candidate,
+                      "result_row": result_row}
+
+    def _authenticate_v2_settlement_evidence_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, result_id: int,
+        manager_session_id: str,
+    ) -> bool:
+        """Authenticate the exact existing completion + recovery-settled audits."""
+        completion = self._v2_identity_scoped_audits(
+            root_task_id, manager_agent, "completion_report",
+        )
+        if completion is None:
+            return False
+        scoped = [
+            row for row in completion
+            if row["payload"].get("_recovery_session_id") == manager_session_id
+            or row["payload"].get("_result_row_id") == result_id
+        ]
+        if len(scoped) != 1:
+            return False
+        payload = scoped[0]["payload"]
+        expected_keys = {
+            "task_id", "agent", "result_id", "session_id", "status",
+            "output_summary", "confidence", "decision",
+            "_recovery_session_id", "_result_row_id",
+        }
+        if set(payload.keys()) != expected_keys:
+            return False
+        if (
+            payload["task_id"] != root_task_id
+            or payload["agent"] != manager_agent
+            or payload["result_id"] != result_id
+            or payload["session_id"] != manager_session_id
+            or payload["_recovery_session_id"] != manager_session_id
+            or payload["_result_row_id"] != result_id
+        ):
+            return False
+        settled = self._v2_identity_scoped_audits(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_RECOVERY_SETTLED_ACTION,
+            attempt_id=None,
+        )
+        if settled is None:
+            return False
+        scoped_settled = [
+            row for row in settled
+            if row["payload"].get("_result_row_id") == result_id
+            and row["payload"].get("recovery_session_id") == manager_session_id
+        ]
+        if len(scoped_settled) != 1:
+            return False
+        spayload = scoped_settled[0]["payload"]
+        settled_keys = {
+            "attempt_id", "candidate_id", "envelope_id", "notification_id",
+            "generation_id", "result_id", "recovery_session_id", "root_task_id",
+            "manager_agent", "manager_session_id", "_result_row_id",
+        }
+        return set(spayload.keys()) == settled_keys
+
+    def _v2_settlement_completion_payload(
+        self, *, root_task_id: str, manager_agent: str, result_row,
+        result_id: int, manager_session_id: str,
+    ) -> dict:
+        raw_decision = result_row["decision_json"]
+        try:
+            decision = json.loads(raw_decision) if raw_decision else None
+        except Exception:
+            decision = None
+        return {
+            "task_id": root_task_id,
+            "agent": manager_agent,
+            "result_id": result_id,
+            "session_id": manager_session_id,
+            "status": result_row["status"],
+            "output_summary": result_row["output_summary"],
+            "confidence": result_row["confidence_score"],
+            "decision": decision,
+            "_recovery_session_id": manager_session_id,
+            "_result_row_id": result_id,
+        }
+
+    def _v2_settlement_settled_payload(
+        self, *, attempt, candidate, envelope, notification,
+    ) -> dict:
+        return {
+            "attempt_id": attempt.attempt_id,
+            "candidate_id": candidate.candidate_id,
+            "envelope_id": envelope.envelope_id,
+            "notification_id": notification.notification_id,
+            "generation_id": notification.notification_id,
+            "result_id": candidate.result_id,
+            "recovery_session_id": candidate.manager_session_id,
+            "root_task_id": candidate.root_task_id,
+            "manager_agent": candidate.manager_agent,
+            "manager_session_id": candidate.manager_session_id,
+            "_result_row_id": candidate.result_id,
+        }
+
+    def _authenticate_v2_ordinary_completion_evidence_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, result_row,
+    ) -> bool:
+        """Require exactly one REAL ordinary completion_report for the result.
+
+        Ordinary callbacks have no recovery receipt: the accepted
+        completion-consumer seam's actual completion_report is required instead,
+        and a recovery-shaped report is never fabricated or accepted here.
+        """
+        rows = self._v2_identity_scoped_audits(
+            root_task_id, manager_agent, "completion_report",
+        )
+        if rows is None:
+            return False
+        ordinary = [
+            row for row in rows if "_recovery_session_id" not in row["payload"]
+        ]
+        if len(ordinary) != 1:
+            return False
+        payload = ordinary[0]["payload"]
+        if (
+            payload.get("task_id") != root_task_id
+            or payload.get("agent") != manager_agent
+            or payload.get("status") != result_row["status"]
+            or payload.get("output_summary") != result_row["output_summary"]
+            or payload.get("confidence") != result_row["confidence_score"]
+        ):
+            return False
+        raw_decision = result_row["decision_json"]
+        try:
+            decision = json.loads(raw_decision) if raw_decision else None
+        except Exception:
+            return False
+        try:
+            return authority_policy_v2_canonical_json_bytes(
+                payload.get("decision")
+            ) == authority_policy_v2_canonical_json_bytes(decision)
+        except Exception:
+            return False
+
+    @_synchronized
+    def settle_authority_policy_v2_continuation_receipt(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, recovery_session_id: str | None = None,
+        accepted_result_id: int | None = None,
+        accepted_result_session_id: str | None = None,
+    ) -> AuthorityPolicyV2SettlementOutcome:
+        """Separate exact post-final receipt-settlement transaction/read.
+
+        For genuine recovery the REAL exact root/agent/recovery_session_id/
+        accepted_result_id/accepted_result_session_id Q is required; a
+        ``callback_accepted`` Q is CASed to ``callback_consumed`` together with
+        the required completion/recovery-settled audits.  An already
+        ``callback_consumed`` exact Q authenticates the complete existing
+        settlement/final evidence read-only and returns ``already_settled_exact``.
+        Explicit recovery without a matching Q refuses.  Ordinary absence stays
+        ordinary and requires real ordinary completion evidence at the accepted
+        completion-consumer seam.  A failed settlement retains Pending/E/N/D/J
+        and callback_accepted and permits ONLY exact settlement retry.
+        """
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=manager_agent, manager_session_id=manager_session_id,
+            result_id=result_id, root_task_id=root_task_id,
+            team=AUTHORITY_POLICY_V2_TEAM,
+        )
+
+        def _pending(reason: str, **kw) -> AuthorityPolicyV2SettlementOutcome:
+            return AuthorityPolicyV2SettlementOutcome(
+                status="settlement_pending", reason=reason,
+                attempt_id=attempt_id, **kw,
+            )
+
+        if self._conn.in_transaction:
+            return _pending("transaction_owned")
+        if recovery_session_id is not None and recovery_session_id != manager_session_id:
+            return _pending("identity_mismatch")
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            code, ctx = self._authenticate_v2_settlement_final_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                manager_session_id=manager_session_id, result_id=result_id,
+            )
+            if code is not None:
+                self._conn.rollback()
+                return _pending(code)
+            assert ctx is not None
+            attempt = ctx["attempt"]
+            candidate = ctx["candidate"]
+            envelope = ctx["envelope"]
+            notification = ctx["notification"]
+            notification_id = notification.notification_id
+            generation_id = ctx["generation_id"]
+            result_row = ctx["result_row"]
+            base = {
+                "candidate_id": candidate.candidate_id,
+                "envelope_id": envelope.envelope_id,
+                "notification_id": notification_id,
+                "generation_id": generation_id,
+            }
+            receipts = self._conn.execute(
+                "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
+                (root_task_id, manager_agent),
+            ).fetchall()
+
+            if recovery_session_id is not None:
+                exact = [
+                    receipt for receipt in receipts
+                    if receipt["recovery_session_id"] == manager_session_id
+                ]
+                if len(exact) != 1:
+                    self._conn.rollback()
+                    return _pending(
+                        "receipt_missing" if not exact else "identity_mismatch", **base,
+                    )
+                receipt = exact[0]
+                if (
+                    accepted_result_id != result_id
+                    or accepted_result_session_id != manager_session_id
+                    or receipt["accepted_result_id"] != result_id
+                    or receipt["accepted_result_session_id"] != manager_session_id
+                ):
+                    self._conn.rollback()
+                    return _pending("identity_mismatch", **base)
+                if receipt["state"] == "callback_accepted":
+                    now = _now().isoformat()
+                    cursor = self._conn.execute(
+                        """UPDATE task_completion_recoveries
+                              SET state='callback_consumed',
+                                  accepted_result_session_id=?, settled_at=?
+                            WHERE id=? AND task_id=? AND agent=?
+                              AND recovery_session_id=? AND accepted_result_id=?
+                              AND accepted_result_session_id=?
+                              AND state='callback_accepted'""",
+                        (
+                            manager_session_id, now, receipt["id"], root_task_id,
+                            manager_agent, manager_session_id, result_id,
+                            manager_session_id,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        self._conn.rollback()
+                        return _pending("identity_mismatch", **base)
+                    self.insert_audit_log_uncommitted(
+                        root_task_id, manager_agent, "completion_report",
+                        self._v2_settlement_completion_payload(
+                            root_task_id=root_task_id, manager_agent=manager_agent,
+                            result_row=result_row, result_id=result_id,
+                            manager_session_id=manager_session_id,
+                        ),
+                    )
+                    self.insert_audit_log_uncommitted(
+                        root_task_id, manager_agent,
+                        AUTHORITY_POLICY_V2_RECOVERY_SETTLED_ACTION,
+                        self._v2_settlement_settled_payload(
+                            attempt=attempt, candidate=candidate,
+                            envelope=envelope, notification=notification,
+                        ),
+                    )
+                    self._conn.commit()
+                    return AuthorityPolicyV2SettlementOutcome(
+                        status="settled", attempt_id=attempt.attempt_id,
+                        recovery=True, receipt_settled=True, **base,
+                    )
+                if receipt["state"] == "callback_consumed":
+                    ok = self._authenticate_v2_settlement_evidence_uncommitted(
+                        root_task_id=root_task_id, manager_agent=manager_agent,
+                        result_id=result_id, manager_session_id=manager_session_id,
+                    )
+                    self._conn.rollback()
+                    if ok:
+                        return AuthorityPolicyV2SettlementOutcome(
+                            status="already_settled_exact",
+                            attempt_id=attempt.attempt_id, recovery=True,
+                            receipt_settled=True, **base,
+                        )
+                    return _pending("identity_mismatch", **base)
+                self._conn.rollback()
+                return _pending("identity_mismatch", **base)
+
+            # Ordinary absence: no recovery assertion and no Q.
+            if receipts:
+                self._conn.rollback()
+                return _pending("identity_mismatch", **base)
+            if not self._authenticate_v2_ordinary_completion_evidence_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                result_row=result_row,
+            ):
+                self._conn.rollback()
+                return _pending("completion_evidence_missing", **base)
+            self._conn.rollback()
+            return AuthorityPolicyV2SettlementOutcome(
+                status="settled", attempt_id=attempt.attempt_id,
+                recovery=False, receipt_settled=False, **base,
+            )
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def get_authority_policy_v2_continue_envelope(
+        self, envelope_id: str,
+    ) -> AuthorityPolicyV2ContinueEnvelope | None:
+        row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_continue_envelopes WHERE envelope_id=?",
+            (envelope_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return self._authority_policy_v2_envelope_from_row(row)
+        except ValueError:
+            return None
+
+    @_synchronized
+    def get_authority_policy_v2_continue_envelope_for_candidate(
+        self, candidate_id: str,
+    ) -> AuthorityPolicyV2ContinueEnvelope | None:
+        row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_continue_envelopes WHERE candidate_id=?",
+            (candidate_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return self._authority_policy_v2_envelope_from_row(row)
+        except ValueError:
+            return None
+
+    @_synchronized
+    def get_authority_policy_v2_continue_envelope_for_root(
+        self, root_task_id: str,
+    ) -> AuthorityPolicyV2ContinueEnvelope | None:
+        """Return the active v2 envelope for a root (if any)."""
+        row = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_continue_envelopes
+               WHERE root_task_id=? AND lifecycle_state='active'
+               ORDER BY created_at, envelope_id LIMIT 1""",
+            (root_task_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return self._authority_policy_v2_envelope_from_row(row)
+        except ValueError:
+            return None
+
+    @_synchronized
+    def get_authority_policy_v2_recovery_notification(
+        self, notification_id: str,
+    ) -> AuthorityPolicyV2RecoveryNotification | None:
+        row = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_recovery_notifications
+               WHERE notification_id=?""",
+            (notification_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return self._authority_policy_v2_notification_from_row(row)
+        except ValueError:
+            return None
+
+    @_synchronized
+    def get_authority_policy_v2_recovery_notification_for_envelope(
+        self, envelope_id: str,
+    ) -> AuthorityPolicyV2RecoveryNotification | None:
+        row = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_recovery_notifications
+               WHERE envelope_id=?""",
+            (envelope_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return self._authority_policy_v2_notification_from_row(row)
+        except ValueError:
+            return None
+
+    @_synchronized
+    def get_authority_policy_v2_root_dispatch(
+        self, root_task_id: str,
+    ) -> AuthorityPolicyV2RootDispatch | None:
+        row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_root_dispatch WHERE root_task_id=?",
+            (root_task_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return self._authority_policy_v2_root_dispatch_from_row(row)
+        except ValueError:
+            return None
 
     @_synchronized
     def get_task_results(self, task_id: str) -> list[dict]:

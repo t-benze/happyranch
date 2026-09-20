@@ -42,6 +42,9 @@ _NO_INVENTION_TABLES = (
     "authority_policy_v2_pins",
     "authority_policy_v2_candidate_audit",
     "authority_policy_v2_evaluations",
+    "authority_policy_v2_continue_envelopes",
+    "authority_policy_v2_recovery_notifications",
+    "authority_policy_v2_root_dispatch",
     "escalation_notifications",
     "tasks",
 )

@@ -725,6 +725,9 @@ def test_exact_untouched_merged_s2_upgrades_and_preserves_every_unrelated_byte_v
         "authority_policy_v2_pins",
         "authority_policy_v2_candidate_audit",
         "authority_policy_v2_evaluations",
+        "authority_policy_v2_continue_envelopes",
+        "authority_policy_v2_recovery_notifications",
+        "authority_policy_v2_root_dispatch",
     }
     def unrelated(schema: list[tuple]) -> list[tuple]:
         return [

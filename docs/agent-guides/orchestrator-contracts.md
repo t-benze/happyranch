@@ -574,9 +574,69 @@ read-only discovery (`list_authority_policy_v2_unfinalized_attempts`,
 including a failed claim with no K, and the durable J/R or recorded obligation
 remains discoverable after a refusal transaction failure. The store exposes thin
 forwards and never commits. The shipping authority hook remains fail-closed; the
-later final continuation/settlement/publication/admission/spend transitions and
+later publication/admission/spend transitions and
 the startup/reaper/run-step automatic discovery wiring remain separate units, so
 the dual-text feature remains unaccepted.
+
+Checkpoint C3d2 lands the accepted R4 finalize and settle-receipt steps 1-2 on
+the same unmerged draft PR, adding exactly the three remaining approved additive
+tables. `authority_policy_v2_continue_envelopes` (E) is unique by candidate and
+repeats/authenticates the complete pinned tuple; its identity is exactly
+`APV2E-` + H({"candidate_id":C,"kind":"continue_envelope"}) and it is inserted
+ACTIVE, with only a forward-only active -> consumed lifecycle (the later spend
+unit owns that transition). `authority_policy_v2_recovery_notifications` (N) is
+the continuation generation G, identity exactly `APV2N-` +
+H({"envelope_id":EN,"kind":"continuation_notification"}), unique by envelope and
+by exact causal tuple, carrying the closed
+`needed|publishing|published|admitted|settled|invalidated` lifecycle,
+publication attempt/boot/lease and a nullable reserved next session.
+`authority_policy_v2_root_dispatch` (D) is keyed by root, names one generation
+with `pending|admitted|retired`, preserves the expected causal owner/session and
+admits only one non-retired generation. ONE
+`Database.finalize_authority_policy_v2_continuation` synchronized
+`BEGIN IMMEDIATE` transaction requires J unfinalized/`consumed_audited`, the
+consumed K, the exact P/V joins, the persisted V `continue_applies` outcome
+(never re-derived and never a second evaluator call), the original uninterrupted
+process-local winning owner, an eligible current root/task and BOTH halves of
+a0/a1/a2/a3 with full closed key/type/value/cardinality checks. It inserts the
+active E, the final candidate/task/hook and closed `continued` result-stage
+audits, the N `needed`, the D `pending(G)`, changes the task to
+Pending/null `block_kind` preserving the causal owner/session, and CASes J to
+`continued`. D is inserted when absent, or CASed from its EXACT retired previous
+G only; a pending/admitted pointer, an existing live v1 envelope or an existing
+v2 envelope for the candidate is never replaced. A required audit/insert/update
+failure rolls the whole final transaction back, retaining the previously
+committed consumed K/P/V/a0..a3 and the in-progress task; a genuine finalization
+failure poisons only the authentic winning owner and selects C3d1 refusal-only
+housekeeping (durable failed-stage obligation plus a process-local safe fallback
+when that diagnostic cannot be written), and no remint, re-evaluation or reopen
+follows because persisted UUIDs never restore liveness. Exact successful causal
+replay authenticates the final evidence read-only (`already_continued`) or goes
+to post-final housekeeping; it never allocates another E/N/D, spends E or resets
+N, and a later legitimate selector activation never invalidates the pinned final
+tuple. A SEPARATE `Database.settle_authority_policy_v2_continuation_receipt`
+transaction/read authenticates the complete final J/K/P/V/E/N/D and final
+audits/attribution before settlement. A genuine recovery requires the REAL exact
+root/agent/recovery_session_id/accepted_result_id/accepted_result_session_id Q
+and CASes `callback_accepted` -> `callback_consumed` together with the required
+closed completion and `authority_policy_v2_recovery_settled` audits; an
+already-`callback_consumed` exact Q independently authenticates the complete
+existing settlement/final evidence read-only and returns `already_settled_exact`
+(a transition-only false return is never treated as absence and missing evidence
+is never synthesized); an explicit recovery assertion with no matching Q returns
+the bounded `receipt_missing` pending code and mutates nothing; and a genuine
+ordinary absence stays ordinary and requires the real ordinary completion
+evidence at the accepted completion-consumer seam instead of a fabricated
+recovery-shaped completion. Identity-scoped audit rows are enumerated before
+closed-payload checks so a different code/discriminator cannot hide a duplicate.
+A failed settlement retains Pending/E/N/D/J and `callback_accepted` and permits
+ONLY exact settlement retry, never policy work or a mint. The store exposes thin
+forwarders (`finalize_v2_continuation`, `settle_v2_continuation_receipt`,
+`get_v2_continue_envelope`, `get_v2_recovery_notification`,
+`get_v2_root_dispatch`) that never commit. Publication, generation admission,
+envelope spend, the startup/reaper/run-step wiring and the production
+authority-hook continuation remain separate units; the shipping hook still
+fail-closes to ESCALATE and the dual-text feature remains unaccepted.
 
 The file-backed completion CLI preserves a supplied `manager_self_evaluation`
 member verbatim (including invalid/null values) so the daemon, rather than the
