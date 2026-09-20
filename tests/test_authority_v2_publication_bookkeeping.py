@@ -359,6 +359,11 @@ def _point_dispatch_at_replacement(
     conn.commit()
 
 
+def _dump(store):
+    """Exact full durable content, stronger than a count comparison."""
+    return "\n".join(store._db._conn.iterdump())
+
+
 class _TargetedFailingConn:
     def __init__(self, real, *, audit_stage: str | None = None, fail_commit=False):
         self._real = real
@@ -1193,3 +1198,367 @@ def test_claim_refuses_recovery_with_unsettled_related_receipt(tmp_path):
     assert refusal.reason == "evidence_drift"
     assert _counts(store._db) == before
     assert _notification(store, outcome).state == "needed"
+
+
+# ── C3d3a correction: impossible/malformed P discriminators at every boundary ──
+
+
+@pytest.mark.parametrize("boundary", ["ack", "reclaim", "failure"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "zero_attempt",
+        "negative_attempt",
+        "future_attempt",
+        "future_attempt_null_generation",
+    ],
+)
+def test_publication_refuses_impossible_attempt_discriminator(
+    tmp_path, boundary, mutation,
+):
+    """A duplicate claim whose ONLY defect is a well-typed wrong P must refuse.
+
+    Manager step2 probe: appending one additional ``publish_claimed`` row that
+    retains every causal identity but changes ``publication_attempt`` to
+    ``0``/``-1``/``2`` (future while retained P=1) or to ``2`` with a null
+    ``generation_id`` must NOT be discarded as legitimately distinct prior
+    history at acknowledgement, reclaim or failure recording.
+    """
+    store, row, attempt, outcome = _finalized(tmp_path)
+    claimed = _claim(store, row)
+    assert claimed.publication_attempt == 1
+    conflicting = dict(_stage_events(store, "publish_claimed")[0])
+    if mutation == "zero_attempt":
+        conflicting["publication_attempt"] = 0
+    elif mutation == "negative_attempt":
+        conflicting["publication_attempt"] = -1
+    elif mutation == "future_attempt":
+        conflicting["publication_attempt"] = 2
+    else:
+        conflicting["publication_attempt"] = 2
+        conflicting["generation_id"] = None
+    _append_stage_event(store, conflicting)
+    before = _dump(store)
+    prior_notification = _notification(store, outcome).model_dump(mode="json")
+
+    if boundary == "reclaim":
+        store.bind_v2_process_boot_id(BOOT_B)
+        result = _claim(store, row)
+        assert result.status == "publication_pending", result
+        assert result.reason == "evidence_drift", result
+    elif boundary == "ack":
+        result = _ack(
+            store, row, publication_attempt=claimed.publication_attempt,
+            publisher_boot_id=claimed.publisher_boot_id,
+        )
+        assert result.status == "ack_pending", result
+        assert result.reason == "evidence_drift", result
+    else:
+        result = _failure(
+            store, row, publication_attempt=claimed.publication_attempt,
+            publisher_boot_id=claimed.publisher_boot_id,
+        )
+        assert result.status == "failure_pending", result
+        assert result.reason == "evidence_drift", result
+
+    assert _dump(store) == before
+    assert _notification(store, outcome).model_dump(mode="json") == prior_notification
+    assert _stage_events(store, "published") == []
+    assert _stage_events(store, "publish_failed") == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["null_attempt", "missing_attempt", "mistyped_attempt", "extra_key"],
+)
+def test_publication_refuses_malformed_attempt_rows(tmp_path, mutation):
+    """Wrong/null/missing/mistyped/extra-key P rows are related conflicts."""
+    store, row, attempt, outcome = _finalized(tmp_path)
+    claimed = _claim(store, row)
+    conflicting = dict(_stage_events(store, "publish_claimed")[0])
+    if mutation == "null_attempt":
+        conflicting["publication_attempt"] = None
+    elif mutation == "missing_attempt":
+        conflicting.pop("publication_attempt")
+    elif mutation == "mistyped_attempt":
+        conflicting["publication_attempt"] = "2"
+    else:
+        conflicting["unexpected"] = True
+    _append_stage_event(store, conflicting)
+    before = _dump(store)
+    ack = _ack(
+        store, row, publication_attempt=claimed.publication_attempt,
+        publisher_boot_id=claimed.publisher_boot_id,
+    )
+    assert ack.status == "ack_pending"
+    assert ack.reason == "evidence_drift"
+    assert _dump(store) == before
+    assert _notification(store, outcome).state == "publishing"
+
+
+def test_publication_refuses_incomplete_retained_claim_history(tmp_path):
+    """Deleting only the earlier P1 claim breaks the closed ``{1..P}`` history."""
+    store, row, attempt, outcome = _finalized(tmp_path)
+    assert _claim(store, row).publication_attempt == 1
+    store.bind_v2_process_boot_id(BOOT_B)
+    second = _claim(store, row)
+    assert second.publication_attempt == 2
+    _delete_audits(
+        store,
+        lambda row: (
+            row["action"] == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
+            and isinstance(row["payload"], dict)
+            and row["payload"].get("stage") == "publish_claimed"
+            and row["payload"].get("publication_attempt") == 1
+        ),
+    )
+    before = _dump(store)
+    ack = _ack(
+        store, row, publication_attempt=second.publication_attempt,
+        publisher_boot_id=second.publisher_boot_id,
+    )
+    assert ack.status == "ack_pending"
+    assert ack.reason == "evidence_drift"
+    assert _dump(store) == before
+    assert _notification(store, outcome).state == "publishing"
+
+
+def test_reclaim_preserves_authentic_earlier_attempt_history(tmp_path):
+    """A genuine P1 stays valid prior history after a real P2 reclaim.
+
+    The accepted design permits several publication attempts for one
+    generation, so the closed-history rule must never become a blanket ban on
+    multiple ``publish_claimed`` rows.
+    """
+    store, row, attempt, outcome = _finalized(tmp_path)
+    first = _claim(store, row)
+    assert _ack(
+        store, row, publication_attempt=first.publication_attempt,
+        publisher_boot_id=first.publisher_boot_id,
+    ).status == "published"
+    store.bind_v2_process_boot_id(BOOT_B)
+    second = _claim(store, row)
+    assert second.status == "claimed", second
+    assert second.publication_attempt == 2
+    assert len(_stage_events(store, "publish_claimed")) == 2
+    ack = _ack(
+        store, row, publication_attempt=second.publication_attempt,
+        publisher_boot_id=second.publisher_boot_id,
+    )
+    assert ack.status == "published", ack
+    assert len(_stage_events(store, "published")) == 2
+    assert _notification(store, outcome).publication_attempt == 2
+
+
+def test_reopen_refuses_damaged_publication_history(tmp_path):
+    """Reopen authenticates retained claim history and refuses damage."""
+    store, row, attempt, outcome = _finalized(tmp_path)
+    claimed = _claim(store, row)
+    conflicting = dict(_stage_events(store, "publish_claimed")[0])
+    conflicting["publication_attempt"] = 9
+    _append_stage_event(store, conflicting)
+    reopened = _reopen(tmp_path)
+    before = _dump(reopened)
+    ack = reopened.acknowledge_v2_notification_publication(
+        root_task_id=TASK_ID, manager_agent=MANAGER,
+        manager_session_id=SESSION_ID, result_id=row["id"],
+        publication_attempt=claimed.publication_attempt,
+        publisher_boot_id=claimed.publisher_boot_id,
+    )
+    assert ack.status == "ack_pending"
+    assert ack.reason == "evidence_drift"
+    assert _dump(reopened) == before
+
+
+def test_two_connection_same_boot_contention_one_winner(tmp_path):
+    """Deterministic same-boot contention: one winner, unchanged loser."""
+    store, row, attempt, outcome = _finalized(tmp_path)
+    claimed = _claim(store, row)
+    assert claimed.status == "claimed"
+    before = _dump(store)
+    other = AuthorityPolicyStore(Database(tmp_path / "c2.db"))
+    other.bind_v2_permission_surface_reader(lambda agent: "a" * 64)
+    other.bind_v2_process_boot_id(BOOT_A)
+    loser = other.claim_v2_notification_publication(
+        root_task_id=TASK_ID, manager_agent=MANAGER,
+        manager_session_id=SESSION_ID, result_id=row["id"],
+    )
+    assert loser.status == "publication_pending"
+    assert loser.reason == "lease_live"
+    assert _dump(store) == before
+    notification = _notification(store, outcome)
+    assert notification.state == "publishing"
+    assert notification.publication_attempt == claimed.publication_attempt
+    assert notification.publisher_boot_id == claimed.publisher_boot_id == BOOT_A
+    assert notification.lease_deadline == claimed.lease_deadline
+    assert len(_stage_events(store, "publish_claimed")) == 1
+    assert _ack(
+        store, row, publication_attempt=claimed.publication_attempt,
+        publisher_boot_id=claimed.publisher_boot_id,
+    ).status == "published"
+
+
+@pytest.mark.parametrize("writer", ["claim", "ack", "failure", "invalidate"])
+def test_public_writer_nesting_preserves_caller_transaction(tmp_path, writer):
+    """Every public publication writer refuses nesting without mutating caller."""
+    store, row, attempt, outcome = _finalized(tmp_path)
+    claimed = None
+    if writer in ("ack", "failure"):
+        claimed = _claim(store, row)
+    conn = store._db._conn
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            "UPDATE tasks SET assigned_agent='caller-pending' WHERE id=?", (TASK_ID,)
+        )
+        if writer == "claim":
+            result = _claim(store, row)
+        elif writer == "ack":
+            result = _ack(
+                store, row, publication_attempt=claimed.publication_attempt,
+                publisher_boot_id=claimed.publisher_boot_id,
+            )
+        elif writer == "failure":
+            result = _failure(
+                store, row, publication_attempt=claimed.publication_attempt,
+                publisher_boot_id=claimed.publisher_boot_id,
+            )
+        else:
+            result = _invalidate(store, row)
+        assert result.reason == "transaction_owned", result
+        assert conn.in_transaction
+        pending = conn.execute(
+            "SELECT assigned_agent FROM tasks WHERE id=?", (TASK_ID,)
+        ).fetchone()[0]
+        assert pending == "caller-pending"
+    finally:
+        conn.rollback()
+    assert _notification(store, outcome).state in ("needed", "publishing")
+
+
+@pytest.mark.parametrize(
+    "mutator,stage",
+    [
+        ("claim", "publish_claimed"),
+        ("ack", "published"),
+        ("failure", "publish_failed"),
+        ("invalidate", "invalidated"),
+    ],
+)
+def test_publication_audit_failure_rolls_back_every_change(tmp_path, mutator, stage):
+    """An audit-insert failure at each writer rolls back every mutation."""
+    store, row, attempt, outcome = _finalized(tmp_path)
+    claimed = None
+    if mutator in ("ack", "failure"):
+        claimed = _claim(store, row)
+    if mutator == "invalidate":
+        _cancel_task(store)
+    before = _dump(store)
+    real = store._db._conn
+    store._db._conn = _TargetedFailingConn(real, audit_stage=stage)
+    try:
+        if mutator == "claim":
+            result = _claim(store, row)
+        elif mutator == "ack":
+            result = _ack(
+                store, row, publication_attempt=claimed.publication_attempt,
+                publisher_boot_id=claimed.publisher_boot_id,
+            )
+        elif mutator == "failure":
+            result = _failure(
+                store, row, publication_attempt=claimed.publication_attempt,
+                publisher_boot_id=claimed.publisher_boot_id,
+            )
+        else:
+            result = _invalidate(store, row)
+    finally:
+        store._db._conn = real
+    assert result.status.endswith("pending"), result
+    assert _dump(store) == before
+    assert _stage_events(store, stage) == []
+
+
+@pytest.mark.parametrize("mutator", ["claim", "ack", "failure", "invalidate"])
+def test_publication_commit_failure_rolls_back_every_change(tmp_path, mutator):
+    """A commit-boundary failure at each writer rolls back every mutation."""
+    store, row, attempt, outcome = _finalized(tmp_path)
+    claimed = None
+    if mutator in ("ack", "failure"):
+        claimed = _claim(store, row)
+    if mutator == "invalidate":
+        _cancel_task(store)
+    before = _dump(store)
+    real = store._db._conn
+    store._db._conn = _TargetedFailingConn(real, fail_commit=True)
+    try:
+        if mutator == "claim":
+            result = _claim(store, row)
+        elif mutator == "ack":
+            result = _ack(
+                store, row, publication_attempt=claimed.publication_attempt,
+                publisher_boot_id=claimed.publisher_boot_id,
+            )
+        elif mutator == "failure":
+            result = _failure(
+                store, row, publication_attempt=claimed.publication_attempt,
+                publisher_boot_id=claimed.publisher_boot_id,
+            )
+        else:
+            result = _invalidate(store, row)
+    finally:
+        store._db._conn = real
+    assert result.status.endswith("pending"), result
+    assert _dump(store) == before
+
+
+@pytest.mark.parametrize("mutator", ["claim", "ack", "failure", "invalidate"])
+def test_publication_sql_mutation_failure_rolls_back(tmp_path, mutator):
+    """A failure at the changed UPDATE mutation itself rolls back cleanly."""
+    store, row, attempt, outcome = _finalized(tmp_path)
+    claimed = None
+    if mutator in ("ack", "failure"):
+        claimed = _claim(store, row)
+    if mutator == "invalidate":
+        _cancel_task(store)
+    before = _dump(store)
+    real = store._db._conn
+    needle = {
+        "claim": "UPDATE authority_policy_v2_recovery_notifications",
+        "ack": "SET state='published'",
+        "failure": "SET publisher_boot_id=NULL",
+        "invalidate": "SET state='invalidated'",
+    }[mutator]
+
+    class _FailingUpdate:
+        def __init__(self, wrapped, needle):
+            self._real = wrapped
+            self._needle = needle
+
+        def execute(self, sql, *args, **kwargs):
+            if self._needle in sql:
+                raise RuntimeError("injected mutation failure")
+            return self._real.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    store._db._conn = _FailingUpdate(real, needle)
+    try:
+        if mutator == "claim":
+            result = _claim(store, row)
+        elif mutator == "ack":
+            result = _ack(
+                store, row, publication_attempt=claimed.publication_attempt,
+                publisher_boot_id=claimed.publisher_boot_id,
+            )
+        elif mutator == "failure":
+            result = _failure(
+                store, row, publication_attempt=claimed.publication_attempt,
+                publisher_boot_id=claimed.publisher_boot_id,
+            )
+        else:
+            result = _invalidate(store, row)
+    finally:
+        store._db._conn = real
+    assert result.status.endswith("pending"), result
+    assert _dump(store) == before

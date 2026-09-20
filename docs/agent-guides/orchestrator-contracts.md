@@ -789,7 +789,12 @@ null/missing/mistyped or whose candidate/result/envelope/notification/generation
 reference is wrong or malformed is a related conflict rather than an unrelated
 row, an opaque non-object body is never ordinary absence, and a row whose every
 present causal reference is well-typed and provably different remains
-legitimately distinct prior `P` history. Invalidation now requires an affirmative
+legitimately distinct prior `P` history. The retained history itself is
+closed: a generation's `publish_claimed` set must be exactly the contiguous,
+duplicate-free `{1..P}` authentic claim events, so an appended row whose only
+defect is a well-typed impossible zero/negative/future `P` (or `P` plus a null
+generation) refuses instead of masquerading as prior history, while a genuine
+earlier attempt stays valid after a real reclaim. Invalidation now requires an affirmative
 durable cause read from current state under the same owned transaction — a
 cancelled task, a well-typed replacement owner/session, or a root pointer
 displaced onto a replacement generation B — so a null/malformed current identity

@@ -11553,34 +11553,16 @@ class Database:
         bind the state-required failure evidence to that same publisher.
         ``None`` means the retained claim evidence does not authenticate.
         """
-        related = self._v2_related_publication_events_uncommitted(
+        claims = self._v2_authenticate_publication_claim_history_uncommitted(
             root_task_id=root_task_id, manager_agent=manager_agent,
-            attempt_id=attempt_id,
-            stage=AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_CLAIMED,
-            candidate_id=candidate_id, result_id=result_id,
+            attempt_id=attempt_id, candidate_id=candidate_id, result_id=result_id,
             envelope_id=envelope_id, notification_id=notification_id,
-            generation_id=generation_id,
+            generation_id=generation_id, publication_attempt=publication_attempt,
         )
-        if related is None:
+        if claims is None:
             return None
-        claims = []
-        for payload in related:
-            attempt_value = payload.get("publication_attempt")
-            if not self._v2_is_int(attempt_value):
-                # A potentially-related claim row whose P is missing/null/wrong
-                # type is a conflict, never evidence for this exact claim.
-                return None
-            if attempt_value != publication_attempt:
-                # A well-typed, provably different prior P event for the same
-                # generation is legitimately distinct history.
-                continue
-            claims.append(payload)
-        if len(claims) != 1:
-            return None
-        claim = claims[0]
-        boot = claim.get("publisher_boot_id")
-        if not isinstance(boot, str) or not boot:
-            return None
+        claim = claims[publication_attempt]
+        boot = claim["publisher_boot_id"]
         expected = self._v2_publication_audit_payload(
             stage=AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_CLAIMED,
             attempt_id=attempt_id, candidate_id=candidate_id, result_id=result_id,
@@ -11634,6 +11616,101 @@ class Database:
         if publisher_boot_id is not None:
             payload["publisher_boot_id"] = publisher_boot_id
         return payload
+
+    def _v2_publication_event_identity_keys(self, stage: str) -> set[str]:
+        """The exact closed key set of one publication/invalidation event.
+
+        ``invalidated`` is the one closed stage with no publication-attempt/boot
+        discriminator; every other publication stage carries both.
+        """
+        keys = {
+            "stage", "attempt_id", "candidate_id", "result_id", "envelope_id",
+            "notification_id", "generation_id",
+        }
+        if stage != AUTHORITY_POLICY_V2_RESULT_STAGE_INVALIDATED:
+            keys = keys | {"publication_attempt", "publisher_boot_id"}
+        return keys
+
+    def _v2_authenticated_publication_events_by_attempt_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, attempt_id: str,
+        stage: str, candidate_id: str, result_id: int, envelope_id: str,
+        notification_id: str, generation_id: str, reference_attempt: int,
+    ) -> dict[int, dict] | None:
+        """Authenticate the complete ``{P: one closed event}`` history for G.
+
+        Every POTENTIALLY related row for ``stage`` must be a closed event for
+        THIS exact causal identity carrying a well-typed positive
+        ``publication_attempt`` in ``1..reference_attempt``.  ``None`` means any
+        row was opaque, extra-key, foreign, malformed, duplicated or carried an
+        impossible zero/negative/future P -- so a different numeric
+        discriminator alone can never be mistaken for legitimately distinct
+        prior publication history.  A returned map holds at most one row per P.
+        """
+        related = self._v2_related_publication_events_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=attempt_id, stage=stage, candidate_id=candidate_id,
+            result_id=result_id, envelope_id=envelope_id,
+            notification_id=notification_id, generation_id=generation_id,
+        )
+        if related is None:
+            return None
+        expected_keys = self._v2_publication_event_identity_keys(stage)
+        by_attempt: dict[int, dict] = {}
+        for payload in related:
+            if not isinstance(payload, dict) or set(payload.keys()) != expected_keys:
+                return None
+            if payload.get("stage") != stage:
+                return None
+            for field, value in (
+                ("attempt_id", attempt_id), ("candidate_id", candidate_id),
+                ("result_id", result_id), ("envelope_id", envelope_id),
+                ("notification_id", notification_id),
+                ("generation_id", generation_id),
+            ):
+                if not self._v2_json_type_sensitive_equal(payload.get(field), value):
+                    return None
+            attempt_value = payload.get("publication_attempt")
+            if not self._v2_is_int(attempt_value):
+                return None
+            if attempt_value < 1 or attempt_value > reference_attempt:
+                return None
+            if attempt_value in by_attempt:
+                return None
+            boot = payload.get("publisher_boot_id")
+            if not isinstance(boot, str) or not boot:
+                return None
+            by_attempt[attempt_value] = payload
+        return by_attempt
+
+    def _v2_authenticate_publication_claim_history_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, attempt_id: str,
+        candidate_id: str, result_id: int, envelope_id: str,
+        notification_id: str, generation_id: str, publication_attempt: int,
+    ) -> dict[int, dict] | None:
+        """The one authentic closed claim history: exactly ``{1..P}``, one each.
+
+        Every committed claim increments P and appends exactly one
+        ``publish_claimed`` event, so a genuine generation retains a contiguous,
+        duplicate-free claim set ending at its current P.  Missing, mutated,
+        duplicated, foreign, malformed or impossible-P claim evidence returns
+        ``None`` -- there is no repair by reinsertion and no future/zero/negative
+        attempt is ever accepted as prior history.
+        """
+        if not self._v2_is_int(publication_attempt) or publication_attempt < 1:
+            return None
+        claims = self._v2_authenticated_publication_events_by_attempt_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=attempt_id,
+            stage=AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_CLAIMED,
+            candidate_id=candidate_id, result_id=result_id,
+            envelope_id=envelope_id, notification_id=notification_id,
+            generation_id=generation_id, reference_attempt=publication_attempt,
+        )
+        if claims is None:
+            return None
+        if set(claims.keys()) != set(range(1, publication_attempt + 1)):
+            return None
+        return claims
 
     def _v2_related_publication_events_uncommitted(
         self, *, root_task_id: str, manager_agent: str, attempt_id: str,
@@ -11705,11 +11782,46 @@ class Database:
         ``publication_attempt`` value is a legitimately distinct prior ``P``
         event, and a row whose every present causal reference is well-typed and
         provably different is independently unrelated.  A missing, duplicated,
-        mutated, foreign or extra-key event refuses.
+        mutated, foreign or extra-key event refuses, and only an authentic
+        earlier attempt with a valid P in ``1..current`` is prior history.
         """
+        stage = expected["stage"]
+        if "publication_attempt" in expected:
+            reference = expected["publication_attempt"]
+            if not self._v2_is_int(reference) or reference < 1:
+                return False
+            if stage == AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_CLAIMED:
+                history = (
+                    self._v2_authenticate_publication_claim_history_uncommitted(
+                        root_task_id=root_task_id, manager_agent=manager_agent,
+                        attempt_id=attempt_id,
+                        candidate_id=expected["candidate_id"],
+                        result_id=expected["result_id"],
+                        envelope_id=expected["envelope_id"],
+                        notification_id=expected["notification_id"],
+                        generation_id=expected["generation_id"],
+                        publication_attempt=reference,
+                    )
+                )
+            else:
+                history = (
+                    self._v2_authenticated_publication_events_by_attempt_uncommitted(
+                        root_task_id=root_task_id, manager_agent=manager_agent,
+                        attempt_id=attempt_id, stage=stage,
+                        candidate_id=expected["candidate_id"],
+                        result_id=expected["result_id"],
+                        envelope_id=expected["envelope_id"],
+                        notification_id=expected["notification_id"],
+                        generation_id=expected["generation_id"],
+                        reference_attempt=reference,
+                    )
+                )
+            if history is None or reference not in history:
+                return False
+            return self._v2_json_type_sensitive_equal(history[reference], expected)
         related = self._v2_related_publication_events_uncommitted(
             root_task_id=root_task_id, manager_agent=manager_agent,
-            attempt_id=attempt_id, stage=expected["stage"],
+            attempt_id=attempt_id, stage=stage,
             candidate_id=expected["candidate_id"], result_id=expected["result_id"],
             envelope_id=expected["envelope_id"],
             notification_id=expected["notification_id"],
@@ -11717,24 +11829,14 @@ class Database:
         )
         if related is None:
             return False
-        matches = []
-        for payload in related:
-            if "publication_attempt" in expected:
-                attempt_value = payload.get("publication_attempt")
-                if (
-                    self._v2_is_int(attempt_value)
-                    and attempt_value != expected["publication_attempt"]
-                ):
-                    # A well-typed, provably different prior P event for the
-                    # same generation is legitimately distinct and never
-                    # invalidates this one.
-                    continue
-                # Missing/null/mistyped P in a related row is a conflict and is
-                # kept for the cardinality/closed-payload check below.
-            matches.append(payload)
-        if len(matches) != 1:
+        if len(related) != 1:
             return False
-        return self._v2_json_type_sensitive_equal(matches[0], expected)
+        payload = related[0]
+        if not isinstance(payload, dict):
+            return False
+        if set(payload.keys()) != self._v2_publication_event_identity_keys(stage):
+            return False
+        return self._v2_json_type_sensitive_equal(payload, expected)
 
     @_synchronized
     def list_authority_policy_v2_publication_targets(
