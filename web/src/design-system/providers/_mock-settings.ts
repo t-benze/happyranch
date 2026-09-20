@@ -12,6 +12,7 @@
  * remains read-only and makes no backend calls.
  */
 import type { SettingsApi, QueryLike } from './DataContext';
+import type { CapacityQueryLike } from './_capacity-ordering';
 import type {
   DaemonCapacitySnapshot,
   DaemonCapacityWrite,
@@ -22,6 +23,31 @@ import type {
 
 function ok<T>(data: T): QueryLike<T> {
   return { data, isLoading: false, isError: false, error: null };
+}
+
+/**
+ * Capacity mirror of `ok()`. The capacity slot is widened with
+ * refresh/receipt/ordering members (TASK-8537 G1), so the mock must implement
+ * the same surface or the provider contract stops type-checking. The receipt is
+ * a fixed prototype value — this mock performs no network request, so advancing
+ * a clock here would fabricate a receipt the design forbids (S5-R5).
+ */
+function okCapacity<T>(data: T, revision: string): CapacityQueryLike<T> {
+  return {
+    data,
+    isLoading: false,
+    isError: false,
+    error: null,
+    refetch: () => Promise.resolve(data),
+    isFetching: false,
+    observation: {
+      issuedSeq: 1,
+      settledSeq: 2,
+      outcome: 'usable',
+      receiptAt: 0,
+      sourceRevision: revision,
+    },
+  };
 }
 
 const FIXTURE: SettingsSnapshot = {
@@ -105,7 +131,8 @@ export const mockSettingsApi: SettingsApi = {
     error: null,
     data: undefined,
   }),
-  useDaemonCapacity: () => ok(DAEMON_CAPACITY_FIXTURE),
+  useDaemonCapacity: () =>
+    okCapacity(DAEMON_CAPACITY_FIXTURE, DAEMON_CAPACITY_FIXTURE.revision),
   useUpdateDaemonCapacity: () => ({
     mutateAsync: (_capacity: DaemonCapacityWrite) => Promise.resolve(DAEMON_CAPACITY_FIXTURE),
     isPending: false,

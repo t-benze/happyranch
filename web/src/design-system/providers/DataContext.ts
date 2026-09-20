@@ -561,7 +561,11 @@ export interface SettingsApi {
     import('@/lib/api/types').OrgSettingsPatch,
     import('@/lib/api/types').SettingsSnapshot
   >;
-  useDaemonCapacity: () => QueryLike<import('@/lib/api/types').DaemonCapacitySnapshot>;
+  /** Capacity slot only: `QueryLike` plus refresh/receipt/ordering metadata
+   *  (TASK-8537 G1). `QueryLike` itself is deliberately NOT widened. */
+  useDaemonCapacity: () => import('./_capacity-ordering').CapacityQueryLike<
+    import('@/lib/api/types').DaemonCapacitySnapshot
+  >;
   useUpdateDaemonCapacity: () => MutationLike<
     import('@/lib/api/types').DaemonCapacityWrite,
     import('@/lib/api/types').DaemonCapacitySnapshot

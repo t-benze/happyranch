@@ -140,8 +140,24 @@ fidelity.
 
 ### Settings
 
-The Settings surface ships as a full page (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*` route, entered from the footer-pinned **Settings** item in the Sidebar, with exactly three left sub-nav panels: Assistant · Organization · Executors. The Settings root, retired `system` and `agents` subroutes, and unknown subroutes resolve to Assistant with replace navigation. (`SettingsDialog` is retained unmounted for direct tests; it is not an application or prototype entry point.) It shows:
+The Settings surface ships as a full page (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*` route, entered from the footer-pinned **Settings** item in the Sidebar, with exactly four left sub-nav panels, in this order: Daemon / Capacity · Assistant · Organization · Executors. The Settings root, retired `system` and `agents` subroutes, and unknown subroutes resolve to Assistant with replace navigation. (`SettingsDialog` is retained unmounted for direct tests; it is not an application or prototype entry point.) It shows:
 
+- **Daemon / Capacity** — stages the paired daemon-wide `queue_workers` and
+  `host_global_session_cap` values for a future operator-controlled restart.
+  Saving never applies live and the page cannot restart the daemon: the running
+  readouts are observations and are unchanged by a save. The panel holds `base`
+  (accepted only from a usable read or a usable success), the operator's
+  `draft`, `latest` observations and an immutable `submission` record
+  separately; a later read never silently rebases a dirty or unresolved draft,
+  and only an explicit rebase / accept-latest moves `base`. Concurrency is the
+  daemon's quoted strong `If-Match` revision. Numeric input is validated as
+  canonical positive-decimal TEXT before any `Number` conversion, so an
+  operator value outside the exactly-representable range is refused with the
+  entered text preserved rather than silently rounded; that bound is an EDITOR
+  representation limit and is not an API maximum. A server numeric that did not
+  survive `JSON.parse` as a safe integer is withheld rather than displayed
+  rounded — see the capacity note in `runtime-and-configuration.md` for the
+  residual limitation this does NOT close.
 - **Assistant** — assistant status, setup/recovery, and assistant executor binding.
 - **Org** (editable, Phase 2) — org-level settings: session timeout override, dreaming schedule (enabled, schedule time/timezone, catch-up-on-startup, agent mode, include/exclude agent names), browser-managed threads config (enabled and invocation timeout), and **working_hours** (THR-035: the Work-Hours Config UI — feature on/off switch, org-level eligibility selector, and the raw per-tier schedule blocks `default` / `teams` / `overrides`).
 - **Executors** — effective machine executor registry, custom CLI lifecycle, and recovery.
