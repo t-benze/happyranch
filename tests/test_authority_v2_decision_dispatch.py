@@ -25,24 +25,39 @@ from runtime.infrastructure.database import Database
 from runtime.models import CompletionReport, NextStep, TaskStatus
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 from runtime.orchestrator.orchestrator import completion_report_from_result_row
+from runtime.orchestrator.active_authority_policy import load_session_policy_binding
 from tests.test_authority_v2_attempt_admission import (
     MANAGER,
     SESSION_ID,
     TASK_ID,
     TEAM,
+    _admit,
+    _carrier_and_admission,
 )
 from tests.test_authority_v2_envelope_spend import (
     RESERVED,
     _BoundaryFailingConn,
     _RendezvousConn,
+    _bind_reserved,
     _reserved_state,
     _row,
     _spend,
 )
+from tests.test_authority_v2_evaluation_stage import (
+    _audit_consumption as _stage_audit_consumption,
+    _audit_evaluation as _stage_audit_evaluation,
+    _claim as _stage_claim,
+    _claim_audit as _stage_claim_audit,
+    _consume as _stage_consume,
+    _evaluate as _stage_evaluate,
+)
+from tests.test_authority_v2_finalization_settlement import (
+    _insert_ordinary_completion,
+)
+from tests.test_authority_v2_generation_admission import _published
 from tests.test_authority_v2_publication_bookkeeping import (
     _append_stage_event,
     _dump,
-    _point_dispatch_at_replacement,
     _stage_events,
 )
 
@@ -519,27 +534,194 @@ def test_applied_replay_refuses_missing_or_duplicate_claim_event(tmp_path):
         assert _dump(store) == before
 
 
-def test_historical_ack_survives_replacement_generation_b(tmp_path):
-    """A's exact acknowledgement must not depend on a still-current retired D.
+# ── authentic generation B through the ACTUAL public stages ───────────────
+#
+# The previous acceptance assertion staged B by cloning A's causal rows
+# (``_point_dispatch_at_replacement``); B was never authenticated as evidence.
+# These cases instead produce B through the real public lifecycle with its own
+# reserved-session attempt/binding/candidate/evaluation/continuation/
+# publication/admission identities and audits, then prove that A's late
+# acknowledgement and A's interruption refusal settle ONLY A and preserve
+# B/task/owner/audits byte-for-byte.  A's exact replay never remints or spends B.
 
-    The replacement pointer names a REAL notification/generation B (staged by
-    the accepted fixture clone); A's own settlement is authenticated from A's
-    exact evidence and the durable ``spent`` audit, never from today's pointer.
-    """
-    store, row, outcome, r2 = _spent_ready(tmp_path)
-    assert _claim(store, row).status == "claimed"
-    notification = store.get_v2_recovery_notification(outcome.notification_id)
-    _point_dispatch_at_replacement(
-        store, notification,
-        envelope_overrides={
-            "spending_result_id": None, "decision_state": None,
-            "lifecycle_state": "active",
-        },
+_B_DECISION_STAGES = {
+    "decision_claimed", "decision_applied", "decision_dispatch_interrupted",
+}
+
+
+def _admitted_reserved_result(store):
+    """Admit the reserved session's REAL manager result (B's causal result)."""
+    binding = load_session_policy_binding(
+        db=store._db, task_id=TASK_ID, session_id=RESERVED, agent_name=MANAGER,
     )
+    assert binding is not None
+    carrier, admission = _carrier_and_admission(binding)
+    assert _admit(store, carrier, admission, session_id=RESERVED) is True
+    row = store._db.get_latest_task_result(TASK_ID, MANAGER, RESERVED)
+    attempt = store._db.get_authority_policy_v2_attempt_for_result(row["id"])
+    assert attempt is not None
+    return row, attempt
+
+
+def _spent_ready_b(tmp_path):
+    """A spent/retired generation A whose causal spending result IS an admitted
+    manager result for the reserved session (the authentic generation-B seed)."""
+    store, row, _attempt, outcome, _claimed = _published(tmp_path)
+    admitted = store.try_claim_v2_continuation_generation(
+        root_task_id=TASK_ID, manager_agent=MANAGER,
+        manager_session_id=SESSION_ID, result_id=row["id"],
+        generation_id=outcome.notification_id, next_session_id=RESERVED,
+    )
+    assert admitted.status == "claimed", admitted
+    settled = store.settle_v2_continuation_generation_admission(
+        root_task_id=TASK_ID, manager_agent=MANAGER,
+        manager_session_id=SESSION_ID, result_id=row["id"],
+        generation_id=outcome.notification_id, next_session_id=RESERVED,
+    )
+    assert settled.status == "settled", settled
+    _bind_reserved(store)
+    r2_row, attempt_b = _admitted_reserved_result(store)
+    spent = _spend(store, row, outcome, r2_row["id"])
+    assert spent.status == "spent", spent
+    return store, row, outcome, r2_row, attempt_b
+
+
+def _drive_generation_b(store, r2_row, attempt_b):
+    """Produce generation B through the REAL public stages.
+
+    B owns its reserved-session R2 attempt/binding/candidate/evaluation/
+    continuation/publication/admission identities and audits; the retired A
+    pointer is advanced by the genuine forward-only ``retired -> pending`` CAS,
+    never by cloned rows or an arbitrary pointer edit.
+    """
+    row, attempt = r2_row, attempt_b
+    session = {"session_id": RESERVED}
+    assert _stage_claim(store, row, attempt, **session).status == "claimed"
+    assert _stage_claim_audit(store, row, attempt, **session).status == "claim_audited"
+    assert _stage_evaluate(store, row, attempt, **session).status == "evaluated"
+    assert _stage_audit_evaluation(store, row, attempt, **session).status == "evaluation_audited"
+    assert _stage_consume(store, row, attempt, **session).status == "consumed"
+    assert _stage_audit_consumption(store, row, attempt, **session).status == "consumed_audited"
+    finalized = store.finalize_v2_continuation(
+        root_task_id=TASK_ID, manager_agent=MANAGER, manager_session_id=RESERVED,
+        result_id=row["id"], origin_boot_id=attempt.origin_boot_id,
+        owner_attempt_id=attempt.owner_attempt_id,
+    )
+    assert finalized.status == "continued", finalized
+    generation = finalized.notification_id
+    _insert_ordinary_completion(store, row["id"])
+    settled = store.settle_v2_continuation_receipt(
+        root_task_id=TASK_ID, manager_agent=MANAGER, manager_session_id=RESERVED,
+        result_id=row["id"],
+    )
+    assert settled.status == "settled", settled
+    store.bind_v2_process_boot_id(attempt.origin_boot_id)
+    claimed = store.claim_v2_notification_publication(
+        root_task_id=TASK_ID, manager_agent=MANAGER, manager_session_id=RESERVED,
+        result_id=row["id"],
+    )
+    assert claimed.status == "claimed", claimed
+    published = store.acknowledge_v2_notification_publication(
+        root_task_id=TASK_ID, manager_agent=MANAGER, manager_session_id=RESERVED,
+        result_id=row["id"], publication_attempt=claimed.publication_attempt,
+        publisher_boot_id=claimed.publisher_boot_id,
+    )
+    assert published.status == "published", published
+    next_b = "sess-authentic-generation-b"
+    admitted = store.try_claim_v2_continuation_generation(
+        root_task_id=TASK_ID, manager_agent=MANAGER, manager_session_id=RESERVED,
+        result_id=row["id"], generation_id=generation, next_session_id=next_b,
+    )
+    assert admitted.status == "claimed", admitted
+    settled_b = store.settle_v2_continuation_generation_admission(
+        root_task_id=TASK_ID, manager_agent=MANAGER, manager_session_id=RESERVED,
+        result_id=row["id"], generation_id=generation, next_session_id=next_b,
+    )
+    assert settled_b.status == "settled", settled_b
+    dispatch = store.get_v2_root_dispatch(TASK_ID)
+    assert dispatch.generation_id == generation and dispatch.state == "admitted"
+    return generation
+
+
+def _b_state(store, generation):
+    """The complete B/task/owner evidence that A's settlement must preserve."""
+    db = store._db
+    notification = db.get_authority_policy_v2_recovery_notification(generation)
+    envelope = store.get_v2_continue_envelope(notification.envelope_id)
+
+    def one(sql, *params):
+        row = db._conn.execute(sql, params).fetchone()
+        return dict(row) if row is not None else None
+
+    return {
+        "notification": one(
+            "SELECT * FROM authority_policy_v2_recovery_notifications "
+            "WHERE notification_id=?", generation,
+        ),
+        "envelope": one(
+            "SELECT * FROM authority_policy_v2_continue_envelopes "
+            "WHERE envelope_id=?", notification.envelope_id,
+        ),
+        "dispatch": one(
+            "SELECT * FROM authority_policy_v2_root_dispatch WHERE root_task_id=?",
+            TASK_ID,
+        ),
+        "attempt": one(
+            "SELECT * FROM authority_policy_v2_attempts WHERE result_id=?",
+            notification.result_id,
+        ),
+        "candidate": one(
+            "SELECT * FROM authority_policy_v2_candidates WHERE candidate_id=?",
+            envelope.candidate_id,
+        ),
+        "task": one("SELECT * FROM tasks WHERE id=?", TASK_ID),
+        "candidate_audits": [
+            dict(r) for r in db._conn.execute(
+                "SELECT * FROM authority_policy_v2_candidate_audit "
+                "WHERE candidate_id=? ORDER BY id", (envelope.candidate_id,),
+            ).fetchall()
+        ],
+        "related_stage_audits": [
+            dict(a) for a in db.list_authority_policy_v2_result_stage_audits(
+                root_task_id=TASK_ID, manager_agent=MANAGER,
+            )
+            if a["payload"].get("stage") not in _B_DECISION_STAGES
+        ],
+    }
+
+
+def test_authentic_generation_b_late_acknowledgement_preserves_b(tmp_path):
+    """A's LATE acknowledgement settles only A; B is preserved byte-for-byte."""
+    store, row, _outcome, r2_row, attempt_b = _spent_ready_b(tmp_path)
+    assert _claim(store, row).status == "claimed"
+    generation = _drive_generation_b(store, r2_row, attempt_b)
+    before = _b_state(store, generation)
+
     acked = _ack(store, row)
     assert acked.status == "applied", acked
-    assert _receipt(store, r2)["decision_state"] == "applied"
+    assert _receipt(store, r2_row["id"])["decision_state"] == "applied"
     assert len(_stage_events(store, APPLIED)) == 1
+    assert _b_state(store, generation) == before
+
+    # An exact A acknowledgement replay is read-only: it never remints, spends
+    # or otherwise mutates the preserved generation B.
+    assert _ack(store, row).status == "already_applied_exact"
+    assert _b_state(store, generation) == before
+
+
+def test_authentic_generation_b_interruption_refusal_preserves_b(tmp_path):
+    """A's interruption refusal settles only A; B is preserved byte-for-byte."""
+    store, row, _outcome, r2_row, attempt_b = _spent_ready_b(tmp_path)
+    assert _claim(store, row).status == "claimed"
+    generation = _drive_generation_b(store, r2_row, attempt_b)
+    before = _b_state(store, generation)
+
+    refused = _refuse(store, row)
+    assert refused.status == "refused", refused
+    assert _receipt(store, r2_row["id"])["decision_state"] == "refused"
+    assert _b_state(store, generation) == before
+    assert len(_stage_events(store, APPLIED)) == 0
+    assert len(_stage_events(store, INTERRUPTED)) == 1
 
 
 # ── persisted-report binding through the shipping representation ──────────

@@ -52,7 +52,11 @@ import pytest
 import uvicorn
 
 from runtime.daemon.app import create_app
-from runtime.models import AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION, TaskStatus
+from runtime.models import (
+    AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+    BlockKind,
+    TaskStatus,
+)
 
 ORG = "isolated-org"
 TEAM = "engineering"
@@ -2605,19 +2609,45 @@ def test_shipping_historically_migrated_reserved_invocation_and_spend(
 # ==========================================================================
 
 
-def _reserved_decision_body(binding: dict, task_id: str, action: str) -> dict:
+def _reserved_decision_body(
+    binding: dict, task_id: str, action: str, *, job_id: str | None = None,
+) -> dict:
     body = _completion_body(binding, task_id)
     if action == "done":
         body["decision"] = {
             "action": "done",
             "summary": "isolated shipping continuation done",
         }
-    else:
+    elif action == "delegate":
         body["decision"] = {
             "action": "delegate", "agent": WORKER,
             "prompt": "isolated shipping continuation delegate",
         }
+    else:
+        # A genuine ``blocked`` completion report: the reserved continuation
+        # result parks the task on its own submitted job (in_progress with
+        # ``block_kind=blocked_on_job``), the spec's in-place block branch.
+        body["status"] = "blocked"
+        body["summary"] = "isolated shipping continuation blocked on job"
+        body["waiting_on_job_ids"] = [job_id]
     return body
+
+
+def _insert_pending_job(fixture: _ShippingFixture, task_id: str) -> str:
+    """A real non-terminal job row so a blocked report parks on it."""
+    from uuid import uuid4
+
+    from runtime.models import JobInterpreter, JobRecord, JobStatus
+
+    job_id = f"JOB-{uuid4().hex[:12]}"
+    fixture.org.db.insert_job(JobRecord(
+        id=job_id, task_id=task_id, agent_name=MANAGER,
+        title="isolated blocked shipping job", rationale="blocked case",
+        script_text="true", interpreter=JobInterpreter.BASH,
+        status=JobStatus.PENDING,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    ))
+    return job_id
 
 
 def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="healthy"):
@@ -2707,7 +2737,12 @@ def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="he
     # result, while the reserved invocation is still held at the launch.
     reserved_binding = _binding(fixture, root_id, reserved)
     assert reserved_binding is not None and reserved_binding["mode"] == "v2"
-    reserved_body = _reserved_decision_body(reserved_binding, root_id, action)
+    blocked_job_id = (
+        _insert_pending_job(fixture, root_id) if action == "blocked" else None
+    )
+    reserved_body = _reserved_decision_body(
+        reserved_binding, root_id, action, job_id=blocked_job_id,
+    )
     reserved_payload = fixture.write_payload(
         reserved_body, name=f"completion-reserved-{action}.json",
     )
@@ -2866,6 +2901,17 @@ def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="he
         assert stages.count("decision_dispatch_interrupted") == 0
         if action == "done":
             assert db.get_task(root_id).status is TaskStatus.COMPLETED
+        elif action == "blocked":
+            # The admitted reserved result's REAL normal effect is the spec's
+            # in-place block branch: the task parks on its own submitted job
+            # (in_progress + blocked_on_job) with no child/enqueue.
+            task = db.get_task(root_id)
+            assert task.status is TaskStatus.IN_PROGRESS
+            assert task.block_kind == BlockKind.BLOCKED_ON_JOB
+            assert json.loads(task.blocked_on_job_ids or "[]") == [blocked_job_id]
+            assert db._conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE parent_task_id=?", (root_id,),
+            ).fetchone()[0] == 0
         else:
             children = [dict(row) for row in db._conn.execute(
                 "SELECT * FROM tasks WHERE parent_task_id=?", (root_id,),
@@ -3014,5 +3060,31 @@ def test_shipping_historically_migrated_common_consumer_ack_failure_then_reopen(
     fixture.start()
     try:
         _drive_c3d3c2_dispatch(fixture, action="done", mode="ack_failure")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_real_reserved_invocation_common_consumer_blocked_result(
+    tmp_path, monkeypatch,
+):
+    """An admitted reserved result whose report is genuinely ``blocked`` runs
+    the REAL common consumer exactly once and parks the task on its own job."""
+    fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2)
+    fixture.start()
+    try:
+        _drive_c3d3c2_dispatch(fixture, action="blocked")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_common_consumer_blocked_result(
+    tmp_path, monkeypatch,
+):
+    fixture = _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=True, queue_workers=2,
+    )
+    fixture.start()
+    try:
+        _drive_c3d3c2_dispatch(fixture, action="blocked")
     finally:
         fixture.stop()
