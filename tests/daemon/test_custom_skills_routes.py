@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 
 import pytest
@@ -3611,13 +3612,18 @@ def test_a5b_a14_a15_first_invalid_dark_both_roots_all_seams(
 
 
 @pytest.mark.parametrize("doc_name,_expected_code", _INVALID_DOCUMENT_NAME_CASES)
+@pytest.mark.parametrize("surface", ["human-append", "agent-append-a", "agent-append-b"])
 def test_a5b_a14_a15_invalid_successor_retains_both_roots_and_eligibility(
-    client_with_runtime, monkeypatch, tmp_path, doc_name, _expected_code,
+    client_with_runtime, monkeypatch, tmp_path, doc_name, _expected_code, surface,
 ):
     """A5b/A14/A15: after granting eligibility and materializing the VALID
-    predecessor in BOTH roots, an invalid-document-name successor retains the
-    prior pointer, the COMPLETE eligibility rows, and BOTH roots' resolved
-    target identity (same canonical package version/hash/bytes)."""
+    predecessor in BOTH roots, an invalid-document-name successor authored
+    through the HUMAN mount or EITHER agent mount retains the prior
+    pointer/description pair, the COMPLETE eligibility rows, and BOTH roots'
+    raw link value + resolved target identity (same canonical package
+    version/hash/bytes) after rematerialization of the SAME workspace."""
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.orchestrator._paths import OrgPaths
     from runtime.skills.canonical_store import CanonicalSkillStore
 
     client, org = client_with_runtime
@@ -3625,52 +3631,157 @@ def test_a5b_a14_a15_invalid_successor_retains_both_roots_and_eligibility(
     conn = getattr(org.db, "_conn", org.db)
     slug = "retain-valid"
     valid_md = "---\nname: retain-valid\ndescription: valid target\n---\n"
-    created = client.post(
-        BASE, json={"slug": slug, "name": "Retain", "skill_md": valid_md}
-    )
-    assert created.status_code == 201, created.text
-    skill_id, valid_version = created.json()["skill_id"], created.json()["version_id"]
+    token = client.headers.get("Authorization")
+
+    # 1. Valid predecessor owned by the relevant human/agent via the REAL route.
+    if surface == "human-append":
+        created = client.post(
+            BASE, json={"slug": slug, "name": "Retain", "skill_md": valid_md}
+        )
+        assert created.status_code == 201, created.text
+        skill_id, valid_version = created.json()["skill_id"], created.json()["version_id"]
+    else:
+        path = _AGENT_CREATE_PATHS[0 if surface == "agent-append-a" else 1]
+        _activate_agent(org, task_id="TASK-A5B-APP", session="sess-a5b-app")
+        client.headers.pop("Authorization", None)
+        created = client.post(
+            path, params={"session_id": "sess-a5b-app"},
+            json={"slug": slug, "name": "Retain", "skill_md": valid_md},
+        )
+        client.headers["Authorization"] = token
+        assert created.status_code == 201, created.text
+        skill_id = created.json()["skill"]["id"]
+        valid_version = created.json()["version"]["id"]
+
+    # The predecessor's real durable owner proves the mount that authored it.
+    origin = conn.execute(
+        "SELECT origin_kind, origin_agent FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone()
+    if surface == "human-append":
+        assert origin["origin_kind"] == "human" and origin["origin_agent"] is None
+    else:
+        assert origin["origin_kind"] == "agent"
+        assert origin["origin_agent"] == "dev_agent"
+
+    # 2. Grant eligibility using the existing human-authorized helper, then
+    #    snapshot the COMPLETE durable predecessor state: the pointer/
+    #    description pair, every eligibility row and the predecessor row
+    #    identity/hash.
     _grant_org_allow(client, skill_id, valid_version)
+    before_pointer = dict(conn.execute(
+        "SELECT current_version_id, description FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone())
     before_eligibility = [dict(r) for r in conn.execute(
         "SELECT * FROM custom_skill_eligibility_rules WHERE skill_id=? ORDER BY id", (skill_id,)
     )]
+    before_valid_row = dict(conn.execute(
+        "SELECT * FROM custom_skill_versions WHERE id=?", (valid_version,)
+    ).fetchone())
+    assert before_pointer["current_version_id"] == valid_version
+    store = ArtifactStore(OrgPaths(org.root).artifacts_dir)
 
+    # 3. Materialize the SAME disposable workspace into BOTH roots BEFORE the
+    #    invalid append and capture the raw readlink value plus resolved
+    #    identity for each root.
     specs, workspace = _canonical_both_roots(org, monkeypatch, tmp_path, task_id="TASK-A5B")
     spec = next(s for s in specs if s["slug"] == slug)
     valid_digest = hashlib.sha256(valid_md.encode()).hexdigest()
     assert spec["version"] == str(valid_version)
     assert spec["content_hash"] == valid_digest
     target = CanonicalSkillStore().canonical_path(slug, str(valid_version), valid_digest)
-    before_targets = {}
+    before_links: dict[str, str] = {}
+    before_targets: dict[str, str] = {}
     for root in (".claude/skills", ".agents/skills"):
         link = workspace / root / slug
         assert link.is_symlink(), root
+        raw = os.readlink(link)
+        assert str(link.readlink()) == raw, root
+        before_links[root] = raw
         assert link.resolve() == target.resolve(), root
         assert (link / "SKILL.md").read_bytes() == valid_md.encode("utf-8")
         before_targets[root] = str(link.resolve())
 
+    # 4. Invalid successor through THIS node's real authoring mount.
     invalid_md = f"---\nname: {doc_name}\ndescription: d\n---\n"
-    appended = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": invalid_md})
-    assert appended.status_code == 201 and appended.json()["validation_state"] == "invalid"
-    assert appended.json()["current_version_id"] == valid_version
+    if surface == "human-append":
+        appended = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": invalid_md})
+    else:
+        path = _AGENT_CREATE_PATHS[0 if surface == "agent-append-a" else 1]
+        client.headers.pop("Authorization", None)
+        appended = client.post(
+            path, params={"session_id": "sess-a5b-app"},
+            json={"slug": slug, "name": "Retain", "skill_md": invalid_md},
+        )
+        client.headers["Authorization"] = token
+    assert appended.status_code == 201, appended.text
+    if surface == "human-append":
+        invalid_version = appended.json()["version_id"]
+        assert appended.json()["validation_state"] == "invalid"
+        assert appended.json()["current_version_id"] == valid_version
+    else:
+        invalid_version = appended.json()["version"]["id"]
+        assert appended.json()["version"]["validation_state"] == "invalid"
+        assert appended.json()["skill"]["current_version_id"] == valid_version
+    # A distinct immutable invalid version whose artifact bytes/hash/key,
+    # validator marker and parent lineage are read from the real store.
+    assert invalid_version != valid_version
+    invalid_digest = hashlib.sha256(invalid_md.encode()).hexdigest()
+    invalid_key = f"custom-skills/{slug}/{invalid_digest}/SKILL.md"
+    invalid_row = conn.execute(
+        "SELECT skill_md_cache, content_hash, content_artifact_key, validation_state, "
+        "validator_version, parent_version_id, author_kind, author_identity "
+        "FROM custom_skill_versions WHERE id=?",
+        (invalid_version,),
+    ).fetchone()
+    assert invalid_row["skill_md_cache"] == invalid_md
+    assert invalid_row["content_hash"] == invalid_digest
+    assert invalid_row["content_artifact_key"] == invalid_key
+    assert invalid_row["validation_state"] == "invalid"
+    assert invalid_row["validator_version"] == "THR-262/1.0.0"
+    assert invalid_row["parent_version_id"] == valid_version
+    if surface == "human-append":
+        assert invalid_row["author_kind"] == "human"
+    else:
+        assert invalid_row["author_kind"] == "agent"
+        assert invalid_row["author_identity"] == "dev_agent"
+    invalid_path = store.path_for(invalid_key)
+    assert invalid_path.is_file(), invalid_key
+    assert invalid_path.read_bytes() == invalid_md.encode("utf-8")
 
-    # Prior pointer and complete eligibility rows retained after the successor.
+    # Prior pointer/description pair and COMPLETE eligibility rows retained; the
+    # valid predecessor row identity/hash and its artifact bytes are unchanged.
     assert dict(conn.execute(
         "SELECT current_version_id, description FROM custom_skills WHERE id=?", (skill_id,)
-    ).fetchone())["current_version_id"] == valid_version
+    ).fetchone()) == before_pointer
     assert [dict(r) for r in conn.execute(
         "SELECT * FROM custom_skill_eligibility_rules WHERE skill_id=? ORDER BY id", (skill_id,)
     )] == before_eligibility
+    assert dict(conn.execute(
+        "SELECT * FROM custom_skill_versions WHERE id=?", (valid_version,)
+    ).fetchone()) == before_valid_row
+    assert store.path_for(
+        f"custom-skills/{slug}/{valid_digest}/SKILL.md"
+    ).read_bytes() == valid_md.encode("utf-8")
 
+    # 5. Rematerialize the SAME workspace: both roots' symlink status, raw link
+    #    values, resolved targets, selected version/hash and bytes are identical
+    #    and the invalid successor never becomes selected.
     specs_after, workspace_after = _canonical_both_roots(
-        org, monkeypatch, tmp_path, task_id="TASK-A5B2"
+        org, monkeypatch, tmp_path, task_id="TASK-A5B"
     )
+    assert workspace_after == workspace
     spec_after = next(s for s in specs_after if s["slug"] == slug)
     assert spec_after["version"] == str(valid_version)
     assert spec_after["content_hash"] == valid_digest
+    assert not any(
+        s["slug"] == slug and s["version"] == str(invalid_version) for s in specs_after
+    )
     for root in (".claude/skills", ".agents/skills"):
         link = workspace_after / root / slug
         assert link.is_symlink(), root
+        raw_after = os.readlink(link)
+        assert str(link.readlink()) == raw_after, root
+        assert raw_after == before_links[root], root
         assert str(link.resolve()) == before_targets[root], root
         assert link.resolve() == target.resolve(), root
         assert (link / "SKILL.md").read_bytes() == valid_md.encode("utf-8")
