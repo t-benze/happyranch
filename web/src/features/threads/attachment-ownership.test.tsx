@@ -5,7 +5,7 @@
  * These run through the real `<AppProvider>` + router + MSW fetch boundary
  * (`renderWithProviders`). MSW is browser-lifecycle evidence only.
  */
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { useNavigate } from 'react-router-dom';
@@ -220,83 +220,174 @@ describe('captured destination and late-result ownership (C8)', () => {
     expect(uploads.filter((u) => u.endsWith('b.txt'))).toHaveLength(1);
   });
 
-  test('a held send response in one org does not leak pending into the replacement org (R3)', async () => {
-    sessionStorage.setItem('happyranch.token', 'tok');
-    server.use(...orgHandlers('alpha', ['THR-001']), ...orgHandlers('beta', ['THR-001']));
-    const sends: { org: string; body: unknown }[] = [];
-    let releaseAlphaSend: () => void = () => {};
-    let releaseBetaSend: () => void = () => {};
-    const heldAlphaSend = new Promise<void>((resolve) => { releaseAlphaSend = resolve; });
-    const heldBetaSend = new Promise<void>((resolve) => { releaseBetaSend = resolve; });
-    server.use(
-      http.post('/api/v1/orgs/alpha/artifacts', async ({ request }) =>
-        HttpResponse.json({ name: requestedName(request), size_bytes: 3, modified_at: 'now' }),
-      ),
-      http.post('/api/v1/orgs/beta/artifacts', async ({ request }) =>
-        HttpResponse.json({ name: requestedName(request), size_bytes: 3, modified_at: 'now' }),
-      ),
-      http.post('/api/v1/orgs/alpha/threads/THR-001/send', async ({ request }) => {
-        sends.push({ org: 'alpha', body: await request.json() });
-        await heldAlphaSend;
-        return HttpResponse.json({ thread_id: 'THR-001', seq: 2 });
-      }),
-      http.post('/api/v1/orgs/beta/threads/THR-001/send', async ({ request }) => {
-        sends.push({ org: 'beta', body: await request.json() });
-        await heldBetaSend;
-        return HttpResponse.json({ thread_id: 'THR-001', seq: 2 });
-      }),
-    );
+  // Late-result ownership for a held send in one org while the replacement org
+  // starts its OWN held send. Both origin and replacement actually submit; each
+  // settle waits for the mocked response delivery (`response:mocked`) and then
+  // flushes the async terminal handling before any pending assertion, so a
+  // still-disabled button is not mistaken for proof that the finalizer ran.
+  for (const oldReject of [false, true]) {
+    for (const oldFirst of [false, true]) {
+      test(`a held send response in one org does not leak pending into the replacement org (R3 oldReject=${oldReject}, oldFirst=${oldFirst})`, async () => {
+        sessionStorage.setItem('happyranch.token', 'tok');
+        server.use(...orgHandlers('alpha', ['THR-001']), ...orgHandlers('beta', ['THR-001']));
+        const sends: { org: string; url: string; body: unknown }[] = [];
+        const uploads: string[] = [];
+        let releaseAlphaSend: () => void = () => {};
+        let releaseBetaSend: () => void = () => {};
+        const heldAlphaSend = new Promise<void>((resolve) => { releaseAlphaSend = resolve; });
+        const heldBetaSend = new Promise<void>((resolve) => { releaseBetaSend = resolve; });
+        let alphaDelivered = false;
+        let betaDelivered = false;
+        let betaAttempts = 0;
+        const observer = ({ request }: { request: Request }) => {
+          if (request.url.includes('/orgs/alpha/threads/THR-001/send')) alphaDelivered = true;
+          if (request.url.includes('/orgs/beta/threads/THR-001/send')) betaDelivered = true;
+        };
+        server.events.on('response:mocked', observer);
+        server.use(
+          http.post('/api/v1/orgs/alpha/artifacts', async ({ request }) => {
+            uploads.push('alpha/' + requestedName(request));
+            return HttpResponse.json({ name: requestedName(request), size_bytes: 3, modified_at: 'now' });
+          }),
+          http.post('/api/v1/orgs/beta/artifacts', async ({ request }) => {
+            uploads.push('beta/' + requestedName(request));
+            return HttpResponse.json({ name: requestedName(request), size_bytes: 3, modified_at: 'now' });
+          }),
+          http.post('/api/v1/orgs/alpha/threads/THR-001/send', async ({ request }) => {
+            sends.push({ org: 'alpha', url: new URL(request.url).pathname, body: await request.json() });
+            await heldAlphaSend;
+            return oldReject
+              ? HttpResponse.json({ detail: { code: 'invalid_artifact_name' } }, { status: 400 })
+              : HttpResponse.json({ thread_id: 'THR-001', seq: 2 });
+          }),
+          http.post('/api/v1/orgs/beta/threads/THR-001/send', async ({ request }) => {
+            sends.push({ org: 'beta', url: new URL(request.url).pathname, body: await request.json() });
+            betaAttempts += 1;
+            await heldBetaSend;
+            return betaAttempts === 1
+              ? HttpResponse.json({ detail: { code: 'thread_not_open' } }, { status: 400 })
+              : HttpResponse.json({ thread_id: 'THR-001', seq: 2 });
+          }),
+        );
 
-    const user = userEvent.setup();
-    renderWithProviders(
-      <>
-        <AppRoutes />
-        <NavTo to="/orgs/beta/threads/THR-001" label="nav-beta" />
-      </>,
-      { route: '/orgs/alpha/threads/THR-001' },
-    );
-    const alphaComposer = await screen.findByLabelText(/Compose follow-up/i);
-    await user.type(alphaComposer, 'alpha held');
-    await user.upload(
-      screen.getByLabelText(/Attach files/i),
-      new File(['AAA'], 'a.txt', { type: 'text/plain' }),
-    );
-    fireEvent.click(screen.getByRole('button', { name: /^Send$/i }));
-    await waitFor(() => expect(sends.filter((s) => s.org === 'alpha')).toHaveLength(1));
+        const user = userEvent.setup();
+        const settle = async (which: 'alpha' | 'beta') => {
+          if (which === 'alpha') releaseAlphaSend();
+          else releaseBetaSend();
+          await waitFor(() =>
+            expect(which === 'alpha' ? alphaDelivered : betaDelivered).toBe(true),
+          );
+          await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
+        };
+        try {
+          renderWithProviders(
+            <>
+              <AppRoutes />
+              <NavTo to="/orgs/beta/threads/THR-001" label="nav-beta" />
+            </>,
+            { route: '/orgs/alpha/threads/THR-001' },
+          );
+          const alphaComposer = await screen.findByLabelText(/Compose follow-up/i);
+          await user.type(alphaComposer, 'alpha held');
+          // Await the actual 300 ms draft debounce before navigating.
+          await waitFor(
+            () => expect(localStorage.getItem('happyranch:draft:alpha:THR-001')).toBe('alpha held'),
+            { timeout: 1500 },
+          );
+          await user.upload(
+            screen.getByLabelText(/Attach files/i),
+            new File(['AAA'], 'a.txt', { type: 'text/plain' }),
+          );
+          fireEvent.click(screen.getByRole('button', { name: /^Send$/i }));
+          await waitFor(() => expect(sends.filter((s) => s.org === 'alpha')).toHaveLength(1));
 
-    // The actual alpha POST response is still held; the replacement org must be
-    // usable immediately (it shares thread id THR-001 and the mutation observer).
-    await user.click(await screen.findByRole('button', { name: 'nav-beta' }));
-    const betaComposer = await screen.findByLabelText(/Compose follow-up/i);
-    await waitFor(() => expect(betaComposer).not.toBeDisabled());
-    await user.type(betaComposer, 'beta draft');
-    await user.upload(
-      screen.getByLabelText(/Attach files/i),
-      new File(['XXX'], 'x.txt', { type: 'text/plain' }),
-    );
-    await waitFor(() => expect(localStorage.getItem('happyranch:draft:beta:THR-001')).toBe('beta draft'), { timeout: 1500 });
+          // The actual alpha POST response is still held; the replacement org must
+          // be usable immediately (it shares thread id THR-001 and the mutation
+          // observer) and must write its own debounced draft under its own key.
+          await user.click(await screen.findByRole('button', { name: 'nav-beta' }));
+          const betaComposer = await screen.findByLabelText(/Compose follow-up/i);
+          await waitFor(() => expect(betaComposer).not.toBeDisabled());
+          await user.type(betaComposer, 'beta draft');
+          await user.upload(
+            screen.getByLabelText(/Attach files/i),
+            new File(['XXX'], 'x.txt', { type: 'text/plain' }),
+          );
+          await waitFor(
+            () => expect(localStorage.getItem('happyranch:draft:beta:THR-001')).toBe('beta draft'),
+            { timeout: 1500 },
+          );
 
-    // Beta starts its OWN held submission; alpha's late finalizer must not
-    // unlock beta's pending run.
-    fireEvent.click(screen.getByRole('button', { name: /^Send$/i }));
-    await waitFor(() => expect(sends.filter((s) => s.org === 'beta')).toHaveLength(1));
-    await waitFor(() => expect(screen.getByRole('button', { name: /^Send$/i })).toBeDisabled());
+          // Beta starts its OWN held submission; alpha's late finalizer must not
+          // unlock beta's pending run.
+          fireEvent.click(screen.getByRole('button', { name: /^Send$/i }));
+          await waitFor(() => expect(sends.filter((s) => s.org === 'beta')).toHaveLength(1));
+          await waitFor(() => expect(screen.getByRole('button', { name: /^Send$/i })).toBeDisabled());
 
-    releaseAlphaSend();
-    await waitFor(() => expect(screen.getByRole('button', { name: /^Send$/i })).toBeDisabled());
-    expect(screen.queryByText('This thread is no longer open.')).toBeNull();
+          if (oldFirst) {
+            await settle('alpha');
+            // The old terminal handling has actually run; beta's OWN held run
+            // still owns the pending latch and its draft/chip/controls.
+            expect(screen.getByRole('button', { name: /^Send$/i })).toBeDisabled();
+            expect(screen.getByLabelText(/Attach files/i)).toBeDisabled();
+            expect(screen.getByRole('button', { name: 'Remove attachment' })).toBeDisabled();
+            expect(screen.getByText('x.txt')).toBeInTheDocument();
+            expect((screen.getByLabelText(/Compose follow-up/i) as HTMLTextAreaElement).value).toBe(
+              'beta draft',
+            );
+            expect(screen.queryByText('That file name is not allowed.')).toBeNull();
+            fireEvent.click(screen.getByRole('button', { name: /^Send$/i }));
+            expect(sends.filter((s) => s.org === 'beta')).toHaveLength(1);
+            await settle('beta');
+          } else {
+            await settle('beta');
+            await settle('alpha');
+          }
 
-    releaseBetaSend();
-    await waitFor(() => expect(screen.getByRole('button', { name: /^Send$/i })).not.toBeDisabled());
-    const alphaSend = sends.find((s) => s.org === 'alpha')!;
-    const betaSend = sends.find((s) => s.org === 'beta')!;
-    expect((alphaSend.body as { attachments: { display_name: string }[] }).attachments.map((r) => r.display_name)).toEqual(['a.txt']);
-    expect((betaSend.body as { attachments: { display_name: string }[] }).attachments.map((r) => r.display_name)).toEqual(['x.txt']);
-    await waitFor(() =>
-      expect((screen.getByLabelText(/Compose follow-up/i) as HTMLTextAreaElement).value).toBe(''),
-    );
-    expect(screen.queryByText('x.txt')).toBeNull();
-  });
+          expect(screen.getByText('This thread is no longer open.')).toBeInTheDocument();
+          const retryComposer = screen.getByLabelText(/Compose follow-up/i);
+          expect(retryComposer).not.toBeDisabled();
+          expect((retryComposer as HTMLTextAreaElement).value).toBe('beta draft');
+          expect(screen.getByText('x.txt')).toBeInTheDocument();
+          expect(localStorage.getItem('happyranch:draft:alpha:THR-001')).toBe('alpha held');
+          expect(localStorage.getItem('happyranch:draft:beta:THR-001')).toBe('beta draft');
+          const alphaSend = sends.find((s) => s.org === 'alpha')!;
+          const betaSend = sends.find((s) => s.org === 'beta')!;
+          // Each submission stayed at its captured destination URL.
+          expect(alphaSend.url).toBe('/api/v1/orgs/alpha/threads/THR-001/send');
+          expect(betaSend.url).toBe('/api/v1/orgs/beta/threads/THR-001/send');
+          expect(
+            (alphaSend.body as { attachments: { display_name: string }[] }).attachments.map(
+              (r) => r.display_name,
+            ),
+          ).toEqual(['a.txt']);
+          expect(
+            (betaSend.body as { attachments: { display_name: string }[] }).attachments.map(
+              (r) => r.display_name,
+            ),
+          ).toEqual(['x.txt']);
+          // Exact refs: each submitted artifact_name is the name actually
+          // uploaded at that org's preparation seam.
+          const alphaRef = (alphaSend.body as { attachments: { artifact_name: string }[] })
+            .attachments[0].artifact_name;
+          const betaRef = (betaSend.body as { attachments: { artifact_name: string }[] })
+            .attachments[0].artifact_name;
+          expect(uploads[0]).toBe(`alpha/${alphaRef}`);
+          expect(uploads[1]).toBe(`beta/${betaRef}`);
+
+          // Manual retry reuses the retained ref: one extra send, no extra upload.
+          fireEvent.click(screen.getByRole('button', { name: /^Send$/i }));
+          await waitFor(() => expect(sends.filter((s) => s.org === 'beta')).toHaveLength(2));
+          const betaRetry = sends.filter((s) => s.org === 'beta')[1];
+          expect(betaRetry.body).toEqual(betaSend.body);
+          expect(uploads).toHaveLength(2);
+        } finally {
+          releaseAlphaSend();
+          releaseBetaSend();
+          server.events.removeListener('response:mocked', observer);
+        }
+      });
+    }
+  }
 
   test('A -> B -> A does not let the stale A success clear the new A draft (C8.1b)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');

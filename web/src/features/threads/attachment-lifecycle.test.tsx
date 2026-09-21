@@ -6,7 +6,7 @@
  * (`renderWithProviders`). MSW is browser-lifecycle evidence only; persisted
  * commit claims live in the task-owned backend probe.
  */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse, type HttpResponseResolver } from 'msw';
 import { MemoryRouter, useNavigate } from 'react-router-dom';
@@ -83,6 +83,8 @@ type CapturedPart = {
   /** The actual File handed to the preparation seam. */
   originalName: string;
   size: number;
+  /** The retained File object itself (selection identity). */
+  file: File;
   bytes: Promise<number[]>;
 };
 
@@ -104,6 +106,7 @@ function captureFormParts() {
           filename: filename ?? value.name,
           originalName: value.name,
           size: value.size,
+          file: value,
           bytes: new Promise((resolve) => {
             const reader = new FileReader();
             reader.onload = () =>
@@ -115,6 +118,15 @@ function captureFormParts() {
       return originalSet.call(this, field, value as Blob, filename);
     });
   return { parts, restore: () => spy.mockRestore() };
+}
+
+/** The chip whose remove button is in scope (never an error line). */
+function chipFor(fileName: string): HTMLElement {
+  const remove = screen.getByRole('button', { name: 'Remove attachment' });
+  const chip = remove.closest('span');
+  if (!chip) throw new Error('attachment chip not found');
+  within(chip).getByText(fileName);
+  return chip;
 }
 
 /** Freeze the artifact-name timestamp only (timers stay real). */
@@ -375,14 +387,19 @@ describe('attachment lifecycle — file-specific failures surface on the existin
     stubBaseHandlers();
     stubThread('THR-001');
     const sends: { url: string; body: unknown }[] = [];
+    let firstAttempts = 0;
+    let retryAttempts = 0;
+    let retried = false;
     const { parts, restore } = captureFormParts();
     server.use(
-      http.post(`/api/v1/orgs/${SLUG}/artifacts`, () =>
-        HttpResponse.json(
+      http.post(`/api/v1/orgs/${SLUG}/artifacts`, () => {
+        if (retried) retryAttempts += 1;
+        else firstAttempts += 1;
+        return HttpResponse.json(
           { detail: { code: 'artifact_too_large', max_bytes: 10, size_bytes: 11 } },
           { status: 413 },
-        ),
-      ),
+        );
+      }),
       http.post(`/api/v1/orgs/${SLUG}/threads/THR-001/send`, sendRecorder(sends)),
     );
 
@@ -398,6 +415,8 @@ describe('attachment lifecycle — file-specific failures surface on the existin
       await user.click(screen.getByRole('button', { name: /^Send$/i }));
       const error = await screen.findByText(/too large to upload/i);
       expect(error.textContent).toContain('big.txt');
+      expect(firstAttempts).toBe(1);
+      expect(retryAttempts).toBe(0);
       expect(sends).toHaveLength(0);
       // The rejected request really carried the File at the preparation seam.
       expect(parts).toHaveLength(1);
@@ -405,13 +424,27 @@ describe('attachment lifecycle — file-specific failures surface on the existin
       expect(parts[0].originalName).toBe('big.txt');
       expect(parts[0].size).toBe(10);
       // Chip retained with true File.name; draft nonempty; controls released.
-      expect(screen.getAllByText(/big\.txt/).length).toBeGreaterThanOrEqual(1);
+      chipFor('big.txt');
       expect((composer as HTMLTextAreaElement).value).toBe('keep this draft');
       await waitFor(() =>
         expect(screen.getByRole('button', { name: /^Send$/i })).not.toBeDisabled(),
       );
       expect(screen.getByLabelText(/Attach files/i)).not.toBeDisabled();
       expect(screen.getByRole('button', { name: 'Remove attachment' })).not.toBeDisabled();
+
+      // Manual retry WITHOUT reselecting: the retained File is observed at the
+      // preparation seam under its unchanged reserved name.
+      retried = true;
+      await user.click(screen.getByRole('button', { name: /^Send$/i }));
+      await waitFor(() => expect(retryAttempts).toBe(1));
+      expect(firstAttempts).toBe(1);
+      expect(sends).toHaveLength(0);
+      expect(parts).toHaveLength(2);
+      expect(parts[1].file).toBe(parts[0].file);
+      expect(parts[1].originalName).toBe('big.txt');
+      expect(parts[1].size).toBe(10);
+      expect(parts[1].filename).toBe(parts[0].filename);
+      expect(await parts[1].bytes).toEqual(await parts[0].bytes);
     } finally {
       restore();
     }
@@ -430,19 +463,32 @@ describe('attachment lifecycle — file-specific failures surface on the existin
       }),
       http.post(`/api/v1/orgs/${SLUG}/threads/THR-001/send`, sendRecorder(sends)),
     );
-    let capturedName = '';
-    let capturedSize = -1;
-    const setSpy = vi.spyOn(FormData.prototype, 'set').mockImplementationOnce(function (
-      _field: string,
-      value: string | Blob,
-      _filename?: string,
-    ) {
-      if (value instanceof File) {
-        capturedName = value.name;
-        capturedSize = value.size;
-      }
-      throw new Error('simulated preparation failure');
-    });
+    const parts: CapturedPart[] = [];
+    let firstAttempts = 0;
+    let retryAttempts = 0;
+    let retried = false;
+    const setSpy = vi
+      .spyOn(FormData.prototype, 'set')
+      .mockImplementation(function (this: FormData, field: string, value: unknown, filename?: string) {
+        if (value instanceof File) {
+          parts.push({
+            field,
+            filename: filename ?? value.name,
+            originalName: value.name,
+            size: value.size,
+            file: value,
+            bytes: new Promise((resolve) => {
+              const reader = new FileReader();
+              reader.onload = () =>
+                resolve(Array.from(new Uint8Array(reader.result as ArrayBuffer)));
+              reader.readAsArrayBuffer(value);
+            }),
+          });
+        }
+        if (retried) retryAttempts += 1;
+        else firstAttempts += 1;
+        throw new Error('simulated preparation failure');
+      });
 
     try {
       const user = userEvent.setup();
@@ -458,16 +504,33 @@ describe('attachment lifecycle — file-specific failures surface on the existin
       expect(error.textContent).toContain('prep.txt');
       expect(artifactFetches).toBe(0);
       expect(sends).toHaveLength(0);
+      expect(firstAttempts).toBe(1);
+      expect(retryAttempts).toBe(0);
       // The File reached the invoked preparation seam with its true metadata.
-      expect(capturedName).toBe('prep.txt');
-      expect(capturedSize).toBe(3);
-      expect(screen.getAllByText(/prep\.txt/).length).toBeGreaterThanOrEqual(1);
+      expect(parts).toHaveLength(1);
+      expect(parts[0].originalName).toBe('prep.txt');
+      expect(parts[0].size).toBe(3);
+      chipFor('prep.txt');
       expect((composer as HTMLTextAreaElement).value).toBe('prep draft');
       await waitFor(() =>
         expect(screen.getByRole('button', { name: /^Send$/i })).not.toBeDisabled(),
       );
       expect(screen.getByLabelText(/Attach files/i)).not.toBeDisabled();
       expect(screen.getByRole('button', { name: 'Remove attachment' })).not.toBeDisabled();
+
+      // Manual retry WITHOUT reselecting: the same retained File reaches the
+      // preparation seam again (repeat failure) with unchanged metadata.
+      retried = true;
+      await user.click(screen.getByRole('button', { name: /^Send$/i }));
+      await waitFor(() => expect(retryAttempts).toBe(1));
+      expect(firstAttempts).toBe(1);
+      expect(artifactFetches).toBe(0);
+      expect(sends).toHaveLength(0);
+      expect(parts).toHaveLength(2);
+      expect(parts[1].file).toBe(parts[0].file);
+      expect(parts[1].originalName).toBe('prep.txt');
+      expect(parts[1].size).toBe(3);
+      expect(parts[1].filename).toBe(parts[0].filename);
     } finally {
       setSpy.mockRestore();
     }
@@ -535,11 +598,14 @@ describe('attachment lifecycle — remaining failure seams and boundaries (TASK-
     stubBaseHandlers();
     stubThread('THR-001');
     const sends: { url: string; body: unknown }[] = [];
-    let uploadCount = 0;
+    let firstAttempts = 0;
+    let retryAttempts = 0;
+    let retried = false;
     const { parts, restore } = captureFormParts();
     server.use(
       http.post(`/api/v1/orgs/${SLUG}/artifacts`, () => {
-        uploadCount += 1;
+        if (retried) retryAttempts += 1;
+        else firstAttempts += 1;
         return HttpResponse.error();
       }),
       http.post(`/api/v1/orgs/${SLUG}/threads/THR-001/send`, sendRecorder(sends)),
@@ -556,10 +622,11 @@ describe('attachment lifecycle — remaining failure seams and boundaries (TASK-
       );
       await user.click(screen.getByRole('button', { name: /^Send$/i }));
       await screen.findByText(/Failed to fetch/i);
-      expect(uploadCount).toBe(1);
+      expect(firstAttempts).toBe(1);
+      expect(retryAttempts).toBe(0);
       expect(sends).toHaveLength(0);
       // Chip retains the actual File.name; the File is retained at the seam.
-      expect(screen.getAllByText(/note\.txt/).length).toBeGreaterThanOrEqual(1);
+      chipFor('note.txt');
       expect(parts).toHaveLength(1);
       expect(parts[0].originalName).toBe('note.txt');
       expect(parts[0].size).toBe(3);
@@ -569,6 +636,20 @@ describe('attachment lifecycle — remaining failure seams and boundaries (TASK-
       );
       expect(screen.getByLabelText(/Attach files/i)).not.toBeDisabled();
       expect(screen.getByRole('button', { name: 'Remove attachment' })).not.toBeDisabled();
+
+      // Manual retry WITHOUT reselecting: the retained File is observed at the
+      // preparation seam under its unchanged reserved name.
+      retried = true;
+      await user.click(screen.getByRole('button', { name: /^Send$/i }));
+      await waitFor(() => expect(retryAttempts).toBe(1));
+      expect(firstAttempts).toBe(1);
+      expect(sends).toHaveLength(0);
+      expect(parts).toHaveLength(2);
+      expect(parts[1].file).toBe(parts[0].file);
+      expect(parts[1].originalName).toBe('note.txt');
+      expect(parts[1].size).toBe(3);
+      expect(parts[1].filename).toBe(parts[0].filename);
+      expect(await parts[1].bytes).toEqual(await parts[0].bytes);
     } finally {
       restore();
     }
@@ -579,11 +660,14 @@ describe('attachment lifecycle — remaining failure seams and boundaries (TASK-
     stubBaseHandlers();
     stubThread('THR-001');
     const sends: { url: string; body: unknown }[] = [];
-    let uploadCount = 0;
+    let firstAttempts = 0;
+    let retryAttempts = 0;
+    let retried = false;
     const { parts, restore } = captureFormParts();
     server.use(
       http.post(`/api/v1/orgs/${SLUG}/artifacts`, () => {
-        uploadCount += 1;
+        if (retried) retryAttempts += 1;
+        else firstAttempts += 1;
         return HttpResponse.json(
           { detail: { code: 'invalid_artifact_name' } },
           { status: 400 },
@@ -604,9 +688,10 @@ describe('attachment lifecycle — remaining failure seams and boundaries (TASK-
       await user.click(screen.getByRole('button', { name: /^Send$/i }));
       const error = await screen.findByText(/name is not allowed/i);
       expect(error.textContent).toContain('weird?.txt');
-      expect(uploadCount).toBe(1);
+      expect(firstAttempts).toBe(1);
+      expect(retryAttempts).toBe(0);
       expect(sends).toHaveLength(0);
-      expect(screen.getAllByText(/weird\?\.txt/).length).toBeGreaterThanOrEqual(1);
+      chipFor('weird?.txt');
       expect(parts).toHaveLength(1);
       expect(parts[0].originalName).toBe('weird?.txt');
       expect(parts[0].size).toBe(3);
@@ -616,6 +701,20 @@ describe('attachment lifecycle — remaining failure seams and boundaries (TASK-
       );
       expect(screen.getByLabelText(/Attach files/i)).not.toBeDisabled();
       expect(screen.getByRole('button', { name: 'Remove attachment' })).not.toBeDisabled();
+
+      // Manual retry WITHOUT reselecting: the retained File is observed at the
+      // preparation seam under its unchanged reserved name.
+      retried = true;
+      await user.click(screen.getByRole('button', { name: /^Send$/i }));
+      await waitFor(() => expect(retryAttempts).toBe(1));
+      expect(firstAttempts).toBe(1);
+      expect(sends).toHaveLength(0);
+      expect(parts).toHaveLength(2);
+      expect(parts[1].file).toBe(parts[0].file);
+      expect(parts[1].originalName).toBe('weird?.txt');
+      expect(parts[1].size).toBe(3);
+      expect(parts[1].filename).toBe(parts[0].filename);
+      expect(await parts[1].bytes).toEqual(await parts[0].bytes);
     } finally {
       restore();
     }
