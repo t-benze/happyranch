@@ -602,11 +602,17 @@ export function ThreadsPage(): JSX.Element {
   const submissionGenRef = useRef(0);
 
   useEffect(() => {
+    // Any destination change — thread AND/OR org, including an org switch that
+    // keeps the same thread id — invalidates in-flight submissions and discards
+    // per-selection upload state so no ref/name can leak into the replacement
+    // view. Keying only on threadId left the same-thread-id org switch unguarded.
     submissionGenRef.current += 1;
+    attachmentRefsRef.current.clear();
+    attachmentNamesRef.current.clear();
     setPendingAttachments([]);
     setUploadPending(false);
     setComposerError(null);
-  }, [threadId]);
+  }, [threadId, slug]);
 
   // Full unmount must also invalidate any in-flight submission's state writes.
   useEffect(() => () => { submissionGenRef.current += 1; }, []);
@@ -687,7 +693,10 @@ export function ThreadsPage(): JSX.Element {
               reserved,
               allocatedNamesRef.current,
             );
-            attachmentNamesRef.current.set(pending.id, artifactName);
+            // Only the owning view may publish into the shared cache maps; a
+            // departed submission's allocation must not be adopted by the view
+            // that replaced it.
+            if (isCurrent()) attachmentNamesRef.current.set(pending.id, artifactName);
           }
           allocatedNamesRef.current.add(artifactName);
           const uploaded = await artifactsApi.uploadArtifact(capturedSlug, {
@@ -700,7 +709,7 @@ export function ThreadsPage(): JSX.Element {
             display_name: pending.file.name,
             content_type: attachmentContentType(pending.file),
           };
-          attachmentRefsRef.current.set(pending.id, ref);
+          if (isCurrent()) attachmentRefsRef.current.set(pending.id, ref);
           reserved.add(uploaded.name);
         }
         refs.push(ref);

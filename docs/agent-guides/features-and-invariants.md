@@ -544,15 +544,21 @@ Traps:
   re-uploads only the selections without a ref and preserves the send order. Removing a failed or
   completed selection invalidates only that selection's cached ref.
 - Each selection's artifact name is reserved once (`allocateArtifactName`) and reused verbatim, and the
-  page never reuses a name it has already allocated. Without this, a same-second retry could regenerate a
-  retained name and `ArtifactStore.put` would replace the retained artifact's bytes.
+  page never reuses a name it has already allocated. The allocator searches upward past the former
+  1000-index ceiling until it finds a free candidate, so it never returns an occupied name; without this, a
+  same-second retry could regenerate a retained name and `ArtifactStore.put` would replace the retained
+  artifact's bytes.
 - `Composer.submit` has a synchronous in-flight latch and the pages track the upload phase, so a
   double-click / Enter+Send during a held upload produces exactly one submission and disables
-  attach/send/remove until it settles. The latch is released on failure.
-- Each submission captures its destination `(orgSlug, threadId/dialog, payload)` at first submit; uploads
-  and the send use that snapshot, and late results only mutate the originating view while it is still
-  mounted and active. A departed or unmounted view's completion never retargets to — or clears the draft,
-  chips, error, latch or dialog of — the new view.
+  attach/send/remove until it settles. The latch is released on failure and reset when the destination
+  changes, so a submission left in flight by a departed view cannot block the replacement view's first
+  submit.
+- Each submission captures its destination `(orgSlug, threadId/dialog, payload)` at first submit; uploads,
+  the send and the new-thread compose use that snapshot, and late results only mutate the originating view
+  while it is still mounted and active. The destination is an ORG-scoped generation, not just a thread id:
+  an org switch that keeps the same thread id, an A→B→A return to the same thread, and a full unmount are
+  all departures, so a stale success cannot clear the replacement view's draft, chips, error, latch or
+  dialog and cannot retarget an in-flight compose.
 - Failures surface on the existing single error line. Attachment/artifact error codes are mapped in
   `web/src/lib/threadErrors.ts`, and a confirmed send failure is never labelled as the last file's upload
   failure.

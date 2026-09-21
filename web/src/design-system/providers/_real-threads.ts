@@ -237,10 +237,22 @@ function useComposeThread(): MutationLike<
 > {
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
+  // A new-thread submission captures its destination org at first submit (see
+  // NewThreadDialog). The destination rides beside the payload so a rerender
+  // after an org switch cannot retarget the in-flight compose; it is stripped
+  // before the request body is built. Mirrors useSendFollowUp.
+  const destinationOf = (variables: ComposeArgs): { slug: string } | undefined =>
+    (variables as ComposeArgs & { destination?: { slug: string } }).destination;
   return useMutation({
-    mutationFn: (body: ComposeArgs) => threadsApi.composeThread(slug, body),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['threads', slug] });
+    mutationFn: (variables: ComposeArgs) => {
+      const destination = destinationOf(variables);
+      const { destination: _destination, ...body } = variables as ComposeArgs & {
+        destination?: { slug: string };
+      };
+      return threadsApi.composeThread(destination?.slug ?? slug, body);
+    },
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: ['threads', destinationOf(variables)?.slug ?? slug] });
     },
   });
 }

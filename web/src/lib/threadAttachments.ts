@@ -48,11 +48,19 @@ export function allocateArtifactName(
   reserved: ReadonlySet<string>,
   alreadyAllocated: ReadonlySet<string> = new Set<string>(),
 ): string {
-  for (let index = 1; index <= 1000; index += 1) {
-    const candidate = safeArtifactName(prefix, file, index);
-    if (!reserved.has(candidate) && !alreadyAllocated.has(candidate)) return candidate;
+  // Search upward until an unoccupied name is found. The old `index <= 1000`
+  // ceiling returned `...-1001-...` without checking it, so a page that had
+  // already reserved index 1001 was handed an occupied name and a later
+  // `ArtifactStore.put` could overwrite the retained artifact's bytes. Both
+  // input sets are finite, so this terminates at the first free index; the
+  // common case is still index 1.
+  let index = 1;
+  let candidate = safeArtifactName(prefix, file, index);
+  while (reserved.has(candidate) || alreadyAllocated.has(candidate)) {
+    index += 1;
+    candidate = safeArtifactName(prefix, file, index);
   }
-  return safeArtifactName(prefix, file, 1001);
+  return candidate;
 }
 
 export function attachmentContentType(file: File): string | null {

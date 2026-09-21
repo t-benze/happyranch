@@ -90,10 +90,14 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
   const bodyId = `${idBase}-body`;
 
   useEffect(() => {
-    if (!open) return;
+    // Every open/close/prefill transition invalidates in-flight work. Bumping
+    // BEFORE the `!open` early return means a close that is never reopened also
+    // abandons the submission, so a late completion cannot close, navigate,
+    // reset or consume a departed dialog's state.
     dialogGenRef.current += 1;
     submittingRef.current = false;
     setUploading(false);
+    if (!open) return;
     attachmentRefsRef.current.clear();
     attachmentNamesRef.current.clear();
     setSubject(prefill?.subject ?? '');
@@ -102,6 +106,9 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
     setPendingAttachments([]);
     setErrorMsg(null);
   }, [open, prefill]);
+
+  // Full unmount must also abandon any in-flight submission.
+  useEffect(() => () => { dialogGenRef.current += 1; }, []);
 
   const removeAttachment = useCallback((id: string) => {
     attachmentRefsRef.current.delete(id);
@@ -145,7 +152,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
               reserved,
               allocatedNamesRef.current,
             );
-            attachmentNamesRef.current.set(pending.id, artifactName);
+            if (isCurrent()) attachmentNamesRef.current.set(pending.id, artifactName);
           }
           allocatedNamesRef.current.add(artifactName);
           const uploaded = await artifactsApi.uploadArtifact(capturedSlug, {
@@ -158,7 +165,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
             display_name: pending.file.name,
             content_type: attachmentContentType(pending.file),
           };
-          attachmentRefsRef.current.set(pending.id, ref);
+          if (isCurrent()) attachmentRefsRef.current.set(pending.id, ref);
           reserved.add(uploaded.name);
         }
         refs.push(ref);
@@ -175,7 +182,10 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
               forwarded_from_kind: prefill.forwarded_from_kind,
             }
           : {}),
-      });
+        // Capture the destination org so an org switch during the upload cannot
+        // retarget the compose to the new org (stripped before the request body).
+        destination: { slug: capturedSlug },
+      } as Parameters<typeof compose.mutateAsync>[0]);
       if (!isCurrent()) return;
       attachmentRefsRef.current.clear();
       attachmentNamesRef.current.clear();
@@ -212,6 +222,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
       submittingRef.current = false;
       return;
     }
+    const capturedSlug = slug;
 
     try {
       const result = await compose.mutateAsync({
@@ -219,7 +230,8 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
         recipients: [agentName],
         body_markdown:
           `Run self-reflection (hr:reflection) on your recent work and post your opening reflection report.`,
-      });
+        destination: { slug: capturedSlug },
+      } as Parameters<typeof compose.mutateAsync>[0]);
       if (!isCurrent()) return;
       onCreated(result.thread_id);
       setPendingAttachments([]);

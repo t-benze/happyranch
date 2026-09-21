@@ -438,3 +438,278 @@ describe('attachment lifecycle — captured destination (C8)', () => {
     expect((screen.getByLabelText(/Compose follow-up/i) as HTMLTextAreaElement).value).toBe('B draft');
   });
 });
+
+describe('attachment lifecycle — remaining failure seams and boundaries (TASK-8616)', () => {
+  test('a transport-unknown upload makes exactly one attempt and zero sends (C2.2)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubBaseHandlers();
+    stubThread('THR-001');
+    const sends: { url: string; body: unknown }[] = [];
+    let uploadCount = 0;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/artifacts`, () => {
+        uploadCount += 1;
+        return HttpResponse.error();
+      }),
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-001/send`, sendRecorder(sends)),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/THR-001` });
+    await user.upload(
+      await screen.findByLabelText(/Attach files/i),
+      new File(['abc'], 'note.txt', { type: 'text/plain' }),
+    );
+    await user.click(screen.getByRole('button', { name: /^Send$/i }));
+    await screen.findByText(/Failed to fetch/i);
+    expect(uploadCount).toBe(1);
+    expect(sends).toHaveLength(0);
+    // Chip retains the actual File.name; the latch is released for retry.
+    expect(screen.getAllByText(/note\.txt/).length).toBeGreaterThanOrEqual(1);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^Send$/i })).not.toBeDisabled(),
+    );
+  });
+
+  test('a 400 invalid_artifact_name maps the code and sends nothing (C2.3)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubBaseHandlers();
+    stubThread('THR-001');
+    const sends: { url: string; body: unknown }[] = [];
+    let uploadCount = 0;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/artifacts`, () => {
+        uploadCount += 1;
+        return HttpResponse.json(
+          { detail: { code: 'invalid_artifact_name' } },
+          { status: 400 },
+        );
+      }),
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-001/send`, sendRecorder(sends)),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/THR-001` });
+    await user.upload(
+      await screen.findByLabelText(/Attach files/i),
+      new File(['abc'], 'weird?.txt', { type: 'text/plain' }),
+    );
+    await user.click(screen.getByRole('button', { name: /^Send$/i }));
+    const error = await screen.findByText(/name is not allowed/i);
+    expect(error.textContent).toContain('weird?.txt');
+    expect(uploadCount).toBe(1);
+    expect(sends).toHaveLength(0);
+    expect(screen.getAllByText(/weird\?\.txt/).length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('equal-metadata files with different bytes reserve distinct names and never conflate bytes (C3.3)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubBaseHandlers();
+    stubThread('THR-001');
+    const sends: { url: string; body: unknown }[] = [];
+    const uploadNames: string[] = [];
+    // jsdom's fetch does not finalize the multipart content-type before MSW sees
+    // it, so capture the actual multipart parts at the FormData boundary: the
+    // part field name, the file, and its bytes are exactly what uploadArtifact
+    // sets. The backend probe independently proves the same bytes over real HTTP.
+    const parts: { field: string; filename: string; bytes: Promise<number[]> }[] = [];
+    const originalSet = FormData.prototype.set;
+    const setSpy = vi
+      .spyOn(FormData.prototype, 'set')
+      .mockImplementation(function (this: FormData, field: string, value: unknown, filename?: string) {
+        if (value instanceof File) {
+          parts.push({
+            field,
+            filename: filename ?? value.name,
+            bytes: new Promise((resolve) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(Array.from(new Uint8Array(reader.result as ArrayBuffer)));
+              reader.readAsArrayBuffer(value);
+            }),
+          });
+        }
+        return originalSet.call(this, field, value as Blob, filename);
+      });
+    let bFailed = false;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/artifacts`, async ({ request }) => {
+        const name = requestedName(request);
+        uploadNames.push(name);
+        if (name.includes('-2-') && !bFailed) {
+          bFailed = true;
+          return HttpResponse.error();
+        }
+        return HttpResponse.json({ name, size_bytes: 3, modified_at: 'now' });
+      }),
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-001/send`, sendRecorder(sends)),
+    );
+
+    try {
+      const user = userEvent.setup();
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/THR-001` });
+      // Identical name/size/lastModified, different bytes.
+      await user.upload(await screen.findByLabelText(/Attach files/i), [
+        new File(['AAA'], 'same.txt', { type: 'text/plain', lastModified: 7 }),
+        new File(['BBB'], 'same.txt', { type: 'text/plain', lastModified: 7 }),
+      ]);
+      await user.click(screen.getByRole('button', { name: /^Send$/i }));
+      await screen.findByText(/Failed to fetch/i);
+      // Both selections kept distinct chips.
+      expect(screen.getAllByRole('button', { name: 'Remove attachment' })).toHaveLength(2);
+      await user.click(screen.getByRole('button', { name: /^Send$/i }));
+      await waitFor(() => expect(sends).toHaveLength(1));
+
+      expect(uploadNames).toHaveLength(3);
+      const aName = uploadNames[0];
+      const bName = uploadNames[1];
+      expect(aName).not.toBe(bName);
+      // The failed selection is retried under its retained (same) name.
+      expect(uploadNames[2]).toBe(bName);
+      // Actual multipart parts: three parts, part name `file`, and the retried
+      // file carries B's bytes (not A's).
+      expect(parts.map((p) => p.field)).toEqual(['file', 'file', 'file']);
+      expect(parts.map((p) => p.filename)).toEqual([aName, bName, bName]);
+      expect(await parts[0].bytes).toEqual([65, 65, 65]);
+      expect(await parts[2].bytes).toEqual([66, 66, 66]);
+      const refs = attachmentsOf(sends[0].body);
+      expect(refs.map((r) => r.artifact_name)).toEqual([aName, bName]);
+      expect(refs.map((r) => r.display_name)).toEqual(['same.txt', 'same.txt']);
+    } finally {
+      setSpy.mockRestore();
+    }
+  });
+
+  test('removing a completed selection sends neither it nor a re-upload (C3.4b)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubBaseHandlers();
+    stubThread('THR-001');
+    const sends: { url: string; body: unknown }[] = [];
+    const uploadedNames: string[] = [];
+    let sendAttempts = 0;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/artifacts`, async ({ request }) => {
+        const name = requestedName(request);
+        uploadedNames.push(name);
+        return HttpResponse.json({ name, size_bytes: 3, modified_at: 'now' });
+      }),
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-001/send`, async ({ request }) => {
+        sendAttempts += 1;
+        sends.push({ url: new URL(request.url).pathname, body: await request.json() });
+        if (sendAttempts === 1) {
+          return HttpResponse.json({ detail: { code: 'internal' } }, { status: 500 });
+        }
+        return HttpResponse.json({ thread_id: 'x', seq: 2 });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/THR-001` });
+    await user.upload(await screen.findByLabelText(/Attach files/i), [
+      new File(['aaa'], 'a.txt', { type: 'text/plain' }),
+      new File(['bbb'], 'b.txt', { type: 'text/plain' }),
+    ]);
+    // First send fails after both uploads, so both refs are retained.
+    await user.click(screen.getByRole('button', { name: /^Send$/i }));
+    await waitFor(() => expect(sends).toHaveLength(1));
+    expect(uploadedNames).toHaveLength(2);
+
+    // Remove the completed selection A, then add replacement C.
+    await user.click(screen.getAllByRole('button', { name: 'Remove attachment' })[0]);
+    await user.upload(
+      screen.getByLabelText(/Attach files/i),
+      new File(['ccc'], 'c.txt', { type: 'text/plain' }),
+    );
+    await user.click(screen.getByRole('button', { name: /^Send$/i }));
+    await waitFor(() => expect(sends).toHaveLength(2));
+
+    // Only B reused, only C newly uploaded; A is neither re-uploaded nor sent.
+    expect(uploadedNames).toHaveLength(3);
+    const refs = attachmentsOf(sends[1].body);
+    expect(refs.map((r) => r.display_name)).toEqual(['b.txt', 'c.txt']);
+    expect(refs[0].artifact_name).toBe(uploadedNames[1]);
+    expect(refs.some((r) => r.artifact_name === uploadedNames[0])).toBe(false);
+  });
+});
+
+describe('attachment lifecycle — lost response and post-200 tail failure (C6)', () => {
+  test('a lost send response is one attempt, keeps the draft/chip and never auto-resends (C6.1)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubBaseHandlers();
+    stubThread('THR-001');
+    let sendCount = 0;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/artifacts`, async ({ request }) =>
+        HttpResponse.json({ name: requestedName(request), size_bytes: 3, modified_at: 'now' }),
+      ),
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-001/send`, () => {
+        sendCount += 1;
+        // No response: outcome unknown. A mock counter is not commit proof.
+        return HttpResponse.error();
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/THR-001` });
+    const composer = await screen.findByLabelText(/Compose follow-up/i);
+    await user.type(composer, 'lost');
+    await user.upload(
+      screen.getByLabelText(/Attach files/i),
+      new File(['abc'], 'note.txt', { type: 'text/plain' }),
+    );
+    await user.click(screen.getByRole('button', { name: /^Send$/i }));
+    await screen.findByText(/Failed to fetch/i);
+    expect(sendCount).toBe(1);
+    // Draft and chip retained; no automatic resend.
+    expect((screen.getByLabelText(/Compose follow-up/i) as HTMLTextAreaElement).value).toBe('lost');
+    expect(screen.getAllByText(/note\.txt/).length).toBeGreaterThanOrEqual(1);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(sendCount).toBe(1);
+  });
+
+  test('a 200 clears the draft/refs and a later refetch failure does not resend (C6.2)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubBaseHandlers();
+    stubThread('THR-001');
+    let sendCount = 0;
+    let committed = false;
+    let messagesFailureConsumed = false;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/artifacts`, async ({ request }) =>
+        HttpResponse.json({ name: requestedName(request), size_bytes: 3, modified_at: 'now' }),
+      ),
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-001/send`, () => {
+        sendCount += 1;
+        committed = true;
+        return HttpResponse.json({ thread_id: 'x', seq: 2 });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-001/messages`, () => {
+        if (committed && !messagesFailureConsumed) {
+          messagesFailureConsumed = true;
+          return HttpResponse.error();
+        }
+        return HttpResponse.json({ messages: [] });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/THR-001` });
+    const composer = await screen.findByLabelText(/Compose follow-up/i);
+    await user.type(composer, 'sent');
+    await user.upload(
+      screen.getByLabelText(/Attach files/i),
+      new File(['abc'], 'note.txt', { type: 'text/plain' }),
+    );
+    await user.click(screen.getByRole('button', { name: /^Send$/i }));
+    await waitFor(() => expect(sendCount).toBe(1));
+    // The 200 clears the originating draft and chips.
+    await waitFor(() =>
+      expect((screen.getByLabelText(/Compose follow-up/i) as HTMLTextAreaElement).value).toBe(''),
+    );
+    expect(screen.queryByText('note.txt')).toBeNull();
+    // The tail/messages refetch failure does not resurrect the draft or resend.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(sendCount).toBe(1);
+    expect((screen.getByLabelText(/Compose follow-up/i) as HTMLTextAreaElement).value).toBe('');
+    expect(screen.queryByText('note.txt')).toBeNull();
+  });
+});

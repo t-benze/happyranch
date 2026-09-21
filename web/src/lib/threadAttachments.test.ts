@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import {
   MAX_THREAD_ATTACHMENTS,
   allocateArtifactName,
@@ -69,5 +69,25 @@ describe('thread attachment helpers', () => {
     const nameA = allocateArtifactName('THR-1', a, new Set());
     const nameB = allocateArtifactName('THR-1', b, new Set([nameA]));
     expect(nameA).not.toBe(nameB);
+  });
+
+  // TASK-8616 C3.3 boundary: the old `index <= 1000` ceiling returned index
+  // 1001 without checking it, so a page that had already reserved 1001 was
+  // handed an occupied name (a later `put` would overwrite retained bytes).
+  test('never returns an occupied name at and beyond the 1000-index boundary', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-21T00:00:00Z'));
+    try {
+      const file = new File(['x'], 'a b.txt');
+      const occupied = new Set<string>();
+      for (let index = 1; index <= 1001; index += 1) {
+        occupied.add(safeArtifactName('THR-1', file, index));
+      }
+      const allocated = allocateArtifactName('THR-1', file, occupied);
+      expect(occupied.has(allocated)).toBe(false);
+      expect(allocated).toBe(safeArtifactName('THR-1', file, 1002));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
