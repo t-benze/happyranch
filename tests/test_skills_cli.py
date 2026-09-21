@@ -1407,3 +1407,234 @@ class TestManageAgentManageRepoCli:
         # Catalog PASSES (status=enabled, no approval gate)
         assert data["catalog_gate"]["passed"] is True
         assert data["is_exposed"] is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THR-262 C1/C4: real CLI transport — headingless initial create + append
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestSkillsCreateTransport:
+    """Drive the shipped ``cmd_skills_create`` against a real loopback daemon.
+
+    The CLI builds its own token-free HTTP request; the server derives
+    org/task/agent from the verified session binding. The same verb performs
+    the initial create and, for an existing same-owner slug, the append.
+    """
+
+    @pytest.fixture
+    def live_daemon(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        import socket
+        import threading
+        import time
+
+        import uvicorn
+
+        from runtime.config import Settings
+        from runtime.daemon import paths as paths_mod
+        from runtime.daemon.app import create_app
+        from runtime.daemon.state import DaemonState
+        from runtime.models import TaskRecord
+        from runtime.runtime import RuntimeDir, port_file
+
+        home = tmp_path / ".happyranch"
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(home))
+        paths_mod.ensure_daemon_home()
+        paths_mod.ensure_token()
+        runtime_dir = RuntimeDir.init(tmp_path / "runtime")
+        org_root = runtime_dir.orgs_dir / "alpha"
+        (org_root / "org").mkdir(parents=True)
+        (org_root / "org" / "teams.yaml").write_text(
+            "teams:\n  engineering:\n    manager: engineering_head\n"
+            "    workers: [dev_agent]\n"
+        )
+        state = DaemonState.from_runtime(runtime_dir, Settings())
+        app = create_app(state)
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        server = uvicorn.Server(
+            uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="off")
+        )
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            with socket.socket() as connect:
+                if connect.connect_ex(("127.0.0.1", port)) == 0:
+                    break
+            time.sleep(0.05)
+        else:  # pragma: no cover - environment failure
+            raise RuntimeError("uvicorn did not start")
+        port_file().write_text(str(port))
+        org = state.orgs["alpha"]
+        org.db.insert_task(TaskRecord(id="TASK-CLI", brief="create a custom skill"))
+        org.sessions.set_active("TASK-CLI", "dev_agent", "sess-cli", org_slug="alpha")
+        yield org
+        server.should_exit = True
+        thread.join(timeout=5)
+
+    @staticmethod
+    def _package(tmp_path: Path, slug: str, description: str) -> Path:
+        path = tmp_path / f"{slug}-{description}.json"
+        path.write_text(json.dumps({
+            "slug": slug,
+            "name": "CLI Skill",
+            "skill_md": f"---\nname: {slug}\ndescription: {description}\n---\n",
+        }))
+        return path
+
+    @staticmethod
+    def _run_create(package: Path, session_id: str) -> None:
+        import argparse
+
+        from cli.commands.skills import cmd_skills_create
+
+        cmd_skills_create(argparse.Namespace(
+            from_file=str(package), session_id=session_id, org="alpha",
+        ))
+
+    def test_initial_create_then_same_owner_append(self, live_daemon, tmp_path, capsys):
+        org = live_daemon
+        conn = getattr(org.db, "_conn", org.db)
+
+        self._run_create(self._package(tmp_path, "cli-skill", "cli-one"), "sess-cli")
+        assert "Skill created successfully." in capsys.readouterr().out
+        row = conn.execute(
+            "SELECT id, current_version_id, description FROM custom_skills WHERE slug='cli-skill'"
+        ).fetchone()
+        assert row is not None and row["description"] == "cli-one"
+        first_version = row["current_version_id"]
+
+        self._run_create(self._package(tmp_path, "cli-skill", "cli-two"), "sess-cli")
+        assert "Skill created successfully." in capsys.readouterr().out
+        row = conn.execute(
+            "SELECT current_version_id, description FROM custom_skills WHERE slug='cli-skill'"
+        ).fetchone()
+        assert row["current_version_id"] != first_version
+        assert row["description"] == "cli-two"
+
+        versions = conn.execute(
+            "SELECT validation_state, validator_version FROM custom_skill_versions "
+            "WHERE skill_id=(SELECT id FROM custom_skills WHERE slug='cli-skill') ORDER BY id"
+        ).fetchall()
+        assert [v["validation_state"] for v in versions] == ["valid", "valid"]
+        assert {v["validator_version"] for v in versions} == {"THR-262/1.0.0"}
+
+    @staticmethod
+    def _bundled_example(tmp_path: Path) -> tuple[Path, dict]:
+        """Extract the shipped create-skill JSON example from the real source.
+
+        The bytes come from the release-owned ``runtime/skills/bundled`` tree,
+        never a duplicated lookalike fixture.
+        """
+        from runtime.skills.sources import bundled_skills_dir
+
+        text = (bundled_skills_dir() / "create-skill" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        opener = "```json\n"
+        start = text.index(opener) + len(opener)
+        end = text.index("\n```", start)
+        payload = text[start:end]
+        path = tmp_path / "bundled-create-skill-example.json"
+        path.write_text(payload, encoding="utf-8")
+        return path, json.loads(payload)
+
+    def test_bundled_create_skill_json_example_succeeds_through_shipped_route(
+        self, live_daemon, tmp_path, capsys,
+    ):
+        """R1: the shipped authoring example itself must pass the real route.
+
+        The example's explicit request description must equal its frontmatter
+        description (or be omitted), and the shipped CLI must derive/persist
+        the expected catalog description through the real agent route."""
+        org = live_daemon
+        example_path, expected = self._bundled_example(tmp_path)
+        # Guard the extracted shape before driving it.
+        assert expected["skill_md"].startswith("---\n")
+        assert "description:" in expected["skill_md"]
+        assert expected["description"] == "Summarize the workflow and when to use it"
+
+        self._run_create(example_path, "sess-cli")
+        assert "Skill created successfully." in capsys.readouterr().out
+
+        conn = getattr(org.db, "_conn", org.db)
+        row = conn.execute(
+            "SELECT current_version_id, description FROM custom_skills WHERE slug=?",
+            (expected["slug"],),
+        ).fetchone()
+        assert row is not None
+        assert row["description"] == "Summarize the workflow and when to use it"
+        version = conn.execute(
+            "SELECT validation_state, validator_version, skill_md_cache "
+            "FROM custom_skill_versions WHERE id=?",
+            (row["current_version_id"],),
+        ).fetchone()
+        assert version["validation_state"] == "valid"
+        assert version["validator_version"] == "THR-262/1.0.0"
+        # The shipped example bytes are persisted unchanged.
+        assert version["skill_md_cache"] == expected["skill_md"]
+
+    def test_non_ascii_slug_transport_receipts_422_invalid_slug(
+        self, live_daemon, tmp_path, capsys,
+    ):
+        """F4 / C1b A8+A17: the real CLI transport shows the approved HTTP 422
+        ``invalid_slug`` receipt for a non-ASCII initial identity AND for a
+        same-owner append identity, without inventing an update verb. The
+        headingless ASCII success path above is unchanged.
+
+        The append case seeds a synthetic historical row whose stored slug is
+        non-ASCII, so the shipped create verb would have appended had the
+        identity been admitted; the gate precedes validation/persistence and
+        the stored row/pointer/description are never touched."""
+        from runtime.skills.custom import service as custom_service
+
+        org = live_daemon
+        conn = getattr(org.db, "_conn", org.db)
+
+        # (1) Non-ASCII initial create through the shipped CLI verb.
+        with pytest.raises(SystemExit) as initial_exit:
+            self._run_create(self._package(tmp_path, "café-cli", "unicode-init"), "sess-cli")
+        assert initial_exit.value.code == 1
+        err = capsys.readouterr().err
+        assert "422" in err and "invalid_slug" in err
+        assert conn.execute(
+            "SELECT count(*) FROM custom_skills WHERE slug='café-cli'"
+        ).fetchone()[0] == 0
+
+        # (2) Same-owner append identity: seed a stored non-ASCII row, then
+        #     drive the same CLI verb again.
+        skill_id = "custom:cli-unicode"
+        conn.execute(
+            "INSERT INTO custom_skills "
+            "(id,org_slug,slug,name,description,origin_kind,origin_agent,created_at,created_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (skill_id, "alpha", "café-cli", "CLI Unicode", "stored-one",
+             "agent", "dev_agent", custom_service.now(), "dev_agent"),
+        )
+        conn.execute(
+            """INSERT INTO custom_skill_versions
+               (skill_id,content_hash,content_artifact_key,skill_md_cache,validation_state,
+                validator_version,validation_findings,created_at,author_kind,author_identity)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (skill_id, "a" * 64, "custom-skills/cafe-cli/stored/SKILL.md",
+             "---\nname: café-cli\ndescription: stored-one\n---\n", "valid",
+             "THR-262/1.0.0", "[]", custom_service.now(), "agent", "dev_agent"),
+        )
+        version_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "UPDATE custom_skills SET current_version_id=? WHERE id=?", (version_id, skill_id)
+        )
+        conn.commit()
+
+        with pytest.raises(SystemExit) as append_exit:
+            self._run_create(self._package(tmp_path, "café-cli", "unicode-two"), "sess-cli")
+        assert append_exit.value.code == 1
+        err = capsys.readouterr().err
+        assert "422" in err and "invalid_slug" in err
+        row = conn.execute(
+            "SELECT current_version_id, description FROM custom_skills WHERE id=?", (skill_id,)
+        ).fetchone()
+        assert row["current_version_id"] == version_id
+        assert row["description"] == "stored-one"

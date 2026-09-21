@@ -54,8 +54,14 @@ def create_version(conn, *, skill_id: str, skill_md: str, actor_kind: str,
                    actor: str, artifact_key: str, validation: dict,
                    task_id: str | None = None, session_id: str | None = None,
                    brief_digest: str | None = None,
-                   parent_id: int | None = None) -> tuple[int, str, str]:
-    """Append and validate an immutable content version."""
+                   parent_id: int | None = None,
+                   validator_version: str = "THR-055/1.0.0") -> tuple[int, str, str]:
+    """Append and validate an immutable content version.
+
+    ``validator_version`` records the authoring contract a NEW row was written
+    under. Historical rows keep their stored value; only the caller threads the
+    THR-262 marker.
+    """
     content_hash = hashlib.sha256(skill_md.encode()).hexdigest()
     valid = bool(validation["ok"])
     result = conn.execute(
@@ -65,7 +71,7 @@ def create_version(conn, *, skill_id: str, skill_md: str, actor_kind: str,
             author_kind,author_identity,source_task_id,source_session_id,task_brief_digest)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (skill_id, parent_id, content_hash, artifact_key, skill_md,
-         "valid" if valid else "invalid", "THR-055/1.0.0",
+         "valid" if valid else "invalid", validator_version,
          json.dumps([] if valid else validation["errors"]), now(),
          actor_kind, actor, task_id, session_id, brief_digest),
     )

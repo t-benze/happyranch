@@ -526,6 +526,49 @@ Traps:
 - Doctrine is system-prompt-injected through `_thread_talk_dispatch_doctrine_section()`.
 - Shared error hint `SELF_DISPATCH_HINT` lives in `runtime/daemon/routes/_doctrine.py`.
 
+## Thread Composer Attachments
+
+The web thread composer (`web/src/design-system/patterns/Composer.tsx`), the thread detail page
+(`web/src/features/threads/ThreadsPage.tsx`) and the new-thread dialog
+(`web/src/shared/threads/NewThreadDialog.tsx`) upload each selected file to the org-shared
+`POST /api/v1/orgs/{slug}/artifacts` (multipart) **before** sending/composing, then pass the returned
+`artifact_name` refs on `POST /threads/{id}/send` (JSON) or `POST /threads`. The CLI/agent thread-scoped
+`/threads/{id}/attachments` store is unchanged; the browser keeps using shared artifacts.
+
+Traps:
+
+- Each selection carries a stable, non-metadata id (`createSelectionIdFactory`). Two identical `File`
+  objects (or the same File selected twice) are distinct selections with distinct chip keys, and removing
+  one never removes the other.
+- A partially failed attempt retains each already-uploaded selection's ref by selection id, so a retry
+  re-uploads only the selections without a ref and preserves the send order. Removing a failed or
+  completed selection invalidates only that selection's cached ref. Each submission reads a run-owned
+  snapshot of those ref/name caches, so a departed run cannot observe a replacement view's selections
+  even though `Composer` selection ids restart at `sel-1` on remount.
+- Each selection's artifact name is reserved once (`allocateArtifactName`) and reused verbatim, and the
+  page never reuses a name it has already allocated. The allocator searches upward past the former
+  1000-index ceiling until it finds a free candidate, so it never returns an occupied name; without this, a
+  same-second retry could regenerate a retained name and `ArtifactStore.put` would replace the retained
+  artifact's bytes.
+- `Composer.submit` has a synchronous in-flight latch and the pages own the run's pending presentation, so
+  a double-click / Enter+Send during a held upload produces exactly one submission and disables
+  attach/send/remove until it settles. The latch is released on failure and reset when the destination
+  changes, so a submission left in flight by a departed view cannot block the replacement view's first
+  submit. Pending is the run's own state, not the surviving mutation observer's `isPending`, so a held send
+  (or compose) in a departed org/thread — including the same thread id in another org — cannot disable the
+  replacement view.
+- Each submission captures its destination `(orgSlug, threadId/dialog, payload)` at first submit; uploads,
+  the send and the new-thread compose use that snapshot, and late results only mutate the originating view
+  while it is still mounted and active. The destination is an ORG-scoped generation, not just a thread id:
+  an org switch that keeps the same thread id, an A→B→A return to the same thread, and a full unmount are
+  all departures, so a stale success cannot clear the replacement view's draft, chips, error, latch or
+  dialog and cannot retarget an in-flight compose.
+- Failures surface on the existing single error line. Attachment/artifact error codes are mapped in
+  `web/src/lib/threadErrors.ts`, and a confirmed send failure is never labelled as the last file's upload
+  failure.
+- Caps are unchanged: `MAX_THREAD_ATTACHMENTS = 5` (`runtime/daemon/routes/threads.py`) and the 10 MiB
+  artifact cap (`runtime/infrastructure/artifact_store.py`). No drag-and-drop or size/state chip was added.
+
 ## Jobs
 
 Per-org jobs use a SQLite table and files at `<runtime>/orgs/<slug>/jobs/JOB-NNN.{out,err,script}`. Spec: `docs/superpowers/specs/2026-05-26-jobs-design.md`.
