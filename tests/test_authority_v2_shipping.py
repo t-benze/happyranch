@@ -423,7 +423,17 @@ class _ShippingFixture:
         return root_id
 
     # -- held launch ---------------------------------------------------
-    def install_launch_hold(self) -> None:
+    def install_launch_hold(self, *, provider_session_id: str | None = None) -> None:
+        """Hold only the external provider launch boundary.
+
+        ``provider_session_id`` opts INTO the genuine completion-recovery venue:
+        the doubled external boundary returns a CLEAN provider result whose
+        ``agent_session_id`` is a real separate provider conversation identity
+        (the origin turn ends without a HappyRanch callback), which is exactly
+        the premise ``run_step``'s real completion-recovery claim requires.  It
+        is deliberately opt-in so every ordinary single-launch case keeps its
+        prior no-recovery behavior.
+        """
         from runtime.orchestrator.executors import ExecutorResult
 
         fixture = self
@@ -449,6 +459,7 @@ class _ShippingFixture:
                 raise AssertionError("held launch was never released")
             return ExecutorResult(
                 success=True, duration_seconds=1, session_id=session,
+                agent_session_id=provider_session_id,
             )
 
         self.monkeypatch.setattr(
@@ -2243,45 +2254,285 @@ def _drive_c3d3b_admission(
     return root_id
 
 
+def _dump_owned_rows(db, sql: str, params: tuple = ()) -> list[dict]:
+    return [dict(row) for row in db._conn.execute(sql, params).fetchall()]
+
+
+def _drive_c3d4b_corrupt_settlement(
+    fixture: _ShippingFixture, *, root_id: str, recovery_session: str,
+    row_id: int, generation: str, raw_puts: list, tagged_puts: list,
+) -> str:
+    """Counter-based corrupt-refusal over the GENUINE accepted recovery.
+
+    C1/C2 preconditions are real (a genuine accepted recovery R/Q, a finalized
+    continuation G).  The ONLY settlement evidence -- the exact accepted Q row
+    -- is then REMOVED and the REAL recovered consumer is exercised.  It must
+    return a bounded refusal, never raise, and make ZERO raw/accepted queue
+    calls, ZERO generation claims, ZERO external launches and no ordinary
+    decision body while preserving the final E/N/D residue.  The exact row is
+    then restored and the permitted retry publishes exactly once.
+    """
+    from runtime.models import (
+        AUTHORITY_POLICY_V2_RECOVERY_SETTLED_ACTION,
+    )
+    from runtime.orchestrator.authority import (
+        POST_FINAL_SETTLEMENT_REFUSED,
+        reconcile_authority_policy_v2_post_final,
+    )
+
+    db = fixture.org.db
+    q_before = _dump_owned_rows(
+        db, "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
+        (root_id, MANAGER),
+    )
+    assert len(q_before) == 1 and q_before[0]["state"] == "callback_accepted"
+    final_before = {
+        "envelopes": _dump_owned_rows(
+            db, "SELECT * FROM authority_policy_v2_continue_envelopes "
+                "WHERE root_task_id=?", (root_id,)),
+        "notifications": _dump_owned_rows(
+            db, "SELECT * FROM authority_policy_v2_recovery_notifications "
+                "WHERE root_task_id=?", (root_id,)),
+        "dispatch": _dump_owned_rows(
+            db, "SELECT * FROM authority_policy_v2_root_dispatch "
+                "WHERE root_task_id=?", (root_id,)),
+        "task": _dump_owned_rows(
+            db, "SELECT * FROM tasks WHERE id=?", (root_id,)),
+        "attempts": _dump_owned_rows(
+            db, "SELECT * FROM authority_policy_v2_attempts WHERE root_task_id=?",
+            (root_id,)),
+        "candidates": _dump_owned_rows(
+            db, "SELECT * FROM authority_policy_v2_candidates WHERE root_task_id=?",
+            (root_id,)),
+        "evaluations": _dump_owned_rows(
+            db,
+            "SELECT e.* FROM authority_policy_v2_evaluations AS e "
+            "JOIN authority_policy_v2_candidates AS c "
+            "ON c.candidate_id = e.candidate_id WHERE c.root_task_id=?",
+            (root_id,)),
+    }
+    put_count = len(raw_puts)
+    tagged_count = len(tagged_puts)
+    launch_before = fixture.launch_count()
+
+    # REMOVE the only genuine settlement evidence.
+    db._conn.execute(
+        "DELETE FROM task_completion_recoveries WHERE task_id=? AND agent=?",
+        (root_id, MANAGER),
+    )
+    db._conn.commit()
+
+    # The REAL recovered consumer must return a bounded refusal (never raise).
+    status = reconcile_authority_policy_v2_post_final(
+        fixture.org.orchestrator, root_task_id=root_id,
+    )
+    assert status == POST_FINAL_SETTLEMENT_REFUSED, status
+
+    # Zero raw/accepted queue calls, claims, launches and normal decision body.
+    assert len(raw_puts) == put_count
+    assert len(tagged_puts) == tagged_count
+    assert fixture.launch_count() == launch_before
+    stages = [
+        a["payload"]["stage"]
+        for a in db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=root_id, manager_agent=MANAGER,
+        )
+    ]
+    assert stages.count("publish_claimed") == 0
+    assert stages.count("generation_claimed") == 0
+    assert stages.count("notification_settled") == 0
+    actions = [a["action"] for a in db.get_audit_logs(root_id)]
+    assert actions.count(AUTHORITY_POLICY_V2_RECOVERY_SETTLED_ACTION) == 0
+    assert db.get_task(root_id).status is TaskStatus.PENDING
+    # The committed final E/N/D residue is byte-identical.
+    final_after = {
+        "envelopes": _dump_owned_rows(
+            db, "SELECT * FROM authority_policy_v2_continue_envelopes "
+                "WHERE root_task_id=?", (root_id,)),
+        "notifications": _dump_owned_rows(
+            db, "SELECT * FROM authority_policy_v2_recovery_notifications "
+                "WHERE root_task_id=?", (root_id,)),
+        "dispatch": _dump_owned_rows(
+            db, "SELECT * FROM authority_policy_v2_root_dispatch "
+                "WHERE root_task_id=?", (root_id,)),
+        "task": _dump_owned_rows(
+            db, "SELECT * FROM tasks WHERE id=?", (root_id,)),
+        "attempts": _dump_owned_rows(
+            db, "SELECT * FROM authority_policy_v2_attempts WHERE root_task_id=?",
+            (root_id,)),
+        "candidates": _dump_owned_rows(
+            db, "SELECT * FROM authority_policy_v2_candidates WHERE root_task_id=?",
+            (root_id,)),
+        "evaluations": _dump_owned_rows(
+            db,
+            "SELECT e.* FROM authority_policy_v2_evaluations AS e "
+            "JOIN authority_policy_v2_candidates AS c "
+            "ON c.candidate_id = e.candidate_id WHERE c.root_task_id=?",
+            (root_id,)),
+    }
+    assert final_after == final_before
+
+    # Remove the injection: restore the EXACT genuine accepted Q and execute the
+    # permitted retry -- it settles and publishes exactly once.
+    db._conn.execute(
+        """INSERT INTO task_completion_recoveries
+           (id, task_id, agent, origin_session_id, recovery_session_id,
+            provider_session_id, claimed_at, expires_at, state,
+            accepted_result_id, accepted_result_session_id, settled_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            q_before[0]["id"], q_before[0]["task_id"], q_before[0]["agent"],
+            q_before[0]["origin_session_id"], q_before[0]["recovery_session_id"],
+            q_before[0]["provider_session_id"], q_before[0]["claimed_at"],
+            q_before[0]["expires_at"], q_before[0]["state"],
+            q_before[0]["accepted_result_id"],
+            q_before[0]["accepted_result_session_id"],
+            q_before[0]["settled_at"],
+        ),
+    )
+    db._conn.commit()
+    retry = reconcile_authority_policy_v2_post_final(
+        fixture.org.orchestrator, root_task_id=root_id,
+    )
+    assert retry in ("reconciled", "settlement_refused"), retry
+    if retry == "reconciled":
+        assert len(tagged_puts) == tagged_count + 1
+        assert tagged_puts[-1]["authority_v2_generation"] == generation
+    fixture.release_launch()
+    fixture.join_workers()
+    return root_id
+
+
 def _drive_c3d4b_post_final_recovery(
     fixture: _ShippingFixture, *, negative: str | None = None,
 ) -> str:
-    """C3d4b post-final recovery seam over the REAL owned runtime.
+    """C3d4b GENUINE current recovery -> post-final settlement -> dispatch.
 
-    The public pre-final stages are staged through controlled public writes
-    (the automatic hook remains dark), then the ACTUAL production
-    ``_consume_accepted_completion_recovery`` seam owns settlement + tagged
-    publication.  The real queue/Dispatcher/run_step then admits the tagged
-    generation exactly once on the held external boundary.  A post-admission
-    replay under a fresh boot must not duplicate admission, and deleting the
-    only settlement proof must refuse with zero queue effect.
+    Unlike the earlier ordinary-callback premise, the origin Codex turn returns
+    CLEANLY without a callback and carries a real provider conversation identity
+    separate from its daemon runtime session, so ``run_step``'s REAL
+    completion-recovery claim + launch binding run: a DISTINCT recovery runtime
+    session is claimed and the provider resume id is the origin provider
+    conversation -- never the runtime session.  The ACTUAL shipping CLI
+    subprocess then drives the real HTTP callback route into a persisted
+    accepted recovery R/Q (state ``callback_accepted``) under the real writers.
+    Only the external provider launch boundary is doubled.
+
+    The automatic pre-final v2 hook remains DARK in this unit, so the accepted
+    pre-final stages (claim/evaluate/consume/finalize) are staged through the
+    REAL public writers and are explicitly labelled as staged.  The post-final
+    settlement, tagged publication and generation admission then run through the
+    ACTUAL production ``_consume_accepted_completion_recovery`` ->
+    ``reconcile_authority_policy_v2_post_final`` seam and the real
+    TaskQueue/Dispatcher/run_step path.
     """
+    from runtime.models import AUTHORITY_POLICY_V2_RECOVERY_SETTLED_ACTION
+
     fixture.activate_v2_pair()
-    fixture.install_launch_hold()
+    provider_resume_id = "provider-resume-c3d4b"
+    fixture.install_launch_hold(provider_session_id=provider_resume_id)
     root_id = fixture.create_and_enqueue_root()
-    captured = fixture.wait_for_launch()
-    session_id = captured["session_id"]
-    binding = _binding(fixture, root_id, session_id)
+
+    origin = fixture.wait_for_launch()
+    origin_session = origin["session_id"]
+    assert origin_session
+
+    # Count the REAL queue attempts separately from ACCEPTED (tagged) puts.
+    queue = fixture.state.queue
+    raw_puts: list[dict] = []
+    tagged_puts: list[dict] = []
+    original_put = queue.put_nowait
+
+    def _counting_put(slug, task_id, *, metadata=None):
+        raw_puts.append({"slug": slug, "task_id": task_id, "metadata": metadata})
+        if isinstance(metadata, dict) and metadata.get("authority_v2_generation"):
+            tagged_puts.append(dict(metadata))
+        return original_put(slug, task_id, metadata=metadata)
+
+    fixture.monkeypatch.setattr(queue, "put_nowait", _counting_put)
+
+    # Release ONLY the origin turn.  It returns success with a separate provider
+    # conversation id and NO callback -- exactly the real premise for run_step's
+    # completion-recovery claim.
+    fixture.release_session(origin_session)
+    recovery_launch = fixture.wait_for_launch_for(root_id, after=1)
+    recovery_session = recovery_launch["session_id"]
+    assert recovery_session and recovery_session != origin_session
+    assert recovery_launch.get("resume_session_id") == provider_resume_id
+    assert recovery_launch.get("recovery") is True
+
+    binding = _binding(fixture, root_id, recovery_session)
     assert binding is not None and binding["mode"] == "v2"
 
+    # ACTUAL shipping CLI subprocess -> real HTTP route -> persisted accepted
+    # recovery R/Q under the real writers.
     body = _completion_body(binding, root_id)
     payload = fixture.write_payload(body)
-    result = fixture.run_cli(payload)
-    assert result.returncode == 0, result.stderr
+    cli = fixture.run_cli(payload)
+    assert cli.returncode == 0, cli.stderr
     assert fixture.last_http()["status"] == 200
+    callback_status = fixture.last_http()["status"]
+    callback_request = fixture.last_http()["body"]
+    callback_response = fixture.last_http()["response_body"]
 
+    db = fixture.org.db
+    receipt = dict(db._conn.execute(
+        "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
+        (root_id, MANAGER),
+    ).fetchone())
+    assert receipt["origin_session_id"] == origin_session
+    assert receipt["recovery_session_id"] == recovery_session
+    assert receipt["provider_session_id"] == provider_resume_id
+    assert receipt["state"] == "callback_accepted"
     results, attempt, _audits = _admission_counts(fixture, root_id)
     assert len(results) == 1 and attempt is not None
     row_id = results[0]["id"]
-    db = fixture.org.db
+    assert receipt["accepted_result_id"] == row_id
+    assert receipt["accepted_result_session_id"] == recovery_session
+    assert db._conn.execute(
+        "SELECT session_id FROM task_results WHERE id=?", (row_id,)
+    ).fetchone()["session_id"] == recovery_session
+    # Actual callback HTTP status/body + durable result provenance: the persisted
+    # R carries exactly the transport summary/status/session under the real route.
+    assert callback_status == 200
+    assert json.loads(callback_response) == {"ok": True}
+    assert json.loads(callback_request)["session_id"] == recovery_session
+    assert (
+        json.loads(callback_request)["manager_self_evaluation"]
+        == body["manager_self_evaluation"]
+    )
+    persisted_result = dict(db._conn.execute(
+        "SELECT * FROM task_results WHERE id=?", (row_id,)
+    ).fetchone())
+    assert persisted_result["agent"] == MANAGER
+    assert persisted_result["session_id"] == recovery_session
+    assert persisted_result["status"] == "completed"
+    assert persisted_result["output_summary"] == body["summary"]
+
+    # Exact callback replay while the recovery generation is still the active
+    # owner: a bounded read-only success with no second result/attempt/audit.
+    replay = fixture.run_cli(payload)
+    assert replay.returncode == 0, replay.stderr
+    replay_status = fixture.last_http()["status"]
+    replay_response = fixture.last_http()["response_body"]
+    assert replay_status == 200
+    assert json.loads(replay_response) == {"ok": True}
+    after_results, after_attempt, after_audits = _admission_counts(fixture, root_id)
+    assert len(after_results) == 1 and after_results[0]["id"] == row_id
+    assert after_attempt.owner_attempt_id == attempt.owner_attempt_id
+    assert [a["id"] for a in after_audits] == [a["id"] for a in _audits]
 
     # The REAL production owner binding (never a test boot string).
     fixture.org.bind_authority_v2_owner()
     assert db._v2_process_boot_id == fixture.org.authority_v2_origin_boot_id
     assert attempt.origin_boot_id == fixture.org.authority_v2_origin_boot_id
 
+    # LABELLED STAGING through REAL public writers: the automatic pre-final v2
+    # hook is dark in this unit, so the accepted pre-final stages are driven
+    # explicitly with the GENUINE recovery identity (never a fabricated Q).
     stage_kwargs = dict(
-        root_task_id=root_id, manager_agent=MANAGER, manager_session_id=session_id,
+        root_task_id=root_id, manager_agent=MANAGER,
+        manager_session_id=recovery_session,
         result_id=row_id, origin_boot_id=attempt.origin_boot_id,
         owner_attempt_id=attempt.owner_attempt_id,
     )
@@ -2295,74 +2546,28 @@ def _drive_c3d4b_post_final_recovery(
     assert finalized.status == "continued", finalized
     generation = finalized.notification_id
 
-    # The exact accepted recovery Q is the ONLY settlement proof; the production
-    # seam (not this test) must settle it.
-    db._conn.execute(
-        """INSERT INTO task_completion_recoveries
-           (task_id, agent, origin_session_id, recovery_session_id,
-            provider_session_id, claimed_at, expires_at, state,
-            accepted_result_id, accepted_result_session_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (root_id, MANAGER, "sess-origin", session_id, "provider-1",
-         "2026-01-01T00:00:00+00:00", "2999-01-01T00:00:00+00:00",
-         "callback_accepted", row_id, session_id),
-    )
-    db._conn.commit()
-
-    from runtime.orchestrator.orchestrator import completion_report_from_result_row
-    from runtime.orchestrator.run_step import _consume_accepted_completion_recovery
-
-    result_row = db._conn.execute(
-        "SELECT * FROM task_results WHERE id=?", (row_id,)
-    ).fetchone()
-    report = completion_report_from_result_row(
-        root_id, dict(result_row), fallback_agent=MANAGER,
-    )
+    # The SAME root is preserved; finalization returns it to Pending (never a new
+    # root / successor) with the durable pointer naming exactly this G.
+    assert db.get_task(root_id).id == root_id
+    assert db.get_task(root_id).status is TaskStatus.PENDING
+    assert db.get_authority_policy_v2_root_dispatch(root_id).state == "pending"
+    assert db.get_authority_policy_v2_root_dispatch(root_id).generation_id == generation
+    assert db.get_authority_policy_v2_recovery_notification(generation).state == "needed"
+    assert not tagged_puts and not raw_puts
+    assert fixture.launch_count() == 2
 
     if negative == "corrupt_settlement":
-        # Delete the only recovery receipt: no genuine Q and no ordinary
-        # completion evidence exists, so the seam must refuse read-only.
-        db._conn.execute(
-            "DELETE FROM task_completion_recoveries WHERE task_id=? AND agent=?",
-            (root_id, MANAGER),
+        return _drive_c3d4b_corrupt_settlement(
+            fixture, root_id=root_id, recovery_session=recovery_session,
+            row_id=row_id, generation=generation, raw_puts=raw_puts,
+            tagged_puts=tagged_puts,
         )
-        db._conn.commit()
-        _consume_accepted_completion_recovery(
-            fixture.org.orchestrator, root_id, report,
-            agent=MANAGER, session_id=session_id, result_row_id=row_id,
-        )
-        notification = db.get_authority_policy_v2_recovery_notification(generation)
-        assert notification is not None and notification.state == "needed"
-        assert db.get_authority_policy_v2_root_dispatch(root_id).state == "pending"
-        assert db.get_task(root_id).status is TaskStatus.PENDING
-        # Zero queue effect: the held external boundary saw only the original.
-        assert fixture.launch_count() == 1
-        fixture.release_launch()
-        fixture.join_workers()
-        return root_id
 
-    _consume_accepted_completion_recovery(
-        fixture.org.orchestrator, root_id, report,
-        agent=MANAGER, session_id=session_id, result_row_id=row_id,
-    )
-    receipt = db._conn.execute(
-        "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
-        (root_id, MANAGER),
-    ).fetchone()
-    assert receipt["state"] == "callback_consumed"
-    stage_events = [
-        a["payload"]["stage"]
-        for a in db.list_authority_policy_v2_result_stage_audits(
-            root_task_id=root_id, manager_agent=MANAGER,
-        )
-    ]
-    assert stage_events.count("publish_claimed") == 1
-    assert stage_events.count("published") == 1
-
-    # The real second worker consumes the tagged item -> the ONLY generation
-    # admission/settlement, then the held reserved-session launch.
+    # Release ONLY the recovery turn so the REAL run_step consumer reads the
+    # durable accepted result, classifies it causal, and settles + publishes.
+    fixture.release_session(recovery_session)
     reserved = None
-    deadline = time.monotonic() + 30.0
+    deadline = time.monotonic() + 60.0
     while time.monotonic() < deadline:
         admitted = db.get_authority_policy_v2_recovery_notification(generation)
         if (
@@ -2374,34 +2579,77 @@ def _drive_c3d4b_post_final_recovery(
                 break
         time.sleep(0.05)
     assert reserved is not None, "generation was never admitted"
-    assert reserved != session_id
-    assert db.get_authority_policy_v2_root_dispatch(root_id).state == "admitted"
+    assert reserved != recovery_session and reserved != origin_session
+    dispatch = db.get_authority_policy_v2_root_dispatch(root_id)
+    assert dispatch.state == "admitted" and dispatch.generation_id == generation
+
+    # Q consumed by the ACTUAL settlement writer (never by this test).
+    receipt = dict(db._conn.execute(
+        "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
+        (root_id, MANAGER),
+    ).fetchone())
+    assert receipt["state"] == "callback_consumed"
+    assert receipt["accepted_result_id"] == row_id
+
     task = db.get_task(root_id)
     assert task.status is TaskStatus.IN_PROGRESS
+    assert task.assigned_agent == MANAGER
     assert task.current_session_id == reserved
-    stage_events = [
+    assert task.orchestration_step_count == 2
+    assert fixture.captured["session_id"] == reserved
+
+    stages = [
         a["payload"]["stage"]
         for a in db.list_authority_policy_v2_result_stage_audits(
             root_task_id=root_id, manager_agent=MANAGER,
         )
     ]
-    assert stage_events.count("generation_claimed") == 1
-    assert stage_events.count("notification_settled") == 1
-    assert fixture.captured["session_id"] == reserved
+    assert stages.count("publish_claimed") == 1
+    assert stages.count("published") == 1
+    assert stages.count("generation_claimed") == 1
+    assert stages.count("notification_settled") == 1
     assert db._conn.execute(
         "SELECT COUNT(*) FROM authority_policy_v2_continue_envelopes"
     ).fetchone()[0] == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_evaluations"
+    ).fetchone()[0] == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_candidates"
+    ).fetchone()[0] == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_candidate_audit"
+    ).fetchone()[0] == 4
+    audits = db.get_audit_logs(root_id)
+    actions = [a["action"] for a in audits]
+    assert actions.count(AUTHORITY_POLICY_V2_RECOVERY_SETTLED_ACTION) == 1
+    # Both required settlement audits: the legitimate ordinary producer audit
+    # and the recovery-owned settlement completion audit coexist.
+    recovery_completions = [
+        a for a in audits
+        if a["action"] == "completion_report"
+        and isinstance(a.get("payload"), dict)
+        and a["payload"].get("_recovery_session_id") == recovery_session
+    ]
+    assert len(recovery_completions) == 1
+    assert actions.count("completion_report") >= 1
 
-    # Post-admission replay under a genuinely new boot: already admitted G is
-    # never republished/reclaimed and no second admission occurs.
-    fixture.org.db.bind_authority_policy_v2_process_boot_id("boot-post-admission")
-    _consume_accepted_completion_recovery(
-        fixture.org.orchestrator, root_id, report,
-        agent=MANAGER, session_id=session_id, result_row_id=row_id,
+    # One raw queue attempt, one ACCEPTED tagged publication with the exact G/P
+    # metadata, one claim and exactly one reserved external launch.
+    assert len(raw_puts) == 1 and len(tagged_puts) == 1
+    assert tagged_puts[0]["authority_v2_generation"] == generation
+    assert tagged_puts[0]["publication_attempt"] == 1
+    assert fixture.launch_count() == 3
+
+    # Exact post-final replay: the production seam is READ-ONLY after settlement
+    # -- no second admission/evaluation/remint/ordinary decision/queue call.
+    from runtime.orchestrator.authority import reconcile_authority_policy_v2_post_final
+
+    reconcile_authority_policy_v2_post_final(
+        fixture.org.orchestrator, root_task_id=root_id,
     )
-    assert db._conn.execute(
-        "SELECT COUNT(*) FROM authority_policy_v2_continue_envelopes"
-    ).fetchone()[0] == 1
+    assert len(raw_puts) == 1 and len(tagged_puts) == 1
+    assert fixture.launch_count() == 3
     assert [
         a["payload"]["stage"]
         for a in db.list_authority_policy_v2_result_stage_audits(
@@ -2409,10 +2657,21 @@ def _drive_c3d4b_post_final_recovery(
         )
     ].count("generation_claimed") == 1
 
+    fixture._c3d4b_callback_evidence = {
+        "callback_status": callback_status,
+        "callback_body": callback_response,
+        "replay_status": replay_status,
+        "replay_body": replay_response,
+        "origin_session_id": origin_session,
+        "recovery_session_id": recovery_session,
+        "provider_resume_id": provider_resume_id,
+        "generation": generation,
+        "reserved_session_id": reserved,
+    }
+
     fixture.release_launch()
     fixture.join_workers()
     return root_id
-
 
 def test_shipping_real_publication_and_generation_admission(tmp_path, monkeypatch):
     fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2)

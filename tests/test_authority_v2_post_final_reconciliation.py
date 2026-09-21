@@ -1085,12 +1085,14 @@ def test_malformed_admitted_identity_refuses_without_repair(tmp_path):
     assert _dump(store) == before
 
 
-def test_current_generation_b_progresses_on_its_own_path(tmp_path):
+def test_current_generation_b_progresses_while_settled_a_stays_untouched(tmp_path):
     """Old A must not stand in for independently valid current B.
 
     B is produced through the real public successor lifecycle; a post-final
     pass on the root publishes B's OWN token (never A's) and leaves A's
-    committed generation bytes untouched.
+    committed generation bytes untouched.  This is the base progression case;
+    ``test_current_generation_b_progresses_on_its_own_path`` (later in this
+    module) strengthens it with the explicit old-A read-only refusal replay.
     """
     from tests.test_authority_v2_decision_dispatch import (
         _drive_generation_b_pending,
