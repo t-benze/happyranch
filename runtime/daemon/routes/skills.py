@@ -635,10 +635,11 @@ def _validate_skill_package(
     (a) parses / well-formed — skill_md is non-empty string
     (b) required metadata present — id, slug, name, version must all be
         non-empty strings
-    (c) SKILL.md present — either heading-first (column-zero Markdown
-        ATX heading: 1–6 ``#`` markers followed by whitespace or
-        end-of-line) or YAML-frontmatter-first with a Markdown body
-        heading (the same ATX boundary)
+    (c) supported authoring contract — YAML frontmatter is REQUIRED at
+        column zero: a YAML mapping carrying the closed five-key
+        allowlist and the required ``name``/``description`` fields. The
+        body-heading requirement is retired, so a headingless body
+        (including an empty body) is accepted
     (d) references + assets resolve — if provided, must be dicts of
         string→string
     (e) NO bundled-slug collision — custom slug must not collide with
@@ -735,10 +736,13 @@ def _validate_skill_package(
         "ok": len(errors) == 0,
         "errors": errors,
         "reason_codes": reason_codes,
-        # The single parsed frontmatter channel (THR-262). ``None`` whenever the
-        # document is structurally unusable or the allowlist/required checks
-        # failed at parse time; valid candidates carry the mapping used for
-        # description projection and divergence comparison.
+        # The single parsed frontmatter channel (THR-262).
+        # ``parse_skill_frontmatter`` returns the mapping for every
+        # structurally usable document — including one that carries
+        # field/admission findings — so that mapping remains available for
+        # description projection and divergence comparison. ``None`` is
+        # returned only for structural errors (empty/no opening fence,
+        # unclosed, malformed, non-mapping or duplicate top-level key).
         "frontmatter": parse_skill_frontmatter(skill_md),
     }
 

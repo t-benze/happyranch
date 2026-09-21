@@ -8,6 +8,26 @@ import sqlite3
 import pytest
 
 from runtime.models import TaskRecord
+# Accepted TASK-8588 §4.3 literal matrix, reused verbatim from the authorized
+# validator-level file; the route cases below pair every row with an
+# INDEPENDENTLY specified expected finding list (never computed by calling the
+# production validator).
+from tests.daemon.test_routes_skills import _LITERAL_CONTRACT_ROWS
+from runtime.skills.skill_md import (
+    ADMISSION_FIELD_NOT_ALLOWED,
+    FRONTMATTER_DUPLICATE_KEY,
+    FRONTMATTER_INVALID_COMPATIBILITY,
+    FRONTMATTER_INVALID_DESCRIPTION,
+    FRONTMATTER_INVALID_LICENSE,
+    FRONTMATTER_INVALID_METADATA,
+    FRONTMATTER_INVALID_NAME,
+    FRONTMATTER_MISSING_DESCRIPTION,
+    FRONTMATTER_MISSING_NAME,
+    FRONTMATTER_NAME_SLUG_MISMATCH,
+    SKILL_MD_MALFORMED_FRONTMATTER,
+    SKILL_MD_NO_FRONTMATTER,
+    SKILL_MD_UNCLOSED_FRONTMATTER,
+)
 
 
 BASE = "/api/v1/orgs/alpha/custom-skills"
@@ -140,6 +160,24 @@ def _residue_snapshot(org, skill_id: str, conn=None) -> dict:
             "SELECT * FROM custom_skill_materializations WHERE skill_id=? ORDER BY id"
         ),
         "artifacts": _artifact_keys(org),
+        "empty_dirs": _empty_artifact_dirs(org),
+    }
+
+
+def _full_custom_state(org) -> dict:
+    """Snapshot EVERY custom-skill durable row plus the actual artifact bytes and
+    file metadata. Unlike ``_custom_counts`` this is content-level; unlike
+    ``_residue_snapshot`` it is not scoped to a single skill id."""
+    conn = getattr(org.db, "_conn", org.db)
+    tables = [row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'custom_skill%'"
+    )]
+    return {
+        "rows": {
+            table: [dict(r) for r in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")]
+            for table in tables
+        },
+        "artifacts": _artifact_bytes_state(org),
         "empty_dirs": _empty_artifact_dirs(org),
     }
 
@@ -2993,16 +3031,150 @@ def test_finding1_duplicate_merge_and_override_route_findings(client_with_runtim
 
 
 # ── Finding 2: literal matrix through the real route + nonmutation ────────
+#
+# The accepted 46-row matrix is reused verbatim from the authorized
+# validator-level file. Each row here is paired with an INDEPENDENTLY specified
+# expected persisted finding list (literal reason_code + key pairs) plus local
+# literal message templates, so the route assertion never calls the production
+# validator to compute its own expected answer. Row index 17 (the uppercase
+# request slug ``My-Workflow``) is a request-IDENTITY refusal: 422 invalid_slug
+# with no residue, classified separately from every conforming-identity row
+# whose invalid document is 201 immutable evidence.
 
+#: Local, independently specified persisted-finding message templates.
+_ROUTE_FINDING_MESSAGE: dict[str, str] = {
+    ADMISSION_FIELD_NOT_ALLOWED: (
+        "HappyRanch accepts only name, description, license, compatibility and "
+        "metadata in SKILL.md frontmatter; '{key}' is not permitted. Request "
+        "tool permission through the jobs / manage-agent workflow."
+    ),
+    FRONTMATTER_DUPLICATE_KEY: "SKILL.md frontmatter repeats the top-level key '{key}'",
+    FRONTMATTER_MISSING_NAME: "SKILL.md frontmatter is missing the required 'name' field",
+    FRONTMATTER_INVALID_NAME: (
+        "SKILL.md frontmatter 'name' must be 1-64 ASCII lower-case letters, "
+        "ASCII digits or single hyphens (a-z, 0-9, '-'), with no leading, "
+        "trailing or consecutive hyphen. This is a HappyRanch admission rule; "
+        "the Agent Skills standard permits Unicode names."
+    ),
+    FRONTMATTER_NAME_SLUG_MISMATCH: (
+        "SKILL.md frontmatter 'name' must equal the logical slug '{slug}'"
+    ),
+    FRONTMATTER_MISSING_DESCRIPTION: (
+        "SKILL.md frontmatter is missing the required 'description' field"
+    ),
+    FRONTMATTER_INVALID_DESCRIPTION: (
+        "SKILL.md frontmatter 'description' must be a non-empty string of at "
+        "most 1024 characters"
+    ),
+    FRONTMATTER_INVALID_LICENSE: "SKILL.md frontmatter 'license' must be a string",
+    FRONTMATTER_INVALID_COMPATIBILITY: (
+        "SKILL.md frontmatter 'compatibility' must be a string of 1-500 characters"
+    ),
+    FRONTMATTER_INVALID_METADATA: (
+        "SKILL.md frontmatter 'metadata' must be a mapping of string keys to "
+        "string values"
+    ),
+    SKILL_MD_NO_FRONTMATTER: (
+        "SKILL.md must start with a YAML frontmatter '---' fence at column zero"
+    ),
+    SKILL_MD_UNCLOSED_FRONTMATTER: (
+        "SKILL.md YAML frontmatter is missing its closing fence"
+    ),
+    SKILL_MD_MALFORMED_FRONTMATTER: "SKILL.md YAML frontmatter is malformed",
+}
+
+#: One entry per `_LITERAL_CONTRACT_ROWS` row, in the same order:
+#: ("document", [(reason_code, key_or_None), ...]) or ("identity", None).
+_ROUTE_ROW_EXPECTATIONS: list[tuple[str, object]] = [
+    ("document", []),  # 0 baseline valid
+    ("document", [(FRONTMATTER_MISSING_DESCRIPTION, None)]),  # 1
+    ("document", [(FRONTMATTER_MISSING_NAME, None)]),  # 2
+    ("document", [(SKILL_MD_NO_FRONTMATTER, None)]),  # 3
+    ("document", [(SKILL_MD_UNCLOSED_FRONTMATTER, None)]),  # 4
+    ("document", [(SKILL_MD_MALFORMED_FRONTMATTER, None)]),  # 5
+    ("document", [(SKILL_MD_MALFORMED_FRONTMATTER, None)]),  # 6
+    ("document", [(ADMISSION_FIELD_NOT_ALLOWED, "hooks")]),  # 7
+    ("document", [(ADMISSION_FIELD_NOT_ALLOWED, "allowed-tools")]),  # 8
+    ("document", [  # 9 four disallowed keys in document order
+        (ADMISSION_FIELD_NOT_ALLOWED, "allowed-tools"),
+        (ADMISSION_FIELD_NOT_ALLOWED, "hooks"),
+        (ADMISSION_FIELD_NOT_ALLOWED, "vendor-x"),
+        (ADMISSION_FIELD_NOT_ALLOWED, "future-field"),
+    ]),
+    ("document", [(ADMISSION_FIELD_NOT_ALLOWED, "vendor-x")]),  # 10
+    ("document", [(FRONTMATTER_DUPLICATE_KEY, "name")]),  # 11
+    ("document", [(FRONTMATTER_DUPLICATE_KEY, "hooks")]),  # 12
+    ("document", []),  # 13 quoted digit-only identity, valid
+    ("document", [(FRONTMATTER_INVALID_NAME, None)]),  # 14 unquoted int name
+    ("document", [(FRONTMATTER_INVALID_NAME, None)]),  # 15 bool name
+    ("document", [(FRONTMATTER_INVALID_NAME, None)]),  # 16 non-ASCII name
+    ("identity", None),  # 17 uppercase request slug -> 422 invalid_slug
+    ("document", [(FRONTMATTER_INVALID_NAME, None)]),  # 18 leading hyphen
+    ("document", [(FRONTMATTER_INVALID_NAME, None)]),  # 19 trailing hyphen
+    ("document", [(FRONTMATTER_INVALID_NAME, None)]),  # 20 double hyphen
+    ("document", [(FRONTMATTER_NAME_SLUG_MISMATCH, None)]),  # 21 mismatch
+    ("document", [(FRONTMATTER_INVALID_DESCRIPTION, None)]),  # 22 null
+    ("document", [(FRONTMATTER_INVALID_DESCRIPTION, None)]),  # 23 int
+    ("document", [(FRONTMATTER_INVALID_DESCRIPTION, None)]),  # 24 empty
+    ("document", [(FRONTMATTER_INVALID_DESCRIPTION, None)]),  # 25 whitespace
+    ("document", [(FRONTMATTER_INVALID_DESCRIPTION, None)]),  # 26 over length
+    ("document", [(FRONTMATTER_INVALID_LICENSE, None)]),  # 27
+    ("document", [(FRONTMATTER_INVALID_COMPATIBILITY, None)]),  # 28
+    ("document", [(FRONTMATTER_INVALID_COMPATIBILITY, None)]),  # 29
+    ("document", [(FRONTMATTER_INVALID_COMPATIBILITY, None)]),  # 30
+    ("document", [(FRONTMATTER_INVALID_METADATA, None)]),  # 31
+    ("document", [(FRONTMATTER_INVALID_METADATA, None)]),  # 32
+    ("document", [(FRONTMATTER_INVALID_METADATA, None)]),  # 33
+    ("document", [(FRONTMATTER_INVALID_METADATA, None)]),  # 34
+    ("document", [(FRONTMATTER_INVALID_METADATA, None)]),  # 35
+    ("document", [(FRONTMATTER_INVALID_METADATA, None)]),  # 36
+    ("document", []),  # 37 valid string metadata
+    ("document", [(ADMISSION_FIELD_NOT_ALLOWED, "allowed-tools")]),  # 38
+    ("document", [(ADMISSION_FIELD_NOT_ALLOWED, "hooks")]),  # 39
+    ("document", []),  # 40 prose mention
+    ("document", []),  # 41 metadata prose mention
+    ("document", [  # 42 admission precedes missing required
+        (ADMISSION_FIELD_NOT_ALLOWED, "allowed-tools"),
+        (FRONTMATTER_MISSING_DESCRIPTION, None),
+    ]),
+    ("document", [  # 43 admission precedes optional-field finding
+        (ADMISSION_FIELD_NOT_ALLOWED, "allowed-tools"),
+        (FRONTMATTER_INVALID_LICENSE, None),
+    ]),
+    ("document", [(FRONTMATTER_DUPLICATE_KEY, "<<")]),  # 44 duplicate merges
+    ("document", [(ADMISSION_FIELD_NOT_ALLOWED, "<<")]),  # 45 merge override
+]
+
+_ROUTE_ROW_IDS = [f"row{i:02d}" for i in range(len(_LITERAL_CONTRACT_ROWS))]
+
+
+def _route_expected_messages(pairs, expected_slug) -> list[str]:
+    return [
+        _ROUTE_FINDING_MESSAGE[code].format(key=key, slug=expected_slug)
+        for code, key in pairs
+    ]
+
+
+@pytest.mark.parametrize("row_index", range(len(_LITERAL_CONTRACT_ROWS)), ids=_ROUTE_ROW_IDS)
 def test_finding2_literal_matrix_route_outcomes_and_permission_nonmutation(
-    client_with_runtime,
+    client_with_runtime, row_index,
 ):
-    """Finding 2 route proof: accepted literal rows through the real route.
-    Document/admission findings persist as 201 immutable invalid evidence with
-    the EXACT ordered finding list; a valid row is 201 valid; a non-conforming
-    logical identity is a 422 request refusal before validation. Authoring
-    leaves every generated permission/settings surface byte-identical (C3)."""
-    from runtime.skills.skill_md import skill_md_contract_violations
+    """Finding 2 route proof: the FULL accepted literal matrix through the real
+    human-create persistence route. Document/admission findings persist as 201
+    immutable invalid evidence with the EXACT ordered finding list (asserted
+    against locally specified messages, never against the production
+    validator); a valid row is 201 valid; the uppercase request slug is a 422
+    request identity refusal with no residue, classified separately from a
+    conforming identity with an invalid document. Authoring leaves every
+    generated permission/settings surface byte-identical (C3)."""
+    assert len(_ROUTE_ROW_EXPECTATIONS) == len(_LITERAL_CONTRACT_ROWS)
+    skill_md, expected_slug, expected_codes = _LITERAL_CONTRACT_ROWS[row_index]
+    kind, expected_pairs = _ROUTE_ROW_EXPECTATIONS[row_index]
+    # The two independent specifications (accepted literal reason codes and the
+    # locally specified finding pairs) must agree on order and identity. The
+    # identity-refusal row has no document finding list.
+    if expected_pairs is not None:
+        assert [code for code, _ in expected_pairs] == expected_codes
 
     client, org = client_with_runtime
     conn = getattr(org.db, "_conn", org.db)
@@ -3016,67 +3188,93 @@ def test_finding2_literal_matrix_route_outcomes_and_permission_nonmutation(
     for path, payload in permission_surfaces.items():
         path.write_bytes(payload)
     before_permissions = {path: path.read_bytes() for path in permission_surfaces}
-
-    cases = [
-        ("literal-valid", "---\nname: literal-valid\ndescription: d\n---\n",
-         "valid", []),
-        ("literal-order",
-         "---\nname: literal-order\ndescription: d\n"
-         "allowed-tools: null\nhooks: false\nvendor-x: 1\nfuture-field: \"\"\n---\n",
-         "invalid", ["admission_field_not_allowed"] * 4),
-        ("literal-duplicate",
-         "---\nname: literal-duplicate\ndescription: d\nname: b\n---\n",
-         "invalid", ["frontmatter_duplicate_key"]),
-        ("literal-duplicate-merge",
-         "---\nname: literal-duplicate-merge\ndescription: d\n<<: {}\n<<: {}\n---\n",
-         "invalid", ["frontmatter_duplicate_key"]),
-        ("literal-malformed", "---\nname: [a\ndescription: d\n---\n",
-         "invalid", ["skill_md_malformed_frontmatter"]),
-        ("literal-required-order",
-         "---\nname: literal-required-order\nallowed-tools: []\n---\n",
-         "invalid", ["admission_field_not_allowed", "frontmatter_missing_description"]),
-        ("literal-optional-order",
-         "---\nname: literal-optional-order\ndescription: d\nallowed-tools: []\nlicense: 1\n---\n",
-         "invalid", ["admission_field_not_allowed", "frontmatter_invalid_license"]),
-    ]
-    for slug, skill_md, expected_state, expected_codes in cases:
-        response = client.post(
-            BASE, json={"slug": slug, "name": "Display label", "skill_md": skill_md}
-        )
-        assert response.status_code == 201, (slug, response.text)
-        assert response.json()["validation_state"] == expected_state
-        # The ordered reason codes are the accepted literal expected order.
-        assert [
-            code for code, _ in skill_md_contract_violations(skill_md, expected_slug=slug)
-        ] == expected_codes
-        persisted = json.loads(conn.execute(
-            "SELECT validation_findings FROM custom_skill_versions WHERE id=?",
-            (response.json()["version_id"],),
-        ).fetchone()["validation_findings"])
-        assert persisted == [
-            message
-            for _, message in skill_md_contract_violations(skill_md, expected_slug=slug)
-        ]
-
     before_counts = _custom_counts(org)
+    before_artifacts = _artifact_bytes_state(org)
+
+    response = client.post(
+        BASE, json={"slug": expected_slug, "name": "Display label", "skill_md": skill_md}
+    )
+
+    if kind == "identity":
+        assert response.status_code == 422, (row_index, response.text)
+        assert response.json()["detail"]["code"] == "invalid_slug"
+        assert _custom_counts(org) == before_counts
+        assert _artifact_bytes_state(org) == before_artifacts
+        assert {p: p.read_bytes() for p in permission_surfaces} == before_permissions
+        return
+
+    assert response.status_code == 201, (row_index, response.text)
+    expected_state = "invalid" if expected_codes else "valid"
+    assert response.json()["validation_state"] == expected_state
+    persisted = json.loads(conn.execute(
+        "SELECT validation_findings FROM custom_skill_versions WHERE id=?",
+        (response.json()["version_id"],),
+    ).fetchone()["validation_findings"])
+    assert persisted == _route_expected_messages(expected_pairs, expected_slug)
+    # Four identical admission codes must still prove allowed-tools, hooks,
+    # vendor-x and future-field order: each persisted message names its key.
+    if expected_codes == [ADMISSION_FIELD_NOT_ALLOWED] * 4:
+        assert [message.split("'")[1] for message in persisted] == [
+            "allowed-tools", "hooks", "vendor-x", "future-field",
+        ]
+    assert {p: p.read_bytes() for p in permission_surfaces} == before_permissions
+
+
+@pytest.mark.parametrize("bad_slug", [
+    "My-Workflow",       # uppercase
+    "café-workflow",     # non-ASCII
+    "a" * 65,            # over length
+    "a--b",              # consecutive hyphen
+    "-a",                # leading hyphen
+    "a-",                # trailing hyphen
+    "a_b",               # underscore
+])
+def test_finding2_nonconforming_request_identity_is_422_no_residue(
+    client_with_runtime, bad_slug,
+):
+    """A non-conforming logical request identity is a 422 ``invalid_slug``
+    BEFORE validation/dry-materialization/artifact-key/durable writes, with no
+    durable or artifact residue and byte-identical permission surfaces."""
+    client, org = client_with_runtime
+    workspace = org.root / "workspaces" / "dev_agent"
+    (workspace / ".claude").mkdir(parents=True, exist_ok=True)
+    surfaces = {
+        workspace / ".claude" / "settings.json": b'{"permissions": {"allow": ["happyranch"]}}\n',
+        workspace / "opencode.json": b'{"permission": {"bash": "ask"}}\n',
+    }
+    for path, payload in surfaces.items():
+        path.write_bytes(payload)
+    before_counts = _custom_counts(org)
+    before_artifacts = _artifact_bytes_state(org)
+
     refused = client.post(
-        BASE, json={"slug": "café-workflow", "name": "Display", "skill_md": _SAFE_ASCII_BODY}
+        BASE, json={"slug": bad_slug, "name": "Display", "skill_md": _SAFE_ASCII_BODY}
     )
     assert refused.status_code == 422, refused.text
     assert refused.json()["detail"]["code"] == "invalid_slug"
     assert _custom_counts(org) == before_counts
-    assert {path: path.read_bytes() for path in permission_surfaces} == before_permissions
+    assert _artifact_bytes_state(org) == before_artifacts
+    assert {p: p.read_bytes() for p in surfaces} == {
+        workspace / ".claude" / "settings.json": b'{"permissions": {"allow": ["happyranch"]}}\n',
+        workspace / "opencode.json": b'{"permission": {"bash": "ask"}}\n',
+    }
 
 
 # ── Finding 3: A1-A4 admitted ASCII identities + Unicode display ──────────
 
 def test_a1_a2_a4_admitted_ascii_boundaries_and_quoted_digit_identities(
-    client_with_runtime,
+    client_with_runtime, monkeypatch, tmp_path,
 ):
     """A1/A2/A4: the real human-create route admits length-1/64 and quoted
     digit-only/mixed ASCII identities, persisting valid versions under the
-    UNCHANGED ASCII artifact-key formula (under the 200-char store bound)."""
+    UNCHANGED ASCII artifact-key formula (under the 200-char store bound). Every
+    authorized version materializes in BOTH provider roots as a symlink whose
+    resolved target is the canonical package identity (version + content hash),
+    with the exact SKILL.md bytes."""
+    from runtime.skills.canonical_store import CanonicalSkillStore
+
     client, org = client_with_runtime
+    _add_agent(org)
     conn = getattr(org.db, "_conn", org.db)
     cases = [
         ("a", "a"),
@@ -3086,6 +3284,7 @@ def test_a1_a2_a4_admitted_ascii_boundaries_and_quoted_digit_identities(
         ("a" * 64, "a" * 64),
         ("a" * 62 + "-b", "a" * 62 + "-b"),
     ]
+    created = []
     for slug, yaml_name in cases:
         skill_md = f"---\nname: {yaml_name}\ndescription: d\n---\n"
         response = client.post(
@@ -3093,14 +3292,31 @@ def test_a1_a2_a4_admitted_ascii_boundaries_and_quoted_digit_identities(
         )
         assert response.status_code == 201, (slug, response.text)
         assert response.json()["validation_state"] == "valid"
+        version_id = response.json()["version_id"]
+        digest = hashlib.sha256(skill_md.encode()).hexdigest()
         row = conn.execute(
-            "SELECT content_artifact_key FROM custom_skill_versions WHERE id=?",
-            (response.json()["version_id"],),
+            "SELECT content_artifact_key, content_hash FROM custom_skill_versions WHERE id=?",
+            (version_id,),
         ).fetchone()
-        assert row["content_artifact_key"] == (
-            f"custom-skills/{slug}/{hashlib.sha256(skill_md.encode()).hexdigest()}/SKILL.md"
-        )
+        assert row["content_artifact_key"] == f"custom-skills/{slug}/{digest}/SKILL.md"
+        assert row["content_hash"] == digest
         assert len(row["content_artifact_key"]) <= 200
+        _grant_org_allow(client, response.json()["skill_id"], version_id)
+        created.append((slug, version_id, digest, skill_md))
+
+    specs, workspace = _canonical_both_roots(org, monkeypatch, tmp_path, task_id="TASK-A1A4")
+    by_slug = {spec["slug"]: spec for spec in specs}
+    store = CanonicalSkillStore()
+    for slug, version_id, digest, skill_md in created:
+        spec = by_slug[slug]
+        assert spec["version"] == str(version_id)
+        assert spec["content_hash"] == digest
+        target = store.canonical_path(slug, str(version_id), digest)
+        for root in (".claude/skills", ".agents/skills"):
+            link = workspace / root / slug
+            assert link.is_symlink(), (root, slug)
+            assert link.resolve() == target.resolve(), (root, slug)
+            assert (link / "SKILL.md").read_bytes() == skill_md.encode("utf-8")
 
 
 def test_a3_unicode_display_and_description_retained_both_roots(
@@ -3136,36 +3352,48 @@ def test_a3_unicode_display_and_description_retained_both_roots(
 
     _grant_org_allow(client, skill_id, version)
     specs, workspace = _canonical_both_roots(org, monkeypatch, tmp_path, task_id="TASK-A3")
+    from runtime.skills.canonical_store import CanonicalSkillStore
+
     spec = next(s for s in specs if s["slug"] == "my-workflow")
     assert spec["version"] == str(version)
+    assert spec["content_hash"] == hashlib.sha256(skill_md.encode()).hexdigest()
+    target = CanonicalSkillStore().canonical_path(
+        "my-workflow", str(version), spec["content_hash"]
+    )
     for root in (".claude/skills", ".agents/skills"):
         link = workspace / root / "my-workflow"
-        assert link.exists(), root
-        assert (link / "SKILL.md").read_text(encoding="utf-8") == skill_md
+        assert link.is_symlink(), root
+        assert link.resolve() == target.resolve(), root
+        assert (link / "SKILL.md").read_bytes() == skill_md.encode("utf-8")
 
 
 # ── Finding 4: A5b/A14/A15 invalid-document 201 evidence ─────────────────
 
 _INVALID_DOCUMENT_NAME_CASES = [
     # A14: admitted ASCII identity + Unicode document name.
-    ("café-workflow", "ASCII lower-case"),
+    ("café-workflow", FRONTMATTER_INVALID_NAME),
     # A15: admitted ASCII identity + ASCII name that differs from the slug.
-    ("other-workflow", "must equal the logical slug"),
+    ("other-workflow", FRONTMATTER_NAME_SLUG_MISMATCH),
     # A5b: admitted ASCII identity + 65-char document name (over the bound).
-    ("a" * 65, "ASCII lower-case"),
+    ("a" * 65, FRONTMATTER_INVALID_NAME),
 ]
 
 
-@pytest.mark.parametrize("doc_name,expected_message", _INVALID_DOCUMENT_NAME_CASES)
+@pytest.mark.parametrize("doc_name,expected_code", _INVALID_DOCUMENT_NAME_CASES)
 @pytest.mark.parametrize("surface", ["human-create", "agent-create-a", "agent-create-b"])
 def test_a5b_a14_a15_invalid_document_name_201_evidence_create_seams(
-    client_with_runtime, doc_name, expected_message, surface,
+    client_with_runtime, doc_name, expected_code, surface,
 ):
     """A5b/A14/A15 on every create seam (human + both agent mounts): a valid
     ASCII identity with an invalid/mismatching/over-length document name is 201
     immutable invalid evidence, never a request-identity 4xx and never a
-    zero-residue claim. Retained bytes/hash/key/findings/marker are asserted and
-    the first-invalid version is the dark current pointer."""
+    zero-residue claim. The ACTUAL stored artifact bytes at the returned key are
+    read and hash-compared (the cached DB column is additional evidence, not a
+    substitute); the exact ordered finding, validator marker and lineage are
+    asserted and the first-invalid version is the dark current pointer."""
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.orchestrator._paths import OrgPaths
+
     client, org = client_with_runtime
     conn = getattr(org.db, "_conn", org.db)
     skill_md = f"---\nname: {doc_name}\ndescription: d\n---\n"
@@ -3191,6 +3419,9 @@ def test_a5b_a14_a15_invalid_document_name_201_evidence_create_seams(
         skill_id, version_id = payload["skill"]["id"], payload["version"]["id"]
         assert payload["version"]["validation_state"] == "invalid"
 
+    expected_message = _ROUTE_FINDING_MESSAGE[expected_code].format(
+        key=None, slug="my-workflow",
+    )
     digest = hashlib.sha256(skill_md.encode()).hexdigest()
     row = conn.execute(
         "SELECT skill_md_cache, content_hash, content_artifact_key, validation_findings, "
@@ -3200,25 +3431,40 @@ def test_a5b_a14_a15_invalid_document_name_201_evidence_create_seams(
     assert row["skill_md_cache"] == skill_md
     assert row["content_hash"] == digest
     assert row["content_artifact_key"] == f"custom-skills/my-workflow/{digest}/SKILL.md"
-    findings = json.loads(row["validation_findings"])
-    assert len(findings) == 1 and expected_message in findings[0]
+    assert json.loads(row["validation_findings"]) == [expected_message]
     assert row["validation_state"] == "invalid"
     assert row["validator_version"] == "THR-262/1.0.0"
     current = conn.execute(
         "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
     ).fetchone()["current_version_id"]
     assert current == version_id
+    # Lineage: a first version has no parent.
+    assert conn.execute(
+        "SELECT parent_version_id FROM custom_skill_versions WHERE id=?", (version_id,)
+    ).fetchone()["parent_version_id"] is None
+
+    # The ACTUAL immutable artifact bytes at the persisted key.
+    store = ArtifactStore(OrgPaths(org.root).artifacts_dir)
+    artifact_path = store.path_for(row["content_artifact_key"])
+    assert artifact_path.is_file(), row["content_artifact_key"]
+    artifact_bytes = artifact_path.read_bytes()
+    assert artifact_bytes == skill_md.encode("utf-8")
+    assert hashlib.sha256(artifact_bytes).hexdigest() == digest
 
 
-@pytest.mark.parametrize("doc_name,expected_message", _INVALID_DOCUMENT_NAME_CASES)
+@pytest.mark.parametrize("doc_name,expected_code", _INVALID_DOCUMENT_NAME_CASES)
 @pytest.mark.parametrize("surface", ["human-append", "agent-append-a", "agent-append-b"])
 def test_a5b_a14_a15_invalid_document_name_201_evidence_append_seams(
-    client_with_runtime, doc_name, expected_message, surface,
+    client_with_runtime, doc_name, expected_code, surface,
 ):
     """A5b/A14/A15 on every append seam (human + both agent mounts): an invalid
-    document name appended to an eligible VALID version retains the prior
-    pointer/description/eligibility and appends immutable invalid evidence with
-    the retained bytes/hash/key/findings."""
+    document name appended to an eligible VALID version retains the COMPLETE
+    prior pointer/description/eligibility rows and the valid predecessor's
+    actual artifact bytes, and appends immutable invalid evidence whose actual
+    artifact bytes/hash/key and ordered finding are read and compared."""
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.orchestrator._paths import OrgPaths
+
     client, org = client_with_runtime
     conn = getattr(org.db, "_conn", org.db)
     _add_agent(org)
@@ -3248,6 +3494,23 @@ def test_a5b_a14_a15_invalid_document_name_201_evidence_append_seams(
     client.headers["Authorization"] = token
     _grant_org_allow(client, skill_id, valid_version)
 
+    # Snapshot the COMPLETE durable state and the predecessor's actual artifact
+    # bytes immediately before the invalid successor request.
+    store = ArtifactStore(OrgPaths(org.root).artifacts_dir)
+    valid_digest = hashlib.sha256(valid_md.encode()).hexdigest()
+    valid_key = f"custom-skills/retain-valid/{valid_digest}/SKILL.md"
+    before_pointer = dict(conn.execute(
+        "SELECT current_version_id, description FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone())
+    before_valid_row = dict(conn.execute(
+        "SELECT * FROM custom_skill_versions WHERE id=?", (valid_version,)
+    ).fetchone())
+    before_eligibility = [dict(r) for r in conn.execute(
+        "SELECT * FROM custom_skill_eligibility_rules WHERE skill_id=? ORDER BY id", (skill_id,)
+    )]
+    assert before_pointer["current_version_id"] == valid_version
+    assert store.path_for(valid_key).read_bytes() == valid_md.encode("utf-8")
+
     if surface == "human-append":
         appended = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": invalid_md})
     else:
@@ -3266,20 +3529,26 @@ def test_a5b_a14_a15_invalid_document_name_201_evidence_append_seams(
         version_id = appended.json()["version"]["id"]
         assert appended.json()["version"]["validation_state"] == "invalid"
 
-    # Prior VALID pointer/description/eligibility retained.
-    skill_row = conn.execute(
+    # Prior VALID pointer/description and the COMPLETE eligibility rows retained
+    # (a single active count is insufficient).
+    assert dict(conn.execute(
         "SELECT current_version_id, description FROM custom_skills WHERE id=?", (skill_id,)
-    ).fetchone()
-    assert skill_row["current_version_id"] == valid_version
-    assert skill_row["description"] == "valid target"
-    assert conn.execute(
-        "SELECT count(*) FROM custom_skill_eligibility_rules "
-        "WHERE skill_id=? AND superseded_at IS NULL", (skill_id,)
-    ).fetchone()[0] == 1
+    ).fetchone()) == before_pointer
+    after_eligibility = [dict(r) for r in conn.execute(
+        "SELECT * FROM custom_skill_eligibility_rules WHERE skill_id=? ORDER BY id", (skill_id,)
+    )]
+    assert after_eligibility == before_eligibility
+    assert sum(1 for r in after_eligibility if r["superseded_at"] is None) == 1
+    # The valid predecessor row AND its actual artifact bytes are retained.
+    assert dict(conn.execute(
+        "SELECT * FROM custom_skill_versions WHERE id=?", (valid_version,)
+    ).fetchone()) == before_valid_row
+    assert store.path_for(valid_key).read_bytes() == valid_md.encode("utf-8")
 
     digest = hashlib.sha256(invalid_md.encode()).hexdigest()
     invalid_row = conn.execute(
-        "SELECT skill_md_cache, content_hash, content_artifact_key, validation_findings "
+        "SELECT skill_md_cache, content_hash, content_artifact_key, validation_findings, "
+        "validation_state, validator_version, parent_version_id "
         "FROM custom_skill_versions WHERE id=?", (version_id,)
     ).fetchone()
     assert invalid_row["skill_md_cache"] == invalid_md
@@ -3287,49 +3556,124 @@ def test_a5b_a14_a15_invalid_document_name_201_evidence_append_seams(
     assert invalid_row["content_artifact_key"] == (
         f"custom-skills/retain-valid/{digest}/SKILL.md"
     )
-    findings = json.loads(invalid_row["validation_findings"])
-    assert len(findings) == 1 and expected_message in findings[0]
+    assert invalid_row["validation_state"] == "invalid"
+    assert invalid_row["validator_version"] == "THR-262/1.0.0"
+    assert invalid_row["parent_version_id"] == valid_version
+    expected_message = _ROUTE_FINDING_MESSAGE[expected_code].format(
+        key=None, slug="retain-valid",
+    )
+    assert json.loads(invalid_row["validation_findings"]) == [expected_message]
+
+    # The ACTUAL immutable artifact bytes at the invalid successor's key.
+    invalid_path = store.path_for(invalid_row["content_artifact_key"])
+    assert invalid_path.is_file(), invalid_row["content_artifact_key"]
+    invalid_bytes = invalid_path.read_bytes()
+    assert invalid_bytes == invalid_md.encode("utf-8")
+    assert hashlib.sha256(invalid_bytes).hexdigest() == digest
 
 
-def test_a5b_a14_a15_first_invalid_dark_and_invalid_successor_both_roots(
-    client_with_runtime, monkeypatch, tmp_path,
+@pytest.mark.parametrize("doc_name,_expected_code", _INVALID_DOCUMENT_NAME_CASES)
+@pytest.mark.parametrize("surface", ["human-create", "agent-create-a", "agent-create-b"])
+def test_a5b_a14_a15_first_invalid_dark_both_roots_all_seams(
+    client_with_runtime, monkeypatch, tmp_path, doc_name, _expected_code, surface,
 ):
-    """A5b/A14/A15 both-root outcome: an invalid-document-name FIRST creation
-    stays dark and is absent from BOTH provider roots; an invalid-document-name
-    SUCCESSOR of an eligible valid version retains the prior pointer and BOTH
-    roots keep the prior valid target identity."""
+    """A5b/A14/A15: an invalid-document-name FIRST creation stays dark and
+    leaves NO link — not even a broken symlink — in EITHER provider root, on the
+    human create and both agent create mounts."""
+    client, org = client_with_runtime
+    _add_agent(org)
+    slug = "dark-doc-name"
+    dark_md = f"---\nname: {doc_name}\ndescription: d\n---\n"
+
+    if surface == "human-create":
+        dark = client.post(BASE, json={"slug": slug, "name": "Dark", "skill_md": dark_md})
+    else:
+        path = _AGENT_CREATE_PATHS[0 if surface == "agent-create-a" else 1]
+        _activate_agent(org, task_id="TASK-DARK", session="sess-dark")
+        client.headers.pop("Authorization", None)
+        dark = client.post(
+            path, params={"session_id": "sess-dark"},
+            json={"slug": slug, "name": "Dark", "skill_md": dark_md},
+        )
+    assert dark.status_code == 201, dark.text
+    if surface == "human-create":
+        assert dark.json()["validation_state"] == "invalid"
+    else:
+        assert dark.json()["version"]["validation_state"] == "invalid"
+
+    specs, workspace = _canonical_both_roots(org, monkeypatch, tmp_path, task_id="TASK-DARK")
+    assert slug not in {spec["slug"] for spec in specs}
+    for root in (".claude/skills", ".agents/skills"):
+        link = workspace / root / slug
+        # Link-aware absence: a broken symlink is still a link and must fail.
+        assert not link.is_symlink(), (root, "broken link present")
+        assert not link.exists(), root
+
+
+@pytest.mark.parametrize("doc_name,_expected_code", _INVALID_DOCUMENT_NAME_CASES)
+def test_a5b_a14_a15_invalid_successor_retains_both_roots_and_eligibility(
+    client_with_runtime, monkeypatch, tmp_path, doc_name, _expected_code,
+):
+    """A5b/A14/A15: after granting eligibility and materializing the VALID
+    predecessor in BOTH roots, an invalid-document-name successor retains the
+    prior pointer, the COMPLETE eligibility rows, and BOTH roots' resolved
+    target identity (same canonical package version/hash/bytes)."""
+    from runtime.skills.canonical_store import CanonicalSkillStore
+
     client, org = client_with_runtime
     _add_agent(org)
     conn = getattr(org.db, "_conn", org.db)
-
-    dark_md = "---\nname: café-workflow\ndescription: d\n---\n"
-    dark = client.post(
-        BASE, json={"slug": "dark-doc-name", "name": "Dark", "skill_md": dark_md}
-    )
-    assert dark.status_code == 201 and dark.json()["validation_state"] == "invalid"
-
+    slug = "retain-valid"
     valid_md = "---\nname: retain-valid\ndescription: valid target\n---\n"
     created = client.post(
-        BASE, json={"slug": "retain-valid", "name": "Retain", "skill_md": valid_md}
+        BASE, json={"slug": slug, "name": "Retain", "skill_md": valid_md}
     )
     assert created.status_code == 201, created.text
     skill_id, valid_version = created.json()["skill_id"], created.json()["version_id"]
     _grant_org_allow(client, skill_id, valid_version)
+    before_eligibility = [dict(r) for r in conn.execute(
+        "SELECT * FROM custom_skill_eligibility_rules WHERE skill_id=? ORDER BY id", (skill_id,)
+    )]
 
-    invalid_md = "---\nname: other-workflow\ndescription: d\n---\n"
+    specs, workspace = _canonical_both_roots(org, monkeypatch, tmp_path, task_id="TASK-A5B")
+    spec = next(s for s in specs if s["slug"] == slug)
+    valid_digest = hashlib.sha256(valid_md.encode()).hexdigest()
+    assert spec["version"] == str(valid_version)
+    assert spec["content_hash"] == valid_digest
+    target = CanonicalSkillStore().canonical_path(slug, str(valid_version), valid_digest)
+    before_targets = {}
+    for root in (".claude/skills", ".agents/skills"):
+        link = workspace / root / slug
+        assert link.is_symlink(), root
+        assert link.resolve() == target.resolve(), root
+        assert (link / "SKILL.md").read_bytes() == valid_md.encode("utf-8")
+        before_targets[root] = str(link.resolve())
+
+    invalid_md = f"---\nname: {doc_name}\ndescription: d\n---\n"
     appended = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": invalid_md})
     assert appended.status_code == 201 and appended.json()["validation_state"] == "invalid"
     assert appended.json()["current_version_id"] == valid_version
 
-    specs, workspace = _canonical_both_roots(org, monkeypatch, tmp_path, task_id="TASK-A5B")
-    slugs = {spec["slug"] for spec in specs}
-    assert "retain-valid" in slugs
-    assert "dark-doc-name" not in slugs
+    # Prior pointer and complete eligibility rows retained after the successor.
+    assert dict(conn.execute(
+        "SELECT current_version_id, description FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone())["current_version_id"] == valid_version
+    assert [dict(r) for r in conn.execute(
+        "SELECT * FROM custom_skill_eligibility_rules WHERE skill_id=? ORDER BY id", (skill_id,)
+    )] == before_eligibility
+
+    specs_after, workspace_after = _canonical_both_roots(
+        org, monkeypatch, tmp_path, task_id="TASK-A5B2"
+    )
+    spec_after = next(s for s in specs_after if s["slug"] == slug)
+    assert spec_after["version"] == str(valid_version)
+    assert spec_after["content_hash"] == valid_digest
     for root in (".claude/skills", ".agents/skills"):
-        assert not (workspace / root / "dark-doc-name").exists(), root
-        link = workspace / root / "retain-valid"
-        assert link.exists(), root
-        assert (link / "SKILL.md").read_text(encoding="utf-8") == valid_md
+        link = workspace_after / root / slug
+        assert link.is_symlink(), root
+        assert str(link.resolve()) == before_targets[root], root
+        assert link.resolve() == target.resolve(), root
+        assert (link / "SKILL.md").read_bytes() == valid_md.encode("utf-8")
 
 
 # ── Finding 5: A17 frozen non-ASCII historical row ───────────────────────
@@ -3403,6 +3747,38 @@ def test_a17_frozen_non_ascii_history_reads_and_append_refusal(
     frozen_versions = [dict(r) for r in conn.execute(
         "SELECT * FROM custom_skill_versions WHERE skill_id=? ORDER BY id", (skill_id,))]
 
+    # Snapshot the ACTUAL bytes/hash/key of BOTH seeded artifacts BEFORE any
+    # historical read, recovery or append, and install the fail-if-called
+    # package-validation spy BEFORE those reads (a read-only historical read and
+    # the recovery refusal must never revalidate).
+    before_artifacts = _artifact_bytes_state(org)
+    seeded_artifacts = {}
+    for seeded_key, seeded_md in ((key_one, first_md), (key_two, second_md)):
+        seeded_bytes = store.path_for(seeded_key).read_bytes()
+        assert seeded_bytes == seeded_md.encode("utf-8")
+        seeded_artifacts[seeded_key] = (
+            seeded_bytes, hashlib.sha256(seeded_bytes).hexdigest(),
+        )
+
+    validator_calls: list = []
+
+    def _fail_if_validated(*args, **kwargs):
+        validator_calls.append((args, kwargs))
+        raise AssertionError(
+            "package validator must not run during frozen historical reads/recovery"
+        )
+
+    monkeypatch.setattr(skills_routes, "_validate_skill_package", _fail_if_validated)
+    dry_calls: list = []
+    key_calls: list = []
+    monkeypatch.setattr(
+        skills_routes, "_dry_materialize", lambda *a, **k: dry_calls.append((a, k))
+    )
+    monkeypatch.setattr(
+        routes, "_artifact_key", lambda *a, **k: key_calls.append(a) or "unused"
+    )
+    write_calls = _no_write_artifact_seam(monkeypatch)
+
     # Read-only history is preserved unchanged.
     detail = client.get(f"{BASE}/{skill_id}")
     assert detail.status_code == 200, detail.text
@@ -3435,6 +3811,17 @@ def test_a17_frozen_non_ascii_history_reads_and_append_refusal(
         "ORDER BY id DESC LIMIT 1", (skill_id,)
     ).fetchone()["reason_codes"] == '["ineligible_current_version"]'
 
+    # The read/recovery sequence performed no validation, no dry run, no key
+    # construction and no artifact write, and every actual frozen artifact byte
+    # is unchanged.
+    assert validator_calls == [] and dry_calls == [] and key_calls == [] and write_calls == []
+    assert _artifact_bytes_state(org) == before_artifacts
+    for seeded_key, (seeded_bytes, seeded_digest) in seeded_artifacts.items():
+        assert store.path_for(seeded_key).read_bytes() == seeded_bytes
+        assert hashlib.sha256(
+            store.path_for(seeded_key).read_bytes()
+        ).hexdigest() == seeded_digest
+
     # Frozen bytes/hash/key/marker/state/findings/provenance never rewritten.
     assert dict(conn.execute(
         "SELECT * FROM custom_skills WHERE id=?", (skill_id,)).fetchone()) == frozen_skill
@@ -3443,23 +3830,8 @@ def test_a17_frozen_non_ascii_history_reads_and_append_refusal(
     ] == frozen_versions
 
     # A NEW append under the stored non-ASCII slug: 422, no residue, and no
-    # downstream validator/dry/key/artifact-write call.
-    validator_calls: list = []
-    key_calls: list = []
-    dry_calls: list = []
-    monkeypatch.setattr(
-        custom_service, "validate_package",
-        lambda *a, **k: validator_calls.append((a, k)) or {
-            "ok": True, "reason_codes": [], "errors": [],
-        },
-    )
-    monkeypatch.setattr(
-        skills_routes, "_dry_materialize", lambda *a, **k: dry_calls.append((a, k))
-    )
-    monkeypatch.setattr(
-        routes, "_artifact_key", lambda *a, **k: key_calls.append(a) or "unused"
-    )
-    write_calls = _no_write_artifact_seam(monkeypatch)
+    # downstream validator/dry/key/artifact-write call. The same spies installed
+    # before the historical reads remain armed.
     before = _residue_snapshot(org, skill_id)
     append = client.post(
         f"{BASE}/{skill_id}/versions",
@@ -3469,6 +3841,12 @@ def test_a17_frozen_non_ascii_history_reads_and_append_refusal(
     assert append.json()["detail"]["code"] == "invalid_slug"
     assert validator_calls == [] and dry_calls == [] and key_calls == [] and write_calls == []
     assert _residue_snapshot(org, skill_id) == before
+    assert _artifact_bytes_state(org) == before_artifacts
+    for seeded_key, (seeded_bytes, seeded_digest) in seeded_artifacts.items():
+        assert store.path_for(seeded_key).read_bytes() == seeded_bytes
+        assert hashlib.sha256(
+            store.path_for(seeded_key).read_bytes()
+        ).hexdigest() == seeded_digest
     assert dict(conn.execute(
         "SELECT * FROM custom_skills WHERE id=?", (skill_id,)).fetchone()) == frozen_skill
     assert [dict(r) for r in conn.execute(
@@ -3482,13 +3860,16 @@ def test_a18_admitted_ascii_existing_human_and_protected_slug_409s(
     client_with_runtime,
 ):
     """A18: an admitted ASCII identity still reaches the existing-human 409
-    ``slug_exists`` and the protected-slug 409, with no residue."""
+    ``slug_exists`` and the protected-slug 409, with the complete per-skill and
+    full-durable state unchanged."""
     client, org = client_with_runtime
     first = client.post(
         BASE, json={"slug": "existing-human", "name": "First", "skill_md": _fm_body("existing-human")}
     )
     assert first.status_code == 201, first.text
-    before = _custom_counts(org)
+    skill_id = first.json()["skill_id"]
+    before_skill = _residue_snapshot(org, skill_id)
+    before = _full_custom_state(org)
 
     again = client.post(
         BASE,
@@ -3497,14 +3878,15 @@ def test_a18_admitted_ascii_existing_human_and_protected_slug_409s(
     )
     assert again.status_code == 409, again.text
     assert again.json()["detail"]["code"] == "slug_exists"
-    assert _custom_counts(org) == before
+    assert _residue_snapshot(org, skill_id) == before_skill
+    assert _full_custom_state(org) == before
 
     protected = client.post(
         BASE, json={"slug": "start-task", "name": "Start", "skill_md": _fm_body("start-task")}
     )
     assert protected.status_code == 409, protected.text
     assert protected.json()["detail"]["code"] == "protected_slug"
-    assert _custom_counts(org) == before
+    assert _full_custom_state(org) == before
 
 
 @pytest.mark.parametrize("case,expected_code,expected_status", [
@@ -3521,7 +3903,7 @@ def test_a18_invalid_identity_keeps_earlier_refusals(
     gate is not moved ahead of the existing checks — with no residue."""
     client, org = client_with_runtime
     bad_slug = "café-workflow"
-    before = _custom_counts(org)
+    before = _full_custom_state(org)
     client.headers.pop("Authorization", None)
 
     if case == "missing-metadata":
@@ -3555,7 +3937,71 @@ def test_a18_invalid_identity_keeps_earlier_refusals(
     assert response.status_code == expected_status, response.text
     assert response.json()["detail"]["code"] == expected_code
     assert response.json()["detail"]["code"] != "invalid_slug"
-    assert _custom_counts(org) == before
+    assert _full_custom_state(org) == before
+
+
+@pytest.mark.parametrize("mount", [0, 1])
+@pytest.mark.parametrize("case,expected_code,expected_status", [
+    ("bearer-rejected", "bearer_not_accepted", 401),
+    ("body-identity-rejected", "body_identity_rejected", 403),
+    ("session-not-current", "session_not_current", 403),
+])
+def test_a18_invalid_identity_competing_earlier_refusals_both_mounts(
+    client_with_runtime, monkeypatch, mount, case, expected_code, expected_status,
+):
+    """A18: a non-conforming identity combined with an EARLIER bearer, forbidden
+    body-identity or stale/non-current-session refusal keeps that earlier result
+    on BOTH agent mounts — the identity gate stays after the existing checks —
+    with the complete durable/artifact state unchanged."""
+    client, org = client_with_runtime
+    bad_slug = "café-workflow"
+    path = _AGENT_CREATE_PATHS[mount]
+
+    if case == "bearer-rejected":
+        # The bearer check is the very first route check: keep the default
+        # Authorization header present and supply an otherwise valid body.
+        _activate_agent(org, task_id="TASK-A18B", session="sess-a18b")
+        body = {"slug": bad_slug, "name": "Display", "skill_md": _SAFE_ASCII_BODY}
+        params = {"session_id": "sess-a18b"}
+    elif case == "body-identity-rejected":
+        _activate_agent(org, task_id="TASK-A18I", session="sess-a18i")
+        client.headers.pop("Authorization", None)
+        body = {
+            "slug": bad_slug, "name": "Display", "skill_md": _SAFE_ASCII_BODY,
+            "task_id": "spoofed",
+        }
+        params = {"session_id": "sess-a18i"}
+    else:
+        _activate_agent(org, task_id="TASK-A18S", session="sess-stale")
+        client.headers.pop("Authorization", None)
+        # The stale generation still resolves its context, but the tracker's
+        # active generation is a different session.
+        monkeypatch.setattr(org.sessions, "get_active", lambda task_id, agent: "sess-current")
+        body = {"slug": bad_slug, "name": "Display", "skill_md": _SAFE_ASCII_BODY}
+        params = {"session_id": "sess-stale"}
+
+    before = _full_custom_state(org)
+    response = client.post(path, params=params, json=body)
+
+    assert response.status_code == expected_status, response.text
+    assert response.json()["detail"]["code"] == expected_code
+    assert response.json()["detail"]["code"] != "invalid_slug"
+    assert _full_custom_state(org) == before
+
+
+def test_a18_human_missing_metadata_precedes_invalid_identity(
+    client_with_runtime,
+):
+    """A18: the human create route's required-metadata check precedes the
+    logical-identity gate: a non-conforming slug with a missing ``name`` is 422
+    ``invalid_request`` (never ``invalid_slug``) with no residue."""
+    client, org = client_with_runtime
+    before = _full_custom_state(org)
+    response = client.post(BASE, json={"slug": "café-workflow", "skill_md": _SAFE_ASCII_BODY})
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "invalid_request"
+    assert response.json()["detail"]["code"] != "invalid_slug"
+    assert _full_custom_state(org) == before
 
 
 def test_a18_append_lookup_and_mutability_refusals_precede_invalid_identity(
@@ -3572,14 +4018,14 @@ def test_a18_append_lookup_and_mutability_refusals_precede_invalid_identity(
 
     client, org = client_with_runtime
     conn = getattr(org.db, "_conn", org.db)
-    before = _custom_counts(org)
+    before = _full_custom_state(org)
 
     missing = client.post(
         f"{BASE}/custom:brand-new/versions",
         json={"skill_md": "---\nname: café-workflow\ndescription: d\n---\n"},
     )
     assert missing.status_code == 404
-    assert _custom_counts(org) == before
+    assert _full_custom_state(org) == before
 
     def _seed(skill_id: str, *, purged: bool, stored_slug: str) -> None:
         content = "---\nname: café-workflow\ndescription: stored\n---\n"
@@ -3612,18 +4058,24 @@ def test_a18_append_lookup_and_mutability_refusals_precede_invalid_identity(
 
     _seed("custom:ordering-unicode", purged=False, stored_slug="café-ordering-unicode")
     present_before = _residue_snapshot(org, "custom:ordering-unicode")
+    present_full_before = _full_custom_state(org)
     no_body = client.post(f"{BASE}/custom:ordering-unicode/versions", json={})
     assert no_body.status_code == 422, no_body.text
     assert no_body.json()["detail"]["code"] == "invalid_request"
     assert _residue_snapshot(org, "custom:ordering-unicode") == present_before
+    assert _full_custom_state(org) == present_full_before
 
     _seed("custom:ordering-purged", purged=True, stored_slug="café-ordering-purged")
+    purged_before = _residue_snapshot(org, "custom:ordering-purged")
+    purged_full_before = _full_custom_state(org)
     purged = client.post(
         f"{BASE}/custom:ordering-purged/versions",
         json={"skill_md": "---\nname: café-workflow\ndescription: d\n---\n"},
     )
     assert purged.status_code == 410, purged.text
     assert purged.json()["detail"]["code"] == "skill_purged"
+    assert _residue_snapshot(org, "custom:ordering-purged") == purged_before
+    assert _full_custom_state(org) == purged_full_before
 
 
 # ── Finding 7: R5c/A16/C4-C6 frozen legacy replay ────────────────────────
