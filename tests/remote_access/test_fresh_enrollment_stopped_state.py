@@ -10,8 +10,10 @@ refusal.
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+import signal
 import stat
 import subprocess
 import sys
@@ -824,3 +826,223 @@ def test_close_and_reap_query_process_reaps_when_deadline_expired() -> None:
         assert child.returncode is not None
         assert child.stdout.closed is True
         child.wait(timeout=2)
+
+
+# ---------------------------------------------------------------------------
+# TASK8644 R1 — a query that completes successfully after the absolute deadline
+# must still be refused. The causal case is a *real scheduling pause* of the
+# isolated observer across the one deadline: the closed fixture writes valid
+# stopped bytes, closes stdout, then SIGSTOPs exactly its parent (the observer),
+# sleeps past the 5 s budget and exits 0. When the observer resumes, a resumed
+# POSIX wait can collect that already-exited child and report success. No
+# candidate source, time or subprocess return value is mocked.
+# ---------------------------------------------------------------------------
+
+
+_LATE_EXIT_PRODUCER = (
+    "import os, signal, time\n"
+    "from pathlib import Path\n"
+    "Path(os.environ['QUERY_PID']).write_text(str(os.getpid()))\n"
+    "Path(os.environ['QUERY_PARENT']).write_text(str(os.getppid()))\n"
+    "Path(os.environ['QUERY_START_AT']).write_text(str(time.monotonic()))\n"
+    "os.write(1, b'LoadState=loaded\\nActiveState=inactive\\nSubState=dead\\n')\n"
+    "os.close(1)\n"
+    "time.sleep(0.2)\n"
+    "os.kill(os.getppid(), signal.SIGSTOP)\n"
+    "time.sleep(5.2)\n"
+    "Path(os.environ['QUERY_EXIT_AT']).write_text(str(time.monotonic()))\n"
+    "os._exit(0)\n"
+)
+
+# This driver runs the *real* production ``_observe_sidecar_stopped`` in-process
+# and records the state of the Popen it owns at the exact instant the observer
+# returns, so the test never has to wait/poll/reap the product's child itself.
+_LATE_EXIT_INPROCESS_DRIVER = '''\
+import json
+import subprocess
+import sys
+import types
+
+sys.path.insert(0, sys.argv[2])
+from runtime.remote_access import cli
+
+owned = []
+real_popen = subprocess.Popen
+
+
+def recording_popen(*args, **kwargs):
+    child = real_popen(*args, **kwargs)
+    owned.append(child)
+    return child
+
+
+cli.subprocess = types.SimpleNamespace(
+    Popen=recording_popen,
+    PIPE=subprocess.PIPE,
+    DEVNULL=subprocess.DEVNULL,
+    TimeoutExpired=subprocess.TimeoutExpired,
+)
+error = None
+try:
+    cli._observe_sidecar_stopped()
+except OSError as exc:
+    error = str(exc)
+child = owned[0] if owned else None
+payload = {
+    "error": error,
+    "owned_count": len(owned),
+    "returncode": None if child is None else child.returncode,
+    "stdout_closed": None if child is None or child.stdout is None else child.stdout.closed,
+}
+with open(sys.argv[1], "w") as handle:
+    json.dump(payload, handle)
+'''
+
+
+def _wait_for_file(path: Path, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"fixture file never appeared: {path}")
+
+
+def _wait_for_process_stopped(pid: int, timeout: float) -> bool:
+    """Wait until the kernel reports this process in the stopped ('T') state."""
+    deadline = time.monotonic() + timeout
+    stat_path = Path(f"/proc/{pid}/stat")
+    while time.monotonic() < deadline:
+        try:
+            text = stat_path.read_text()
+        except OSError:
+            return False
+        closing = text.rfind(")")
+        if closing != -1 and len(text) > closing + 2 and text[closing + 2] == "T":
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def _resume_and_collect(process: subprocess.Popen[bytes], query_parent: Path, started: float) -> None:
+    """Confirm the fixture really paused the observer, then resume past expiry."""
+    _wait_for_file(query_parent, 10.0)
+    assert _wait_for_process_stopped(process.pid, 10.0), "fixture never paused the observer"
+    remaining = (started + 6.2) - time.monotonic()
+    if remaining > 0:
+        time.sleep(remaining)
+    os.kill(process.pid, signal.SIGCONT)
+
+
+def _late_exit_env(
+    tmp_path: Path, fixture: dict[str, Path]
+) -> tuple[dict[str, str], Path, dict[str, Path]]:
+    bindir = tmp_path / "bin"
+    producer = _write_producer_systemctl(bindir, _LATE_EXIT_PRODUCER)
+    env, calls = _producer_env(tmp_path, bindir=bindir, producer=producer, tmp_path=tmp_path)
+    markers = {
+        "pid": tmp_path / "query.pid",
+        "parent": tmp_path / "query.parent",
+        "start": tmp_path / "query.start-at",
+        "exit": tmp_path / "query.exit-at",
+    }
+    env.update(
+        QUERY_PID=str(markers["pid"]),
+        QUERY_PARENT=str(markers["parent"]),
+        QUERY_START_AT=str(markers["start"]),
+        QUERY_EXIT_AT=str(markers["exit"]),
+    )
+    return env, calls, markers
+
+
+def _late_query_lifetime(markers: dict[str, Path]) -> float:
+    return float(markers["exit"].read_text()) - float(markers["start"].read_text())
+
+
+@pytest.mark.parametrize("attempt", (1, 2))
+def test_late_exit_after_absolute_deadline_refuses_unchanged(
+    tmp_path: Path, attempt: int
+) -> None:
+    """A successful exit observed after the 5 s budget must not mutate anything."""
+    fixture = _enrollment_case(tmp_path, marker=True, dropin=True)
+    env, calls, markers = _late_exit_env(tmp_path, fixture)
+    before = _snapshot(fixture["case"])
+    started = time.monotonic()
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-B",
+            "-m",
+            "runtime.remote_access.cli",
+            "prepare-fresh-enrollment",
+            "--source",
+            str(fixture["source"]),
+            "--marker",
+            str(fixture["marker"]),
+            "--dropin",
+            str(fixture["dropin"]),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _resume_and_collect(process, markers["parent"], started)
+        stdout, stderr = process.communicate(timeout=30)
+    finally:
+        if process.returncode is None:
+            try:
+                os.kill(process.pid, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+            process.kill()
+            process.wait(timeout=5)
+    # The query truly outlived the one absolute five-second observation budget.
+    assert _late_query_lifetime(markers) > 5.0
+    assert (process.returncode, stdout, stderr.strip()) == (1, "", _CATEGORY)
+    assert _snapshot(fixture["case"]) == before
+    assert not fixture["dropin"].with_name(fixture["dropin"].name + ".new").exists()
+    assert calls.read_text().splitlines() == [_SHOW_ARGV]
+
+
+def test_late_exit_refusal_reaps_owned_child_before_return(tmp_path: Path) -> None:
+    """Owned reaping/pipe closure at the observer return instant, late-exit path."""
+    fixture = _enrollment_case(tmp_path, marker=True, dropin=True)
+    env, calls, markers = _late_exit_env(tmp_path, fixture)
+    driver = tmp_path / "observer_driver.py"
+    driver.write_text(_LATE_EXIT_INPROCESS_DRIVER, encoding="utf-8")
+    result_path = tmp_path / "observer-result.json"
+    before = _snapshot(fixture["case"])
+    started = time.monotonic()
+    process = subprocess.Popen(
+        [sys.executable, "-B", str(driver), str(result_path), str(REPO_ROOT)],
+        cwd=REPO_ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _resume_and_collect(process, markers["parent"], started)
+        process.communicate(timeout=30)
+    finally:
+        if process.returncode is None:
+            try:
+                os.kill(process.pid, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+            process.kill()
+            process.wait(timeout=5)
+    assert process.returncode == 0, process.stderr
+    assert _late_query_lifetime(markers) > 5.0
+    result = json.loads(result_path.read_text())
+    # Ownership is asserted at the observer's own return, before any test-side
+    # wait/poll/fixture cleanup could have reaped the owned child for it.
+    assert result["owned_count"] == 1
+    assert result["error"] == "service state unavailable"
+    assert result["returncode"] is not None
+    assert result["stdout_closed"] is True
+    assert _snapshot(fixture["case"]) == before
+    assert calls.read_text().splitlines() == [_SHOW_ARGV]

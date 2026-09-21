@@ -75,7 +75,9 @@ _SERVICE_QUERY_READ_CHUNK_BYTES = 4096
 # refused observation. But once it has expired, a still-live owned child must
 # still be killed and then CONFIRMED reaped before the query returns, so this
 # separate finite allowance is measured from whichever is later, the
-# observation deadline or the start of cleanup.
+# observation deadline or the start of cleanup. Confirming that an owned child
+# is reaped is cleanup evidence only (TASK8644 R1): it never authorizes a
+# successful observation that completed after the deadline.
 _SERVICE_QUERY_REAP_GRACE_SECONDS = 5.0
 
 # THR-228 seq275 (TASK8607 F1): the only supported record framing is LF-delimited
@@ -546,6 +548,12 @@ def _observe_sidecar_stopped() -> None:
     when the observation deadline has already expired. That allowance never
     restarts query reading and never authorizes a refused observation, and an
     unconfirmed reap refuses category-only instead of being silently ignored.
+
+    TASK8644 R1: the one original absolute deadline also fences successful
+    acceptance. A blocking exit observation that is collected after expiry (a
+    resumed POSIX wait can collect an already-exited child and report success)
+    and any scheduling delay before final acceptance refuse category-only, so
+    the separate cleanup allowance can never authorize a late success.
     """
     argv = [
         "systemctl",
@@ -583,10 +591,23 @@ def _observe_sidecar_stopped() -> None:
                 else:
                     if returncode != 0:
                         refusal = OSError("service state unavailable")
+                    elif time.monotonic() >= deadline:
+                        # TASK8644 R1: a resumed POSIX wait can collect an
+                        # already-exited child and report success after the
+                        # absolute observation deadline expired. A query that
+                        # completed late is never affirmative evidence.
+                        refusal = OSError("service state unavailable")
     finally:
         _close_and_reap_query_process(process, deadline)
     if refusal is not None:
         raise refusal
+    if time.monotonic() >= deadline:
+        # TASK8644 R1: the separate bounded kill/reap allowance may confirm an
+        # owned child but must never authorize a late success. Re-check the one
+        # original observation deadline before the parsed observation is
+        # accepted, so a scheduling delay after observation cannot slip a
+        # successful query past expiry.
+        raise OSError("service state unavailable")
     _require_stopped_service_properties(raw)
 
 
