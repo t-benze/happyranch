@@ -26,7 +26,11 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowRight, Paperclip, Square, X } from 'lucide-react';
-import { MAX_THREAD_ATTACHMENTS, REMOVE_ATTACHMENT_LABEL } from '@/lib/threadAttachments';
+import {
+  MAX_THREAD_ATTACHMENTS,
+  REMOVE_ATTACHMENT_LABEL,
+  createSelectionIdFactory,
+} from '@/lib/threadAttachments';
 import { MentionTextarea } from './MentionTextarea';
 import type { AgentSummary } from '@/lib/api/agents';
 
@@ -147,18 +151,40 @@ export function Composer({
   const { draft, setDraft, clearDraft } = useThreadDraft(orgSlug, threadId);
   const canSend = Boolean(draft.trim() || attachments.length);
 
+  // Synchronous in-flight latch — blocks a second same-tick submit (double
+  // click, Enter+Send race) before the async `onSend` can set a re-render
+  // driven `pending` prop. Mirrors NewThreadDialog's submittingRef.
+  const submittingRef = useRef(false);
+  // Latest destination key. A submission that finishes after the composer has
+  // been pointed at another thread/org must not clear the new view's draft or
+  // chips, so the post-success clearing is conditional on the key being stable.
+  const threadKeyRef = useRef(`${orgSlug}:${threadId}`);
+  threadKeyRef.current = `${orgSlug}:${threadId}`;
+  // Stable, non-metadata chip identity (two identical Files stay distinct).
+  const selectionIdFactory = useRef<(() => string) | null>(null);
+  if (selectionIdFactory.current === null) {
+    selectionIdFactory.current = createSelectionIdFactory();
+  }
+  const nextSelectionId = selectionIdFactory.current;
+
   const removeAttachment = (id: string) => {
     onAttachmentsChange?.(attachments.filter((item) => item.id !== id));
   };
 
   const submit = async () => {
-    if (!canSend || disabled || pending) return;
+    if (!canSend || disabled || pending || submittingRef.current) return;
+    submittingRef.current = true;
+    const submitKey = threadKeyRef.current;
     try {
       await onSend(draft, attachments);
-      clearDraft();
-      onAttachmentsChange?.([]);
+      if (threadKeyRef.current === submitKey) {
+        clearDraft();
+        onAttachmentsChange?.([]);
+      }
     } catch {
       // Composition surfaces via errorMessage; draft is preserved for retry.
+    } finally {
+      submittingRef.current = false;
     }
   };
 
@@ -217,7 +243,7 @@ export function Composer({
               onAttachmentsChange?.([
                 ...attachments,
                 ...files.map((file) => ({
-                  id: `${file.name}-${file.size}-${file.lastModified}`,
+                  id: nextSelectionId(),
                   file,
                 })),
               ].slice(0, MAX_THREAD_ATTACHMENTS));

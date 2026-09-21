@@ -6,6 +6,7 @@
  * features/threads/. Feature folders re-export from here to keep
  * existing imports intact.
  */
+import { MAX_THREAD_ATTACHMENTS } from './threadAttachments';
 
 /** Daemon error-code → human-friendly message for thread operations. */
 export const THREAD_ERROR_STRINGS: Record<string, string> = {
@@ -18,6 +19,17 @@ export const THREAD_ERROR_STRINGS: Record<string, string> = {
   thread_not_open: 'This thread is no longer open.',
   not_found: 'Thread not found.',
   invalid_token: 'Invalid invocation token (agent operation).',
+  // Attachment / artifact upload + send validation codes. Before this mapping
+  // the composer surfaced only the bare `HTTP <status>` fallback, so a failed
+  // attachment upload could not be told apart from a failed message send.
+  artifact_too_large: 'That file is too large to upload.',
+  attachment_too_large: 'That file is too large to attach.',
+  invalid_artifact_name: 'That file name is not allowed.',
+  artifact_not_found: 'That attachment is no longer available; remove it and attach it again.',
+  thread_attachment_not_found: 'That attachment is no longer available; remove it and attach it again.',
+  invalid_attachment_display_name: 'That attachment name is not allowed.',
+  too_many_attachments: `Too many attachments — at most ${MAX_THREAD_ATTACHMENTS} per message.`,
+  duplicate_attachment: 'That attachment was added more than once.',
 };
 
 /** Map a daemon error code to a human-friendly description. */

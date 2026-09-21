@@ -17,8 +17,9 @@ import { useOrgSlug } from '@/lib/orgSlug';
 import {
   MAX_THREAD_ATTACHMENTS,
   REMOVE_ATTACHMENT_LABEL,
+  allocateArtifactName,
   attachmentContentType,
-  safeArtifactName,
+  createSelectionIdFactory,
 } from '@/lib/threadAttachments';
 import { useComposeThread } from '@/hooks/threads';
 import { describeError } from '@/lib/threadErrors';
@@ -59,10 +60,29 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
   const [body, setBody] = useState('');
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // True during the upload phase, so attach/send/remove disable from the first
+  // click (compose.isPending only flips after the uploads finish).
+  const [uploading, setUploading] = useState(false);
 
   // Synchronous in-flight latch — prevents duplicate submits before
   // React Query's isPending state propagates (double-click, Enter+Send).
   const submittingRef = useRef(false);
+
+  // Stable, non-metadata chip identity (two identical Files stay distinct).
+  const selectionIdFactory = useRef<(() => string) | null>(null);
+  if (selectionIdFactory.current === null) {
+    selectionIdFactory.current = createSelectionIdFactory('nsel');
+  }
+  const nextSelectionId = selectionIdFactory.current;
+
+  // Retained per-selection upload results/names so a failed attempt re-uploads
+  // only the selections without a ref, and never regenerates a retained name.
+  const attachmentRefsRef = useRef<Map<string, ThreadAttachmentRef>>(new Map());
+  const attachmentNamesRef = useRef<Map<string, string>>(new Map());
+  const allocatedNamesRef = useRef<Set<string>>(new Set());
+  // Dialog generation: a completion from a closed/reopened dialog must not
+  // close, navigate, clear or consume the reopened dialog's state.
+  const dialogGenRef = useRef(0);
 
   const idBase = useId();
   const subjectId = `${idBase}-subject`;
@@ -71,7 +91,11 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
 
   useEffect(() => {
     if (!open) return;
+    dialogGenRef.current += 1;
     submittingRef.current = false;
+    setUploading(false);
+    attachmentRefsRef.current.clear();
+    attachmentNamesRef.current.clear();
     setSubject(prefill?.subject ?? '');
     setRecipientsRaw(prefill?.recipients?.join(', ') ?? '');
     setBody(prefill?.body ?? '');
@@ -79,11 +103,19 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
     setErrorMsg(null);
   }, [open, prefill]);
 
+  const removeAttachment = useCallback((id: string) => {
+    attachmentRefsRef.current.delete(id);
+    attachmentNamesRef.current.delete(id);
+    setPendingAttachments((current) => current.filter((attachment) => attachment.id !== id));
+  }, []);
+
   const submit = useCallback(async () => {
     // Guard against double-submit (double-click, Enter+Send race).
     // The ref is synchronous — no React render needed to block re-entry.
     if (submittingRef.current) return;
     submittingRef.current = true;
+    const generation = dialogGenRef.current;
+    const isCurrent = () => dialogGenRef.current === generation;
 
     setErrorMsg(null);
     const recipients = recipientsRaw
@@ -95,27 +127,43 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
       submittingRef.current = false;
       return;
     }
+    const capturedSlug = slug;
+    setUploading(true);
+    let failedUpload: PendingAttachment | null = null;
     try {
       const refs: ThreadAttachmentRef[] = [];
-      const generatedNames = new Map<string, number>();
+      const reserved = new Set<string>(attachmentNamesRef.current.values());
       for (const pending of pendingAttachments) {
-        let artifactName = safeArtifactName('thread-draft', pending.file);
-        const count = (generatedNames.get(artifactName) ?? 0) + 1;
-        generatedNames.set(artifactName, count);
-        if (count > 1) {
-          artifactName = safeArtifactName('thread-draft', pending.file, count);
+        failedUpload = pending;
+        let ref = attachmentRefsRef.current.get(pending.id);
+        if (!ref) {
+          let artifactName = attachmentNamesRef.current.get(pending.id);
+          if (!artifactName) {
+            artifactName = allocateArtifactName(
+              'thread-draft',
+              pending.file,
+              reserved,
+              allocatedNamesRef.current,
+            );
+            attachmentNamesRef.current.set(pending.id, artifactName);
+          }
+          allocatedNamesRef.current.add(artifactName);
+          const uploaded = await artifactsApi.uploadArtifact(capturedSlug, {
+            file: pending.file,
+            name: artifactName,
+            agent: 'founder',
+          });
+          ref = {
+            artifact_name: uploaded.name,
+            display_name: pending.file.name,
+            content_type: attachmentContentType(pending.file),
+          };
+          attachmentRefsRef.current.set(pending.id, ref);
+          reserved.add(uploaded.name);
         }
-        const uploaded = await artifactsApi.uploadArtifact(slug, {
-          file: pending.file,
-          name: artifactName,
-          agent: 'founder',
-        });
-        refs.push({
-          artifact_name: uploaded.name,
-          display_name: pending.file.name,
-          content_type: attachmentContentType(pending.file),
-        });
+        refs.push(ref);
       }
+      failedUpload = null;
       const result = await compose.mutateAsync({
         subject: subject.trim(),
         recipients,
@@ -128,22 +176,34 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
             }
           : {}),
       });
+      if (!isCurrent()) return;
+      attachmentRefsRef.current.clear();
+      attachmentNamesRef.current.clear();
       onCreated(result.thread_id);
       setPendingAttachments([]);
       onClose();
       // submittingRef remains true — dialog closes on success, so no
       // further re-entry is possible.
     } catch (err) {
-      setErrorMsg(
-        err instanceof ApiError ? describeError(err.code, `HTTP ${err.status}`) : String(err),
-      );
-      submittingRef.current = false;
+      if (isCurrent()) {
+        const label = failedUpload ? `${failedUpload.file.name}: ` : '';
+        setErrorMsg(
+          err instanceof ApiError
+            ? label + describeError(err.code, `HTTP ${err.status}`)
+            : label + String(err),
+        );
+        submittingRef.current = false;
+      }
+    } finally {
+      if (isCurrent()) setUploading(false);
     }
   }, [subject, recipientsRaw, body, pendingAttachments, prefill, compose, slug, onCreated, onClose]);
 
   const handleReflection = useCallback(async () => {
     if (submittingRef.current) return;
     submittingRef.current = true;
+    const generation = dialogGenRef.current;
+    const isCurrent = () => dialogGenRef.current === generation;
     setErrorMsg(null);
 
     const agentName = reflection?.recipients?.[0];
@@ -160,16 +220,22 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
         body_markdown:
           `Run self-reflection (hr:reflection) on your recent work and post your opening reflection report.`,
       });
+      if (!isCurrent()) return;
       onCreated(result.thread_id);
       setPendingAttachments([]);
       onClose();
     } catch (err) {
-      setErrorMsg(
-        err instanceof ApiError ? describeError(err.code, `HTTP ${err.status}`) : String(err),
-      );
-      submittingRef.current = false;
+      if (isCurrent()) {
+        setErrorMsg(
+          err instanceof ApiError ? describeError(err.code, `HTTP ${err.status}`) : String(err),
+        );
+        submittingRef.current = false;
+      }
     }
   }, [reflection, compose, onCreated, onClose, slug]);
+
+  // Upload phase + compose phase both disable the dialog's controls.
+  const inFlight = uploading || compose.isPending;
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent>
@@ -209,7 +275,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
               onChange={setBody}
               agents={agents}
               onSubmit={() => { if (!submittingRef.current) submit(); }}
-              disabled={submittingRef.current || compose.isPending}
+              disabled={inFlight}
               rows={6}
             />
           </FormField>
@@ -223,7 +289,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
                 type="file"
                 multiple
                 className="sr-only"
-                disabled={compose.isPending}
+                disabled={inFlight}
                 onChange={(event) => {
                   const files = Array.from(event.currentTarget.files ?? []).slice(
                     0,
@@ -232,7 +298,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
                   setPendingAttachments((current) => [
                     ...current,
                     ...files.map((file) => ({
-                      id: `${file.name}-${file.size}-${file.lastModified}`,
+                      id: nextSelectionId(),
                       file,
                     })),
                   ].slice(0, MAX_THREAD_ATTACHMENTS));
@@ -253,12 +319,8 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
                     type="button"
                     className="text-text-muted hover:text-text"
                     aria-label={REMOVE_ATTACHMENT_LABEL}
-                    onClick={() =>
-                      setPendingAttachments((current) =>
-                        current.filter((attachment) => attachment.id !== item.id),
-                      )
-                    }
-                    disabled={compose.isPending}
+                    onClick={() => removeAttachment(item.id)}
+                    disabled={inFlight}
                   >
                     <X className="h-3.5 w-3.5" aria-hidden="true" />
                   </button>
@@ -273,14 +335,14 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
             <Button
               variant="secondary"
               onClick={handleReflection}
-              disabled={submittingRef.current || compose.isPending}
+              disabled={inFlight}
             >
-              {submittingRef.current || compose.isPending ? 'Sending…' : 'Reflection'}
+              {inFlight ? 'Sending…' : 'Reflection'}
             </Button>
           ) : null}
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={submit} disabled={submittingRef.current || compose.isPending}>
-            {submittingRef.current || compose.isPending ? 'Sending…' : 'Send'}
+          <Button onClick={submit} disabled={inFlight}>
+            {inFlight ? 'Sending…' : 'Send'}
           </Button>
         </DialogFooter>
       </DialogContent>

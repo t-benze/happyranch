@@ -526,6 +526,39 @@ Traps:
 - Doctrine is system-prompt-injected through `_thread_talk_dispatch_doctrine_section()`.
 - Shared error hint `SELF_DISPATCH_HINT` lives in `runtime/daemon/routes/_doctrine.py`.
 
+## Thread Composer Attachments
+
+The web thread composer (`web/src/design-system/patterns/Composer.tsx`), the thread detail page
+(`web/src/features/threads/ThreadsPage.tsx`) and the new-thread dialog
+(`web/src/shared/threads/NewThreadDialog.tsx`) upload each selected file to the org-shared
+`POST /api/v1/orgs/{slug}/artifacts` (multipart) **before** sending/composing, then pass the returned
+`artifact_name` refs on `POST /threads/{id}/send` (JSON) or `POST /threads`. The CLI/agent thread-scoped
+`/threads/{id}/attachments` store is unchanged; the browser keeps using shared artifacts.
+
+Traps:
+
+- Each selection carries a stable, non-metadata id (`createSelectionIdFactory`). Two identical `File`
+  objects (or the same File selected twice) are distinct selections with distinct chip keys, and removing
+  one never removes the other.
+- A partially failed attempt retains each already-uploaded selection's ref by selection id, so a retry
+  re-uploads only the selections without a ref and preserves the send order. Removing a failed or
+  completed selection invalidates only that selection's cached ref.
+- Each selection's artifact name is reserved once (`allocateArtifactName`) and reused verbatim, and the
+  page never reuses a name it has already allocated. Without this, a same-second retry could regenerate a
+  retained name and `ArtifactStore.put` would replace the retained artifact's bytes.
+- `Composer.submit` has a synchronous in-flight latch and the pages track the upload phase, so a
+  double-click / Enter+Send during a held upload produces exactly one submission and disables
+  attach/send/remove until it settles. The latch is released on failure.
+- Each submission captures its destination `(orgSlug, threadId/dialog, payload)` at first submit; uploads
+  and the send use that snapshot, and late results only mutate the originating view while it is still
+  mounted and active. A departed or unmounted view's completion never retargets to — or clears the draft,
+  chips, error, latch or dialog of — the new view.
+- Failures surface on the existing single error line. Attachment/artifact error codes are mapped in
+  `web/src/lib/threadErrors.ts`, and a confirmed send failure is never labelled as the last file's upload
+  failure.
+- Caps are unchanged: `MAX_THREAD_ATTACHMENTS = 5` (`runtime/daemon/routes/threads.py`) and the 10 MiB
+  artifact cap (`runtime/infrastructure/artifact_store.py`). No drag-and-drop or size/state chip was added.
+
 ## Jobs
 
 Per-org jobs use a SQLite table and files at `<runtime>/orgs/<slug>/jobs/JOB-NNN.{out,err,script}`. Spec: `docs/superpowers/specs/2026-05-26-jobs-design.md`.

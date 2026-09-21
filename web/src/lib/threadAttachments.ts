@@ -16,6 +16,45 @@ export function safeArtifactName(prefix: string, file: File, collisionIndex = 1)
   return `${prefix}-${stamp}-${disambiguator}${safeArtifactBasename(file)}`;
 }
 
+/**
+ * Stable, non-metadata selection identity.
+ *
+ * The id is deliberately NOT derived from `File.name`/`size`/`lastModified`:
+ * two distinct `File` objects with identical metadata (or literally the same
+ * File selected twice) must stay distinct selections with distinct chip keys.
+ * The returned factory is monotonic for its owner's lifetime, so a removed and
+ * re-added file receives a fresh id (and therefore a fresh upload).
+ */
+export function createSelectionIdFactory(prefix = 'sel'): () => string {
+  let counter = 0;
+  return () => {
+    counter += 1;
+    return `${prefix}-${counter}`;
+  };
+}
+
+/**
+ * Reserve an artifact name for one selection, deterministically avoiding names
+ * already reserved by this submission ({@link reserved}) or already allocated by
+ * this page/dialog lifetime ({@link alreadyAllocated}).
+ *
+ * Reusing the same-second base name would make `ArtifactStore.put` replace a
+ * previously uploaded artifact's bytes, conflating distinct selections. The
+ * smallest free collision index is chosen; index 1 is the common-case format.
+ */
+export function allocateArtifactName(
+  prefix: string,
+  file: File,
+  reserved: ReadonlySet<string>,
+  alreadyAllocated: ReadonlySet<string> = new Set<string>(),
+): string {
+  for (let index = 1; index <= 1000; index += 1) {
+    const candidate = safeArtifactName(prefix, file, index);
+    if (!reserved.has(candidate) && !alreadyAllocated.has(candidate)) return candidate;
+  }
+  return safeArtifactName(prefix, file, 1001);
+}
+
 export function attachmentContentType(file: File): string | null {
   return file.type || null;
 }

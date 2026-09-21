@@ -33,7 +33,7 @@ import type {
   ThreadAttachmentRef,
   ThreadMessage,
 } from '@/lib/api/types';
-import { attachmentContentType, safeArtifactName } from '@/lib/threadAttachments';
+import { allocateArtifactName, attachmentContentType } from '@/lib/threadAttachments';
 import type { PendingAttachment } from '@/design-system/patterns/Composer';
 import { useAgentsList } from '@/hooks/agents';
 import { useThreadFreshTokens } from '@/hooks/tokens';
@@ -586,10 +586,41 @@ export function ThreadsPage(): JSX.Element {
   };
   const [composerError, setComposerError] = useState<string | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  // True while the upload phase of a submission is in flight, so the composer
+  // disables attach/send/remove from the first click (React Query's isPending
+  // only flips after the uploads finish).
+  const [uploadPending, setUploadPending] = useState(false);
+  // Per-selection upload results/names are retained across a failed attempt so
+  // a retry re-uploads only the selections that do not already have a ref.
+  const attachmentRefsRef = useRef<Map<string, ThreadAttachmentRef>>(new Map());
+  const attachmentNamesRef = useRef<Map<string, string>>(new Map());
+  // Every name this page has allocated. Never reused, so a replacement
+  // selection cannot `ArtifactStore.put`-overwrite an earlier artifact.
+  const allocatedNamesRef = useRef<Set<string>>(new Set());
+  // Ownership generation: a submission may only mutate the view's state while
+  // it is still the origin (no thread switch / unmount in between).
+  const submissionGenRef = useRef(0);
 
   useEffect(() => {
+    submissionGenRef.current += 1;
     setPendingAttachments([]);
+    setUploadPending(false);
+    setComposerError(null);
   }, [threadId]);
+
+  // Full unmount must also invalidate any in-flight submission's state writes.
+  useEffect(() => () => { submissionGenRef.current += 1; }, []);
+
+  const onAttachmentsChange = useCallback((next: PendingAttachment[]) => {
+    const keep = new Set(next.map((item) => item.id));
+    for (const id of [...attachmentRefsRef.current.keys()]) {
+      if (!keep.has(id)) attachmentRefsRef.current.delete(id);
+    }
+    for (const id of [...attachmentNamesRef.current.keys()]) {
+      if (!keep.has(id)) attachmentNamesRef.current.delete(id);
+    }
+    setPendingAttachments(next);
+  }, []);
 
   // Dialog state
   const [showNew, setShowNew] = useState(false);
@@ -629,40 +660,74 @@ export function ThreadsPage(): JSX.Element {
 
   const onSendFollowUp = async (markdown: string, attachments: PendingAttachment[]) => {
     if (!threadId || !slug) return;
+    // Capture the destination + payload at first submit. A later thread/org
+    // switch must not retarget this submission, and its late results must not
+    // mutate the departee's replacement view.
+    const capturedSlug = slug;
+    const capturedThreadId = threadId;
+    const generation = (submissionGenRef.current += 1);
+    const isCurrent = () => submissionGenRef.current === generation;
     setComposerError(null);
+    setUploadPending(true);
+    // Identifies the selection whose upload failed; cleared once uploads
+    // succeed so a later send failure is never blamed on the last file.
+    let failedUpload: PendingAttachment | null = null;
     try {
       const refs: ThreadAttachmentRef[] = [];
-      const generatedNames = new Map<string, number>();
+      const reserved = new Set<string>(attachmentNamesRef.current.values());
       for (const pending of attachments) {
-        let artifactName = safeArtifactName(threadId, pending.file);
-        const count = (generatedNames.get(artifactName) ?? 0) + 1;
-        generatedNames.set(artifactName, count);
-        if (count > 1) {
-          artifactName = safeArtifactName(threadId, pending.file, count);
+        failedUpload = pending;
+        let ref = attachmentRefsRef.current.get(pending.id);
+        if (!ref) {
+          let artifactName = attachmentNamesRef.current.get(pending.id);
+          if (!artifactName) {
+            artifactName = allocateArtifactName(
+              capturedThreadId,
+              pending.file,
+              reserved,
+              allocatedNamesRef.current,
+            );
+            attachmentNamesRef.current.set(pending.id, artifactName);
+          }
+          allocatedNamesRef.current.add(artifactName);
+          const uploaded = await artifactsApi.uploadArtifact(capturedSlug, {
+            file: pending.file,
+            name: artifactName,
+            agent: 'founder',
+          });
+          ref = {
+            artifact_name: uploaded.name,
+            display_name: pending.file.name,
+            content_type: attachmentContentType(pending.file),
+          };
+          attachmentRefsRef.current.set(pending.id, ref);
+          reserved.add(uploaded.name);
         }
-        const uploaded = await artifactsApi.uploadArtifact(slug, {
-          file: pending.file,
-          name: artifactName,
-          agent: 'founder',
-        });
-        refs.push({
-          artifact_name: uploaded.name,
-          display_name: pending.file.name,
-          content_type: attachmentContentType(pending.file),
-        });
+        refs.push(ref);
       }
+      failedUpload = null;
       await sendFollowUp.mutateAsync({
         body_markdown: markdown.trim(),
         ...(refs.length ? { attachments: refs } : {}),
-      });
-      setPendingAttachments([]);
+        destination: { slug: capturedSlug, threadId: capturedThreadId },
+      } as Parameters<typeof sendFollowUp.mutateAsync>[0]);
+      if (isCurrent()) {
+        attachmentRefsRef.current.clear();
+        attachmentNamesRef.current.clear();
+        setPendingAttachments([]);
+      }
     } catch (err) {
-      if (err instanceof ApiError) {
-        setComposerError(describeError(err.code, `HTTP ${err.status}`));
-      } else {
-        setComposerError(String(err));
+      if (isCurrent()) {
+        const label = failedUpload ? `${failedUpload.file.name}: ` : '';
+        if (err instanceof ApiError) {
+          setComposerError(label + describeError(err.code, `HTTP ${err.status}`));
+        } else {
+          setComposerError(label + String(err));
+        }
       }
       throw err;
+    } finally {
+      if (isCurrent()) setUploadPending(false);
     }
   };
 
@@ -915,12 +980,12 @@ export function ThreadsPage(): JSX.Element {
               threadId={threadId ?? ''}
               orgSlug={slug ?? ''}
               disabled={activeThread.data?.status !== 'open'}
-              pending={sendFollowUp.isPending}
+              pending={uploadPending || sendFollowUp.isPending}
               errorMessage={composerError}
               helper={S.composerHelper}
               onSend={onSendFollowUp}
               attachments={pendingAttachments}
-              onAttachmentsChange={setPendingAttachments}
+              onAttachmentsChange={onAttachmentsChange}
               registerFocus={(focus) => { composerFocusRef.current = focus; }}
               // "Abort reply" lives INSIDE the input pill (THR-099 Phase A).
               // Renders only while replies are in flight; one click aborts EVERY

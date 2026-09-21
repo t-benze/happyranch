@@ -251,15 +251,34 @@ function useSendFollowUp(threadId: string): MutationLike<
 > {
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
+  // A submission captures its destination at first submit (see ThreadsPage).
+  // The destination rides beside the payload so a rerender after a thread/org
+  // switch cannot retarget an in-flight send to the new view; it is stripped
+  // before the request body is built.
+  type Destination = { slug: string; threadId: string };
+  const destinationOf = (variables: SendFollowUpArgs): Destination | undefined =>
+    (variables as SendFollowUpArgs & { destination?: Destination }).destination;
   return useMutation({
-    mutationFn: (body: SendFollowUpArgs) =>
-      threadsApi.sendThreadFollowUp(slug, threadId, body),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['thread-messages', slug, threadId] });
+    mutationFn: (variables: SendFollowUpArgs) => {
+      const destination = destinationOf(variables);
+      const { destination: _destination, ...body } = variables as SendFollowUpArgs & {
+        destination?: Destination;
+      };
+      return threadsApi.sendThreadFollowUp(
+        destination?.slug ?? slug,
+        destination?.threadId ?? threadId,
+        body,
+      );
+    },
+    onSuccess: (_data, variables) => {
+      const destination = destinationOf(variables);
+      const targetSlug = destination?.slug ?? slug;
+      const targetThreadId = destination?.threadId ?? threadId;
+      qc.invalidateQueries({ queryKey: ['thread-messages', targetSlug, targetThreadId] });
       // A follow-up message wakes every other participant — the pair-level
       // reply_delivery projection on the thread detail must refetch too.
-      qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
-      qc.invalidateQueries({ queryKey: ['threads', slug] });
+      qc.invalidateQueries({ queryKey: ['thread', targetSlug, targetThreadId] });
+      qc.invalidateQueries({ queryKey: ['threads', targetSlug] });
     },
   });
 }
