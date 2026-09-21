@@ -90,6 +90,33 @@ This prevents a Content Manager from enrolling agents into the engineering team,
 - **update**: Updates the agent's description, system prompt, executor, model, or repos in the enrollment registry. If the system prompt or executor changes, the workspace bootstrap files are regenerated. A real executor change clears the old executor-specific model when `model` is omitted; include an explicit `model` value (or `null`) to choose the new executor's model (or its CLI default). An unchanged executor preserves an omitted model. Only works on approved agents.
 - **terminate**: Archives a quiescent, approved non-manager worker. The active agent file is moved to `org/agents/_terminated/<name>.md`, the workspace is moved to `workspaces/_terminated/<name>/`, and the worker is removed from its team. Historic tasks, audit rows, token records, thread messages/participants, schedules, wakes, dreams, and archived files are preserved. The agent name cannot be re-enrolled while the terminated record exists. Termination is refused when the worker has live work (non-terminal assigned tasks, started thread invocations, firing schedules, running wakes/dreams, or pending/running jobs) or when the target is a manager.
 
+## Lasting permission grants (`allow_rules`)
+
+`allow_rules` is the only supported lasting-grant channel: an `update` payload
+may carry an `allow_rules` array that adds Bash prefixes beyond the baseline
+`happyranch` grant. This skill is team-manager gated — the daemon accepts it only
+from a manager's active task session, and the target must be in that manager's
+team (`403 cross_team_forbidden`). A worker cannot re-grant itself: the request
+routes through its team manager. A manager changing its own rules (or another
+manager's) needs a **founder escalation**. `expected_revision` must be a fresh
+64-hex revision (`422 expected_revision_required`); a stale value is rejected
+(`409 stale_agent_revision`).
+
+An `allow_rules` update is not a live permission change on every executor:
+
+| Executor | Effect of an `allow_rules` update |
+| --- | --- |
+| **Claude** | `--allowedTools` is rebuilt from `allow_rules` on every launch, so the new rule is live on the agent's next session. (The generated `.claude/settings.json` `permissions.allow` list is not honoured in headless `-p` mode.) |
+| **Codex** | The effective surface is the CLI sandbox flag; `allow_rules` is not wired into it. A lasting Codex grant needs a concrete founder escalation to the actual permission-model surface. |
+| **Pi** | `PiExecutor` has no HappyRanch-managed permission surface. A lasting Pi grant likewise needs a concrete founder escalation — separate from Codex. |
+| **opencode** | The effective surface is the generated `opencode.json`. An **`allow_rules`-only update does not re-run the workspace bootstrap** (regeneration is gated on a system-prompt or executor change), so the grant is inert until a bootstrap-forcing change or `happyranch init-agent`. This is an open limitation, not repaired here. |
+
+Request the narrowest prefix plus the skill step that needs it and why a
+reviewed one-off job is insufficient. Approval of one job never expands ongoing
+permissions; no self-edit or new grant endpoint exists. A one-off blocked
+operation is a reviewed **job** (see the **jobs** skill), not an `allow_rules`
+change.
+
 ## Agent naming
 
 Agent names must be lowercase with underscores only (e.g. `content_writer`, `seo_agent`). No spaces, hyphens, or uppercase.

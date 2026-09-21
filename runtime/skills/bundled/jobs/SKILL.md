@@ -46,6 +46,74 @@ Short/focused tests that are expected to finish inside one minute remain
 appropriate to run directly in-session. If duration is uncertain, use the
 durable job boundary.
 
+## Classify the failure before requesting a job
+
+A skill step can fail for several different reasons. Only one of them is a
+permission refusal, and only that one is fixed by asking for a reviewed job.
+Classify first:
+
+| Observed failure | Signal | Permission refusal? | Correct action |
+| --- | --- | --- | --- |
+| **Executor permission refusal** | The command is refused/denied by the executor's permission or sandbox decision (for example an unlisted leading binary under `allow_rules`, or a sandbox denial) — not a missing program | **Yes** | Record redacted evidence; submit one reviewed bounded job (below) |
+| Binary not found | Shell "command not found" / exit 127 | No | Install or use an available tool; do not request permissions |
+| Authentication / credential | The program runs and returns 401/403, an auth prompt, or "no credentials" | No | Route through the existing credential/operator workflow; do not request shell permissions |
+| Network / service unreachable | DNS/timeout/connection refused from a runnable program | No | Report the dependency; do not request permissions |
+| Denied product policy | A HappyRanch policy gate rejects the operation | No | Escalate the policy decision; do not request permissions |
+| Ordinary command bug | Non-zero exit with a normal program error | No | Fix the command or its inputs |
+
+Record the minimum redacted evidence: the skill id/version; the exact attempted
+command; the cwd or resource scope; the executor's refusal text (redact secrets,
+tokens, credentials and private paths); why the step needs it; and the narrowest
+scope that would unblock it. Pause that one operation. Do not evade the decision
+with an executor switch, a skill-level grant, wildcard expansion, gate
+suppression, or an unrelated credential request.
+
+## Request one blocked operation (reviewed, bounded, task-bound job)
+
+For a one-off or rare blocked operation, submit a reviewed job from a **normal
+active task session** (`task_id` + `session_id` from that session). Write the
+payload and submit it on a single line. `cwd_hint` is a **relative** path: the
+daemon resolves it under the workspace root and passes it to the runner as the
+process working directory, so the script must **not** `cd` again.
+
+```json
+{
+  "task_id": "<active TASK id>",
+  "session_id": "<active session id>",
+  "title": "Run one blocked deployment command for skill X",
+  "script": "./deploy.sh --check\n",
+  "interpreter": "bash",
+  "cwd_hint": "repos/<repo>",
+  "rationale": "Skill <slug>@<version> step N is refused by the executor permission layer. Minimum requested operation: ./deploy.sh --check in repos/<repo>. Full refusal evidence and the skill step are in output/<task>/permission-request.md (secrets redacted). This authorizes only this command; it does not change agent permissions.",
+  "review_required": true,
+  "persistent": false,
+  "max_runtime_seconds": 300
+}
+```
+
+```bash
+happyranch jobs submit --org <slug> --from-file /tmp/job-permission-request.json
+```
+
+Rules grounded in the serving code:
+
+- `task_id` + `session_id` must come from that active task session. The daemon
+  rejects a non-active task (`400 task_not_active`), a stale session
+  (`409 session_mismatch`), a completion-recovery session
+  (`403 recovery_purpose_forbidden`) and a missing reviewed rationale
+  (`400 rationale_required`).
+- `title`, `script` and `interpreter` are required; `rationale` is required
+  whenever `review_required=true`.
+- `cwd_hint` must be relative — no leading `/` and no `..` (`422 invalid_cwd_hint`).
+  `max_runtime_seconds` is 1..86400; `persistent` is independent of
+  `review_required`.
+- Put the skill id/version, scope and evidence context in the supported
+  `rationale`, or reference an artifact. Do not invent request fields.
+- A submitted reviewed job stays `pending` until the founder approves-and-runs
+  or rejects it.
+- The reviewed job authorizes **only that command**. Approval never grants a
+  lasting permission and never guarantees success.
+
 ## The form
 
 You fill in a JSON payload with these fields:
@@ -134,12 +202,21 @@ with `status=blocked` and `waiting_on_job_ids` populated:
 
 ```json
 {
+  "task_id": "<TASK>",
+  "session_id": "<session>",
+  "agent": "<you>",
   "status": "blocked",
   "confidence": 0,
-  "output_summary": "Waiting for JOB-12 and JOB-13 before I can verify the migration ran cleanly.",
+  "summary": "Waiting for JOB-12 and JOB-13 before I can verify the migration ran cleanly.",
   "waiting_on_job_ids": ["JOB-12", "JOB-13"]
 }
 ```
+
+Use the agent-facing `summary` field (the CLI maps it to the daemon's
+`output_summary`); do not send the daemon-only alias from a completion file.
+`waiting_on_job_ids` is valid only alongside `status="blocked"`: an explicitly
+empty list is rejected (`400 empty_waiting_on_job_ids`), so **omit the key
+entirely** when there is no live job wait.
 
 The system resumes your task automatically once **every** listed job reaches a
 terminal state (`completed`, `failed`, or `rejected`). When you resume, your
@@ -150,6 +227,26 @@ commands to fetch full output. **You don't poll.**
 If you need to stay in-session for a fast `review_required=false` job, the
 existing `happyranch jobs wait JOB-NNN --timeout-seconds 30` pattern still works.
 Prefer block-and-resume for any wait long enough to risk session timeout.
+
+## Job outcomes and duplicate side effects
+
+When the task resumes, read the actual receipt (`happyranch jobs show` /
+`happyranch jobs output`) before acting. Terminal state and exit code are
+separate facts:
+
+| Terminal state | Meaning | Required disposition |
+| --- | --- | --- |
+| `completed`, exit 0 | Executed successfully | Verify output and side effects, then continue the skill step. Do not repeat successful work merely because the task resumed. |
+| **`completed`, non-zero exit** | The process ran to completion but **failed** (the runner records `completed` for normal termination and stores `returncode` separately) | Treat as a **failed operation**; inspect output for partial side effects before any retry. |
+| `failed` (`timeout` / `output_cap` / external kill) | Did not complete cleanly | May have **partial side effects**; reconcile state, then retry only the unfinished authorized work. |
+| `rejected` | Founder declined; the command was **not executed** | **Terminal**: no re-wait and no automatic resubmission. Report the precise blocked disposition with `waiting_on_job_ids` omitted, or finish via an authorized alternative. |
+| `running` | Not terminal | The task stays blocked; do not duplicate the submission. |
+
+Never resubmit a byte-identical job automatically. Retry only unfinished
+authorized work, after side-effect reconciliation, and never repeat a
+successful operation. The blocked-report and lasting-grant rules live in the
+**start-task** skill; the executor-specific grant effects live in the
+**manage-agent** skill and `docs/agent-guides/agent-executors-and-permissions.md`.
 
 ## PR CI / guarded merge helper
 
@@ -204,9 +301,12 @@ Before reporting your task complete, stop any of your own jobs you no longer nee
 
 - `422 empty_<field>` — required field missing or whitespace-only. Check and resubmit.
 - `422` from validator — auth binding malformed (e.g., supplied both `task_id+session_id` AND `task_id`, or supplied `task_id` without `session_id`).
-- `400 unknown_interpreter` — `interpreter` not in the allowed set.
+- `422 unknown_interpreter` — `interpreter` not in the allowed set.
 - `400 rationale_required` — submitted `review_required=true` without a `rationale`.
-- `400 script_too_large` — script body exceeded 64 KB.
+- `422 script_too_large` — script body exceeded 64 KB.
+- `422 invalid_cwd_hint` — `cwd_hint` is absolute or contains `..`.
+- `400 task_not_active` — the referenced task is not pending/in-progress.
+- `403 recovery_purpose_forbidden` — this is a completion-recovery binding; it cannot submit new jobs.
 - `404 not_found` / `404 unknown_task` — referenced id doesn't exist.
 - `409 session_mismatch` — daemon spawned a newer session for this `(task_id, agent)`. Exit immediately.
 
