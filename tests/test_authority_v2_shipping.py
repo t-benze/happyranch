@@ -112,28 +112,31 @@ def _fixture_agents():
     return manager, worker
 
 
-def _bootstrap_runtime(tmp_path: Path):
+def _bootstrap_runtime(tmp_path: Path, slugs: tuple[str, ...] = (ORG,)):
     from runtime.orchestrator._paths import OrgPaths
     from runtime.orchestrator.agent_def import render_agent_text
     from runtime.runtime import RuntimeDir
 
     rt = RuntimeDir.init(tmp_path / "runtime")
-    org_root = rt.orgs_dir / ORG
-    (org_root / "org" / "agents").mkdir(parents=True)
-    for name in ("workspaces", "kb", "threads", "artifacts"):
-        (org_root / name).mkdir(parents=True, exist_ok=True)
-    (org_root / "org" / "teams.yaml").write_text(
-        "teams:\n"
-        "  engineering:\n"
-        "    manager: engineering_manager\n"
-        "    workers: [dev_agent]\n"
-    )
-    (org_root / "org" / "config.yaml").write_text("{}\n")
+    org_roots: dict[str, Path] = {}
     manager, worker = _fixture_agents()
-    paths = OrgPaths(root=org_root)
-    (paths.agents_dir / f"{MANAGER}.md").write_text(render_agent_text(manager))
-    (paths.agents_dir / f"{WORKER}.md").write_text(render_agent_text(worker))
-    return rt, org_root, (manager, worker)
+    for slug in slugs:
+        org_root = rt.orgs_dir / slug
+        (org_root / "org" / "agents").mkdir(parents=True)
+        for name in ("workspaces", "kb", "threads", "artifacts"):
+            (org_root / name).mkdir(parents=True, exist_ok=True)
+        (org_root / "org" / "teams.yaml").write_text(
+            "teams:\n"
+            "  engineering:\n"
+            "    manager: engineering_manager\n"
+            "    workers: [dev_agent]\n"
+        )
+        (org_root / "org" / "config.yaml").write_text("{}\n")
+        paths = OrgPaths(root=org_root)
+        (paths.agents_dir / f"{MANAGER}.md").write_text(render_agent_text(manager))
+        (paths.agents_dir / f"{WORKER}.md").write_text(render_agent_text(worker))
+        org_roots[slug] = org_root
+    return rt, org_roots, (manager, worker)
 
 
 def _held_loop(stop_event: threading.Event):
@@ -192,7 +195,24 @@ class _OwnedServer:
         try:
             self._loop.run_until_complete(self._server.serve(sockets=[self._sock]))
         finally:
-            self._loop.close()
+            # Quiesce every fixture-owned background task on THIS loop before
+            # the loop is destroyed.  The real lifespan (runtime/daemon/app.py)
+            # requests cancellation of its periodic loops but never awaits
+            # them; cancelling-and-awaiting here is lifecycle cleanup, not
+            # warning suppression and not an assertion relaxation.
+            try:
+                self._loop.run_until_complete(self._drain_owned_tasks())
+            finally:
+                self._loop.close()
+
+    async def _drain_owned_tasks(self) -> None:
+        """Cancel and await every pending task owned by this fixture loop."""
+        current = asyncio.current_task()
+        pending = [t for t in asyncio.all_tasks() if t is not current]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     def start(self, *, timeout: float = 60.0) -> None:
         self._thread.start()
@@ -245,12 +265,15 @@ class _ShippingFixture:
     def __init__(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         *, seed_historical: bool = False, queue_workers: int = 1,
-        dequeue_gate: bool = False,
+        dequeue_gate: bool = False, orgs: tuple[str, ...] = (ORG,),
     ) -> None:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
         self.seed_historical = seed_historical
         self.queue_workers = queue_workers
+        # TASK-8718 Part D: ONE real DaemonState may load MORE THAN ONE real
+        # OrgState/Database.  Default stays exactly the single accepted org.
+        self.org_slugs = tuple(orgs)
         # TASK-8698 restart venue only: install a polling dequeue gate BEFORE
         # the real workers start, so a committed tagged item can be held back
         # from dequeue until the simulated crash.  Default off: every existing
@@ -273,8 +296,10 @@ class _ShippingFixture:
         self.launch_cv = threading.Condition()
         self.state = None
         self.org = None
+        self.orgs: dict = {}
         self.rt = None
         self.org_root = None
+        self.org_roots: dict[str, Path] = {}
         self.fixture_agents = ()
         self.sock: socket.socket | None = None
         self.server: _OwnedServer | None = None
@@ -300,15 +325,19 @@ class _ShippingFixture:
         self._settings = None
 
     # -- setup ---------------------------------------------------------
-    def start(self) -> "_ShippingFixture":
+    def start(self, *, defer_http: bool = False) -> "_ShippingFixture":
         from runtime.config import Settings
         from runtime.daemon import paths as paths_mod
         from runtime.orchestrator._paths import OrgPaths
 
-        self.rt, self.org_root, self.fixture_agents = _bootstrap_runtime(self.tmp_path)
+        self.rt, self.org_roots, self.fixture_agents = _bootstrap_runtime(
+            self.tmp_path, self.org_slugs,
+        )
+        self.org_root = self.org_roots[self.org_slugs[0]]
         # Everything the fixture owns must resolve inside tmp_path.
         assert self.rt.root.resolve().is_relative_to(self.tmp_path.resolve())
-        assert self.org_root.resolve().is_relative_to(self.tmp_path.resolve())
+        for root in self.org_roots.values():
+            assert root.resolve().is_relative_to(self.tmp_path.resolve())
 
         # Optional historical venue: reconstruct the FULL old schema and let
         # the actual current Database open/migration path converge it.  This
@@ -319,9 +348,8 @@ class _ShippingFixture:
                 reconstruct_historical_database,
             )
 
-            reconstruct_historical_database(
-                OrgPaths(root=self.org_root).db_path
-            )
+            for root in self.org_roots.values():
+                reconstruct_historical_database(OrgPaths(root=root).db_path)
 
         paths_mod.ensure_daemon_home()
         token = paths_mod.ensure_token()
@@ -332,7 +360,8 @@ class _ShippingFixture:
             project_root=CHECKOUT, queue_workers=self.queue_workers,
         )
         self._open_owner()
-        self._start_http()
+        if not defer_http:
+            self._start_http()
         return self
 
     def _open_owner(self) -> "_ShippingFixture":
@@ -367,23 +396,27 @@ class _ShippingFixture:
 
         self.state = DaemonState.from_runtime(self.rt, self._settings)
         assert self.state.broken_orgs == {}, self.state.broken_orgs
-        assert set(self.state.orgs.keys()) == {ORG}
-        self.org = self.state.orgs[ORG]
+        assert set(self.state.orgs.keys()) == set(self.org_slugs)
+        self.orgs = self.state.orgs
+        self.org = self.orgs[self.org_slugs[0]]
 
-        # Fixture-owned workspace bootstrap through the supported Codex adapter.
-        org_paths = OrgPaths(root=self.org.root)
-        adapter = CodexWorkspaceAdapter(self._settings, org_paths, slug=ORG)
-        for agent in self.fixture_agents:
-            workspace = org_paths.workspaces_dir / agent.name
-            assert workspace.resolve().is_relative_to(self.tmp_path.resolve())
-            adapter.ensure_workspace_ready(
-                workspace, agent.name, agent.system_prompt,
-            )
-            marker = self.org.orchestrator._readiness_marker(workspace, "codex")
-            assert marker == workspace / "AGENTS.md"
-            assert marker.resolve().is_relative_to(self.tmp_path.resolve())
-            assert marker.is_file()
-            assert agent.system_prompt.strip() in marker.read_text()
+        # Fixture-owned workspace bootstrap through the supported Codex adapter
+        # for EVERY loaded org (single-org default unchanged).
+        for slug in self.org_slugs:
+            org = self.orgs[slug]
+            org_paths = OrgPaths(root=org.root)
+            adapter = CodexWorkspaceAdapter(self._settings, org_paths, slug=slug)
+            for agent in self.fixture_agents:
+                workspace = org_paths.workspaces_dir / agent.name
+                assert workspace.resolve().is_relative_to(self.tmp_path.resolve())
+                adapter.ensure_workspace_ready(
+                    workspace, agent.name, agent.system_prompt,
+                )
+                marker = org.orchestrator._readiness_marker(workspace, "codex")
+                assert marker == workspace / "AGENTS.md"
+                assert marker.resolve().is_relative_to(self.tmp_path.resolve())
+                assert marker.is_file()
+                assert agent.system_prompt.strip() in marker.read_text()
 
         # Hold only the unrelated periodic service entry points.
         for module_name, attr in _HELD_LOOPS:
@@ -503,32 +536,43 @@ class _ShippingFixture:
 
     def await_run_step_returns(
         self, task_id: str, count: int, *, timeout: float = 60.0,
+        slug: str | None = None,
     ) -> None:
-        """Deterministic barrier on completed real ``run_step`` calls."""
+        """Deterministic barrier on completed real ``run_step`` calls.
+
+        ``slug`` optionally scopes the count to ONE owned org (Part D uses the
+        SAME textual task id in two orgs, so the un-scoped count would conflate
+        them).
+        """
         deadline = time.monotonic() + timeout
+
+        def _matches(r) -> bool:
+            return r[1] == task_id and (slug is None or r[0] == slug)
+
         with self.run_step_cv:
-            while sum(1 for r in self.run_step_returns if r[1] == task_id) < count:
+            while sum(1 for r in self.run_step_returns if _matches(r)) < count:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise AssertionError(
-                        f"run_step for {task_id} never returned {count} times"
+                        f"run_step for {slug or '*'} / {task_id} never returned "
+                        f"{count} times"
                     )
                 self.run_step_cv.wait(timeout=min(remaining, 0.5))
 
     # -- isolated API control pair ------------------------------------
-    def _api(self, method: str, path: str, **kwargs) -> httpx.Response:
+    def _api(self, method: str, path: str, *, slug: str | None = None, **kwargs) -> httpx.Response:
         from runtime.daemon import paths as paths_mod
 
         token = paths_mod.read_token()
         return httpx.request(
             method,
-            f"http://127.0.0.1:{self.port}/api/v1/orgs/{ORG}{path}",
+            f"http://127.0.0.1:{self.port}/api/v1/orgs/{slug or self.org_slugs[0]}{path}",
             headers={"Authorization": f"Bearer {token}"},
             timeout=20.0,
             **kwargs,
         )
 
-    def activate_v2_pair(self) -> dict:
+    def activate_v2_pair(self, *, slug: str | None = None) -> dict:
         base = f"/agents/{MANAGER}/team-escalation-policy/v2/releases"
         body = {
             "team": TEAM, "policy_id": "engineering-dual-text",
@@ -539,19 +583,20 @@ class _ShippingFixture:
             "what_to_escalate": WHAT_TO, "what_not_to_escalate": WHAT_NOT,
             "acknowledge_shared_credential_attribution": True,
         }
-        response = self._api("POST", base, json=body)
+        response = self._api("POST", base, slug=slug, json=body)
         assert response.status_code == 201, (response.status_code, response.text)
         return response.json()
 
     # -- real task + enqueue ------------------------------------------
-    def create_and_enqueue_root(self) -> str:
+    def create_and_enqueue_root(self, *, org=None) -> str:
         from runtime.daemon.runner import enqueue_task
 
-        root_id = self.org.orchestrator.create_task("isolated shipping brief", team=TEAM)
-        task = self.org.db.get_task(root_id)
+        target = org if org is not None else self.org
+        root_id = target.orchestrator.create_task("isolated shipping brief", team=TEAM)
+        task = target.db.get_task(root_id)
         assert task.status is TaskStatus.PENDING
         assert task.current_session_id is None
-        enqueue_task(self.state, ORG, root_id)
+        enqueue_task(self.state, target.slug, root_id)
         return root_id
 
     # -- held launch ---------------------------------------------------
@@ -570,45 +615,61 @@ class _ShippingFixture:
 
         fixture = self
 
-        def _held_launch(**kwargs):
-            kwargs["pre_launch_integrity_validator"]()
-            kwargs["recovery_launch_validator"]()
-            fixture.captured = dict(kwargs)
-            with fixture.launch_cv:
-                fixture.launch_history.append(dict(kwargs))
-                fixture.launch_cv.notify_all()
-            fixture.launch_event.set()
-            session = kwargs["session_id"]
-            deadline = time.monotonic() + _LAUNCH_HOLD_SECONDS
-            while time.monotonic() < deadline:
-                if (
-                    fixture.release_event.is_set()
-                    or session in fixture.released_sessions
-                ):
-                    break
-                time.sleep(0.02)
-            else:
-                raise AssertionError("held launch was never released")
-            return ExecutorResult(
-                success=True, duration_seconds=1, session_id=session,
-                agent_session_id=provider_session_id,
-            )
+        def _make_held(slug: str):
+            def _held_launch(**kwargs):
+                kwargs["pre_launch_integrity_validator"]()
+                kwargs["recovery_launch_validator"]()
+                record = dict(kwargs)
+                # Part D: record which OWNED ORG launched so two orgs sharing the
+                # same textual task id stay distinguishable without inspecting
+                # private queue contents.
+                record["_fixture_org"] = slug
+                fixture.captured = record
+                with fixture.launch_cv:
+                    fixture.launch_history.append(dict(record))
+                    fixture.launch_cv.notify_all()
+                fixture.launch_event.set()
+                session = kwargs["session_id"]
+                deadline = time.monotonic() + _LAUNCH_HOLD_SECONDS
+                while time.monotonic() < deadline:
+                    if (
+                        fixture.release_event.is_set()
+                        or session in fixture.released_sessions
+                    ):
+                        break
+                    time.sleep(0.02)
+                else:
+                    raise AssertionError("held launch was never released")
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id=session,
+                    agent_session_id=provider_session_id,
+                )
+            return _held_launch
 
-        self.monkeypatch.setattr(
-            self.org.orchestrator, "_launch_agent_with_scratch", _held_launch,
-        )
+        targets = self.orgs.values() if self.orgs else (self.org,)
+        for org in targets:
+            self.monkeypatch.setattr(
+                org.orchestrator, "_launch_agent_with_scratch",
+                _make_held(org.slug),
+            )
 
     def wait_for_launch_for(
         self, task_id: str, *, after: int = 0, timeout: float = _LAUNCH_HOLD_SECONDS,
+        org: str | None = None,
     ) -> dict:
         """Wait (condition-barrier, no elapsed-sleep proof) for a launch of
-        ``task_id`` recorded after index ``after``.  Returns the launch kwargs."""
+        ``task_id`` recorded after index ``after``.  Returns the launch kwargs.
+
+        ``org`` optionally scopes to one owned org slug so the same textual task
+        id in two loaded orgs stays distinguishable (Part D)."""
         deadline = time.monotonic() + timeout
         with self.launch_cv:
             while True:
                 for index in range(after, len(self.launch_history)):
                     entry = self.launch_history[index]
-                    if entry.get("task_id") == task_id:
+                    if entry.get("task_id") == task_id and (
+                        org is None or entry.get("_fixture_org") == org
+                    ):
                         return entry
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -710,10 +771,10 @@ class _ShippingFixture:
         assert path.is_absolute()
         return path
 
-    def run_cli(self, payload: Path) -> subprocess.CompletedProcess:
+    def run_cli(self, payload: Path, *, org: str | None = None) -> subprocess.CompletedProcess:
         command = [
             sys.executable, "-m", "cli.main", "report-completion",
-            "--org", ORG, "--from-file", str(payload),
+            "--org", org or self.org_slugs[0], "--from-file", str(payload),
         ]
         result = subprocess.run(
             command, cwd=str(CHECKOUT), env=self.cli_env,
@@ -5298,5 +5359,597 @@ def test_shipping_historically_migrated_restart_corrupt_settlement_refuses(
     try:
         result = _drive_restart_lost_queue(fixture, negative="corrupt_receipt")
         assert result["refused"] is True
+    finally:
+        fixture.stop()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TASK-8718 — C3d4b Part D: ONE real DaemonState loading TWO real
+# OrgState/Database venues over one owned RuntimeDir, with the SAME textual
+# root task id in both orgs.  Real startup/enqueue publication -> real
+# TaskQueue worker -> Dispatcher -> Orchestrator/run_step -> the atomic
+# generation fence -> `_run_agent`, with ONLY the external provider launch
+# doubled (the shipping launch hold).  Generation staging is labelled: it uses
+# the accepted public writers while the automatic pre-final hook stays dark.
+# ══════════════════════════════════════════════════════════════════════════
+
+TWO_ORG_A = "isolated-org-a"
+TWO_ORG_B = "isolated-org-b"
+DUAL_ROOT_ID = "TASK-C3D4B-DUAL"
+
+
+def _two_org_fixture(
+    tmp_path, monkeypatch, *, seed_historical: bool = False,
+    queue_workers: int = 3,
+) -> _ShippingFixture:
+    return _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=seed_historical,
+        queue_workers=queue_workers, orgs=(TWO_ORG_A, TWO_ORG_B),
+    )
+
+
+def _bind_two_orgs(fixture: _ShippingFixture) -> None:
+    """Bind the REAL server-owned boot identity + permission reader per org."""
+    for slug in fixture.org_slugs:
+        fixture.orgs[slug].bind_authority_v2_owner()
+
+
+def _prewarm_two_org_skills(fixture: _ShippingFixture) -> None:
+    """Sequentially build the shared canonical skill packages for both orgs.
+
+    The canonical store lives under the ONE daemon home, but its per-workspace
+    materialization lock is workspace-scoped; two orgs' FIRST concurrent launch
+    would otherwise race on the store's predictable ``.tmp.<hash>`` build path
+    (an out-of-radius canonical-store concern, recorded in the handoff, not
+    fixed here).  This helper deterministically pre-builds the same packages
+    through the REAL production materializer before any worker starts, so the
+    shipping launches below only exercise the supported reuse path.
+    """
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import materialize_workspace_skills
+
+    skills_root = fixture._settings.project_root / "runtime" / "skills"
+    for slug in fixture.org_slugs:
+        org = fixture.orgs[slug]
+        org_paths = OrgPaths(root=org.root)
+        for agent_name in (MANAGER, WORKER):
+            materialize_workspace_skills(
+                org_paths.workspaces_dir / agent_name, fixture._settings,
+                slug=slug, context="task", provider="codex",
+                agent_name=agent_name, team=TEAM, skills_root=skills_root,
+                org_root=org.root, db=org.db,
+            )
+
+
+def _stage_pending_generation(
+    org, *, task_id: str, session_id: str, confidence: int = 90,
+) -> dict:
+    """LABELLED pre-final staging of ONE authentic pending-v2 generation.
+
+    Every step is an existing REAL public writer on the shipping org's own
+    ``Database`` (activate selector -> normalized callback admission -> claim /
+    claim-audit / evaluate / evaluation-audit / consume / consumed-audit ->
+    finalize -> ordinary completion evidence -> exact receipt settlement).  The
+    automatic production pre-final hook stays dark; no synthetic evaluator,
+    authenticator, receipt or generation is manufactured.  The org's
+    server-owned boot/permission bindings are the ones bound by
+    :func:`_bind_two_orgs`, never a fixture constant.
+    """
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    from tests.test_authority_v2_attempt_admission import (
+        _admit,
+        _assessment,
+        _seed_bound_task,
+    )
+    from tests.test_authority_v2_finalization_settlement import (
+        _ProducerStub,
+        _result_row,
+    )
+    import hashlib
+    import types as _types
+
+    from runtime.models import authority_policy_v2_canonical_json_bytes
+    from runtime.orchestrator.orchestrator import (
+        Orchestrator,
+        completion_report_from_result_row,
+    )
+
+    store = AuthorityPolicyStore(org.db)
+    binding = _seed_bound_task(store, task_id=task_id, session_id=session_id)
+    assert binding is not None and binding["mode"] == "v2"
+    # Build the normalized carrier for THIS root/session (the shared seed
+    # helper hardcodes its own root id; this venue uses its own textual id).
+    carrier = {
+        "activation_epoch": binding["selector_epoch"],
+        "activation_id": binding["activation_id"],
+        "contract_digest": binding["contract_digest"],
+        "contract_id": binding["contract_id"],
+        "contract_version": binding["contract_version"],
+        "executor_kind": binding["executor_kind"],
+        "manager_session_id": binding["session_id"],
+        "model_id": binding["model_id"],
+        "policy_digest": binding["policy_digest"],
+        "policy_version": binding["policy_version"],
+        "provider_id": binding["provider_id"],
+        "release_id": binding["release_id"],
+        "root_task_id": task_id,
+        **_assessment(confidence=confidence),
+    }
+    canonical = authority_policy_v2_canonical_json_bytes(carrier)
+    admission = {
+        "team": binding["team"],
+        "binding_id": binding["binding_id"],
+        "contract_id": binding["contract_id"],
+        "contract_version": binding["contract_version"],
+        "contract_digest": binding["contract_digest"],
+        "release_id": binding["release_id"],
+        "activation_id": binding["activation_id"],
+        "activation_epoch": binding["selector_epoch"],
+        "selector_id": binding["selector_id"],
+        "assessment_digest": hashlib.sha256(canonical).hexdigest(),
+        "assessment_canonical_json": canonical.decode("utf-8"),
+        # The real server-owned per-org daemon-process boot identity.
+        "origin_boot_id": org.db._v2_process_boot_id,
+    }
+    assert _admit(
+        store, carrier, admission, task_id=task_id, session_id=session_id,
+    ) is True
+    row = org.db.get_latest_task_result(task_id, MANAGER, session_id)
+    assert row is not None
+    attempt = org.db.get_authority_policy_v2_attempt_for_result(row["id"])
+    assert attempt is not None
+
+    stage_kwargs = dict(
+        root_task_id=task_id, manager_agent=MANAGER,
+        manager_session_id=session_id, result_id=row["id"],
+        origin_boot_id=attempt.origin_boot_id,
+        owner_attempt_id=attempt.owner_attempt_id,
+    )
+    assert org.db.claim_authority_policy_v2_candidate(**stage_kwargs).status == "claimed"
+    assert org.db.audit_authority_policy_v2_candidate_claim(**stage_kwargs).status == "claim_audited"
+    _evaluated = org.db.evaluate_authority_policy_v2_candidate(**stage_kwargs)
+    assert _evaluated.status == "evaluated", _evaluated
+    assert org.db.audit_authority_policy_v2_candidate_evaluation(**stage_kwargs).status == "evaluation_audited"
+    assert org.db.consume_authority_policy_v2_candidate(**stage_kwargs).status == "consumed"
+    assert org.db.audit_authority_policy_v2_candidate_consumption(**stage_kwargs).status == "consumed_audited"
+    finalized = org.db.finalize_authority_policy_v2_continuation(**stage_kwargs)
+    assert finalized.status == "continued", finalized
+    # Ordinary completion evidence through the REAL producer seam, bound to
+    # THIS root (the shared seed helper hardcodes its own root id).
+    result_row = _result_row(store, row["id"])
+    report = completion_report_from_result_row(
+        task_id, dict(result_row), fallback_agent=MANAGER,
+    )
+    Orchestrator._log_step_result(
+        _ProducerStub(store), task_id,
+        _types.SimpleNamespace(session_id=session_id), report,
+        result_row_id=row["id"],
+    )
+    settled = org.db.settle_authority_policy_v2_continuation_receipt(
+        root_task_id=task_id, manager_agent=MANAGER,
+        manager_session_id=session_id, result_id=row["id"],
+    )
+    assert settled.status == "settled", settled
+
+    generation = finalized.notification_id
+    assert org.db.get_authority_policy_v2_recovery_notification(
+        generation
+    ).state == "needed"
+    dispatch = org.db.get_authority_policy_v2_root_dispatch(task_id)
+    assert dispatch.state == "pending" and dispatch.generation_id == generation
+    assert org.db.get_task(task_id).status is TaskStatus.PENDING
+    return {
+        "generation": generation, "result_id": row["id"], "session_id": session_id,
+        "origin_boot_id": attempt.origin_boot_id,
+    }
+
+
+def _part_d_observe_enqueues(fixture: _ShippingFixture):
+    """Call-through observation of the REAL queue writer (raw vs tagged puts).
+
+    Wraps the primitive ``TaskQueue.enqueue`` (``put_nowait`` delegates to it),
+    so both the ordinary enqueue and the authenticated publisher are observed
+    without replacing the writer.
+    """
+    queue = fixture.state.queue
+    raw: list[dict] = []
+    tagged: list[dict] = []
+
+    real = queue.enqueue
+
+    def _count(slug, task_id, *, metadata=None):
+        raw.append({"slug": slug, "task_id": task_id, "metadata": metadata})
+        if isinstance(metadata, dict) and metadata.get("authority_v2_generation"):
+            tagged.append({"slug": slug, "task_id": task_id, **dict(metadata)})
+        return real(slug, task_id, metadata=metadata)
+
+    fixture.monkeypatch.setattr(queue, "enqueue", _count)
+    return raw, tagged
+
+
+def _v2_evidence_counts(org) -> dict:
+    db = org.db
+    names = (
+        "authority_policy_v2_attempts",
+        "authority_policy_v2_candidates",
+        "authority_policy_v2_pins",
+        "authority_policy_v2_candidate_audit",
+        "authority_policy_v2_evaluations",
+        "authority_policy_v2_continue_envelopes",
+        "authority_policy_v2_recovery_notifications",
+        "authority_policy_v2_root_dispatch",
+    )
+    return {
+        name: db._conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+        for name in names
+    }
+
+
+def _claims_for(org, generation: str) -> int:
+    """Count ``generation_claimed`` stage events for THIS exact generation."""
+    return sum(
+        1
+        for a in org.db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=DUAL_ROOT_ID, manager_agent=MANAGER,
+        )
+        if a["payload"].get("stage") == "generation_claimed"
+        and a["payload"].get("generation_id") == generation
+    )
+
+
+def _await_generation_admission(
+    fixture: _ShippingFixture, org, generation: str, *, task_id: str = DUAL_ROOT_ID,
+    timeout: float = 60.0,
+) -> str:
+    """Deterministic barrier: this org admitted ITS OWN generation and launched."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        notification = org.db.get_authority_policy_v2_recovery_notification(generation)
+        if (
+            notification is not None and notification.state == "settled"
+            and notification.next_session_id
+        ):
+            reserved = notification.next_session_id
+            task = org.db.get_task(task_id)
+            if task.status is TaskStatus.IN_PROGRESS and task.current_session_id == reserved:
+                with fixture.launch_cv:
+                    launched = any(
+                        e.get("_fixture_org") == org.slug
+                        and e.get("task_id") == task_id
+                        and e.get("session_id") == reserved
+                        for e in fixture.launch_history
+                    )
+                if launched:
+                    return reserved
+        time.sleep(0.02)
+    notification = org.db.get_authority_policy_v2_recovery_notification(generation)
+    task = org.db.get_task(task_id)
+    stages = [
+        a["payload"].get("stage")
+        for a in org.db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=task_id, manager_agent=MANAGER,
+        )
+    ]
+    launches = [
+        {"org": e.get("_fixture_org"), "task_id": e.get("task_id"),
+         "session_id": e.get("session_id")}
+        for e in fixture.launch_history
+    ]
+    audits = [
+        (a.get("action"), str(a.get("payload"))[:160])
+        for a in org.db.get_audit_logs(task_id)
+    ][-6:]
+    raise AssertionError(
+        f"org {org.slug} never admitted generation {generation}: "
+        f"notification={getattr(notification, 'state', None)} "
+        f"reserved={getattr(notification, 'next_session_id', None)} "
+        f"task={task.status}/{task.current_session_id} note={getattr(task, 'note', None)} "
+        f"stages={stages} "
+        f"launches={launches} release={fixture.release_event.is_set()} "
+        f"run_steps={list(fixture.run_step_returns)} audits={audits}"
+    )
+
+
+# ── D1: authentic pending-v2 org A + ordinary org B, same root id ─────────
+
+
+def _drive_dual_org_mixed(fixture: _ShippingFixture) -> dict:
+    from runtime.daemon import runner
+    from runtime.daemon.__main__ import _publish_v2_generations_on_startup
+    from runtime.models import TaskRecord
+
+    org_a = fixture.orgs[TWO_ORG_A]
+    org_b = fixture.orgs[TWO_ORG_B]
+    _bind_two_orgs(fixture)
+    _prewarm_two_org_skills(fixture)
+
+    staged = _stage_pending_generation(
+        org_a, task_id=DUAL_ROOT_ID, session_id="sess-dual-a",
+    )
+    # Org B owns the SAME textual root id as an ordinary row on its own DB.
+    org_b.db.insert_task(TaskRecord(
+        id=DUAL_ROOT_ID, brief="ordinary dual-root", team=TEAM,
+        assigned_agent=MANAGER,
+    ))
+    assert org_b.db.classify_authority_policy_v2_root_dispatch_for_enqueue(
+        DUAL_ROOT_ID
+    ).kind == "absent"
+
+    fixture.install_launch_hold()
+    raw, tagged = _part_d_observe_enqueues(fixture)
+
+    # ACTUAL startup publication for org A; ordinary enqueue for org B.
+    _publish_v2_generations_on_startup(org_a, fixture.state.queue)
+    assert runner.enqueue_task(fixture.state, TWO_ORG_B, DUAL_ROOT_ID) is None
+
+    assert len(raw) == 2, raw
+    assert len(tagged) == 1, tagged
+    assert tagged[0]["slug"] == TWO_ORG_A
+    assert tagged[0]["authority_v2_generation"] == staged["generation"]
+    assert tagged[0]["publication_attempt"] == 1
+    assert org_a.db.get_authority_policy_v2_recovery_notification(
+        staged["generation"]
+    ).state == "published"
+    # Org B's ordinary enqueue is genuinely untagged and B holds NO v2 evidence.
+    assert [r["metadata"] for r in raw if r["slug"] == TWO_ORG_B] == [None]
+    assert set(_v2_evidence_counts(org_b).values()) == {0}
+
+    fixture._start_http()
+    reserved_a = _await_generation_admission(
+        fixture, org_a, staged["generation"], task_id=DUAL_ROOT_ID,
+    )
+    launch_b = fixture.wait_for_launch_for(
+        DUAL_ROOT_ID, org=TWO_ORG_B, timeout=_LAUNCH_HOLD_SECONDS,
+    )
+
+    task_a = org_a.db.get_task(DUAL_ROOT_ID)
+    task_b = org_b.db.get_task(DUAL_ROOT_ID)
+    # Same textual root id in both orgs, each admitted under its OWN session.
+    assert task_a.id == task_b.id == DUAL_ROOT_ID
+    assert task_a.status is TaskStatus.IN_PROGRESS
+    assert task_a.current_session_id == reserved_a
+    assert task_b.status is TaskStatus.IN_PROGRESS
+    assert task_b.current_session_id != reserved_a
+    assert task_b.orchestration_step_count == 1
+    assert task_a.orchestration_step_count == 2
+    assert launch_b["_fixture_org"] == TWO_ORG_B
+    assert launch_b["session_id"] != reserved_a
+
+    # Exactly one generation claim on A; NONE on B (ordinary path stayed
+    # ordinary; no v2 evidence leaked).
+    assert _claims_for(org_a, staged["generation"]) == 1
+    assert _claims_for(org_b, staged["generation"]) == 0
+    assert set(_v2_evidence_counts(org_b).values()) == {0}
+    assert org_b.db.get_authority_policy_v2_root_dispatch(DUAL_ROOT_ID) is None
+    assert fixture.launch_count() == 2
+
+    fixture.release_launch()
+    fixture.join_workers()
+    return {"reserved_a": reserved_a, "task_b_session": task_b.current_session_id}
+
+
+# ── D2: both orgs authentic DISTINCT pending generations, same root id ────
+
+
+def _drive_dual_org_generations(fixture: _ShippingFixture) -> dict:
+    from runtime.daemon.__main__ import _publish_v2_generations_on_startup
+
+    org_a = fixture.orgs[TWO_ORG_A]
+    org_b = fixture.orgs[TWO_ORG_B]
+    _bind_two_orgs(fixture)
+    _prewarm_two_org_skills(fixture)
+
+    staged_a = _stage_pending_generation(
+        org_a, task_id=DUAL_ROOT_ID, session_id="sess-dual-a",
+    )
+    staged_b = _stage_pending_generation(
+        org_b, task_id=DUAL_ROOT_ID, session_id="sess-dual-b",
+    )
+    assert staged_a["generation"] != staged_b["generation"]
+
+    fixture.install_launch_hold()
+    raw, tagged = _part_d_observe_enqueues(fixture)
+    _publish_v2_generations_on_startup(org_a, fixture.state.queue)
+    _publish_v2_generations_on_startup(org_b, fixture.state.queue)
+
+    assert len(raw) == 2 and len(tagged) == 2
+    assert {t["slug"] for t in tagged} == {TWO_ORG_A, TWO_ORG_B}
+    assert {t["authority_v2_generation"] for t in tagged} == {
+        staged_a["generation"], staged_b["generation"],
+    }
+
+    fixture._start_http()
+    reserved_a = _await_generation_admission(
+        fixture, org_a, staged_a["generation"], task_id=DUAL_ROOT_ID,
+    )
+    reserved_b = _await_generation_admission(
+        fixture, org_b, staged_b["generation"], task_id=DUAL_ROOT_ID,
+    )
+    assert reserved_a != reserved_b
+
+    # Each org admits exactly its OWN G, one step increment, one launch.
+    assert org_a.db.get_authority_policy_v2_root_dispatch(
+        DUAL_ROOT_ID
+    ).generation_id == staged_a["generation"]
+    assert org_b.db.get_authority_policy_v2_root_dispatch(
+        DUAL_ROOT_ID
+    ).generation_id == staged_b["generation"]
+    assert _claims_for(org_a, staged_a["generation"]) == 1
+    assert _claims_for(org_a, staged_b["generation"]) == 0
+    assert _claims_for(org_b, staged_b["generation"]) == 1
+    assert _claims_for(org_b, staged_a["generation"]) == 0
+    assert org_a.db.get_task(DUAL_ROOT_ID).orchestration_step_count == 2
+    assert org_b.db.get_task(DUAL_ROOT_ID).orchestration_step_count == 2
+    assert fixture.launch_count() == 2
+
+    # No remint / re-evaluation / spend: each org keeps one active envelope.
+    for org in (org_a, org_b):
+        counts = _v2_evidence_counts(org)
+        assert counts["authority_policy_v2_candidates"] == 1
+        assert counts["authority_policy_v2_evaluations"] == 1
+        assert counts["authority_policy_v2_continue_envelopes"] == 1
+        envelope = org.db.get_authority_policy_v2_continue_envelope_for_root(
+            DUAL_ROOT_ID
+        )
+        assert envelope.lifecycle_state == "active"
+
+    fixture.release_launch()
+    fixture.join_workers()
+    return {"reserved_a": reserved_a, "reserved_b": reserved_b}
+
+
+# ── D3: wrong-org / duplicate / stale / malformed tokens + control ────────
+
+
+def _drive_dual_org_negative(fixture: _ShippingFixture) -> dict:
+    from runtime.daemon.__main__ import _publish_v2_generations_on_startup
+
+    org_a = fixture.orgs[TWO_ORG_A]
+    org_b = fixture.orgs[TWO_ORG_B]
+    _bind_two_orgs(fixture)
+    _prewarm_two_org_skills(fixture)
+
+    staged_a = _stage_pending_generation(
+        org_a, task_id=DUAL_ROOT_ID, session_id="sess-dual-a",
+    )
+    staged_b = _stage_pending_generation(
+        org_b, task_id=DUAL_ROOT_ID, session_id="sess-dual-b",
+    )
+    gen_a, gen_b = staged_a["generation"], staged_b["generation"]
+
+    snapshot_a = _restart_durable_snapshot(org_a.db, DUAL_ROOT_ID, gen_a)
+    snapshot_b = _restart_durable_snapshot(org_b.db, DUAL_ROOT_ID, gen_b)
+    counts_a = _v2_evidence_counts(org_a)
+    counts_b = _v2_evidence_counts(org_b)
+    assert _claims_for(org_a, gen_a) == 0 and _claims_for(org_b, gen_b) == 0
+
+    fixture.install_launch_hold()
+    fixture._start_http()
+
+    queue = fixture.state.queue
+    # (a) WRONG-ORG G tokens in BOTH directions, a STALE/unknown shape-valid
+    # token, and a malformed present token, all through the REAL queue writer.
+    queue.put_nowait(TWO_ORG_A, DUAL_ROOT_ID, metadata={
+        "authority_v2_generation": gen_b, "publication_attempt": 1,
+    })
+    queue.put_nowait(TWO_ORG_B, DUAL_ROOT_ID, metadata={
+        "authority_v2_generation": gen_a, "publication_attempt": 1,
+    })
+    queue.put_nowait(TWO_ORG_A, DUAL_ROOT_ID, metadata={
+        "authority_v2_generation": "APV2N-" + "f" * 64, "publication_attempt": 1,
+    })
+    queue.put_nowait(TWO_ORG_A, DUAL_ROOT_ID, metadata={
+        "authority_v2_generation": "", "publication_attempt": 1,
+    })
+
+    # Negative completion requires ACTUAL worker/run_step barriers.
+    fixture.await_run_step_returns(DUAL_ROOT_ID, 3, slug=TWO_ORG_A)
+    fixture.await_run_step_returns(DUAL_ROOT_ID, 1, slug=TWO_ORG_B)
+    fixture.join_workers()
+
+    # ZERO effects: no foreign admission, no ordinary fallback, no launch, no
+    # remint/evaluation/spend, and byte-identical retained task/G/evidence.
+    assert fixture.launch_count() == 0
+    assert org_a.db.get_task(DUAL_ROOT_ID).status is TaskStatus.PENDING
+    assert org_b.db.get_task(DUAL_ROOT_ID).status is TaskStatus.PENDING
+    assert _restart_durable_snapshot(org_a.db, DUAL_ROOT_ID, gen_a) == snapshot_a
+    assert _restart_durable_snapshot(org_b.db, DUAL_ROOT_ID, gen_b) == snapshot_b
+    assert _v2_evidence_counts(org_a) == counts_a
+    assert _v2_evidence_counts(org_b) == counts_b
+    assert _claims_for(org_a, gen_a) == 0 and _claims_for(org_b, gen_b) == 0
+
+    # Healthy control: the genuine generations then admit EXACTLY once each.
+    raw, tagged = _part_d_observe_enqueues(fixture)
+    _publish_v2_generations_on_startup(org_a, queue)
+    _publish_v2_generations_on_startup(org_b, queue)
+    assert len(raw) == 2 and len(tagged) == 2
+    assert {t["authority_v2_generation"] for t in tagged} == {gen_a, gen_b}
+    reserved_a = _await_generation_admission(
+        fixture, org_a, gen_a, task_id=DUAL_ROOT_ID,
+    )
+    reserved_b = _await_generation_admission(
+        fixture, org_b, gen_b, task_id=DUAL_ROOT_ID,
+    )
+    assert fixture.launch_count() == 2
+
+    # (b) DUPLICATE of the genuine admitted token launches nothing new.
+    # The genuine control run_steps are still parked in the held launch, so
+    # bound the wait by the CURRENT count rather than an absolute total.
+    with fixture.run_step_cv:
+        before_a = sum(
+            1 for r in fixture.run_step_returns
+            if r[0] == TWO_ORG_A and r[1] == DUAL_ROOT_ID
+        )
+    queue.put_nowait(TWO_ORG_A, DUAL_ROOT_ID, metadata={
+        "authority_v2_generation": gen_a, "publication_attempt": 1,
+    })
+    fixture.await_run_step_returns(DUAL_ROOT_ID, before_a + 1, slug=TWO_ORG_A)
+    assert fixture.launch_count() == 2
+    assert _claims_for(org_a, gen_a) == 1
+    assert org_a.db.get_task(DUAL_ROOT_ID).current_session_id == reserved_a
+    assert org_b.db.get_task(DUAL_ROOT_ID).current_session_id == reserved_b
+
+    fixture.release_launch()
+    fixture.join_workers()
+    return {"reserved_a": reserved_a, "reserved_b": reserved_b}
+
+
+# ── Fresh + full historical-migrated venues ───────────────────────────────
+
+
+def test_shipping_dual_org_mixed_v2_and_ordinary(tmp_path, monkeypatch):
+    fixture = _two_org_fixture(tmp_path, monkeypatch)
+    fixture.start(defer_http=True)
+    try:
+        _drive_dual_org_mixed(fixture)
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_dual_org_mixed(tmp_path, monkeypatch):
+    fixture = _two_org_fixture(tmp_path, monkeypatch, seed_historical=True)
+    fixture.start(defer_http=True)
+    try:
+        _drive_dual_org_mixed(fixture)
+    finally:
+        fixture.stop()
+
+
+def test_shipping_dual_org_distinct_generations(tmp_path, monkeypatch):
+    fixture = _two_org_fixture(tmp_path, monkeypatch)
+    fixture.start(defer_http=True)
+    try:
+        _drive_dual_org_generations(fixture)
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_dual_org_distinct_generations(
+    tmp_path, monkeypatch,
+):
+    fixture = _two_org_fixture(tmp_path, monkeypatch, seed_historical=True)
+    fixture.start(defer_http=True)
+    try:
+        _drive_dual_org_generations(fixture)
+    finally:
+        fixture.stop()
+
+
+def test_shipping_dual_org_foreign_and_duplicate_tokens(tmp_path, monkeypatch):
+    fixture = _two_org_fixture(tmp_path, monkeypatch)
+    fixture.start(defer_http=True)
+    try:
+        _drive_dual_org_negative(fixture)
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_dual_org_foreign_tokens(
+    tmp_path, monkeypatch,
+):
+    fixture = _two_org_fixture(tmp_path, monkeypatch, seed_historical=True)
+    fixture.start(defer_http=True)
+    try:
+        _drive_dual_org_negative(fixture)
     finally:
         fixture.stop()
