@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import os
 import sqlite3
@@ -13,13 +14,21 @@ import pytest
 
 from runtime.infrastructure.database import Database
 from tests.workflows.u0_evidence_helpers import (
+    ProfileOperationInterrupted,
+    ProfileOrg,
     PublicationInterrupted,
     accept_current_join,
     admit_authority_request,
     compensate_authority_publication,
+    compensate_profile_operation,
+    coordinate_profile_operation,
     fence_authority_namespace,
+    mutate_profile_dependency,
     publish_authority_generation,
+    reconcile_profile_operation,
     recover_authority_publication,
+    register_profile_dependency,
+    republish_profile_dependents,
     revalidate_authority_dispatch,
     sha256_bytes,
 )
@@ -542,24 +551,34 @@ def _u0_assert_caller_result(
     *, label: str, started_workers: Iterable[threading.Thread],
     errors: list[BaseException], outcomes: list[object],
     expected_results: list[object],
+    expected_started: Iterable[threading.Thread] | None = None,
 ) -> None:
     """Report every caller-visible failure in one combined result.
 
     ``errors`` carries release/join/cleanup/liveness and original-boundary
     failures; ``outcomes`` carries the real wrapper return values or the
     original worker exceptions.  Expected refusal outcomes are asserted by the
-    caller separately and never enter either list.  A single ``AssertionError``
-    names every group, so an early boundary assertion can no longer hide a
-    worker failure (or vice versa) in the reported diagnostic.
+    caller separately and never enter either list.  ``expected_started`` folds
+    the success-only started-worker shape assertion into the same report, so an
+    injected ``Thread.start`` failure can no longer be hidden behind a bare
+    ``assert started == [...]``.  A single ``AssertionError`` names every group,
+    so an early boundary/shape assertion can no longer hide a worker failure
+    (or vice versa) in the reported diagnostic.
     """
+    started = list(started_workers)
     worker_failures = [outcome for outcome in outcomes if isinstance(outcome, BaseException)]
     observed_results = [outcome for outcome in outcomes if not isinstance(outcome, BaseException)]
-    live_workers = sorted(worker.name for worker in started_workers if worker.is_alive())
+    live_workers = sorted(worker.name for worker in started if worker.is_alive())
     failures: dict[str, object] = {}
     if worker_failures:
         failures["worker"] = worker_failures
     if observed_results != expected_results:
         failures["unexpected_result"] = observed_results
+    if expected_started is not None:
+        expected_names = [worker.name for worker in expected_started]
+        started_names = [worker.name for worker in started]
+        if started_names != expected_names:
+            failures["unexpected_started_workers"] = started_names
     if errors:
         failures["boundary_release_join_cleanup_liveness"] = list(errors)
     if live_workers:
@@ -1133,12 +1152,20 @@ def test_proposed_admission_owned_transaction_and_publisher_contend_in_both_orde
         }
         assert held_admission_state == [True]
         assert cache == {"engineering": (1, sha256_bytes(b"base"))} and outcomes == []
+        # Held transaction has no file effect: canonical bytes are the prior
+        # admitted prestate and no staging file exists yet.
+        assert (files / "engineering.authority.json").read_bytes() == b"base"
+        assert list(files.glob("*.staging")) == []
     except BaseException as exc:
         admission_errors.append(exc)
     finally:
         _release_all_and_join((release_admission,), started, admission_errors)
-    assert started == [first, second] and not first.is_alive() and not second.is_alive()
-    _u0_assert_caller_result(label="admission-first", started_workers=started, errors=admission_errors, outcomes=outcomes, expected_results=[1, 2])
+    # The success-only started-worker/liveness shape is part of the combined
+    # report, so an injected second ``Thread.start`` failure is not masked here.
+    _u0_assert_caller_result(
+        label="admission-first", started_workers=started, errors=admission_errors,
+        outcomes=outcomes, expected_results=[1, 2], expected_started=[first, second],
+    )
     admitted = _publication_rows(path)
     assert admitted["pointers"] == [("engineering", 2, "after-admission", sha256_bytes(b"after-admission"), "ready", 0)]
     assert admitted["journals"][0] == seeded["journals"][0]
@@ -1156,11 +1183,26 @@ def test_proposed_admission_owned_transaction_and_publisher_contend_in_both_orde
     publisher_arrived, release_publisher = threading.Event(), threading.Event()
     reverse: list[object] = []
     reverse_owners: list[str] = []
+    held_publisher_state: list[bool] = []
+    # The reverse publisher and the fenced reader are separate participants with
+    # independently owned process caches; one shared dict would not prove the
+    # publisher's new generation and the denied reader's cached view separately.
+    publisher_cache: dict[str, tuple[int, str]] = {}
+    stale_reader_cache: dict[str, tuple[int, str]] = {"engineering": (2, sha256_bytes(b"after-admission"))}
 
     def publisher_first() -> None:
         conn = _adapter(path)
+
+        def on_stage(stage: str) -> None:
+            if stage != "file_phase_reserved":
+                return
+            held_publisher_state.append(conn.in_transaction)
+            publisher_arrived.set()
+            if not release_publisher.wait(5):
+                raise AssertionError("publisher_release_timeout")
+
         try:
-            reverse.append(publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=2, snapshot=b"publisher-first", publisher="teams-route", journal_id="publisher-first", stage_hook=lambda stage: (publisher_arrived.set(), (_ for _ in ()).throw(AssertionError("publisher_release_timeout")) if not release_publisher.wait(5) else None) if stage == "file_phase_reserved" else None, on_lease_acquired=reverse_owners.append))
+            reverse.append(publish_authority_generation(conn, root=files, cache=publisher_cache, namespace="engineering", expected_generation=2, snapshot=b"publisher-first", publisher="teams-route", journal_id="publisher-first", stage_hook=on_stage, on_lease_acquired=reverse_owners.append))
         except BaseException as exc:
             reverse.append(exc)
         finally:
@@ -1173,21 +1215,41 @@ def test_proposed_admission_owned_transaction_and_publisher_contend_in_both_orde
     try:
         _start_worker(worker, started_reverse)
         assert publisher_arrived.wait(5)
+        # Held publication boundary: the publisher owns the lease and the reserved
+        # file phase, but has no file or cache effect yet. Expectations derive from
+        # the prior admitted prestate and the independently captured invocation.
+        held_reverse = _publication_rows(path)
+        assert held_reverse["pointers"] == [("engineering", 2, "after-admission", sha256_bytes(b"after-admission"), "ready", 0)]
+        assert len(reverse_owners) == 1 and reverse_owners[0].startswith("teams-route:")
+        assert held_reverse["journals"] == [
+            seeded["journals"][0],
+            admitted["journals"][1],
+            ("publisher-first", "engineering", 3, 2, sha256_bytes(b"publisher-first"), "teams-route", reverse_owners[0], "file_phase_reserved", "workflow_recovery", b"publisher-first", 0, reverse_owners[0]),
+        ]
+        assert held_reverse["admissions"] == [("admission-first", "engineering", 1, sha256_bytes(b"request"), "reader")]
+        assert held_reverse["leases"] == [("engineering", reverse_owners[0], os.getpid())]
+        assert held_publisher_state == [False]
+        assert (files / "engineering.authority.json").read_bytes() == b"after-admission"
+        assert list(files.glob("*.staging")) == []
+        assert publisher_cache == {}
         with pytest.raises(ValueError, match="publication_fenced:file_phase_reserved"):
-            admit_authority_request(denied, root=files, cache=cache, namespace="engineering", request_id="denied-after-publisher", request_bytes=b"request", admitted_by="reader", expected_generation=2)
+            admit_authority_request(denied, root=files, cache=stale_reader_cache, namespace="engineering", request_id="denied-after-publisher", request_bytes=b"request", admitted_by="reader", expected_generation=2)
         assert _publication_rows(path)["admissions"] == [("admission-first", "engineering", 1, sha256_bytes(b"request"), "reader")]
         assert not denied.in_transaction
+        # A deferred fence/denial is zero-effect for the reader's own cache.
+        assert stale_reader_cache == {"engineering": (2, sha256_bytes(b"after-admission"))}
     except BaseException as exc:
         reverse_errors.append(exc)
     finally:
         _release_all_and_join((release_publisher,), started_reverse, reverse_errors)
         denied.close()
     assert started_reverse == [worker]
-    _u0_assert_caller_result(label="publisher-first-reverse", started_workers=started_reverse, errors=reverse_errors, outcomes=reverse, expected_results=[3])
+    _u0_assert_caller_result(label="publisher-first-reverse", started_workers=started_reverse, errors=reverse_errors, outcomes=reverse, expected_results=[3], expected_started=[worker])
     terminal = _publication_rows(path)
     assert terminal["pointers"] == [("engineering", 3, "publisher-first", sha256_bytes(b"publisher-first"), "ready", 0)]
     reverse_journal = terminal["journals"][2]
     assert len(reverse_owners) == 1 and reverse_owners[0].startswith("teams-route:")
+    assert reverse_journal[:6] == ("publisher-first", "engineering", 3, 2, sha256_bytes(b"publisher-first"), "teams-route")
     assert reverse_journal[6] == reverse_owners[0] and reverse_journal[11] == reverse_owners[0]
     assert reverse_journal[7:] == ("cache_installed", "workflow_recovery", b"publisher-first", 0, reverse_owners[0])
     # The admission committed before this publication keeps its exact record but
@@ -1195,12 +1257,17 @@ def test_proposed_admission_owned_transaction_and_publisher_contend_in_both_orde
     assert terminal["admissions"] == admitted["admissions"] == [("admission-first", "engineering", 1, sha256_bytes(b"request"), "reader")]
     assert terminal["journals"][0] == seeded["journals"][0] and terminal["journals"][1] == admitted["journals"][1]
     assert terminal["leases"] == []
+    dispatch_cache: dict[str, tuple[int, str]] = {"engineering": (3, sha256_bytes(b"publisher-first"))}
     with pytest.raises(ValueError, match="dispatch_generation_stale"):
-        revalidate_authority_dispatch(seed, root=files, cache=cache, namespace="engineering", request_id="admission-first")
+        revalidate_authority_dispatch(seed, root=files, cache=dispatch_cache, namespace="engineering", request_id="admission-first")
     assert _publication_rows(path) == terminal
     assert not list(files.glob("*.staging"))
     assert (files / "engineering.authority.json").read_bytes() == b"publisher-first"
-    assert cache == {"engineering": (3, sha256_bytes(b"publisher-first"))} and not seed.in_transaction
+    # Independently owned caches: the publisher's cache has the new generation;
+    # the denied reader's cache truthfully retains only its stale prior view.
+    assert publisher_cache == {"engineering": (3, sha256_bytes(b"publisher-first"))}
+    assert stale_reader_cache == {"engineering": (2, sha256_bytes(b"after-admission"))}
+    assert not seed.in_transaction
     seed.close()
 
 
@@ -1547,6 +1614,39 @@ def test_proposed_same_label_caller_aggregates_worker_and_boundary_failures(
     assert not [thread for thread in threading.enumerate() if thread.name.startswith("u0-")]
 
 
+def test_proposed_admission_caller_retains_injected_second_worker_start_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ACTUAL admission-first caller must surface a real second-start fault.
+
+    The manager probe injects a ``Thread.start`` failure for
+    ``u0-publisher-second`` while the first real admission worker is held.  A
+    bare success-only ``assert started == [first, second]`` before the combined
+    caller result hides that injected failure.  Here the actual caller's own
+    wrappers raise, and its single reported result must name the injected
+    failure, the unexpected started-worker set and leave no owned worker live.
+    """
+    import tests.workflows.test_u0_migration_recovery as caller_module
+
+    real_start = threading.Thread.start
+    attempts: list[str] = []
+
+    def failing_start(self: threading.Thread, *args: object, **kwargs: object) -> None:
+        if self.name == "u0-publisher-second":
+            attempts.append(self.name)
+            raise RuntimeError("injected_thread_start_failure")
+        real_start(self, *args, **kwargs)
+
+    monkeypatch.setattr(threading.Thread, "start", failing_start)
+    with pytest.raises(AssertionError) as raised:
+        caller_module.test_proposed_admission_owned_transaction_and_publisher_contend_in_both_orders(tmp_path)
+    diagnostic = str(raised.value)
+    assert attempts == ["u0-publisher-second"]
+    assert "injected_thread_start_failure" in diagnostic
+    assert "unexpected_started_workers" in diagnostic
+    assert not [thread for thread in threading.enumerate() if thread.name.startswith("u0-")]
+
+
 def test_proposed_publication_helpers_refuse_caller_transactions_without_committing_them(tmp_path: Path) -> None:
     path, files, cache = tmp_path / "caller-transaction.db", tmp_path / "canonical", {}
     conn = _adapter(path)
@@ -1555,3 +1655,236 @@ def test_proposed_publication_helpers_refuse_caller_transactions_without_committ
         publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"never", publisher="agents-route", journal_id="never")
     assert conn.in_transaction
     conn.rollback()
+
+
+# ---------------------------------------------------------------------------
+# F4 proposed machine-global profile membership / activation coordinator.
+#
+# These schedules connect the global coordinator to the already-proved per-org
+# publication, fence, lease and recovery machinery above.  They are isolated
+# evidence (unimplemented production proposal), not a runtime guarantee.
+# ---------------------------------------------------------------------------
+
+
+def _seed_profile_orgs(
+    tmp_path: Path, names: Iterable[str],
+) -> tuple[dict[str, ProfileOrg], dict[str, Path]]:
+    """Seed each dependent organization with one coherent published authority."""
+    orgs: dict[str, ProfileOrg] = {}
+    paths: dict[str, Path] = {}
+    for name in names:
+        path = tmp_path / f"{name}.db"
+        root = tmp_path / f"{name}-canonical"
+        conn = _adapter(path)
+        cache: dict[str, tuple[int, str]] = {}
+        assert publish_authority_generation(conn, root=root, cache=cache, namespace=name, expected_generation=0, snapshot=name.encode(), publisher="bootstrap", journal_id=f"base-{name}") == 1
+        orgs[name] = ProfileOrg(namespace=name, connection=conn, root=root, cache=cache)
+        paths[name] = path
+    return orgs, paths
+
+
+def test_proposed_profile_activation_before_operation_is_captured_and_fenced(tmp_path: Path) -> None:
+    """An activation that wins the race must be inside the captured fenced set."""
+    coordinator = _adapter(tmp_path / "profiles.db")
+    orgs, paths = _seed_profile_orgs(tmp_path, ("org-a", "org-b", "org-c"))
+    for name in ("org-a", "org-b", "org-c"):
+        assert register_profile_dependency(coordinator, organization=name, profile_name="codex-profile", expected_generation=0) == 0
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="codex-profile", operation_kind="register", snapshot=b"profile-v1", operation_id="op-before") == "published"
+    operation = coordinator.execute("SELECT captured_members, target_generation, state FROM workflow_profile_operations WHERE id='op-before'").fetchone()
+    assert json.loads(operation[0]) == ["org-a", "org-b", "org-c"]
+    assert operation[1] == 1 and operation[2] == "published"
+    # Every captured org is fenced before the store/registry commit and denies
+    # stale admission until an independent republish.
+    for name in ("org-a", "org-b", "org-c"):
+        assert _publication_rows(paths[name])["pointers"][0][4] == "fenced"
+        with pytest.raises(ValueError, match="authority_pointer_not_ready"):
+            admit_authority_request(orgs[name].connection, root=orgs[name].root, cache=orgs[name].cache, namespace=name, request_id=f"stale-{name}", request_bytes=b"x", admitted_by="reader", expected_generation=1)
+    assert coordinator.execute("SELECT generation, state FROM workflow_profile_store WHERE profile_name='codex-profile'").fetchone() == (1, "active")
+    assert coordinator.execute("SELECT published_generation FROM workflow_profile_registry WHERE profile_name='codex-profile'").fetchone() == (1,)
+    assert coordinator.execute("SELECT COUNT(*) FROM workflow_profile_leases").fetchone() == (0,)
+    assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-before") == ["org-a", "org-b", "org-c"]
+    for name in ("org-a", "org-b", "org-c"):
+        assert _publication_rows(paths[name])["pointers"][0][0:2] == (name, 2)
+        assert orgs[name].cache == {name: (2, sha256_bytes(name.encode()))}
+    assert admit_authority_request(orgs["org-a"].connection, root=orgs["org-a"].root, cache=orgs["org-a"].cache, namespace="org-a", request_id="after-republish", request_bytes=b"x", admitted_by="reader", expected_generation=2) == 2
+
+
+def test_proposed_profile_operation_wins_and_late_activation_cannot_admit_stale(tmp_path: Path) -> None:
+    """A late/new-org activation cannot join or admit stale authority mid-op."""
+    path = tmp_path / "profiles.db"
+    coordinator = _adapter(path)
+    orgs, paths = _seed_profile_orgs(tmp_path, ("org-a", "org-b", "org-late"))
+    register_profile_dependency(coordinator, organization="org-a", profile_name="codex-profile", expected_generation=0)
+    register_profile_dependency(coordinator, organization="org-b", profile_name="codex-profile", expected_generation=0)
+    late_results: list[object] = []
+    captured = threading.Event()
+
+    def late_activation() -> None:
+        conn = _adapter(path)
+        try:
+            late_results.append(register_profile_dependency(conn, organization="org-late", profile_name="codex-profile", expected_generation=0))
+        except BaseException as exc:
+            late_results.append(exc)
+        finally:
+            conn.close()
+
+    def on_stage(stage: str) -> None:
+        if stage != "captured":
+            return
+        captured.set()
+        worker = threading.Thread(target=late_activation, name="u0-late-activation")
+        worker.start()
+        worker.join(5)
+        assert not worker.is_alive()
+
+    with pytest.raises(ProfileOperationInterrupted, match="after_store"):
+        coordinate_profile_operation(coordinator, orgs=orgs, profile_name="codex-profile", operation_kind="register", snapshot=b"profile-v1", operation_id="op-wins", interrupt_at="after_store", stage_hook=on_stage)
+    assert captured.is_set()
+    assert len(late_results) == 1 and isinstance(late_results[0], ValueError)
+    assert str(late_results[0]).startswith("profile_operation_in_progress:")
+    # Store committed but the registry is not yet published: every captured org
+    # fails closed against the old authority.
+    for name in ("org-a", "org-b"):
+        assert _publication_rows(paths[name])["pointers"][0][4] == "fenced"
+        with pytest.raises(ValueError, match="authority_pointer_not_ready"):
+            admit_authority_request(orgs[name].connection, root=orgs[name].root, cache=orgs[name].cache, namespace=name, request_id=f"mid-{name}", request_bytes=b"x", admitted_by="reader", expected_generation=1)
+    assert coordinator.execute("SELECT state FROM workflow_profile_operations WHERE id='op-wins'").fetchone() == ("store_committed",)
+    assert coordinator.execute("SELECT published_generation FROM workflow_profile_registry WHERE profile_name='codex-profile'").fetchone() is None
+    cold = _adapter(path)
+    cold_orgs = {name: ProfileOrg(name, _adapter(paths[name]), orgs[name].root, {}) for name in ("org-a", "org-b")}
+    assert reconcile_profile_operation(cold, orgs=cold_orgs, operation_id="op-wins") == "recovered_forward"
+    assert republish_profile_dependents(cold, orgs=cold_orgs, operation_id="op-wins") == ["org-a", "org-b"]
+    with pytest.raises(ValueError, match="profile_generation_stale"):
+        register_profile_dependency(cold, organization="org-late", profile_name="codex-profile", expected_generation=0)
+    assert register_profile_dependency(cold, organization="org-late", profile_name="codex-profile", expected_generation=1) == 1
+    assert coordinator.execute("SELECT org_namespace, bound_generation FROM workflow_profile_dependencies ORDER BY org_namespace").fetchall() == [("org-a", 0), ("org-b", 0), ("org-late", 1)]
+    for org in list(orgs.values()):
+        org.connection.close()
+    for org in list(cold_orgs.values()):
+        org.connection.close()
+
+
+@pytest.mark.parametrize("to_profile", ("claude-profile", None))
+def test_proposed_profile_dependency_mutation_is_fenced_during_operation(tmp_path: Path, to_profile: str | None) -> None:
+    """A concurrent rebind/removal keeps the captured membership truthful."""
+    path = tmp_path / "profiles.db"
+    coordinator = _adapter(path)
+    orgs, _paths = _seed_profile_orgs(tmp_path, ("org-a", "org-b"))
+    register_profile_dependency(coordinator, organization="org-a", profile_name="codex-profile", expected_generation=0)
+    register_profile_dependency(coordinator, organization="org-b", profile_name="codex-profile", expected_generation=0)
+    mutation_results: list[object] = []
+
+    def concurrent_mutation() -> None:
+        conn = _adapter(path)
+        try:
+            mutation_results.append(mutate_profile_dependency(conn, organization="org-b", from_profile="codex-profile", to_profile=to_profile, expected_generation=0))
+        except BaseException as exc:
+            mutation_results.append(exc)
+        finally:
+            conn.close()
+
+    def on_stage(stage: str) -> None:
+        if stage != "captured":
+            return
+        worker = threading.Thread(target=concurrent_mutation, name="u0-dependency-mutation")
+        worker.start()
+        worker.join(5)
+        assert not worker.is_alive()
+
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="codex-profile", operation_kind="register", snapshot=b"profile-v1", operation_id="op-dep", stage_hook=on_stage) == "published"
+    assert len(mutation_results) == 1 and isinstance(mutation_results[0], ValueError)
+    assert str(mutation_results[0]).startswith("profile_operation_in_progress:")
+    captured = json.loads(coordinator.execute("SELECT captured_members FROM workflow_profile_operations WHERE id='op-dep'").fetchone()[0])
+    assert captured == ["org-a", "org-b"]
+    assert coordinator.execute("SELECT org_namespace, profile_name, state FROM workflow_profile_dependencies ORDER BY org_namespace").fetchall() == [("org-a", "codex-profile", "active"), ("org-b", "codex-profile", "active")]
+    republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-dep")
+    assert mutate_profile_dependency(coordinator, organization="org-b", from_profile="codex-profile", to_profile=to_profile, expected_generation=1) == ("dependency_rebound" if to_profile is not None else "dependency_removed")
+    row = coordinator.execute("SELECT profile_name, bound_generation, state FROM workflow_profile_dependencies WHERE org_namespace='org-b'").fetchone()
+    assert row == (("claude-profile", 1, "active") if to_profile is not None else ("codex-profile", 0, "removed"))
+
+
+@pytest.mark.parametrize("interrupt_at", ("after_first_fence", "after_store"))
+def test_proposed_profile_partial_fence_or_post_store_interruption_recovers_cold(tmp_path: Path, interrupt_at: str) -> None:
+    """A partial-fence or post-store/pre-registry crash converges forward cold."""
+    path = tmp_path / "profiles.db"
+    coordinator = _adapter(path)
+    orgs, paths = _seed_profile_orgs(tmp_path, ("org-a", "org-b"))
+    register_profile_dependency(coordinator, organization="org-a", profile_name="codex-profile", expected_generation=0)
+    register_profile_dependency(coordinator, organization="org-b", profile_name="codex-profile", expected_generation=0)
+    with pytest.raises(ProfileOperationInterrupted, match=interrupt_at):
+        coordinate_profile_operation(coordinator, orgs=orgs, profile_name="codex-profile", operation_kind="register", snapshot=b"profile-v1", operation_id="op-cold", interrupt_at=interrupt_at)
+    assert _publication_rows(paths["org-a"])["pointers"][0][4] == "fenced"
+    if interrupt_at == "after_first_fence":
+        assert _publication_rows(paths["org-b"])["pointers"][0][4] == "ready"
+        assert coordinator.execute("SELECT generation FROM workflow_profile_store WHERE profile_name='codex-profile'").fetchone() is None
+    else:
+        assert _publication_rows(paths["org-b"])["pointers"][0][4] == "fenced"
+        assert coordinator.execute("SELECT generation, state FROM workflow_profile_store WHERE profile_name='codex-profile'").fetchone() == (1, "active")
+        assert coordinator.execute("SELECT published_generation FROM workflow_profile_registry WHERE profile_name='codex-profile'").fetchone() is None
+    with pytest.raises(ValueError, match="authority_pointer_not_ready"):
+        admit_authority_request(orgs["org-a"].connection, root=orgs["org-a"].root, cache=orgs["org-a"].cache, namespace="org-a", request_id="stale-cold", request_bytes=b"x", admitted_by="reader", expected_generation=1)
+    cold = _adapter(path)
+    cold_orgs = {name: ProfileOrg(name, _adapter(paths[name]), orgs[name].root, {}) for name in ("org-a", "org-b")}
+    assert reconcile_profile_operation(cold, orgs=cold_orgs, operation_id="op-cold") == "recovered_forward"
+    assert reconcile_profile_operation(cold, orgs=cold_orgs, operation_id="op-cold") == "published"
+    assert republish_profile_dependents(cold, orgs=cold_orgs, operation_id="op-cold") == ["org-a", "org-b"]
+    for name in ("org-a", "org-b"):
+        assert _publication_rows(paths[name])["pointers"][0][0:2] == (name, 2)
+        assert cold_orgs[name].cache == {name: (2, sha256_bytes(name.encode()))}
+    assert coordinator.execute("SELECT generation, state FROM workflow_profile_store WHERE profile_name='codex-profile'").fetchone() == (1, "active")
+    assert coordinator.execute("SELECT published_generation FROM workflow_profile_registry WHERE profile_name='codex-profile'").fetchone() == (1,)
+    assert coordinator.execute("SELECT state FROM workflow_profile_operations WHERE id='op-cold'").fetchone() == ("published",)
+    assert coordinator.execute("SELECT COUNT(*) FROM workflow_profile_leases").fetchone() == (0,)
+
+
+def test_proposed_stale_profile_compensation_cannot_restore_newer_operation(tmp_path: Path) -> None:
+    """An old compensation must never overwrite a newer committed operation."""
+    path = tmp_path / "profiles.db"
+    coordinator = _adapter(path)
+    orgs, _paths = _seed_profile_orgs(tmp_path, ("org-a",))
+    register_profile_dependency(coordinator, organization="org-a", profile_name="codex-profile", expected_generation=0)
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="codex-profile", operation_kind="register", snapshot=b"profile-v1", operation_id="op-older") == "published"
+    republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-older")
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="codex-profile", operation_kind="rebind", snapshot=b"profile-v2", operation_id="op-newer") == "published"
+    republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-newer")
+    before = (
+        coordinator.execute("SELECT profile_name, generation, profile_digest, state FROM workflow_profile_store").fetchall(),
+        coordinator.execute("SELECT profile_name, published_generation FROM workflow_profile_registry").fetchall(),
+        coordinator.execute("SELECT id, state, compensation_generation FROM workflow_profile_operations ORDER BY id").fetchall(),
+    )
+    with pytest.raises(ValueError, match="stale_profile_compensation_fenced"):
+        compensate_profile_operation(coordinator, operation_id="op-older")
+    after = (
+        coordinator.execute("SELECT profile_name, generation, profile_digest, state FROM workflow_profile_store").fetchall(),
+        coordinator.execute("SELECT profile_name, published_generation FROM workflow_profile_registry").fetchall(),
+        coordinator.execute("SELECT id, state, compensation_generation FROM workflow_profile_operations ORDER BY id").fetchall(),
+    )
+    assert after == before
+    assert coordinator.execute("SELECT state FROM workflow_profile_operations WHERE id='op-older'").fetchone() == ("published",)
+    assert coordinator.execute("SELECT generation FROM workflow_profile_store WHERE profile_name='codex-profile'").fetchone() == (2,)
+
+
+def test_proposed_profile_coordinator_reclaims_dead_process_owner_and_completes(tmp_path: Path) -> None:
+    """The cross-process coordinator lease is reclaimed from a proven-dead owner."""
+    path = tmp_path / "profiles.db"
+    coordinator = _adapter(path)
+    orgs, paths = _seed_profile_orgs(tmp_path, ("org-a",))
+    register_profile_dependency(coordinator, organization="org-a", profile_name="codex-profile", expected_generation=0)
+    script = """import sqlite3, sys
+from pathlib import Path
+from tests.workflows.u0_evidence_helpers import ProfileOrg, coordinate_profile_operation
+conn = sqlite3.connect(sys.argv[1]); conn.execute('PRAGMA foreign_keys=ON')
+org = sqlite3.connect(sys.argv[2]); org.execute('PRAGMA foreign_keys=ON')
+orgs = {'org-a': ProfileOrg('org-a', org, Path(sys.argv[3]), {})}
+coordinate_profile_operation(conn, orgs=orgs, profile_name='codex-profile', operation_kind='register', snapshot=b'profile-v1', operation_id='dead-op', interrupt_at='process_exit_after_lease')
+"""
+    result = subprocess.run([sys.executable, "-c", script, str(path), str(paths["org-a"]), str(orgs["org-a"].root)], cwd=Path(__file__).parents[2], capture_output=True, text=True)
+    assert result.returncode == 74, result.stderr
+    stranded = coordinator.execute("SELECT owner_token, owner_pid FROM workflow_profile_leases WHERE profile_name='codex-profile'").fetchone()
+    assert stranded is not None and stranded[1] > 0
+    cold = _adapter(path)
+    cold_org = ProfileOrg("org-a", _adapter(paths["org-a"]), orgs["org-a"].root, {})
+    assert coordinate_profile_operation(cold, orgs={"org-a": cold_org}, profile_name="codex-profile", operation_kind="register", snapshot=b"profile-v1", operation_id="fresh-op") == "published"
+    assert coordinator.execute("SELECT COUNT(*) FROM workflow_profile_leases").fetchone() == (0,)
+    assert coordinator.execute("SELECT state FROM workflow_profile_operations WHERE id='fresh-op'").fetchone() == ("published",)
+    assert republish_profile_dependents(cold, orgs={"org-a": cold_org}, operation_id="fresh-op") == ["org-a"]

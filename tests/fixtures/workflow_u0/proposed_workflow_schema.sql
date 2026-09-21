@@ -40,3 +40,17 @@ CREATE TABLE workflow_publication_leases (namespace TEXT PRIMARY KEY, owner_toke
 CREATE TABLE workflow_admission_records (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, generation INTEGER NOT NULL CHECK(generation>0), request_digest TEXT NOT NULL, admitted_by TEXT NOT NULL, UNIQUE(namespace,id), FOREIGN KEY(namespace) REFERENCES workflow_authority_pointers(namespace));
 CREATE INDEX workflow_publication_journals_namespace_state_idx ON workflow_publication_journals(namespace,state,generation);
 CREATE INDEX workflow_admission_records_namespace_generation_idx ON workflow_admission_records(namespace,generation);
+-- F4 proposed machine-global profile membership/activation coordinator.  This is
+-- an isolated evidence relation set, not an installed migration and not a claim
+-- of a distributed atomic commit.  The coordinator is same-host cooperative
+-- only: a cross-process lease serializes operations, and any same-UID direct
+-- database/file mutation stays outside the guarantee.  The per-organization
+-- authority pointer/journal/lease/file/cache relations above remain the only
+-- authority store; the coordinator never replaces them.
+CREATE TABLE workflow_profile_store (profile_name TEXT PRIMARY KEY, generation INTEGER NOT NULL CHECK(generation>=0), profile_digest TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('active','removed')));
+CREATE TABLE workflow_profile_registry (profile_name TEXT PRIMARY KEY REFERENCES workflow_profile_store(profile_name), published_generation INTEGER NOT NULL CHECK(published_generation>=0));
+CREATE TABLE workflow_profile_operations (id TEXT PRIMARY KEY, profile_name TEXT NOT NULL, operation_kind TEXT NOT NULL CHECK(operation_kind IN ('register','rebind','remove')), captured_members TEXT NOT NULL, target_generation INTEGER NOT NULL CHECK(target_generation>0), state TEXT NOT NULL CHECK(state IN ('captured','fenced','store_committed','published','forward_recovery_required','aborted')), profile_digest TEXT NOT NULL, coordinator_invocation TEXT NOT NULL, compensation_generation INTEGER NOT NULL DEFAULT 0 CHECK(compensation_generation>=0), created_at TEXT NOT NULL);
+CREATE TABLE workflow_profile_leases (profile_name TEXT PRIMARY KEY, owner_token TEXT NOT NULL, owner_pid INTEGER NOT NULL CHECK(owner_pid>0));
+CREATE TABLE workflow_profile_dependencies (org_namespace TEXT PRIMARY KEY, profile_name TEXT NOT NULL, bound_generation INTEGER NOT NULL CHECK(bound_generation>=0), state TEXT NOT NULL CHECK(state IN ('active','removed')));
+CREATE INDEX workflow_profile_operations_profile_state_idx ON workflow_profile_operations(profile_name,state,target_generation);
+CREATE INDEX workflow_profile_dependencies_profile_idx ON workflow_profile_dependencies(profile_name,state);

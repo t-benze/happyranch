@@ -402,14 +402,81 @@ executor/model/adapter selection. Its durable pointer is
 Machine-global executor profiles are separate and cannot be represented by an
 org pointer alone.
 
-| Effective source writer/reader | classification / scope |
-| --- | --- |
-| agent create/approve/reject/terminate and `manage_agent` repo/model/executor writers; AgentDef readers | participate only for grantor/target/repo/executor/model/input scope; future writers join or activation is fenced |
-| `put_teams`, `TeamsRegistry.save/load`, `OrgState.load` | participate for team/role eligibility; display-only settings are irrelevant; snapshot is org-scoped |
-| org init/bootstrap/reload and `DaemonState.from_runtime` | setup/reader fence: partial org or incoherent pointer/file/cache refuses activation |
-| authority-policy release/activation | immutable release creation separate; active pointer participates, existing epoch is not universal authority |
-| `remove_runtime_executor_profile`, `bind_adapter_profile`, `_perform_adapter_profile_binding`, store/registry callers | participate only for a used profile; machine-global store/profile lock required; otherwise unsupported, not universal revocation |
-| activation/admission/receipt/final-join/recovery | proposed adapter readers; current run-step/queue/legacy chain/fanout remain separately owned |
+### Effective supported-operation map
+
+| Current file/symbol | Supported entrypoint or direct caller | Durable surface | Cached surface | Eligibility/input dependency changed | Reader/use points | Present lock/transaction/compensation | Proposed precise participation point (proposed filename/symbol) | Classification |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `runtime/daemon/routes/agents.py:659 manage_agent` (enroll) | `POST /api/v1/orgs/{slug}/agents/manage`; CLI `cli/commands/agents.py:158 cmd_manage_agent` posts the route | `org/agents/_pending/<name>.md` via `prompt_loader.write_pending_agent` (`runtime/orchestrator/prompt_loader.py:136`); `org/teams.yaml` via `TeamsRegistry.add_worker`; audit `log_agent_managed` | in-memory `org.teams` (`TeamsRegistry`); file reads are fresh (no name/def cache) | grantor, target name, team/role assignment, executor, model, repos, input scope | `_require_team_manager_auth`; `validate_team_membership`; `orchestrator._resolve_executor_name` (`runtime/orchestrator/orchestrator.py:360`) | `async with org.teams_lock`; atomic tempfile+`os.replace` pending write; audit after commit | `WorkflowAuthorityCoordinator.publish_generation(org)` after both file writes commit (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/agents.py:885 manage_agent` terminate branch | `POST .../agents/manage` with `ManageAgentAction.terminate` | archive move to `org/agents/_terminated/<name>.md` + `_terminated` workspace; `teams.remove_worker`; DB cleanup | `org.teams` | target teardown (removes target/team/role eligibility) | `list_enrollments`, `validate_team_membership`, dispatch roster | `org.teams_lock`; multi-step rollback compensation (restore worker, move dirs, restore agent file) | `WorkflowAuthorityCoordinator.fence_org` then `publish_generation` after archive (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/agents.py:1162 founder_create_agent` | `POST /api/v1/orgs/{slug}/agents`; CLI `cmd_manage_agent` enroll path | active `org/agents/<name>.md`; new/updated `org/teams.yaml` (`add_team`/`add_worker`) | `org.teams` | grantor, target, team/role (manager creates team), executor, model, repos | `list_agents`, `validate_team_membership`, dispatch | `async with org.teams_lock`; team rollback on agent-write failure | `WorkflowAuthorityCoordinator.publish_generation(org)` (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/agents.py:2103 approve_agent` + `runtime/orchestrator/prompt_loader.py:154 approve_agent` | `POST /api/v1/orgs/{slug}/agents/{agent_name}/approve`; CLI enrollment approve | pending file → active `org/agents/<name>.md` (rename/atomic) | `org.teams` (promotion validated against roster) | target activation (pending→active) | `prompt_loader.load_agent` (`prompt_loader.py:60`), `list_agents` (`:127`) | `org.teams` roster check before promote; `FileExistsError` CAS on promotion | `WorkflowAuthorityCoordinator.publish_generation(org)` (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/agents.py:2176 reject_agent` + `runtime/orchestrator/prompt_loader.py:173 reject_agent` | `POST /api/v1/orgs/{slug}/agents/{agent_name}/reject` | unlink pending file; `teams.remove_worker` | `org.teams` | target denial (removes pending eligibility) | `list_pending`, `list_agents` | `async with org.teams_lock`; unlink+worker removal paired | `WorkflowAuthorityCoordinator.publish_generation(org)` (proposed, unimplemented) | participating |
+| `runtime/orchestrator/agent_def.py:169 render_agent_text` / `AgentDef` model (`runtime/orchestrator/agent_def.py:64 parse_agent_text`) | direct caller `manage_repo` (agents.py:566), `set_agent_model` (agents.py:1955), `set_agent_executor` (agents.py:1605), `founder_create_agent` | canonical `org/agents/<name>.md` frontmatter bytes | none (fresh parse per read) | executor/model/repos/allow-rules/team/role identity | `prompt_loader.load_agent`, dispatch, workspace bootstrap | atomic tempfile+`os.replace` in each caller | canonical-authority-file writer under `WorkflowAuthorityStore.commit_pointer` (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/agents.py:566 manage_repo` | `POST /api/v1/orgs/{slug}/agents/{agent_name}/repos`; CLI `cli/commands/agents.py:104 cmd_manage_repo` | rewritten `repos:` frontmatter in `org/agents/<name>.md` | none | repository/input scope for target | `prompt_loader.load_agent`; `ContextBuilder` bootstrap | atomic tempfile+`os.replace`; `ensure_workspace_ready` after | `WorkflowAuthorityCoordinator.publish_generation(org)` (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/agents.py:1605 set_agent_executor` | `PUT /api/v1/orgs/{slug}/agents/{agent_name}/executor`; CLI `cli/commands/agents.py:298 cmd_set_executor` | `executor:` frontmatter in `org/agents/<name>.md` (single authoritative store) | none (registry resolved at dispatch) | concrete executor selection for target | `_validate_executor` (`agents.py:1585`); `orchestrator._resolve_executor_name` (`orchestrator.py:360`); launch read `orchestrator.py:766` | journaled declared-write capture + rollback on materialization failure; preflight gates before mutation | join existing machine-global path: `ProfileCoordinator.fence_dependent_orgs` is NOT needed (no global write); `WorkflowAuthorityCoordinator.publish_generation(org)` (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/agents.py:1955 set_agent_model` | `PUT /api/v1/orgs/{slug}/agents/{agent_name}/model`; CLI `cli/commands/agents.py:268 cmd_set_model` | `model:` frontmatter in `org/agents/<name>.md` | none; `_resolve_agent_model` (`agents.py:425`) re-reads | model selection for target | `_resolve_agent_model`; launch env builder | atomic tempfile+`os.replace`; audit row | `WorkflowAuthorityCoordinator.publish_generation(org)` (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/settings.py:1009 put_teams` | `PUT /api/v1/orgs/{slug}/settings/teams` | `org/teams.yaml` via `TeamsRegistry.add_worker`/`remove_worker` (`runtime/orchestrator/teams.py:115`,`:127`) | in-memory `org.teams` | team/worker/role membership | `validate_team_membership`; `_post_flight_worker_agent_drift` (`settings.py`); dispatch roster | `async with org.teams_lock`; preflight + post-flight validate with rollback to `original_workers` | `WorkflowAuthorityCoordinator.publish_generation(org)` (proposed, unimplemented) | participating |
+| `runtime/orchestrator/teams.py:58 TeamsRegistry.save` | direct caller `add_worker`/`remove_worker`/`add_team`/`remove_team`; test helpers | `org/teams.yaml` | `TeamsRegistry._teams` in memory | team/manager/worker membership | `OrgState.load` (`runtime/daemon/org_state.py:158`) | atomic tempfile+`os.replace`; no cross-process lock | canonical-authority-file writer under `WorkflowAuthorityStore.commit_pointer` (proposed, unimplemented) | participating |
+| `runtime/orchestrator/teams.py:27 TeamsRegistry.load` | direct caller `OrgState.load`; `runtime/daemon/state.py:149` at startup | reads `org/teams.yaml` | builds in-memory `_teams` | team/role eligibility snapshot | `validate_team_membership`; `all_agents`, `team_for_agent` | none (read; caller validates) | `WorkflowAuthorityCoordinator.verify_ready(org)` before roster is trusted (proposed, unimplemented) | participating |
+| `runtime/orchestrator/teams.py:49 TeamsRegistry.seed_empty` | no supported live caller found (rg: `rg -rn "seed_empty" runtime cli --include=*.py` → only the definition at `teams.py:49`) | would write `org/teams.yaml` | none | team seed | none in production | none | none required until a caller exists | explicitly unsupported/fenced: dormant helper with no supported live caller; `_seed_skeleton` writes the seed inline instead (`routes/orgs.py:54`) |
+| `runtime/daemon/org_state.py:158 OrgState.load` | callers `DaemonState.from_runtime` (`state.py:149`) and `DaemonState.add_org` (`state.py:195`) | reads `org/teams.yaml` and opens `happyranch.db` | constructs `Orchestrator`; `org.orchestrator` lives in memory | whole-org eligibility snapshot (roster + agents + settings seed) | all per-org routes via `OrgDep` | `validate_team_membership` raises `OrgConsistencyError`; no generation check | `WorkflowAuthorityCoordinator.verify_ready(org)` at attach time; refuse partial org (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/settings.py:814 put_org_settings` (`reviewer_agents`) | `PUT /api/v1/orgs/{slug}/settings/org` | `org_settings` DB rows / `org/config.yaml` | in-memory org config / `OrgState.settings` | reviewer-agent eligibility (reviewer omission rules) | `_reviewer_agents_for` (`run_step.py:1448`); settings readers | HTTP validation; no org-level transaction | `WorkflowAuthorityCoordinator.publish_generation(org)` for the reviewer_agents field only (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/settings.py:814 put_org_settings` (display name, `feishu_notifications`, presentation keys) | `PUT /api/v1/orgs/{slug}/settings/org`; `GET /api/v1/orgs/{slug}/settings` (`settings.py:382`) | `org/config.yaml` / settings rows | in-memory config | none (presentation / notification only) | UI settings view | HTTP validation only | none | irrelevant: display name / notification settings are presentation data, not org authority inputs; they must not invalidate workflows |
+| `runtime/orchestrator/active_authority_policy.py:45 resolve_active_team_policy_snapshot` | direct callers merge at task/thread/wake/dream/schedule launch (prompt build); CLI/HTTP not direct | reads `AuthorityPolicyStore` (org DB tables) | none (resolved per launch, then bound to session) | active escalation policy identity for eligible `engineering` / `engineering_manager` | launch prompt builder; `render_active_team_policy` | `ActiveAuthorityPolicyError` fail-closed on incoherence | `WorkflowAuthorityCoordinator.verify_ready(org)` then read active pointer, not a mutable current value (proposed, unimplemented) | participating |
+| `runtime/orchestrator/active_authority_policy.py:62 persist_session_policy_binding` | direct caller task launch path (`orchestrator`/`run_step`) | audit-log row `authority_policy_session_binding` in org DB | session binding read back by `load_session_policy_snapshot` guarded by `binding_lease` | pins release/activation/epoch/provider/executor/model for the session | `load_session_policy_snapshot` (`active_authority_policy.py:93`) | audit idempotency; ambiguity raises `ActiveAuthorityPolicyError` | record the workflow authority generation in the binding (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/authority_policy.py:474 activate_team_escalation_policy` + `runtime/orchestrator/authority_policy_store.py:51 activate_with_audit` | `POST /api/v1/orgs/{slug}/agents/{agent_name}/team-escalation-policy/activations` | `authority_policy_activations` rows (org DB) | none | D2 activation: current active policy release + monotonic epoch for the team | `store.get_current_activation` (`authority_policy_store.py:79`); session binding | `activate_with_audit` CAS on `expected_previous_epoch`; `sqlite3.IntegrityError` → 409 | `WorkflowAuthorityCoordinator.publish_generation(org)` after D2 activation commits (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/authority_policy.py:403 create_team_escalation_policy_release` + `authority_policy_store.py:32 create_release_with_audit` | `POST .../team-escalation-policy/releases` | immutable `authority_policy_releases` rows (org DB) | none | none by itself (D1 template/version publishing; not active authority) | `store.get_release` (`authority_policy_store.py:70`); activation links release_id | `create_release_with_audit` idempotency/request-digest; append-only | none (release creation is deliberately separate from generation publish) | irrelevant: D1 immutable release/version publishing is deliberately outside the Phase1 org-authority generation; only D2 activation joins |
+| `runtime/daemon/routes/authority_policy.py:146 get_team_escalation_policy` / `:194 get_team_escalation_policy_history` / `:341 ..._outcomes` | `GET .../team-escalation-policy[...]` | reads release/activation/outcome rows | none | none (read-only projections) | manager policy page | none | verify against `WorkflowAuthorityCoordinator.verify_ready` (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/orgs.py:134 init_org` | `POST /api/v1/orgs`; CLI `happyranch orgs ...` | creates `org/` skeleton + `happyranch.db`; then `DaemonState.add_org` | new `OrgState` in `state.orgs` | whole-org creation (roster + policy + pointer all absent) | `list_orgs`; every per-org route | rollback `shutil.rmtree` on seed/add failure; `_is_reclaimable_partial` guard | `WorkflowAuthorityCoordinator.verify_ready(org)` = `uninitialized_no_authority` until first publish; refuse partial org (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/orgs.py:39 _seed_skeleton` | direct caller `init_org` (`orgs.py:174`) | writes `org/teams.yaml` `"teams: {}\n"` inline, creates `org/agents/_pending`, `workspaces/`, `kb/`, `artifacts/` | none | initial empty team seed for a new org | `TeamsRegistry.load` on attach | `mkdir(exist_ok=False)` then caller rollback | seed canonical authority file as part of the same atomic step (proposed, unimplemented) | participating |
+| `runtime/daemon/state.py:179 DaemonState.add_org` | callers `init_org` (`orgs.py:185`) and reload/activate paths | attach `OrgState` to `state.orgs`; pop `broken_orgs` | `state.orgs` dict; `org.sessions`, `org.orchestrator` | org becomes runnable (roster/policy eligibility now live) | `get_org`; `OrgDep` | `async with self.orgs_lock`; `OrgConsistencyError` propagates | `WorkflowAuthorityCoordinator.verify_ready(org)` before attach (proposed, unimplemented) | participating |
+| `runtime/daemon/state.py:87 DaemonState.from_runtime` | boot `runtime/daemon/__main__.py:454` and runtime swap `routes/runtime.py:23` | opens each `OrgState`; loads machine-global profiles into registry | process-wide `state.orgs`, `host_supervisor`, executor registry singleton | startup/reader fence for every org + registry contents | all daemon routes | per-org `try/except` records `broken_orgs`; profile per-entry validate/skip (`state.py:133-145`) | `WorkflowAuthorityCoordinator.verify_ready(org)` per org; `ProfileCoordinator` must publish/fence global registry state before attach (proposed, unimplemented) | participating |
+| `runtime/daemon/state.py:130 load_runtime_profiles` (inside `from_runtime`) | direct caller `from_runtime`; also `routes/executors.py:656`, `routes/adapters.py:540`,`:620`, `custom_adapter_registry.py:1226` | reads `<daemon-home>/executor_profiles.yaml` | registers each profile in process-wide `get_registry()` | machine-global executor profile availability for all orgs | `orchestrator._resolve_executor_name`; `_validate_executor`; dispatch | per-entry `validate_custom_profile_config` + `register_custom_profile`; invalid entries skipped | `ProfileCoordinator.fence_dependent_orgs` before any global profile mutation (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/runtime.py:21 _swap` / `:52 register_runtime` / `:94 use_runtime` | `POST /api/v1/runtime`, `POST /api/v1/runtime/use`; CLI `happyranch runtime ...` | `runtimes.yaml` via `runtime/daemon/runtimes.py:19 load`/`register`/`activate`; rebuilds `state.orgs` | whole `DaemonState` is replaced in place | which runtime tree (and therefore which org/authority pointers) is active | all routes after swap | `daemon.orgs_lock`; refuses when any org has non-terminal tasks; closes old orgs | `WorkflowAuthorityCoordinator.verify_ready(org)` for every newly attached org (proposed, unimplemented) | participating |
+| `runtime/daemon/runtimes.py:19 load` | callers `routes/runtime.register_runtime` (`:56`), `use_runtime` (`:105`), boot | reads/writes `runtimes.yaml` | none | active runtime root selection | daemon boot; runtime routes | `_save` plain write (no lock) | reader fence: confirm each registered root's authority pointer before activation (proposed, unimplemented) | participating |
+| `runtime/orchestrator/runtime_executor_store.py:48 load_runtime_profiles` | direct callers `DaemonState.from_runtime` (`state.py:130`), `routes/executors.py:656`,`:737`, `routes/adapters.py:540`,`:620`,`:1653` | reads machine-global `executor_profiles.yaml` | feeds process-wide registry | machine-global profile set | registry `get_profile`; eligibility resolution | read-only; `yaml.YAMLError`/`OSError` → `{}` (fail-soft) | `ProfileCoordinator` read-side under global fence (proposed, unimplemented) | participating |
+| `runtime/orchestrator/runtime_executor_store.py:76 save_runtime_profile` | direct callers `custom_adapter_registry.py:1421` (bind), `routes/adapters.py:1662` (bind) | atomically rewrites machine-global `executor_profiles.yaml` | in-memory registry updated by caller after durable write | machine-global profile availability (every org can resolve it) | `orchestrator._resolve_executor_name` | read-merge tempfile+`os.replace`; caller holds `adapter_store.acquire_store_lock` or per-name lock; compensating restore/removal at `custom_adapter_registry.py:1449-1451` | `ProfileCoordinator.fence_dependent_orgs` before write, `release_dependent_orgs` after (proposed, unimplemented) | participating |
+| `runtime/orchestrator/runtime_executor_store.py:105 remove_runtime_profile` | direct callers `routes/executors.py:761` (remove route), `custom_adapter_registry.py:1451` (rollback) | atomically rewrites machine-global `executor_profiles.yaml` | registry entry cleared by caller | removes machine-global profile availability | `registry.get_profile`; dispatch | tempfile+`os.replace`; per-name lock in remove route | `ProfileCoordinator.fence_dependent_orgs` before removal, `release_dependent_orgs` after (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/executors.py:715 remove_runtime_executor_profile` | `DELETE /api/v1/runtime/executors/runtime/profiles/{name}` | durable store removed first, then in-memory registry; adapter cleanup + `runtime-audit.db` row | process-wide registry singleton | removes a profile that dependent org agents may reference | `orchestrator._resolve_executor_name` at next dispatch | `_acquire_profile_lock(name)` (`executors.py:57`); durable-first ordering; `remove_unbound_direct_connect_adapter` restore on audit error | `ProfileCoordinator.fence_dependent_orgs` before store mutation, republish before re-admission (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/executors.py:57 _acquire_profile_lock` | internal to `remove_runtime_executor_profile`; also register paths | in-process `threading.Lock` per profile name | none | serialization primitive, no eligibility | n/a | per-name lock; process-local only | fold under `ProfileCoordinator` machine-global fence (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/executors.py:636 list_runtime_executor_profiles` | `GET /api/v1/runtime/executors/runtime/profiles` | reads machine-global store | none | none (read-only) | operator UI/CLI | none | `ProfileCoordinator` read under fence (proposed, unimplemented) | participating |
+| `runtime/orchestrator/executor_registry.py:486 get_registry` / `:200 register_custom_profile` / `:234 unregister_custom_profile` | direct callers `state.py:129`, `routes/executors.py:132`&`:766`, `routes/adapters.py:1537`, `_perform_adapter_profile_binding` | none (process memory only) | process-wide `_registry` singleton (`executor_registry.py:483`) | in-process resolution of machine-global profiles for all orgs | `_resolve_executor_name`; `_validate_executor`; `is_registered` | `register_custom_profile` collision detection; no lock (callers serialize) | `ProfileCoordinator` publishes registry state after durable commit and fences orgs first (proposed, unimplemented) | participating |
+| `runtime/orchestrator/custom_adapter_registry.py:1471 approve_adapter` | direct caller `routes/adapters.py:769 approve_registered_adapter` | adapter store (`adapter_store.py`), then optional profile bind | registry via `_perform_adapter_profile_binding` | approves adapter and may bind a machine-global profile in one transaction | `get_adapter` (`adapter_store.py:234`); `resolve_adapter`; dispatch | holds `adapter_store.acquire_store_lock`; approval rolled back to PENDING if bind fails | `ProfileCoordinator.fence_dependent_orgs` spans approval+bind (proposed, unimplemented) | participating |
+| `runtime/orchestrator/custom_adapter_registry.py:1318 _perform_adapter_profile_binding` | direct caller `approve_adapter` (and bind path); precondition caller holds `acquire_store_lock` | `executor_profiles.yaml` via `save_runtime_profile` (`:1421`); adapter store approval | process-wide registry | machine-global profile bound to approved adapter | dispatch adapter resolution | snapshots `pre_request_profiles`; restores `save_runtime_profile`/`remove_runtime_profile` on any post-durable failure (`:1449-1451`) | `ProfileCoordinator` owns the durable-write + compensation span (proposed, unimplemented) | participating |
+| `runtime/orchestrator/custom_adapter_registry.py:1030 register_custom_adapter` | direct caller adapter-submission route (PENDING registration) | adapter store entry (machine-global) | none | adds a PENDING adapter identity; no eligibility until approved | `get_adapter`; approval route | `adapter_store` lock; validation before write | `ProfileCoordinator` fence around adapter-store mutation (proposed, unimplemented) | participating |
+| `runtime/orchestrator/adapter_store.py:42 acquire_store_lock` / `:205 load_adapters` / `:234 get_adapter` | direct callers `custom_adapter_registry`, `routes/adapters.py`, `routes/direct_connect_commit.py`, `direct_connect_projection.py`, `direct_connect_retry.py` | reads/writes `<daemon-home>/adapters` store | none | machine-global adapter registry contents | approval/bind/removal/resolution | process-local `acquire_store_lock`; no cross-process lock | the present lock the profile coordinator must supersede/wrap (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/adapters.py:1479 bind_adapter_profile` | `POST /api/v1/runtime/adapters/{adapter_id}/bind` (management) | `executor_profiles.yaml` via `save_runtime_profile`; adapter approval | registry | binds machine-global profile to APPROVED adapter (recovery and intended-profile paths) | dispatch adapter resolution | `acquire_store_lock`; re-reads/validates adapter snapshot under lock; compensating restore at `:1690-1696` | `ProfileCoordinator.fence_dependent_orgs` spans re-read + write + compensation (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/adapters.py:769 approve_registered_adapter` | `POST /api/v1/runtime/adapters/{adapter_id}/approve` | adapter store APPROVED + optional profile bind | registry | adapter approval (and auto-bind of intended profile) | `get_adapter`; bind recovery | delegates lock/rollback to `approve_adapter`; 422 rollback to PENDING | `ProfileCoordinator.fence_dependent_orgs` around approval+bind (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/adapters.py:1830 remove_adapter_entry` (+ `:1777 _remove_adapter_locked_with_audit`) | `DELETE /api/v1/runtime/adapters/{adapter_id}` | adapter store removal; direct-connect cleanup | registry (related profiles removed separately) | removes machine-global adapter identity | `get_adapter`; profile resolution | `acquire_store_lock`; audit + restore helper | `ProfileCoordinator.fence_dependent_orgs` when a dependent profile is used (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/direct_connect_commit.py:200 load_runtime_profiles` | direct-connect commit route | reads machine-global profiles to validate a binding before committing | none | machine-global profile availability for direct-connect | direct-connect commit validation | route transaction; no global profile lock | `ProfileCoordinator` read-side fence (proposed, unimplemented) | participating |
+| `runtime/daemon/queue.py:44 enqueue` / `:47 put_nowait` / `:74 _worker_loop` | direct callers producers in `run_step`/routes; worker loop calls `dispatcher.run_step` | in-memory `asyncio.Queue`; dispatch hands to `Orchestrator.run_step` | queue deque in process | none (no authority input); it is the admission→dispatch seam | `_worker_loop` → `run_step` | `asyncio.Queue`; no authority check before dispatch | proposed workflow admission/dispatch adapter reader (proposed, unimplemented) | explicitly unsupported/fenced: current queue admission/dispatch is legacy-owned and does not consult any org authority generation; the proposed adapter is unimplemented |
+| `runtime/orchestrator/run_step.py:58 run_step_impl` (activation + dispatch) | direct caller `queue._worker_loop` via `Orchestrator.run_step`; CLI task run routes enqueue | task rows in `happyranch.db`; audit | in-memory `Orchestrator`/`SessionTracker` | none beyond task state; reads agent/policy snapshot at launch | prompt build (`_build_agent_prompt`, `run_step.py:1782`) | `org.db_lock` + `binding_lease` around completion; no authority generation | `WorkflowAuthorityCoordinator.verify_ready(org)` before prompt build (proposed, unimplemented) | explicitly unsupported/fenced: current run-step activation/dispatch remains separately owned and is not gated by a workflow authority generation |
+| `runtime/daemon/routes/tasks.py:542 submit_completion` → `runtime/orchestrator/run_step.py:750 _consume_completion_report` | `POST /api/v1/orgs/{slug}/tasks/{task_id}/completion`; CLI completion callback | `task_results` rows; audit; task status transitions | `SessionTracker` active-session ownership read | none (receipt/admission of agent output) | `_consume_completion_report`; chain advance | `SessionTracker` id/`binding_lease` validation; `org.db_lock` around transitions; recovery-session restrictions | proposed workflow receipt/admission adapter reader (proposed, unimplemented) | explicitly unsupported/fenced: current completion receipt remains separately owned; no workflow-authority reader is wired |
+| `runtime/orchestrator/run_step.py:2530 _advance_chain_for_completed_child` / `:3027 _enqueue_parent_if_waiting` | internal callers `_consume_completion_report`, `__main__._sweep_on_startup` | `tasks` parent/child rows + chain tables | in-memory chain state | none (final-join of child→parent) | parent re-enqueue; `TaskQueue.enqueue` | `org.db_lock`; CAS-style transitions in `database.try_*` | proposed workflow final-join adapter reader (proposed, unimplemented) | explicitly unsupported/fenced: legacy chain final-join remains separately owned |
+| `runtime/orchestrator/run_step.py:3742 _spawn_fanout_children` / `runtime/orchestrator/fanout.py:79 build_fanout_join_context` | internal callers decision handling (`_consume_completion_report`) | `tasks`/`fanout` durable state | in-memory fanout state | none (fanout child eligibility comes from decision + roster) | `_inject_fanout_join_context` (`run_step.py:4013`) | `org.db_lock`; `fanout.ChainState`/`FanoutState.serialize` durable payloads | proposed workflow admission/final-join adapter readers (proposed, unimplemented) | explicitly unsupported/fenced: legacy fanout spawn/join remains separately owned |
+| `runtime/orchestrator/chain.py:32 ChainState.serialize` / `:86 compute_advance_action` / `runtime/orchestrator/run_step.py:4157 database.try_advance_chain` | internal callers completion/advance paths | `chain_state` durable payload + task rows | in-memory chain state | none (legacy chain ownership) | `_advance_chain_for_completed_child`; `_current_leg_agent` | `database.try_advance_chain` transactional under `org.db_lock` | none; keep legacy owner | explicitly unsupported/fenced: legacy chain owner is deliberately retained and not reparented under the workflow authority generation |
+| `runtime/orchestrator/run_step.py:431 _consume_accepted_completion_recovery` / `runtime/daemon/__main__.py:47 _sweep_on_startup` | boot (`__main__.py:454` after `from_runtime`); recovery route paths | `task_completion_recovery` ledger + task rows in org DB | in-memory registry | none (restart recovery of receipts/final-join) | recovery owners; `_enqueue_parent_if_waiting` | owner-predicate recheck; `org.db_lock`; keeps failed history | proposed workflow recovery reader must verify authority generation before resume (proposed, unimplemented) | explicitly unsupported/fenced: current startup/recovery sweep remains legacy-owned and does not consult a workflow authority generation |
+| `runtime/daemon/sessions.py:28 SessionTracker` (`:135 set_active`, `:226 set_pid`, `:282 set_cancel_control`, `:354 clear`, `:370 clear_if_active_session`) | direct callers `run_step`/`exercises`/`cancel_task`/`submit_completion` | none (in-memory only) | in-process `SessionTracker` maps + per-(task,agent) `binding_lease` | none (session ownership / cancellation controls) | `get_active`, `get_pid`, `iter_task_cancel_controls` | `binding_lease` locks; generation-versioned by session_id | none required for authority eligibility; keep as containment owner | explicitly unsupported/fenced: in-memory session/containment cache, not an authority-eligibility writer; it is not fenced by the proposed contract |
+| `runtime/daemon/routes/tasks.py:1540 cancel_task` | `POST /api/v1/orgs/{slug}/tasks/{task_id}/cancel`; CLI `happyranch cancel` | `tasks` status/`cancelled_at` + `task_cancelled` audit | reads/invokes `SessionTracker` cancel controls | none (task lifecycle; does not change roster/policy/executor eligibility) | `iter_task_cancel_controls`; `_maybe_post_thread_followup` | `async with org.db_lock` for DB+audit; controls invoked outside lock | none; must not be blocked by template/authority publish | explicitly unsupported/fenced: cancellation is task-lifecycle, not an authority-eligibility writer, so gating it on the workflow generation would be incorrect |
+| `runtime/infrastructure/database.py:4054 try_delegate` / `:3399 try_delegate_many` / `:4157 try_advance_chain` | direct callers `run_step`/`_consume_completion_report` | `tasks`, `chain_state`, delegation rows in org DB | in-memory chain/fanout re-derived | none (delegation/chain transitions) | `_advance_chain_for_completed_child`; parent enqueue | SQLite transactions under `org.db_lock` | none; keep legacy owner | explicitly unsupported/fenced: legacy delegation/chain durable transitions remain separately owned |
+| `runtime/skills/custom/service.py:93 current_rules` / `:97 replace_rules` | direct callers skill eligibility routes (`runtime/daemon/routes/custom_skills.py`) | `custom_skill_eligibility_rules` rows (org DB) | resolver policy cache | **skill** eligibility only, not agent/team/policy/executor authority | `runtime/skills/eligibility.py`; `resolver.py` | supersession update + eligibility event insert | none for Phase1 authority | irrelevant: custom-skill eligibility is a separate policy domain and does not change the Phase1 org authority/input contract |
+| `runtime/skills/skill_md.py:83 skill_md_contract_violations` | direct callers skill create/validate paths | none (validation only) | none | none | skill authoring | pure validation | none | irrelevant: static SKILL.md contract validation only |
+| `runtime/skills/canonical_store.py` / `symlink_materializer.py` / `exposure.py` (skill delivery) | session launch materialization (`routes/agents.py` executor switch, task launch seams) | canonical package files + workspace symlinks; ledger | process/resolver caches | none for agent/team/policy authority; may affect delivered skill set | launch materialization; `validate_workspace_skills_integrity` | verify/refuse fail-closed; no authority generation | none unless a skill input changes agent eligibility, which none currently does | irrelevant: skill delivery/materialization is not an org authority-eligibility input in Phase1 |
+| `runtime/daemon/agent_config.py:56 set_executor` / `:66 set_model` (legacy workspace `agent.yaml`) | no supported live caller found (rg: `grep -rn "set_executor\|set_model" runtime --include=*.py` matched only the definitions and the `load_agent_config` reader at `routes/agents.py:1651`) | would write `<workspace>/agent.yaml` | none | none — workspace `agent.yaml` is no longer authoritative (THR-095) | `load_agent_config` is used only for the one-shot migration and `before_ws` diagnostics (`routes/agents.py:1651`) | none | none | explicitly unsupported/fenced: legacy workspace `agent.yaml` writer with no supported live caller; `org/agents/<name>.md` is authoritative |
+| `runtime/daemon/agent_config.py:113 migrate_agent_yaml_to_frontmatter` | direct caller `runtime/daemon/app.py:142` (one-shot startup migration) | rewrites `org/agents/<name>.md` frontmatter | none | executor/repo identity migration | `prompt_loader.load_agent` | idempotent one-shot; runs before org attach | `WorkflowAuthorityCoordinator.publish_generation(org)` if it changes authority (proposed, unimplemented) | participating |
+
+### Indirect writers
+
+These are the real supported writers when the surface is reached through a call chain, not the route name.
+The map above already cites the store/leaf symbol, but the chain matters for the proposed join point:
+
+- **Agent create/enroll:** `cli/commands/agents.py (cmd_manage_agent, cmd_init_agent) → POST /orgs/{slug}/agents[/manage] → routes/agents.py (manage_agent / founder_create_agent) → prompt_loader.write_pending_agent | approve_agent | reject_agent → org/agents/*.md` and `→ TeamsRegistry.add_worker/add_team → org/teams.yaml`. The authority publish must happen after **both** file classes commit, or be fenced.
+- **Agent repo/model/executor:** `cli/commands/agents.py (cmd_manage_repo, cmd_set_model, cmd_set_executor) → routes/agents.py (manage_repo, set_agent_model, set_agent_executor) → agent_def.render_agent_text + tempfile/os.replace → org/agents/<name>.md`. Only the `set_agent_executor` path also materializes workspace skills (`_executor_switch_materialize`), which is delivery, not authority.
+- **Team membership:** `PUT /settings/teams → routes/settings.py:put_teams → TeamsRegistry.add_worker/remove_worker → TeamsRegistry.save → org/teams.yaml`, with rollback to `original_workers` on validation drift.
+- **Machine-global profiles:** `POST /runtime/adapters/{id}/approve → routes/adapters.py:approve_registered_adapter → custom_adapter_registry.approve_adapter → _perform_adapter_profile_binding → runtime_executor_store.save_runtime_profile → executor_profiles.yaml` and `→ get_registry().register_custom_profile`. Also `POST /runtime/adapters/{id}/bind → routes/adapters.py:bind_adapter_profile` does the same write inline (`routes/adapters.py:1662`), and `DELETE /runtime/executors/runtime/profiles/{name} → routes/executors.py:remove_runtime_executor_profile → remove_runtime_profile → registry.unregister_custom_profile`.
+- **Active policy:** `POST .../team-escalation-policy/activations → routes/authority_policy.py:activate_team_escalation_policy → AuthorityPolicyStore.activate_with_audit → authority_policy_activations`. Launch reads it through `resolve_active_team_policy_snapshot` and pins it via `persist_session_policy_binding`.
+- **Org lifecycle:** `POST /orgs → routes/orgs.py:init_org → _seed_skeleton → DaemonState.add_org → OrgState.load` (teams.yaml + DB). Runtime switch: `POST /runtime[/use] → routes/runtime.py → _swap → DaemonState.from_runtime`.
+- **Workflow execution:** `producers → TaskQueue.enqueue → _worker_loop → Orchestrator.run_step → run_step_impl`; receipt `submit_completion → _consume_completion_report`; final-join `_advance_chain_for_completed_child`/`_enqueue_parent_if_waiting`; recovery `__main__._sweep_on_startup`.
 
 Journal attempts have unique invocation identity; an aborted attempt does not
 reserve its generation. States are `prepared`, durable
@@ -604,3 +671,159 @@ pending** alongside F5 (atomic request/outbox/uncertain launch) and F6
 namespace/name/version/CAS); U1--U6 retain their ledger. The study is **NOT
 RUN**, and local counts, this contract acceptance or the candidate head are not
 independent package acceptance. Evidence remains UNACCEPTED / D5 NOT READY.
+
+### 2026-09-21 F4 global membership/activation protocol and step92 residual closure (TASK-8677)
+
+This subsection is the current normative statement of the proposed D2 global
+profile protocol and supersedes the earlier outline wherever it is more
+specific. It remains an unimplemented cooperative proposal plus isolated
+executable evidence; current shipping routes do not gain these guarantees and
+D5 is not approved. The effective supported-operation map above replaces the
+former grouped table and is the current writer/reader/lock map.
+
+**Step92 residual closure.** The actual admission-first caller
+(`test_proposed_admission_owned_transaction_and_publisher_contend_in_both_orders`)
+now folds its success-only started-worker/liveness shape into the same combined
+result as worker/boundary/release/join/cleanup failures; the caller cannot hide
+an injected second `Thread.start` failure behind a bare
+`assert started == [first, second]`. A control drives that actual caller with a
+real injected `u0-publisher-second` start failure and requires the injected
+failure and the unexpected started-worker set in the reported diagnostic with no
+owned worker left live
+(`test_proposed_admission_caller_retains_injected_second_worker_start_failure`).
+The admission-first held boundary now also asserts the prior canonical bytes and
+the absence of staging files. The reverse publisher-first held boundary asserts
+the complete pointer/journal/admission/lease rows, canonical/staging bytes, the
+held worker's transaction state and the denied connection's transaction state,
+and the publisher's and the stale reader's independently owned process caches;
+the terminal reverse `journal[:6]` is derived from the prior admitted prestate
+and the independently captured publisher invocation. No new schedule was added
+and no row is compared to itself.
+
+**Proposed D2 global profile protocol (concrete).** The proposal selects a
+machine-global coordinator that cannot be represented by the org-scoped pointer
+alone. Proposed (unimplemented) symbols live in
+`runtime/workflows/profile_coordinator.py` (`ProfileCoordinator.register`,
+`.rebind`, `.remove`, `.reconcile`, `.compensate`, `.republish_dependents`) over
+coordinator-owned durable relations in the machine-global store:
+`workflow_profile_store(profile_name, generation, profile_digest, state)`,
+`workflow_profile_registry(profile_name, published_generation)`,
+`workflow_profile_dependencies(org_namespace, profile_name, bound_generation,
+state)`, `workflow_profile_operations(id, profile_name, operation_kind,
+captured_members, target_generation, state, profile_digest,
+coordinator_invocation, compensation_generation, created_at)`, and
+`workflow_profile_leases(profile_name, owner_token, owner_pid)`. The isolated
+model uses a separate machine-global SQLite file carrying the same proposed
+schema; the dependent-organization authority itself remains exactly the existing
+per-org pointer/journal/lease/canonical-file/cache relations above.
+
+Operation identity is `id`; membership identity is
+`(org_namespace, profile_name, bound_generation)`; the operation's
+`target_generation = store.generation + 1`; `coordinator_invocation` is the
+immutable lease token acquired at the start. The affected-org set is captured
+once, canonically ordered, inside the same `BEGIN IMMEDIATE` that inserts the
+operation row, so a registration that wins the race is included and a later one
+is refused. Acquisition edges are: cross-process `workflow_profile_leases` (one
+coordinator per profile, dead-owner reclaim only) -> short SQLite operation
+transactions -> per-org `workflow_publication_leases` one at a time during the
+pre-fence pass -> store commit -> registry commit -> coordinator release ->
+independent per-org republish, each under its own publication lease. The graph is
+acyclic and never nests: profile lease -> org publication lease; no path takes
+the profile lease while holding an org publication lease; the existing callback
+order `org.db_lock -> binding_lease -> synchronized DB callback` is untouched and
+no coordinator spans clone/network/host-launch/callback.
+
+Pre-fencing reuses the proved machinery: for every captured org,
+`fence_authority_namespace` sets the pointer `fenced`, increments the monotonic
+`profile_fence`, and drops the process cache; a fenced org refuses admission with
+`authority_pointer_not_ready` until an explicitly profile-validated republish
+(`publish_authority_generation` with the current fence) returns it to ready at
+`generation+1`. Linearization points are: capture = operation-row insert commit;
+fence = per-org pointer `fenced` commit; store = profile-store generation advance
+commit; profile publication = `registry.published_generation == store.generation`.
+A new-org activation or a rebind/removal is refused with
+`profile_operation_in_progress:<state>` while any non-terminal operation exists
+for either profile; after publication a stale `expected_generation` is refused
+with `profile_generation_stale`, so a late activation can neither escape the
+captured set nor admit stale authority.
+
+Failure handling is forward-only and cold-recoverable. A failure after only some
+org fences leaves `state='fenced'`; a crash after the durable store commit but
+before registry publication leaves `state='store_committed'`. A cold
+`reconcile_profile_operation` on fresh connections and cold caches re-fences any
+remaining member, completes the store CAS, and publishes the registry; only a
+still-`captured` operation with no fenced member may abort. Because every
+captured member is fenced before the store mutates, no organization can admit
+incoherent authority at any interruption point. An old compensation is refused
+with `stale_profile_compensation_fenced` when the store or registry generation is
+already at or beyond the operation's target, so a stale compensator cannot
+overwrite a later successful operation.
+
+The cooperative support boundary is explicit: same-host proven-dead-PID lease
+reclaim and process-crash recovery only. The proposal does **not** promise
+hostile same-UID enforcement, power-loss durability, or a distributed atomic
+commit across organizations. A writer that cannot participate (for example the
+test-only `TeamsRegistry.seed_empty` with no supported live caller, the legacy
+workspace `agent.yaml` helpers with no supported live caller, or arbitrary same-UID
+file/DB mutation) is classified explicitly unsupported/fenced and excluded from
+*new workflow activation*; it is not a universal revocation of already-running
+work. Presentation/notification settings are irrelevant to this authority/input
+contract rather than global invalidators. D1 operator template publishing
+(`workflow_template_drafts`/`workflow_template_versions`) remains separate from
+D2 separately authorized activation.
+
+**Isolated executable proof.** The schedules connect the global coordinator to
+the already-proved per-org publication/lease/fence/recovery machinery rather than
+toggling a separate Boolean: `test_proposed_profile_activation_before_operation_is_captured_and_fenced`
+(activation wins, is captured and fenced, then independently republished);
+`test_proposed_profile_operation_wins_and_late_activation_cannot_admit_stale`
+(operation wins, a late activation is refused, captured orgs deny stale admission
+while the store is committed but the registry is unpublished, then cold recovery
+completes and only the new generation may join);
+`test_proposed_profile_dependency_mutation_is_fenced_during_operation` (rebind and
+removal both refused mid-operation with the captured membership unchanged);
+`test_proposed_profile_partial_fence_or_post_store_interruption_recovers_cold`
+(both the partial-fence and post-store/pre-registry windows recover forward cold);
+`test_proposed_stale_profile_compensation_cannot_restore_newer_operation`; and
+`test_proposed_profile_coordinator_reclaims_dead_process_owner_and_completes`
+(real child `os._exit` leaves the coordinator lease; a fresh coordinator reclaims
+it). Focused `tests/workflows/test_u0_migration_recovery.py` passed 90 tests on
+effective Python 3.14.4 / SQLite 3.46.1 / pytest 9.0.3 with independent
+connections, cold caches and deterministic barriers.
+
+**Constraints versus service validation.** DDL owns generation/state domains and
+foreign keys (`state IN (...)`, `generation>=0`, `target_generation=generation+1`
+by construction); the service owns membership truthfulness, capture immutability,
+the admission barrier, fence-before-store ordering, forward-only compensation and
+cold reconciliation semantics that SQL alone cannot express.
+
+**Remaining ledger (F4 D, for F6 consolidation).** F4-A effective map: delivered
+here; owner dev_agent; dependency = current pinned source; verification =
+targeted `rg` citations. F4-B protocol: delivered here; owner dev_agent;
+dependency = D5 protected-choice disposition; verification = independent review.
+F4-C isolated proof: delivered here; owner dev_agent; dependency = ten-path
+evidence radius; verification = focused + all-three-U0 + required local CI.
+F4-D per-delta implementation needs: (1) additive `runtime/workflows/` schema and
+coordinator (production schema/ownership decision); (2) per-org pre-fence wiring
+from the coordinator to real supported writers (needs the supported-writer
+boundary decision); (3) barrier enforcement at every supported activation/rebind
+route (needs route-level implementation review); (4) republish/recovery wiring
+into startup reconciliation (needs old-reader/disable-new-runs decisions). These
+remain unimplemented and are owned by the later protected D5 disposition; F5
+(atomic request/outbox/uncertain launch) and F6 (historical cutover/old-reader,
+disable-new-runs/drain, template namespace/name/version/CAS) remain explicitly
+pending, together with the U1--U6 ledger.
+
+**Current-hosted receipt and provenance.** All four required hosted checks are
+SUCCESS at the PR845 head `6fbd77b9` (run `35570243967`; Python unit 3.14
+completed 07:05:25Z); `JOB2080` exit 7 is a GitHub transport failure, not a CI
+verdict, and `JOB2074` local `scripts/local_ci.sh all` is exit 0 with a capped
+tail (no invented suite totals). The manager independently ran the three U0 files
+(140 passed, exit 0) and recomputed the review-visible `8074f3b7`..`6fbd77b9`
+diff (exactly the ten authorized paths, +7180, `git diff --check` 0, SHA-256
+`2483592997412db9fe13d5d88be619c464efc42271e1286c3e24ba08c0c59dee`). Current main
+`ea0b2d88` adds skills-publication paths that do not change
+`run_step.py`/`orchestrator.py`; the branch production bytes, current main, the
+observed deployed source and the proposed behavior are recorded separately.
+Locks, published branch head and local counts are not independent package
+acceptance. Evidence remains UNACCEPTED / D5 NOT READY; the study is NOT RUN.
