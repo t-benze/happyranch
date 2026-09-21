@@ -1076,6 +1076,15 @@ const REQUIRED_OPERATIONS = [
 const REQUIRED_WALKS = [
   'ordinary', 'override-ack', 'unknown-check', 'conflict-rebase', 'conflict-accept', 'leave-dialog',
 ];
+/**
+ * Every scenario the inventories above require, derived from THEM — never from
+ * `KEYBOARD_SCENARIOS` — so removing a scenario definition cannot remove it
+ * from what a full run must prove.
+ */
+const REQUIRED_SCENARIOS = [...new Set([
+  ...REQUIRED_WALKS,
+  ...REQUIRED_OPERATIONS.map((e) => e.scenario),
+])];
 /** The leave dialog's text that MUST be contrast-sampled while it is open. */
 const REQUIRED_DIALOG_SAMPLES = [
   { key: 'title', match: (t) => t === 'Discard unsaved capacity changes?' },
@@ -1104,9 +1113,16 @@ const TONE_PHASES = ['rest', 'hover', 'active'];
  */
 function evaluateGate(manifest, scope = {}) {
   const partialRun = Boolean(scope.partialRun ?? manifest.partialRun);
-  const viewports = scope.viewports ?? ALL_VIEWPORTS.map((v) => v.name);
-  const themes = scope.themes ?? ALL_THEMES;
-  const scenarios = scope.scenarios ?? KEYBOARD_SCENARIOS.map((sc) => sc.name);
+  // C5: a FULL run is judged against the complete finite inventory — every
+  // required scenario, viewport and theme — whatever scope the caller passes.
+  // Deriving it from the scenario list (or any caller-supplied filter) let a
+  // deleted scenario delete its own operation and walk requirements too. Only
+  // an explicitly PARTIAL run may narrow, and a partial run is never acceptance
+  // evidence.
+  const narrow = (filter, full) => (partialRun && filter ? filter : full);
+  const viewports = narrow(scope.viewports, ALL_VIEWPORTS.map((v) => v.name));
+  const themes = narrow(scope.themes, ALL_THEMES);
+  const scenarios = narrow(scope.scenarios, REQUIRED_SCENARIOS);
   const combos = viewports.flatMap((viewport) => themes.map((theme) => ({ viewport, theme })));
 
   // --- required operations -------------------------------------------------
@@ -1319,8 +1335,10 @@ function evaluateGate(manifest, scope = {}) {
  * The unchanged manifest of a full run must PASS. Each finite corruption below
  * must FAIL it, with the named criterion among the failures. This is how a
  * missing required operation, a failed one, a missing walk, a missing dialog
- * sample and a weakened Check assertion are demonstrated to be fatal rather
- * than merely reported.
+ * sample, a weakened Check assertion and a DELETED SCENARIO (passed to the
+ * gate exactly as the final caller would then pass the shortened list) are
+ * demonstrated to be fatal rather than merely reported. A case may carry the
+ * `scope` its caller would pass; only an explicitly partial scope may narrow.
  */
 function runGateSelftest(path) {
   const original = JSON.parse(readFileSync(path, 'utf8'));
@@ -1347,6 +1365,55 @@ function runGateSelftest(path) {
       expect: 'required keyboard operations never performed',
       mutate: (m) => {
         m.keyboardOperations = drop(m.keyboardOperations, (o) => o.scenario === 'conflict-accept');
+        return m;
+      },
+    },
+    {
+      // C5: the scenario ITSELF deleted — its definition, its operation records
+      // and its walks — exactly as the final caller would then pass the
+      // shortened scenario list. A full run must still require it.
+      name: 'a required scenario deleted with all its records (conflict-accept)',
+      expect: [
+        'required keyboard operations never performed',
+        'keyboard scenario coverage gaps',
+      ],
+      scope: {
+        scenarios: KEYBOARD_SCENARIOS.map((sc) => sc.name).filter((n) => n !== 'conflict-accept'),
+      },
+      mutate: (m) => {
+        m.keyboardOperations = drop(m.keyboardOperations, (o) => o.scenario === 'conflict-accept');
+        m.tabOrders = drop(m.tabOrders, (t) => t.scenario === 'conflict-accept');
+        return m;
+      },
+    },
+    {
+      name: 'a full-run caller narrowing viewports/themes (1280x900 records gone)',
+      expect: [
+        'required keyboard operations never performed',
+        'keyboard scenario coverage gaps',
+        'leave-dialog samples missing',
+      ],
+      scope: { viewports: ['1440x1000'], themes: ['light', 'dark'] },
+      mutate: (m) => {
+        const keep = (x) => x.viewport !== '1280x900';
+        m.keyboardOperations = m.keyboardOperations.filter(keep);
+        m.tabOrders = m.tabOrders.filter(keep);
+        m.dialogMeasurements = m.dialogMeasurements.filter(keep);
+        return m;
+      },
+    },
+    {
+      // The one legitimate narrowing: an EXPLICITLY partial diagnostic. It is
+      // labelled partial and the run never reports it as acceptance.
+      name: 'an explicitly PARTIAL diagnostic may narrow (never acceptance)',
+      expect: null,
+      scope: {
+        partialRun: true,
+        scenarios: KEYBOARD_SCENARIOS.map((sc) => sc.name).filter((n) => n !== 'conflict-accept'),
+      },
+      mutate: (m) => {
+        m.keyboardOperations = drop(m.keyboardOperations, (o) => o.scenario === 'conflict-accept');
+        m.tabOrders = drop(m.tabOrders, (t) => t.scenario === 'conflict-accept');
         return m;
       },
     },
@@ -1432,11 +1499,11 @@ function runGateSelftest(path) {
   ];
   let bad = 0;
   for (const c of cases) {
-    const failures = evaluateGate(c.mutate(clone()), { partialRun: false });
+    const failures = evaluateGate(c.mutate(clone()), { partialRun: false, ...(c.scope ?? {}) });
     const labels = failures.map(([label]) => label);
     const ok = c.expect === null
       ? failures.length === 0
-      : labels.some((label) => label.includes(c.expect));
+      : [c.expect].flat().every((want) => labels.some((label) => label.includes(want)));
     if (!ok) bad += 1;
     console.log(`${ok ? 'PASS' : 'FAIL'}  ${c.name}`);
     console.log(`      gate: ${failures.length === 0 ? 'clean' : labels.map((l, i) => `${l} (${failures[i][1].length})`).join('; ')}`);
@@ -2935,8 +3002,10 @@ try {
     partialRun: PARTIAL_RUN,
     viewports: VIEWPORTS.map((v) => v.name),
     themes: THEMES,
-    // A filtered run narrows WHICH scenarios are expected; it never narrows the
-    // expectation for a scenario whose operation callback was withheld.
+    // Honoured ONLY for an explicitly filtered (partial) run, which is never
+    // acceptance. A full run is judged against the complete REQUIRED_*
+    // inventory, so a scenario missing from this list — deleted, or its
+    // callback withheld — is a failure, not a narrower expectation.
     scenarios: SELECTED_SCENARIOS.map((sc) => sc.name),
   });
   manifest.gateFailures = gate.map(([label, findings]) => ({ label, count: findings.length }));

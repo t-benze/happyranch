@@ -185,6 +185,9 @@ interface RefetchOutcome {
   data?: unknown;
 }
 
+/** The provider-owned capacity observation, as the capacity hook exposes it. */
+type CapacityObservationLike = ReturnType<typeof useDaemonCapacity>['observation'];
+
 /** Where a `latest` observation came from. Presentation only — never priority. */
 type LatestOrigin = 'conflict' | 'external' | 'checked';
 
@@ -401,7 +404,8 @@ export function DaemonCapacitySection(): JSX.Element {
   const observationRef = useRef(query.observation);
   observationRef.current = query.observation;
   /**
-   * C3: whether THIS editor has a write it initiated still in flight.
+   * C3: THIS editor's own most recent write, bound to the provider observation
+   * that write SETTLED as — never to a revision.
    *
    * The capacity observation is module-scoped by org, so `origin: 'write'`
    * cannot by itself tell the SUBMITTING editor apart from a SECOND mounted
@@ -410,25 +414,71 @@ export function DaemonCapacitySection(): JSX.Element {
    * editor stale on an older base/revision and ready to submit a stale
    * `If-Match`. Only the initiator owns its own response; another observer sees
    * it as the external change it is.
-   */
-  const ownWriteInFlightRef = useRef(false);
-  /**
-   * C3, corrected: the REVISION of this editor's own accepted write.
    *
-   * In-flight-ness alone is not a sound ownership test. `useEffect` is a
+   * In-flight-ness alone is not a sound ownership test either. `useEffect` is a
    * PASSIVE effect: in a real browser the cache notification commits, the
-   * awaited submit continuation resumes and clears the in-flight flag, and only
-   * then is the effect flushed — so the editor met its OWN accepted write with
-   * the flag already down and recorded a phantom "Configuration changed
-   * elsewhere" against the revision it had just saved, leaving the guard armed
-   * after a successful save. (jsdom flushes in a different order, which is why
-   * the mounted tests did not see it; the real-browser harness gates it as an
-   * incoherent post-save surface.) Ownership is therefore recorded by the
-   * accepted revision itself, which no scheduling order can invalidate. A
-   * SECOND mounted editor never submits, so it never owns a revision and still
-   * treats the write as the external change it is.
+   * awaited submit continuation resumes and finishes, and only then is the
+   * effect flushed — so an in-flight-only marker met the editor's OWN accepted
+   * write already cleared and recorded a phantom "Configuration changed
+   * elsewhere", leaving the guard armed after a successful save. (jsdom flushes
+   * in a different order; the real-browser harness gates it as an incoherent
+   * post-save surface.)
+   *
+   * Nor is the accepted revision. A revision is a content hash of the saved
+   * configuration, so ANY editor that later restores those bytes produces the
+   * same revision again. Ownership keyed on revision equality therefore
+   * suppressed another editor's genuine later write back to it, leaving this
+   * editor on a stale base and building a stale `If-Match`.
+   *
+   * Ownership is bound instead to the write's own SETTLEMENT: `afterSeq` is the
+   * last settlement this editor had observed when it submitted, so its own
+   * write settles strictly after it; the first usable write observation past
+   * that point carrying the write's ACCEPTED revision is bound by its
+   * `settledSeq`, and from then on only THAT observation is suppressed (while
+   * the request is still in flight, before the accepted revision is known, a
+   * write observation is suppressed without being bound). Any other observation —
+   * a later read, or another editor's later write of the same bytes — carries a
+   * different `settledSeq` and is observed normally. An unbound ownership
+   * expires as soon as a newer non-write observation proves the write's own
+   * observation was superseded. No scheduling order can move a settlement
+   * sequence, and no later observation can inherit one.
    */
-  const ownAcceptedWriteRef = useRef<string | null>(null);
+  const ownWriteRef = useRef<{
+    afterSeq: number;
+    inFlight: boolean;
+    revision: string | null;
+    settledSeq: number | null;
+  } | null>(null);
+  /**
+   * True when `observation` is the settlement of THIS editor's own write of
+   * `revision`. Binds the settlement the first time it is seen and expires an
+   * unbound ownership once a newer non-write observation has superseded it.
+   */
+  const isOwnWriteObservation = useCallback((
+    observation: CapacityObservationLike,
+    revision: string,
+  ): boolean => {
+    const own = ownWriteRef.current;
+    if (own === null || observation === null) return false;
+    if (own.settledSeq !== null) {
+      return observation.origin === 'write'
+        && observation.settledSeq === own.settledSeq
+        && observation.sourceRevision === revision;
+    }
+    if (observation.settledSeq <= own.afterSeq) return false;
+    const acceptedWrite = observation.origin === 'write'
+      && observation.outcome === 'usable'
+      && observation.sourceRevision === revision;
+    if (acceptedWrite && own.revision === revision) {
+      own.settledSeq = observation.settledSeq;
+      return true;
+    }
+    // Still in flight with no accepted revision yet: suppress, but bind nothing
+    // until the submit handler knows which revision this write accepted.
+    if (acceptedWrite && own.inFlight && own.revision === null) return true;
+    if (!own.inFlight) ownWriteRef.current = null;
+    return false;
+  }, []);
 
   // Retain the last USABLE observation — snapshot AND its receipt — so an
   // unusable or failed read can still show labelled prior values, each with the
@@ -460,6 +510,17 @@ export function DaemonCapacitySection(): JSX.Element {
       receiptAt: observation.receiptAt,
     });
   }, [classification, usableObservationSeq]);
+
+  // C3: bind (or expire) this editor's own-write ownership on EVERY usable
+  // settlement, including one whose snapshot equals the base the submit handler
+  // already accepted — the read-acceptance effect below returns early on an
+  // unchanged revision and would otherwise never see the write's settlement,
+  // leaving the ownership unbound for a later observation to inherit. Declared
+  // before that effect so a write's settlement is bound before it is judged.
+  useEffect(() => {
+    const observation = observationRef.current;
+    if (observation?.sourceRevision) isOwnWriteObservation(observation, observation.sourceRevision);
+  }, [usableObservationSeq, isOwnWriteObservation]);
 
   /**
    * The current read FAILED after a successful one (R1). React Query keeps the
@@ -587,26 +648,20 @@ export function DaemonCapacitySection(): JSX.Element {
     // elsewhere" against the revision just saved. The submit handler owns
     // accepting a write result; this effect owns READ observations only.
     //
-    // C3: suppression is scoped to THIS editor's own in-flight write. A second
-    // mounted editor on the same QueryClient has no such write, so it adopts the
-    // accepted snapshot exactly like any other external change (and, if dirty,
-    // records it as `latest`). The module-scoped observation alone cannot make
-    // that distinction.
-    const observation = observationRef.current;
-    if (
-      (ownWriteInFlightRef.current || ownAcceptedWriteRef.current === observed.revision)
-      && observation?.origin === 'write'
-      && observation.sourceRevision === observed.revision
-    ) {
-      return;
-    }
+    // C3: suppression is scoped to the ONE settlement of THIS editor's own
+    // write. A second mounted editor on the same QueryClient does not own it,
+    // so it adopts the accepted snapshot exactly like any other external change
+    // (and, if dirty, records it as `latest`); and a later write that restores
+    // the same revision is a different settlement, observed normally by every
+    // editor, including the one that first wrote those bytes.
+    if (isOwnWriteObservation(observationRef.current, observed.revision)) return;
     if (!guardRef.current.dirty && !guardRef.current.writeLocked) {
       acceptBase(observed);
       return;
     }
     recordLatest(observed, 'external');
     setExternalSeen(true);
-  }, [snapshot, acceptBase, recordLatest]);
+  }, [snapshot, acceptBase, recordLatest, isOwnWriteObservation]);
 
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
@@ -782,10 +837,16 @@ export function DaemonCapacitySection(): JSX.Element {
     };
     setSubmission(record);
     setOutcome({ kind: 'saving' });
-    // C3: mark this write as OWNED by this editor for exactly as long as the
-    // request is in flight, so the read-acceptance effect can suppress only its
-    // own cache-write notification. Cleared on EVERY settlement path.
-    ownWriteInFlightRef.current = true;
+    // C3: this write is OWNED by this editor. Its settlement is necessarily
+    // later than every settlement already observed, so only an observation past
+    // `afterSeq` can be it. Ownership is released on every non-accepted path.
+    ownWriteRef.current = {
+      afterSeq: observationRef.current?.settledSeq ?? 0,
+      inFlight: true,
+      revision: null,
+      settledSeq: null,
+    };
+    let accepted = false;
     try {
       const result = await save.mutateAsync({
         revision: record.baseRevision,
@@ -809,9 +870,16 @@ export function DaemonCapacitySection(): JSX.Element {
       // (S5-R1/R8) and is fenced here. A genuinely newer read settling AFTER
       // this point is re-recorded by the read-acceptance effect, so protection
       // for real newer observations is preserved.
-      // Own the accepted revision BEFORE any state update, so the effect sees
-      // ownership whenever it is flushed relative to this continuation.
-      ownAcceptedWriteRef.current = classified.snapshot.revision;
+      // Record the accepted revision BEFORE any state update, so the effect can
+      // bind this write's settlement whenever it is flushed relative to this
+      // continuation. Ownership remains the settlement, not the revision.
+      if (ownWriteRef.current !== null) {
+        ownWriteRef.current.revision = classified.snapshot.revision;
+        // Bind now if this write's settlement has already been rendered;
+        // otherwise the settlement effect binds it when it is.
+        isOwnWriteObservation(observationRef.current, classified.snapshot.revision);
+      }
+      accepted = true;
       acceptBase(baseFromSnapshot(classified.snapshot));
       setReason('');
       setFieldErrors({});
@@ -855,7 +923,8 @@ export function DaemonCapacitySection(): JSX.Element {
       setOutcome(classified);
       if (classified.kind === 'rejected' && classified.focus) focusField(classified.focus);
     } finally {
-      ownWriteInFlightRef.current = false;
+      if (!accepted) ownWriteRef.current = null;
+      else if (ownWriteRef.current !== null) ownWriteRef.current.inFlight = false;
     }
   }
 

@@ -672,6 +672,343 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     second.unmount();
   });
 
+  // -------------------------------------------------------------------------
+  // C3-R — own-write ownership is ONE settlement, never a revision.
+  //
+  // Revision is a content hash of the saved configuration, so restoring the
+  // same bytes legitimately returns the same revision. These fixtures derive
+  // the revision from the submitted pair exactly that way.
+  // -------------------------------------------------------------------------
+  const PAIR_REVISIONS: Record<string, string> = {
+    '3/10': REV_A, '5/12': REV_B, '7/14': REV_C, '9/15': REV_D,
+  };
+  const REV_E = `sha256:${'e'.repeat(64)}`;
+  const savedAt = (w: number, h: number) => snapshot({
+    revision: PAIR_REVISIONS[`${w}/${h}`] ?? REV_E,
+    persisted_yaml: { queue_workers: w, host_global_session_cap: h },
+    next_start: { queue_workers: w, host_global_session_cap: h },
+    restart_pending: w !== 3 || h !== 10,
+  });
+
+  /**
+   * A stateful venue: every accepted PUT persists the submitted pair at its
+   * content revision, and every GET returns what is currently persisted.
+   * `gate` optionally holds the FIRST PUT open.
+   */
+  function contentVenue(gate?: Promise<Response>) {
+    const state = { current: savedAt(3, 10) };
+    stubVenue({
+      get: () => HttpResponse.json(state.current),
+      put: (i) => {
+        const body = JSON.parse(puts()[i].rawBody) as {
+          queue_workers: number; host_global_session_cap: number;
+        };
+        state.current = savedAt(body.queue_workers, body.host_global_session_cap);
+        return i === 0 && gate ? gate : HttpResponse.json(state.current);
+      },
+    });
+    return state;
+  }
+
+  function mountSecond(client: ReturnType<typeof mount>['client']) {
+    return renderGuarded(<AppRoutes />, {
+      client,
+      entries: [`/orgs/${SLUG}/settings/daemon-capacity`],
+      resetOrdering: false,
+    });
+  }
+
+  async function setPairIn(root: HTMLElement, w: string, h: string) {
+    const user = userEvent.setup();
+    await user.clear(workersIn(root));
+    await user.type(workersIn(root), w);
+    await user.clear(capIn(root));
+    await user.type(capIn(root), h);
+  }
+
+  /** The accepted TERMINAL state of one editor after its own write settles. */
+  async function expectCleanTerminal(
+    root: HTMLElement,
+    client: ReturnType<typeof mount>['client'],
+    expected: { w: number; h: number; revision: string; receiptAt: number },
+  ) {
+    const ui = within(root);
+    await ui.findByText(/^Saved for next restart\. Running limits are unchanged\./);
+    await waitFor(() => expect(reasonIn(root)).toHaveValue(''));
+    expect(workersIn(root)).toHaveValue(String(expected.w));
+    expect(capIn(root)).toHaveValue(String(expected.h));
+    const cached = client.getQueryData<{
+      revision: string;
+      persisted_yaml: { queue_workers: number; host_global_session_cap: number };
+      next_start: { queue_workers: number; host_global_session_cap: number };
+    }>(capacityQueryKey(SLUG));
+    expect(cached?.revision).toBe(expected.revision);
+    expect(cached?.persisted_yaml).toEqual({
+      queue_workers: expected.w, host_global_session_cap: expected.h,
+    });
+    expect(cached?.next_start).toEqual({
+      queue_workers: expected.w, host_global_session_cap: expected.h,
+    });
+    expect(capacityObservation(SLUG)?.origin).toBe('write');
+    expect(capacityObservation(SLUG)?.outcome).toBe('usable');
+    expect(capacityObservation(SLUG)?.sourceRevision).toBe(expected.revision);
+    expect(capacityObservation(SLUG)?.receiptAt).toBe(expected.receiptAt);
+    expect(ui.getAllByText(/Last received/)[0].textContent)
+      .toContain(formatReceipt(expected.receiptAt)!);
+    expect(ui.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    expect(ui.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+    expect(ui.queryByText(/You submitted/)).not.toBeInTheDocument();
+    expect(ui.queryByText(/Reconcile the saved values/)).not.toBeInTheDocument();
+    expect(ui.getByRole('button', { name: /Save for next restart/ })).toBeEnabled();
+  }
+
+  function expectGuardDisarmed() {
+    const unload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(false);
+  }
+
+  test('C3-R a clean editor ADOPTS another editor\'s later write restoring the revision it once saved (B -> C -> B), and its next save carries B', async () => {
+    let now = 1800000000000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const state = contentVenue();
+      const first = mount();
+      await ready();
+      const firstUi = within(first.container);
+
+      // 1. The first editor accepts ITS OWN write: 5/12 @ B.
+      now += 60000;
+      await setPair('5', '12');
+      await saveWith('first owns B');
+      await expectCleanTerminal(first.container, first.client,
+        { w: 5, h: 12, revision: REV_B, receiptAt: now });
+      await waitFor(() => expect(first.client.isMutating()).toBe(0));
+
+      // 2. A genuinely usable later READ returns 7/14 @ C; the clean editor adopts it.
+      state.current = savedAt(7, 14);
+      now += 60000;
+      await userEvent.click(firstUi.getByRole('button', { name: /Refresh running state/ }));
+      await waitFor(() => expect(workersIn(first.container)).toHaveValue('7'));
+      expect(capIn(first.container)).toHaveValue('14');
+      expect(capacityObservation(SLUG)?.origin).toBe('read');
+      expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_C);
+
+      // 3. A SECOND production editor on the SAME client (ordering NOT reset)
+      //    deliberately restores 5/12 and is accepted at B again.
+      const second = mountSecond(first.client);
+      const secondUi = within(second.container);
+      await waitFor(() => expect(workersIn(second.container)).toHaveValue('7'));
+      now += 60000;
+      await setPairIn(second.container, '5', '12');
+      await userEvent.type(reasonIn(second.container), 'restore B');
+      await userEvent.click(secondUi.getByRole('button', { name: /Save for next restart/ }));
+      await expectCleanTerminal(second.container, first.client,
+        { w: 5, h: 12, revision: REV_B, receiptAt: now });
+      const restoreSeq = capacityObservation(SLUG)?.settledSeq;
+      expect(puts()).toHaveLength(2);
+      expect(puts()[1].ifMatch).toBe(`"${REV_C}"`);
+
+      // 4. The FIRST editor observes that later write: B is not its own old
+      //    settlement, so it is adopted — form, base and guard — not suppressed.
+      await waitFor(() => expect(workersIn(first.container)).toHaveValue('5'));
+      expect(capIn(first.container)).toHaveValue('12');
+      expect(firstUi.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+      expect(firstUi.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+      expectGuardDisarmed();
+
+      // 5. Its next deliberate save is built on the ADOPTED base: quoted B, 5/12.
+      now += 60000;
+      await userEvent.type(reasonIn(first.container), 'first after external return');
+      await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+      await waitFor(() => expect(puts()).toHaveLength(3));
+      expect(puts()[2].ifMatch).toBe(`"${REV_B}"`);
+      expect(JSON.parse(puts()[2].rawBody)).toEqual({
+        queue_workers: 5,
+        host_global_session_cap: 12,
+        rationale: 'first after external return',
+        confirm_environment_shadow: false,
+      });
+
+      // 6. That save drains to a coherent terminal state in BOTH editors,
+      //    at a NEW settlement of the same content revision.
+      await expectCleanTerminal(first.container, first.client,
+        { w: 5, h: 12, revision: REV_B, receiptAt: now });
+      expect(capacityObservation(SLUG)?.settledSeq).toBeGreaterThan(restoreSeq ?? Infinity);
+      expect(workersIn(second.container)).toHaveValue('5');
+      expect(secondUi.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+      expect(secondUi.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+      expectGuardDisarmed();
+      expect(puts()).toHaveLength(3);
+      expect(undeclared).toEqual([]);
+      second.unmount();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test('C3-R a DIRTY editor meets that B -> C -> B return with an explicit choice, then a separate manual save carries B', async () => {
+    let now = 1800000000000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const state = contentVenue();
+      const first = mount();
+      await ready();
+      const firstUi = within(first.container);
+      now += 60000;
+      await setPair('5', '12');
+      await saveWith('first owns B');
+      await expectCleanTerminal(first.container, first.client,
+        { w: 5, h: 12, revision: REV_B, receiptAt: now });
+      await waitFor(() => expect(first.client.isMutating()).toBe(0));
+      state.current = savedAt(7, 14);
+      now += 60000;
+      await userEvent.click(firstUi.getByRole('button', { name: /Refresh running state/ }));
+      await waitFor(() => expect(workersIn(first.container)).toHaveValue('7'));
+
+      // The first editor now holds unsaved work against C.
+      await setPairIn(first.container, '9', '15');
+      await userEvent.type(reasonIn(first.container), 'first draft');
+
+      const second = mountSecond(first.client);
+      const secondUi = within(second.container);
+      await waitFor(() => expect(workersIn(second.container)).toHaveValue('7'));
+      now += 60000;
+      await setPairIn(second.container, '5', '12');
+      await userEvent.type(reasonIn(second.container), 'restore B');
+      await userEvent.click(secondUi.getByRole('button', { name: /Save for next restart/ }));
+      await expectCleanTerminal(second.container, first.client,
+        { w: 5, h: 12, revision: REV_B, receiptAt: now });
+
+      // Observed, not suppressed: draft, reason and base C preserved, B offered.
+      await firstUi.findByText('Configuration changed elsewhere.');
+      expect(workersIn(first.container)).toHaveValue('9');
+      expect(capIn(first.container)).toHaveValue('15');
+      expect(reasonIn(first.container)).toHaveValue('first draft');
+      expect(firstUi.getByText('Accepted base').parentElement?.textContent)
+        .toContain('Task session slots 7');
+      expect(firstUi.getByText('Currently saved').parentElement?.textContent)
+        .toContain('Task session slots 5');
+
+      // Save is refused at the handler until an explicit choice: NO PUT.
+      await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+      expect(puts()).toHaveLength(2);
+
+      // Explicit choice — keep the draft, rebase onto B. Sends NO request.
+      await userEvent.click(firstUi.getByRole('button', { name: /Keep my draft, rebase onto latest/ }));
+      await waitFor(() => expect(firstUi.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument());
+      expect(workersIn(first.container)).toHaveValue('9');
+      expect(capIn(first.container)).toHaveValue('15');
+      expect(reasonIn(first.container)).toHaveValue('first draft');
+      expect(puts()).toHaveLength(2);
+
+      // A separate, deliberate manual save carries the chosen base B.
+      now += 60000;
+      await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+      await waitFor(() => expect(puts()).toHaveLength(3));
+      expect(puts()[2].ifMatch).toBe(`"${REV_B}"`);
+      expect(JSON.parse(puts()[2].rawBody)).toEqual({
+        queue_workers: 9,
+        host_global_session_cap: 15,
+        rationale: 'first draft',
+        confirm_environment_shadow: false,
+      });
+      await expectCleanTerminal(first.container, first.client,
+        { w: 9, h: 15, revision: REV_D, receiptAt: now });
+      // The clean second editor adopts the first editor's accepted D.
+      await waitFor(() => expect(workersIn(second.container)).toHaveValue('9'));
+      expect(secondUi.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+      expectGuardDisarmed();
+      expect(puts()).toHaveLength(3);
+      expect(undeclared).toEqual([]);
+      second.unmount();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test('C3-R control: two successive OWN writes settle cleanly at distinct revisions with no phantom reconciliation', async () => {
+    let now = 1800000000000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      contentVenue();
+      const view = mount();
+      await ready();
+      now += 60000;
+      await setPair('5', '12');
+      await saveWith('first');
+      await expectCleanTerminal(view.container, view.client,
+        { w: 5, h: 12, revision: REV_B, receiptAt: now });
+      now += 60000;
+      await setPair('7', '14');
+      await saveWith('second');
+      await expectCleanTerminal(view.container, view.client,
+        { w: 7, h: 14, revision: REV_C, receiptAt: now });
+      expect(puts()).toHaveLength(2);
+      expect(puts()[1].ifMatch).toBe(`"${REV_B}"`);
+      expect(JSON.parse(puts()[1].rawBody)).toEqual({
+        queue_workers: 7, host_global_session_cap: 14, rationale: 'second',
+        confirm_environment_shadow: false,
+      });
+      expectGuardDisarmed();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test('C3-R control: a DIRTY second editor keeps its draft/base through another editor\'s accepted write, sends nothing until an explicit choice, then saves the adopted base', async () => {
+    let now = 1800000000000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const gate = deferred<Response>();
+      contentVenue(gate.promise);
+      const first = mount();
+      await ready();
+      await setPair('5', '12');
+      await saveWith();
+      const second = mountSecond(first.client);
+      const ui = within(second.container);
+      await waitFor(() => expect(workersIn(second.container)).toHaveValue('3'));
+      await userEvent.clear(workersIn(second.container));
+      await userEvent.type(workersIn(second.container), '8');
+      await userEvent.type(reasonIn(second.container), 'second dirty');
+      now += 60000;
+      gate.resolve(HttpResponse.json(savedAt(5, 12)));
+      await expectCleanTerminal(first.container, first.client,
+        { w: 5, h: 12, revision: REV_B, receiptAt: now });
+
+      await ui.findByText('Configuration changed elsewhere.');
+      expect(workersIn(second.container)).toHaveValue('8');
+      expect(reasonIn(second.container)).toHaveValue('second dirty');
+      expect(ui.getByText('Accepted base').parentElement?.textContent).toContain('Task session slots 3');
+      expect(ui.getByText('Currently saved').parentElement?.textContent).toContain('Task session slots 5');
+      await userEvent.click(ui.getByRole('button', { name: /Save for next restart/ }));
+      expect(puts()).toHaveLength(1);
+
+      // Rebase keeps the draft TEXT verbatim (8/10) and moves only the base.
+      await userEvent.click(ui.getByRole('button', { name: /Keep my draft, rebase onto latest/ }));
+      expect(workersIn(second.container)).toHaveValue('8');
+      expect(capIn(second.container)).toHaveValue('10');
+      expect(puts()).toHaveLength(1);
+      now += 60000;
+      await userEvent.click(ui.getByRole('button', { name: /Save for next restart/ }));
+      await waitFor(() => expect(puts()).toHaveLength(2));
+      expect(puts()[1].ifMatch).toBe(`"${REV_B}"`);
+      expect(JSON.parse(puts()[1].rawBody)).toEqual({
+        queue_workers: 8, host_global_session_cap: 10, rationale: 'second dirty',
+        confirm_environment_shadow: false,
+      });
+      await expectCleanTerminal(second.container, first.client,
+        { w: 8, h: 10, revision: REV_E, receiptAt: now });
+      await waitFor(() => expect(workersIn(first.container)).toHaveValue('8'));
+      expect(within(first.container).queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+      expectGuardDisarmed();
+      second.unmount();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   /**
    * Drive the accepted during-PUT ordering scenario to its FINAL settled state.
    *

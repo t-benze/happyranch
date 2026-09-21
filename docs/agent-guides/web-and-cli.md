@@ -182,14 +182,19 @@ The Settings surface ships as a full page (`web/src/features/settings/SettingsPa
   rebase and accept-latest; an accepted write then clears the reconciliation
   state its own response made obsolete and finishes in a coherent clean state.
   The suppression that stops the SUBMITTING editor mislabelling its own accepted
-  write as an external change is scoped to the REVISION that editor's own write
-  had accepted — not to the window in which the request happened to be in
-  flight, because the read-acceptance effect can be flushed after that window
-  closes and would then meet the editor's own saved revision as an external
-  change. A second editor mounted on the SAME client never owns that revision,
-  so it treats the write as the external change it is, adopting it when clean
-  and recording it for an explicit choice when dirty, rather than staying stale
-  on the older base and revision.
+  write as an external change is bound to that write's own SETTLEMENT — the
+  provider observation it settled as, identified by its settlement sequence —
+  not to the window in which the request happened to be in flight (the
+  read-acceptance effect can be flushed after that window closes) and not to
+  the revision it accepted. A revision is a content hash of the saved
+  configuration, so any editor that later restores the same bytes produces the
+  same revision again; that later write is a different settlement and every
+  editor observes it, including the one that first saved those bytes. Any other
+  editor mounted on the SAME client — whether or not it has saved before —
+  treats a write it did not settle as the external change it is, adopting it
+  when clean and recording it for an explicit choice when dirty, rather than
+  staying stale on an older base and revision; its next deliberate save then
+  carries the adopted (or explicitly chosen) revision.
   Draft consequence arithmetic uses the RESOLVED per-key next-start values, so
   an environment-shadowed key contributes the environment's value rather than
   the draft the environment will shadow.
@@ -213,7 +218,11 @@ The Settings surface ships as a full page (`web/src/features/settings/SettingsPa
   accept-latest and the separate manual save that follows it; the leave
   dialog's Stay and its confirmed departure — independently of what any run
   records, so a required operation that is missing fails the run exactly like
-  one that failed, and deleting a scenario cannot delete its expectation. Where
+  one that failed. An unfiltered run is judged against that complete inventory
+  at every viewport and theme whatever scenario list it executed, so deleting a
+  scenario — its definition, its callback or its records — fails the run rather
+  than deleting its expectation; only an explicitly filtered run narrows, and it
+  is labelled partial and never reported as acceptance. Where
   an operation has a pure verdict (Check semantics, the C1 receipt sequence)
   the gate recomputes it from the recorded evidence rather than trusting a
   recorded pass, and a focused failed-reread control proves that cached values
@@ -226,7 +235,9 @@ The Settings surface ships as a full page (`web/src/features/settings/SettingsPa
   computed-visibility predicate against positive and negative clipping
   controls. `--gate-selftest <MANIFEST.json>` runs that same acceptance gate
   over a recorded manifest and over finite corruptions of it — missing
-  operations, a removed scenario, a failed operation, a weakened Check
+  operations, a removed scenario callback, a deleted scenario passed to the
+  gate exactly as the run would then pass it, a full-run caller narrowing
+  viewports or themes, a failed operation, a weakened Check
   assertion, a missing walk, missing dialog samples, a C1 receipt that went
   backwards — and fails unless every one of them is fatal and the unchanged
   manifest passes. Because the shell scrolls internally, a state whose evidence
