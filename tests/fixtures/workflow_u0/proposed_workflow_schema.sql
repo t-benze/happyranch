@@ -51,6 +51,11 @@ CREATE TABLE workflow_profile_store (profile_name TEXT PRIMARY KEY, generation I
 CREATE TABLE workflow_profile_registry (profile_name TEXT PRIMARY KEY REFERENCES workflow_profile_store(profile_name), published_generation INTEGER NOT NULL CHECK(published_generation>=0));
 CREATE TABLE workflow_profile_operations (id TEXT PRIMARY KEY, profile_name TEXT NOT NULL, operation_kind TEXT NOT NULL CHECK(operation_kind IN ('register','rebind','remove')), captured_members TEXT NOT NULL, target_generation INTEGER NOT NULL CHECK(target_generation>0), state TEXT NOT NULL CHECK(state IN ('captured','fenced','store_committed','published','forward_recovery_required','aborted')), profile_digest TEXT NOT NULL, coordinator_invocation TEXT NOT NULL, compensation_generation INTEGER NOT NULL DEFAULT 0 CHECK(compensation_generation>=0), created_at TEXT NOT NULL);
 CREATE TABLE workflow_profile_leases (profile_name TEXT PRIMARY KEY, owner_token TEXT NOT NULL, owner_pid INTEGER NOT NULL CHECK(owner_pid>0));
-CREATE TABLE workflow_profile_dependencies (org_namespace TEXT PRIMARY KEY, profile_name TEXT NOT NULL, bound_generation INTEGER NOT NULL CHECK(bound_generation>=0), state TEXT NOT NULL CHECK(state IN ('active','removed')));
+-- Membership identity is the tuple (org_namespace, profile_name): one org may
+-- depend on several profiles (executor resolution is per agent) and several
+-- orgs may depend on one profile.  bound_generation is the profile generation
+-- the org's own authority was last coherently published against.  This is a
+-- service constraint, not a DDL one: SQL cannot express cross-row eligibility.
+CREATE TABLE workflow_profile_dependencies (org_namespace TEXT NOT NULL, profile_name TEXT NOT NULL, bound_generation INTEGER NOT NULL CHECK(bound_generation>=0), state TEXT NOT NULL CHECK(state IN ('active','removed')), PRIMARY KEY(org_namespace,profile_name));
 CREATE INDEX workflow_profile_operations_profile_state_idx ON workflow_profile_operations(profile_name,state,target_generation);
 CREATE INDEX workflow_profile_dependencies_profile_idx ON workflow_profile_dependencies(profile_name,state);

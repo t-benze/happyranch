@@ -407,6 +407,7 @@ org pointer alone.
 | Current file/symbol | Supported entrypoint or direct caller | Durable surface | Cached surface | Eligibility/input dependency changed | Reader/use points | Present lock/transaction/compensation | Proposed precise participation point (proposed filename/symbol) | Classification |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `runtime/daemon/routes/agents.py:659 manage_agent` (enroll) | `POST /api/v1/orgs/{slug}/agents/manage`; CLI `cli/commands/agents.py:158 cmd_manage_agent` posts the route | `org/agents/_pending/<name>.md` via `prompt_loader.write_pending_agent` (`runtime/orchestrator/prompt_loader.py:136`); `org/teams.yaml` via `TeamsRegistry.add_worker`; audit `log_agent_managed` | in-memory `org.teams` (`TeamsRegistry`); file reads are fresh (no name/def cache) | grantor, target name, team/role assignment, executor, model, repos, input scope | `_require_team_manager_auth`; `validate_team_membership`; `orchestrator._resolve_executor_name` (`runtime/orchestrator/orchestrator.py:360`) | `async with org.teams_lock`; atomic tempfile+`os.replace` pending write; audit after commit | `WorkflowAuthorityCoordinator.publish_generation(org)` after both file writes commit (proposed, unimplemented) | participating |
+| `runtime/daemon/routes/agents.py:723 manage_agent` (update branch) | `POST /api/v1/orgs/{slug}/agents/manage` with `ManageAgentAction.update`; CLI `cli/commands/agents.py:158 cmd_manage_agent` | canonical `org/agents/<name>.md` frontmatter via `agent_def.render_agent_text` + tempfile+`os.replace` under `org.teams_lock`; an executor switch additionally invalidates thread sessions (`org.db.reset_thread_sessions_for_agent`, session reset + invalidation audit in one DB txn) and reconciles the workspace bootstrap (`ContextBuilder.ensure_workspace_ready`); audit `log_agent_managed` | in-memory `org.teams` roster consulted for team auth; fresh parse per read (no def cache) | executable/eligibility fields: executor, model, repos, allow_rules; pinned review-input provenance fields: system_prompt, description | `prompt_loader.load_agent`; `_resolve_agent_model` (`agents.py:425`); `orchestrator._resolve_executor_name` (`orchestrator.py:360`); launch env builder; `ContextBuilder` bootstrap | CAS: `expected_revision` (64-hex canonical revision) re-read and compared under `org.teams_lock`; atomic tempfile+`os.replace`; on executor-switch session-reset failure it restores only the exact bytes this operation owns (a newer accepted update is preserved and re-reconciled) | pre-fence BEFORE the canonical-file commit and hold it through workspace reconciliation and the rollback compensation; `WorkflowAuthorityCoordinator.publish_generation(org)` only at the linearization commit (proposed, unimplemented). A publish that merely follows the writes leaves the pre-fence→publication authority interval closed by nothing | participating |
 | `runtime/daemon/routes/agents.py:885 manage_agent` terminate branch | `POST .../agents/manage` with `ManageAgentAction.terminate` | archive move to `org/agents/_terminated/<name>.md` + `_terminated` workspace; `teams.remove_worker`; DB cleanup | `org.teams` | target teardown (removes target/team/role eligibility) | `list_enrollments`, `validate_team_membership`, dispatch roster | `org.teams_lock`; multi-step rollback compensation (restore worker, move dirs, restore agent file) | `WorkflowAuthorityCoordinator.fence_org` then `publish_generation` after archive (proposed, unimplemented) | participating |
 | `runtime/daemon/routes/agents.py:1162 founder_create_agent` | `POST /api/v1/orgs/{slug}/agents`; CLI `cmd_manage_agent` enroll path | active `org/agents/<name>.md`; new/updated `org/teams.yaml` (`add_team`/`add_worker`) | `org.teams` | grantor, target, team/role (manager creates team), executor, model, repos | `list_agents`, `validate_team_membership`, dispatch | `async with org.teams_lock`; team rollback on agent-write failure | `WorkflowAuthorityCoordinator.publish_generation(org)` (proposed, unimplemented) | participating |
 | `runtime/daemon/routes/agents.py:2103 approve_agent` + `runtime/orchestrator/prompt_loader.py:154 approve_agent` | `POST /api/v1/orgs/{slug}/agents/{agent_name}/approve`; CLI enrollment approve | pending file → active `org/agents/<name>.md` (rename/atomic) | `org.teams` (promotion validated against roster) | target activation (pending→active) | `prompt_loader.load_agent` (`prompt_loader.py:60`), `list_agents` (`:127`) | `org.teams` roster check before promote; `FileExistsError` CAS on promotion | `WorkflowAuthorityCoordinator.publish_generation(org)` (proposed, unimplemented) | participating |
@@ -424,8 +425,8 @@ org pointer alone.
 | `runtime/daemon/routes/settings.py:814 put_org_settings` (display name, `feishu_notifications`, presentation keys) | `PUT /api/v1/orgs/{slug}/settings/org`; `GET /api/v1/orgs/{slug}/settings` (`settings.py:382`) | `org/config.yaml` / settings rows | in-memory config | none (presentation / notification only) | UI settings view | HTTP validation only | none | irrelevant: display name / notification settings are presentation data, not org authority inputs; they must not invalidate workflows |
 | `runtime/orchestrator/active_authority_policy.py:45 resolve_active_team_policy_snapshot` | direct callers merge at task/thread/wake/dream/schedule launch (prompt build); CLI/HTTP not direct | reads `AuthorityPolicyStore` (org DB tables) | none (resolved per launch, then bound to session) | active escalation policy identity for eligible `engineering` / `engineering_manager` | launch prompt builder; `render_active_team_policy` | `ActiveAuthorityPolicyError` fail-closed on incoherence | `WorkflowAuthorityCoordinator.verify_ready(org)` then read active pointer, not a mutable current value (proposed, unimplemented) | participating |
 | `runtime/orchestrator/active_authority_policy.py:62 persist_session_policy_binding` | direct caller task launch path (`orchestrator`/`run_step`) | audit-log row `authority_policy_session_binding` in org DB | session binding read back by `load_session_policy_snapshot` guarded by `binding_lease` | pins release/activation/epoch/provider/executor/model for the session | `load_session_policy_snapshot` (`active_authority_policy.py:93`) | audit idempotency; ambiguity raises `ActiveAuthorityPolicyError` | record the workflow authority generation in the binding (proposed, unimplemented) | participating |
-| `runtime/daemon/routes/authority_policy.py:474 activate_team_escalation_policy` + `runtime/orchestrator/authority_policy_store.py:51 activate_with_audit` | `POST /api/v1/orgs/{slug}/agents/{agent_name}/team-escalation-policy/activations` | `authority_policy_activations` rows (org DB) | none | D2 activation: current active policy release + monotonic epoch for the team | `store.get_current_activation` (`authority_policy_store.py:79`); session binding | `activate_with_audit` CAS on `expected_previous_epoch`; `sqlite3.IntegrityError` → 409 | `WorkflowAuthorityCoordinator.publish_generation(org)` after D2 activation commits (proposed, unimplemented) | participating |
-| `runtime/daemon/routes/authority_policy.py:403 create_team_escalation_policy_release` + `authority_policy_store.py:32 create_release_with_audit` | `POST .../team-escalation-policy/releases` | immutable `authority_policy_releases` rows (org DB) | none | none by itself (D1 template/version publishing; not active authority) | `store.get_release` (`authority_policy_store.py:70`); activation links release_id | `create_release_with_audit` idempotency/request-digest; append-only | none (release creation is deliberately separate from generation publish) | irrelevant: D1 immutable release/version publishing is deliberately outside the Phase1 org-authority generation; only D2 activation joins |
+| `runtime/daemon/routes/authority_policy.py:474 activate_team_escalation_policy` + `runtime/orchestrator/authority_policy_store.py:51 activate_with_audit` | `POST /api/v1/orgs/{slug}/agents/{agent_name}/team-escalation-policy/activations` | `authority_policy_activations` rows (org DB) | none | existing escalation-policy activation input (NOT the proposed D2 workflow activation): current active policy release + monotonic epoch for the team | `store.get_current_activation` (`authority_policy_store.py:79`); session binding | `activate_with_audit` CAS on `expected_previous_epoch`; `sqlite3.IntegrityError` → 409 | `WorkflowAuthorityCoordinator.publish_generation(org)` after the existing escalation-policy activation commits (proposed, unimplemented) | participating as an existing policy input; distinct from the proposed D2 separately authorized workflow activation |
+| `runtime/daemon/routes/authority_policy.py:403 create_team_escalation_policy_release` + `authority_policy_store.py:32 create_release_with_audit` | `POST .../team-escalation-policy/releases` | immutable `authority_policy_releases` rows (org DB) | none | none by itself (existing escalation-policy release/version history; NOT the proposed D1 operator workflow-template namespace publisher) | `store.get_release` (`authority_policy_store.py:70`); activation links release_id | `create_release_with_audit` idempotency/request-digest; append-only | none (release creation is deliberately separate from generation publish) | irrelevant to the proposed D1: existing escalation-policy release publishing is a separate immutable policy history, not the operator-authored workflow-template namespace publication |
 | `runtime/daemon/routes/authority_policy.py:146 get_team_escalation_policy` / `:194 get_team_escalation_policy_history` / `:341 ..._outcomes` | `GET .../team-escalation-policy[...]` | reads release/activation/outcome rows | none | none (read-only projections) | manager policy page | none | verify against `WorkflowAuthorityCoordinator.verify_ready` (proposed, unimplemented) | participating |
 | `runtime/daemon/routes/orgs.py:134 init_org` | `POST /api/v1/orgs`; CLI `happyranch orgs ...` | creates `org/` skeleton + `happyranch.db`; then `DaemonState.add_org` | new `OrgState` in `state.orgs` | whole-org creation (roster + policy + pointer all absent) | `list_orgs`; every per-org route | rollback `shutil.rmtree` on seed/add failure; `_is_reclaimable_partial` guard | `WorkflowAuthorityCoordinator.verify_ready(org)` = `uninitialized_no_authority` until first publish; refuse partial org (proposed, unimplemented) | participating |
 | `runtime/daemon/routes/orgs.py:39 _seed_skeleton` | direct caller `init_org` (`orgs.py:174`) | writes `org/teams.yaml` `"teams: {}\n"` inline, creates `org/agents/_pending`, `workspaces/`, `kb/`, `artifacts/` | none | initial empty team seed for a new org | `TeamsRegistry.load` on attach | `mkdir(exist_ok=False)` then caller rollback | seed canonical authority file as part of the same atomic step (proposed, unimplemented) | participating |
@@ -477,6 +478,38 @@ The map above already cites the store/leaf symbol, but the chain matters for the
 - **Active policy:** `POST .../team-escalation-policy/activations → routes/authority_policy.py:activate_team_escalation_policy → AuthorityPolicyStore.activate_with_audit → authority_policy_activations`. Launch reads it through `resolve_active_team_policy_snapshot` and pins it via `persist_session_policy_binding`.
 - **Org lifecycle:** `POST /orgs → routes/orgs.py:init_org → _seed_skeleton → DaemonState.add_org → OrgState.load` (teams.yaml + DB). Runtime switch: `POST /runtime[/use] → routes/runtime.py → _swap → DaemonState.from_runtime`.
 - **Workflow execution:** `producers → TaskQueue.enqueue → _worker_loop → Orchestrator.run_step → run_step_impl`; receipt `submit_completion → _consume_completion_report`; final-join `_advance_chain_for_completed_child`/`_enqueue_parent_if_waiting`; recovery `__main__._sweep_on_startup`.
+
+**Authority interval and writer ownership.** For every *participating* writer the
+proposed contract is stated as four edges, not "publish after the writes": (1) the
+pre-fence begins **before** the effective mutation commits and is held until the
+publication linearization point, so no reader can observe the new bytes under the
+old generation; (2) publication/linearization is the pointer CAS of
+`WorkflowAuthorityStore.commit_pointer` (or the machine-global registry commit for
+a profile), not the file write; (3) compensation/recovery ownership is the
+operation's immutable invocation token, which reclaims only a proven-dead owner
+and restores only the exact bytes that operation owns (never a newer accepted
+write); and (4) the lock edges are `org.teams_lock` for canonical agent/team file
+writers, the org `db_lock`/`binding_lease` for receipt/final-join paths, the
+machine-global per-profile lock for profile writers, and the per-org publication
+lease for authority commits. A generic "publish after both writes" statement does
+not close the interval between the first effective mutation and that commit.
+
+**D1/D2 and skill/prompt classification.** The proposed **D1** is the
+operator-authored *workflow-template namespace* publisher
+(`workflow_template_drafts`/`workflow_template_versions` with pinned
+source/compiler/validator revisions); the proposed **D2** is the *separately
+authorized dynamic cross-team workflow activation*. The existing
+`authority_policy_releases`/`authority_policy_activations` rows above are an
+**existing escalation-policy input** and are neither D1 nor D2; they participate
+only as a policy input whose launch binding must be revalidated, not as the D1
+template publisher or the D2 workflow activation. Skill and prompt inputs are
+classified separately: a skill-eligibility rule change is a **skill-eligibility**
+input, while a `system_prompt`/`description` update is **pinned review-input
+provenance** — an unrelated presentation setting is irrelevant and must not
+invalidate every workflow, but the pinned source/revision/compiler/input digest
+correctness for a genuinely participating input remains required. Branch source,
+current `origin/main`, the observed deployed runtime and the proposed (unimplemented)
+behavior are recorded as separate provenance and are never conflated.
 
 Journal attempts have unique invocation identity; an aborted attempt does not
 reserve its generation. States are `prepared`, durable
@@ -827,3 +860,70 @@ diff (exactly the ten authorized paths, +7180, `git diff --check` 0, SHA-256
 observed deployed source and the proposed behavior are recorded separately.
 Locks, published branch head and local counts are not independent package
 acceptance. Evidence remains UNACCEPTED / D5 NOT READY; the study is NOT RUN.
+
+### 2026-09-21 F4 consolidated correction: membership, validity and stale recovery (TASK-8691)
+
+This subsection is the current normative correction of the proposed D2 global
+profile protocol and supersedes the earlier F4 outline wherever the two differ.
+It remains an unimplemented cooperative proposal plus isolated executable
+evidence; current shipping routes gain none of these guarantees and D5 is not
+approved.
+
+**Membership identity.** The isolated fixture's `workflow_profile_dependencies`
+primary key is the tuple `(org_namespace, profile_name)`, not `org_namespace`
+alone. This is the shape the supported runtime already needs: executor
+resolution is per agent, so one organization may depend on several profiles and
+several organizations may depend on one profile. Registering, rebinding or
+removing one consumer never drops another live consumer or another profile of the
+same organization. DDL constrains the tuple key, the state domain and
+`bound_generation >= 0`; the service owns cross-row truthfulness —
+`bound_generation` tracks the profile generation the organization's own authority
+was last coherently published against and advances with a register/rebind store
+commit, while a `remove` store commit marks the dependent rows `removed` and
+leaves them incoherent.
+
+**Transitions share source+target coordination.** `register_profile_dependency`
+refuses while any non-terminal operation is active for the target profile **or
+for any profile the organization already depends on**, so a later registration
+cannot silently change captured membership. `mutate_profile_dependency` validates
+the source dependency identity and that its `bound_generation` equals the current
+source store generation, and for a rebind validates the destination profile's
+actual existence, `active` state, exact generation and registry publication.
+Missing, stale, removed or otherwise incoherent requests leave every row
+unchanged. A rebind destination must be a real published profile, not an
+arbitrary integer binding.
+
+**Stale recovery is zero-effect.** `reconcile_profile_operation`,
+`compensate_profile_operation` and `republish_profile_dependents` read the
+authoritative operation/store/registry/membership/ownership state **after**
+acquiring the coordination lease and inside their transactions. A recovery
+resuming behind a second connection that already finished the operation and
+published a newer generation observes terminal/superseded work with zero writes
+instead of committing a stale registry generation over the newer one. A delayed
+republish of a superseded operation refuses with `profile_operation_superseded`.
+
+**Validity through republish and admission.** Republish returns an organization
+to `ready` only while it has at least one dependency coherent with the actual
+current profile store and registry (`active`, exact bound generation, published).
+A globally `removed` still-required profile therefore keeps the organization
+fenced and admission fails with `authority_pointer_not_ready` until a supported
+registration to a coherent published profile and a fresh coordinated operation
+legitimately restore eligibility. Unrelated eligible dependencies are preserved
+and the organization is never reopened from stale snapshot bytes.
+
+**Corrected isolated proof.** The corrected schedules are
+`test_proposed_stale_profile_recovery_is_zero_effect_behind_newer_operation`,
+`test_proposed_profile_registration_cannot_bypass_captured_source_barrier`,
+`test_proposed_profile_rebind_validates_real_destination_and_source`,
+`test_proposed_profile_remove_keeps_dependents_fenced_until_supported_registration`,
+`test_proposed_profile_membership_preserves_multiple_profiles_and_consumers`, and
+the live cross-process contention control
+`test_proposed_profile_live_process_contention_excludes_second_coordinator` (a
+real child process holds the durable lease while a second real connection is
+refused `profile_coordinator_busy`, distinct from dead-owner reclaim). Focused
+`tests/workflows/test_u0_migration_recovery.py` profile schedules passed 18/18
+and the three U0 files passed 155 on the corrected candidate under effective
+Python 3.14.4 / SQLite 3.46.1 / pytest 9.0.3. The independent corrected probe
+`output/TASK-8691/probe-f4-corrected.py` reproduces the manager's five
+counterexamples and asserts the corrected outcome for each. Production wiring
+(F4-D) remains unimplemented; F5 and F6 stay pending.

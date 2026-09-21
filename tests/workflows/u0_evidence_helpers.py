@@ -820,6 +820,74 @@ def _active_profile_operation(conn: sqlite3.Connection, profile_name: str) -> tu
     return None if row is None else (row[0], row[1])
 
 
+def _profile_registry_generation(conn: sqlite3.Connection, profile_name: str) -> int | None:
+    row = conn.execute(
+        "SELECT published_generation FROM workflow_profile_registry WHERE profile_name=?",
+        (profile_name,),
+    ).fetchone()
+    return None if row is None else int(row[0])
+
+
+def _active_dependency_profiles(conn: sqlite3.Connection, organization: str) -> list[str]:
+    """Every profile the org currently depends on, canonically ordered."""
+    return [
+        row[0]
+        for row in conn.execute(
+            "SELECT profile_name FROM workflow_profile_dependencies WHERE org_namespace=? AND state='active' ORDER BY profile_name",
+            (organization,),
+        ).fetchall()
+    ]
+
+
+def _assert_no_active_operation(conn: sqlite3.Connection, profile_name: str) -> None:
+    active = _active_profile_operation(conn, profile_name)
+    if active is not None:
+        raise ValueError(f"profile_operation_in_progress:{active[1]}")
+
+
+def _coherent_dependency_count(coordinator: sqlite3.Connection, organization: str) -> int:
+    """Count this org's dependencies that are coherent with the current store.
+
+    A dependency is coherent only when its profile is ``active`` at exactly the
+    bound generation and the registry has published that same generation.  A
+    removed, absent, unpublished or stale profile can never make an org eligible.
+    """
+    coherent = 0
+    for profile_name, bound_generation in coordinator.execute(
+        "SELECT profile_name, bound_generation FROM workflow_profile_dependencies WHERE org_namespace=? AND state='active'",
+        (organization,),
+    ).fetchall():
+        generation, _digest, state = _profile_store(coordinator, profile_name)
+        if state != "active" or generation != bound_generation:
+            continue
+        if _profile_registry_generation(coordinator, profile_name) != bound_generation:
+            continue
+        coherent += 1
+    return coherent
+
+
+def _apply_profile_store_to_dependents(
+    coordinator: sqlite3.Connection, profile_name: str, operation_kind: str, target_generation: int,
+) -> None:
+    """Keep dependent membership truthfully aligned with the store commit.
+
+    A ``register``/``rebind`` store advance makes every active dependent coherent
+    with the new generation, so ``bound_generation`` advances.  A ``remove``
+    store commit makes the dependent rows incoherent (``removed``); they are not
+    silently left active against a profile the global store says is gone.
+    """
+    if operation_kind == "remove":
+        coordinator.execute(
+            "UPDATE workflow_profile_dependencies SET state='removed' WHERE profile_name=? AND state='active'",
+            (profile_name,),
+        )
+    else:
+        coordinator.execute(
+            "UPDATE workflow_profile_dependencies SET bound_generation=? WHERE profile_name=? AND state='active'",
+            (target_generation, profile_name),
+        )
+
+
 def _acquire_profile_lease(
     conn: sqlite3.Connection, profile_name: str, owner: str, *,
     on_begin_immediate: Callable[[], None] | None = None,
@@ -865,18 +933,20 @@ def _release_profile_lease(conn: sqlite3.Connection, profile_name: str, owner: s
 def register_profile_dependency(
     conn: sqlite3.Connection, *, organization: str, profile_name: str, expected_generation: int,
 ) -> int:
-    """Join a profile's durable dependent membership, or fail closed.
+    """Join one profile's dependent membership, or fail closed.
 
-    A new-org activation is refused while any non-terminal operation has already
-    captured this profile; therefore a late activation cannot admit stale
-    authority or escape the captured affected-org set.
+    A registration is refused while any non-terminal operation is active for the
+    target profile **or for any profile the organization already depends on**.
+    Otherwise an operation that captured ``p``/org-a could be bypassed by a
+    later registration to ``q``, silently changing the captured membership.
     """
     _require_idle(conn)
     conn.execute("BEGIN IMMEDIATE")
     try:
-        active = _active_profile_operation(conn, profile_name)
-        if active is not None:
-            raise ValueError(f"profile_operation_in_progress:{active[1]}")
+        _assert_no_active_operation(conn, profile_name)
+        for source in _active_dependency_profiles(conn, organization):
+            if source != profile_name:
+                _assert_no_active_operation(conn, source)
         generation, _digest, state = _profile_store(conn, profile_name)
         if state == "active":
             if generation != expected_generation:
@@ -885,8 +955,8 @@ def register_profile_dependency(
             raise ValueError("profile_generation_stale")
         conn.execute(
             """INSERT INTO workflow_profile_dependencies VALUES (?,?,?,'active')
-               ON CONFLICT(org_namespace) DO UPDATE SET
-                 profile_name=excluded.profile_name, bound_generation=excluded.bound_generation, state='active'""",
+               ON CONFLICT(org_namespace,profile_name) DO UPDATE SET
+                 bound_generation=excluded.bound_generation, state='active'""",
             (organization, profile_name, expected_generation),
         )
         conn.commit()
@@ -900,33 +970,62 @@ def mutate_profile_dependency(
     conn: sqlite3.Connection, *, organization: str, from_profile: str, to_profile: str | None,
     expected_generation: int,
 ) -> str:
-    """Rebind or remove one dependency, fenced during a captured operation."""
+    """Rebind or remove one dependency, coordinated by source and target.
+
+    Refused while any non-terminal operation is active for the source, the
+    destination, or any other profile the organization depends on.  A rebind
+    validates the destination's actual existence, active state, generation and
+    registry publication plus the current source identity/generation; any
+    missing, stale, removed or incoherent request leaves every row unchanged.
+    """
     _require_idle(conn)
     conn.execute("BEGIN IMMEDIATE")
     try:
-        for profile in (from_profile, to_profile):
-            if profile is None:
-                continue
-            active = _active_profile_operation(conn, profile)
-            if active is not None:
-                raise ValueError(f"profile_operation_in_progress:{active[1]}")
+        involved = set(_active_dependency_profiles(conn, organization))
+        involved.add(from_profile)
+        if to_profile is not None:
+            involved.add(to_profile)
+        for profile in sorted(involved):
+            _assert_no_active_operation(conn, profile)
         row = conn.execute(
-            "SELECT profile_name FROM workflow_profile_dependencies WHERE org_namespace=?", (organization,),
+            "SELECT bound_generation, state FROM workflow_profile_dependencies WHERE org_namespace=? AND profile_name=?",
+            (organization, from_profile),
         ).fetchone()
-        if row is None or row[0] != from_profile:
+        if row is None or row[1] != "active":
             raise ValueError("profile_dependency_missing")
+        source_bound, _source_state = int(row[0]), row[1]
+        source_generation, _source_digest, source_store_state = _profile_store(conn, from_profile)
+        if source_store_state == "active":
+            if source_generation != source_bound:
+                raise ValueError("profile_source_binding_stale")
+        elif not (source_store_state == "absent" and source_bound == 0):
+            raise ValueError("profile_source_binding_stale")
         if to_profile is None:
+            if expected_generation not in {source_bound, source_generation}:
+                raise ValueError("profile_generation_stale")
             conn.execute(
                 "UPDATE workflow_profile_dependencies SET state='removed' WHERE org_namespace=? AND profile_name=?",
                 (organization, from_profile),
             )
-        else:
-            conn.execute(
-                "UPDATE workflow_profile_dependencies SET profile_name=?, bound_generation=?, state='active' WHERE org_namespace=? AND profile_name=?",
-                (to_profile, expected_generation, organization, from_profile),
-            )
+            conn.commit()
+            return "dependency_removed"
+        existing = conn.execute(
+            "SELECT 1 FROM workflow_profile_dependencies WHERE org_namespace=? AND profile_name=?",
+            (organization, to_profile),
+        ).fetchone()
+        if existing is not None:
+            raise ValueError("profile_dependency_exists")
+        destination_generation, _destination_digest, destination_state = _profile_store(conn, to_profile)
+        if destination_state != "active" or destination_generation != expected_generation:
+            raise ValueError("profile_target_not_active")
+        if _profile_registry_generation(conn, to_profile) != expected_generation:
+            raise ValueError("profile_target_not_published")
+        conn.execute(
+            "UPDATE workflow_profile_dependencies SET profile_name=?, bound_generation=?, state='active' WHERE org_namespace=? AND profile_name=?",
+            (to_profile, expected_generation, organization, from_profile),
+        )
         conn.commit()
-        return "dependency_rebound" if to_profile is not None else "dependency_removed"
+        return "dependency_rebound"
     except Exception:
         conn.rollback()
         raise
@@ -994,9 +1093,10 @@ def coordinate_profile_operation(
             raise ProfileOperationInterrupted("profile_interrupted:after_capture")
         for index, namespace in enumerate(members):
             org = orgs[namespace]
-            fence_authority_namespace(
-                org.connection, cache=org.cache, namespace=namespace, reason=f"profile:{profile_name}",
-            )
+            if _pointer(org.connection, namespace)[3] != "fenced":
+                fence_authority_namespace(
+                    org.connection, cache=org.cache, namespace=namespace, reason=f"profile:{profile_name}",
+                )
             coordinator.execute(
                 "UPDATE workflow_profile_operations SET state='fenced' WHERE id=?", (operation_id,),
             )
@@ -1017,6 +1117,7 @@ def coordinate_profile_operation(
                 (profile_name, generation + 1, sha256_bytes(snapshot),
                  "removed" if operation_kind == "remove" else "active"),
             )
+            _apply_profile_store_to_dependents(coordinator, profile_name, operation_kind, generation + 1)
             coordinator.execute("UPDATE workflow_profile_operations SET state='store_committed' WHERE id=?", (operation_id,))
             coordinator.commit()
         except Exception:
@@ -1050,51 +1151,94 @@ def coordinate_profile_operation(
 def reconcile_profile_operation(
     coordinator: sqlite3.Connection, *, orgs: dict[str, ProfileOrg], operation_id: str,
 ) -> str:
-    """Cold forward reconciliation of a partially applied profile operation."""
+    """Cold forward reconciliation of a partially applied profile operation.
+
+    Only the profile name is read before the lease — enough to select the
+    coordination lock.  Every authoritative fact (operation state/target,
+    store, registry, live membership, captured ownership) is re-read **after**
+    the lease and inside transactions.  A recovery interleaved behind a second
+    connection that already finished the old operation and published a newer
+    generation therefore observes terminal/superseded work with zero writes
+    instead of committing a stale registry generation over the newer one.
+    """
     _require_idle(coordinator)
-    row = coordinator.execute(
-        """SELECT profile_name, operation_kind, captured_members, target_generation, state, profile_digest
-           FROM workflow_profile_operations WHERE id=?""",
-        (operation_id,),
+    seed = coordinator.execute(
+        "SELECT profile_name FROM workflow_profile_operations WHERE id=?", (operation_id,),
     ).fetchone()
-    if row is None:
+    if seed is None:
         raise ValueError("profile_operation_missing")
-    profile_name, operation_kind, members_json, target_generation, state, profile_digest = row
-    if state in {"published", "aborted"}:
-        return state
-    members = json.loads(members_json)
+    profile_name = seed[0]
     owner = f"profile-recovery:{uuid.uuid4().hex}"
     _acquire_profile_lease(coordinator, profile_name, owner)
     try:
-        if state == "captured" and all(
-            _pointer(orgs[namespace].connection, namespace)[3] != "fenced" for namespace in members
-        ):
+        row = coordinator.execute(
+            """SELECT operation_kind, captured_members, target_generation, state,
+                      profile_digest, coordinator_invocation
+               FROM workflow_profile_operations WHERE id=? AND profile_name=?""",
+            (operation_id, profile_name),
+        ).fetchone()
+        if row is None:
+            raise ValueError("profile_operation_missing")
+        operation_kind, members_json, target_generation, state, profile_digest, _captured_owner = row
+        if state in {"published", "aborted"}:
+            return state
+        current, _digest, _store_state = _profile_store(coordinator, profile_name)
+        registry = _profile_registry_generation(coordinator, profile_name)
+        # Superseded by newer committed work: observe with zero writes.  A newer
+        # operation always advances the store past this target; only this
+        # operation's own commit may leave store==target with the registry behind.
+        if current > target_generation or (registry is not None and registry > target_generation):
+            return "superseded"
+        members = json.loads(members_json)
+        if state in {"captured", "fenced"}:
+            live_members = [
+                live[0] for live in coordinator.execute(
+                    "SELECT org_namespace FROM workflow_profile_dependencies WHERE profile_name=? AND state='active' ORDER BY org_namespace",
+                    (profile_name,),
+                ).fetchall()
+            ]
+            if live_members != members:
+                raise ValueError("profile_membership_changed")
+        if state in {"captured", "fenced"}:
+            if state == "captured" and all(
+                _pointer(orgs[namespace].connection, namespace)[3] != "fenced" for namespace in members
+            ):
+                coordinator.execute("BEGIN IMMEDIATE")
+                try:
+                    recheck = coordinator.execute(
+                        "SELECT state FROM workflow_profile_operations WHERE id=?", (operation_id,),
+                    ).fetchone()
+                    if recheck != ("captured",):
+                        raise ValueError("profile_operation_state_changed")
+                    coordinator.execute(
+                        "UPDATE workflow_profile_operations SET state='aborted' WHERE id=? AND state='captured'", (operation_id,),
+                    )
+                    coordinator.commit()
+                except Exception:
+                    coordinator.rollback()
+                    raise
+                return "aborted_unpublished"
+            for namespace in members:
+                org = orgs[namespace]
+                if _pointer(org.connection, namespace)[3] == "fenced":
+                    continue
+                fence_authority_namespace(
+                    org.connection, cache=org.cache, namespace=namespace, reason=f"profile:{profile_name}",
+                )
             coordinator.execute("BEGIN IMMEDIATE")
             try:
+                recheck = coordinator.execute(
+                    "SELECT state FROM workflow_profile_operations WHERE id=?", (operation_id,),
+                ).fetchone()
+                if recheck not in {("captured",), ("fenced",)}:
+                    raise ValueError("profile_operation_state_changed")
                 coordinator.execute(
-                    "UPDATE workflow_profile_operations SET state='aborted' WHERE id=? AND state='captured'", (operation_id,),
+                    "UPDATE workflow_profile_operations SET state='fenced' WHERE id=? AND state='captured'", (operation_id,),
                 )
                 coordinator.commit()
             except Exception:
                 coordinator.rollback()
                 raise
-            return "aborted_unpublished"
-        for namespace in members:
-            org = orgs[namespace]
-            if _pointer(org.connection, namespace)[3] == "fenced":
-                continue
-            fence_authority_namespace(
-                org.connection, cache=org.cache, namespace=namespace, reason=f"profile:{profile_name}",
-            )
-        coordinator.execute("BEGIN IMMEDIATE")
-        try:
-            coordinator.execute(
-                "UPDATE workflow_profile_operations SET state='fenced' WHERE id=? AND state='captured'", (operation_id,),
-            )
-            coordinator.commit()
-        except Exception:
-            coordinator.rollback()
-            raise
         current, _digest, _state = _profile_store(coordinator, profile_name)
         if current < target_generation:
             coordinator.execute("BEGIN IMMEDIATE")
@@ -1109,6 +1253,7 @@ def reconcile_profile_operation(
                     (profile_name, target_generation, profile_digest,
                      "removed" if operation_kind == "remove" else "active"),
                 )
+                _apply_profile_store_to_dependents(coordinator, profile_name, operation_kind, target_generation)
                 coordinator.execute("UPDATE workflow_profile_operations SET state='store_committed' WHERE id=?", (operation_id,))
                 coordinator.commit()
             except Exception:
@@ -1134,13 +1279,16 @@ def reconcile_profile_operation(
 def republish_profile_dependents(
     coordinator: sqlite3.Connection, *, orgs: dict[str, ProfileOrg], operation_id: str,
 ) -> list[str]:
-    """Independently return every captured org to coherent ready authority.
+    """Return each captured org to ready authority only while it is coherent.
 
     The coordinator lease is already released before this runs, so per-org
     publication never nests inside the machine-global coordinator; the graph is
     coordinator lease -> (released) -> per-org publication lease, and the legacy
     callback order (org db lock -> binding lease -> callback transaction) is
-    untouched.
+    untouched.  An org whose only relevant dependency was removed (or is
+    otherwise incoherent with the current profile store/registry) stays fenced:
+    a global ``remove`` never manufactures admission from stale snapshot bytes.
+    A delayed republish of an operation a newer one already superseded refuses.
     """
     _require_idle(coordinator)
     row = coordinator.execute(
@@ -1149,12 +1297,17 @@ def republish_profile_dependents(
     ).fetchone()
     if row is None:
         raise ValueError("profile_operation_missing")
-    profile_name, members_json, _target_generation, state = row
+    profile_name, members_json, target_generation, state = row
     if state != "published":
         raise ValueError("profile_operation_not_published")
+    current, _digest, _store_state = _profile_store(coordinator, profile_name)
+    if current != target_generation or _profile_registry_generation(coordinator, profile_name) != target_generation:
+        raise ValueError("profile_operation_superseded")
     members = json.loads(members_json)
     republished: list[str] = []
     for namespace in members:
+        if _coherent_dependency_count(coordinator, namespace) == 0:
+            continue
         org = orgs[namespace]
         generation, _journal_id, digest, pointer_state, profile_fence = _pointer(org.connection, namespace)
         if pointer_state == "ready" and org.cache.get(namespace) == (generation, digest):
@@ -1172,26 +1325,42 @@ def republish_profile_dependents(
 
 
 def compensate_profile_operation(coordinator: sqlite3.Connection, *, operation_id: str) -> str:
-    """Abort an owned pre-store operation; never overwrite a newer commit."""
+    """Abort an owned pre-store operation; never overwrite a newer commit.
+
+    The operation row, store and registry are re-read under the acquired
+    coordination lease and inside the abort transaction, so a stale compensator
+    that read a pre-lease snapshot cannot abort or roll back newer work.
+    """
     _require_idle(coordinator)
-    row = coordinator.execute(
-        "SELECT profile_name, target_generation, state FROM workflow_profile_operations WHERE id=?", (operation_id,),
+    seed = coordinator.execute(
+        "SELECT profile_name FROM workflow_profile_operations WHERE id=?", (operation_id,),
     ).fetchone()
-    if row is None:
+    if seed is None:
         raise ValueError("profile_operation_missing")
-    profile_name, target_generation, state = row
     owner = f"profile-compensation:{uuid.uuid4().hex}"
-    _acquire_profile_lease(coordinator, profile_name, owner)
+    _acquire_profile_lease(coordinator, seed[0], owner)
     try:
-        current, _digest, _profile_state = _profile_store(coordinator, profile_name)
-        registry = coordinator.execute(
-            "SELECT published_generation FROM workflow_profile_registry WHERE profile_name=?", (profile_name,),
+        row = coordinator.execute(
+            "SELECT profile_name, target_generation, state FROM workflow_profile_operations WHERE id=? AND profile_name=?",
+            (operation_id, seed[0]),
         ).fetchone()
-        published = 0 if registry is None else registry[0]
-        if current >= target_generation or published >= target_generation or state in {"store_committed", "published"}:
+        if row is None:
+            raise ValueError("profile_operation_missing")
+        profile_name, target_generation, state = row
+        if state in {"store_committed", "published", "aborted"}:
+            raise ValueError("stale_profile_compensation_fenced")
+        current, _digest, _profile_state = _profile_store(coordinator, profile_name)
+        registry = _profile_registry_generation(coordinator, profile_name)
+        published = 0 if registry is None else registry
+        if current >= target_generation or published >= target_generation:
             raise ValueError("stale_profile_compensation_fenced")
         coordinator.execute("BEGIN IMMEDIATE")
         try:
+            recheck = coordinator.execute(
+                "SELECT state FROM workflow_profile_operations WHERE id=?", (operation_id,),
+            ).fetchone()
+            if recheck is None or recheck[0] in {"store_committed", "published", "aborted"}:
+                raise ValueError("stale_profile_compensation_fenced")
             coordinator.execute(
                 """UPDATE workflow_profile_operations
                    SET state='aborted', compensation_generation=compensation_generation+1

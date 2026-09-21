@@ -1757,7 +1757,7 @@ def test_proposed_profile_operation_wins_and_late_activation_cannot_admit_stale(
     with pytest.raises(ValueError, match="profile_generation_stale"):
         register_profile_dependency(cold, organization="org-late", profile_name="codex-profile", expected_generation=0)
     assert register_profile_dependency(cold, organization="org-late", profile_name="codex-profile", expected_generation=1) == 1
-    assert coordinator.execute("SELECT org_namespace, bound_generation FROM workflow_profile_dependencies ORDER BY org_namespace").fetchall() == [("org-a", 0), ("org-b", 0), ("org-late", 1)]
+    assert coordinator.execute("SELECT org_namespace, bound_generation FROM workflow_profile_dependencies ORDER BY org_namespace").fetchall() == [("org-a", 1), ("org-b", 1), ("org-late", 1)]
     for org in list(orgs.values()):
         org.connection.close()
     for org in list(cold_orgs.values()):
@@ -1766,12 +1766,20 @@ def test_proposed_profile_operation_wins_and_late_activation_cannot_admit_stale(
 
 @pytest.mark.parametrize("to_profile", ("claude-profile", None))
 def test_proposed_profile_dependency_mutation_is_fenced_during_operation(tmp_path: Path, to_profile: str | None) -> None:
-    """A concurrent rebind/removal keeps the captured membership truthful."""
+    """A concurrent rebind/removal keeps the captured membership truthful.
+
+    The rebind destination is a real, published ``claude-profile`` generation 1
+    (seeded through the same coordinator), not an arbitrary integer binding; the
+    source dependency must be coherent with the current ``codex-profile`` store.
+    """
     path = tmp_path / "profiles.db"
     coordinator = _adapter(path)
-    orgs, _paths = _seed_profile_orgs(tmp_path, ("org-a", "org-b"))
+    orgs, _paths = _seed_profile_orgs(tmp_path, ("org-a", "org-b", "org-c"))
     register_profile_dependency(coordinator, organization="org-a", profile_name="codex-profile", expected_generation=0)
     register_profile_dependency(coordinator, organization="org-b", profile_name="codex-profile", expected_generation=0)
+    register_profile_dependency(coordinator, organization="org-c", profile_name="claude-profile", expected_generation=0)
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="claude-profile", operation_kind="register", snapshot=b"claude-v1", operation_id="op-claude") == "published"
+    assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-claude") == ["org-c"]
     mutation_results: list[object] = []
 
     def concurrent_mutation() -> None:
@@ -1796,11 +1804,11 @@ def test_proposed_profile_dependency_mutation_is_fenced_during_operation(tmp_pat
     assert str(mutation_results[0]).startswith("profile_operation_in_progress:")
     captured = json.loads(coordinator.execute("SELECT captured_members FROM workflow_profile_operations WHERE id='op-dep'").fetchone()[0])
     assert captured == ["org-a", "org-b"]
-    assert coordinator.execute("SELECT org_namespace, profile_name, state FROM workflow_profile_dependencies ORDER BY org_namespace").fetchall() == [("org-a", "codex-profile", "active"), ("org-b", "codex-profile", "active")]
+    assert coordinator.execute("SELECT org_namespace, profile_name, state FROM workflow_profile_dependencies ORDER BY org_namespace, profile_name").fetchall() == [("org-a", "codex-profile", "active"), ("org-b", "codex-profile", "active"), ("org-c", "claude-profile", "active")]
     republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-dep")
     assert mutate_profile_dependency(coordinator, organization="org-b", from_profile="codex-profile", to_profile=to_profile, expected_generation=1) == ("dependency_rebound" if to_profile is not None else "dependency_removed")
-    row = coordinator.execute("SELECT profile_name, bound_generation, state FROM workflow_profile_dependencies WHERE org_namespace='org-b'").fetchone()
-    assert row == (("claude-profile", 1, "active") if to_profile is not None else ("codex-profile", 0, "removed"))
+    row = coordinator.execute("SELECT profile_name, bound_generation, state FROM workflow_profile_dependencies WHERE org_namespace='org-b' AND profile_name=?", ("claude-profile" if to_profile is not None else "codex-profile",)).fetchone()
+    assert row == (("claude-profile", 1, "active") if to_profile is not None else ("codex-profile", 1, "removed"))
 
 
 @pytest.mark.parametrize("interrupt_at", ("after_first_fence", "after_store"))
@@ -1888,3 +1896,217 @@ coordinate_profile_operation(conn, orgs=orgs, profile_name='codex-profile', oper
     assert coordinator.execute("SELECT COUNT(*) FROM workflow_profile_leases").fetchone() == (0,)
     assert coordinator.execute("SELECT state FROM workflow_profile_operations WHERE id='fresh-op'").fetchone() == ("published",)
     assert republish_profile_dependents(cold, orgs={"org-a": cold_org}, operation_id="fresh-op") == ["org-a"]
+
+
+# ---------------------------------------------------------------------------
+# F4 corrected-contract schedules: consolidated TASK-8641/step4 counterexamples.
+#
+# Each test drives the actual corrected helpers with independent connections and
+# deterministic interleavings.  A reproduced counterexample asserts the corrected
+# older/newer outcome, zero effects on newer state, and preserved sentinels.
+# ---------------------------------------------------------------------------
+
+
+def test_proposed_stale_profile_recovery_is_zero_effect_behind_newer_operation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recovery resuming behind a newer generation must not regress the registry.
+
+    The manager interleaving completes the old recovery, republishes its
+    dependent and publishes a new generation 2 on a second connection while the
+    old recovery is between its pre-lease read and its lease.  The resumed
+    recovery must observe terminal work with zero writes.
+    """
+    import tests.workflows.u0_evidence_helpers as u0_helpers
+
+    path = tmp_path / "profiles.db"
+    coordinator = _adapter(path)
+    orgs, paths = _seed_profile_orgs(tmp_path, ("org-a",))
+    register_profile_dependency(coordinator, organization="org-a", profile_name="p", expected_generation=0)
+    with pytest.raises(ProfileOperationInterrupted, match="after_store"):
+        coordinate_profile_operation(coordinator, orgs=orgs, profile_name="p", operation_kind="register", snapshot=b"authority-v1", operation_id="old", interrupt_at="after_store")
+    original = u0_helpers._acquire_profile_lease
+    interleaved: list[str] = []
+
+    def acquire(conn: sqlite3.Connection, profile: str, owner: str, **kwargs: object) -> None:
+        if not interleaved and owner.startswith("profile-recovery:"):
+            interleaved.append("finish-old-then-publish-new-before-stale-recovery-acquires-lease")
+            other = _adapter(path)
+            try:
+                assert reconcile_profile_operation(other, orgs=orgs, operation_id="old") == "recovered_forward"
+                assert republish_profile_dependents(other, orgs=orgs, operation_id="old") == ["org-a"]
+                assert coordinate_profile_operation(other, orgs=orgs, profile_name="p", operation_kind="rebind", snapshot=b"authority-v2", operation_id="new") == "published"
+                assert republish_profile_dependents(other, orgs=orgs, operation_id="new") == ["org-a"]
+            finally:
+                other.close()
+        return original(conn, profile, owner, **kwargs)
+
+    monkeypatch.setattr(u0_helpers, "_acquire_profile_lease", acquire)
+    try:
+        assert reconcile_profile_operation(coordinator, orgs=orgs, operation_id="old") == "published"
+    finally:
+        monkeypatch.setattr(u0_helpers, "_acquire_profile_lease", original)
+    assert interleaved == ["finish-old-then-publish-new-before-stale-recovery-acquires-lease"]
+    assert coordinator.execute("SELECT generation, state FROM workflow_profile_store WHERE profile_name='p'").fetchone() == (2, "active")
+    assert coordinator.execute("SELECT published_generation FROM workflow_profile_registry WHERE profile_name='p'").fetchone() == (2,)
+    assert coordinator.execute("SELECT state FROM workflow_profile_operations WHERE id='old'").fetchone() == ("published",)
+    assert coordinator.execute("SELECT state FROM workflow_profile_operations WHERE id='new'").fetchone() == ("published",)
+    assert coordinator.execute("SELECT org_namespace, profile_name, bound_generation, state FROM workflow_profile_dependencies").fetchall() == [("org-a", "p", 2, "active")]
+    assert _publication_rows(paths["org-a"])["pointers"][0][4] == "ready"
+    for org in orgs.values():
+        org.connection.close()
+
+
+def test_proposed_profile_registration_cannot_bypass_captured_source_barrier(tmp_path: Path) -> None:
+    """Registering a second profile must not evade a captured source operation."""
+    coordinator = _adapter(tmp_path / "profiles.db")
+    orgs, _paths = _seed_profile_orgs(tmp_path, ("org-a",))
+    register_profile_dependency(coordinator, organization="org-a", profile_name="p", expected_generation=0)
+    with pytest.raises(ProfileOperationInterrupted, match="after_capture"):
+        coordinate_profile_operation(coordinator, orgs=orgs, profile_name="p", operation_kind="register", snapshot=b"v1", operation_id="captured-p", interrupt_at="after_capture")
+    before = (
+        coordinator.execute("SELECT org_namespace, profile_name, bound_generation, state FROM workflow_profile_dependencies ORDER BY org_namespace, profile_name").fetchall(),
+        coordinator.execute("SELECT id, profile_name, state FROM workflow_profile_operations ORDER BY id").fetchall(),
+    )
+    with pytest.raises(ValueError, match="profile_operation_in_progress:captured"):
+        register_profile_dependency(coordinator, organization="org-a", profile_name="q", expected_generation=0)
+    after = (
+        coordinator.execute("SELECT org_namespace, profile_name, bound_generation, state FROM workflow_profile_dependencies ORDER BY org_namespace, profile_name").fetchall(),
+        coordinator.execute("SELECT id, profile_name, state FROM workflow_profile_operations ORDER BY id").fetchall(),
+    )
+    assert after == before
+    assert before[0] == [("org-a", "p", 0, "active")]
+
+
+def test_proposed_profile_rebind_validates_real_destination_and_source(tmp_path: Path) -> None:
+    """A rebind needs a real published destination and a current source binding."""
+    path = tmp_path / "profiles.db"
+    coordinator = _adapter(path)
+    orgs, _paths = _seed_profile_orgs(tmp_path, ("org-a", "org-b"))
+    register_profile_dependency(coordinator, organization="org-a", profile_name="p", expected_generation=0)
+    register_profile_dependency(coordinator, organization="org-b", profile_name="q", expected_generation=0)
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="q", operation_kind="register", snapshot=b"q-v1", operation_id="op-q") == "published"
+    before = (
+        coordinator.execute("SELECT org_namespace, profile_name, bound_generation, state FROM workflow_profile_dependencies ORDER BY org_namespace, profile_name").fetchall(),
+        coordinator.execute("SELECT id, state, compensation_generation FROM workflow_profile_operations ORDER BY id").fetchall(),
+    )
+    with pytest.raises(ValueError, match="profile_target_not_active"):
+        mutate_profile_dependency(coordinator, organization="org-a", from_profile="p", to_profile="missing", expected_generation=999)
+    with pytest.raises(ValueError, match="profile_target_not_active"):
+        mutate_profile_dependency(coordinator, organization="org-a", from_profile="p", to_profile="q", expected_generation=7)
+    after = (
+        coordinator.execute("SELECT org_namespace, profile_name, bound_generation, state FROM workflow_profile_dependencies ORDER BY org_namespace, profile_name").fetchall(),
+        coordinator.execute("SELECT id, state, compensation_generation FROM workflow_profile_operations ORDER BY id").fetchall(),
+    )
+    assert after == before
+    assert after[0] == [("org-a", "p", 0, "active"), ("org-b", "q", 1, "active")]
+    # A stale source binding (bound_generation behind the store generation) is
+    # refused with zero effects.  Publish p first so it has a real generation.
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="p", operation_kind="register", snapshot=b"p-v1", operation_id="op-p") == "published"
+    assert coordinator.execute("SELECT bound_generation FROM workflow_profile_dependencies WHERE org_namespace='org-a' AND profile_name='p'").fetchone() == (1,)
+    coordinator.execute("UPDATE workflow_profile_dependencies SET bound_generation=0 WHERE org_namespace='org-a' AND profile_name='p'")
+    coordinator.commit()
+    with pytest.raises(ValueError, match="profile_source_binding_stale"):
+        mutate_profile_dependency(coordinator, organization="org-a", from_profile="p", to_profile="q", expected_generation=1)
+    assert coordinator.execute("SELECT profile_name, bound_generation, state FROM workflow_profile_dependencies WHERE org_namespace='org-a'").fetchone() == ("p", 0, "active")
+
+
+def test_proposed_profile_remove_keeps_dependents_fenced_until_supported_registration(tmp_path: Path) -> None:
+    """A removed required profile must not regain admission from stale bytes."""
+    path = tmp_path / "profiles.db"
+    coordinator = _adapter(path)
+    orgs, paths = _seed_profile_orgs(tmp_path, ("org-a", "org-b"))
+    register_profile_dependency(coordinator, organization="org-b", profile_name="q", expected_generation=0)
+    register_profile_dependency(coordinator, organization="org-a", profile_name="p", expected_generation=0)
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="q", operation_kind="register", snapshot=b"q-v1", operation_id="op-q") == "published"
+    assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-q") == ["org-b"]
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="p", operation_kind="register", snapshot=b"p-v1", operation_id="op-p") == "published"
+    assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-p") == ["org-a"]
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="p", operation_kind="remove", snapshot=b"p-removed", operation_id="op-rm") == "published"
+    assert coordinator.execute("SELECT generation, state FROM workflow_profile_store WHERE profile_name='p'").fetchone() == (2, "removed")
+    assert coordinator.execute("SELECT profile_name, bound_generation, state FROM workflow_profile_dependencies WHERE org_namespace='org-a'").fetchall() == [("p", 1, "removed")]
+    # Republish of the remove operation cannot manufacture a ready org from the
+    # old canonical bytes; the org stays fenced and admission is refused.
+    assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-rm") == []
+    assert _publication_rows(paths["org-a"])["pointers"][0][4] == "fenced"
+    with pytest.raises(ValueError, match="authority_pointer_not_ready"):
+        admit_authority_request(orgs["org-a"].connection, root=orgs["org-a"].root, cache=orgs["org-a"].cache, namespace="org-a", request_id="bad-removed", request_bytes=b"x", admitted_by="reader", expected_generation=2)
+    # The unrelated dependent org-b is preserved ready on the still-live q.
+    assert _publication_rows(paths["org-b"])["pointers"][0][4] == "ready"
+    # Only an explicitly supported registration to a coherent, published profile
+    # plus a fresh coordinated operation legitimately restores eligibility.
+    assert register_profile_dependency(coordinator, organization="org-a", profile_name="q", expected_generation=1) == 1
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="q", operation_kind="register", snapshot=b"q-v2", operation_id="op-q2") == "published"
+    assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-q2") == ["org-a", "org-b"]
+    pointer = _publication_rows(paths["org-a"])["pointers"][0]
+    assert pointer[4] == "ready"
+    assert admit_authority_request(orgs["org-a"].connection, root=orgs["org-a"].root, cache=orgs["org-a"].cache, namespace="org-a", request_id="restored", request_bytes=b"x", admitted_by="reader", expected_generation=pointer[1]) == pointer[1]
+    for org in orgs.values():
+        org.connection.close()
+
+
+def test_proposed_profile_membership_preserves_multiple_profiles_and_consumers(tmp_path: Path) -> None:
+    """Tuple membership keeps one org on several profiles and several on one."""
+    path = tmp_path / "profiles.db"
+    coordinator = _adapter(path)
+    orgs, _paths = _seed_profile_orgs(tmp_path, ("org-a", "org-b", "org-c"))
+    for name in ("org-a", "org-b", "org-c"):
+        assert register_profile_dependency(coordinator, organization=name, profile_name="p", expected_generation=0) == 0
+    assert register_profile_dependency(coordinator, organization="org-a", profile_name="q", expected_generation=0) == 0
+    # Registering q for org-a must not drop its p dependency.
+    assert coordinator.execute("SELECT org_namespace, profile_name, state FROM workflow_profile_dependencies ORDER BY org_namespace, profile_name").fetchall() == [
+        ("org-a", "p", "active"), ("org-a", "q", "active"), ("org-b", "p", "active"), ("org-c", "p", "active"),
+    ]
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="p", operation_kind="register", snapshot=b"p-v1", operation_id="op-p") == "published"
+    assert json.loads(coordinator.execute("SELECT captured_members FROM workflow_profile_operations WHERE id='op-p'").fetchone()[0]) == ["org-a", "org-b", "org-c"]
+    assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-p") == ["org-a", "org-b", "org-c"]
+    # The unrelated q dependency of org-a is preserved untouched.
+    assert coordinator.execute("SELECT bound_generation, state FROM workflow_profile_dependencies WHERE org_namespace='org-a' AND profile_name='q'").fetchone() == (0, "active")
+    # A later registration to p is refused while a captured operation is active.
+    with pytest.raises(ProfileOperationInterrupted, match="after_capture"):
+        coordinate_profile_operation(coordinator, orgs=orgs, profile_name="p", operation_kind="register", snapshot=b"p-v2", operation_id="op-p2", interrupt_at="after_capture")
+    with pytest.raises(ValueError, match="profile_operation_in_progress:captured"):
+        register_profile_dependency(coordinator, organization="org-d", profile_name="p", expected_generation=1)
+    for org in orgs.values():
+        org.connection.close()
+
+
+def test_proposed_profile_live_process_contention_excludes_second_coordinator(tmp_path: Path) -> None:
+    """A real live child owner excludes a second coordinator until it is dead.
+
+    This is live cross-process contention evidence, not dead-owner reclaim: the
+    child process holds the durable lease while a second real connection in this
+    process is refused with no operation row written.
+    """
+    path = tmp_path / "profiles.db"
+    coordinator = _adapter(path)
+    orgs, _paths = _seed_profile_orgs(tmp_path, ("org-a",))
+    register_profile_dependency(coordinator, organization="org-a", profile_name="codex-profile", expected_generation=0)
+    script = """import sqlite3, sys
+from tests.workflows.u0_evidence_helpers import _acquire_profile_lease
+conn = sqlite3.connect(sys.argv[1]); conn.execute('PRAGMA foreign_keys=ON')
+_acquire_profile_lease(conn, 'codex-profile', 'profile-coordinator:live-child')
+print('HELD', flush=True)
+sys.stdin.readline()
+"""
+    child = subprocess.Popen(
+        [sys.executable, "-c", script, str(path)], cwd=Path(__file__).parents[2],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        first = child.stdout.readline() if child.stdout is not None else ""
+        assert first.strip() == "HELD", child.stderr.read() if child.stderr is not None else ""
+        with pytest.raises(ValueError, match="profile_coordinator_busy"):
+            coordinate_profile_operation(coordinator, orgs=orgs, profile_name="codex-profile", operation_kind="register", snapshot=b"v1", operation_id="blocked")
+        assert coordinator.execute("SELECT COUNT(*) FROM workflow_profile_operations").fetchone() == (0,)
+        assert coordinator.execute("SELECT COUNT(*) FROM workflow_profile_leases").fetchone() == (1,)
+    finally:
+        if child.stdin is not None:
+            child.stdin.write("\n")
+            child.stdin.flush()
+        child.wait(timeout=10)
+    assert child.returncode == 0
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="codex-profile", operation_kind="register", snapshot=b"v1", operation_id="fresh") == "published"
+    assert coordinator.execute("SELECT COUNT(*) FROM workflow_profile_leases").fetchone() == (0,)
+    for org in orgs.values():
+        org.connection.close()
