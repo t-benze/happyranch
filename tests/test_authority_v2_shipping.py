@@ -245,11 +245,17 @@ class _ShippingFixture:
     def __init__(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         *, seed_historical: bool = False, queue_workers: int = 1,
+        dequeue_gate: bool = False,
     ) -> None:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
         self.seed_historical = seed_historical
         self.queue_workers = queue_workers
+        # TASK-8698 restart venue only: install a polling dequeue gate BEFORE
+        # the real workers start, so a committed tagged item can be held back
+        # from dequeue until the simulated crash.  Default off: every existing
+        # case keeps the unchanged real asyncio.Queue.get worker path.
+        self.dequeue_gate = dequeue_gate
         self.home = tmp_path / "daemon-home"
         self.home.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(self.home))
@@ -284,16 +290,20 @@ class _ShippingFixture:
         # reopen never races that worker's transactions or periodic heartbeat.
         self.tagged_run_step_returned = threading.Event()
         self.reserved_invocation_done = threading.Event()
+        # THR-229 C3d4b restart venue: per-owner run_step completion barrier and
+        # a test-only lifecycle barrier that can refuse DEQUEUE of a committed
+        # tagged generation before a simulated crash (never a writer replacement).
+        self.run_step_returns: list[tuple] = []
+        self.run_step_cv = threading.Condition()
+        self.tagged_dequeue_blocked = False
+        self.owner_generation = 0
+        self._settings = None
 
     # -- setup ---------------------------------------------------------
     def start(self) -> "_ShippingFixture":
         from runtime.config import Settings
         from runtime.daemon import paths as paths_mod
-        from runtime.daemon.state import DaemonState
         from runtime.orchestrator._paths import OrgPaths
-        from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
-
-        import runtime.daemon.app as app_mod
 
         self.rt, self.org_root, self.fixture_agents = _bootstrap_runtime(self.tmp_path)
         # Everything the fixture owns must resolve inside tmp_path.
@@ -318,17 +328,51 @@ class _ShippingFixture:
         assert token
         self.cli_env = _sanitized_env(self.home)
 
-        fixture_settings = Settings(project_root=CHECKOUT, queue_workers=self.queue_workers)
-        self.monkeypatch.setattr(app_mod, "settings", fixture_settings)
+        self._settings = Settings(
+            project_root=CHECKOUT, queue_workers=self.queue_workers,
+        )
+        self._open_owner()
+        self._start_http()
+        return self
 
-        self.state = DaemonState.from_runtime(self.rt, fixture_settings)
+    def _open_owner(self) -> "_ShippingFixture":
+        """Open ONE real owning process over the persisted runtime dir.
+
+        Reused by :meth:`start` and by the genuine restart venue: a fresh call
+        after :meth:`_crash_detach` builds a NEW ``DaemonState``/``OrgState`` and
+        a NEW real ``TaskQueue`` over the SAME persisted file (never a boot
+        string reassigned on a live object).
+        """
+        from runtime.daemon.state import DaemonState
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
+        import runtime.daemon.app as app_mod
+
+        self.owner_generation += 1
+        self.stop_event = threading.Event()
+        self.release_event = threading.Event()
+        self.launch_event = threading.Event()
+        self.captured = {}
+        self.launch_history = []
+        self.launch_cv = threading.Condition()
+        self.released_sessions = set()
+        self.run_step_returns = []
+        self.run_step_cv = threading.Condition()
+        self.tagged_dequeue_blocked = False
+        self.tagged_run_step_returned = threading.Event()
+        self.reserved_invocation_done = threading.Event()
+
+        self.monkeypatch.setattr(app_mod, "settings", self._settings)
+
+        self.state = DaemonState.from_runtime(self.rt, self._settings)
         assert self.state.broken_orgs == {}, self.state.broken_orgs
         assert set(self.state.orgs.keys()) == {ORG}
         self.org = self.state.orgs[ORG]
 
         # Fixture-owned workspace bootstrap through the supported Codex adapter.
         org_paths = OrgPaths(root=self.org.root)
-        adapter = CodexWorkspaceAdapter(fixture_settings, org_paths, slug=ORG)
+        adapter = CodexWorkspaceAdapter(self._settings, org_paths, slug=ORG)
         for agent in self.fixture_agents:
             workspace = org_paths.workspaces_dir / agent.name
             assert workspace.resolve().is_relative_to(self.tmp_path.resolve())
@@ -350,8 +394,15 @@ class _ShippingFixture:
         # can await the TAGGED reserved run_step's deterministic return instead
         # of racing an active worker against reopen/close.
         self._instrument_reserved_completion()
+        # Install the test-only dequeue gate BEFORE the real workers start.
+        if self.dequeue_gate:
+            self._install_tagged_dequeue_barrier()
+        return self
 
-        # Retain a socket bound to 127.0.0.1:0 and keep the real lifespan.
+    def _start_http(self) -> "_ShippingFixture":
+        """Start the real app/lifespan (and therefore the real queue workers)."""
+        from runtime.daemon import paths as paths_mod
+
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(("127.0.0.1", 0))
@@ -365,6 +416,7 @@ class _ShippingFixture:
         self.server.start()
 
         # Bounded readiness: the real lifespan must have wired the workers.
+        token = paths_mod.read_token()
         token_header = {"Authorization": f"Bearer {token}"}
         deadline = time.monotonic() + 30.0
         while time.monotonic() < deadline:
@@ -382,6 +434,86 @@ class _ShippingFixture:
         else:
             raise AssertionError("fixture daemon did not become ready")
         return self
+
+    def _crash_detach(self) -> None:
+        """Simulate a daemon crash: drop the in-memory queue/workers and the owner.
+
+        The detached owner's ``TaskQueue`` is dereferenced WITHOUT a drain, so
+        any queued item that was never dequeued is genuinely lost.  The old
+        ``Database``/``OrgState`` are closed and never reused.  No boot string is
+        reassigned on a live object.
+        """
+        state = self.state
+        server = self.server
+        sock = self.sock
+        if server is not None:
+            server.stop()
+        elif state is not None:
+            async def _shutdown() -> None:
+                await state.queue.stop()
+                await state.close_all()
+
+            asyncio.run(_shutdown())
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        self.server = None
+        self.sock = None
+        self.state = None
+        self.org = None
+        self.capture = None
+
+    def _install_tagged_dequeue_barrier(self) -> None:
+        """Test-only lifecycle barrier that refuses DEQUEUE of a tagged item.
+
+        Installed BEFORE the real workers start, so every worker's ``get``
+        observes the live flag.  While ``tagged_dequeue_blocked`` is set the
+        worker sees the tagged publication at the head but does NOT remove it,
+        so a committed generation can be deliberately lost with the owner at
+        the simulated crash.  A polling ``get_nowait`` is used (never a parked
+        ``Queue.get``) so flipping the flag after workers are parked is observed
+        deterministically.  This never replaces a publication/admission/consumer
+        writer and is removed by the crash itself.
+        """
+        queue = self.state.queue._queue
+        fixture = self
+
+        async def _gated_get():
+            while True:
+                if fixture.tagged_dequeue_blocked:
+                    try:
+                        head = queue._queue[0]
+                    except IndexError:
+                        head = None
+                    if (
+                        head is not None
+                        and isinstance(head[2], dict)
+                        and head[2].get("authority_v2_generation")
+                    ):
+                        await asyncio.sleep(0.01)
+                        continue
+                try:
+                    return queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    await asyncio.sleep(0.005)
+
+        queue.get = _gated_get  # type: ignore[assignment]
+
+    def await_run_step_returns(
+        self, task_id: str, count: int, *, timeout: float = 60.0,
+    ) -> None:
+        """Deterministic barrier on completed real ``run_step`` calls."""
+        deadline = time.monotonic() + timeout
+        with self.run_step_cv:
+            while sum(1 for r in self.run_step_returns if r[1] == task_id) < count:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AssertionError(
+                        f"run_step for {task_id} never returned {count} times"
+                    )
+                self.run_step_cv.wait(timeout=min(remaining, 0.5))
 
     # -- isolated API control pair ------------------------------------
     def _api(self, method: str, path: str, **kwargs) -> httpx.Response:
@@ -532,6 +664,9 @@ class _ShippingFixture:
             try:
                 return original(dispatcher_self, slug, task_id, metadata)
             finally:
+                with fixture.run_step_cv:
+                    fixture.run_step_returns.append((slug, task_id, metadata))
+                    fixture.run_step_cv.notify_all()
                 if (
                     isinstance(metadata, dict)
                     and metadata.get("authority_v2_generation")
@@ -4489,5 +4624,679 @@ def test_shipping_real_later_lifecycle_invalid_has_zero_effects(tmp_path, monkey
     fixture.start()
     try:
         _drive_later_lifecycle_invalid(fixture)
+    finally:
+        fixture.stop()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TASK-8698 — C3d4b genuine shipping RESTART (lost queue) and C4 actual
+# startup-caller fault/refusal cases over BOTH fresh and full
+# historical-migrated owned venues.
+#
+# Reuses the TASK-8663 genuine completion-recovery claim (distinct runtime
+# session + separate provider resume id + ACTUAL subprocess CLI -> HTTP ->
+# persisted accepted R/Q), labels the still-dark pre-final staging through the
+# REAL public writers, then establishes a COMMITTED publication whose tagged
+# in-memory queue item is deliberately LOST before admission.  A test-only
+# lifecycle barrier refuses dequeue; the owner is then detached and a DISTINCT
+# Database + real OrgState is opened over the SAME persisted file with a new
+# server-owned boot.  The ACTUAL `_sweep_on_startup` and
+# `_publish_v2_generations_on_startup` run in production order, then the real
+# TaskQueue/Dispatcher/Orchestrator/run_step/_run_agent path admits the
+# generation with ONLY the external provider launch doubled.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _restart_durable_snapshot(db, root_id: str, generation: str) -> str:
+    """Byte-stable projection of the v2 causal rows for before/after compare."""
+    def _rows(sql, params=()):
+        return [dict(r) for r in db._conn.execute(sql, params).fetchall()]
+
+    stages = [
+        {"stage": a["payload"].get("stage"), "id": a["id"]}
+        for a in db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=root_id, manager_agent=MANAGER,
+        )
+    ]
+    audits = sorted(
+        (a["id"], a["action"]) for a in db.get_audit_logs(root_id)
+    )
+    return json.dumps(
+        {
+            "receipts": _rows(
+                "SELECT * FROM task_completion_recoveries "
+                "WHERE task_id=? AND agent=?", (root_id, MANAGER)),
+            "notifications": _rows(
+                "SELECT * FROM authority_policy_v2_recovery_notifications "
+                "WHERE root_task_id=?", (root_id,)),
+            "dispatch": _rows(
+                "SELECT * FROM authority_policy_v2_root_dispatch "
+                "WHERE root_task_id=?", (root_id,)),
+            "envelopes": _rows(
+                "SELECT * FROM authority_policy_v2_continue_envelopes "
+                "WHERE root_task_id=?", (root_id,)),
+            "candidates": _rows(
+                "SELECT * FROM authority_policy_v2_candidates "
+                "WHERE root_task_id=?", (root_id,)),
+            "evaluations": _rows(
+                "SELECT * FROM authority_policy_v2_evaluations"),
+            "tasks": _rows(
+                "SELECT id, status, assigned_agent, current_session_id, "
+                "orchestration_step_count, block_kind FROM tasks WHERE id=?",
+                (root_id,)),
+            "stages": stages,
+            "audits": audits,
+        },
+        sort_keys=True, default=str,
+    )
+
+
+def _restart_genuine_committed_publication(fixture: _ShippingFixture) -> dict:
+    """C1/C2 genuine recovery through a COMMITTED publication, queue item lost.
+
+    Returns the exact identities plus the separately counted raw/accepted queue
+    calls observed on this (old) owner.
+    """
+    fixture.activate_v2_pair()
+    provider_resume_id = "provider-resume-restart"
+    fixture.install_launch_hold(provider_session_id=provider_resume_id)
+    root_id = fixture.create_and_enqueue_root()
+    origin = fixture.wait_for_launch()
+    origin_session = origin["session_id"]
+    assert origin_session
+
+    queue = fixture.state.queue
+    raw_puts: list[dict] = []
+    tagged_puts: list[dict] = []
+    original_put = queue.put_nowait
+
+    def _counting_put(slug, task_id, *, metadata=None):
+        raw_puts.append({"slug": slug, "task_id": task_id, "metadata": metadata})
+        if isinstance(metadata, dict) and metadata.get("authority_v2_generation"):
+            tagged_puts.append(dict(metadata))
+        return original_put(slug, task_id, metadata=metadata)
+
+    fixture.monkeypatch.setattr(queue, "put_nowait", _counting_put)
+
+    # Test-only lifecycle barrier: a committed tagged item must NOT be dequeued
+    # before the simulated crash, so it can be genuinely lost with the owner.
+    fixture.tagged_dequeue_blocked = True
+    fixture._install_tagged_dequeue_barrier()
+
+    # Release ONLY the origin turn: it returns success with a separate provider
+    # conversation and NO callback -- the real completion-recovery premise.
+    fixture.release_session(origin_session)
+    recovery_launch = fixture.wait_for_launch_for(root_id, after=1)
+    recovery_session = recovery_launch["session_id"]
+    assert recovery_session and recovery_session != origin_session
+    assert recovery_launch.get("resume_session_id") == provider_resume_id
+    assert recovery_launch.get("recovery") is True
+
+    binding = _binding(fixture, root_id, recovery_session)
+    assert binding is not None and binding["mode"] == "v2"
+
+    body = _completion_body(binding, root_id)
+    payload = fixture.write_payload(body, name="completion-restart.json")
+    cli = fixture.run_cli(payload)
+    assert cli.returncode == 0, cli.stderr
+    assert fixture.last_http()["status"] == 200
+
+    db = fixture.org.db
+    receipt = dict(db._conn.execute(
+        "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
+        (root_id, MANAGER),
+    ).fetchone())
+    assert receipt["state"] == "callback_accepted"
+    results, attempt, _audits = _admission_counts(fixture, root_id)
+    assert len(results) == 1 and attempt is not None
+    row_id = results[0]["id"]
+    assert receipt["accepted_result_id"] == row_id
+    assert receipt["accepted_result_session_id"] == recovery_session
+
+    # REAL production owner binding (never a test boot string).
+    fixture.org.bind_authority_v2_owner()
+    assert attempt.origin_boot_id == fixture.org.authority_v2_origin_boot_id
+
+    # LABELLED STAGING through REAL public writers (automatic pre-final hook is
+    # dark in this unit).
+    stage_kwargs = dict(
+        root_task_id=root_id, manager_agent=MANAGER,
+        manager_session_id=recovery_session, result_id=row_id,
+        origin_boot_id=attempt.origin_boot_id,
+        owner_attempt_id=attempt.owner_attempt_id,
+    )
+    assert db.claim_authority_policy_v2_candidate(**stage_kwargs).status == "claimed"
+    assert db.audit_authority_policy_v2_candidate_claim(**stage_kwargs).status == "claim_audited"
+    assert db.evaluate_authority_policy_v2_candidate(**stage_kwargs).status == "evaluated"
+    assert db.audit_authority_policy_v2_candidate_evaluation(**stage_kwargs).status == "evaluation_audited"
+    assert db.consume_authority_policy_v2_candidate(**stage_kwargs).status == "consumed"
+    assert db.audit_authority_policy_v2_candidate_consumption(**stage_kwargs).status == "consumed_audited"
+    finalized = db.finalize_authority_policy_v2_continuation(**stage_kwargs)
+    assert finalized.status == "continued", finalized
+    generation = finalized.notification_id
+    assert db.get_task(root_id).status is TaskStatus.PENDING
+    assert db.get_authority_policy_v2_root_dispatch(root_id).state == "pending"
+    assert db.get_authority_policy_v2_recovery_notification(generation).state == "needed"
+    assert not raw_puts and not tagged_puts
+    assert fixture.launch_count() == 2
+
+    # Release ONLY the recovery turn: the REAL run_step consumer reads the
+    # durable accepted result and settles the Q + publishes the tagged token.
+    fixture.release_session(recovery_session)
+    fixture.await_run_step_returns(root_id, 1)
+
+    receipt = dict(db._conn.execute(
+        "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
+        (root_id, MANAGER),
+    ).fetchone())
+    assert receipt["state"] == "callback_consumed"
+    assert receipt["accepted_result_id"] == row_id
+    assert db.get_authority_policy_v2_recovery_notification(generation).state == "published"
+    assert db.get_authority_policy_v2_root_dispatch(root_id).state == "pending"
+    assert len(raw_puts) == 1 and len(tagged_puts) == 1
+    assert tagged_puts[0]["authority_v2_generation"] == generation
+    assert tagged_puts[0]["publication_attempt"] == 1
+    assert fixture.launch_count() == 2
+
+    # Deterministic quiescence of the ORIGINAL recovery worker: its queue item
+    # reached ``task_done`` (the only remaining unfinished item is the lost
+    # tagged publication), so the old owner is quiet before the crash.
+    deadline = time.monotonic() + 10.0
+    while (
+        time.monotonic() < deadline
+        and fixture.state.queue._queue._unfinished_tasks != 1
+    ):
+        time.sleep(0.01)
+    assert fixture.state.queue._queue._unfinished_tasks == 1
+
+    # The committed tagged item is still IN the old in-memory queue -- never
+    # dequeued, never admitted on the old owner.
+    pending = [
+        item for item in fixture.state.queue._queue._queue
+        if isinstance(item[2], dict) and item[2].get("authority_v2_generation")
+    ]
+    assert len(pending) == 1
+    assert pending[0][2]["authority_v2_generation"] == generation
+
+    return {
+        "root_id": root_id, "generation": generation, "row_id": row_id,
+        "origin_session": origin_session, "recovery_session": recovery_session,
+        "provider_resume_id": provider_resume_id,
+        "old_boot": fixture.org.authority_v2_origin_boot_id,
+        "old_step": db.get_task(root_id).orchestration_step_count,
+        "raw_puts": raw_puts, "tagged_puts": tagged_puts, "payload": payload,
+    }
+
+
+def _restart_open_owner(fixture: _ShippingFixture) -> object:
+    """Open a genuine NEW owner over the SAME persisted file and bind it."""
+    fixture._open_owner()
+    org = fixture.org
+    org.bind_authority_v2_owner()
+    return org
+
+
+def _restart_observe_puts(fixture: _ShippingFixture):
+    queue = fixture.state.queue
+    raw: list[dict] = []
+    tagged: list[dict] = []
+    real_put = queue.put_nowait
+
+    def _count(slug, task_id, *, metadata=None):
+        raw.append({"slug": slug, "task_id": task_id, "metadata": metadata})
+        if isinstance(metadata, dict) and metadata.get("authority_v2_generation"):
+            tagged.append(dict(metadata))
+        return real_put(slug, task_id, metadata=metadata)
+
+    fixture.monkeypatch.setattr(queue, "put_nowait", _count)
+    return raw, tagged
+
+
+def _restart_assert_retained(db, root_id: str, generation: str, row_id: int) -> None:
+    receipt = dict(db._conn.execute(
+        "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
+        (root_id, MANAGER),
+    ).fetchone())
+    assert receipt["state"] == "callback_consumed"
+    assert receipt["accepted_result_id"] == row_id
+    assert db.get_authority_policy_v2_root_dispatch(root_id).generation_id == generation
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_continue_envelopes "
+        "WHERE root_task_id=?", (root_id,),
+    ).fetchone()[0] == 1
+
+
+def _restart_drain_and_assert(
+    fixture: _ShippingFixture, db, *, root_id: str, generation: str,
+    old_step: int, tag_holds,
+) -> dict:
+    """Start the new owner's real workers and assert ONE winning admission."""
+    # The ONLY external-launch double must be installed BEFORE the real workers
+    # start, exactly as in the C1/C2 venue.
+    fixture.install_launch_hold()
+    fixture._start_http()
+    reserved = None
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        admitted = db.get_authority_policy_v2_recovery_notification(generation)
+        if (
+            admitted is not None and admitted.state == "settled"
+            and admitted.next_session_id
+        ):
+            reserved = admitted.next_session_id
+            if fixture.captured.get("session_id") == reserved:
+                break
+        time.sleep(0.05)
+    assert reserved is not None, "generation was never admitted"
+    dispatch = db.get_authority_policy_v2_root_dispatch(root_id)
+    assert dispatch.state == "admitted" and dispatch.generation_id == generation
+    task = db.get_task(root_id)
+    assert task.id == root_id
+    assert task.status is TaskStatus.IN_PROGRESS
+    assert task.assigned_agent == MANAGER
+    assert task.current_session_id == reserved
+    # exactly one winning admission step increment
+    assert task.orchestration_step_count == old_step + 1
+    assert fixture.captured["session_id"] == reserved
+    # exactly one held external launch on the NEW owner
+    assert fixture.launch_count() == 1
+    stages = [
+        a["payload"]["stage"]
+        for a in db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=root_id, manager_agent=MANAGER,
+        )
+    ]
+    assert stages.count("generation_claimed") == 1
+    assert stages.count("notification_settled") == 1
+    # no remint / re-evaluation / second candidate / spend of the envelope
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_evaluations").fetchone()[0] == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_candidates").fetchone()[0] == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_continue_envelopes").fetchone()[0] == 1
+    envelope = db.get_authority_policy_v2_continue_envelope_for_root(root_id)
+    assert envelope.lifecycle_state == "active"
+    # no ordinary fallback enqueue happened (all raw puts were tagged)
+    assert tag_holds["raw"] == tag_holds["tagged"]
+
+    # After-admission restart replay while the reserved invocation is still
+    # held: the SETTLED generation is READ-ONLY -- no republish/reclaim/second
+    # admission/launch and byte-identical durable residue.  (The
+    # admitted-but-unsettled bookkeeping-only settle-once case stays the
+    # existing caller-unit
+    # ``test_reopened_orgstate_admitted_generation_settles_once`` matrix.)
+    from runtime.orchestrator.authority import (
+        reconcile_authority_policy_v2_post_final,
+    )
+
+    launches_before = fixture.launch_count()
+    snapshot_before_replay = _restart_durable_snapshot(db, root_id, generation)
+    reconcile_authority_policy_v2_post_final(
+        fixture.org.orchestrator, root_task_id=root_id,
+    )
+    assert fixture.launch_count() == launches_before
+    assert _restart_durable_snapshot(
+        db, root_id, generation
+    ) == snapshot_before_replay
+    assert db.get_authority_policy_v2_recovery_notification(
+        generation
+    ).state == "settled"
+
+    fixture.release_launch()
+    fixture.join_workers()
+    return {"reserved": reserved}
+
+
+def _drive_restart_lost_queue(
+    fixture: _ShippingFixture, *, negative: str | None = None,
+) -> dict:
+    ctx = _restart_genuine_committed_publication(fixture)
+    root_id = ctx["root_id"]
+    generation = ctx["generation"]
+    old_db = fixture.org.db
+    old_conn = old_db._conn
+    _restart_assert_retained(old_db, root_id, generation, ctx["row_id"])
+
+    # Crash: the committed tagged in-memory item is lost with the old owner.
+    fixture._crash_detach()
+
+    # DISTINCT Database + real OrgState over the SAME persisted file.
+    new_org = _restart_open_owner(fixture)
+    new_db = new_org.db
+    assert new_db is not old_db
+    assert new_db._conn is not old_conn
+    assert new_db.db_path == old_db.db_path
+    assert new_org.authority_v2_origin_boot_id != ctx["old_boot"]
+    # Real server-owned boot + permission-digest binding (never a fixture lambda
+    # and never a boot string reassigned on a live object).
+    assert new_db._v2_process_boot_id == new_org.authority_v2_origin_boot_id
+    assert callable(new_db._v2_permission_surface_reader)
+    _restart_assert_retained(new_db, root_id, generation, ctx["row_id"])
+    assert new_db.get_authority_policy_v2_recovery_notification(
+        generation
+    ).state == "published"
+
+    if negative == "corrupt_receipt":
+        # Corrupt the carried genuine settlement evidence: delete the exact
+        # accepted recovery receipt the publisher must re-authenticate.
+        new_db._conn.execute(
+            "DELETE FROM task_completion_recoveries WHERE task_id=? AND agent=?",
+            (root_id, MANAGER),
+        )
+        new_db._conn.commit()
+
+    raw, tagged = _restart_observe_puts(fixture)
+    snapshot_before = _restart_durable_snapshot(new_db, root_id, generation)
+
+    from runtime.daemon.__main__ import (
+        _publish_v2_generations_on_startup,
+        _sweep_on_startup,
+    )
+
+    # Production order: startup sweep, then the per-org startup publication.
+    _sweep_on_startup(new_db, fixture.state.queue, ORG, new_org.orchestrator)
+    _publish_v2_generations_on_startup(new_org, fixture.state.queue)
+
+    if negative == "corrupt_receipt":
+        # Bounded refusal: zero raw/accepted puts, zero claims/launches, no
+        # ordinary decision effect and byte-identical residue.
+        assert raw == [] and tagged == []
+        assert fixture.launch_count() == 0
+        assert _restart_durable_snapshot(new_db, root_id, generation) == snapshot_before
+        assert new_db.get_authority_policy_v2_recovery_notification(
+            generation
+        ).state == "published"
+        assert new_db.get_authority_policy_v2_root_dispatch(root_id).state == "pending"
+        assert new_db.get_task(root_id).status is TaskStatus.PENDING
+        stages = [
+            a["payload"]["stage"]
+            for a in new_db.list_authority_policy_v2_result_stage_audits(
+                root_task_id=root_id, manager_agent=MANAGER,
+            )
+        ]
+        assert stages.count("generation_claimed") == 0
+        assert stages.count("notification_settled") == 0
+        fixture._crash_detach()
+        return {"root_id": root_id, "generation": generation, "refused": True}
+
+    # Already-consumed Q did NOT suppress independent G discovery: exactly ONE
+    # reclaimed tagged publication with the permitted NEW boot and P.
+    assert len(raw) == 1 and len(tagged) == 1
+    assert tagged[0]["authority_v2_generation"] == generation
+    assert tagged[0]["publication_attempt"] == 2
+    notification = new_db.get_authority_policy_v2_recovery_notification(generation)
+    assert notification.state == "published"
+    assert notification.publisher_boot_id == new_org.authority_v2_origin_boot_id
+
+    _restart_drain_and_assert(
+        fixture, new_db, root_id=root_id, generation=generation,
+        old_step=ctx["old_step"], tag_holds={"raw": len(raw), "tagged": len(tagged)},
+    )
+    _restart_assert_retained(new_db, root_id, generation, ctx["row_id"])
+    return {"root_id": root_id, "generation": generation, "tagged": tagged}
+
+
+def _drive_restart_startup_fault(
+    fixture: _ShippingFixture, *, fault: str,
+) -> dict:
+    ctx = _restart_genuine_committed_publication(fixture)
+    old_db = fixture.org.db
+    old_conn = old_db._conn
+    fixture._crash_detach()
+
+    owner2 = _restart_open_owner(fixture)
+    db2 = owner2.db
+    assert db2 is not old_db and db2._conn is not old_conn
+    assert db2.db_path == old_db.db_path
+    boot2 = owner2.authority_v2_origin_boot_id
+    assert boot2 != ctx["old_boot"]
+
+    calls = {"n": 0}
+    granted = {"on": True}
+    real_claim = db2.claim_authority_policy_v2_notification_publication
+    real_ack = db2.acknowledge_authority_policy_v2_notification_publication
+    if fault == "claim":
+        def _claim_boom(**kwargs):
+            calls["n"] += 1
+            if granted["on"]:
+                raise RuntimeError("injected publication-claim failure")
+            return real_claim(**kwargs)
+
+        fixture.monkeypatch.setattr(
+            db2, "claim_authority_policy_v2_notification_publication", _claim_boom,
+        )
+    else:
+        def _ack_boom(**kwargs):
+            calls["n"] += 1
+            if granted["on"]:
+                raise RuntimeError("injected acknowledgement failure")
+            return real_ack(**kwargs)
+
+        fixture.monkeypatch.setattr(
+            db2, "acknowledge_authority_policy_v2_notification_publication",
+            _ack_boom,
+        )
+
+    # Call-through recorder for the bounded receipts at the REAL publisher.
+    import runtime.orchestrator.authority as authority_mod
+
+    receipts_seen: list[list] = []
+    real_pub = authority_mod.publish_authority_policy_v2_notifications
+
+    def _rec(*args, **kwargs):
+        out = real_pub(*args, **kwargs)
+        receipts_seen.append(out)
+        return out
+
+    fixture.monkeypatch.setattr(
+        authority_mod, "publish_authority_policy_v2_notifications", _rec,
+    )
+
+    raw, tagged = _restart_observe_puts(fixture)
+    snapshot_before = _restart_durable_snapshot(
+        db2, ctx["root_id"], ctx["generation"],
+    )
+
+    from runtime.daemon.__main__ import (
+        _publish_v2_generations_on_startup,
+        _sweep_on_startup,
+    )
+
+    _sweep_on_startup(db2, fixture.state.queue, ORG, owner2.orchestrator)
+    _publish_v2_generations_on_startup(owner2, fixture.state.queue)
+
+    assert calls["n"] >= 1, "injection never fired"
+    assert receipts_seen, "publisher never returned receipts"
+    flat = [r for batch in receipts_seen for r in batch]
+
+    if fault == "claim":
+        # RETURNED bounded refusal (never a thrown exception out of the caller).
+        assert flat and all(
+            r.get("status") == "publication_claim_failed" for r in flat
+        ), flat
+        assert raw == [] and tagged == []
+        assert fixture.launch_count() == 0
+        assert _restart_durable_snapshot(
+            db2, ctx["root_id"], ctx["generation"],
+        ) == snapshot_before
+        assert db2.get_authority_policy_v2_recovery_notification(
+            ctx["generation"]
+        ).state == "published"
+        assert db2.get_task(ctx["root_id"]).status is TaskStatus.PENDING
+
+        # Remove the injection (call-through resumes) and run the permitted
+        # retry on the SAME permitted new boot -- one reclaimed publication.
+        granted["on"] = False
+        _publish_v2_generations_on_startup(owner2, fixture.state.queue)
+        assert len(raw) == 1 and len(tagged) == 1
+        assert tagged[0]["authority_v2_generation"] == ctx["generation"]
+        assert tagged[0]["publication_attempt"] == 2
+        assert db2.get_authority_policy_v2_recovery_notification(
+            ctx["generation"]
+        ).publisher_boot_id == boot2
+        _restart_drain_and_assert(
+            fixture, db2, root_id=ctx["root_id"], generation=ctx["generation"],
+            old_step=ctx["old_step"], tag_holds={"raw": len(raw), "tagged": len(tagged)},
+        )
+        _restart_assert_retained(db2, ctx["root_id"], ctx["generation"], ctx["row_id"])
+        return {"root_id": ctx["root_id"], "generation": ctx["generation"]}
+
+    # Post-put acknowledgement failure: a LEGITIMATE tagged put exists with a
+    # replayable lease/evidence -- never an invented zero-put claim.  The sweep
+    # publishes first (ack failure); the later startup publication then observes
+    # the retained live lease as a bounded pending refusal (no second put).
+    statuses = [r.get("status") for r in flat]
+    assert "publication_acknowledgement_failed" in statuses, flat
+    assert not any(
+        s in ("published", "published_exact", "publication_claim_failed")
+        for s in statuses
+    ), flat
+    assert len(raw) == 1 and len(tagged) == 1
+    assert tagged[0]["authority_v2_generation"] == ctx["generation"]
+    assert tagged[0]["publication_attempt"] == 2
+    notification = db2.get_authority_policy_v2_recovery_notification(ctx["generation"])
+    assert notification.state == "publishing"
+    assert notification.publisher_boot_id == boot2
+    assert notification.lease_deadline is not None
+    stages2 = [
+        a["payload"] for a in db2.list_authority_policy_v2_result_stage_audits(
+            root_task_id=ctx["root_id"], manager_agent=MANAGER,
+        )
+    ]
+    claimed_attempts = [
+        p.get("publication_attempt") for p in stages2
+        if p.get("stage") == "publish_claimed"
+    ]
+    assert 2 in claimed_attempts, claimed_attempts
+    assert db2.get_authority_policy_v2_root_dispatch(ctx["root_id"]).state == "pending"
+
+    # Crash the failed owner (its in-memory tagged item is lost) and recover on
+    # a genuinely NEW boot: exactly one admission/launch despite the queued and
+    # replayed tokens.
+    fixture._crash_detach()
+    owner3 = _restart_open_owner(fixture)
+    db3 = owner3.db
+    assert db3 is not db2
+    assert owner3.authority_v2_origin_boot_id not in (boot2, ctx["old_boot"])
+    raw3, tagged3 = _restart_observe_puts(fixture)
+    _sweep_on_startup(db3, fixture.state.queue, ORG, owner3.orchestrator)
+    _publish_v2_generations_on_startup(owner3, fixture.state.queue)
+    assert len(raw3) == 1 and len(tagged3) == 1
+    assert tagged3[0]["authority_v2_generation"] == ctx["generation"]
+    assert tagged3[0]["publication_attempt"] == 3
+    recovered = db3.get_authority_policy_v2_recovery_notification(ctx["generation"])
+    assert recovered.state == "published"
+    assert recovered.publisher_boot_id == owner3.authority_v2_origin_boot_id
+    _restart_drain_and_assert(
+        fixture, db3, root_id=ctx["root_id"], generation=ctx["generation"],
+        old_step=ctx["old_step"],
+        tag_holds={"raw": len(raw3), "tagged": len(tagged3)},
+    )
+    _restart_assert_retained(db3, ctx["root_id"], ctx["generation"], ctx["row_id"])
+    return {"root_id": ctx["root_id"], "generation": ctx["generation"]}
+
+
+# ── C3: genuine shipping restart / lost queue (fresh + historical) ────────
+
+
+def test_shipping_restart_lost_queue_generation_drains(tmp_path, monkeypatch):
+    fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2, dequeue_gate=True)
+    fixture.start()
+    try:
+        result = _drive_restart_lost_queue(fixture)
+        assert result["tagged"][0]["publication_attempt"] == 2
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_restart_lost_queue_generation_drains(
+    tmp_path, monkeypatch,
+):
+    fixture = _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=True, queue_workers=2,
+        dequeue_gate=True,
+    )
+    fixture.start()
+    try:
+        result = _drive_restart_lost_queue(fixture)
+        assert result["tagged"][0]["publication_attempt"] == 2
+    finally:
+        fixture.stop()
+
+
+# ── C4: actual startup caller claim/ack failure (fresh + historical) ─────
+
+
+def test_shipping_restart_startup_claim_failure_then_retry(tmp_path, monkeypatch):
+    fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2, dequeue_gate=True)
+    fixture.start()
+    try:
+        _drive_restart_startup_fault(fixture, fault="claim")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_startup_claim_failure_then_retry(
+    tmp_path, monkeypatch,
+):
+    fixture = _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=True, queue_workers=2,
+        dequeue_gate=True,
+    )
+    fixture.start()
+    try:
+        _drive_restart_startup_fault(fixture, fault="claim")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_restart_startup_ack_failure_then_new_boot(tmp_path, monkeypatch):
+    fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2, dequeue_gate=True)
+    fixture.start()
+    try:
+        _drive_restart_startup_fault(fixture, fault="ack")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_startup_ack_failure_then_new_boot(
+    tmp_path, monkeypatch,
+):
+    fixture = _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=True, queue_workers=2,
+        dequeue_gate=True,
+    )
+    fixture.start()
+    try:
+        _drive_restart_startup_fault(fixture, fault="ack")
+    finally:
+        fixture.stop()
+
+
+# ── C4: corrupt startup negative paired with the healthy C3 control ──────
+
+
+def test_shipping_restart_corrupt_settlement_refuses(tmp_path, monkeypatch):
+    fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2, dequeue_gate=True)
+    fixture.start()
+    try:
+        result = _drive_restart_lost_queue(fixture, negative="corrupt_receipt")
+        assert result["refused"] is True
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_restart_corrupt_settlement_refuses(
+    tmp_path, monkeypatch,
+):
+    fixture = _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=True, queue_workers=2,
+        dequeue_gate=True,
+    )
+    fixture.start()
+    try:
+        result = _drive_restart_lost_queue(fixture, negative="corrupt_receipt")
+        assert result["refused"] is True
     finally:
         fixture.stop()
