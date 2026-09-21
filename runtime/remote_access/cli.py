@@ -549,11 +549,15 @@ def _observe_sidecar_stopped() -> None:
     restarts query reading and never authorizes a refused observation, and an
     unconfirmed reap refuses category-only instead of being silently ignored.
 
-    TASK8644 R1: the one original absolute deadline also fences successful
-    acceptance. A blocking exit observation that is collected after expiry (a
-    resumed POSIX wait can collect an already-exited child and report success)
-    and any scheduling delay before final acceptance refuse category-only, so
-    the separate cleanup allowance can never authorize a late success.
+    TASK8644 R1 / TASK8662 R1: the one original absolute deadline also fences
+    successful acceptance. A blocking exit observation that is collected after
+    expiry (a resumed POSIX wait can collect an already-exited child and report
+    success) and any scheduling delay before final acceptance refuse
+    category-only, so the separate cleanup allowance can never authorize a late
+    success. The same deadline is re-checked after the strict property
+    validation succeeds and immediately before the affirmative return, so a
+    scheduling pause inside the validator cannot authorize a late success
+    either.
     """
     argv = [
         "systemctl",
@@ -609,6 +613,12 @@ def _observe_sidecar_stopped() -> None:
         # successful query past expiry.
         raise OSError("service state unavailable")
     _require_stopped_service_properties(raw)
+    if time.monotonic() >= deadline:
+        # TASK8662 R1: the strict property validation runs after the last
+        # deadline check. Re-check the same one original observation deadline
+        # after it succeeds and immediately before the affirmative return, so a
+        # scheduling pause inside the validator cannot authorize a late success.
+        raise OSError("service state unavailable")
 
 
 def _require_stopped_service_properties(raw: bytes) -> None:

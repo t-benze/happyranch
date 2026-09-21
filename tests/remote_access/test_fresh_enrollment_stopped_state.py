@@ -1046,3 +1046,149 @@ def test_late_exit_refusal_reaps_owned_child_before_return(tmp_path: Path) -> No
     assert result["stdout_closed"] is True
     assert _snapshot(fixture["case"]) == before
     assert calls.read_text().splitlines() == [_SHOW_ARGV]
+
+
+# ---------------------------------------------------------------------------
+# TASK8662 R1 — a scheduling pause inside the real strict validator must not
+# let an otherwise successful observation be accepted after the one original
+# deadline. The closed fixture answers the real ``systemctl show`` query
+# immediately with valid stopped bytes; the isolated driver pauses only itself
+# at entry to the production validator and is resumed 0.15 s after the original
+# deadline read from the observer frame. No candidate source, monotonic time,
+# parser or subprocess return value is mocked.
+# ---------------------------------------------------------------------------
+
+
+_VALIDATION_PAUSE_DRIVER = '''\
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+import types
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[2])
+from runtime.remote_access import cli
+
+owned = []
+observations = []
+real_popen = subprocess.Popen
+
+
+def recording_popen(*args, **kwargs):
+    child = real_popen(*args, **kwargs)
+    owned.append(child)
+    return child
+
+
+cli.subprocess = types.SimpleNamespace(
+    Popen=recording_popen,
+    PIPE=subprocess.PIPE,
+    DEVNULL=subprocess.DEVNULL,
+    TimeoutExpired=subprocess.TimeoutExpired,
+    run=subprocess.run,
+)
+
+
+def profile(frame, event, arg):
+    name = frame.f_code.co_name
+    if name == "_require_stopped_service_properties" and event == "call":
+        deadline = frame.f_back.f_locals["deadline"]
+        Path(os.environ["PAUSE_MARKER"]).write_text(
+            json.dumps({"deadline": deadline, "paused_at": time.monotonic()})
+        )
+        os.kill(os.getpid(), signal.SIGSTOP)
+    if name == "_observe_sidecar_stopped" and event == "return":
+        observations.append(
+            {
+                "deadline": frame.f_locals["deadline"],
+                "return_at": time.monotonic(),
+                "owned": [
+                    {
+                        "returncode": child.returncode,
+                        "stdout_closed": child.stdout.closed,
+                    }
+                    for child in owned
+                ],
+            }
+        )
+
+
+sys.setprofile(profile)
+rc = cli.main(sys.argv[3:])
+sys.setprofile(None)
+Path(sys.argv[1]).write_text(
+    json.dumps({"observations": observations, "rc": rc, "cli_path": cli.__file__})
+)
+raise SystemExit(rc)
+'''
+
+
+@pytest.mark.parametrize("attempt", (1, 2))
+def test_validation_pause_after_deadline_refuses_unchanged(
+    tmp_path: Path, attempt: int
+) -> None:
+    """A validator scheduling pause cannot authorize mutation past the deadline."""
+    bindir = tmp_path / "bin"
+    _write_systemctl(bindir)
+    fixture = _enrollment_case(tmp_path, marker=True, dropin=True)
+    env, calls = _fixture_env(tmp_path, bindir=bindir, show_output=_STOPPED)
+    pause = tmp_path / "paused.json"
+    result_path = tmp_path / "observer.json"
+    driver = tmp_path / "validation_pause_driver.py"
+    driver.write_text(_VALIDATION_PAUSE_DRIVER, encoding="utf-8")
+    env.update(PAUSE_MARKER=str(pause), OBSERVER_RESULT=str(result_path))
+    before = _snapshot(fixture["case"])
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-B",
+            str(driver),
+            str(result_path),
+            str(REPO_ROOT),
+            "prepare-fresh-enrollment",
+            "--source",
+            str(fixture["source"]),
+            "--marker",
+            str(fixture["marker"]),
+            "--dropin",
+            str(fixture["dropin"]),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _wait_for_file(pause, 10.0)
+        assert _wait_for_process_stopped(process.pid, 10.0), "fixture never paused"
+        paused = json.loads(pause.read_text())
+        remaining = (paused["deadline"] + 0.15) - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
+        os.kill(process.pid, signal.SIGCONT)
+        stdout, stderr = process.communicate(timeout=30)
+    finally:
+        if process.returncode is None:
+            try:
+                os.kill(process.pid, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+            process.kill()
+            process.wait(timeout=5)
+    result = json.loads(result_path.read_text())
+    assert (process.returncode, stdout, stderr.strip()) == (1, "", _CATEGORY)
+    assert result["rc"] == 1
+    assert len(result["observations"]) == 1
+    observation = result["observations"][0]
+    # The successful observation was handed back after the original deadline.
+    assert observation["return_at"] - observation["deadline"] > 0.0
+    # Ownership is asserted at the observer's own return, before any test-side
+    # wait/poll or fixture cleanup could have reaped the owned child for it.
+    assert observation["owned"] == [{"returncode": 0, "stdout_closed": True}]
+    assert _snapshot(fixture["case"]) == before
+    assert not fixture["dropin"].with_name(fixture["dropin"].name + ".new").exists()
+    assert calls.read_text().splitlines() == [_SHOW_ARGV]
