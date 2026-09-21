@@ -3507,6 +3507,112 @@ def _count_inner_enqueues(fixture: _ShippingFixture) -> list[tuple]:
     return calls
 
 
+def _snapshot_generation_a(db, staged: dict) -> dict:
+    """Byte-for-byte snapshot of the RETAINED generation-A v2 evidence.
+
+    Called with the SAME ``staged`` identity twice: once BEFORE the later R3
+    root result is persisted and once AFTER the real later root effect and
+    every gate-level replay.  ``after == before`` therefore proves the terminal
+    generation-A evidence was not rewritten by the later ordinary lifecycle.
+
+    Every query is scoped to the exact generation-A identity so the ONLY
+    excluded later rows are R3's own unrelated later-context admission:
+
+    * ``task_results`` is scoped to the causal R1 and the reserved R2 spending
+      result; the later R3 row is excluded.
+    * ``authority_policy_v2_attempts`` is scoped to the result ids R1/R2 (the
+      causal and reserved generation-A attempts); the R3 callback's own new
+      attempt is excluded.
+    * ``authority_policy_v2_result_stage`` audit rows are scoped to a payload
+      ``result_id`` of R1/R2 (the causal/reserved generation-A stages); R3's
+      own later-context ``admitted`` stage row is excluded.  The scoped rows
+      are compared in full (all ``audit_log`` columns).
+    * candidate/pin/evaluation/candidate-audit/envelope/notification/dispatch
+      are unique to generation A and are compared in full.
+
+    ``dict(row)``-style values are captured as ordered column tuples so any
+    column change is a byte-for-byte mismatch.
+    """
+    root_id = staged["root_id"]
+    causal_id = staged["causal_id"]
+    r2_id = staged["r2"]
+    envelope_id = staged["envelope_id"]
+    generation = staged["generation"]
+    envelope_row = db._conn.execute(
+        "SELECT candidate_id FROM authority_policy_v2_continue_envelopes "
+        "WHERE envelope_id=?",
+        (envelope_id,),
+    ).fetchone()
+    assert envelope_row is not None
+    candidate_id = envelope_row["candidate_id"]
+    generation_result_ids = (causal_id, r2_id)
+
+    def _rows(sql: str, params: tuple = ()) -> tuple:
+        return tuple(tuple(row) for row in db._conn.execute(sql, params).fetchall())
+
+    stage_rows = []
+    excluded_result_ids = set()
+    for row in db._conn.execute(
+        "SELECT * FROM audit_log WHERE action=? AND task_id=? AND agent=? ORDER BY id",
+        (AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION, root_id, MANAGER),
+    ).fetchall():
+        payload = json.loads(row["payload"])
+        result_id = payload.get("result_id")
+        if result_id in generation_result_ids:
+            stage_rows.append(tuple(row))
+        else:
+            # Only the later R3 result's own later-context ``admitted`` stage
+            # may fall outside the causal/reserved generation-A result ids.
+            assert result_id is not None
+            excluded_result_ids.add(result_id)
+    assert not (excluded_result_ids & set(generation_result_ids))
+
+    return {
+        "root_dispatch": _rows(
+            "SELECT * FROM authority_policy_v2_root_dispatch WHERE root_task_id=?",
+            (root_id,),
+        ),
+        "envelopes": _rows(
+            "SELECT * FROM authority_policy_v2_continue_envelopes WHERE envelope_id=?",
+            (envelope_id,),
+        ),
+        "notifications": _rows(
+            "SELECT * FROM authority_policy_v2_recovery_notifications "
+            "WHERE notification_id=?",
+            (generation,),
+        ),
+        "attempts": _rows(
+            "SELECT * FROM authority_policy_v2_attempts "
+            "WHERE result_id IN (?,?) ORDER BY result_id",
+            (causal_id, r2_id),
+        ),
+        "candidates": _rows(
+            "SELECT * FROM authority_policy_v2_candidates WHERE candidate_id=?",
+            (candidate_id,),
+        ),
+        "pins": _rows(
+            "SELECT * FROM authority_policy_v2_pins WHERE candidate_id=?",
+            (candidate_id,),
+        ),
+        "evaluations": _rows(
+            "SELECT * FROM authority_policy_v2_evaluations WHERE candidate_id=?",
+            (candidate_id,),
+        ),
+        "candidate_audit": _rows(
+            "SELECT * FROM authority_policy_v2_candidate_audit "
+            "WHERE candidate_id=? ORDER BY id",
+            (candidate_id,),
+        ),
+        "result_stage_audits": tuple(stage_rows),
+        "causal_result": _rows(
+            "SELECT * FROM task_results WHERE id=?", (causal_id,),
+        ),
+        "reserved_result": _rows(
+            "SELECT * FROM task_results WHERE id=?", (r2_id,),
+        ),
+    }
+
+
 def _drive_later_lifecycle(fixture: _ShippingFixture) -> dict:
     """Part A: a legitimate normal lifecycle AFTER terminal generation A.
 
@@ -3563,26 +3669,22 @@ def _drive_later_lifecycle(fixture: _ShippingFixture) -> dict:
     # persisted later result and performs the prescribed normal effect once.
     before_launches = fixture.launch_count()
     fixture.release_session(child_session)
-    deadline = time.monotonic() + 60.0
-    while time.monotonic() < deadline:
-        if db.get_task(child_id).status is TaskStatus.COMPLETED and any(
-            t == staged["root_id"] for _, t, _ in calls
-        ):
-            break
-        time.sleep(0.05)
+    # Deterministic quiescence (no elapsed sleep): the child's normal effect
+    # enqueues the parent wake and the real producer then records the root's
+    # held relaunch, so waiting on that recorded launch (condition barrier)
+    # proves the child run_step committed its parent-wake enqueue.
+    parent_launch = fixture.wait_for_launch_for(
+        staged["root_id"], after=before_launches,
+    )
     assert db.get_task(child_id).status is TaskStatus.COMPLETED
     wake = [c for c in calls if c[1] == staged["root_id"]]
     assert len(wake) == 1, calls
     # The exact consumed later result is retained; the retired pointer is
     # unchanged and no v2 evidence row was rewritten.
-    assert db.get_task(child_id).status is TaskStatus.COMPLETED
     assert db.get_authority_policy_v2_root_dispatch(staged["root_id"]).state == "retired"
 
     # The real producer re-launched the root through the ordinary path (a new
     # session published by `_run_agent`), not a manually patched owner.
-    parent_launch = fixture.wait_for_launch_for(
-        staged["root_id"], after=before_launches,
-    )
     assert parent_launch["session_id"] != staged["session_id"]
     assert parent_launch["session_id"] != staged["reserved"]
     assert db.get_task(staged["root_id"]).current_session_id == parent_launch["session_id"]
@@ -3605,6 +3707,60 @@ def _drive_later_lifecycle(fixture: _ShippingFixture) -> dict:
     assert later_binding is not None, later_binding
     assert later_binding.get("mode") == "v2", later_binding.get("mode")
 
+    # ── Deterministic counts for the ONE real normal done effect ──
+    # The root's terminal-v2 ``later`` branch runs the EXISTING normal body
+    # once.  Wrap (CALL THROUGH, never replace) the two real run_step-module
+    # functions so the exact-once semantics are measured on the actual code
+    # path: the normal-body entry and the successful ``_complete`` done
+    # transition.  ``root_body_returned`` is the deterministic quiescence
+    # signal for the final snapshot (the untagged ordinary root re-launch has
+    # no fixture event).
+    from runtime.orchestrator import run_step as _run_step
+
+    root_body_calls: list[str] = []
+    root_done_effects: list[str] = []
+    root_body_returned = threading.Event()
+    _real_body = _run_step._consume_completion_report_body
+    _real_complete = _run_step._complete
+
+    def _counting_body(orch, task_id, report, **kwargs):
+        root_body_calls.append(task_id)
+        try:
+            return _real_body(orch, task_id, report, **kwargs)
+        finally:
+            if task_id == root_id:
+                root_body_returned.set()
+
+    def _counting_complete(orch, task_id, **kwargs):
+        completed = _real_complete(orch, task_id, **kwargs)
+        if completed:
+            root_done_effects.append(task_id)
+        return completed
+
+    fixture.monkeypatch.setattr(
+        _run_step, "_consume_completion_report_body", _counting_body,
+    )
+    fixture.monkeypatch.setattr(_run_step, "_complete", _counting_complete)
+
+    # Snapshot the retained generation-A evidence BEFORE the later R3 root
+    # result is persisted by the CLI below.
+    generation_a_before = _snapshot_generation_a(db, staged)
+    assert generation_a_before["root_dispatch"]
+    assert generation_a_before["envelopes"]
+    assert generation_a_before["notifications"]
+    assert len(generation_a_before["attempts"]) == 2
+    assert generation_a_before["candidates"]
+    assert generation_a_before["pins"]
+    assert generation_a_before["evaluations"]
+    assert generation_a_before["candidate_audit"]
+    assert generation_a_before["result_stage_audits"]
+    assert generation_a_before["causal_result"]
+    assert generation_a_before["reserved_result"]
+    # No normal-body entry or done effect yet for the root after generation A
+    # was applied (its reserved delegate body ran BEFORE these counters).
+    assert root_body_calls.count(root_id) == 0
+    assert root_done_effects.count(root_id) == 0
+
     root_enqueues_before = len([c for c in calls if c[1] == root_id])
     root_body = _reserved_decision_body(later_binding, root_id, "done")
     root_run = fixture.run_cli(
@@ -3624,8 +3780,20 @@ def _drive_later_lifecycle(fixture: _ShippingFixture) -> dict:
     )
     assert ctx.kind == "later", ctx
 
+    # The ONLY generation-A-vs-later exclusion in the snapshot is R3's own
+    # later-context admission: exactly one ``authority_policy_v2_result_stage``
+    # ``admitted`` row for the R3 result (plus R3's own attempt/result rows,
+    # also excluded by exact result-id scoping).
+    r3_stage_audits = [
+        a for a in db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=root_id, manager_agent=MANAGER,
+        )
+        if a["payload"].get("result_id") == r3["id"]
+    ]
+    assert len(r3_stage_audits) == 1, r3_stage_audits
+    assert r3_stage_audits[0]["payload"]["stage"] == "admitted"
+
     from runtime.orchestrator.orchestrator import completion_report_from_result_row
-    from runtime.orchestrator import run_step as _run_step
 
     genuine_report = completion_report_from_result_row(
         root_id, dict(r3), fallback_agent=MANAGER,
@@ -3645,6 +3813,10 @@ def _drive_later_lifecycle(fixture: _ShippingFixture) -> dict:
     assert db.get_task(root_id).current_session_id == root_session
     assert len(db.get_task_results(root_id)) == len(root_rows)
     assert len([c for c in calls if c[1] == root_id]) == root_enqueues_before
+    # The changed-supplied-report refusal never entered the normal body and
+    # never performed a done effect.
+    assert root_body_calls.count(root_id) == 0
+    assert root_done_effects.count(root_id) == 0
 
     # HTTP replay of the SAME later session while the invocation is still held
     # is suppressed at the ROUTE's own session/idempotency seam -- distinct
@@ -3657,6 +3829,11 @@ def _drive_later_lifecycle(fixture: _ShippingFixture) -> dict:
     assert db.get_task(root_id).status is TaskStatus.IN_PROGRESS
     assert fixture.last_http()["status"] in (200, 409)
     assert http_replay.returncode == 0 or fixture.last_http()["status"] == 409
+    # HTTP idempotency is a route-level suppression: no enqueue, no normal
+    # body entry and no done effect.
+    assert len([c for c in calls if c[1] == root_id]) == root_enqueues_before
+    assert root_body_calls.count(root_id) == 0
+    assert root_done_effects.count(root_id) == 0
 
     # Actual-ROOT invalid provenance at the REAL route seam: a never-spawned
     # session (unbound), a wrong agent, and a wrong/other session are all
@@ -3680,6 +3857,9 @@ def _drive_later_lifecycle(fixture: _ShippingFixture) -> dict:
         assert fixture.last_http()["status"] in (400, 409)
         assert len(db.get_task_results(root_id)) == len(root_rows)
         assert len([c for c in calls if c[1] == root_id]) == root_enqueues_before
+        # Each invalid-provenance refusal adds no body entry/done effect.
+        assert root_body_calls.count(root_id) == 0
+        assert root_done_effects.count(root_id) == 0
     assert db.get_task(root_id).status is TaskStatus.IN_PROGRESS
 
     # Actual-ROOT stale/unbound identities at the REAL classifier: the causal
@@ -3701,17 +3881,28 @@ def _drive_later_lifecycle(fixture: _ShippingFixture) -> dict:
     assert db.get_task(root_id).status is TaskStatus.IN_PROGRESS
     assert len(db.get_task_results(root_id)) == len(root_rows)
     assert len([c for c in calls if c[1] == root_id]) == root_enqueues_before
+    # The stale-identity consumption skipped at the real gate: no enqueue, no
+    # normal body entry, no done effect.
+    assert root_body_calls.count(root_id) == 0
+    assert root_done_effects.count(root_id) == 0
 
     # Release ONLY the root invocation: the REAL run_step consumes R3 through
     # the terminal-v2 ``later`` branch and runs the EXISTING normal body (done)
     # exactly once.
     fixture.release_session(root_session)
-    deadline = time.monotonic() + 60.0
-    while time.monotonic() < deadline:
-        if db.get_task(root_id).status is TaskStatus.COMPLETED:
-            break
-        time.sleep(0.05)
+    # The root's later invocation is an ORDINARY (untagged) re-launch, so no
+    # fixture tagged/reserved event covers it.  The deterministic quiescence
+    # signal is the call-through wrapper's Event, set when the root's real
+    # normal body returns; the final snapshot is taken after that proven
+    # return (never after an elapsed sleep).
+    assert root_body_returned.wait(timeout=_JOIN_SECONDS), (
+        "root later normal body never returned"
+    )
     assert db.get_task(root_id).status is TaskStatus.COMPLETED
+    # Exactly one normal body entry and exactly one actual done effect for the
+    # root across the whole later lifecycle.
+    assert root_body_calls.count(root_id) == 1
+    assert root_done_effects.count(root_id) == 1
     # No extra enqueue beyond the child's single parent wake.
     assert len([c for c in calls if c[1] == root_id]) == root_enqueues_before
 
@@ -3724,6 +3915,10 @@ def _drive_later_lifecycle(fixture: _ShippingFixture) -> dict:
     assert db.get_task(root_id).status is TaskStatus.COMPLETED
     assert after_http.returncode != 0
     assert fixture.last_http()["status"] == 409
+    # Post-terminal replay adds no enqueue, body entry or done effect.
+    assert len([c for c in calls if c[1] == root_id]) == root_enqueues_before
+    assert root_body_calls.count(root_id) == 1
+    assert root_done_effects.count(root_id) == 1
 
     # A common-consumer replay of the SAME genuine report after terminal state
     # adds no effect (the lineage is no longer ordinary-capable).
@@ -3733,11 +3928,19 @@ def _drive_later_lifecycle(fixture: _ShippingFixture) -> dict:
     assert db.get_task(root_id).status is TaskStatus.COMPLETED
     assert len(db.get_task_results(root_id)) == len(root_rows)
     assert len([c for c in calls if c[1] == root_id]) == root_enqueues_before
+    # The duplicate common-consumer replay skipped: still exactly one body
+    # entry and one done effect.
+    assert root_body_calls.count(root_id) == 1
+    assert root_done_effects.count(root_id) == 1
 
-    # Old generation-A evidence is unchanged.
+    # Old generation-A evidence is unchanged: the retained generation-A
+    # rows/audits captured BEFORE the later R3 result are byte-for-byte
+    # identical AFTER the real later root effect and every replay above.
     assert db.get_authority_policy_v2_root_dispatch(root_id).state == "retired"
     envelope = db.get_authority_policy_v2_continue_envelope(staged["envelope_id"])
     assert envelope.decision_state == "applied"
+    generation_a_after = _snapshot_generation_a(db, staged)
+    assert generation_a_after == generation_a_before
 
     return {
         "root_id": root_id, "child_id": child_id,

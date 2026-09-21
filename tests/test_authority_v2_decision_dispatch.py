@@ -563,10 +563,14 @@ def _admitted_reserved_result(store):
     return row, attempt
 
 
-def _spent_ready_b(tmp_path):
-    """A spent/retired generation A whose causal spending result IS an admitted
-    manager result for the reserved session (the authentic generation-B seed)."""
-    store, row, _attempt, outcome, _claimed = _published(tmp_path)
+def _finish_a_and_bind_reserved_b(store, row, outcome):
+    """Admit+settle generation A, bind the reserved session, admit B's causal
+    result and spend A, leaving D ``retired`` and the reserved R2 result ready.
+
+    This is the shared, AUTHENTIC successor-generation seed: every step is a
+    real public store transaction.  No row is cloned and no pointer is edited by
+    hand.
+    """
     admitted = store.try_claim_v2_continuation_generation(
         root_task_id=TASK_ID, manager_agent=MANAGER,
         manager_session_id=SESSION_ID, result_id=row["id"],
@@ -583,16 +587,26 @@ def _spent_ready_b(tmp_path):
     r2_row, attempt_b = _admitted_reserved_result(store)
     spent = _spend(store, row, outcome, r2_row["id"])
     assert spent.status == "spent", spent
+    return r2_row, attempt_b
+
+
+def _spent_ready_b(tmp_path):
+    """A spent/retired generation A whose causal spending result IS an admitted
+    manager result for the reserved session (the authentic generation-B seed)."""
+    store, row, _attempt, outcome, _claimed = _published(tmp_path)
+    r2_row, attempt_b = _finish_a_and_bind_reserved_b(store, row, outcome)
     return store, row, outcome, r2_row, attempt_b
 
 
-def _drive_generation_b(store, r2_row, attempt_b):
-    """Produce generation B through the REAL public stages.
+def _drive_generation_b_pending(store, r2_row, attempt_b):
+    """Drive AUTHENTIC B through the real public pre-publication stages and stop
+    with a COHERENT ``D pending(B)`` / ``N needed`` root.
 
     B owns its reserved-session R2 attempt/binding/candidate/evaluation/
-    continuation/publication/admission identities and audits; the retired A
-    pointer is advanced by the genuine forward-only ``retired -> pending`` CAS,
-    never by cloned rows or an arbitrary pointer edit.
+    continuation identities and audits; the retired A pointer is advanced by the
+    genuine forward-only ``retired -> pending`` CAS inside finalization, never by
+    cloned rows or an arbitrary pointer edit.  The returned generation is ready
+    for the real publisher/claim (and later generation admission).
     """
     row, attempt = r2_row, attempt_b
     session = {"session_id": RESERVED}
@@ -615,6 +629,19 @@ def _drive_generation_b(store, r2_row, attempt_b):
         result_id=row["id"],
     )
     assert settled.status == "settled", settled
+    return generation
+
+
+def _drive_generation_b(store, r2_row, attempt_b):
+    """Produce generation B through the REAL public stages.
+
+    B owns its reserved-session R2 attempt/binding/candidate/evaluation/
+    continuation/publication/admission identities and audits; the retired A
+    pointer is advanced by the genuine forward-only ``retired -> pending`` CAS,
+    never by cloned rows or an arbitrary pointer edit.
+    """
+    row, attempt = r2_row, attempt_b
+    generation = _drive_generation_b_pending(store, r2_row, attempt_b)
     store.bind_v2_process_boot_id(attempt.origin_boot_id)
     claimed = store.claim_v2_notification_publication(
         root_task_id=TASK_ID, manager_agent=MANAGER, manager_session_id=RESERVED,
