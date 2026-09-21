@@ -1,149 +1,469 @@
-"""Canonical SKILL.md authoring-contract tests (founder-approved, THR-169).
+"""Canonical SKILL.md authoring-contract tests (THR-262 / seq27).
 
-THR-210 PR 2 authoring grammar: a newly authored SKILL.md body is accepted
-when it is either (a) heading-first — it starts at column zero with a
-Markdown heading (H1/H2/any ATX level) followed by the body — or
-(b) YAML-frontmatter-first — a valid opening `---` fence at column zero, a
-YAML mapping, a closing `---` fence, then a Markdown body heading. Leading
-BOM/whitespace before either opening shape is NOT tolerated (the documented
-column-zero contract; no silent healing), matching the pre-PR-2 behavior
-that a leading blank line or BOM keeps the document outside the accepted
-grammar. Malformed YAML frontmatter, unclosed frontmatter, non-mapping
-frontmatter, and frontmatter without a Markdown body heading remain invalid
-and are classified under the stable reason codes below (THR-210 PR 1 keeps
-such candidates as immutable validation/provenance evidence).
+The THR-210 PR-2 heading-first grammar is retired for NEW custom-skill writes.
+A conforming document is frontmatter-first: a column-zero ``---`` fence, a YAML
+mapping, a closing fence.  The only permitted top-level keys are
+``name``/``description``/``license``/``compatibility``/``metadata``; every other
+key is admission-policy invalid by presence.  ``name`` must equal the logical
+slug; ``description`` must be non-empty.
+
+The literal inputs and ordered findings below mirror case-design §4.3 row by
+row.  Historical reason codes stay readable (``skill_md_no_heading``).
 """
 from __future__ import annotations
 
 import pytest
 
 from runtime.skills.skill_md import (
+    ADMISSION_FIELD_NOT_ALLOWED,
+    FRONTMATTER_DUPLICATE_KEY,
+    FRONTMATTER_INVALID_COMPATIBILITY,
+    FRONTMATTER_INVALID_DESCRIPTION,
+    FRONTMATTER_INVALID_LICENSE,
+    FRONTMATTER_INVALID_METADATA,
+    FRONTMATTER_INVALID_NAME,
+    FRONTMATTER_MISSING_DESCRIPTION,
+    FRONTMATTER_MISSING_NAME,
+    FRONTMATTER_NAME_SLUG_MISMATCH,
     SKILL_MD_EMPTY,
     SKILL_MD_FRONTMATTER_NOT_MAPPING,
     SKILL_MD_MALFORMED_FRONTMATTER,
     SKILL_MD_NO_FRONTMATTER,
     SKILL_MD_NO_HEADING,
     SKILL_MD_UNCLOSED_FRONTMATTER,
+    frontmatter_admission_violations,
+    is_valid_logical_slug,
+    parse_skill_frontmatter,
     skill_md_contract_violations,
 )
 
-_VALID = "---\nname: Example\ndescription: demo\n---\n\n# Example\n\nBody.\n"
+_BASELINE = "---\nname: my-workflow\ndescription: d\n---\n"
 
 
-# ── positive coverage ───────────────────────────────────────────────────
-
-def test_valid_frontmatter_first_body_has_no_violations():
-    assert skill_md_contract_violations(_VALID) == []
+def _codes(skill_md: object, slug: str = "my-workflow") -> list[str]:
+    return [code for code, _ in skill_md_contract_violations(skill_md, expected_slug=slug)]
 
 
-def test_frontmatter_then_heading_then_body_is_valid():
-    body = (
-        "---\nname: qa-b2-verify\ndescription: temporary verification fixture\n"
-        "---\n\n# QA B2 Verify\n\nVerification skill for B2 custom-skill cutover.\n"
+# ── literal §4.3 matrix ─────────────────────────────────────────────────
+
+@pytest.mark.parametrize("skill_md,expected", [
+    # 1 baseline
+    (_BASELINE, []),
+    # 2 baseline without description
+    ("---\nname: my-workflow\n---\n", [FRONTMATTER_MISSING_DESCRIPTION]),
+    # 3 complete doc with description only
+    ("---\ndescription: d\n---\n", [FRONTMATTER_MISSING_NAME]),
+    # 4 no opening fence (heading-first is retired for new writes)
+    ("# Heading-first body\n\nBody text.\n", [SKILL_MD_NO_FRONTMATTER]),
+    ("plain text without frontmatter", [SKILL_MD_NO_FRONTMATTER]),
+    # 5 opening fence, no closing fence
+    ("---\nname: my-workflow\n", [SKILL_MD_UNCLOSED_FRONTMATTER]),
+    # 6 malformed YAML
+    ("---\nname: [a\ndescription: d\n---\n", [SKILL_MD_MALFORMED_FRONTMATTER]),
+    # 7 malformed document that merely spells a disallowed key
+    ("---\nname: my-workflow\ndescription: d\nallowed-tools: [Bash\n---\n",
+     [SKILL_MD_MALFORMED_FRONTMATTER]),
+    # 8 hooks: null
+    ("---\nname: my-workflow\ndescription: d\nhooks: null\n---\n",
+     [ADMISSION_FIELD_NOT_ALLOWED]),
+    # 9 allowed-tools: []
+    ("---\nname: my-workflow\ndescription: d\nallowed-tools: []\n---\n",
+     [ADMISSION_FIELD_NOT_ALLOWED]),
+    # 11 vendor key
+    ("---\nname: my-workflow\ndescription: d\nvendor-x: 1\n---\n",
+     [ADMISSION_FIELD_NOT_ALLOWED]),
+    # 12 duplicate name
+    ("---\nname: my-workflow\ndescription: d\nname: b\n---\n",
+     [FRONTMATTER_DUPLICATE_KEY]),
+    # 13 duplicate excluded key whose last value is empty
+    ("---\nname: my-workflow\ndescription: d\nhooks: {}\nhooks: {}\n---\n",
+     [FRONTMATTER_DUPLICATE_KEY]),
+    # 15/16 YAML non-string name
+    ("---\nname: 123\ndescription: d\n---\n", [FRONTMATTER_INVALID_NAME]),
+    ("---\nname: true\ndescription: d\n---\n", [FRONTMATTER_INVALID_NAME]),
+    # 18 uppercase name
+    ("---\nname: My-Workflow\ndescription: d\n---\n", [FRONTMATTER_INVALID_NAME]),
+    # 19 hyphen boundary
+    ("---\nname: -a\ndescription: d\n---\n", [FRONTMATTER_INVALID_NAME]),
+    ("---\nname: a-\ndescription: d\n---\n", [FRONTMATTER_INVALID_NAME]),
+    ("---\nname: a--b\ndescription: d\n---\n", [FRONTMATTER_INVALID_NAME]),
+    # 20 name/slug mismatch
+    ("---\nname: other-workflow\ndescription: d\n---\n", [FRONTMATTER_NAME_SLUG_MISMATCH]),
+    # 21-25 description type/length
+    ("---\nname: my-workflow\ndescription: null\n---\n", [FRONTMATTER_INVALID_DESCRIPTION]),
+    ("---\nname: my-workflow\ndescription: 5\n---\n", [FRONTMATTER_INVALID_DESCRIPTION]),
+    ("---\nname: my-workflow\ndescription: \"\"\n---\n", [FRONTMATTER_INVALID_DESCRIPTION]),
+    ("---\nname: my-workflow\ndescription: \"   \"\n---\n", [FRONTMATTER_INVALID_DESCRIPTION]),
+    ("---\nname: my-workflow\ndescription: " + "x" * 1025 + "\n---\n",
+     [FRONTMATTER_INVALID_DESCRIPTION]),
+    # 26-29 optional scalar typing
+    ("---\nname: my-workflow\ndescription: d\nlicense: 1\n---\n",
+     [FRONTMATTER_INVALID_LICENSE]),
+    ("---\nname: my-workflow\ndescription: d\ncompatibility: 0\n---\n",
+     [FRONTMATTER_INVALID_COMPATIBILITY]),
+    ("---\nname: my-workflow\ndescription: d\ncompatibility: \"\"\n---\n",
+     [FRONTMATTER_INVALID_COMPATIBILITY]),
+    ("---\nname: my-workflow\ndescription: d\ncompatibility: " + "x" * 501 + "\n---\n",
+     [FRONTMATTER_INVALID_COMPATIBILITY]),
+    # 30-35 metadata typing
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {a: 1}\n---\n",
+     [FRONTMATTER_INVALID_METADATA]),
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {1: x}\n---\n",
+     [FRONTMATTER_INVALID_METADATA]),
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {a: true}\n---\n",
+     [FRONTMATTER_INVALID_METADATA]),
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {a: null}\n---\n",
+     [FRONTMATTER_INVALID_METADATA]),
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {true: x}\n---\n",
+     [FRONTMATTER_INVALID_METADATA]),
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {a: [x]}\n---\n",
+     [FRONTMATTER_INVALID_METADATA]),
+    # 37/38 standard-recognized and native-mechanism keys are admission-policy
+    ("---\nname: my-workflow\ndescription: d\nallowed-tools: Bash(git status *)\n---\n",
+     [ADMISSION_FIELD_NOT_ALLOWED]),
+    ("---\nname: my-workflow\ndescription: d\nhooks: PreToolUse\n---\n",
+     [ADMISSION_FIELD_NOT_ALLOWED]),
+])
+def test_contract_matrix_literal_findings(skill_md, expected):
+    assert _codes(skill_md) == expected
+    # A candidate is invalid if any finding exists.
+    assert bool(expected) is (skill_md_contract_violations(skill_md, expected_slug="my-workflow") != [])
+
+
+@pytest.mark.parametrize("skill_md", [
+    # 1 baseline
+    _BASELINE,
+    # 10 metadata string-to-string with multiple keys
+    "---\nname: my-workflow\ndescription: d\nmetadata: {a: \"b\", b: \"c\"}\n---\n",
+    # 36 valid optional fields together
+    "---\nname: my-workflow\ndescription: d\nlicense: MIT\ncompatibility: >-\n  Requires a POSIX shell\nmetadata: {owner: platform}\n---\n",
+    # 39/40 prose/string metadata mentions are not top-level declarations
+    "---\nname: my-workflow\ndescription: \"mentions allowed-tools and hooks\"\n---\n",
+    "---\nname: my-workflow\ndescription: d\nmetadata: {note: \"allowed-tools\"}\n---\n",
+    # frontmatter-only document (empty body) is accepted
+    "---\nname: my-workflow\ndescription: d\n---\n",
+])
+def test_contract_accepts_conforming_documents(skill_md):
+    assert _codes(skill_md) == []
+
+
+def test_contract_matrix_slug_aware_rows():
+    # A2: quoted digit-only and mixed ASCII values are strings / admitted.
+    assert _codes("---\nname: \"123\"\ndescription: d\n---\n", slug="123") == []
+    assert _codes("---\nname: a-1\ndescription: d\n---\n", slug="a-1") == []
+    # A2/15: an unquoted YAML int is a type failure, never coerced.
+    assert _codes("---\nname: 123\ndescription: d\n---\n", slug="123") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    # A8/A9/A10/A11/A12/A13: a non-ASCII frontmatter name is an ordinary
+    # document finding. The separate request-identity 422 invalid_slug boundary
+    # is covered by the route tests; here the document-only check runs with the
+    # (possibly non-ASCII) expected slug.
+    assert _codes("---\nname: café-workflow\ndescription: d\n---\n", slug="café-workflow") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    assert _codes("---\nname: cafe\u0301-workflow\ndescription: d\n---\n", slug="my-workflow") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    assert _codes("---\nname: 库存盘点\ndescription: d\n---\n", slug="库存盘点") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    assert _codes("---\nname: ｗf-1\ndescription: d\n---\n", slug="my-workflow") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    assert _codes("---\nname: wf-٣\ndescription: d\n---\n", slug="my-workflow") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    assert _codes("---\nname: wf-²\ndescription: d\n---\n", slug="my-workflow") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    assert _codes("---\nname: а-b\ndescription: d\n---\n", slug="my-workflow") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    # A7: uppercase ASCII is refused; no case folding.
+    assert _codes("---\nname: My-Workflow\ndescription: d\n---\n", slug="My-Workflow") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    # A6/A19: hyphen boundaries and consecutive hyphens.
+    for bad in ("-a", "a-", "a--b"):
+        assert _codes(f"---\nname: {bad}\ndescription: d\n---\n", slug="my-workflow") == [
+            FRONTMATTER_INVALID_NAME
+        ]
+    # A9b: full-string match — trailing newline / whitespace is non-conforming.
+    assert _codes("---\nname: \"my-workflow\\n\"\ndescription: d\n---\n", slug="my-workflow") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    assert _codes("---\nname: \"my-workflow \"\ndescription: d\n---\n", slug="my-workflow") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    # A15: an ASCII name that differs from the slug.
+    assert _codes("---\nname: other-workflow\ndescription: d\n---\n", slug="my-workflow") == [
+        FRONTMATTER_NAME_SLUG_MISMATCH
+    ]
+
+
+@pytest.mark.parametrize("value", [
+    # A1/A2/A4: conforming boundaries (length 1 and 64, digit-only/mixed).
+    "a", "my-workflow", "123", "a-1", "inventory-count",
+    "a" * 64, "a" * 62 + "-b",
+])
+def test_logical_slug_predicate_accepts_conforming_ascii(value):
+    assert is_valid_logical_slug(value) is True
+    assert _codes(f'---\nname: "{value}"\ndescription: d\n---\n', slug=value) == []
+
+
+@pytest.mark.parametrize("value", [
+    # A5: 65 grammar-conforming characters exceed the 1-64 bound.
+    "a" * 65, "a" * 63 + "-b",
+    # A6: hyphen boundaries / consecutive hyphens.
+    "-a", "a-", "a--b", "-", "--",
+    # A7: uppercase ASCII (no lowercasing).
+    "My-Workflow", "ABC", "aB",
+    # A8: precomposed accent.
+    "café-workflow",
+    # A9: decomposed accent (no NFC/NFKC).
+    "cafe\u0301-workflow",
+    # A9b: trailing/leading newline or whitespace (full-string; no `$` loophole).
+    "my-workflow\n", "my-workflow ", " my-workflow", "my-workflow\r",
+    # A10: CJK.
+    "库存盘点",
+    # A11: fullwidth letters / digits (no width folding).
+    "ａｂｃ", "１２３", "ｗf-1",
+    # A12: Arabic-Indic digits (ASCII 0-9 only).
+    "١٢٣", "wf-٣",
+    # A13: Cyrillic lookalikes.
+    "а-b", "аbc",
+    # THR262seq48 concrete values within the accepted non-ASCII categories.
+    "wf-²",
+    # Non-string / empty values are refused.
+    "", None, 123, ["a"], {"a": 1},
+])
+def test_logical_slug_predicate_refuses_non_conforming(value):
+    assert is_valid_logical_slug(value) is False
+
+
+# ── admission ordering + grouping ───────────────────────────────────────
+
+def test_admission_findings_follow_document_order_and_precede_required():
+    doc = (
+        "---\nname: my-workflow\ndescription: d\n"
+        "allowed-tools: null\nhooks: false\nvendor-x: 1\nfuture-field: \"\"\n---\n"
     )
-    assert skill_md_contract_violations(body) == []
+    codes = _codes(doc)
+    assert codes == [ADMISSION_FIELD_NOT_ALLOWED] * 4
+    messages = [message for _, message in skill_md_contract_violations(doc, expected_slug="my-workflow")]
+    assert "allowed-tools" in messages[0]
+    assert "hooks" in messages[1]
+    assert "vendor-x" in messages[2]
+    assert "future-field" in messages[3]
 
 
-def test_frontmatter_with_level_two_heading_is_valid():
-    assert skill_md_contract_violations("---\nname: x\n---\n## Sub\n\nBody\n") == []
+def test_admission_precedes_required_and_optional_findings():
+    missing = "---\nname: my-workflow\nallowed-tools: []\n---\n"
+    assert _codes(missing) == [ADMISSION_FIELD_NOT_ALLOWED, FRONTMATTER_MISSING_DESCRIPTION]
+    optional = (
+        "---\nname: my-workflow\ndescription: d\nallowed-tools: []\nlicense: 1\n---\n"
+    )
+    assert _codes(optional) == [ADMISSION_FIELD_NOT_ALLOWED, FRONTMATTER_INVALID_LICENSE]
 
 
-def test_frontmatter_with_extra_yaml_keys_is_valid():
-    assert skill_md_contract_violations(
-        "---\nname: x\ndescription: y\ntags:\n  - a\n  - b\n---\n\n# H\n\nBody\n"
+def test_structural_findings_short_circuit_field_groups():
+    # Duplicate key cannot fall through to admission/required findings.
+    assert _codes("---\nhooks: {}\nhooks: {}\n---\n") == [FRONTMATTER_DUPLICATE_KEY]
+    # Non-mapping frontmatter is structural only.
+    assert _codes("---\n- a\n- b\n---\n") == [SKILL_MD_FRONTMATTER_NOT_MAPPING]
+    assert _codes("---\n---\n") == [SKILL_MD_FRONTMATTER_NOT_MAPPING]
+    assert _codes("") == [SKILL_MD_EMPTY]
+    assert _codes("   \n\n") == [SKILL_MD_EMPTY]
+    assert _codes(123) == [SKILL_MD_EMPTY]
+
+
+def test_duplicate_key_message_names_first_duplicated_key():
+    messages = dict(skill_md_contract_violations(
+        "---\nname: my-workflow\ndescription: d\nhooks: {}\nhooks: {}\n---\n",
+        expected_slug="my-workflow",
+    ))
+    assert "hooks" in messages[FRONTMATTER_DUPLICATE_KEY]
+
+
+# ── R2: original root key identity/order survives YAML merge flattening ──
+
+def test_present_yaml_merge_key_is_admission_invalid_by_presence():
+    """``<<`` is a top-level key: flatten_mapping removes it from the parsed
+    mapping, so the guard must report it by its preserved root identity."""
+    empty_merge = "---\nname: my-workflow\ndescription: d\n<<: {}\n---\n"
+    assert _codes(empty_merge) == [ADMISSION_FIELD_NOT_ALLOWED]
+    messages = dict(skill_md_contract_violations(empty_merge, expected_slug="my-workflow"))
+    assert "<<" in messages[ADMISSION_FIELD_NOT_ALLOWED]
+    # A merge that contributes otherwise-allowed keys is not laundered.
+    assert _codes(
+        "---\nname: my-workflow\ndescription: d\n<<: {license: MIT}\n---\n"
+    ) == [ADMISSION_FIELD_NOT_ALLOWED]
+    # The bundled-source guard enforces the same presence rule.
+    assert [code for code, _ in frontmatter_admission_violations(empty_merge)] == [
+        ADMISSION_FIELD_NOT_ALLOWED
+    ]
+
+
+def test_merge_key_preserves_document_order_and_precedence():
+    """The preserved root order puts the merge key where the document put it,
+    and a malformed/duplicate document still short-circuits to structural."""
+    doc = (
+        "---\nname: my-workflow\ndescription: d\n"
+        "vendor-x: 1\n<<: {}\n---\n"
+    )
+    messages = [
+        message
+        for _, message in skill_md_contract_violations(doc, expected_slug="my-workflow")
+    ]
+    assert messages[0].find("vendor-x") != -1
+    assert messages[1].find("<<") != -1
+    # A genuine duplicate wins over the merge presence (structural precedence).
+    assert _codes(
+        "---\nname: my-workflow\nname: other\n<<: {}\n---\n"
+    ) == [FRONTMATTER_DUPLICATE_KEY]
+
+
+def test_duplicate_merge_declarations_use_original_root_identity():
+    """R2/R3 repair: duplicate identity is the ORIGINAL root key order captured
+    BEFORE ``flatten_mapping``. Two top-level ``<<: {}`` declarations are one
+    ``frontmatter_duplicate_key`` naming ``<<`` -- never two admission findings
+    and never a parsed mapping."""
+    duplicate_merge = (
+        "---\nname: duplicate-merge\ndescription: d\n<<: {}\n<<: {}\n---\n"
+    )
+    findings = skill_md_contract_violations(duplicate_merge, expected_slug="duplicate-merge")
+    assert [code for code, _ in findings] == [FRONTMATTER_DUPLICATE_KEY]
+    assert "<<" in dict(findings)[FRONTMATTER_DUPLICATE_KEY]
+    # A duplicate is structural: no parsed channel and no admission/required
+    # group follows (the "last-wins" merge cannot launder the identity).
+    assert parse_skill_frontmatter(duplicate_merge) is None
+    assert [code for code, _ in frontmatter_admission_violations(duplicate_merge)] == [
+        FRONTMATTER_DUPLICATE_KEY
+    ]
+
+
+def test_merge_override_reports_excluded_key_not_fabricated_duplicate_name():
+    """R2/R3 repair: a single ``<<: {name: inherited}`` beside one explicit
+    top-level ``name`` declares each original root key once. It is excluded-merge
+    admission-invalid by presence, never a fabricated duplicate ``name``."""
+    override_merge = (
+        "---\nname: merge-override\ndescription: d\n<<: {name: inherited}\n---\n"
+    )
+    findings = skill_md_contract_violations(override_merge, expected_slug="merge-override")
+    assert [code for code, _ in findings] == [ADMISSION_FIELD_NOT_ALLOWED]
+    assert "<<" in dict(findings)[ADMISSION_FIELD_NOT_ALLOWED]
+    # The original root declares ``name`` once; the merged value is not a second
+    # root identity, so the parsed mapping is the explicit document value.
+    assert parse_skill_frontmatter(override_merge) == {
+        "name": "merge-override", "description": "d",
+    }
+    assert [code for code, _ in frontmatter_admission_violations(override_merge)] == [
+        ADMISSION_FIELD_NOT_ALLOWED
+    ]
+
+
+def test_original_root_duplicate_precedence_with_merge_and_nested_content():
+    """The repair keeps structural precedence intact: a genuine original
+    duplicate, a malformed merge value and a nested-mapping merge are classified
+    exactly as before (malformed/non-mapping first; nested is never the root)."""
+    # A genuine original duplicate still short-circuits every later group.
+    assert _codes(
+        "---\nname: my-workflow\nname: other\n<<: {name: inherited}\n---\n"
+    ) == [FRONTMATTER_DUPLICATE_KEY]
+    # A non-mapping merge value is malformed before any duplicate/admission group.
+    assert _codes(
+        "---\nname: my-workflow\ndescription: d\n<<: 5\n---\n"
+    ) == [SKILL_MD_MALFORMED_FRONTMATTER]
+    # A merge key inside a nested mapping is not an original root declaration;
+    # the merged nested shape is an invalid metadata value instead.
+    assert _codes(
+        "---\nname: my-workflow\ndescription: d\nmetadata: {a: {<<: {b: c}}}\n---\n"
+    ) == [FRONTMATTER_INVALID_METADATA]
+
+
+# ── R3: duplicate identity/presence separated from nullable key values ──
+
+def test_repeated_null_key_is_the_sole_duplicate_finding():
+    """A repeated ``null`` key stores ``None``; the duplicate must still be
+    detected and must not fall through to a last-wins admission finding."""
+    assert _codes("---\nnull: a\nnull: b\n---\n") == [FRONTMATTER_DUPLICATE_KEY]
+    # Distinct from "no duplicate": a single null key is admission-invalid by
+    # presence and falls through to the required-field group, never duplicate.
+    single = _codes("---\nnull: a\n---\n")
+    assert single == [
+        ADMISSION_FIELD_NOT_ALLOWED,
+        FRONTMATTER_MISSING_NAME,
+        FRONTMATTER_MISSING_DESCRIPTION,
+    ]
+
+
+def test_nested_mapping_duplicate_is_not_a_root_duplicate():
+    """A duplicate inside a nested sequence/metadata mapping is an invalid
+    metadata value, never a fabricated top-level duplicate key."""
+    assert _codes(
+        "---\nname: my-workflow\ndescription: d\nmetadata: [{a: x, a: y}]\n---\n"
+    ) == [FRONTMATTER_INVALID_METADATA]
+    assert _codes(
+        "---\nname: my-workflow\ndescription: d\nmetadata: {a: {b: x, b: y}}\n---\n"
+    ) == [FRONTMATTER_INVALID_METADATA]
+    # A genuine root duplicate is still detected with nested content present.
+    assert _codes(
+        "---\nname: my-workflow\ndescription: d\nname: other\nmetadata: [{a: x, a: y}]\n---\n"
+    ) == [FRONTMATTER_DUPLICATE_KEY]
+
+
+def test_exact_boundaries_are_accepted():
+    assert _codes("---\nname: " + "a" * 64 + "\ndescription: d\n---\n", slug="a" * 64) == []
+    assert _codes("---\nname: my-workflow\ndescription: " + "x" * 1024 + "\n---\n") == []
+    assert _codes(
+        "---\nname: my-workflow\ndescription: d\ncompatibility: " + "x" * 500 + "\n---\n"
+    ) == []
+    assert _codes(
+        "---\nname: my-workflow\ndescription: d\nmetadata: {}\n---\n"
     ) == []
 
 
-# ── THR-210 PR 2: heading-first acceptance ──────────────────────────────
-
-@pytest.mark.parametrize("skill_md", [
-    "# Heading-first body\n\nBody text.\n",            # H1 + normal body
-    "## Heading-first level two\n\nBody text.\n",      # H2 + normal body
-    "### Heading-first level three\n\nBody text.\n",   # any ATX level
-    "# Heading without trailing newline",              # heading-only body
-    "# Heading\nBody starts immediately below\n",      # no blank line after heading
-    "#\n",                                              # ATX boundary: 1 hash + EOL
-    "###### Level-six heading\n\nBody text.\n",        # ATX boundary: 6 hashes + space
-    "######\n",                                         # ATX boundary: 6 hashes + EOL
-    "#\tTab-separated heading\n\nBody text.\n",        # ATX: whitespace after the hashes
-])
-def test_heading_first_body_with_markdown_heading_is_valid(skill_md):
-    assert skill_md_contract_violations(skill_md) == []
+def test_sixty_five_character_name_is_invalid():
+    assert _codes("---\nname: " + "a" * 65 + "\ndescription: d\n---\n", slug="a" * 65) == [
+        FRONTMATTER_INVALID_NAME
+    ]
 
 
-# ── adversarial shape coverage ──────────────────────────────────────────
+# ── parsed channel + bundled admission-only guard ───────────────────────
 
-@pytest.mark.parametrize("body,expected", [
-    # empty / missing body
-    ("", SKILL_MD_EMPTY),
-    ("   \n\n", SKILL_MD_EMPTY),
-    (123, SKILL_MD_EMPTY),  # non-string
-    # no frontmatter AND no heading -> still outside the grammar
-    ("plain text without frontmatter", SKILL_MD_NO_FRONTMATTER),
-    ("This is not a heading\n", SKILL_MD_NO_FRONTMATTER),
-    # hash-prefixed lines are NOT ATX headings unless 1-6 hashes are followed
-    # by whitespace or end-of-line (CommonMark §4.2) — a leading '#' alone
-    # does not make the line a heading
-    ("#not-a-heading\n", SKILL_MD_NO_FRONTMATTER),
-    ("##not-a-heading either\n", SKILL_MD_NO_FRONTMATTER),
-    ("####### Seven hashes then a space\n", SKILL_MD_NO_FRONTMATTER),
-    ("#######\n", SKILL_MD_NO_FRONTMATTER),             # 7 hashes + EOL
-    ("######## Too many\n", SKILL_MD_NO_FRONTMATTER),
-    # leading BOM/whitespace before a heading is NOT accepted: the accepted
-    # opening shapes must start the document at column zero (documented
-    # contract), so these are classified invalid without silent healing.
-    ("\n# Leading blank line\n", SKILL_MD_NO_FRONTMATTER),
-    ("\ufeff# BOM-prefixed heading\n", SKILL_MD_NO_FRONTMATTER),
-    ("  # Indented heading\n", SKILL_MD_NO_FRONTMATTER),
-    # unclosed frontmatter fence
-    ("---\nname: x\n# no closing fence\n", SKILL_MD_UNCLOSED_FRONTMATTER),
-    ("---\nname: x", SKILL_MD_UNCLOSED_FRONTMATTER),
-    # malformed YAML inside the fence
-    ("---\nname: [unclosed\n---\n# Heading\n", SKILL_MD_MALFORMED_FRONTMATTER),
-    ("---\n: : : bad\n---\n# Heading\n", SKILL_MD_MALFORMED_FRONTMATTER),
-    # non-mapping frontmatter
-    ("---\n- a\n- b\n---\n# Heading\n", SKILL_MD_FRONTMATTER_NOT_MAPPING),
-    ("---\njust a string\n---\n# Heading\n", SKILL_MD_FRONTMATTER_NOT_MAPPING),
-    ("---\n42\n---\n# Heading\n", SKILL_MD_FRONTMATTER_NOT_MAPPING),
-    ("---\n---\n# Heading\n", SKILL_MD_FRONTMATTER_NOT_MAPPING),  # empty frontmatter
-    # missing post-frontmatter heading
-    ("---\nname: x\n---\nplain text without a heading\n", SKILL_MD_NO_HEADING),
-    ("---\nname: x\n---\n\n", SKILL_MD_NO_HEADING),  # empty body after fence
-    ("---\nname: x\n---\n", SKILL_MD_NO_HEADING),
-    ("---\nname: x\n---\n   \n", SKILL_MD_NO_HEADING),
-    # the post-frontmatter body heading uses the IDENTICAL ATX boundary
-    ("---\nname: x\n---\n#not-a-heading\n", SKILL_MD_NO_HEADING),
-    ("---\nname: x\n---\n####### Seven hashes\n", SKILL_MD_NO_HEADING),
-    ("---\nname: x\n---\n  # Indented body heading\n", SKILL_MD_NO_HEADING),
-])
-def test_contract_violations_reject_invalid_bodies(body, expected):
-    codes = [code for code, _ in skill_md_contract_violations(body)]
-    assert codes == [expected]
+def test_parse_skill_frontmatter_returns_mapping_only_for_structurally_valid():
+    assert parse_skill_frontmatter(_BASELINE) == {"name": "my-workflow", "description": "d"}
+    assert parse_skill_frontmatter("# heading first\n") is None
+    assert parse_skill_frontmatter("---\nname: [a\n---\n") is None
+    assert parse_skill_frontmatter("---\nname: a\nname: b\n---\n") is None
+    assert parse_skill_frontmatter("---\n- a\n---\n") is None
 
 
-@pytest.mark.parametrize("skill_md", [
-    "---\nname: x\n---\n#\n",                            # 1 hash + EOL
-    "---\nname: x\n---\n###### Level-six heading\n\nBody\n",  # 6 hashes + space
-    "---\nname: x\n---\n######\n",                       # 6 hashes + EOL
-])
-def test_frontmatter_body_heading_accepts_atx_boundary_forms(skill_md):
-    """The required Markdown heading after YAML frontmatter obeys the same
-    ATX boundary as heading-first: 1-6 '#' markers followed by whitespace
-    or end-of-line, on the body's first non-blank line (blank lines between
-    the closing fence and the heading remain tolerated)."""
-    assert skill_md_contract_violations(skill_md) == []
+def test_frontmatter_admission_violations_passes_absent_frontmatter():
+    # The bundled-source CI guard checks the allowed key set only: a heading /
+    # no-frontmatter source has no top-level keys and passes.
+    assert frontmatter_admission_violations("# Heading-first body\n\nBody\n") == []
+    assert frontmatter_admission_violations("plain prose") == []
+    assert frontmatter_admission_violations("---\nname: x\ndescription: y\n---\n") == []
+    assert [
+        code for code, _ in frontmatter_admission_violations(
+            "---\nname: x\ndescription: y\nallowed-tools: []\n---\n"
+        )
+    ] == [ADMISSION_FIELD_NOT_ALLOWED]
+    assert [
+        code for code, _ in frontmatter_admission_violations("---\nname: x\nname: y\n---\n")
+    ] == [FRONTMATTER_DUPLICATE_KEY]
+    assert [
+        code for code, _ in frontmatter_admission_violations("---\nname: [a\n---\n")
+    ] == [SKILL_MD_MALFORMED_FRONTMATTER]
 
 
-def test_contract_violations_include_human_readable_message():
-    codes = dict(skill_md_contract_violations("no frontmatter here"))
-    assert SKILL_MD_NO_FRONTMATTER in codes
-    assert codes[SKILL_MD_NO_FRONTMATTER]
-
-
-def test_no_frontmatter_message_names_both_accepted_shapes():
-    """The stable skill_md_no_frontmatter code must keep its deterministic
-    message truthful under the THR-210 PR 2 grammar (heading-first is now
-    accepted too). New invalid evidence rows store this text; legacy rows
-    keep their older wording and are never rewritten."""
-    codes = dict(skill_md_contract_violations("plain prose"))
-    assert "frontmatter fence or a Markdown heading" in codes[SKILL_MD_NO_FRONTMATTER]
+def test_historical_reason_code_stays_readable():
+    """``skill_md_no_heading`` is retained for historical rows and never emitted
+    for new writes; the retired heading-first shape now reports no frontmatter."""
+    assert SKILL_MD_NO_HEADING == "skill_md_no_heading"
+    assert _codes("---\nname: x\n---\nplain text without a heading\n") == [
+        FRONTMATTER_NAME_SLUG_MISMATCH,
+        FRONTMATTER_MISSING_DESCRIPTION,
+    ]
