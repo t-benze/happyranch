@@ -1128,7 +1128,7 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  test('a forward dialog keeps the captured forwarded fields/subject/recipients/body after a prefill change', async () => {
+  test('a forward dialog keeps the captured forwarded fields/subject/recipients/body after departure and a prefill change', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubBaseHandlers();
     stubCreatedThread('THR-NEW');
@@ -1177,6 +1177,7 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
           <button type="button" data-testid="change-prefill" onClick={() => setPrefill(CHANGED)}>
             change prefill
           </button>
+          <NavTo to="/orgs/beta/threads" label="depart" testId="depart" />
         </>
       );
     }
@@ -1212,6 +1213,12 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
     await waitFor(() =>
       expect(screen.getByLabelText(/^Subject$/i)).toHaveValue(CHANGED.subject),
     );
+    // Also DEPART the org while the upload is held. The dialog is modal, so
+    // dispatch the navigation directly (same as C8.2b).
+    fireEvent.click(document.querySelector('[data-testid="depart"]') as HTMLElement);
+    await waitFor(() =>
+      expect(screen.getByTestId('review-location')).toHaveTextContent('/orgs/beta/threads'),
+    );
     releaseUpload(undefined);
     await waitFor(() => expect(composeBody).not.toBeNull());
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
@@ -1222,10 +1229,10 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
       forwarded_from_id: ORIGINAL.forwarded_from_id,
       forwarded_from_kind: ORIGINAL.forwarded_from_kind,
     });
-    // The stale completion must not close or navigate the changed dialog.
+    // The stale completion must not close, navigate or reset the changed dialog.
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(screen.getByLabelText(/^Subject$/i)).toHaveValue(CHANGED.subject);
-    expect(screen.getByTestId('review-location').textContent).toBe(`/orgs/${SLUG}/threads`);
+    expect(screen.getByTestId('review-location').textContent).toBe('/orgs/beta/threads');
   });
 });
 
