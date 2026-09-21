@@ -223,7 +223,13 @@ The Settings surface ships as a full page (`web/src/features/settings/SettingsPa
   that one observation whenever its render is flushed — never a window in
   which the request happened to be in flight and never the revision it
   accepted. A revision is a content hash, so another editor saving or restoring
-  the same bytes is a different settlement and is observed normally. Every
+  the same bytes is a different settlement and is observed normally. A
+  receipt of the editor's own base revision is ordinarily a no-op (no notice,
+  no target), but equality to the base is not proof that nothing happened
+  since: when a pending reconciliation target names another revision, a later
+  observation restoring the base bytes supersedes that target like any later
+  observation, so rebase and accept-latest act on the restored revision
+  rather than on an obsolete one, and the explicit choice is still required. Every
   observation that is not this editor's own settlement — including another
   editor's write that lands while this editor's request is still pending — is
   handled at once by the ordinary rules: adopted when clean, recorded for an

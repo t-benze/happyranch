@@ -529,6 +529,8 @@ export function DaemonCapacitySection(): JSX.Element {
   baseRef.current = base;
   const guardRef = useRef({ dirty: false, writeLocked: false });
   guardRef.current = { dirty, writeLocked };
+  const latestRef = useRef<LatestObservation | null>(null);
+  latestRef.current = latest;
 
   const acceptBase = useCallback((next: CapacityBase) => {
     const workers = String(next.pair.queue_workers);
@@ -566,7 +568,9 @@ export function DaemonCapacitySection(): JSX.Element {
    * Accept a usable read into `base` ONLY when that cannot lose operator work:
    *
    *  - no base yet            -> seed it;
-   *  - same revision          -> observations only, `base` untouched;
+   *  - same revision          -> observations only, `base` untouched — unless
+   *                              an older `latest` names another revision
+   *                              (see C3-A below);
    *  - revision moved, clean  -> adopt it (there is no draft to protect);
    *  - revision moved, dirty
    *    or unresolved          -> record it as `latest` and require an EXPLICIT
@@ -580,7 +584,6 @@ export function DaemonCapacitySection(): JSX.Element {
       acceptBase(observed);
       return;
     }
-    if (current.revision === observed.revision) return;
     const observation = observationRef.current;
     const own = ownWriteRef.current;
     const ownSettlement = own === null ? null : settlementOf(own.request);
@@ -602,6 +605,16 @@ export function DaemonCapacitySection(): JSX.Element {
       if (ownSettlement.outcome === 'usable' && observation.settledSeq < ownSettlement.settledSeq) {
         return;
       }
+    }
+    if (current.revision === observed.revision) {
+      // An ordinary receipt of the revision this editor is based on changes
+      // nothing: no target, no notice. C3-A: equality to the base does NOT mean
+      // nothing happened since, though. When a pending reconciliation target
+      // names ANOTHER revision, this later observation (another editor
+      // restoring the base bytes) supersedes it like any later observation,
+      // so neither explicit choice acts on an obsolete target.
+      const target = latestRef.current;
+      if (target === null || target.base.revision === observed.revision) return;
     }
     if (!guardRef.current.dirty && !guardRef.current.writeLocked) {
       acceptBase(observed);

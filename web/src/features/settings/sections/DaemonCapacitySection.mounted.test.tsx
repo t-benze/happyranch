@@ -731,9 +731,10 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     root: HTMLElement,
     client: ReturnType<typeof mount>['client'],
     expected: { w: number; h: number; revision: string; receiptAt: number },
+    saved: RegExp = /^Saved for next restart\. Running limits are unchanged\./,
   ) {
     const ui = within(root);
-    await ui.findByText(/^Saved for next restart\. Running limits are unchanged\./);
+    await ui.findByText(saved);
     await waitFor(() => expect(reasonIn(root)).toHaveValue(''));
     expect(workersIn(root)).toHaveValue(String(expected.w));
     expect(capIn(root)).toHaveValue(String(expected.h));
@@ -1093,7 +1094,11 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
   }
 
   /** After a NON-accepted own result: external evidence available, nothing sent. */
-  async function expectExternalKeptAndWriteRefused(root: HTMLElement, puts0: number) {
+  async function expectExternalKeptAndWriteRefused(
+    root: HTMLElement,
+    puts0: number,
+    latestPair: [number, number] = [7, 14],
+  ) {
     const ui = within(root);
     expect(workersIn(root)).toHaveValue('5');
     expect(capIn(root)).toHaveValue('12');
@@ -1106,7 +1111,8 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     expect(ui.getByText(/Reconcile the saved values before saving again/)).toBeInTheDocument();
     expect(ui.getByText('Configuration changed elsewhere.')).toBeInTheDocument();
     expect(ui.getByText('Accepted base').parentElement?.textContent).toContain('Task session slots 3');
-    expect(ui.getByText('Currently saved').parentElement?.textContent).toContain('Task session slots 7');
+    expect(ui.getByText('Currently saved').parentElement?.textContent)
+      .toContain(`Task session slots ${latestPair[0]}, Host session admission limit ${latestPair[1]}`);
     // Submission provenance is retained exactly as for any non-accepted result.
     expect(ui.getByText(/You submitted Task session slots 5/)).toBeInTheDocument();
     expect(ui.queryByText(/^Saved for next restart/)).not.toBeInTheDocument();
@@ -1329,6 +1335,250 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       expect(puts()[2].ifMatch).toBe(`"${REV_B}"`);
       await expectCleanTerminal(first.container, first.client,
         { w: 9, h: 15, revision: REV_D, receiptAt: clock.now });
+      expect(undeclared).toEqual([]);
+      second.unmount();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // C3-A — a later observation restoring the editor's OWN base revision still
+  // supersedes an older reconciliation target. Equality to the base says the
+  // bytes match what this editor started from, not that nothing happened since.
+  // -------------------------------------------------------------------------
+
+  /** A save landing back on the running values reports that no restart is pending. */
+  const SAVED_AT_RUNNING = /^Saved\. No restart is pending for these values\./;
+
+  /**
+   * The overlapped scenario, then the still-mounted second editor deliberately
+   * restores 3/10 (quoted C -> A) while the first editor's own request is still
+   * held. The first editor's target must move to A; its draft, reason and base
+   * are untouched and nothing is sent on its behalf.
+   */
+  async function overlappedThenRestoredToBase(clock: { now: number }) {
+    const ctx = await overlappedByAcceptedExternalWrite(clock);
+    const { first, firstUi, second, secondUi } = ctx;
+    await firstUi.findByText('Configuration changed elsewhere.');
+    expect(firstUi.getByText('Currently saved').parentElement?.textContent)
+      .toContain('Task session slots 7, Host session admission limit 14');
+
+    clock.now += 60000;
+    await setPairIn(second.container, '3', '10');
+    await userEvent.type(reasonIn(second.container), 'second restores A');
+    await userEvent.click(secondUi.getByRole('button', { name: /Save for next restart/ }));
+    await expectCleanTerminal(second.container, first.client,
+      { w: 3, h: 10, revision: REV_A, receiptAt: clock.now }, SAVED_AT_RUNNING);
+    expect(puts()).toHaveLength(3);
+    expect(puts()[2].ifMatch).toBe(`"${REV_C}"`);
+    const restoredSeq = capacityObservation(SLUG)?.settledSeq ?? -Infinity;
+    expect(restoredSeq).toBeGreaterThan(ctx.externalSeq);
+
+    // The target now names the restoration, not the obsolete 7/14.
+    await waitFor(() => expect(firstUi.getByText('Currently saved').parentElement?.textContent)
+      .toContain('Task session slots 3, Host session admission limit 10'));
+    expect(firstUi.getByText('Configuration changed elsewhere.')).toBeInTheDocument();
+    expect(firstUi.getByText('Saving for next restart…')).toBeInTheDocument();
+    expect(firstUi.getByText('Accepted base').parentElement?.textContent).toContain('Task session slots 3');
+    expect(workersIn(first.container)).toHaveValue('5');
+    expect(capIn(first.container)).toHaveValue('12');
+    expect(reasonIn(first.container)).toHaveValue('first may fail');
+    expect(puts()).toHaveLength(3);
+    return { ...ctx, restoredSeq };
+  }
+
+  test.each(['rebase', 'accept'] as const)('C3-A a REJECTED own request after another editor restores the original base: the %s choice acts on A, never the obsolete 7/14', async (choice) => {
+    const clock = { now: 1800000000000 };
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => clock.now);
+    try {
+      const ctx = await overlappedThenRestoredToBase(clock);
+      const { first, firstUi, second, secondUi } = ctx;
+      const restoredReceipt = clock.now;
+      ctx.gate.resolve(HttpResponse.json(
+        { detail: { code: 'config_write_failed', artifact_state: 'absent' } },
+        { status: 503 },
+      ));
+      await firstUi.findByText(/Configuration storage failed\. This request did not publish new values\./);
+      await waitFor(() => expect(first.client.isMutating()).toBe(0));
+      expect(first.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision)
+        .toBe(REV_A);
+      expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_A);
+      expect(capacityObservation(SLUG)?.receiptAt).toBe(restoredReceipt);
+      // Explicit-choice lock remains: a Save attempt sends no fourth PUT.
+      await expectExternalKeptAndWriteRefused(first.container, 3, [3, 10]);
+      expect(workersIn(second.container)).toHaveValue('3');
+      expect(secondUi.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+
+      if (choice === 'rebase') {
+        // The rebase target is A; the separate manual save carries quoted A.
+        await rebaseThenManualSave(clock, ctx, REV_A);
+      } else {
+        await userEvent.click(firstUi.getByRole('button', { name: /Discard draft, accept latest/ }));
+        await waitFor(() => expect(workersIn(first.container)).toHaveValue('3'));
+        expect(capIn(first.container)).toHaveValue('10');
+        expect(reasonIn(first.container)).toHaveValue('');
+        expect(puts()).toHaveLength(3);
+        expect(firstUi.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+        expect(firstUi.queryByText('Currently saved')).not.toBeInTheDocument();
+        expect(firstUi.queryByText(/You submitted/)).not.toBeInTheDocument();
+        expect(firstUi.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+        expect(firstUi.getByRole('button', { name: /Save for next restart/ })).toBeEnabled();
+        expectGuardDisarmed();
+
+        clock.now += 60000;
+        await setPairIn(first.container, '8', '15');
+        await userEvent.type(reasonIn(first.container), 'after accepting A');
+        await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+        await waitFor(() => expect(puts()).toHaveLength(4));
+        expect(puts()[3].ifMatch).toBe(`"${REV_A}"`);
+        expect(JSON.parse(puts()[3].rawBody)).toEqual({
+          queue_workers: 8,
+          host_global_session_cap: 15,
+          rationale: 'after accepting A',
+          confirm_environment_shadow: false,
+        });
+        await expectCleanTerminal(first.container, first.client,
+          { w: 8, h: 15, revision: REV_E, receiptAt: clock.now });
+        await waitFor(() => expect(workersIn(second.container)).toHaveValue('8'));
+        expect(capIn(second.container)).toHaveValue('15');
+        expect(reasonIn(second.container)).toHaveValue('');
+        expect(secondUi.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+        expect(secondUi.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+        expect(secondUi.getByRole('button', { name: /Save for next restart/ })).toBeEnabled();
+        expectGuardDisarmed();
+        expect(puts()).toHaveLength(4);
+        expect(undeclared).toEqual([]);
+      }
+      second.unmount();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('C3-A an ACCEPTED own request after the restoration still fences both older observations and ends clean at its own settlement', async () => {
+    const clock = { now: 1800000000000 };
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => clock.now);
+    try {
+      const ctx = await overlappedThenRestoredToBase(clock);
+      const { first, firstUi, second, secondUi } = ctx;
+      clock.now += 60000;
+      ctx.state.current = savedAt(5, 12);
+      ctx.gate.resolve(HttpResponse.json(savedAt(5, 12)));
+      await expectCleanTerminal(first.container, first.client,
+        { w: 5, h: 12, revision: REV_B, receiptAt: clock.now });
+      expect(capacityObservation(SLUG)?.settledSeq).toBeGreaterThan(ctx.restoredSeq);
+      expect(firstUi.queryByText('Currently saved')).not.toBeInTheDocument();
+      await waitFor(() => expect(workersIn(second.container)).toHaveValue('5'));
+      expect(secondUi.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+      expectGuardDisarmed();
+      expect(puts()).toHaveLength(3);
+      expect(undeclared).toEqual([]);
+      second.unmount();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('C3-A control: an ordinary receipt of the base revision with NO pending target raises no notice, target or guard change', async () => {
+    const clock = { now: 1800000000000 };
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => clock.now);
+    try {
+      contentVenue();
+      const first = mount();
+      await ready();
+      const firstUi = within(first.container);
+      // A dirty, unsaved draft in the first editor.
+      await setPair('5', '12');
+      await userEvent.type(reasonBox(), 'draft only');
+      const second = mountSecond(first.client);
+      const secondUi = within(second.container);
+      await waitFor(() => expect(workersIn(second.container)).toHaveValue('3'));
+      // Another editor re-saves the SAME bytes: a new settlement at base A.
+      clock.now += 60000;
+      await userEvent.type(reasonIn(second.container), 'reaffirm A');
+      await userEvent.click(secondUi.getByRole('button', { name: /Save for next restart/ }));
+      await expectCleanTerminal(second.container, first.client,
+        { w: 3, h: 10, revision: REV_A, receiptAt: clock.now }, SAVED_AT_RUNNING);
+      expect(puts()).toHaveLength(1);
+      expect(puts()[0].ifMatch).toBe(`"${REV_A}"`);
+      // Nothing changed relative to the first editor's base: no phantom banner.
+      expect(firstUi.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+      expect(firstUi.queryByText('Currently saved')).not.toBeInTheDocument();
+      expect(workersIn(first.container)).toHaveValue('5');
+      expect(reasonIn(first.container)).toHaveValue('draft only');
+      expect(firstUi.getByRole('button', { name: /Save for next restart/ })).toBeEnabled();
+
+      clock.now += 60000;
+      await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+      await waitFor(() => expect(puts()).toHaveLength(2));
+      expect(puts()[1].ifMatch).toBe(`"${REV_A}"`);
+      await expectCleanTerminal(first.container, first.client,
+        { w: 5, h: 12, revision: REV_B, receiptAt: clock.now });
+      expectGuardDisarmed();
+      expect(undeclared).toEqual([]);
+      second.unmount();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('C3-A / C3-R a DIRTY editor whose base is its own ACCEPTED write sees another editor restore that revision (B -> C -> B) as the new target', async () => {
+    const clock = { now: 1800000000000 };
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => clock.now);
+    try {
+      contentVenue();
+      const first = mount();
+      await ready();
+      const firstUi = within(first.container);
+      clock.now += 60000;
+      await setPair('5', '12');
+      await saveWith('own B');
+      await expectCleanTerminal(first.container, first.client,
+        { w: 5, h: 12, revision: REV_B, receiptAt: clock.now });
+      await setPairIn(first.container, '9', '15');
+      await userEvent.type(reasonIn(first.container), 'dirty after own');
+
+      const second = mountSecond(first.client);
+      const secondUi = within(second.container);
+      await waitFor(() => expect(workersIn(second.container)).toHaveValue('5'));
+      clock.now += 60000;
+      await setPairIn(second.container, '7', '14');
+      await userEvent.type(reasonIn(second.container), 'second C');
+      await userEvent.click(secondUi.getByRole('button', { name: /Save for next restart/ }));
+      await expectCleanTerminal(second.container, first.client,
+        { w: 7, h: 14, revision: REV_C, receiptAt: clock.now });
+      await firstUi.findByText('Configuration changed elsewhere.');
+      expect(firstUi.getByText('Currently saved').parentElement?.textContent)
+        .toContain('Task session slots 7, Host session admission limit 14');
+
+      clock.now += 60000;
+      await setPairIn(second.container, '5', '12');
+      await userEvent.type(reasonIn(second.container), 'second restores B');
+      await userEvent.click(secondUi.getByRole('button', { name: /Save for next restart/ }));
+      await expectCleanTerminal(second.container, first.client,
+        { w: 5, h: 12, revision: REV_B, receiptAt: clock.now });
+      await waitFor(() => expect(firstUi.getByText('Currently saved').parentElement?.textContent)
+        .toContain('Task session slots 5, Host session admission limit 12'));
+      expect(workersIn(first.container)).toHaveValue('9');
+      expect(reasonIn(first.container)).toHaveValue('dirty after own');
+      expect(puts()).toHaveLength(3);
+
+      await userEvent.click(firstUi.getByRole('button', { name: /Keep my draft, rebase onto latest/ }));
+      expect(puts()).toHaveLength(3);
+      clock.now += 60000;
+      await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+      await waitFor(() => expect(puts()).toHaveLength(4));
+      expect(puts()[3].ifMatch).toBe(`"${REV_B}"`);
+      expect(JSON.parse(puts()[3].rawBody)).toEqual({
+        queue_workers: 9, host_global_session_cap: 15, rationale: 'dirty after own',
+        confirm_environment_shadow: false,
+      });
+      await expectCleanTerminal(first.container, first.client,
+        { w: 9, h: 15, revision: REV_D, receiptAt: clock.now });
+      await waitFor(() => expect(workersIn(second.container)).toHaveValue('9'));
+      expect(secondUi.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+      expectGuardDisarmed();
       expect(undeclared).toEqual([]);
       second.unmount();
     } finally {
