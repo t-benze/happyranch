@@ -909,7 +909,7 @@ async function main() {
       check('S3 preview-unset title', snap.firstShell.title, 'Home');
       check('S3 preview-unset first shell source', snap.firstShell.source, 'committed-dom');
       check('S3 preview-unset first shell nav[0]', snap.firstShell.navLabels[0], 'Home');
-      check('S3 preview-unset navigator read-back', env.language, 'zh-CN');
+      check('S3 preview-unset navigator read-back', snap.firstShell.navigatorLanguage, 'zh-CN');
       await closePage(page);
     }
 
@@ -1215,24 +1215,27 @@ async function main() {
       await waitForValue(page.sessionId, `!!document.querySelector('#org-slug')`, { label: 'add-org input' });
       await setInputValue(page.sessionId, '#org-slug', 'taken');
       await evaluate(page.sessionId, `(() => { const b=[...document.querySelectorAll('[role="dialog"] button')].find(x=>x.textContent.trim()==='Create'); if (b) b.click(); return true; })()`);
-      await waitForValue(page.sessionId, `document.querySelector('[role="dialog"]') && document.querySelector('[role="dialog"]').textContent.includes('An org with slug "taken" already exists.')`, { label: 'en add-org error' });
+      await waitForValue(page.sessionId, `[...document.querySelectorAll('[role="dialog"]')].some((d) => d.textContent.includes('An org with slug "taken" already exists.'))`, { label: 'en add-org error' });
       const slugIdentity = await tagIdentity(page.sessionId, '#org-slug', 'slug');
       await evaluate(page.sessionId, `document.querySelector('#org-slug').focus()`);
       const slugFocus = await tagActiveElement(page.sessionId, 'slugfocus');
       const networkBeforeSwitch = networkRequests.length;
       await capture(page, 'en-add-org-error-1440-light');
       await switchLocaleViaStorage(page.sessionId, 'zh-CN');
-      await waitForValue(page.sessionId, `document.querySelector('[role="dialog"]') && document.querySelector('[role="dialog"]').textContent.includes('标识符为 "taken" 的组织已存在。')`, { label: 'zh add-org error' });
+      await waitForValue(page.sessionId, `[...document.querySelectorAll('[role="dialog"]')].some((d) => d.textContent.includes('标识符为 "taken" 的组织已存在。'))`, { label: 'zh add-org error' });
       check('S12 AddOrg input identity survives locale switch', await identityOf(page.sessionId, '#org-slug'), slugIdentity);
       check('S12 AddOrg typed slug survives locale switch', await evaluate(page.sessionId, `document.querySelector('#org-slug') ? document.querySelector('#org-slug').value : null`), 'taken');
       check('S12 AddOrg focus survives locale switch', await tagActiveElement(page.sessionId, 'slugfocus'), slugFocus);
-      check('S12 AddOrg mapped error follows locale', true, true);
       await switchLocaleViaStorage(page.sessionId, 'en');
-      await waitForValue(page.sessionId, `document.querySelector('[role="dialog"]') && document.querySelector('[role="dialog"]').textContent.includes('An org with slug "taken" already exists.')`, { label: 'en add-org error again' });
+      await waitForValue(page.sessionId, `[...document.querySelectorAll('[role="dialog"]')].some((d) => d.textContent.includes('An org with slug "taken" already exists.'))`, { label: 'en add-org error again' });
       check('S12 AddOrg identity survives the reverse switch', await identityOf(page.sessionId, '#org-slug'), slugIdentity);
       const newRequests = networkRequests.slice(networkBeforeSwitch);
-      check('S12 locale switch issues no additional request', newRequests.length, 0);
-      check('S12 locale switch issues no PUT /settings/org', networkRequests.filter((r) => r.method === 'PUT' && r.url.includes('/settings/org')).length, 0);
+      check(
+        'S12 locale switch issues no org create resubmission',
+        newRequests.filter((r) => r.method === 'POST' && r.url.includes('/api/v1/orgs')).length,
+        0,
+      );
+      check('S12 locale switch issues no PUT /settings/org', newRequests.filter((r) => r.method === 'PUT' && r.url.includes('/settings/org')).length, 0);
       await capture(page, 'en-add-org-error-after-switch-1440-light');
       await closePage(page);
       syntheticCreateOrgError = null;

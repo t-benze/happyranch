@@ -57,7 +57,14 @@ export function readCommittedShell(root: ParentNode = document): CommittedShell 
   const sidebar = root.querySelector('aside[role="navigation"]');
   const nav = sidebar ? sidebar.querySelector('nav') : null;
   if (!sidebar || !nav) return null;
-  const navLabels = [...sidebar.querySelectorAll('a')].map((a) => (a.textContent || '').trim());
+  // Nav items render as links when enabled and as `aria-disabled` spans
+  // otherwise (e.g. Threads with no active org); both are actual Sidebar output.
+  const text = (el: Element): string => (el.textContent || '').trim();
+  const navItems = [...nav.children].map(text);
+  const footerItems = [...sidebar.querySelectorAll('a, span[aria-disabled="true"]')]
+    .filter((el) => !nav.contains(el))
+    .map(text);
+  const navLabels = [...navItems, ...footerItems];
   const appBarSpan = root.querySelector('main')?.previousElementSibling?.querySelector('span');
   return {
     navLabels,
