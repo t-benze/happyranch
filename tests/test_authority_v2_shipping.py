@@ -474,6 +474,21 @@ class _ShippingFixture:
                     )
                 self.launch_cv.wait(timeout=min(remaining, 0.5))
 
+    def await_delegated_launch(
+        self, task_id: str, *, timeout: float = _LAUNCH_HOLD_SECONDS,
+    ) -> dict:
+        """Deterministic quiescence barrier for a REAL delegated child launch.
+
+        A delegated child enqueued through the real queue reaches
+        ``_launch_agent_with_scratch`` only AFTER its durable ``session_start``
+        audit and initial heartbeat commit, then parks in the held launch (no
+        further writes until released). Awaiting that recorded launch makes a
+        later full-DB byte-identity replay comparison immune to the child's
+        asynchronous startup writes, using the launch condition barrier (never
+        elapsed sleep or a child-row count).
+        """
+        return self.wait_for_launch_for(task_id, timeout=timeout)
+
     def launch_count(self) -> int:
         with self.launch_cv:
             return len(self.launch_history)
@@ -2989,10 +3004,11 @@ def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="he
                     "SELECT * FROM tasks WHERE parent_task_id=?", (root_id,),
                 ).fetchall()]
                 assert len(children) == 1, children
+                child_id = children[0]["id"]
                 # The delegate+ack_failure branch: the real normal effect
                 # enqueued the child EXACTLY once before the fault.
                 assert len(enqueue_calls) == 1, enqueue_calls
-                assert enqueue_calls[0][1] == children[0]["id"]
+                assert enqueue_calls[0][1] == child_id
             enqueues_before_reopen = len(enqueue_calls)
             # A reopen refuses exactly once with the same causal identity and
             # never re-runs the consumer or regresses the committed effect.  The
@@ -3006,6 +3022,10 @@ def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="he
             # elapsed sleep stands in for the barrier.
             db._conn = real_conn
             fixture.await_reserved_invocation_done()
+            if action == "delegate":
+                # Quiesce the REAL delegated child's asynchronous startup writes
+                # before the byte-identity replay comparison.
+                fixture.await_delegated_launch(child_id)
             reopened = _reopen_owned_db(
                 db, origin_boot_id=attempt.origin_boot_id,
                 expect_envelope_id=envelope_id,
@@ -3095,6 +3115,7 @@ def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="he
             ).fetchall()]
             assert len(children) == 1, children
             assert children[0]["assigned_agent"] == WORKER
+            child_id = children[0]["id"]
 
         # Reopen/duplicate sees the terminal exact receipt: never a second
         # consumer, never a second child/enqueue, no new audit.
@@ -3106,6 +3127,10 @@ def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="he
         # genuinely distinct Database over the SAME persisted file.
         db._conn = real_conn
         fixture.await_reserved_invocation_done()
+        if action == "delegate":
+            # Quiesce the REAL delegated child's asynchronous startup writes
+            # before the byte-identity replay comparison.
+            fixture.await_delegated_launch(child_id)
         reopened = _reopen_owned_db(
             db, origin_boot_id=attempt.origin_boot_id,
             expect_envelope_id=envelope_id,
