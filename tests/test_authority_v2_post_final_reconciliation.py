@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import types
 
-from runtime.models import TaskStatus
+from runtime.models import AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION, TaskStatus
 from runtime.orchestrator.authority import (
     POST_FINAL_NOT_FINALIZED,
     POST_FINAL_RECONCILED,
@@ -47,7 +47,11 @@ from tests.test_authority_v2_finalization_settlement import (
     _seed_q,
     _settle,
 )
-from tests.test_authority_v2_generation_admission import _RecordingQueue
+from tests.test_authority_v2_generation_admission import (
+    _RecordingQueue,
+    _admit,
+    _settle as _settle_generation,
+)
 from tests.test_authority_v2_publication_bookkeeping import (
     BOOT_A,
     BOOT_B,
@@ -359,3 +363,224 @@ def test_startup_publication_requests_full_coverage(monkeypatch, tmp_path):
     )
     daemon_main._publish_v2_generations_on_startup(org, _RecordingQueue())
     assert captured == {"limit": None, "root_task_id": None}
+
+
+# ── exact post-final outcome authentication (C3d4b correction A) ─────────
+
+
+def _raw_delete(store, sql, params=(), *, drop_triggers=()):
+    """Fixture-level removal of exact production rows (evidence loss only).
+
+    Foreign keys and the immutable no-delete guards are disabled only on this
+    disposable fixture database to seed synthetic corruption; this never
+    describes or claims a production deletion path.
+    """
+    db = store._db
+    db._conn.execute("PRAGMA foreign_keys=OFF")
+    for trigger in drop_triggers:
+        db._conn.execute(f"DROP TRIGGER {trigger}")
+    cursor = db._conn.execute(sql, params)
+    db._conn.commit()
+    return cursor.rowcount
+
+
+def test_settled_receipt_with_missing_notification_refuses(tmp_path):
+    """A missing generation row is never affirmative settlement proof.
+
+    Regression for the ``settled = not refused`` false positive: with the whole
+    recovery-notification row gone, discovery legitimately yields zero targets,
+    so an empty receipt list must refuse rather than reconcile.
+    """
+    store, _row, _attempt, _outcome = _finalized_recovery(tmp_path)
+    assert _q(store)["state"] == "callback_consumed"
+    assert _raw_delete(
+        store, "DELETE FROM authority_policy_v2_recovery_notifications",
+        drop_triggers=(
+            "authority_policy_v2_recovery_notifications_no_delete",
+        ),
+    ) == 1
+    queue = _RecordingQueue()
+    before = _dump(store)
+
+    status = reconcile_authority_policy_v2_post_final(
+        _orch(store, queue), root_task_id=TASK_ID,
+    )
+
+    assert status == POST_FINAL_SETTLEMENT_REFUSED
+    assert queue.items == []
+    assert _dump(store) == before
+
+
+def test_settled_receipt_with_missing_dispatch_pointer_refuses(tmp_path):
+    """A missing root-dispatch pointer is never affirmative settlement proof."""
+    store, _row, _attempt, _outcome = _finalized_recovery(tmp_path)
+    assert _raw_delete(
+        store, "DELETE FROM authority_policy_v2_root_dispatch",
+        drop_triggers=("authority_policy_v2_root_dispatch_no_delete",),
+    ) == 1
+    queue = _RecordingQueue()
+    before = _dump(store)
+
+    status = reconcile_authority_policy_v2_post_final(
+        _orch(store, queue), root_task_id=TASK_ID,
+    )
+
+    assert status == POST_FINAL_SETTLEMENT_REFUSED
+    assert queue.items == []
+    assert _dump(store) == before
+
+
+def test_admitted_unsettled_generation_settles_bookkeeping_only(tmp_path):
+    """An authentic admitted-but-unsettled G completes R4 step6 bookkeeping.
+
+    The reopened owner settles the exact durable admission through the EXISTING
+    admission-settlement writer: no republication, no reclaim, no second
+    admission, no task status/session/step regression, and no queue call.
+    """
+    store, _row, _attempt, outcome = _finalized_recovery(tmp_path)
+    db = store._db
+    first = _RecordingQueue()
+    assert reconcile_authority_policy_v2_post_final(
+        _orch(store, first), root_task_id=TASK_ID,
+    ) == POST_FINAL_RECONCILED
+    assert _notification(store, outcome).state == "published"
+    admission = _admit(store, outcome)
+    assert admission.status == "claimed", admission
+    assert _notification(store, outcome).state == "admitted"
+    task_before = db.get_task(TASK_ID)
+    queue = _RecordingQueue()
+    before = _dump(store)
+
+    status = reconcile_authority_policy_v2_post_final(
+        _orch(store, queue), root_task_id=TASK_ID,
+    )
+
+    assert status == POST_FINAL_RECONCILED
+    assert _notification(store, outcome).state == "settled"
+    assert len(_stage_events(store, "notification_settled")) == 1
+    assert queue.items == []  # never republished/reclaimed
+    task_after = db.get_task(TASK_ID)
+    assert task_after.status is task_before.status
+    assert task_after.orchestration_step_count == task_before.orchestration_step_count
+    assert task_after.current_session_id == task_before.current_session_id
+    assert _dispatch(store).state == "admitted"
+    assert _q(store)["state"] == "callback_consumed"
+    assert _dump(store) != before
+
+
+def test_settled_generation_with_deleted_claim_audit_refuses(tmp_path):
+    """A settled generation whose claim audit was deleted never reconciles."""
+    store, _row, _attempt, outcome = _finalized_recovery(tmp_path)
+    db = store._db
+    first = _RecordingQueue()
+    assert reconcile_authority_policy_v2_post_final(
+        _orch(store, first), root_task_id=TASK_ID,
+    ) == POST_FINAL_RECONCILED
+    assert _admit(store, outcome).status == "claimed"
+    assert _settle_generation(store, outcome).status == "settled"
+    deleted = _raw_delete(
+        store,
+        "DELETE FROM audit_log WHERE action=?"
+        " AND json_extract(payload,'$.stage')='generation_claimed'",
+        (AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,),
+    )
+    assert deleted == 1
+    queue = _RecordingQueue()
+    before = _dump(store)
+
+    status = reconcile_authority_policy_v2_post_final(
+        _orch(store, queue), root_task_id=TASK_ID,
+    )
+
+    assert status == POST_FINAL_SETTLEMENT_REFUSED
+    assert queue.items == []
+    assert _dump(store) == before
+
+
+# ── actual caller: admitted-generation and corrupt-evidence coverage (B) ──
+
+
+def _causal_recovery_via_caller(store, queue, row):
+    """Drive the ACTUAL accepted-completion-recovery seam for causal R."""
+    _consume_accepted_completion_recovery(
+        _orch(store, queue), TASK_ID, _report(row),
+        agent=MANAGER, session_id=SESSION_ID, result_row_id=row["id"],
+    )
+
+
+def test_caller_settles_admitted_generation_without_launch(tmp_path):
+    """The real caller completes exact admitted bookkeeping, never launches."""
+    store, row, _attempt, outcome = _finalized_recovery(tmp_path)
+    db = store._db
+    first = _RecordingQueue()
+    _causal_recovery_via_caller(store, first, row)
+    assert _notification(store, outcome).state == "published"
+    assert _admit(store, outcome).status == "claimed"
+    task_before = db.get_task(TASK_ID)
+    queue = _RecordingQueue()
+    before = _dump(store)
+
+    _causal_recovery_via_caller(store, queue, row)
+
+    assert _notification(store, outcome).state == "settled"
+    assert len(_stage_events(store, "notification_settled")) == 1
+    assert queue.items == []
+    task_after = db.get_task(TASK_ID)
+    assert task_after.status is task_before.status
+    assert task_after.current_session_id == task_before.current_session_id
+    assert task_after.orchestration_step_count == task_before.orchestration_step_count
+    assert _dispatch(store).state == "admitted"
+    assert _q(store)["state"] == "callback_consumed"
+    assert _dump(store) != before
+
+
+def test_caller_refuses_missing_notification_without_ordinary_fallback(tmp_path):
+    """Corrupt causal evidence refuses read-only through the real caller."""
+    store, row, _attempt, _outcome = _finalized_recovery(tmp_path)
+    assert _raw_delete(
+        store, "DELETE FROM authority_policy_v2_recovery_notifications",
+        drop_triggers=(
+            "authority_policy_v2_recovery_notifications_no_delete",
+        ),
+    ) == 1
+    queue = _RecordingQueue()
+    before = _dump(store)
+
+    _causal_recovery_via_caller(store, queue, row)
+
+    assert queue.items == []
+    assert _q(store)["state"] == "callback_consumed"
+    assert _dump(store) == before
+
+
+def test_admitted_settlement_fault_refuses_with_prior_residue(tmp_path, monkeypatch):
+    """An injected admission-settlement fault refuses with the prior residue."""
+    store, _row, _attempt, outcome = _finalized_recovery(tmp_path)
+    db = store._db
+    first = _RecordingQueue()
+    assert reconcile_authority_policy_v2_post_final(
+        _orch(store, first), root_task_id=TASK_ID,
+    ) == POST_FINAL_RECONCILED
+    assert _admit(store, outcome).status == "claimed"
+    queue = _RecordingQueue()
+    before = _dump(store)
+    calls = {"n": 0}
+    real = db.settle_v2_continuation_generation_admission
+
+    def _boom(**kwargs):
+        calls["n"] += 1
+        raise RuntimeError("injected admission-settlement failure")
+
+    monkeypatch.setattr(
+        db, "settle_v2_continuation_generation_admission", _boom,
+    )
+
+    status = reconcile_authority_policy_v2_post_final(
+        _orch(store, queue), root_task_id=TASK_ID,
+    )
+
+    assert calls["n"] == 1  # the intended injection fired at the real seam
+    assert status == POST_FINAL_SETTLEMENT_REFUSED
+    assert queue.items == []
+    assert _notification(store, outcome).state == "admitted"
+    assert _dump(store) == before

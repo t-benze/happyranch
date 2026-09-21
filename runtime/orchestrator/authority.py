@@ -2771,6 +2771,11 @@ def reconcile_authority_policy_v2_post_final(
        writer (genuine recovery branch when an exact Q exists; the ordinary
        branch -- which requires real completion evidence -- when none does), or
        authenticate an already-``callback_consumed`` settlement read-only;
+    2b. when the exact generation was already ADMITTED by a real consumer and the
+       transition-only receipt reader can no longer re-authenticate it, complete
+       its R4 step6 bookkeeping through the EXISTING admission-settlement writer
+       using the durable G and reserved session -- bookkeeping only, with no
+       republication, reclaim, second admission or launch authority;
     3. independently discover and publish EVERY needed/publishing/published
        pending-G notification for the root through the EXISTING authenticated
        publisher (real claim -> raw tagged ``TaskQueue`` put OUTSIDE any
@@ -2780,9 +2785,13 @@ def reconcile_authority_policy_v2_post_final(
     in-memory queue after a committed ``published``, an old-boot ``publishing``
     lease and an already-consumed receipt are all rediscovered.  It never
     evaluates, remints, spends, launches, mutates the task outside the writers
-    above, or runs the ordinary decision body.  A missing/conflicting settlement
-    proof refuses with the prior residue and performs no ordinary fallback; the
-    publisher then also refuses on the same proof, so no queue call happens.
+    above, or runs the ordinary decision body.  The outcome is AUTHENTICATED,
+    never inferred from an empty discovery: ``reconciled`` requires a real writer
+    ``settled``/``already_settled_exact`` outcome or an ACTUAL authenticated
+    publication of the EXACT generation.  A missing N, a missing D, a hidden
+    malformed target, a refused claim, a live lease, a discovery failure or any
+    other refusal returns ``settlement_refused`` with the prior residue and zero
+    queue calls, and never an ordinary fallback.
 
     Returns one of the bounded ``POST_FINAL_*`` status strings.
     """
@@ -2847,6 +2856,14 @@ def reconcile_authority_policy_v2_post_final(
         logger.exception(
             "post-final %s: continuation receipt settlement failed", root_task_id,
         )
+    if not settled:
+        # The transition-only settlement reader above requires N ``needed``; a
+        # generation already ADMITTED (or admitted + settled) by a real consumer
+        # is beyond that reader, so complete/authenticate its exact R4 step6
+        # bookkeeping through the EXISTING admission-settlement writer.
+        settled = _settle_admitted_generation_bookkeeping(
+            db, root_task_id=root_task_id,
+        )
     queue = getattr(orch, "_queue", None)
     receipts: list[dict] = []
     if queue is not None:
@@ -2854,19 +2871,83 @@ def reconcile_authority_policy_v2_post_final(
             orch, queue, root_task_id=root_task_id, limit=None,
         )
     if not settled and committed_receipt:
-        # The exact receipt is already durably ``callback_consumed``.  Its
-        # read-only re-verification through the settlement writer requires N
-        # ``needed``, which the publisher may have legitimately advanced; the
-        # publisher's OWN settlement proof re-authenticated the complete
-        # settlement evidence.  Reconcile when nothing was refused: a refused
-        # claim (corrupt/conflicting/missing proof, live lease, stale token) or a
-        # discovery failure is reported as a refusal, never as settled.
-        refused = any(
-            isinstance(receipt, dict) and receipt.get("status") != "published"
+        # The exact receipt is already durably ``callback_consumed`` but the
+        # transition-only settlement reader could not re-authenticate it (the
+        # publisher legitimately advanced N past ``needed``).  The ONLY
+        # affirmative proof in that case is an ACTUAL authenticated publication
+        # of the EXACT generation: the publisher's own claim re-authenticated the
+        # complete settlement evidence.  Empty discovery, a discovery failure, a
+        # live lease, a hidden malformed target or any other refusal is NEVER
+        # settlement authentication.
+        settled = any(
+            isinstance(receipt, dict)
+            and receipt.get("status") in ("published", "published_exact")
             for receipt in receipts
         )
-        settled = not refused
     return POST_FINAL_RECONCILED if settled else POST_FINAL_SETTLEMENT_REFUSED
+
+
+def _settle_admitted_generation_bookkeeping(db, *, root_task_id: str) -> bool:
+    """Complete exact admitted/settled generation bookkeeping (C3d4b).
+
+    Reached only when the transition-only receipt settlement reader could not
+    re-authenticate an already-``callback_consumed`` receipt (or an ordinary
+    completion) because the real consumer advanced the generation past
+    ``needed``.  It reads the immutable generation token G and its reserved
+    session from DURABLE rows -- never a caller assertion, the latest result or
+    the current session -- and calls the EXISTING admission-settlement writer,
+    which independently authenticates the complete post-final/admission/
+    publication/settlement evidence.  A missing/conflicting/corrupt admission
+    therefore refuses read-only.  This NEVER republishes or reclaims an admitted
+    generation, never performs a second generation admission and never grants
+    launch authority: the reserved owner token stays process-local and is not
+    reconstructed from durable UUIDs.
+    """
+    try:
+        dispatch = db.get_authority_policy_v2_root_dispatch(root_task_id)
+    except Exception:
+        logger.exception("post-final %s: root dispatch read failed", root_task_id)
+        return False
+    if dispatch is None or getattr(dispatch, "state", None) != "admitted":
+        return False
+    generation_id = getattr(dispatch, "generation_id", None)
+    if not isinstance(generation_id, str) or not generation_id:
+        return False
+    try:
+        notification = db.get_authority_policy_v2_recovery_notification(
+            generation_id
+        )
+    except Exception:
+        logger.exception(
+            "post-final %s: admitted generation read failed", root_task_id,
+        )
+        return False
+    if (
+        notification is None
+        or notification.root_task_id != root_task_id
+        or notification.state not in ("admitted", "settled")
+    ):
+        return False
+    next_session_id = getattr(notification, "next_session_id", None)
+    if not isinstance(next_session_id, str) or not next_session_id:
+        return False
+    try:
+        settlement = db.settle_v2_continuation_generation_admission(
+            root_task_id=root_task_id,
+            manager_agent=notification.manager_agent,
+            manager_session_id=notification.manager_session_id,
+            result_id=notification.result_id,
+            generation_id=generation_id,
+            next_session_id=next_session_id,
+        )
+    except Exception:
+        logger.exception(
+            "post-final %s: admitted generation settlement failed", root_task_id,
+        )
+        return False
+    return getattr(settlement, "status", None) in (
+        "settled", "already_settled_exact",
+    )
 
 
 # Closed bounded outcomes of the common DB-aware enqueue entry (THR-229 C3d4a).

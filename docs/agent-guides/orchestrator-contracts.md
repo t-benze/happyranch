@@ -1197,6 +1197,34 @@ authority hook, refusal/reaper orchestration and the editable-pair
 editor/browser path remain LATER units; the hook stays fail-closed/DARK and the
 dual-text feature remains unaccepted.
 
+C3d4b correction (same unmerged draft PR). The post-final outcome is
+AUTHENTICATED, never inferred from the absence of a refusal. The earlier helper
+treated an already-`callback_consumed` receipt as reconciled whenever the
+publisher produced no refusal (`settled = not refused`), so a deleted
+notification (N), a deleted root-dispatch pointer (D) or a deleted
+`generation_claimed` claim audit — each of which makes discovery legitimately
+empty — was silently reported as a successful reconciliation. Reconciliation now
+returns `reconciled` ONLY on a real writer outcome (`settled` /
+`already_settled_exact` from the EXISTING
+`settle_authority_policy_v2_continuation_receipt` /
+`settle_v2_continuation_generation_admission` writers) or on an ACTUAL
+authenticated publication of the EXACT generation (the publisher's own claim
+re-authenticates the complete settlement evidence). An empty discovery, a
+`discovery_failed`, a hidden malformed target, a refusal and a live lease are all
+`settlement_refused` with zero queue calls and byte-unchanged durable residue; a
+missing N, missing D or corrupt claimed/settled generation therefore refuses
+instead of reconciling, and discovery remains discovery. An authentic generation
+already ADMITTED by a real consumer (N `admitted`, D `admitted(G)`) is completed
+through the EXISTING `Database.settle_v2_continuation_generation_admission`
+writer using the immutable G and reserved session derived from durable rows, so a
+reopened owner finishes the exact R4 step6 `notification_settled` bookkeeping
+WITHOUT republishing or reclaiming the admitted generation, performing a second
+admission, regressing task status/session/step or gaining launch authority; a
+corrupt admitted/settled generation refuses unchanged. Actual success where the
+exact settlement committed but the external queue failed is preserved (the
+writer outcome is already `settled`/`already_settled_exact`), and is now
+distinguished from settlement that was never authenticated.
+
 `tests/test_authority_v2_post_final_reconciliation.py` drives the REAL
 `_consume_accepted_completion_recovery` and `_sweep_on_startup` callers across
 accepted/already-consumed/ordinary settlement, missing/conflicting-proof
