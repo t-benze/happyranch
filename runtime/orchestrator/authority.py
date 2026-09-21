@@ -2820,7 +2820,14 @@ def reconcile_authority_policy_v2_post_final(
 
     Publication runs whether or not a Q transition happened, so a lost
     in-memory queue after a committed ``published``, an old-boot ``publishing``
-    lease and an already-consumed receipt are all rediscovered.  It never
+    lease and an already-consumed receipt are all rediscovered.  Receipt
+    discovery is converged on the exact immutable E/R/session identity above and
+    the SAME potentially-related classification the ordinary settlement branch
+    uses: an unrelated ESTABLISHED TERMINAL historical receipt neither supplies
+    current authority nor blocks a healthy current accepted/consumed Q or genuine
+    ordinary evidence, while a related (partial/malformed/nonterminal/
+    unknown-state) or second potentially-related receipt still refuses
+    read-only.  It never
     evaluates, remints, spends, launches, mutates the task outside the writers
     above, or runs the ordinary decision body.  The outcome is AUTHENTICATED,
     never inferred from an empty discovery: ``reconciled`` requires a real writer
@@ -2850,6 +2857,8 @@ def reconcile_authority_policy_v2_post_final(
     try:
         identity = db.get_authority_policy_v2_settlement_receipt_identity(
             root_task_id=root_task_id, manager_agent=envelope.manager_agent,
+            manager_session_id=envelope.manager_session_id,
+            result_id=envelope.result_id,
         )
     except Exception:
         logger.exception(
@@ -2870,10 +2879,12 @@ def reconcile_authority_policy_v2_post_final(
                 result_id=envelope.result_id,
             )
         elif identity.get("conflict"):
-            # More than one receipt: never guess which is authoritative and never
-            # let one matching row settle behind a conflicting sibling.  Refuse
-            # read-only with the prior residue; the publisher independently
-            # refuses on the same conflicting proof, so no queue call happens.
+            # The receipt set cannot be reduced to exactly one receipt that IS the
+            # exact current causal recovery identity: never guess which is
+            # authoritative and never let one matching row settle behind a
+            # conflicting sibling.  Refuse read-only with the prior residue; the
+            # publisher independently refuses on the same conflicting proof, so
+            # no queue call happens.
             outcome = None
         else:
             outcome = db.settle_authority_policy_v2_continuation_receipt(

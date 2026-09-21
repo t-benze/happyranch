@@ -1174,7 +1174,9 @@ ACTUAL recovery and startup seams.
 `runtime.orchestrator.authority.reconcile_authority_policy_v2_post_final(orch,
 *, root_task_id)` derives the immutable finalized envelope (E) and, through the
 new read-only
-`Database.get_authority_policy_v2_settlement_receipt_identity`, the exact real
+`Database.get_authority_policy_v2_settlement_receipt_identity` (converged on the
+exact immutable E/R/session identity by the C3d4b discovery correction below),
+the exact real
 recovery receipt Q, then settles through the EXISTING public
 `settle_authority_policy_v2_continuation_receipt` writer (genuine recovery when
 an exact Q exists, the ordinary branch requiring real completion evidence
@@ -1265,6 +1267,59 @@ file (with `bind_authority_v2_owner`'s server-owned permission-digest binding)
 rediscovers a lost in-memory queue; and seeds 34 genuinely finalized roots so the
 real startup publisher delivers every eligible root past the first 32 while an
 early same-boot live lease is refused.
+
+C3d4b discovery correction (same unmerged draft PR).
+`Database.get_authority_policy_v2_settlement_receipt_identity` no longer treats
+`len(receipts) > 1` as a blanket conflict before it classifies causal
+relatedness. Given the caller's exact immutable envelope identity
+(`manager_session_id` / `result_id`), it reuses the SAME potentially-related
+classification as the ordinary settlement branch (`_v2_receipt_blocks_ordinary`):
+exactly one potentially-related receipt that IS the exact current recovery
+identity (`recovery_session_id`/`accepted_result_session_id` equal the current
+manager session and `accepted_result_id` equals the current result) is returned;
+zero potentially-related receipts means a genuine unrelated ESTABLISHED TERMINAL
+historical receipt, which is neither authority nor a veto, so the ordinary branch
+proceeds; and any other shape — a second potentially-related receipt, or one
+related partial/malformed/nonterminal/unknown-state receipt that is not the exact
+current recovery identity — is a bounded conflict. An unrelated established
+terminal historical Q therefore no longer blocks a healthy current
+`callback_accepted`/`callback_consumed` Q or genuine ordinary evidence, while a
+related or conflicting Q can never disappear behind an unrelated sibling, a
+session/result filter or the ordinary branch. The reader stays read-only (it
+performs no transition and grants no authority) and the public settlement writer
+still independently re-reads and authenticates the complete evidence; no new
+evaluator/authenticator, table, column or dependency is introduced.
+`runtime/orchestrator/authority_policy_store.get_v2_settlement_receipt_identity`
+and `reconcile_authority_policy_v2_post_final` thread the exact identity through
+unchanged. `tests/test_authority_v2_post_final_reconciliation.py` proves the
+healthy current accepted and consumed Q plus both synthetic and genuinely
+public-produced historical history (`_drive_realistic_terminal_history`), the
+ordinary-completion-plus-history control, the genuine-current-Q-beside-ordinary
+case and the related/partial/malformed/nonterminal conflict refusals, all at the
+real recovery and startup callers.
+
+C3d4b caller/reopen completion (same unmerged draft PR). The same test file now
+drives the receipt-settlement, publication-claim, raw-put, publication-
+acknowledgement and generation-admission-settlement failures through the ACTUAL
+`_consume_accepted_completion_recovery`, `_publish_v2_generations_on_startup` and
+`_sweep_on_startup` callers (the direct-publisher analogues remain labelled
+publisher-unit tests), asserting each injection fired, counting RAW queue attempts
+separately from ACCEPTED enqueues, and covering the new branch where a raw put
+fails AND the failure-bookkeeping write raises (the prior `publishing` claim/lease
+stays retained and the pass still publishes every later eligible root). It
+extends the genuine reopen proof to admitted-but-unsettled settlement and settled
+read-only replay over a NEW `Database` AND real `OrgState` on the same persisted
+file (server-owned boot + permission binding), plus a corrupt-evidence refusal
+with preserved residue; adds an actual old-A late receipt/admission bookkeeping
+replay while authentic public-produced B is current (returned read-only
+`identity_mismatch`, with B, the task/session/step and all retained A evidence
+byte-identical) before B progresses on its own path; and runs the production
+startup entry over a real `OrgState` with >32 eligible finalized roots, an early
+authentic live lease, exact per-root generation isolation (per-root put counts,
+not set size) and a real ordinary-root control. The `limit=None` plumbing test
+stays a plumbing test. Genuine recovered subprocess CLI Part C and multi-org
+`DaemonState` Part D remain the following serial work; the feature is not
+complete and the dual-text feature remains unaccepted.
 
 ## Inline Delegation Chains
 

@@ -71,8 +71,10 @@ from tests.test_authority_v2_finalization_settlement import (
     _admitted,
     _counts,
     _drive,
+    _drive_realistic_terminal_history,
     _finalize,
     _insert_ordinary_completion,
+    _insert_q,
     _q,
     _seed_q,
     _settle,
@@ -851,7 +853,9 @@ def test_failed_claim_makes_zero_queue_attempts_and_keeps_residue(
     Injected at the REAL ``claim_authority_policy_v2_notification_publication``
     coupling on a healthy settled root: the caller converts it into a bounded
     refusal receipt, the exact generation token is untouched and the dispatch
-    pointer stays ``pending``.  (Synthetic store-exception caller-unit evidence.)
+    pointer stays ``pending``.  This is a DIRECT-PUBLISHER unit test (synthetic
+    store-exception evidence); the production-startup-entry variant is
+    ``test_startup_caller_claim_failure_makes_zero_queue_attempts``.
     """
     store, row, _attempt, outcome = _finalized(tmp_path)
     db = store._db
@@ -896,20 +900,24 @@ def test_acknowledgement_failure_preserves_recoverable_publication_evidence(
     store, _row, _attempt, outcome = _finalized(tmp_path)
     db = store._db
     real_ack = db.acknowledge_authority_policy_v2_notification_publication
+    calls = {"n": 0}
 
     def _boom(**kwargs):
+        calls["n"] += 1
         raise RuntimeError("injected acknowledgement failure")
 
     monkeypatch.setattr(
         db, "acknowledge_authority_policy_v2_notification_publication", _boom,
     )
-    queue = _RecordingQueue()
+    queue = _AttemptRecordingQueue()
     reconcile_authority_policy_v2_post_final(
         _orch(store, queue), root_task_id=TASK_ID,
     )
 
-    # The raw tagged put happened exactly once; the claim is retained and
-    # reclaimable, so nothing is lost and no second admission is conferred.
+    assert calls["n"] == 1  # the intended injection fired at the real seam
+    # An acknowledgement exception FOLLOWS a legitimate tagged put: exactly one
+    # raw attempt and exactly one accepted enqueue (NOT zero queue attempts).
+    assert queue.attempts == 1
     assert queue.items == [(
         SLUG, TASK_ID,
         {"authority_v2_generation": outcome.notification_id, "publication_attempt": 1},
@@ -941,7 +949,9 @@ def test_startup_publication_continues_after_a_raised_target_failure(
     Regression for the demonstrated propagation defect: the per-target loop in
     the real publisher previously let a raised claim exception abort the whole
     pass, so every later eligible root was starved on that startup.  The repair
-    records a bounded per-target refusal and continues.
+    records a bounded per-target refusal and continues.  This is a
+    DIRECT-PUBLISHER unit test; the production-startup-entry variant is
+    ``test_startup_caller_bad_early_target_does_not_starve_later_roots``.
     """
     store = _store(tmp_path)
     seeded = {}
@@ -1260,3 +1270,811 @@ def test_reopened_orgstate_over_same_file_republishes_lost_queue(tmp_path):
     assert second.items[0][2]["publication_attempt"] == 2
     assert second.items[0][2]["authority_v2_generation"] == outcome.notification_id
     assert _notification(reopened_store, outcome).state == "published"
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# TASK-8651 — C3d4b Q-discovery causal identity and the remaining Part B
+# caller/reopen/startup assertions.
+#
+# Synthetic event-loss/corruption fixtures below are CALLER-UNIT evidence only
+# (raw deletes, injected store exceptions, SQL-seeded current Q rows).  They are
+# never presented as genuine recovered subprocess CLI shipping.  The broad
+# integration suite is SKIPPED under founder THR-243 seq42, never PASS.
+# ═════════════════════════════════════════════════════════════════════════
+
+
+class _AttemptRecordingQueue:
+    """Counts RAW queue attempts separately from ACCEPTED enqueues.
+
+    ``attempts`` increments on every ``put_nowait`` call; ``items`` records only
+    a completed call.  A failed claim or failed raw put therefore shows
+    ``attempts == 1 and items == []``, while an acknowledgement failure after a
+    legitimate tagged put shows ``attempts == 1 and items == [the tagged put]``.
+    ``fail_for`` fails the raw put only for the named roots, so anti-starvation
+    can be driven through the real startup caller.
+    """
+
+    def __init__(self, *, fail_put: bool = False, fail_for=()):
+        self.attempts = 0
+        self.items: list[tuple] = []
+        self.fail_put = fail_put
+        self.fail_for = set(fail_for)
+
+    def put_nowait(self, slug, task_id, *, metadata=None):
+        self.attempts += 1
+        if self.fail_put or task_id in self.fail_for:
+            raise RuntimeError("injected raw queue put failure")
+        self.items.append((slug, task_id, metadata))
+
+
+def _receipt_row(store, recovery_session):
+    row = store._db._conn.execute(
+        "SELECT * FROM task_completion_recoveries WHERE recovery_session_id=?",
+        (recovery_session,),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def _startup_publish(store, queue):
+    """Run the PRODUCTION per-org startup publication entry for ``store``."""
+    from runtime.daemon.__main__ import _publish_v2_generations_on_startup
+
+    org = types.SimpleNamespace(
+        slug=SLUG, orchestrator=_orch(store, queue), orchestrator_present=True,
+    )
+    _publish_v2_generations_on_startup(org, queue)
+
+
+# ── requirement 1: converged Q discovery on full causal identity ─────────
+
+
+def test_accepted_current_q_ignores_unrelated_terminal_history(tmp_path):
+    """A healthy current accepted Q settles despite unrelated terminal history.
+
+    Regression for the manager step19 defect: the read-only Q discovery treated
+    ``len(receipts) > 1`` as a blanket conflict BEFORE classifying causal
+    relatedness, so an unrelated established terminal historical receipt refused
+    a perfectly healthy current ``callback_accepted`` Q with zero queue calls.
+    The current accepted Q here is synthetic caller-unit setup, NOT recovered
+    subprocess shipping.
+    """
+    store, row, _attempt, outcome = _accepted_finalized(tmp_path)
+    _insert_q(
+        store, recovery_session="sess-historical",
+        origin_session="sess-history-origin",
+        accepted_result_id=row["id"] + 1000,
+        accepted_result_session="sess-historical",
+    )
+    history_before = _receipt_row(store, "sess-historical")
+    queue = _RecordingQueue()
+
+    status = reconcile_authority_policy_v2_post_final(
+        _orch(store, queue), root_task_id=TASK_ID,
+    )
+
+    assert status == POST_FINAL_RECONCILED
+    assert _q(store)["state"] == "callback_consumed"
+    assert _notification(store, outcome).state == "published"
+    assert queue.items == [(
+        SLUG, TASK_ID,
+        {"authority_v2_generation": outcome.notification_id, "publication_attempt": 1},
+    )]
+    # The unrelated historical receipt is byte-for-byte unchanged.
+    assert _receipt_row(store, "sess-historical") == history_before
+
+
+def test_consumed_current_q_ignores_unrelated_terminal_history(tmp_path):
+    """An already consumed current Q republishes read-only beside history."""
+    store, row, _attempt, outcome = _finalized_recovery(tmp_path)
+    _insert_q(
+        store, recovery_session="sess-historical",
+        origin_session="sess-history-origin",
+        accepted_result_id=row["id"] + 1000,
+        accepted_result_session="sess-historical",
+    )
+    current_before = dict(_q(store))
+    history_before = _receipt_row(store, "sess-historical")
+    queue = _RecordingQueue()
+
+    status = reconcile_authority_policy_v2_post_final(
+        _orch(store, queue), root_task_id=TASK_ID,
+    )
+
+    assert status == POST_FINAL_RECONCILED
+    assert dict(_q(store)) == current_before  # no second transition
+    assert _notification(store, outcome).state == "published"
+    assert [item[2]["authority_v2_generation"] for item in queue.items] == [
+        outcome.notification_id
+    ]
+    assert _receipt_row(store, "sess-historical") == history_before
+
+
+def test_accepted_current_q_ignores_public_produced_terminal_history(tmp_path):
+    """The same green path over a GENUINE public historical recovery chronology.
+
+    ``_drive_realistic_terminal_history`` produces the historical terminal Q
+    through the real public claim -> binding -> callback admission -> consumption
+    seams (never a SQL-inserted fixture); the current result is finalized with
+    its own accepted Q and driven through the ACTUAL accepted-completion-recovery
+    caller (``run_step._consume_accepted_completion_recovery``).
+    """
+    store, row, attempt, historical = _drive_realistic_terminal_history(tmp_path)
+    _drive(store, row, attempt, "consumed_audited")
+    outcome = _finalize(store, row, attempt)
+    assert outcome.status == "continued", outcome
+    _seed_q(
+        store, row["id"], state="callback_accepted",
+        origin_session="sess-current-origin",
+    )
+    store.bind_v2_process_boot_id(BOOT_A)
+    assert historical["id"] != row["id"]
+    history_before = _receipt_row(store, "sess-hist-recovery")
+    assert history_before is not None and history_before["state"] == "callback_consumed"
+    queue = _RecordingQueue()
+
+    _consume_accepted_completion_recovery(
+        _orch(store, queue), TASK_ID, _report(row),
+        agent=MANAGER, session_id=SESSION_ID, result_row_id=row["id"],
+    )
+
+    current = store._db._conn.execute(
+        "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=? "
+        "AND recovery_session_id=?",
+        (TASK_ID, MANAGER, SESSION_ID),
+    ).fetchone()
+    assert current is not None and current["state"] == "callback_consumed"
+    assert _notification(store, outcome).state == "published"
+    assert queue.items == [(
+        SLUG, TASK_ID,
+        {"authority_v2_generation": outcome.notification_id, "publication_attempt": 1},
+    )]
+    assert _receipt_row(store, "sess-hist-recovery") == history_before
+
+
+def test_ordinary_completion_ignores_unrelated_terminal_history(tmp_path):
+    """Genuine ordinary evidence is not blocked by unrelated terminal history."""
+    store, row, _attempt, outcome = _finalized(tmp_path)
+    _insert_q(
+        store, recovery_session="sess-historical",
+        origin_session="sess-history-origin",
+        accepted_result_id=row["id"] + 1000,
+        accepted_result_session="sess-historical",
+    )
+    history_before = _receipt_row(store, "sess-historical")
+    queue = _RecordingQueue()
+
+    status = reconcile_authority_policy_v2_post_final(
+        _orch(store, queue), root_task_id=TASK_ID,
+    )
+
+    assert status == POST_FINAL_RECONCILED
+    assert _notification(store, outcome).state == "published"
+    assert [item[2]["authority_v2_generation"] for item in queue.items] == [
+        outcome.notification_id
+    ]
+    # No recovery receipt was invented, transitioned or rewritten.
+    assert _receipt_row(store, SESSION_ID) is None
+    assert _receipt_row(store, "sess-historical") == history_before
+
+
+def test_current_q_alongside_ordinary_evidence_settles_recovery(tmp_path):
+    """A genuine current Q wins over coexisting ordinary completion evidence."""
+    store, row, _attempt, outcome = _accepted_finalized(tmp_path)
+    _insert_ordinary_completion(store, row["id"])
+    ordinary_before = _receipt_row(store, SESSION_ID)
+    queue = _RecordingQueue()
+
+    status = reconcile_authority_policy_v2_post_final(
+        _orch(store, queue), root_task_id=TASK_ID,
+    )
+
+    assert status == POST_FINAL_RECONCILED
+    # The exact recovery branch consumed the Q exactly once and published.
+    assert _q(store)["state"] == "callback_consumed"
+    assert _notification(store, outcome).state == "published"
+    assert [item[2]["authority_v2_generation"] for item in queue.items] == [
+        outcome.notification_id
+    ]
+    assert ordinary_before is not None
+
+
+@pytest.mark.parametrize(
+    "mode,state,settled",
+    [
+        # exact current recovery session but a FOREIGN accepted result
+        ("recovery_match_result_foreign", "callback_consumed", True),
+        # exact current accepted result but a FOREIGN recovery session
+        ("result_match_recovery_foreign", "callback_consumed", True),
+        # malformed/opaque accepted-result identity
+        ("malformed_result", "callback_consumed", True),
+        # nonterminal state can never be established as unrelated
+        ("nonterminal", "claimed", False),
+        # unknown state fails closed
+        ("unknown_state", "unknown_state", False),
+    ],
+)
+def test_related_q_conflict_refuses_read_only(tmp_path, mode, state, settled):
+    """A related/partial/malformed/nonterminal Q never disappears.
+
+    It must refuse read-only with zero queue calls and no ordinary fallback, even
+    beside otherwise valid ordinary completion evidence.
+    """
+    store, row, _attempt, outcome = _finalized(tmp_path)
+    if mode == "recovery_match_result_foreign":
+        _insert_q(
+            store, recovery_session=SESSION_ID, state=state,
+            accepted_result_id=row["id"] + 1000,
+            accepted_result_session=SESSION_ID, settled=settled,
+        )
+    elif mode == "result_match_recovery_foreign":
+        _insert_q(
+            store, recovery_session="sess-foreign", state=state,
+            accepted_result_id=row["id"],
+            accepted_result_session="sess-foreign", settled=settled,
+        )
+    elif mode == "malformed_result":
+        _insert_q(
+            store, recovery_session="sess-foreign", state=state,
+            accepted_result_id=str(row["id"]),
+            accepted_result_session="sess-foreign", settled=settled,
+        )
+    else:
+        _insert_q(
+            store, recovery_session="sess-foreign", state=state,
+            accepted_result_id=row["id"] + 1000,
+            accepted_result_session="sess-foreign", settled=settled,
+        )
+    queue = _RecordingQueue()
+    before = _dump(store)
+
+    status = reconcile_authority_policy_v2_post_final(
+        _orch(store, queue), root_task_id=TASK_ID,
+    )
+
+    assert status == POST_FINAL_SETTLEMENT_REFUSED
+    assert queue.items == []
+    assert _notification(store, outcome).state == "needed"
+    assert _dump(store) == before
+
+
+# ── requirement 2: caller fault matrix at the REAL callers ───────────────
+
+
+def test_consume_caller_receipt_settlement_failure_is_a_refusal(
+    tmp_path, monkeypatch,
+):
+    """The real accepted-completion caller converts a raised settlement fault.
+
+    Injected at the REAL ``settle_authority_policy_v2_continuation_receipt``
+    coupling on a healthy accepted Q.  The injection must actually fire, the
+    caller must return (not raise), and a failed receipt settlement makes ZERO
+    raw queue attempts.  Removing the injection yields exactly one settlement +
+    publication.
+    """
+    store, row, _attempt, outcome = _accepted_finalized(tmp_path)
+    db = store._db
+    queue = _AttemptRecordingQueue()
+    before = _dump(store)
+    calls = {"n": 0}
+    real = db.settle_authority_policy_v2_continuation_receipt
+
+    def _boom(**kwargs):
+        calls["n"] += 1
+        raise RuntimeError("injected receipt settlement failure")
+
+    monkeypatch.setattr(
+        db, "settle_authority_policy_v2_continuation_receipt", _boom,
+    )
+
+    _causal_recovery_via_caller(store, queue, row)
+
+    assert calls["n"] == 1  # the intended injection fired at the real seam
+    assert queue.attempts == 0 and queue.items == []
+    assert _q(store)["state"] == "callback_accepted"
+    assert _notification(store, outcome).state == "needed"
+    assert _dump(store) == before
+
+    monkeypatch.setattr(
+        db, "settle_authority_policy_v2_continuation_receipt", real,
+    )
+    retry = _AttemptRecordingQueue()
+    _causal_recovery_via_caller(store, retry, row)
+    assert retry.attempts == 1 and len(retry.items) == 1
+    assert _q(store)["state"] == "callback_consumed"
+    assert _notification(store, outcome).state == "published"
+
+
+def test_consume_caller_admission_settlement_failure_is_a_refusal(
+    tmp_path, monkeypatch,
+):
+    """The real caller converts a raised admission-settlement fault.
+
+    Injected at the REAL ``settle_v2_continuation_generation_admission`` coupling
+    after an authentic generation admission.  The injection must fire, the exact
+    admitted residue is preserved, and there are ZERO raw queue attempts (a
+    refused admitted bookkeeping step never republishes).
+    """
+    store, row, _attempt, outcome = _finalized_recovery(tmp_path)
+    db = store._db
+    first = _RecordingQueue()
+    _causal_recovery_via_caller(store, first, row)
+    assert _admit(store, outcome).status == "claimed"
+    queue = _AttemptRecordingQueue()
+    before = _dump(store)
+    calls = {"n": 0}
+
+    def _boom(**kwargs):
+        calls["n"] += 1
+        raise RuntimeError("injected admission-settlement failure")
+
+    monkeypatch.setattr(
+        db, "settle_v2_continuation_generation_admission", _boom,
+    )
+
+    _causal_recovery_via_caller(store, queue, row)
+
+    assert calls["n"] == 1
+    assert queue.attempts == 0 and queue.items == []
+    assert _notification(store, outcome).state == "admitted"
+    assert _dump(store) == before
+
+
+def test_startup_caller_claim_failure_makes_zero_queue_attempts(
+    tmp_path, monkeypatch,
+):
+    """A raised claim through the STARTUP caller never reaches the raw put.
+
+    The direct-publisher analogue remains a publisher-unit test; this one drives
+    the production per-org startup entry (``_publish_v2_generations_on_startup``).
+    """
+    store, _row, _attempt, outcome = _finalized(tmp_path)
+    db = store._db
+    queue = _AttemptRecordingQueue()
+    before = _dump(store)
+    calls = {"n": 0}
+
+    def _boom(**kwargs):
+        calls["n"] += 1
+        raise RuntimeError("injected publication-claim failure")
+
+    monkeypatch.setattr(
+        db, "claim_authority_policy_v2_notification_publication", _boom,
+    )
+
+    _startup_publish(store, queue)
+
+    assert calls["n"] == 1
+    assert queue.attempts == 0 and queue.items == []
+    assert _notification(store, outcome).state == "needed"
+    assert _dispatch(store).state == "pending"
+    assert _dump(store) == before
+
+
+def test_startup_caller_raw_put_failure_keeps_reclaimable_residue(tmp_path):
+    """A failed raw put keeps the audited claim reclaimable and retries once."""
+    store, _row, _attempt, outcome = _finalized_recovery(tmp_path)
+    queue = _AttemptRecordingQueue(fail_put=True)
+
+    _startup_publish(store, queue)
+
+    assert queue.attempts == 1 and queue.items == []
+    notification = _notification(store, outcome)
+    assert notification.state == "publishing"
+    assert notification.publisher_boot_id is None
+    assert notification.lease_deadline is None
+    assert len(_stage_events(store, "publish_failed")) == 1
+    # The independently committed settlement survives the raw put failure.
+    assert _q(store)["state"] == "callback_consumed"
+
+    # The injection is removed for the REAL permitted retry: a restarted boot
+    # reclaims and publishes exactly once.
+    store.bind_v2_process_boot_id(BOOT_B)
+    retry = _AttemptRecordingQueue()
+    _startup_publish(store, retry)
+    assert retry.attempts == 1 and len(retry.items) == 1
+    assert retry.items[0][2]["publication_attempt"] == 2
+    assert _notification(store, outcome).state == "published"
+
+
+def test_startup_caller_raw_put_and_bookkeeping_failure_is_bounded(
+    tmp_path, monkeypatch,
+):
+    """NEW branch: a raw put failure AND a raising failure-bookkeeping write.
+
+    The publisher must still return a bounded ``publish_failed`` receipt for the
+    bad target, retain the prior ``publishing`` claim/lease (safely reclaimable)
+    and let BOTH later eligible roots publish.  This is anti-starvation through
+    the actual startup caller, driven by per-root raw-put failure.
+    """
+    store = _store(tmp_path)
+    bad_row, bad_outcome = _settled_root(
+        store, task_id="TASK-BAD", session_id="sess-bad", activate=True,
+    )
+    good = [
+        _settled_root(
+            store, task_id=f"TASK-GOOD{i}", session_id=f"sess-good{i}",
+            activate=False,
+        )
+        for i in range(2)
+    ]
+    db = store._db
+    calls = {"n": 0}
+
+    def _boom(**kwargs):
+        calls["n"] += 1
+        raise RuntimeError("injected failure-bookkeeping failure")
+
+    monkeypatch.setattr(
+        db, "record_authority_policy_v2_notification_publication_failure", _boom,
+    )
+    queue = _AttemptRecordingQueue(fail_for={"TASK-BAD"})
+
+    _startup_publish(store, queue)
+
+    # The bad target attempted its raw put and its bookkeeping write; the bad
+    # write is contained and the pass continues.
+    assert queue.attempts == 3
+    assert calls["n"] == 1
+    published = {item[1]: item[2] for item in queue.items}
+    assert set(published) == {"TASK-GOOD0", "TASK-GOOD1"}
+    assert queue.attempts - len(queue.items) == 1  # exactly the bad target failed
+    assert published["TASK-GOOD0"]["authority_v2_generation"] == (
+        good[0][1].notification_id
+    )
+    assert published["TASK-GOOD1"]["authority_v2_generation"] == (
+        good[1][1].notification_id
+    )
+    # The failed-bookkeeping target retains its exact prior claim/lease, and the
+    # refusal is never authentication or permission.
+    retained = _notification(store, bad_outcome)
+    assert retained.state == "publishing"
+    assert retained.publisher_boot_id == BOOT_A
+    assert store.get_v2_root_dispatch("TASK-BAD").state == "pending"
+    assert bad_row["id"] > 0
+
+
+def test_startup_caller_bad_early_target_does_not_starve_later_roots(
+    tmp_path, monkeypatch,
+):
+    """A raised claim on the EARLY startup target never aborts the pass.
+
+    Through the actual startup caller: the bad early target is a bounded refusal
+    and every later eligible root still receives its own valid tagged token.
+    """
+    store = _store(tmp_path)
+    bad_row, bad_outcome = _settled_root(
+        store, task_id="TASK-BAD", session_id="sess-bad", activate=True,
+    )
+    good = [
+        _settled_root(
+            store, task_id=f"TASK-GOOD{i}", session_id=f"sess-good{i}",
+            activate=False,
+        )
+        for i in range(2)
+    ]
+    db = store._db
+    real_claim = db.claim_authority_policy_v2_notification_publication
+    calls = {"n": 0}
+
+    def _boom(**kwargs):
+        calls["n"] += 1
+        if kwargs.get("root_task_id") == "TASK-BAD":
+            raise RuntimeError("injected claim failure for the bad target")
+        return real_claim(**kwargs)
+
+    monkeypatch.setattr(
+        db, "claim_authority_policy_v2_notification_publication", _boom,
+    )
+    queue = _AttemptRecordingQueue()
+
+    _startup_publish(store, queue)
+
+    assert calls["n"] == 3  # the bad target did not abort the pass
+    assert queue.attempts == 2 and len(queue.items) == 2
+    published = {item[1]: item[2] for item in queue.items}
+    assert set(published) == {"TASK-GOOD0", "TASK-GOOD1"}
+    assert published["TASK-GOOD0"]["authority_v2_generation"] == (
+        good[0][1].notification_id
+    )
+    assert published["TASK-GOOD1"]["authority_v2_generation"] == (
+        good[1][1].notification_id
+    )
+    assert _notification(store, bad_outcome).state == "needed"
+    assert store.get_v2_root_dispatch("TASK-BAD").state == "pending"
+    assert bad_row["id"] > 0
+
+
+# ── requirement 3: identity/reopen/startup assertions ────────────────────
+
+
+def test_reopened_orgstate_admitted_generation_settles_once(tmp_path):
+    """A genuinely reopened owner settles an admitted G exactly once.
+
+    New ``Database`` AND real ``OrgState`` over the SAME persisted file after the
+    old owner is quiescent: object/connection inequality, retained exact rows,
+    real new boot + permission reader.  The admitted-but-unsettled generation
+    completes its R4 step6 bookkeeping with ZERO republish/reclaim/relaunch and
+    no task/session/step regression.
+    """
+    paths = _make_org_paths(tmp_path)
+    org = _open_org(paths)
+    store = _store_from_db(org.db)
+    _row, outcome = _settled_root(
+        store, task_id=TASK_ID, session_id=SESSION_ID, activate=True,
+        boot=org.authority_v2_origin_boot_id,
+    )
+    first = _RecordingQueue()
+    assert reconcile_authority_policy_v2_post_final(
+        _orch(store, first), root_task_id=TASK_ID,
+    ) == POST_FINAL_RECONCILED
+    assert len(first.items) == 1
+    assert _admit(store, outcome).status == "claimed"
+    assert _notification(store, outcome).state == "admitted"
+    task_before = org.db.get_task(TASK_ID)
+    q_before = dict(_q(store))
+
+    old_db, old_conn = org.db, org.db._conn
+    reopened = _open_org(paths)
+    reopened_db = reopened.db
+    assert reopened_db is not old_db
+    assert reopened_db._conn is not old_conn
+    assert reopened_db.db_path == old_db.db_path
+    assert reopened.authority_v2_origin_boot_id != org.authority_v2_origin_boot_id
+    reopened_store = _store_from_db(reopened_db)
+    queue = _RecordingQueue()
+    before = _dump(reopened_store)
+
+    assert reconcile_authority_policy_v2_post_final(
+        _orch(reopened_store, queue), root_task_id=TASK_ID,
+    ) == POST_FINAL_RECONCILED
+
+    assert queue.items == []  # bookkeeping only: no republish/reclaim/relaunch
+    assert _notification(reopened_store, outcome).state == "settled"
+    assert len(_stage_events(reopened_store, "notification_settled")) == 1
+    assert dict(_q(reopened_store)) == q_before  # exact retained Q row
+    task_after = reopened_db.get_task(TASK_ID)
+    assert task_after.status is task_before.status
+    assert task_after.current_session_id == task_before.current_session_id
+    assert task_after.orchestration_step_count == task_before.orchestration_step_count
+    assert reopened_store.get_v2_root_dispatch(TASK_ID).state == "admitted"
+    assert _dump(reopened_store) != before  # exactly the settlement bookkeeping
+
+
+def test_reopened_orgstate_settled_generation_replay_is_read_only(tmp_path):
+    """A settled generation replay on a reopened owner writes nothing."""
+    paths = _make_org_paths(tmp_path)
+    org = _open_org(paths)
+    store = _store_from_db(org.db)
+    _row, outcome = _settled_root(
+        store, task_id=TASK_ID, session_id=SESSION_ID, activate=True,
+        boot=org.authority_v2_origin_boot_id,
+    )
+    first = _RecordingQueue()
+    assert reconcile_authority_policy_v2_post_final(
+        _orch(store, first), root_task_id=TASK_ID,
+    ) == POST_FINAL_RECONCILED
+    assert _admit(store, outcome).status == "claimed"
+    assert _settle_generation(store, outcome).status == "settled"
+
+    reopened = _open_org(paths)
+    reopened_store = _store_from_db(reopened.db)
+    queue = _RecordingQueue()
+    before = _dump(reopened_store)
+
+    assert reconcile_authority_policy_v2_post_final(
+        _orch(reopened_store, queue), root_task_id=TASK_ID,
+    ) == POST_FINAL_RECONCILED
+
+    assert queue.items == []
+    assert _notification(reopened_store, outcome).state == "settled"
+    assert len(_stage_events(reopened_store, "notification_settled")) == 1
+    assert _dump(reopened_store) == before  # read-only replay
+
+
+def test_reopened_orgstate_corrupted_evidence_refuses_with_residue(tmp_path):
+    """Corrupted admitted evidence refuses read-only across a genuine reopen."""
+    paths = _make_org_paths(tmp_path)
+    org = _open_org(paths)
+    store = _store_from_db(org.db)
+    _row, outcome = _settled_root(
+        store, task_id=TASK_ID, session_id=SESSION_ID, activate=True,
+        boot=org.authority_v2_origin_boot_id,
+    )
+    first = _RecordingQueue()
+    assert reconcile_authority_policy_v2_post_final(
+        _orch(store, first), root_task_id=TASK_ID,
+    ) == POST_FINAL_RECONCILED
+    assert _admit(store, outcome).status == "claimed"
+    assert _raw_delete(
+        store,
+        "DELETE FROM audit_log WHERE action=?"
+        " AND json_extract(payload,'$.stage')='generation_claimed'",
+        (AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,),
+    ) == 1
+
+    reopened = _open_org(paths)
+    reopened_store = _store_from_db(reopened.db)
+    queue = _RecordingQueue()
+    before = _dump(reopened_store)
+
+    assert reconcile_authority_policy_v2_post_final(
+        _orch(reopened_store, queue), root_task_id=TASK_ID,
+    ) == POST_FINAL_SETTLEMENT_REFUSED
+
+    assert queue.items == []
+    assert _notification(reopened_store, outcome).state == "admitted"
+    assert _dump(reopened_store) == before  # preserved residue, no repair
+
+
+def test_startup_publication_with_real_orgstate_beyond_32(tmp_path):
+    """The PRODUCTION startup entry over a REAL OrgState covers every root.
+
+    Seeds >32 genuinely finalized+settled roots through the real public stages
+    with a server-owned boot/permission binding, leaves the earliest holding an
+    authentic same-boot live lease (an ineligible early target), adds a real
+    ordinary root control with NO v2 lineage, and counts PER-ROOT puts (a set
+    alone can hide duplicates).  The ``limit=None`` plumbing test stays plumbing.
+    """
+    import collections
+
+    from runtime.daemon.__main__ import _publish_v2_generations_on_startup
+    from runtime.models import TaskRecord
+
+    paths = _make_org_paths(tmp_path)
+    org = _open_org(paths)
+    store = _store_from_db(org.db)
+    boot = org.authority_v2_origin_boot_id
+    total = 34
+    row0, outcome0 = _settled_root(
+        store, task_id="TASK-M00", session_id="sess-m00", activate=True, boot=boot,
+    )
+    warmup = _RecordingQueue()
+    assert reconcile_authority_policy_v2_post_final(
+        _orch(store, warmup), root_task_id="TASK-M00",
+    ) == POST_FINAL_RECONCILED
+    assert len(warmup.items) == 1  # same-boot live lease, publication attempt 1
+    for index in range(1, total):
+        _settled_root(
+            store, task_id=f"TASK-M{index:02d}", session_id=f"sess-m{index:02d}",
+            activate=False, boot=boot,
+        )
+    store._db.insert_task(TaskRecord(
+        id="TASK-ORDINARY", status=TaskStatus.PENDING, assigned_agent=MANAGER,
+        team=TEAM, brief="ordinary control root", orchestration_step_count=0,
+    ))
+    ordinary_before = dict(store._db._conn.execute(
+        "SELECT * FROM tasks WHERE id='TASK-ORDINARY'",
+    ).fetchone())
+
+    queue = _RecordingQueue()
+    _publish_v2_generations_on_startup(org, queue)
+
+    per_root = collections.Counter(item[1] for item in queue.items)
+    assert per_root["TASK-M00"] == 0  # a live lease is never stolen
+    assert "TASK-ORDINARY" not in per_root
+    for index in range(1, total):
+        assert per_root[f"TASK-M{index:02d}"] == 1
+    tokens = [item[2]["authority_v2_generation"] for item in queue.items]
+    assert len(set(tokens)) == total - 1  # exact root/G isolation
+    assert all(item[2]["publication_attempt"] == 1 for item in queue.items)
+    assert dict(store._db._conn.execute(
+        "SELECT * FROM tasks WHERE id='TASK-ORDINARY'",
+    ).fetchone()) == ordinary_before
+    assert _notification(store, outcome0).state == "published"
+    assert row0["id"] > 0
+
+
+def test_current_generation_b_progresses_on_its_own_path(tmp_path):
+    """Old A must not stand in for independently valid current B.
+
+    B is produced through the real public successor lifecycle.  While B is
+    current, an old-A late receipt/admission bookkeeping replay is performed and
+    must be a RETURNED read-only refusal that leaves B, the task/session/step and
+    every retained A row byte-identical; only then does a post-final pass publish
+    B's OWN token (never A's).
+    """
+    from tests.test_authority_v2_decision_dispatch import (
+        _drive_generation_b_pending,
+        _spent_ready_b,
+    )
+    from tests.test_authority_v2_envelope_spend import RESERVED
+
+    store, row_a, outcome_a, r2_row, attempt_b = _spent_ready_b(tmp_path)
+    generation_b = _drive_generation_b_pending(store, r2_row, attempt_b)
+    assert generation_b != outcome_a.notification_id
+    store.bind_v2_process_boot_id(BOOT_A)
+
+    def _one(sql, params):
+        row = store._db._conn.execute(sql, params).fetchone()
+        return dict(row) if row is not None else None
+
+    def _a_evidence():
+        return {
+            "notification": _one(
+                "SELECT * FROM authority_policy_v2_recovery_notifications "
+                "WHERE notification_id=?", (outcome_a.notification_id,),
+            ),
+            "envelope": _one(
+                "SELECT * FROM authority_policy_v2_continue_envelopes "
+                "WHERE envelope_id=?", (outcome_a.envelope_id,),
+            ),
+            "attempt": _one(
+                "SELECT * FROM authority_policy_v2_attempts WHERE result_id=?",
+                (row_a["id"],),
+            ),
+            "result": _one("SELECT * FROM task_results WHERE id=?", (row_a["id"],)),
+        }
+
+    b_notification = store.get_v2_recovery_notification(generation_b)
+    assert b_notification is not None
+    b_envelope = store.get_v2_continue_envelope(b_notification.envelope_id)
+    assert b_envelope is not None
+
+    def _b_evidence():
+        return {
+            "notification": _one(
+                "SELECT * FROM authority_policy_v2_recovery_notifications "
+                "WHERE notification_id=?", (generation_b,),
+            ),
+            "envelope": _one(
+                "SELECT * FROM authority_policy_v2_continue_envelopes "
+                "WHERE envelope_id=?", (b_envelope.envelope_id,),
+            ),
+            "candidate": _one(
+                "SELECT * FROM authority_policy_v2_candidates WHERE candidate_id=?",
+                (b_envelope.candidate_id,),
+            ),
+            "dispatch": _one(
+                "SELECT * FROM authority_policy_v2_root_dispatch WHERE root_task_id=?",
+                (TASK_ID,),
+            ),
+            "task": _one("SELECT * FROM tasks WHERE id=?", (TASK_ID,)),
+            "candidate_audits": [
+                dict(r) for r in store._db._conn.execute(
+                    "SELECT * FROM authority_policy_v2_candidate_audit "
+                    "WHERE candidate_id=? ORDER BY id", (b_envelope.candidate_id,),
+                ).fetchall()
+            ],
+        }
+
+    a_before, b_before = _a_evidence(), _b_evidence()
+    assert a_before["notification"]["state"] == "settled"
+    assert b_before["dispatch"]["state"] == "pending"
+
+    # Actual old-A recovery/late-bookkeeping replay: both durable replays are
+    # RETURNED read-only refusals (`identity_mismatch`), never raised and never a
+    # mutation, because the root pointer legitimately advanced to B.
+    a_receipt = store.settle_v2_continuation_receipt(
+        root_task_id=TASK_ID, manager_agent=MANAGER,
+        manager_session_id=SESSION_ID, result_id=row_a["id"],
+    )
+    assert a_receipt.status == "settlement_pending"
+    assert a_receipt.reason == "identity_mismatch"
+    a_admission = store.settle_v2_continuation_generation_admission(
+        root_task_id=TASK_ID, manager_agent=MANAGER,
+        manager_session_id=SESSION_ID, result_id=row_a["id"],
+        generation_id=outcome_a.notification_id, next_session_id=RESERVED,
+    )
+    assert a_admission.status == "settlement_pending"
+    assert a_admission.reason == "identity_mismatch"
+    assert _a_evidence() == a_before
+    assert _b_evidence() == b_before
+
+    queue = _RecordingQueue()
+    status = reconcile_authority_policy_v2_post_final(
+        _orch(store, queue), root_task_id=TASK_ID,
+    )
+
+    assert status == POST_FINAL_RECONCILED
+    assert [item[2]["authority_v2_generation"] for item in queue.items] == [
+        generation_b
+    ]
+    # B progressed on its own path; A's committed evidence, B's identity and the
+    # task/session/step are all byte-identical.
+    assert _a_evidence() == a_before
+    after = _b_evidence()
+    assert after["task"] == b_before["task"]
+    assert after["dispatch"] == b_before["dispatch"]
+    assert after["candidate"] == b_before["candidate"]
+    assert after["candidate_audits"] == b_before["candidate_audits"]
+    assert after["envelope"] == b_before["envelope"]

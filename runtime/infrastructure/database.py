@@ -11603,16 +11603,43 @@ class Database:
     @_synchronized
     def get_authority_policy_v2_settlement_receipt_identity(
         self, *, root_task_id: str, manager_agent: str,
+        manager_session_id: str | None = None, result_id: int | None = None,
     ) -> dict | None:
         """Return the exact recovery-receipt (Q) identity for a root, or ``None``.
 
-        ``None`` means the root has NO recovery receipt for this manager: the
-        finalized continuation was settled through the genuine ordinary
-        completion-evidence branch.  ``{"conflict": True}`` means more than one
-        receipt exists, which the caller must refuse rather than guess at.
-        Otherwise the bounded exact ``recovery_session_id`` /
-        ``accepted_result_id`` / ``accepted_result_session_id`` / ``state``
-        columns are returned for the settlement writer's recovery branch.
+        ``None`` means the root has NO settlement-relevant recovery receipt for
+        this manager: the finalized continuation was settled through the genuine
+        ordinary completion-evidence branch (an unrelated ESTABLISHED TERMINAL
+        historical receipt is history, not current settlement).  Otherwise the
+        bounded exact ``recovery_session_id`` / ``accepted_result_id`` /
+        ``accepted_result_session_id`` / ``state`` columns are returned for the
+        settlement writer's recovery branch.  ``{"conflict": True}`` means the
+        receipt set cannot be reduced to exactly one receipt that IS the exact
+        current causal recovery identity, which the caller must refuse rather
+        than guess at.
+
+        When the caller supplies the exact expected ``manager_session_id`` /
+        ``result_id`` (the finalized continuation's immutable E/R/session
+        identity), discovery reuses the SAME potentially-related classification
+        as the ordinary settlement branch (``_v2_receipt_blocks_ordinary``):
+
+        * exactly one potentially-related receipt that is the exact current
+          recovery identity (``recovery_session_id`` and
+          ``accepted_result_session_id`` equal the current manager session and
+          ``accepted_result_id`` equal the current result) is returned;
+        * zero potentially-related receipts means a genuine unrelated
+          ESTABLISHED TERMINAL history, which neither supplies current authority
+          nor blocks the ordinary branch, so ``None`` is returned;
+        * any other shape -- a second potentially-related receipt or one related
+          (partial/malformed/nonterminal/unknown-state) receipt that is not the
+          exact current recovery identity -- is a bounded conflict, so a related
+          Q can never disappear behind an unrelated sibling or the ordinary
+          branch.
+
+        Without the expected identity the bounded conservative contract is
+        preserved (exactly one receipt, else conflict).  This is read-only: it
+        performs NO transition and grants NO authority; the public settlement
+        writer independently re-reads and authenticates the complete evidence.
         """
         rows = self._conn.execute(
             "SELECT * FROM task_completion_recoveries "
@@ -11621,9 +11648,32 @@ class Database:
         ).fetchall()
         if not rows:
             return None
-        if len(rows) != 1:
+        if manager_session_id is None or result_id is None:
+            if len(rows) != 1:
+                return {"conflict": True}
+            return self._v2_receipt_identity_of(rows[0])
+        blocking = [
+            receipt for receipt in rows
+            if self._v2_receipt_blocks_ordinary(
+                receipt, result_id=result_id,
+                manager_session_id=manager_session_id,
+            )
+        ]
+        if not blocking:
+            return None
+        exact = [
+            receipt for receipt in blocking
+            if receipt["recovery_session_id"] == manager_session_id
+            and receipt["accepted_result_id"] == result_id
+            and receipt["accepted_result_session_id"] == manager_session_id
+        ]
+        if len(blocking) != 1 or len(exact) != 1:
             return {"conflict": True}
-        row = rows[0]
+        return self._v2_receipt_identity_of(exact[0])
+
+    @staticmethod
+    def _v2_receipt_identity_of(row) -> dict:
+        """Bounded exact recovery-receipt identity columns for one Q row."""
         return {
             "conflict": False,
             "state": row["state"],

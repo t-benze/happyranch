@@ -438,9 +438,11 @@ class AuthorityPolicyStore:
 
     def get_v2_settlement_receipt_identity(
         self, *, root_task_id: str, manager_agent: str,
+        manager_session_id: str | None = None, result_id: int | None = None,
     ) -> dict | None:
         return self._db.get_authority_policy_v2_settlement_receipt_identity(
             root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
     # -- THR-229 checkpoint C3d3a: thin forwarders over the DB-owned read-only
