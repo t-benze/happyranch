@@ -15,14 +15,32 @@
  *      createBrowserRouter -> AppShell -> I18nProvider` startup, proving
  *      `<html lang>` and the first React text agree.
  *
+ * The production-startup path is built with `I18N_BROWSER_EVIDENCE=1`, which
+ * makes `vite.config.ts` inject the test-only `I18nEvidenceConsumer` adjacent
+ * to `<AppRoutes />` inside the real composition (see that config and
+ * `src/test/i18n-evidence-consumer.tsx`). It never rewrites the resolver,
+ * bootstrap snapshot handoff, provider or router, and the transform is a no-op
+ * for every ordinary build. The harness asserts on the consumer text frozen at
+ * the FIRST render/commit, so a later layout/passive effect cannot disguise a
+ * wrong first locale.
+ *
  * Usage (after `npm run build` and `npm run build-storybook`):
  *
  *   node scripts/i18n-browser-evidence.mjs \
  *     --dist ./dist --storybook ./storybook-static \
  *     --out <evidence dir> --head <40-char-sha>
  *
- * Exit 0 only when every assertion passes; writes `<out>/receipt.json` plus
- * SHA-256-bound PNG screenshots.
+ * Negative control (isolated `I18N_BROWSER_EVIDENCE=negative` build):
+ *
+ *   node scripts/i18n-browser-evidence.mjs \
+ *     --negative --dist ./dist/negative-probe \
+ *     --out <evidence dir> --head <40-char-sha>
+ *
+ * Positive mode exits 0 only when every assertion passes. Negative mode is the
+ * deliberate causal control: it records the genuine first-commit acceptance
+ * assertion as FAILED and exits 1 as expected (exit 2 means the negative fixture
+ * itself was broken and the mismatch never occurred). Both write
+ * `<out>/receipt.json` plus SHA-256-bound PNG screenshots.
  */
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -46,6 +64,22 @@ const outDir = resolve(arg('out', join(webRoot, '.i18n-browser-evidence')));
 const head = arg('head', 'unknown');
 const chromeBin = arg('chrome', process.env.CHROME_BIN || 'google-chrome');
 const keepUserDataDir = process.argv.includes('--keep-profile');
+const negative = process.argv.includes('--negative');
+
+const EVIDENCE_ZH_TEXT = '已翻译探针';
+const EVIDENCE_EN_TEXT = 'Translated probe';
+
+/**
+ * The deterministic real-browser language environments. `Emulation.
+ * setLocaleOverride` alone only changes `Intl`; the shipping resolver reads
+ * `navigator.language`/`navigator.languages`, so each page also installs a
+ * document-start fixture that overrides those getters before app modules run
+ * and immediately asserts the actual values.
+ */
+const DEV_ENVIRONMENTS = {
+  zh: { id: 'zh-CN', locale: 'zh-CN', language: 'zh-CN', languages: ['zh-CN', 'zh'] },
+  en: { id: 'en-US', locale: 'en-US', language: 'en-US', languages: ['en-US', 'en'] },
+};
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -296,8 +330,54 @@ try {
 })();
 `;
 
+/**
+ * Document-start fixture: install the real `navigator.language` /
+ * `navigator.languages` inputs BEFORE any app module runs, then immediately
+ * read them back and publish an honest setup record. The harness asserts the
+ * record and fails the run on any mismatch, so a "Chinese environment" case can
+ * never silently run under an English environment again (the exact TASK-8598
+ * gap). This runs before `seedLocaleSource`/`LANG_PROBE` in the same
+ * `Page.addScriptToEvaluateOnNewDocument` payload.
+ */
+function navigatorLocaleSource(env) {
+  return `
+(() => {
+  const expected = ${JSON.stringify({ language: env.language, languages: env.languages })};
+  const failures = [];
+  try {
+    Object.defineProperty(Navigator.prototype, 'language', {
+      configurable: true,
+      get: () => expected.language,
+    });
+  } catch (error) { failures.push('define language: ' + (error && error.message)); }
+  try {
+    Object.defineProperty(Navigator.prototype, 'languages', {
+      configurable: true,
+      get: () => expected.languages.slice(),
+    });
+  } catch (error) { failures.push('define languages: ' + (error && error.message)); }
+  let actualLanguage = null;
+  let actualLanguages = null;
+  try { actualLanguage = navigator.language; } catch (error) { failures.push('read language: ' + (error && error.message)); }
+  try { actualLanguages = Array.isArray(navigator.languages) ? navigator.languages.slice() : null; } catch (error) { failures.push('read languages: ' + (error && error.message)); }
+  const ok =
+    failures.length === 0 &&
+    actualLanguage === expected.language &&
+    Array.isArray(actualLanguages) &&
+    actualLanguages.join(',') === expected.languages.join(',');
+  window.__hrLocaleSetup = {
+    ok,
+    expected,
+    actual: { language: actualLanguage, languages: actualLanguages },
+    failures,
+  };
+})();
+`;
+}
+
 async function main() {
-  for (const dir of [distDir, storybookDir]) {
+  const requiredDirs = negative ? [distDir] : [distDir, storybookDir];
+  for (const dir of requiredDirs) {
     if (!existsSync(dir)) {
       throw new Error(`missing build directory ${dir}; run the web build first`);
     }
@@ -307,6 +387,8 @@ async function main() {
   const assertions = [];
   const screenshots = [];
   const notes = [];
+  const environments = [];
+  let negativeControl = null;
 
   function check(name, actual, expected) {
     const ok = JSON.stringify(actual) === JSON.stringify(expected);
@@ -330,17 +412,23 @@ async function main() {
   }
 
   const appServer = await startServer({ root: distDir, api: true });
-  const storyServer = await startServer({ root: storybookDir, api: false });
-
-  const indexResponse = await fetch(`http://127.0.0.1:${storyServer.port}/index.json`);
-  const indexJson = await indexResponse.json();
-  const storyEntry = Object.values(indexJson.entries || {}).find(
-    (entry) => entry.title === 'Design System/I18n Foundation',
-  );
-  if (!storyEntry) throw new Error('foundation story not found in Storybook index.json');
-  const storyUrl = `http://127.0.0.1:${storyServer.port}/iframe.html?id=${storyEntry.id}&viewMode=story`;
+  let storyServer = null;
+  let storyUrl = null;
+  let storyId = null;
+  if (!negative) {
+    storyServer = await startServer({ root: storybookDir, api: false });
+    const indexResponse = await fetch(`http://127.0.0.1:${storyServer.port}/index.json`);
+    const indexJson = await indexResponse.json();
+    const storyEntry = Object.values(indexJson.entries || {}).find(
+      (entry) => entry.title === 'Design System/I18n Foundation',
+    );
+    if (!storyEntry) throw new Error('foundation story not found in Storybook index.json');
+    storyUrl = `http://127.0.0.1:${storyServer.port}/iframe.html?id=${storyEntry.id}&viewMode=story`;
+    storyId = storyEntry.id;
+    notes.push({ storyUrl, storyId });
+  }
   const appUrl = `http://127.0.0.1:${appServer.port}/`;
-  notes.push({ storyUrl, appUrl, storyId: storyEntry.id });
+  notes.push({ appUrl, negative, instrumentation: negative ? 'negative' : 'positive' });
 
   const userDataDir = join(pickProfileRoot(), `hr-i18n-${process.pid}-${Date.now()}`);
   mkdirSync(userDataDir, { recursive: true });
@@ -399,7 +487,7 @@ async function main() {
     await cdp.ready;
     notes.push({ chrome: version.Browser, chromeBin, protocolVersion: version['Protocol-Version'] });
 
-    async function openPage({ url, locale, initScript }) {
+    async function openPage({ url, env, initScript }) {
       const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
       const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
       await cdp.send('Page.enable', {}, sessionId);
@@ -410,14 +498,19 @@ async function main() {
       await cdp.send('Network.setBlockedURLs', {
         urls: ['https://fonts.googleapis.com/*', 'https://fonts.gstatic.com/*'],
       }, sessionId);
-      if (locale) {
+      // `setLocaleOverride` changes Intl but not navigator.language; keep it as
+      // additional environment realism and rely on navigatorLocaleSource below
+      // for the shipping resolver input.
+      if (env) {
         try {
-          await cdp.send('Emulation.setLocaleOverride', { locale }, sessionId);
+          await cdp.send('Emulation.setLocaleOverride', { locale: env.locale }, sessionId);
         } catch (error) {
-          notes.push({ localeOverrideFailed: `${locale}: ${error.message}` });
+          notes.push({ localeOverrideFailed: `${env.locale}: ${error.message}` });
         }
       }
-      const source = [initScript, LANG_PROBE].filter(Boolean).join('\n');
+      const source = [env ? navigatorLocaleSource(env) : null, initScript, LANG_PROBE]
+        .filter(Boolean)
+        .join('\n');
       if (source.trim()) {
         await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source }, sessionId);
       }
@@ -466,6 +559,36 @@ async function main() {
       throw new Error(`timeout waiting for ${label || expression}; last=${JSON.stringify(last)}`);
     }
 
+    /**
+     * Assert the document-start navigator-language fixture actually produced
+     * the intended values, and record the ACTUAL values in the receipt. A
+     * mismatch is a real failing assertion (never silently ignored), so a
+     * "Chinese environment" case cannot pass while running in English.
+     */
+    async function assertLocaleSetup(sessionId, label, env) {
+      const setup = await evaluate(sessionId, 'window.__hrLocaleSetup || null');
+      const ok = Boolean(setup && setup.ok);
+      assertions.push({
+        name: `${label} navigator language environment asserted before app modules`,
+        actual: setup ? { actual: setup.actual, failures: setup.failures } : null,
+        expected: env ? { language: env.language, languages: env.languages } : null,
+        ok,
+      });
+      console.log(
+        `${ok ? 'PASS' : 'FAIL'} ${label} navigator language environment asserted before app modules${
+          ok ? '' : ` — actual=${JSON.stringify(setup && setup.actual)} expected=${JSON.stringify(env)}`
+        }`,
+      );
+      environments.push({
+        label,
+        id: env ? env.id : null,
+        expected: setup ? setup.expected : null,
+        actual: setup ? setup.actual : null,
+        ok,
+      });
+      return setup;
+    }
+
     const PROBE_SNAPSHOT = `(() => {
       const q = (selector) => document.querySelector(selector);
       const text = (selector) => {
@@ -489,6 +612,8 @@ async function main() {
         instance: q('[data-testid="foundation-probe"]')
           ? q('[data-testid="foundation-probe"]').dataset.instance || null
           : null,
+        firstConsumer: window.__hrFirstConsumer || null,
+        localeSetup: window.__hrLocaleSetup || null,
         stored: (() => { try { return localStorage.getItem('happyranch.ui.locale'); } catch (error) { return 'THREW'; } })(),
         writes: typeof window.__hrWrites === 'number' ? window.__hrWrites : null,
         langProbe: window.__hrLangProbe || null,
@@ -536,17 +661,21 @@ async function main() {
       return file;
     }
 
-    async function openStory({ locale, initScript }) {
-      const page = await openPage({ url: storyUrl, locale, initScript });
+    async function openStory({ env, initScript }) {
+      const page = await openPage({ url: storyUrl, env, initScript });
+      await assertLocaleSetup(page.sessionId, `story[${env.id}]`, env);
       await waitForValue(page.sessionId, `!!document.querySelector('[data-testid="foundation-probe"]')`, {
         label: 'foundation story probe',
       });
       return page;
     }
 
-    // --- S1: saved explicit English in a Chinese environment -----------------
-    {
-      const page = await openStory({ locale: 'zh-CN', initScript: seedLocaleSource('en') });
+    // The Storybook scenarios need the Storybook server; the isolated negative
+    // control consumes only the app bundle, so skip them in `--negative` mode.
+    if (!negative) {
+      // --- S1: saved explicit English in a Chinese environment ---------------
+      {
+      const page = await openStory({ env: DEV_ENVIRONMENTS.zh, initScript: seedLocaleSource('en') });
       const snap = await snapshot(page.sessionId);
       check('S1 saved-en-in-zh-env html.lang', snap.lang, 'en');
       check('S1 resolved locale', snap.locale, 'locale=en source=saved');
@@ -557,9 +686,9 @@ async function main() {
       await closePage(page);
     }
 
-    // --- S2: saved Simplified Chinese ---------------------------------------
+    // --- S2: saved Simplified Chinese (English-language control env) ---------
     {
-      const page = await openStory({ locale: 'en-US', initScript: seedLocaleSource('zh-CN') });
+      const page = await openStory({ env: DEV_ENVIRONMENTS.en, initScript: seedLocaleSource('zh-CN') });
       const snap = await snapshot(page.sessionId);
       check('S2 saved-zh html.lang', snap.lang, 'zh-CN');
       check('S2 resolved locale', snap.locale, 'locale=zh-CN source=saved');
@@ -582,7 +711,7 @@ async function main() {
 
     // --- S3: unset preference stays English in preview -----------------------
     {
-      const page = await openStory({ locale: 'zh-CN', initScript: clearLocaleSource() });
+      const page = await openStory({ env: DEV_ENVIRONMENTS.zh, initScript: clearLocaleSource() });
       const snap = await snapshot(page.sessionId);
       check('S3 preview-unset html.lang', snap.lang, 'en');
       check('S3 preview-unset locale source', snap.locale, 'locale=en source=default');
@@ -594,7 +723,7 @@ async function main() {
 
     // --- S4: switching preserves draft / selection / open state --------------
     {
-      const page = await openStory({ locale: 'zh-CN', initScript: seedLocaleSource('en') });
+      const page = await openStory({ env: DEV_ENVIRONMENTS.zh, initScript: seedLocaleSource('en') });
       await click(page.sessionId, 'set-draft', 'edit draft');
       await click(page.sessionId, 'set-selection', 'select gamma');
       await evaluate(
@@ -640,7 +769,7 @@ async function main() {
 
     // --- S5: storage read/write failure stays usable in memory ---------------
     {
-      const page = await openStory({ initScript: STORAGE_FAILURE });
+      const page = await openStory({ env: DEV_ENVIRONMENTS.en, initScript: STORAGE_FAILURE });
       const initial = await snapshot(page.sessionId);
       check('S5 storage-failure falls back to English', initial.lang, 'en');
       check('S5 storage read is a guarded failure', initial.stored, 'THREW');
@@ -658,8 +787,8 @@ async function main() {
 
     // --- S6: real same-origin tabs change/clear with no echo write -----------
     {
-      const pageA = await openStory({ initScript: seedLocaleSource('en') });
-      const pageB = await openStory({});
+      const pageA = await openStory({ env: DEV_ENVIRONMENTS.en, initScript: seedLocaleSource('en') });
+      const pageB = await openStory({ env: DEV_ENVIRONMENTS.en });
       const beforeA = await snapshot(pageA.sessionId);
       const writesBefore = beforeA.writes;
 
@@ -702,48 +831,143 @@ async function main() {
       await closePage(pageA);
       await closePage(pageB);
     }
+    }
 
-    // --- S7-S9: the REAL production startup (main.tsx -> App) ----------------
-    async function openApp({ locale, initScript }) {
-      const page = await openPage({ url: appUrl, locale, initScript });
-      await waitForValue(
-        page.sessionId,
-        `!!(window.__hrLangProbe && window.__hrLangProbe.firstText !== null)`,
-        { label: 'app first React text' },
-      );
+    // --- the REAL production startup (main.tsx -> App -> createBrowserRouter
+    //     -> AppShell -> I18nProvider), with the evidence-only consumer --------
+    async function openApp({ env, initScript }) {
+      const page = await openPage({ url: appUrl, env, initScript });
+      await assertLocaleSetup(page.sessionId, `app[${env.id}]`, env);
+      // The injected consumer freezes its first-render text synchronously,
+      // before any layout/passive effect. Wait for that frozen record, never an
+      // eventual DOM snapshot.
+      await waitForValue(page.sessionId, `!!window.__hrFirstConsumer`, {
+        label: 'app first committed consumer',
+      });
       return page;
     }
 
-    {
+    if (negative) {
+      // --- NEGATIVE CONTROL (case 5): mismatched initial provider locale -----
+      // The `I18N_BROWSER_EVIDENCE=negative` build hands the real provider
+      // {locale:'en'} while the document locale from bootstrapDocumentLocale()
+      // is correctly 'zh-CN', and a passive effect repairs the locale after the
+      // first commit. The genuine first-commit acceptance predicate MUST fail;
+      // that is the causal proof that the harness check is not vacuous.
       const page = await openApp({
-        locale: 'en-US',
+        env: DEV_ENVIRONMENTS.zh,
         initScript: seedLocaleSource('zh-CN'),
       });
-      const snap = await snapshot(page.sessionId);
-      check('S7 app saved-zh html.lang', snap.lang, 'zh-CN');
-      check('S7 app first-text lang matches resolved locale', snap.langProbe.firstTextLang, 'zh-CN');
-      check('S7 app lang probe ran before the document element existed', snap.langProbe.langAtStart, null);
-      checkTruthy('S7 app first React text recorded', snap.langProbe.firstText);
-      await capture(page, 'app-main-startup-zh-cn');
+      const first = await evaluate(page.sessionId, 'window.__hrFirstConsumer || null');
+      const eventual = await waitForValue(
+        page.sessionId,
+        `document.querySelector('[data-testid="evidence-first-consumer"]')?.textContent === ${JSON.stringify(
+          EVIDENCE_ZH_TEXT,
+        )} ? document.querySelector('[data-testid="evidence-first-consumer"]').textContent : null`,
+        { label: 'negative-control eventual correction' },
+      );
+      const mismatchObserved = Boolean(
+        first && first.text === EVIDENCE_EN_TEXT && first.htmlLang === 'zh-CN',
+      );
+      const positivePredicate = Boolean(
+        first && first.text === EVIDENCE_ZH_TEXT && first.htmlLang === 'zh-CN',
+      );
+      const record = (name, actual, expected, ok) => {
+        assertions.push({ name, actual, expected, ok });
+        console.log(
+          `${ok ? 'PASS' : 'FAIL'} ${name} — actual=${JSON.stringify(actual)} expected=${JSON.stringify(expected)}`,
+        );
+      };
+      record(
+        'NEGATIVE mismatch observed: first committed English text under correct zh-CN html.lang',
+        { text: first && first.text, locale: first && first.locale, htmlLang: first && first.htmlLang },
+        { text: EVIDENCE_EN_TEXT, locale: 'en', htmlLang: 'zh-CN' },
+        mismatchObserved,
+      );
+      record(
+        'NEGATIVE later passive effect corrected the eventual DOM text',
+        eventual,
+        EVIDENCE_ZH_TEXT,
+        eventual === EVIDENCE_ZH_TEXT,
+      );
+      // The EXACT positive acceptance predicate, marked failed on purpose.
+      record(
+        'NEGATIVE [expected failure] first-commit consumer predicate is Chinese + zh-CN',
+        positivePredicate,
+        true,
+        false,
+      );
+      negativeControl = {
+        mismatchObserved,
+        positivePredicate,
+        fixtureBroken: !mismatchObserved,
+        firstText: first && first.text,
+        firstLocale: first && first.locale,
+        firstHtmlLang: first && first.htmlLang,
+        eventualText: eventual,
+        expectedExitCode: 1,
+      };
+      console.log(
+        '\nNEGATIVE CONTROL: the genuine first-commit acceptance predicate FAILED as designed' +
+          ` (mismatchObserved=${mismatchObserved}); exit 1 is the recorded expected failing exit.`,
+      );
       await closePage(page);
-    }
+    } else {
+      // --- S7 (case 2): real startup, saved zh-CN in an English environment --
+      {
+        const page = await openApp({
+          env: DEV_ENVIRONMENTS.en,
+          initScript: seedLocaleSource('zh-CN'),
+        });
+        const snap = await snapshot(page.sessionId);
+        const first = snap.firstConsumer;
+        check('S7 app saved-zh html.lang', snap.lang, 'zh-CN');
+        checkTruthy('S7 first committed consumer captured', first);
+        check(
+          'S7 first committed consumer text is the real Chinese catalog string',
+          first && first.text,
+          EVIDENCE_ZH_TEXT,
+        );
+        check('S7 first committed consumer locale', first && first.locale, 'zh-CN');
+        check('S7 html.lang at the same first commit', first && first.htmlLang, 'zh-CN');
+        check('S7 first-text lang probe agrees', snap.langProbe.firstTextLang, 'zh-CN');
+        check('S7 lang probe ran before the document element existed', snap.langProbe.langAtStart, null);
+        checkTruthy('S7 app first React text recorded', snap.langProbe.firstText);
+        await capture(page, 'app-main-startup-zh-cn');
+        await closePage(page);
+      }
 
-    {
-      const page = await openApp({ locale: 'zh-CN', initScript: seedLocaleSource('en') });
-      const snap = await snapshot(page.sessionId);
-      check('S8 app saved-en-in-zh-env html.lang', snap.lang, 'en');
-      check('S8 app first-text lang', snap.langProbe.firstTextLang, 'en');
-      await capture(page, 'app-main-startup-en-in-zh-env');
-      await closePage(page);
-    }
+      // --- S8 (case 3): real startup, saved en in an asserted Chinese env -----
+      {
+        const page = await openApp({ env: DEV_ENVIRONMENTS.zh, initScript: seedLocaleSource('en') });
+        const snap = await snapshot(page.sessionId);
+        const first = snap.firstConsumer;
+        check('S8 app saved-en-in-zh-env html.lang', snap.lang, 'en');
+        checkTruthy('S8 first committed consumer captured', first);
+        check('S8 first committed consumer text is English', first && first.text, EVIDENCE_EN_TEXT);
+        check('S8 first committed consumer locale', first && first.locale, 'en');
+        check('S8 html.lang at the same first commit', first && first.htmlLang, 'en');
+        check('S8 first-text lang probe agrees', snap.langProbe.firstTextLang, 'en');
+        await capture(page, 'app-main-startup-en-in-zh-env');
+        await closePage(page);
+      }
 
-    {
-      const page = await openApp({ locale: 'zh-CN', initScript: clearLocaleSource() });
-      const snap = await snapshot(page.sessionId);
-      check('S9 app preview-unset-in-zh-env html.lang', snap.lang, 'en');
-      check('S9 app first-text lang', snap.langProbe.firstTextLang, 'en');
-      await capture(page, 'app-main-startup-preview-zh-env');
-      await closePage(page);
+      // --- S9 (case 4): real startup, no preference in an asserted Chinese env,
+      //     preview mode (W5 auto-detection stays disabled) --------------------
+      {
+        const page = await openApp({ env: DEV_ENVIRONMENTS.zh, initScript: clearLocaleSource() });
+        const snap = await snapshot(page.sessionId);
+        const first = snap.firstConsumer;
+        check('S9 app preview-unset-in-zh-env html.lang', snap.lang, 'en');
+        checkTruthy('S9 first committed consumer captured', first);
+        check('S9 first committed consumer text is English', first && first.text, EVIDENCE_EN_TEXT);
+        check('S9 first committed consumer locale', first && first.locale, 'en');
+        check('S9 html.lang at the same first commit', first && first.htmlLang, 'en');
+        check('S9 first-text lang probe agrees', snap.langProbe.firstTextLang, 'en');
+        check('S9 stored preference stays unset', snap.stored, null);
+        await capture(page, 'app-main-startup-preview-zh-env');
+        await closePage(page);
+      }
     }
 
     const failed = assertions.filter((assertion) => !assertion.ok);
@@ -752,7 +976,10 @@ async function main() {
       generatedAt: new Date().toISOString(),
       node: process.version,
       distDir,
-      storybookDir,
+      storybookDir: negative ? null : storybookDir,
+      negative,
+      environments,
+      negativeControl,
       notes,
       assertions,
       screenshots,
@@ -763,7 +990,14 @@ async function main() {
     console.log(
       `\n${receipt.passed}/${assertions.length} assertions passed; ${screenshots.length} screenshots in ${outDir}`,
     );
-    process.exitCode = failed.length ? 1 : 0;
+    if (negative) {
+      process.exitCode = negativeControl && negativeControl.fixtureBroken ? 2 : 1;
+      if (process.exitCode === 2) {
+        console.error('NEGATIVE CONTROL FIXTURE BROKEN: the mismatched first commit never occurred.');
+      }
+    } else {
+      process.exitCode = failed.length ? 1 : 0;
+    }
   } catch (error) {
     console.error(`browser evidence harness failed: ${error.stack || error.message}`);
     if (chromeStderr) console.error(`chrome stderr:\n${chromeStderr.slice(-2000)}`);
@@ -783,7 +1017,7 @@ async function main() {
       chrome.kill('SIGKILL');
     }
     appServer.server.close();
-    storyServer.server.close();
+    if (storyServer) storyServer.server.close();
     if (!keepUserDataDir) {
       try {
         rmSync(userDataDir, { recursive: true, force: true });

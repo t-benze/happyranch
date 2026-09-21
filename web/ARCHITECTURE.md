@@ -84,8 +84,13 @@ components so fallback is never mistaken for coverage. Foundation browser
 evidence runs the isolated
 `src/design-system/i18n/I18nFoundation.stories.tsx` story and the real
 `main.tsx` startup through `scripts/i18n-browser-evidence.mjs` (headless Chrome
-over CDP, no new dependency). See
-`docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
+over CDP, no new dependency). Every page installs and asserts the real
+`navigator.language`/`navigator.languages` before app modules, and the
+production path is built with `I18N_BROWSER_EVIDENCE` so `vite.config.ts` injects
+the test-only `src/test/i18n-evidence-consumer.tsx` next to `<AppRoutes />`; the
+harness asserts the first COMMITTED consumer text and `<html lang>` together and
+includes a negative control. The env gate is a no-op for every ordinary build.
+See `docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
 
 ## What is intentionally not in here
 

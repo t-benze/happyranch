@@ -109,3 +109,48 @@ describe('production App composition and startup handoff (W1 acceptance cases 4/
     await expectOnboarding();
   });
 });
+
+describe('browser-evidence instrumentation is test-only and gated (W1 acceptance case 8)', () => {
+  it('the evidence Vite transform is disabled unless I18N_BROWSER_EVIDENCE is set', () => {
+    const config = read('vite.config.ts');
+    expect(config).toContain('process.env.I18N_BROWSER_EVIDENCE');
+    expect(config).toContain("EVIDENCE_ENV === '1' || EVIDENCE_NEGATIVE");
+    expect(config).toContain('if (!EVIDENCE_ENABLED) return null');
+  });
+
+  it('injects the consumer adjacent to AppRoutes inside the real provider/router composition', () => {
+    const config = read('vite.config.ts');
+    // The injection targets the real App.tsx sibling of AppRoutes, never a
+    // replacement provider/router, and preserves the AppRoutes anchor.
+    expect(config).toContain("clean.endsWith('/src/App.tsx')");
+    expect(config).toContain('const EVIDENCE_APP_ANCHOR = ' + "'        <AppRoutes />'");
+    expect(config).toContain('<I18nEvidenceConsumer />');
+    // The negative control additionally swaps the handed resolution in main.tsx
+    // and pins the document locale so only the provider locale is mismatched.
+    expect(config).toContain('EVIDENCE_NEGATIVE');
+    expect(config).toContain('evidenceMismatchedResolution');
+    expect(config).toContain('<I18nEvidenceDocumentLocale />');
+  });
+
+  it('shipping App.tsx never statically imports the evidence consumer', () => {
+    expect(read('src/App.tsx')).not.toContain('i18n-evidence-consumer');
+    expect(read('src/main.tsx')).not.toContain('i18n-evidence-consumer');
+  });
+
+  it('the evidence consumer renders a real catalog key and captures the first render', () => {
+    const consumer = read('src/test/i18n-evidence-consumer.tsx');
+    expect(consumer).toContain("t('common.translatedProbe')");
+    // Captured during render, before any layout/passive effect can correct it.
+    expect(consumer).toContain('window.__hrFirstConsumer');
+    expect(consumer).not.toMatch(/useLayoutEffect\(/);
+  });
+
+  it('the harness asserts the real navigator language input and the first commit', () => {
+    const harness = read('scripts/i18n-browser-evidence.mjs');
+    expect(harness).toContain("Object.defineProperty(Navigator.prototype, 'language'");
+    expect(harness).toContain("Object.defineProperty(Navigator.prototype, 'languages'");
+    expect(harness).toContain('window.__hrFirstConsumer');
+    expect(harness).toContain('--negative');
+    expect(harness).toContain('NEGATIVE CONTROL');
+  });
+});

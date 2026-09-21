@@ -67,7 +67,10 @@ not-yet-migrated mounted route namespace `english-only` (copy-bearing
 `index`/`*` included, copy-free redirects `not-applicable`) and lists the actual
 mounted dialogs, so English fallback is never mistaken for coverage. Foundation
 browser evidence (isolated Storybook probe + the real `main.tsx` startup in
-headless Chrome) runs via `web/scripts/i18n-browser-evidence.mjs`. Current
+headless Chrome) runs via `web/scripts/i18n-browser-evidence.mjs`; it asserts the
+real asserted `navigator` language input, the first committed bilingual consumer
+text through the real provider/router (an `I18N_BROWSER_EVIDENCE`-gated,
+test-only build injection), and a causal negative control. Current
 contract: `docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
 
 ### Web contract and navigation

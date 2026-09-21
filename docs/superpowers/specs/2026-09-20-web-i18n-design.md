@@ -26,7 +26,7 @@ Delivery status at W1 (keep separate from later phases):
 | Browser preference (`happyranch.ui.locale`) with resilient storage | shipped |
 | Injectable locale preference adapter (native seam) | shipped (browser + test doubles only) |
 | Mounted-route/namespace coverage manifest | shipped |
-| Foundation browser/Storybook evidence (isolated, non-product) | shipped — `web/scripts/i18n-browser-evidence.mjs` + `I18nFoundation.stories.tsx` |
+| Foundation browser/Storybook evidence (isolated, non-product) | shipped — `web/scripts/i18n-browser-evidence.mjs` + `I18nFoundation.stories.tsx` + an `I18N_BROWSER_EVIDENCE`-gated test-only first-commit consumer |
 | Explicit-locale display formatters | shipped (interfaces only; no caller migration) |
 | Route/page translation | **W2-W4** — not shipped |
 | Public language selector / opt-in preview | **W3** — not shipped |
@@ -199,11 +199,34 @@ Foundational browser evidence is provided by
 WebSocket + the installed headless Chrome) against two same-origin servers:
 the built Storybook foundation story
 (`src/design-system/i18n/I18nFoundation.stories.tsx`) and the production SPA
-bundle (`web/dist`) with a synthetic `/api/v1` stub. It asserts saved explicit
-English under a Chinese environment, saved `zh-CN`, unset preview English,
-first React text agreeing with `<html lang>` for the real
-`main.tsx → App → createBrowserRouter` startup, state preservation across a
-locale switch, fail-safe storage read/write failure, real same-origin tab
+bundle (`web/dist`) with a synthetic `/api/v1` stub. Every page installs and
+then asserts the REAL `navigator.language`/`navigator.languages` input at
+document start, before app modules, and the receipt records the actual values —
+`Emulation.setLocaleOverride` alone changes only `Intl` and was insufficient
+(the shipping resolver reads `navigator`). A setup mismatch is a failing
+assertion, never a silent fallback.
+
+For the real `main.tsx → App → createBrowserRouter → AppShell → I18nProvider`
+startup the harness builds with `I18N_BROWSER_EVIDENCE=1`, which makes
+`vite.config.ts` inject the test-only `src/test/i18n-evidence-consumer.tsx`
+adjacent to `<AppRoutes />`. That consumer renders a real catalog key
+(`common.translatedProbe`) and freezes its first-render text plus `<html lang>`
+before any layout/passive effect, so the assertions observe the FIRST COMMITTED
+consumer text, not an eventual snapshot. The resolver, bootstrap snapshot
+handoff, provider and router are never rewritten, and the transform returns
+`null` for every ordinary build. Asserted cases: saved `zh-CN` in an English
+environment renders the Chinese catalog string with `html.lang=zh-CN` at the
+same first commit; saved `en` under an asserted Chinese environment renders
+English with `html.lang=en`; unset preview under an asserted Chinese environment
+renders English with `html.lang=en` (W5 detection stays disabled). An isolated
+`I18N_BROWSER_EVIDENCE=negative` build feeds a deliberately mismatched provider
+locale while the document locale stays correct and repairs it from a passive
+effect; its genuine first-commit assertion fails as designed (recorded expected
+failing exit), proving the check is causal.
+
+It also asserts saved explicit English under a Chinese environment, saved
+`zh-CN`, unset preview English, state preservation across a locale switch,
+fail-safe storage read/write failure, real same-origin tab
 change/delete/clear with no echo write, and that Chinese copy is rendered by a
 CJK platform font (captured PNGs + `receipt.json` bound to the head SHA under
 the task evidence directory). This is foundation evidence only: it does not
@@ -217,7 +240,7 @@ Frontend readiness map for foundation-only scope (actual evidence):
 | Public language selector | N/A — W3 |
 | Browser two-tab live evidence | covered by unit/integration storage-event tests AND captured same-origin two-tab change/delete/clear/no-echo browser evidence at the head SHA |
 | Bilingual foundation browser capture | captured: real-browser story screenshots for saved-en-in-Chinese-env, saved `zh-CN` (CJK font glyphs) and preview-unset English |
-| Production startup first-paint | captured: real `main.tsx`/`createBrowserRouter` startup with synthetic API stub; first React text and `<html lang>` agree |
+| Production startup first-paint | captured: real `main.tsx`/`createBrowserRouter` startup with synthetic API stub; the first COMMITTED bilingual consumer text and `<html lang>` are asserted together for saved `zh-CN`, saved `en` and preview-unset under an asserted Chinese navigator environment; a negative control proves the first-commit check is causal |
 | Native Mac persistence receipt | N/A — N0/N1 (Linux host; not claimed) |
 
 ## 10. Exclusions
