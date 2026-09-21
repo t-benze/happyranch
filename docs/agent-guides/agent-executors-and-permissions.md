@@ -604,3 +604,28 @@ implemented in this phase.
 > profile with `command_adapter_id: custom-adapter:<id>`. Recovery uses an
 > existing built-in executor or ordinary re-registration of a valid approved
 > custom-adapter profile; there is no automatic or versioned fallback.
+
+## Shared workspace-cleanup skill (THR-259 / TASK-8667)
+
+The daemon-managed workspace-cleanup scheduler and manual cleanup both deliver
+the ONE shared `workspace-cleanup` TASK system contract
+(`runtime/skills/bundled/workspace-cleanup/SKILL.md`, `requires_repo=false`), so
+no-repo agents receive it too; it materializes into both `.claude/skills` and
+`.agents/skills` like every other release-owned contract. Manual dispatch
+requires the exact first line `HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN
+(manual-dispatch)`; an unmarked manual request is inventory-only, and manual
+runs contribute zero to the first-two report-only ordinal.
+
+Its bundled read-only helper `runtime/skills/bundled/workspace-cleanup/scripts/check_path_use.py`
+implements the founder-approved THR-259 seq171/seq185 observation: an
+authoritative recorded terminal status plus a fresh complete same-user process
+scan replaces separate live-session/task-to-process identity, and a fixed
+login/session daemon qualifies only by an exact readable process name AND its
+exact bounded cgroup role (`sshd-session`, `systemd --user`, `(sd-pam)`,
+`ssh-agent`, `gpg-agent`, `gcr-ssh-agent`/`ssh-agent` alias in
+`gcr-ssh-agent.service`). A qualifying exception is deliberately uninspected —
+unreadable `exe`/namespace is not a veto and is not executable-identity
+authentication; every other unreadable same-user process is `unknown` and skips,
+root is outside the scan, and positive non-exempt use blocks. This is a snapshot
+with accepted later-opener/write-interruption residual, never an OS-wide-absence
+or future-non-use guarantee.

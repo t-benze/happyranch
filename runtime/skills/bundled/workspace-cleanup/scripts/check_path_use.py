@@ -1,0 +1,1145 @@
+#!/usr/bin/env python3
+"""Bounded, read-only current-use scanner for a workspace-cleanup candidate path.
+
+TASK-8672 prototype (founder THR-259 seq185 approving seq183; retained seq171).
+This is the ONE bounded stdlib helper intended to become
+``runtime/skills/bundled/workspace-cleanup/scripts/check_path_use.py`` during the
+production-integration leg. It is dependency-injectable so the complete finite
+case matrix can be exercised deterministically without real /proc.
+
+Contract (approved same-user population, seq185 name+role accident-prevention):
+  * Complete means every process running as the agent's user was read, except
+    confirmed exited processes and the fixed login/session daemon roles
+    identified by an EXACT readable process name AND its exact bounded expected
+    cgroup role:
+      - ``sshd-session`` in ``session-<N>.scope`` under the user slice;
+      - ``systemd`` (the per-user manager, comm ``systemd``) and ``(sd-pam)`` in
+        ``user@<UID>.service/init.scope`` under the user slice;
+      - ``ssh-agent`` in ``user@<UID>.service/app.slice/ssh-agent.service``;
+      - ``gpg-agent`` in ``user@<UID>.service/app.slice/gpg-agent.service``;
+      - ``gcr-ssh-agent`` OR its ``ssh-agent`` child alias in
+        ``user@<UID>.service/app.slice/gcr-ssh-agent.service``.
+    Name alone, role alone, a lookalike unit/session suffix, a generic
+    ``*.service``/``*agent`` wildcard, an arbitrary cgroup or a different UID
+    never qualifies. A qualifying exception is deliberately NOT inspected: an
+    unreadable ``exe``/namespace does not reintroduce a veto, and this is an
+    accident-prevention boundary, not executable-identity authentication.
+  * Root-owned processes are outside this scan (scope exclusion only -- never
+    proof of non-use and never permission to execute as root).
+  * Any other unreadable same-user process makes coverage unknown -> the caller
+    must skip.
+  * Confirmed exit is distinct from EACCES/EPERM, PID/TID reuse, changed
+    credentials, incomplete enumeration and transient unreadable references.
+  * Checked per thread: cwd, root, exe, maps and private FD table.
+  * Cross-mount-namespace processes require established path identity (the
+    target path resolves to the same dev/ino through /proc/<pid>/root).
+  * Positive non-exempt use blocks even when coverage is otherwise incomplete.
+  * Enumeration is re-derived until bounded convergence; new processes are
+    examined, never silently dropped.
+
+Outcome is exactly one of ``clear_observation``, ``blocked`` or ``unknown``.
+Never ``safe``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import stat as stat_mod
+import sys
+import time
+from dataclasses import dataclass, field
+
+# seq185 exact name+role exception table. ``gcr-ssh-agent`` also matches when the
+# kernel reports the ``ssh-agent`` child alias inside the gcr unit.
+EXCEPTION_ROLES = ("sshd-session", "systemd --user", "(sd-pam)",
+                   "ssh-agent", "gpg-agent", "gcr-ssh-agent")
+
+DEFAULT_MAX_PIDS = 4096
+DEFAULT_MAX_THREADS = 256
+DEFAULT_MAX_FDS = 4096
+DEFAULT_MAX_MAPS_BYTES = 4 * 1024 * 1024
+DEFAULT_MAX_MAPS_LINES = 20000
+DEFAULT_DEADLINE_SECONDS = 30.0
+DEFAULT_MAX_ENUM_PASSES = 6
+
+
+# ── typed read outcomes ───────────────────────────────────────────────────
+@dataclass(frozen=True)
+class Outcome:
+    kind: str  # ok | denied | vanished | error | truncated
+    value: object = None
+    detail: str = ""
+
+
+OK = "ok"
+DENIED = "denied"
+VANISHED = "vanished"
+ERROR = "error"
+TRUNCATED = "truncated"
+
+
+# ── /proc seam ────────────────────────────────────────────────────────────
+class RealProc:
+    """Read-only /proc accessor. Every failure is a typed outcome, never an
+    exception that silently disappears."""
+
+    def __init__(self, proc_root: str = "/proc") -> None:
+        self.root = proc_root
+        self._stat_cache: dict[str, Outcome] = {}
+        self._skip_ino_prefixes = ("/proc/", "/sys/", "/dev/")
+
+    def _path(self, pid: str, rel: str) -> str:
+        return os.path.join(self.root, pid, rel) if rel else os.path.join(self.root, pid)
+
+    def list_pids(self, max_pids: int) -> Outcome:
+        try:
+            names = os.listdir(self.root)
+        except OSError as exc:  # pragma: no cover - host dependent
+            return Outcome(ERROR, None, exc.__class__.__name__)
+        pids = [n for n in names if n.isdecimal()]
+        pids.sort(key=int)
+        if len(pids) > max_pids:
+            return Outcome(TRUNCATED, pids[:max_pids], f"pids>{max_pids}")
+        return Outcome(OK, pids)
+
+    def listdir(self, pid: str, rel: str, max_entries: int) -> Outcome:
+        p = self._path(pid, rel)
+        try:
+            names = os.listdir(p)
+        except FileNotFoundError:
+            return Outcome(VANISHED, None, p)
+        except PermissionError:
+            return Outcome(DENIED, None, p)
+        except OSError as exc:
+            return Outcome(ERROR, None, f"{p}:{exc.__class__.__name__}")
+        if len(names) > max_entries:
+            return Outcome(TRUNCATED, names[:max_entries], f"{p}>{max_entries}")
+        return Outcome(OK, names)
+
+    def read_text(self, pid: str, rel: str, max_bytes: int) -> Outcome:
+        p = self._path(pid, rel)
+        try:
+            with open(p, "rb") as fh:
+                data = fh.read(max_bytes + 1)
+        except FileNotFoundError:
+            return Outcome(VANISHED, None, p)
+        except PermissionError:
+            return Outcome(DENIED, None, p)
+        except OSError as exc:
+            return Outcome(ERROR, None, f"{p}:{exc.__class__.__name__}")
+        if len(data) > max_bytes:
+            return Outcome(TRUNCATED, data[:max_bytes].decode("utf-8", "replace"), p)
+        return Outcome(OK, data.decode("utf-8", "replace"))
+
+    def readlink(self, pid: str, rel: str) -> Outcome:
+        p = self._path(pid, rel)
+        try:
+            return Outcome(OK, os.readlink(p))
+        except FileNotFoundError:
+            return Outcome(VANISHED, None, p)
+        except PermissionError:
+            return Outcome(DENIED, None, p)
+        except OSError as exc:
+            return Outcome(ERROR, None, f"{p}:{exc.__class__.__name__}")
+
+    def stat_link(self, pid: str, rel: str) -> Outcome:
+        p = self._path(pid, rel)
+        try:
+            st = os.stat(p)
+        except FileNotFoundError:
+            return Outcome(VANISHED, None, p)
+        except PermissionError:
+            return Outcome(DENIED, None, p)
+        except OSError as exc:
+            return Outcome(ERROR, None, f"{p}:{exc.__class__.__name__}")
+        return Outcome(OK, st, p)
+
+    def stat_path(self, path: str) -> Outcome:
+        if path.startswith(self._skip_ino_prefixes):
+            return Outcome(VANISHED, None, path)
+        if path in self._stat_cache:
+            return self._stat_cache[path]
+        try:
+            out = Outcome(OK, os.stat(path), path)
+        except FileNotFoundError:
+            out = Outcome(VANISHED, None, path)
+        except PermissionError:
+            out = Outcome(DENIED, None, path)
+        except OSError as exc:
+            out = Outcome(ERROR, None, f"{path}:{exc.__class__.__name__}")
+        self._stat_cache[path] = out
+        return out
+
+    def stat_through_root(self, pid: str, path: str) -> Outcome:
+        """Resolve ``path`` inside ``pid``'s mount namespace (identity check)."""
+        if path.startswith(self._skip_ino_prefixes):
+            return Outcome(VANISHED, None, path)
+        key = f"{pid}\0{path}"
+        if key in self._stat_cache:
+            return self._stat_cache[key]
+        p = f"{self.root}/{pid}/root{path}"
+        try:
+            out = Outcome(OK, os.stat(p), p)
+        except FileNotFoundError:
+            out = Outcome(VANISHED, None, p)
+        except PermissionError:
+            out = Outcome(DENIED, None, p)
+        except OSError as exc:
+            out = Outcome(ERROR, None, f"{p}:{exc.__class__.__name__}")
+        self._stat_cache[key] = out
+        return out
+
+    def host_context(self, self_pid: str) -> dict:
+        """Establish whether this context enumerates the host process population.
+
+        Necessary condition only: PID1 is the host init and /proc is a single
+        unstacked (non-private) proc mount. The scanner may itself run in a
+        child PID namespace while /proc still enumerates the host's initial
+        population, so PID-namespace agreement is recorded as context, not a
+        veto; a private sandbox proc mount (e.g. PID1=bwrap, stacked /proc)
+        still fails.
+        """
+        comm = self.read_text("1", "comm", 64)
+        pid1_comm = comm.value.strip() if comm.kind == OK else None
+        pid1_pid = self.readlink("1", "ns/pid")
+        self_pid_ns = self.readlink(self_pid, "ns/pid")
+        pid1_mnt = self.readlink("1", "ns/mnt")
+        self_mnt = self.readlink(self_pid, "ns/mnt")
+        mi = self.read_text(self_pid, "mountinfo", 1 << 20)
+        proc_mounts = []
+        if mi.kind == OK:
+            proc_mounts = [ln for ln in mi.value.splitlines() if " - proc proc " in ln]
+        stacked = len(proc_mounts) != 1
+        pid_ns_agree = (pid1_pid.kind == OK and self_pid_ns.kind == OK
+                        and pid1_pid.value == self_pid_ns.value)
+        mnt_agree = (pid1_mnt.kind == OK and self_mnt.kind == OK
+                     and pid1_mnt.value == self_mnt.value)
+        ok = (pid1_comm in ("systemd", "init")) and not stacked
+        return {"pid1_comm": pid1_comm, "pid_ns_agree": pid_ns_agree,
+                "mnt_agree": mnt_agree, "proc_mounts": len(proc_mounts),
+                "stacked": stacked, "mountinfo": mi.kind,
+                "pid1_ns_readable": pid1_pid.kind == OK, "ok": ok}
+
+
+class FakeProc:
+    """Deterministic fault-injection seam over the same interface.
+
+    ``spec`` is ``{pid: process-dict}``. Per-process keys: ``uid`` (4-list),
+    ``comm``, ``ppid``, ``exe`` (realpath string or None), ``exe_stat`` (tuple
+    (uid, mode, is_file) or None), ``cwd``, ``root``, ``maps`` (list of path
+    strings), ``fds`` ({fd: link}), ``threads`` ({tid: {cwd,root,exe,maps,fds}}),
+    ``ns`` ({pid,mnt,user}), ``cgroup``, ``starttime``.
+    ``deny`` / ``vanish`` / ``error`` are sets of ``(pid, rel)``.
+    """
+
+    def __init__(self, spec: dict, *, deny=(), vanish=(), error=(), self_ns=None,
+                 list_state: str | None = None, stat_map: dict | None = None,
+                 default_stat: tuple[int, int] | None = None,
+                 host_context: dict | None = None,
+                 root_unverified: set | None = None) -> None:
+        self.spec = spec
+        self.deny = set(deny)
+        self.vanish = set(vanish)
+        self.error = set(error)
+        self.self_ns = self_ns or {}
+        self.list_state = list_state
+        self.stat_map = stat_map or {}
+        self.default_stat = default_stat
+        self.root_unverified = set(root_unverified or ())
+        self._host_context = host_context or {"ok": True, "synthetic": True,
+                                              "pid1_comm": "systemd",
+                                              "pid_ns_agree": True, "mnt_agree": True,
+                                              "proc_mounts": 1, "stacked": False}
+
+    def host_context(self, self_pid: str) -> dict:
+        return dict(self._host_context)
+
+    def _outcome(self, pid: str, rel: str):
+        if (pid, rel) in self.deny:
+            return Outcome(DENIED)
+        if (pid, rel) in self.vanish:
+            return Outcome(VANISHED)
+        if (pid, rel) in self.error:
+            return Outcome(ERROR)
+        return Outcome(OK)
+
+    def list_pids(self, max_pids: int) -> Outcome:
+        if self.list_state == "truncated":
+            return Outcome(TRUNCATED, sorted(self.spec, key=int)[:max_pids])
+        if self.list_state in ("denied", "error"):
+            return Outcome(self.list_state)
+        pids = sorted(self.spec, key=int)
+        if len(pids) > max_pids:
+            return Outcome(TRUNCATED, pids[:max_pids])
+        return Outcome(OK, pids)
+
+    def _proc(self, pid: str) -> dict:
+        return self.spec.get(pid, {})
+
+    def listdir(self, pid: str, rel: str, max_entries: int) -> Outcome:
+        if pid not in self.spec:
+            return Outcome(VANISHED)
+        out = self._outcome(pid, rel)
+        if out.kind != OK:
+            return out
+        d = self._proc(pid)
+        if rel == "task":
+            return Outcome(OK, list(d.get("threads", {})))
+        if rel == "fd":
+            return Outcome(OK, list(d.get("fds", {})))
+        if rel.startswith("task/") and rel.endswith("/fd"):
+            tid = rel.split("/")[1]
+            th = d.get("threads", {}).get(tid, {})
+            return Outcome(OK, list(th.get("fds", {})))
+        return Outcome(OK, [])
+
+    def read_text(self, pid: str, rel: str, max_bytes: int) -> Outcome:
+        if pid not in self.spec:
+            return Outcome(VANISHED)
+        out = self._outcome(pid, rel)
+        if out.kind != OK:
+            return out
+        d = self._proc(pid)
+        if rel == "status":
+            uid = d.get("uid", [])
+            lines = [f"Name:\t{d.get('comm', '?')}",
+                     "Uid:\t" + "\t".join(str(u) for u in uid),
+                     f"PPid:\t{d.get('ppid', '0')}"]
+            return Outcome(OK, "\n".join(lines) + "\n")
+        if rel == "comm":
+            return Outcome(OK, d.get("comm", ""))
+        if rel == "cgroup":
+            return Outcome(OK, d.get("cgroup", ""))
+        if rel == "maps":
+            return Outcome(OK, "\n".join(d.get("maps", [])) + ("\n" if d.get("maps") else ""))
+        if rel == "stat":
+            return Outcome(OK, _stat_text(pid, d.get("starttime", 0)))
+        if rel.startswith("task/") and rel.endswith("/maps"):
+            tid = rel.split("/")[1]
+            th = d.get("threads", {}).get(tid, {})
+            return Outcome(OK, "\n".join(th.get("maps", [])) + ("\n" if th.get("maps") else ""))
+        return Outcome(OK, "")
+
+    def readlink(self, pid: str, rel: str) -> Outcome:
+        if pid not in self.spec:
+            return Outcome(VANISHED)
+        out = self._outcome(pid, rel)
+        if out.kind != OK:
+            return out
+        d = self._proc(pid)
+        if rel in ("exe", "cwd", "root"):
+            v = d.get(rel)
+            return Outcome(OK, v) if v is not None else Outcome(VANISHED)
+        if rel.startswith("ns/"):
+            v = d.get("ns", {}).get(rel.split("/", 1)[1])
+            return Outcome(OK, v) if v is not None else Outcome(DENIED)
+        if rel.startswith("fd/"):
+            v = d.get("fds", {}).get(rel.split("/", 1)[1])
+            return Outcome(OK, v) if v is not None else Outcome(VANISHED)
+        if rel.startswith("task/"):
+            parts = rel.split("/")
+            tid = parts[1]
+            th = d.get("threads", {}).get(tid, {})
+            if parts[2] in ("cwd", "root", "exe"):
+                v = th.get(parts[2])
+                return Outcome(OK, v) if v is not None else Outcome(VANISHED)
+            if parts[2] == "fd" and len(parts) == 4:
+                v = th.get("fds", {}).get(parts[3])
+                return Outcome(OK, v) if v is not None else Outcome(VANISHED)
+        return Outcome(VANISHED)
+
+    def stat_link(self, pid: str, rel: str) -> Outcome:
+        if pid not in self.spec:
+            return Outcome(VANISHED)
+        out = self._outcome(pid, rel)
+        if out.kind != OK:
+            return out
+        d = self._proc(pid)
+        if rel == "exe":
+            es = d.get("exe_stat")
+            if es is None:
+                return Outcome(DENIED)
+            uid, mode, is_file = es
+            return Outcome(OK, SimpleStat(uid, mode, is_file))
+        return self._outcome(pid, rel)
+
+    def stat_path(self, path: str) -> Outcome:
+        if path in self.stat_map:
+            dev, ino = self.stat_map[path]
+            return Outcome(OK, RealishStat(dev, ino))
+        if self.default_stat is not None:
+            dev, ino = self.default_stat
+            return Outcome(OK, RealishStat(dev, ino))
+        return Outcome(VANISHED)
+
+    def stat_through_root(self, pid: str, path: str) -> Outcome:
+        if pid in self.root_unverified:
+            return Outcome(DENIED, None, path)
+        return self.stat_path(path)
+
+
+@dataclass
+class SimpleStat:
+    st_uid: int
+    st_mode: int
+    is_file: bool
+
+
+@dataclass
+class RealishStat:
+    st_dev: int
+    st_ino: int
+
+
+# ── identity evidence + exception classification ──────────────────────────
+@dataclass
+class IdentityEvidence:
+    pid: str
+    uid_quad: tuple[int, int, int, int] | None
+    comm: str | None
+    ppid: str | None
+    exe_path: str | None
+    exe_stat: object | None
+    exe_verified_root_file: bool
+    cgroup: str | None
+    agent_uid: int
+    # B1: how readable the executable actually was. One of
+    # ``verified`` (root-owned non-writable executable inode),
+    # ``readable_unverified`` (the executable was observed but is not a verified
+    # root role binary -- contrary evidence), or ``unreadable`` (ptrace-denied /
+    # absent, so no executable identity is available).
+    exe_status: str = "unreadable"
+    gid_quad: tuple[int, int, int, int] | None = None
+    groups: tuple[int, ...] = ()
+    parent_role: str | None = None
+    parent_comm: str | None = None
+    parent_uid: tuple[int, int, int, int] | None = None
+    parent_cgroup: str | None = None
+    evidence_gaps: list[str] = field(default_factory=list)
+
+    @property
+    def unit(self) -> str:
+        return _cgroup_unit(self.cgroup)
+
+    @property
+    def parent_unit(self) -> str:
+        return _cgroup_unit(self.parent_cgroup)
+
+    @property
+    def exe_readable(self) -> bool:
+        """True when the executable was actually observed (verified or not)."""
+        return self.exe_status in ("verified", "readable_unverified")
+
+
+def _basename(path: str | None) -> str | None:
+    if not path:
+        return None
+    return os.path.basename(path.rstrip("/")) or None
+
+
+def _exe_is_verified(exe_path: str | None, exe_stat: object | None) -> bool:
+    """Root-owned, non-group/world-writable regular *executable* inode.
+
+    An executable path alone is NOT reliable: the inode must be root-owned, not
+    writable by group/other, a regular file, AND carry at least one execute bit
+    (B2). A root-owned regular file without execute permission (e.g. 0o644) is
+    not an executable and must never be accepted as verified executable
+    evidence.
+    """
+    if not exe_path or exe_stat is None:
+        return False
+    st_uid = getattr(exe_stat, "st_uid", -1)
+    st_mode = getattr(exe_stat, "st_mode", 0)
+    is_file = getattr(exe_stat, "is_file", None)
+    if is_file is None:
+        is_file = stat_mod.S_ISREG(st_mode)
+    if st_uid != 0:
+        return False
+    if st_mode & 0o022:
+        return False
+    if not (st_mode & 0o111):
+        return False
+    return bool(is_file)
+
+
+def _cgroup_unit(cgroup_text: str | None) -> str:
+    """Return the systemd cgroup path from a /proc/<pid>/cgroup body."""
+    if not cgroup_text:
+        return ""
+    for line in cgroup_text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if ":" not in line:
+            if line.startswith("/"):
+                return line
+            continue
+        parts = line.split(":", 2)
+        if len(parts) != 3:
+            continue
+        controllers, path = parts[1], parts[2].strip()
+        if controllers == "" or "name=systemd" in controllers:
+            return path
+    return ""
+
+
+def _user_slice_prefix(uid: int) -> str:
+    return f"/user.slice/user-{uid}.slice"
+
+
+def _session_scope_re(uid: int):
+    return re.compile(rf"^{re.escape(_user_slice_prefix(uid))}/session-\d+\.scope$")
+
+
+def expected_exception_role(comm: str | None, uid: int,
+                            unit: str | None) -> str | None:
+    """Return the exact bounded role for an exact (comm, cgroup-unit) pair.
+
+    Name-only, role-only, lookalike, wildcard and cross-UID matches return
+    ``None``. This is deliberately a pure metadata match (seq185): it prevents
+    accidental folder use by a known login/session daemon, and is not
+    executable-identity authentication.
+    """
+    name = comm or ""
+    if not unit:
+        return None
+    prefix = _user_slice_prefix(uid)
+    if not unit.startswith(prefix + "/"):
+        return None
+    if name == "sshd-session" and _session_scope_re(uid).fullmatch(unit):
+        return "sshd-session"
+    user_service = f"{prefix}/user@{uid}.service"
+    if name == "systemd" and unit == f"{user_service}/init.scope":
+        return "systemd --user"
+    if name == "(sd-pam)" and unit == f"{user_service}/init.scope":
+        return "(sd-pam)"
+    app_slice = f"{user_service}/app.slice"
+    if name == "ssh-agent" and unit in (f"{app_slice}/ssh-agent.service",
+                                        f"{app_slice}/gcr-ssh-agent.service"):
+        return "ssh-agent"
+    if name == "gpg-agent" and unit == f"{app_slice}/gpg-agent.service":
+        return "gpg-agent"
+    if name == "gcr-ssh-agent" and unit == f"{app_slice}/gcr-ssh-agent.service":
+        return "gcr-ssh-agent"
+    return None
+
+
+_KNOWN_EXCEPTION_NAMES = ("sshd-session", "systemd", "(sd-pam)", "ssh-agent",
+                          "gpg-agent", "gcr-ssh-agent")
+
+
+def looks_exceptional(ev: IdentityEvidence) -> bool:
+    """True when the observed name or cgroup unit resembles an exception.
+
+    Used only for honest accounting of name-only / role-only mismatches; it never
+    grants an exemption.
+    """
+    name = ev.comm or ""
+    unit = ev.unit or ""
+    if name in _KNOWN_EXCEPTION_NAMES:
+        return True
+    tail = unit.rsplit("/", 1)[-1] if unit else ""
+    return tail in ("ssh-agent.service", "gpg-agent.service",
+                    "gcr-ssh-agent.service", "init.scope") or "session-" in tail
+
+
+def classify_exception(ev: IdentityEvidence) -> str:
+    """Return the exact bounded role, or ``none`` for an ordinary member.
+
+    Only :func:`expected_exception_role` (exact readable process name AND exact
+    bounded cgroup role) can exempt a process. The executable inode, parent chain
+    and any weaker claim are recorded for observation but never authenticate or
+    veto a qualifying exception; a name-only/role-only lookalike is an ordinary
+    member that is scanned.
+    """
+    return expected_exception_role(ev.comm, ev.agent_uid, ev.unit) or "none"
+
+
+# ── scanner ───────────────────────────────────────────────────────────────
+@dataclass
+class Bounds:
+    max_pids: int = DEFAULT_MAX_PIDS
+    max_threads: int = DEFAULT_MAX_THREADS
+    max_fds: int = DEFAULT_MAX_FDS
+    max_maps_bytes: int = DEFAULT_MAX_MAPS_BYTES
+    max_maps_lines: int = DEFAULT_MAX_MAPS_LINES
+    deadline_seconds: float = DEFAULT_DEADLINE_SECONDS
+    max_enum_passes: int = DEFAULT_MAX_ENUM_PASSES
+
+
+@dataclass
+class ScanResult:
+    state: str
+    target: str
+    hits: list[dict] = field(default_factory=list)
+    reasons: list[str] = field(default_factory=list)
+    coverage: dict = field(default_factory=dict)
+    exempt: list[dict] = field(default_factory=list)
+    cycles: list[dict] = field(default_factory=list)
+
+    def to_json(self) -> dict:
+        return {"state": self.state, "target": self.target, "hits": self.hits,
+                "reasons": sorted(set(self.reasons)), "coverage": self.coverage,
+                "exempt": self.exempt, "cycles": self.cycles}
+
+
+def _parse_uid(status_text: str) -> tuple[int, int, int, int] | None:
+    for line in status_text.splitlines():
+        if line.startswith("Uid:"):
+            parts = line.split()
+            if len(parts) >= 5:
+                try:
+                    return (int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4]))
+                except ValueError:
+                    return None
+    return None
+
+
+def _parse_gid(status_text: str) -> tuple[int, int, int, int] | None:
+    for line in status_text.splitlines():
+        if line.startswith("Gid:"):
+            parts = line.split()
+            if len(parts) >= 5:
+                try:
+                    return (int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4]))
+                except ValueError:
+                    return None
+    return None
+
+
+def _parse_groups(status_text: str) -> tuple[int, ...]:
+    for line in status_text.splitlines():
+        if line.startswith("Groups:"):
+            out = []
+            for tok in line.split(":", 1)[1].split():
+                try:
+                    out.append(int(tok))
+                except ValueError:
+                    return ()
+            return tuple(out)
+    return ()
+
+
+def _parse_status_field(status_text: str, name: str) -> str | None:
+    for line in status_text.splitlines():
+        if line.startswith(name + ":"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+def _stat_text(pid, starttime) -> str:
+    return (f"{pid} (x) S 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 "
+            f"{starttime}")
+
+
+def _parse_starttime(stat_text: str) -> str | None:
+    try:
+        close = stat_text.rindex(")")
+        rest = stat_text[close + 2:].split()
+        return rest[19]  # field 22 == rest[19]
+    except (ValueError, IndexError):
+        return None
+
+
+def _under(path: str | None, target_real: str) -> bool:
+    if not path:
+        return False
+    p = path
+    if p.endswith(" (deleted)"):
+        p = p[: -len(" (deleted)")]
+    if p == target_real:
+        return True
+    return p.startswith(target_real.rstrip("/") + "/")
+
+
+def _path_identity(proc, pid: str, path: str, same_ns: bool):
+    st = proc.stat_path(path) if same_ns else proc.stat_through_root(pid, path)
+    if st.kind != OK:
+        return None
+    return (getattr(st.value, "st_dev", None), getattr(st.value, "st_ino", None))
+
+
+@dataclass
+class _Rec:
+    pid: str
+    uid: tuple | None = None
+    gid: tuple | None = None
+    groups: tuple[int, ...] = ()
+    comm: str | None = None
+    ppid: str | None = None
+    starttime: str | None = None
+    status_kind: str = OK
+    stat_kind: str = OK
+    role: str | None = None
+    ev: IdentityEvidence | None = None
+    handled: bool = False
+
+
+def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
+         agent_uid: int | None = None, bounds: Bounds | None = None,
+         clock=time.monotonic) -> ScanResult:
+    """Scan the approved same-user population for current use of ``target``.
+
+    Read-only and bounded. Never returns ``safe``. Never mutates anything.
+    """
+    proc = proc or RealProc()
+    bounds = bounds or Bounds()
+    self_pid = str(self_pid if self_pid is not None else os.getpid())
+    agent_uid = agent_uid if agent_uid is not None else os.getuid()
+    target_real = os.path.realpath(os.fspath(target))
+    tstat = proc.stat_path(target_real)
+    target_id = ((getattr(tstat.value, "st_dev", None), getattr(tstat.value, "st_ino", None))
+                 if tstat.kind == OK else None)
+
+    started = clock()
+    res = ScanResult(state="unknown", target=target_real)
+    res.coverage = {
+        "agent_uid": agent_uid, "self_pid": self_pid,
+        "target_dev_ino": list(target_id) if target_id else None,
+        "total_pids": 0, "same_user": 0, "root": 0, "other_user": 0,
+        "exempt": 0, "scanned": 0, "exited": 0, "unreadable_same_user": 0,
+        # B3: an unreadable identity of UNKNOWN uid is distinct from a known
+        # other-user process that is simply out of scope.
+        "unreadable_unknown_uid": 0, "identity_read_errors": 0,
+        # seq185: name-only / role-only lookalikes that did NOT qualify.
+        "role_mismatch": 0,
+        "denied": 0, "vanished": 0, "errors": 0,
+        "truncated": 0, "maps_truncated": 0, "fd_truncated": 0,
+        "threads_truncated": 0, "new_pids_after": 0, "reused_pids": 0,
+        "mnt_ns_differs": 0, "mnt_ns_path_unverified": 0,
+        "target_present": tstat.kind == OK,
+    }
+    if tstat.kind != OK:
+        res.reasons.append(f"target_unavailable:{tstat.kind}")
+        res.cycles.append({"phase": "target", "kind": tstat.kind})
+        return res
+
+    hc = proc.host_context(self_pid)
+    res.coverage["host_context"] = hc
+    if not hc.get("ok"):
+        lost = [k for k in ("pid_ns_agree", "stacked") if not hc.get(k)]
+        if hc.get("pid1_comm") not in ("systemd", "init"):
+            lost.append("pid1_not_host_init")
+        res.reasons.append("host_context_unestablished:" + ",".join(lost))
+
+    self_mnt = proc.readlink(self_pid, "ns/mnt")
+    self_mnt = self_mnt.value if self_mnt.kind == OK else None
+
+    records: dict[str, _Rec] = {}
+    processed: set[str] = set()
+
+    def snapshot(pid: str) -> _Rec:
+        st = proc.read_text(pid, "stat", 4096)
+        status = proc.read_text(pid, "status", 8192)
+        rec = _Rec(pid=pid, status_kind=status.kind, stat_kind=st.kind)
+        if st.kind == OK:
+            rec.starttime = _parse_starttime(st.value)
+        elif st.kind == ERROR:
+            res.coverage["identity_read_errors"] += 1
+        if status.kind == OK:
+            rec.uid = _parse_uid(status.value)
+            rec.gid = _parse_gid(status.value)
+            rec.groups = _parse_groups(status.value)
+            rec.comm = _parse_status_field(status.value, "Name")
+            rec.ppid = _parse_status_field(status.value, "PPid")
+        elif status.kind == ERROR:
+            res.coverage["identity_read_errors"] += 1
+        records[pid] = rec
+        return rec
+
+    def parent_facts(ppid: str | None) -> tuple:
+        if not ppid or ppid == "0":
+            return None, None, None
+        prec = records.get(ppid)
+        if prec is None:
+            return None, None, None
+        cg = proc.read_text(ppid, "cgroup", 8192)
+        return prec.comm, prec.uid, (cg.value if cg.kind == OK else None)
+
+    def ensure_parents() -> None:
+        """Snapshot parent records (e.g. a root sshd listener) so role evidence
+        can use the parent chain. Bounded by the finite parent chain."""
+        for _ in range(8):
+            missing = sorted({r.ppid for r in list(records.values())
+                              if r.ppid and r.ppid != "0" and r.ppid not in records},
+                             key=int)
+            if not missing:
+                return
+            for ppid in missing:
+                processed.add(ppid)
+                snapshot(ppid)
+
+    def classify_pending() -> None:
+        ensure_parents()
+        for pid, rec in list(records.items()):
+            if rec.handled or rec.uid is None:
+                continue
+            if rec.uid == (0, 0, 0, 0):
+                rec.role = "root"
+                rec.handled = True
+            elif rec.uid != (agent_uid,) * 4:
+                rec.role = ("credential_transition"
+                            if (agent_uid in rec.uid or 0 in rec.uid) else "other")
+                rec.handled = True
+        for pid, rec in list(records.items()):
+            if rec.uid is None or rec.role is not None or rec.ev is not None:
+                continue
+            if rec.uid == (agent_uid,) * 4:
+                ev = _gather_identity(proc, pid, rec, agent_uid)
+                ev.parent_comm, ev.parent_uid, ev.parent_cgroup = parent_facts(rec.ppid)
+                rec.ev = ev
+        # classify every role except (sd-pam) first, then resolve its parent
+        for pid, rec in list(records.items()):
+            if rec.ev is None or rec.role is not None or rec.ev.comm == "(sd-pam)":
+                continue
+            role = classify_exception(rec.ev)
+            rec.role = role if role in EXCEPTION_ROLES else "member"
+        for pid, rec in list(records.items()):
+            if rec.ev is None or rec.role is not None:
+                continue
+            parent = records.get(rec.ppid or "")
+            rec.ev.parent_role = parent.role if parent else None
+            role = classify_exception(rec.ev)
+            rec.role = role if role in EXCEPTION_ROLES else "member"
+
+    # ── bounded enumeration convergence ─────────────────────────────────────
+    # Each pass re-lists and ingests every process that appeared since the last
+    # ingest; a pass with no unprocessed process is the observation boundary.
+    stable = False
+    enum_pass = -1
+    for enum_pass in range(bounds.max_enum_passes):
+        listed = proc.list_pids(bounds.max_pids)
+        if listed.kind != OK:
+            if listed.kind == TRUNCATED:
+                res.coverage["truncated"] += 1
+            elif listed.kind == ERROR:
+                res.coverage["errors"] += 1
+            res.reasons.append(f"enumeration_{listed.kind}")
+            res.cycles.append({"phase": "enumerate", "kind": listed.kind,
+                               "detail": listed.detail})
+            break
+        res.coverage["total_pids"] = max(res.coverage["total_pids"], len(listed.value))
+        new_pids = [p for p in listed.value if p not in processed]
+        if not new_pids:
+            stable = True
+            break
+        if enum_pass > 0:
+            # B3: processes that appeared after the first ingest (bounded churn).
+            res.coverage["new_pids_after"] += len(new_pids)
+        for pid in new_pids:
+            processed.add(pid)
+            if pid == self_pid:
+                continue
+            snapshot(pid)
+        classify_pending()
+        res.cycles.append({"phase": "enumerate_pass", "pass": enum_pass,
+                           "new": len(new_pids)})
+    res.coverage["enum_passes"] = enum_pass + 1
+
+    # ── tally identity classes for every examined record ────────────────────
+    for rec in sorted(records.values(), key=lambda r: int(r.pid)):
+        if rec.uid is None:
+            if rec.status_kind == VANISHED or rec.stat_kind == VANISHED:
+                res.coverage["exited"] += 1
+            else:
+                # B3: identity itself is unreadable -> UNKNOWN uid. This is not
+                # the same as a known other-user process, which is out of scope.
+                kind = rec.stat_kind if rec.starttime is None else rec.status_kind
+                res.reasons.append(f"identity_{kind}:{rec.pid}")
+                res.coverage["unreadable_unknown_uid"] += 1
+                if kind == ERROR:
+                    res.coverage["errors"] += 1
+            continue
+        if rec.role == "member":
+            res.coverage["same_user"] += 1
+            if rec.ev is not None and looks_exceptional(rec.ev):
+                # Name-only or role-only lookalike: no exemption, ordinary scan.
+                res.coverage["role_mismatch"] += 1
+        elif rec.role in EXCEPTION_ROLES:
+            res.coverage["same_user"] += 1
+            res.coverage["exempt"] += 1
+            ev = rec.ev
+            res.exempt.append({"pid": rec.pid, "role": rec.role,
+                               "basis": "name_and_cgroup_role",
+                               "exe": ev.exe_path if ev else None,
+                               "comm": (ev.comm if ev else rec.comm),
+                               "unit": ev.unit if ev else "",
+                               "gaps": sorted(set(ev.evidence_gaps)) if ev else []})
+        elif rec.role == "root":
+            res.coverage["root"] += 1
+        elif rec.role == "other":
+            # Known other-user process: out of scope, not a coverage hole.
+            res.coverage["other_user"] += 1
+        elif rec.role == "credential_transition":
+            res.reasons.append(f"credential_transition:{rec.pid}")
+            res.coverage["unreadable_same_user"] += 1
+        else:
+            res.reasons.append(f"unclassified_identity:{rec.pid}")
+            res.coverage["unreadable_unknown_uid"] += 1
+
+    # scan non-exempt members (fresh starttime recheck)
+    for pid, rec in records.items():
+        if rec.role != "member" or rec.handled:
+            continue
+        if clock() - started > bounds.deadline_seconds:
+            res.reasons.append("deadline_exceeded")
+            res.coverage["truncated"] += 1
+            break
+        rec.handled = True
+        cur = proc.read_text(pid, "stat", 4096)
+        if cur.kind == VANISHED:
+            res.coverage["exited"] += 1
+            res.coverage["vanished"] += 1
+            continue
+        if cur.kind != OK:
+            res.reasons.append(f"identity_recheck_{cur.kind}:{pid}")
+            res.coverage["unreadable_same_user"] += 1
+            res.coverage["denied"] += 1
+            continue
+        if _parse_starttime(cur.value) != rec.starttime:
+            res.reasons.append(f"pid_reuse:{pid}")
+            res.coverage["reused_pids"] += 1
+            continue
+        res.coverage["scanned"] += 1
+        _scan_member(proc, pid, target_real, target_id, bounds, res, self_mnt)
+
+    # The last enumeration that contained no unprocessed process defines the
+    # observation boundary. Processes that appear after that instant are later
+    # openers (the disclosed snapshot residual). The loop re-listed after every
+    # ingest, so anything that appeared during the window was ingested and
+    # examined. Churn is unknown only when the bounded pass budget is exhausted
+    # without ever reaching a boundary (unbounded churn).
+    if not stable:
+        res.reasons.append("enumeration_churn")
+
+    if res.hits:
+        res.state = "blocked"
+    elif res.reasons:
+        res.state = "unknown"
+    else:
+        res.state = "clear_observation"
+    return res
+
+
+def _gather_identity(proc, pid: str, rec: _Rec, agent_uid: int) -> IdentityEvidence:
+    exe = proc.readlink(pid, "exe")
+    exe_path = exe.value if exe.kind == OK else None
+    exe_stat_out = proc.stat_link(pid, "exe")
+    exe_stat = exe_stat_out.value if exe_stat_out.kind == OK else None
+    verified = _exe_is_verified(exe_path, exe_stat)
+    exe_readable = (exe.kind == OK) or (exe_stat_out.kind == OK)
+    if verified:
+        exe_status = "verified"
+    elif exe_readable:
+        # B1: the executable was observed but is not a verified root role binary
+        # -> contrary evidence, never a fallback to weaker role claims.
+        exe_status = "readable_unverified"
+    else:
+        exe_status = "unreadable"
+    cg = proc.read_text(pid, "cgroup", 8192)
+    cgroup = cg.value if cg.kind == OK else None
+    ev = IdentityEvidence(
+        pid=pid, uid_quad=rec.uid, comm=rec.comm, ppid=rec.ppid,
+        exe_path=exe_path, exe_stat=exe_stat,
+        exe_verified_root_file=verified, exe_status=exe_status,
+        gid_quad=rec.gid, groups=rec.groups,
+        cgroup=cgroup, agent_uid=agent_uid)
+    if exe_status == "unreadable":
+        ev.evidence_gaps.append("exe_unreadable")
+    elif exe_status == "readable_unverified":
+        ev.evidence_gaps.append("exe_unverified")
+    if cgroup is None:
+        ev.evidence_gaps.append("cgroup_unreadable")
+    return ev
+
+
+def _scan_member(proc, pid: str, target_real: str, target_id, bounds: Bounds,
+                 res: ScanResult, self_mnt: str | None) -> None:
+    mnt = proc.readlink(pid, "ns/mnt")
+    usr = proc.readlink(pid, "ns/user")
+    if mnt.kind == VANISHED or usr.kind == VANISHED:
+        # proven exit mid-scan, not a permission denial or a coverage hole
+        res.coverage["exited"] += 1
+        res.coverage["vanished"] += 1
+        return
+    if mnt.kind != OK or usr.kind != OK:
+        kind = mnt.kind if mnt.kind != OK else usr.kind
+        res.reasons.append(f"ns_{kind}:{pid}")
+        res.coverage["unreadable_same_user"] += 1
+        if kind == DENIED:
+            res.coverage["denied"] += 1
+        elif kind == TRUNCATED:
+            res.coverage["truncated"] += 1
+        else:
+            res.coverage["errors"] += 1
+        return
+    same_ns = self_mnt is not None and mnt.value == self_mnt
+    if not same_ns:
+        res.coverage["mnt_ns_differs"] += 1
+        # establish path identity inside that mount namespace
+        if target_id is None:
+            res.reasons.append(f"mnt_ns_target_identity_unknown:{pid}")
+            res.coverage["mnt_ns_path_unverified"] += 1
+        else:
+            ident = _path_identity(proc, pid, target_real, same_ns=False)
+            if ident != target_id:
+                res.reasons.append(f"mnt_ns_path_unverified:{pid}")
+                res.coverage["mnt_ns_path_unverified"] += 1
+
+    threads = proc.listdir(pid, "task", bounds.max_threads)
+    if threads.kind == VANISHED:
+        res.coverage["exited"] += 1
+        res.coverage["vanished"] += 1
+        return
+    if threads.kind != OK:
+        res.reasons.append(f"threads_{threads.kind}:{pid}")
+        res.coverage["unreadable_same_user"] += 1
+        if threads.kind == TRUNCATED:
+            res.coverage["threads_truncated"] += 1
+            res.coverage["truncated"] += 1
+        elif threads.kind == DENIED:
+            res.coverage["denied"] += 1
+        else:
+            res.coverage["errors"] += 1
+        return
+    tids = threads.value or []
+    if len(tids) > bounds.max_threads:
+        res.reasons.append(f"threads_truncated:{pid}")
+        res.coverage["threads_truncated"] += 1
+        res.coverage["truncated"] += 1
+        return
+
+    def check(rel: str, kind: str, tid: str | None = None) -> None:
+        link = proc.readlink(pid, rel)
+        if link.kind == VANISHED:
+            res.coverage["vanished"] += 1
+            return
+        if link.kind != OK:
+            res.reasons.append(f"{kind}_{link.kind}:{pid}{':' + tid if tid else ''}")
+            if link.kind == DENIED:
+                res.coverage["denied"] += 1
+                res.coverage["unreadable_same_user"] += 1
+            elif link.kind == TRUNCATED:
+                res.coverage["truncated"] += 1
+            else:
+                res.coverage["errors"] += 1
+                res.coverage["unreadable_same_user"] += 1
+            return
+        if _under(link.value, target_real):
+            res.hits.append({"pid": pid, "tid": tid, "kind": kind, "evidence": link.value})
+        elif target_id and link.value and link.value.startswith("/"):
+            ident = _path_identity(proc, pid, link.value, same_ns)
+            if ident and ident == target_id:
+                res.hits.append({"pid": pid, "tid": tid, "kind": kind + "_inode",
+                                 "evidence": link.value})
+
+    for tid in [None] + tids:
+        prefix = "" if tid is None else f"task/{tid}/"
+        for rel, kind in ((prefix + "cwd", "cwd"), (prefix + "root", "root"),
+                          (prefix + "exe", "exe")):
+            check(rel, kind, tid)
+
+    for rel, tid in [("maps", None)] + [(f"task/{tid}/maps", tid) for tid in tids]:
+        mt = proc.read_text(pid, rel, bounds.max_maps_bytes)
+        if mt.kind == VANISHED:
+            res.coverage["vanished"] += 1
+            continue
+        if mt.kind != OK:
+            res.reasons.append(f"maps_{mt.kind}:{pid}{':' + tid if tid else ''}")
+            res.coverage["unreadable_same_user"] += 1
+            if mt.kind == TRUNCATED:
+                res.coverage["maps_truncated"] += 1
+                res.coverage["truncated"] += 1
+            elif mt.kind == DENIED:
+                res.coverage["denied"] += 1
+            else:
+                res.coverage["errors"] += 1
+            continue
+        lines = mt.value.splitlines()
+        if len(lines) > bounds.max_maps_lines:
+            res.reasons.append(f"maps_truncated:{pid}{':' + tid if tid else ''}")
+            res.coverage["maps_truncated"] += 1
+            res.coverage["truncated"] += 1
+            continue
+        for line in lines:
+            parts = line.split(None, 5)
+            if len(parts) >= 6 and _under(parts[5], target_real):
+                res.hits.append({"pid": pid, "tid": tid, "kind": "maps",
+                                 "evidence": parts[5]})
+
+    for rel, tid in [("fd", None)] + [(f"task/{tid}/fd", tid) for tid in tids]:
+        fds = proc.listdir(pid, rel, bounds.max_fds)
+        if fds.kind == VANISHED:
+            res.coverage["vanished"] += 1
+            continue
+        if fds.kind != OK:
+            res.reasons.append(f"fd_list_{fds.kind}:{pid}{':' + tid if tid else ''}")
+            res.coverage["unreadable_same_user"] += 1
+            if fds.kind == TRUNCATED:
+                res.coverage["fd_truncated"] += 1
+                res.coverage["truncated"] += 1
+            elif fds.kind == DENIED:
+                res.coverage["denied"] += 1
+            else:
+                res.coverage["errors"] += 1
+            continue
+        entries = fds.value or []
+        if len(entries) > bounds.max_fds:
+            res.reasons.append(f"fd_truncated:{pid}{':' + tid if tid else ''}")
+            res.coverage["fd_truncated"] += 1
+            res.coverage["truncated"] += 1
+            continue
+        for fd in entries:
+            link = proc.readlink(pid, f"{rel}/{fd}")
+            if link.kind == VANISHED:
+                continue
+            if link.kind != OK:
+                res.reasons.append(f"fd_{link.kind}:{pid}{':' + tid if tid else ''}")
+                if link.kind == DENIED:
+                    res.coverage["denied"] += 1
+                    res.coverage["unreadable_same_user"] += 1
+                elif link.kind == TRUNCATED:
+                    res.coverage["truncated"] += 1
+                else:
+                    res.coverage["errors"] += 1
+                    res.coverage["unreadable_same_user"] += 1
+                continue
+            if _under(link.value, target_real):
+                res.hits.append({"pid": pid, "tid": tid, "kind": "fd",
+                                 "evidence": link.value})
+            elif target_id and link.value and link.value.startswith("/"):
+                ident = _path_identity(proc, pid, link.value, same_ns)
+                if ident and ident == target_id:
+                    res.hits.append({"pid": pid, "tid": tid, "kind": "fd_inode",
+                                     "evidence": link.value})
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="bounded current-use scanner")
+    ap.add_argument("--target", required=True, help="candidate path to check")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--max-pids", type=int, default=DEFAULT_MAX_PIDS)
+    ap.add_argument("--deadline-seconds", type=float, default=DEFAULT_DEADLINE_SECONDS)
+    ap.add_argument("--max-enum-passes", type=int, default=DEFAULT_MAX_ENUM_PASSES)
+    args = ap.parse_args(argv)
+    res = scan(args.target, bounds=Bounds(max_pids=args.max_pids,
+                                          deadline_seconds=args.deadline_seconds,
+                                          max_enum_passes=args.max_enum_passes))
+    out = res.to_json()
+    if args.json:
+        print(json.dumps(out, indent=2, sort_keys=True))
+    else:
+        print(f"state={out['state']} target={out['target']}")
+        for r in out["reasons"]:
+            print(f"  reason: {r}")
+        for h in out["hits"]:
+            print(f"  hit: {h}")
+    return 0 if out["state"] == "clear_observation" else (3 if out["state"] == "blocked" else 2)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
