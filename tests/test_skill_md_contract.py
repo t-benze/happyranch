@@ -324,6 +324,64 @@ def test_merge_key_preserves_document_order_and_precedence():
     ) == [FRONTMATTER_DUPLICATE_KEY]
 
 
+def test_duplicate_merge_declarations_use_original_root_identity():
+    """R2/R3 repair: duplicate identity is the ORIGINAL root key order captured
+    BEFORE ``flatten_mapping``. Two top-level ``<<: {}`` declarations are one
+    ``frontmatter_duplicate_key`` naming ``<<`` -- never two admission findings
+    and never a parsed mapping."""
+    duplicate_merge = (
+        "---\nname: duplicate-merge\ndescription: d\n<<: {}\n<<: {}\n---\n"
+    )
+    findings = skill_md_contract_violations(duplicate_merge, expected_slug="duplicate-merge")
+    assert [code for code, _ in findings] == [FRONTMATTER_DUPLICATE_KEY]
+    assert "<<" in dict(findings)[FRONTMATTER_DUPLICATE_KEY]
+    # A duplicate is structural: no parsed channel and no admission/required
+    # group follows (the "last-wins" merge cannot launder the identity).
+    assert parse_skill_frontmatter(duplicate_merge) is None
+    assert [code for code, _ in frontmatter_admission_violations(duplicate_merge)] == [
+        FRONTMATTER_DUPLICATE_KEY
+    ]
+
+
+def test_merge_override_reports_excluded_key_not_fabricated_duplicate_name():
+    """R2/R3 repair: a single ``<<: {name: inherited}`` beside one explicit
+    top-level ``name`` declares each original root key once. It is excluded-merge
+    admission-invalid by presence, never a fabricated duplicate ``name``."""
+    override_merge = (
+        "---\nname: merge-override\ndescription: d\n<<: {name: inherited}\n---\n"
+    )
+    findings = skill_md_contract_violations(override_merge, expected_slug="merge-override")
+    assert [code for code, _ in findings] == [ADMISSION_FIELD_NOT_ALLOWED]
+    assert "<<" in dict(findings)[ADMISSION_FIELD_NOT_ALLOWED]
+    # The original root declares ``name`` once; the merged value is not a second
+    # root identity, so the parsed mapping is the explicit document value.
+    assert parse_skill_frontmatter(override_merge) == {
+        "name": "merge-override", "description": "d",
+    }
+    assert [code for code, _ in frontmatter_admission_violations(override_merge)] == [
+        ADMISSION_FIELD_NOT_ALLOWED
+    ]
+
+
+def test_original_root_duplicate_precedence_with_merge_and_nested_content():
+    """The repair keeps structural precedence intact: a genuine original
+    duplicate, a malformed merge value and a nested-mapping merge are classified
+    exactly as before (malformed/non-mapping first; nested is never the root)."""
+    # A genuine original duplicate still short-circuits every later group.
+    assert _codes(
+        "---\nname: my-workflow\nname: other\n<<: {name: inherited}\n---\n"
+    ) == [FRONTMATTER_DUPLICATE_KEY]
+    # A non-mapping merge value is malformed before any duplicate/admission group.
+    assert _codes(
+        "---\nname: my-workflow\ndescription: d\n<<: 5\n---\n"
+    ) == [SKILL_MD_MALFORMED_FRONTMATTER]
+    # A merge key inside a nested mapping is not an original root declaration;
+    # the merged nested shape is an invalid metadata value instead.
+    assert _codes(
+        "---\nname: my-workflow\ndescription: d\nmetadata: {a: {<<: {b: c}}}\n---\n"
+    ) == [FRONTMATTER_INVALID_METADATA]
+
+
 # ── R3: duplicate identity/presence separated from nullable key values ──
 
 def test_repeated_null_key_is_the_sole_duplicate_finding():

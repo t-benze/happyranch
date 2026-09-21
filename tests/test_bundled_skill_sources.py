@@ -302,6 +302,38 @@ def test_bundled_merge_key_is_rejected_in_copied_real_source(tmp_path: Path) -> 
     assert "<<" in findings[0][2]
 
 
+def test_bundled_duplicate_merge_declarations_fail_as_one_duplicate(
+    tmp_path: Path,
+) -> None:
+    """R2/R3 repair in copied real source: duplicate identity is the original
+    root order before merge flattening, so two ``<<: {}`` declarations are one
+    ``frontmatter_duplicate_key`` naming ``<<``, never two admission findings."""
+    root = _mutated_source(
+        tmp_path,
+        lambda text: _insert_frontmatter_line(
+            _insert_frontmatter_line(text, "<<: {}"), "<<: {}"
+        ),
+    )
+    findings = _bundled_source_findings(root)
+    assert [code for _, code, _ in findings] == ["frontmatter_duplicate_key"]
+    assert "<<" in findings[0][2]
+
+
+def test_bundled_merge_override_reports_excluded_key_not_duplicate_name(
+    tmp_path: Path,
+) -> None:
+    """R2/R3 repair in copied real source: a single ``<<`` merge that contributes
+    a key the document already declares once is admission-invalid by presence,
+    never a fabricated duplicate of that key."""
+    root = _mutated_source(
+        tmp_path,
+        lambda text: _insert_frontmatter_line(text, "<<: {name: create-skill}"),
+    )
+    findings = _bundled_source_findings(root)
+    assert [code for _, code, _ in findings] == ["admission_field_not_allowed"]
+    assert "<<" in findings[0][2]
+
+
 def _frontmatter_rewrite(text: str, frontmatter: str) -> str:
     """Replace the real source's frontmatter block with ``frontmatter``,
     keeping the real body bytes after the closing fence."""

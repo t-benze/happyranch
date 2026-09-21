@@ -28,7 +28,13 @@ NEW custom-skill writes):
   and string values only).
 * Duplicate top-level keys are detected by a duplicate-aware load and produce
   ``frontmatter_duplicate_key`` naming the first duplicated key; they are
-  structural and short-circuit every later group.
+  structural and short-circuit every later group. The duplicate identity is
+  read from the ORIGINAL root key order captured before YAML merge (``<<``)
+  flattening, so two top-level ``<<: {}`` declarations are one duplicate
+  naming ``<<`` while a single ``<<`` merge that happens to contribute an
+  otherwise-present key (for example ``<<: {name: inherited}`` beside an
+  explicit ``name``) is admission-invalid by presence, never a fabricated
+  duplicate ``name``.
 
 Deterministic precedence (the first applicable finding in an earlier group is
 the only finding of that group; groups 2-4 may coexist in order):
@@ -166,7 +172,15 @@ _MERGE_KEY = "<<"
 class _StrictLoader(yaml.SafeLoader):
     """SafeLoader that records the first duplicated top-level mapping key and
     preserves the original root key identities/order before YAML merge keys
-    (``<<``) are flattened away."""
+    (``<<``) are flattened away.
+
+    Duplicate identity is decided from ``top_level_keys`` -- the original root
+    key order captured before ``flatten_mapping`` -- never from the flattened
+    mapping. Flattening removes ``<<`` and injects the merged entries, so a
+    post-merge scan would both miss repeated merge declarations and fabricate a
+    duplicate from a merge-contributed key that the document only declares
+    once.
+    """
 
     def __init__(self, stream) -> None:
         super().__init__(stream)
@@ -176,6 +190,24 @@ class _StrictLoader(yaml.SafeLoader):
         self.top_level_duplicate_present = False
         self.top_level_keys: list = []
         self._root_node = None
+
+
+def _record_root_duplicate(loader: _StrictLoader, original_keys: list) -> None:
+    """Record the first duplicated ORIGINAL root key before merge flattening.
+
+    An unhashable root key is skipped here: the post-merge construction loop
+    raises the canonical ``found unhashable key`` ``ConstructorError``, which
+    the caller classifies as malformed exactly as before.
+    """
+    seen: set = set()
+    for original_key in original_keys:
+        try:
+            if original_key in seen and not loader.top_level_duplicate_present:
+                loader.top_level_duplicate = original_key
+                loader.top_level_duplicate_present = True
+            seen.add(original_key)
+        except TypeError:
+            continue
 
 
 def _strict_mapping(loader: _StrictLoader, node, deep: bool = False):
@@ -196,6 +228,9 @@ def _strict_mapping(loader: _StrictLoader, node, deep: bool = False):
             else loader.construct_object(key_node, deep=False)
             for key_node, _value_node in node.value
         ]
+        # Duplicate identity is the ORIGINAL root declaration order, captured
+        # before ``flatten_mapping`` mutates ``node.value``.
+        _record_root_duplicate(loader, loader.top_level_keys)
     loader.flatten_mapping(node)
     mapping: dict = {}
     for key_node, value_node in node.value:
@@ -209,9 +244,6 @@ def _strict_mapping(loader: _StrictLoader, node, deep: bool = False):
                 "found unhashable key",
                 key_node.start_mark,
             ) from exc
-        if is_root and key in mapping and not loader.top_level_duplicate_present:
-            loader.top_level_duplicate = key
-            loader.top_level_duplicate_present = True
         mapping[key] = loader.construct_object(value_node, deep=deep)
     return mapping
 

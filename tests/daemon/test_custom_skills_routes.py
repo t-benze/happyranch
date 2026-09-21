@@ -2890,3 +2890,863 @@ def test_route_rejects_present_merge_key_and_null_duplicate(client_with_runtime)
         (nulled.json()["version_id"],),
     ).fetchone()
     assert "repeats the top-level key" in null_row["validation_findings"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TASK-8617 — repair of the two TASK-8613 findings under the accepted Option A
+# design. Finding 1 duplicate identity (original root order before merge
+# flattening) and the literal-matrix/route completion; A1-A4 admitted ASCII
+# boundaries; A5b/A14/A15 invalid-document 201 evidence on human and both agent
+# mounts; A17 frozen non-ASCII history; A18 route ordering; R5c/A16/C4-C6
+# frozen legacy replay. All cases reuse the existing helpers and fixtures; no
+# second validator or parallel framework is introduced.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_AGENT_CREATE_PATHS = [f"{BASE}/agent-create", "/api/v1/orgs/alpha/skills/agent"]
+
+
+def _canonical_both_roots(org, monkeypatch, tmp_path, *, task_id="TASK-ROOTS"):
+    """Materialize the unified canonical set into a disposable workspace and
+    return ``(specs, workspace)`` so BOTH provider roots can be inspected."""
+    from runtime.orchestrator import workspace_adapters as wa
+
+    monkeypatch.setenv("HAPPYRANCH_CANONICAL_STORE_ROOT", str(tmp_path / "canonical"))
+    workspace = org.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True, exist_ok=True)
+    specs = wa._materialize_unified_canonical(
+        workspace, org.settings, slug="alpha", context="task", provider="codex",
+        agent_name="dev_agent", team="engineering", task_id=task_id,
+        session_id="sess-roots", org_root=org.root, db=org.db,
+        skills_root=org.settings.project_root / "runtime" / "skills",
+    )
+    return specs, workspace
+
+
+def _grant_org_allow(client, skill_id, version_id):
+    response = client.put(
+        f"{BASE}/{skill_id}/eligibility",
+        json=[{"scope_type": "org", "scope_target": None, "effect": "allow"}],
+        headers={"If-Match": str(version_id)},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _activate_agent(org, *, task_id="TASK-T8617", agent="dev_agent", session="sess-t8617"):
+    org.db.insert_task(TaskRecord(id=task_id, brief="author a custom skill"))
+    org.sessions.set_active(task_id, agent, session, org_slug="alpha")
+    return task_id, session
+
+
+# ── Finding 1: duplicate identity at the real human-create route ─────────
+
+def test_finding1_duplicate_merge_and_override_route_findings(client_with_runtime):
+    """Finding 1 route proof: two original top-level ``<<: {}`` declarations
+    persist exactly ONE ``frontmatter_duplicate_key`` naming ``<<`` and parse to
+    no mapping; one ``<<: {name: inherited}`` beside one explicit ``name``
+    persists excluded-merge admission naming ``<<`` (never a fabricated
+    duplicate name). Both remain 201 immutable invalid evidence."""
+    from runtime.skills.skill_md import parse_skill_frontmatter
+
+    client, org = client_with_runtime
+    conn = getattr(org.db, "_conn", org.db)
+
+    duplicate_md = "---\nname: duplicate-merge\ndescription: d\n<<: {}\n<<: {}\n---\n"
+    duplicate = client.post(
+        BASE,
+        json={"slug": "duplicate-merge", "name": "Duplicate Merge", "skill_md": duplicate_md},
+    )
+    assert duplicate.status_code == 201, duplicate.text
+    assert duplicate.json()["validation_state"] == "invalid"
+    dup_row = conn.execute(
+        "SELECT skill_md_cache, validation_findings FROM custom_skill_versions WHERE id=?",
+        (duplicate.json()["version_id"],),
+    ).fetchone()
+    assert dup_row["skill_md_cache"] == duplicate_md
+    assert json.loads(dup_row["validation_findings"]) == [
+        "SKILL.md frontmatter repeats the top-level key '<<'"
+    ]
+    # A structural duplicate produces no parsed mapping channel.
+    assert parse_skill_frontmatter(duplicate_md) is None
+
+    override_md = (
+        "---\nname: merge-override\ndescription: d\n<<: {name: inherited}\n---\n"
+    )
+    override = client.post(
+        BASE,
+        json={"slug": "merge-override", "name": "Merge Override", "skill_md": override_md},
+    )
+    assert override.status_code == 201, override.text
+    assert override.json()["validation_state"] == "invalid"
+    override_findings = json.loads(conn.execute(
+        "SELECT validation_findings FROM custom_skill_versions WHERE id=?",
+        (override.json()["version_id"],),
+    ).fetchone()["validation_findings"])
+    assert len(override_findings) == 1
+    assert "'<<' is not permitted" in override_findings[0]
+    assert "duplicate" not in override_findings[0].lower()
+    # The original root declares ``name`` once: the parsed channel is the
+    # explicit document value, never a fabricated duplicate name.
+    assert parse_skill_frontmatter(override_md) == {
+        "name": "merge-override", "description": "d",
+    }
+
+
+# ── Finding 2: literal matrix through the real route + nonmutation ────────
+
+def test_finding2_literal_matrix_route_outcomes_and_permission_nonmutation(
+    client_with_runtime,
+):
+    """Finding 2 route proof: accepted literal rows through the real route.
+    Document/admission findings persist as 201 immutable invalid evidence with
+    the EXACT ordered finding list; a valid row is 201 valid; a non-conforming
+    logical identity is a 422 request refusal before validation. Authoring
+    leaves every generated permission/settings surface byte-identical (C3)."""
+    from runtime.skills.skill_md import skill_md_contract_violations
+
+    client, org = client_with_runtime
+    conn = getattr(org.db, "_conn", org.db)
+
+    workspace = org.root / "workspaces" / "dev_agent"
+    (workspace / ".claude").mkdir(parents=True, exist_ok=True)
+    permission_surfaces = {
+        workspace / ".claude" / "settings.json": b'{"permissions": {"allow": ["happyranch"]}}\n',
+        workspace / "opencode.json": b'{"permission": {"bash": "ask"}}\n',
+    }
+    for path, payload in permission_surfaces.items():
+        path.write_bytes(payload)
+    before_permissions = {path: path.read_bytes() for path in permission_surfaces}
+
+    cases = [
+        ("literal-valid", "---\nname: literal-valid\ndescription: d\n---\n",
+         "valid", []),
+        ("literal-order",
+         "---\nname: literal-order\ndescription: d\n"
+         "allowed-tools: null\nhooks: false\nvendor-x: 1\nfuture-field: \"\"\n---\n",
+         "invalid", ["admission_field_not_allowed"] * 4),
+        ("literal-duplicate",
+         "---\nname: literal-duplicate\ndescription: d\nname: b\n---\n",
+         "invalid", ["frontmatter_duplicate_key"]),
+        ("literal-duplicate-merge",
+         "---\nname: literal-duplicate-merge\ndescription: d\n<<: {}\n<<: {}\n---\n",
+         "invalid", ["frontmatter_duplicate_key"]),
+        ("literal-malformed", "---\nname: [a\ndescription: d\n---\n",
+         "invalid", ["skill_md_malformed_frontmatter"]),
+        ("literal-required-order",
+         "---\nname: literal-required-order\nallowed-tools: []\n---\n",
+         "invalid", ["admission_field_not_allowed", "frontmatter_missing_description"]),
+        ("literal-optional-order",
+         "---\nname: literal-optional-order\ndescription: d\nallowed-tools: []\nlicense: 1\n---\n",
+         "invalid", ["admission_field_not_allowed", "frontmatter_invalid_license"]),
+    ]
+    for slug, skill_md, expected_state, expected_codes in cases:
+        response = client.post(
+            BASE, json={"slug": slug, "name": "Display label", "skill_md": skill_md}
+        )
+        assert response.status_code == 201, (slug, response.text)
+        assert response.json()["validation_state"] == expected_state
+        # The ordered reason codes are the accepted literal expected order.
+        assert [
+            code for code, _ in skill_md_contract_violations(skill_md, expected_slug=slug)
+        ] == expected_codes
+        persisted = json.loads(conn.execute(
+            "SELECT validation_findings FROM custom_skill_versions WHERE id=?",
+            (response.json()["version_id"],),
+        ).fetchone()["validation_findings"])
+        assert persisted == [
+            message
+            for _, message in skill_md_contract_violations(skill_md, expected_slug=slug)
+        ]
+
+    before_counts = _custom_counts(org)
+    refused = client.post(
+        BASE, json={"slug": "café-workflow", "name": "Display", "skill_md": _SAFE_ASCII_BODY}
+    )
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"]["code"] == "invalid_slug"
+    assert _custom_counts(org) == before_counts
+    assert {path: path.read_bytes() for path in permission_surfaces} == before_permissions
+
+
+# ── Finding 3: A1-A4 admitted ASCII identities + Unicode display ──────────
+
+def test_a1_a2_a4_admitted_ascii_boundaries_and_quoted_digit_identities(
+    client_with_runtime,
+):
+    """A1/A2/A4: the real human-create route admits length-1/64 and quoted
+    digit-only/mixed ASCII identities, persisting valid versions under the
+    UNCHANGED ASCII artifact-key formula (under the 200-char store bound)."""
+    client, org = client_with_runtime
+    conn = getattr(org.db, "_conn", org.db)
+    cases = [
+        ("a", "a"),
+        ("a-1", "a-1"),
+        ("123", '"123"'),
+        ("inventory-count", "inventory-count"),
+        ("a" * 64, "a" * 64),
+        ("a" * 62 + "-b", "a" * 62 + "-b"),
+    ]
+    for slug, yaml_name in cases:
+        skill_md = f"---\nname: {yaml_name}\ndescription: d\n---\n"
+        response = client.post(
+            BASE, json={"slug": slug, "name": f"Display {slug}", "skill_md": skill_md}
+        )
+        assert response.status_code == 201, (slug, response.text)
+        assert response.json()["validation_state"] == "valid"
+        row = conn.execute(
+            "SELECT content_artifact_key FROM custom_skill_versions WHERE id=?",
+            (response.json()["version_id"],),
+        ).fetchone()
+        assert row["content_artifact_key"] == (
+            f"custom-skills/{slug}/{hashlib.sha256(skill_md.encode()).hexdigest()}/SKILL.md"
+        )
+        assert len(row["content_artifact_key"]) <= 200
+
+
+def test_a3_unicode_display_and_description_retained_both_roots(
+    client_with_runtime, monkeypatch, tmp_path,
+):
+    """A3: an ASCII logical identity admits a Unicode catalog display name and
+    Unicode frontmatter description. Both are retained EXACTLY, the artifact key
+    keeps the ASCII logical slug, and the authorized skill materializes in both
+    provider roots with the exact target identity."""
+    client, org = client_with_runtime
+    _add_agent(org)
+    display = "库存盘点"
+    unicode_description = "盘点库存流程 café"
+    skill_md = f"---\nname: my-workflow\ndescription: {unicode_description}\n---\n"
+    response = client.post(
+        BASE, json={"slug": "my-workflow", "name": display, "skill_md": skill_md}
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["validation_state"] == "valid"
+    skill_id, version = response.json()["skill_id"], response.json()["version_id"]
+
+    detail = client.get(f"{BASE}/{skill_id}").json()
+    assert detail["name"] == display
+    assert detail["description"] == unicode_description
+    stored = getattr(org.db, "_conn", org.db).execute(
+        "SELECT content_artifact_key, skill_md_cache FROM custom_skill_versions WHERE id=?",
+        (version,),
+    ).fetchone()
+    assert stored["content_artifact_key"] == (
+        f"custom-skills/my-workflow/{hashlib.sha256(skill_md.encode()).hexdigest()}/SKILL.md"
+    )
+    assert stored["skill_md_cache"] == skill_md
+
+    _grant_org_allow(client, skill_id, version)
+    specs, workspace = _canonical_both_roots(org, monkeypatch, tmp_path, task_id="TASK-A3")
+    spec = next(s for s in specs if s["slug"] == "my-workflow")
+    assert spec["version"] == str(version)
+    for root in (".claude/skills", ".agents/skills"):
+        link = workspace / root / "my-workflow"
+        assert link.exists(), root
+        assert (link / "SKILL.md").read_text(encoding="utf-8") == skill_md
+
+
+# ── Finding 4: A5b/A14/A15 invalid-document 201 evidence ─────────────────
+
+_INVALID_DOCUMENT_NAME_CASES = [
+    # A14: admitted ASCII identity + Unicode document name.
+    ("café-workflow", "ASCII lower-case"),
+    # A15: admitted ASCII identity + ASCII name that differs from the slug.
+    ("other-workflow", "must equal the logical slug"),
+    # A5b: admitted ASCII identity + 65-char document name (over the bound).
+    ("a" * 65, "ASCII lower-case"),
+]
+
+
+@pytest.mark.parametrize("doc_name,expected_message", _INVALID_DOCUMENT_NAME_CASES)
+@pytest.mark.parametrize("surface", ["human-create", "agent-create-a", "agent-create-b"])
+def test_a5b_a14_a15_invalid_document_name_201_evidence_create_seams(
+    client_with_runtime, doc_name, expected_message, surface,
+):
+    """A5b/A14/A15 on every create seam (human + both agent mounts): a valid
+    ASCII identity with an invalid/mismatching/over-length document name is 201
+    immutable invalid evidence, never a request-identity 4xx and never a
+    zero-residue claim. Retained bytes/hash/key/findings/marker are asserted and
+    the first-invalid version is the dark current pointer."""
+    client, org = client_with_runtime
+    conn = getattr(org.db, "_conn", org.db)
+    skill_md = f"---\nname: {doc_name}\ndescription: d\n---\n"
+
+    if surface == "human-create":
+        response = client.post(
+            BASE, json={"slug": "my-workflow", "name": "Display label", "skill_md": skill_md}
+        )
+    else:
+        path = _AGENT_CREATE_PATHS[0 if surface == "agent-create-a" else 1]
+        _activate_agent(org, task_id="TASK-INV", session="sess-inv")
+        client.headers.pop("Authorization", None)
+        response = client.post(
+            path, params={"session_id": "sess-inv"},
+            json={"slug": "my-workflow", "name": "Display label", "skill_md": skill_md},
+        )
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    if surface == "human-create":
+        skill_id, version_id = payload["skill_id"], payload["version_id"]
+        assert payload["validation_state"] == "invalid"
+    else:
+        skill_id, version_id = payload["skill"]["id"], payload["version"]["id"]
+        assert payload["version"]["validation_state"] == "invalid"
+
+    digest = hashlib.sha256(skill_md.encode()).hexdigest()
+    row = conn.execute(
+        "SELECT skill_md_cache, content_hash, content_artifact_key, validation_findings, "
+        "validation_state, validator_version FROM custom_skill_versions WHERE id=?",
+        (version_id,),
+    ).fetchone()
+    assert row["skill_md_cache"] == skill_md
+    assert row["content_hash"] == digest
+    assert row["content_artifact_key"] == f"custom-skills/my-workflow/{digest}/SKILL.md"
+    findings = json.loads(row["validation_findings"])
+    assert len(findings) == 1 and expected_message in findings[0]
+    assert row["validation_state"] == "invalid"
+    assert row["validator_version"] == "THR-262/1.0.0"
+    current = conn.execute(
+        "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone()["current_version_id"]
+    assert current == version_id
+
+
+@pytest.mark.parametrize("doc_name,expected_message", _INVALID_DOCUMENT_NAME_CASES)
+@pytest.mark.parametrize("surface", ["human-append", "agent-append-a", "agent-append-b"])
+def test_a5b_a14_a15_invalid_document_name_201_evidence_append_seams(
+    client_with_runtime, doc_name, expected_message, surface,
+):
+    """A5b/A14/A15 on every append seam (human + both agent mounts): an invalid
+    document name appended to an eligible VALID version retains the prior
+    pointer/description/eligibility and appends immutable invalid evidence with
+    the retained bytes/hash/key/findings."""
+    client, org = client_with_runtime
+    conn = getattr(org.db, "_conn", org.db)
+    _add_agent(org)
+    token = client.headers.get("Authorization")
+    valid_md = "---\nname: retain-valid\ndescription: valid target\n---\n"
+    invalid_md = f"---\nname: {doc_name}\ndescription: d\n---\n"
+
+    if surface == "human-append":
+        created = client.post(
+            BASE, json={"slug": "retain-valid", "name": "Retain", "skill_md": valid_md}
+        )
+    else:
+        path = _AGENT_CREATE_PATHS[0 if surface == "agent-append-a" else 1]
+        _activate_agent(org, task_id="TASK-APP", session="sess-app")
+        client.headers.pop("Authorization", None)
+        created = client.post(
+            path, params={"session_id": "sess-app"},
+            json={"slug": "retain-valid", "name": "Retain", "skill_md": valid_md},
+        )
+    assert created.status_code == 201, created.text
+    if surface == "human-append":
+        skill_id, valid_version = created.json()["skill_id"], created.json()["version_id"]
+    else:
+        skill_id = created.json()["skill"]["id"]
+        valid_version = created.json()["version"]["id"]
+
+    client.headers["Authorization"] = token
+    _grant_org_allow(client, skill_id, valid_version)
+
+    if surface == "human-append":
+        appended = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": invalid_md})
+    else:
+        path = _AGENT_CREATE_PATHS[0 if surface == "agent-append-a" else 1]
+        client.headers.pop("Authorization", None)
+        appended = client.post(
+            path, params={"session_id": "sess-app"},
+            json={"slug": "retain-valid", "name": "Retain", "skill_md": invalid_md},
+        )
+        client.headers["Authorization"] = token
+    assert appended.status_code == 201, appended.text
+    if surface == "human-append":
+        version_id = appended.json()["version_id"]
+        assert appended.json()["validation_state"] == "invalid"
+    else:
+        version_id = appended.json()["version"]["id"]
+        assert appended.json()["version"]["validation_state"] == "invalid"
+
+    # Prior VALID pointer/description/eligibility retained.
+    skill_row = conn.execute(
+        "SELECT current_version_id, description FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone()
+    assert skill_row["current_version_id"] == valid_version
+    assert skill_row["description"] == "valid target"
+    assert conn.execute(
+        "SELECT count(*) FROM custom_skill_eligibility_rules "
+        "WHERE skill_id=? AND superseded_at IS NULL", (skill_id,)
+    ).fetchone()[0] == 1
+
+    digest = hashlib.sha256(invalid_md.encode()).hexdigest()
+    invalid_row = conn.execute(
+        "SELECT skill_md_cache, content_hash, content_artifact_key, validation_findings "
+        "FROM custom_skill_versions WHERE id=?", (version_id,)
+    ).fetchone()
+    assert invalid_row["skill_md_cache"] == invalid_md
+    assert invalid_row["content_hash"] == digest
+    assert invalid_row["content_artifact_key"] == (
+        f"custom-skills/retain-valid/{digest}/SKILL.md"
+    )
+    findings = json.loads(invalid_row["validation_findings"])
+    assert len(findings) == 1 and expected_message in findings[0]
+
+
+def test_a5b_a14_a15_first_invalid_dark_and_invalid_successor_both_roots(
+    client_with_runtime, monkeypatch, tmp_path,
+):
+    """A5b/A14/A15 both-root outcome: an invalid-document-name FIRST creation
+    stays dark and is absent from BOTH provider roots; an invalid-document-name
+    SUCCESSOR of an eligible valid version retains the prior pointer and BOTH
+    roots keep the prior valid target identity."""
+    client, org = client_with_runtime
+    _add_agent(org)
+    conn = getattr(org.db, "_conn", org.db)
+
+    dark_md = "---\nname: café-workflow\ndescription: d\n---\n"
+    dark = client.post(
+        BASE, json={"slug": "dark-doc-name", "name": "Dark", "skill_md": dark_md}
+    )
+    assert dark.status_code == 201 and dark.json()["validation_state"] == "invalid"
+
+    valid_md = "---\nname: retain-valid\ndescription: valid target\n---\n"
+    created = client.post(
+        BASE, json={"slug": "retain-valid", "name": "Retain", "skill_md": valid_md}
+    )
+    assert created.status_code == 201, created.text
+    skill_id, valid_version = created.json()["skill_id"], created.json()["version_id"]
+    _grant_org_allow(client, skill_id, valid_version)
+
+    invalid_md = "---\nname: other-workflow\ndescription: d\n---\n"
+    appended = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": invalid_md})
+    assert appended.status_code == 201 and appended.json()["validation_state"] == "invalid"
+    assert appended.json()["current_version_id"] == valid_version
+
+    specs, workspace = _canonical_both_roots(org, monkeypatch, tmp_path, task_id="TASK-A5B")
+    slugs = {spec["slug"] for spec in specs}
+    assert "retain-valid" in slugs
+    assert "dark-doc-name" not in slugs
+    for root in (".claude/skills", ".agents/skills"):
+        assert not (workspace / root / "dark-doc-name").exists(), root
+        link = workspace / root / "retain-valid"
+        assert link.exists(), root
+        assert (link / "SKILL.md").read_text(encoding="utf-8") == valid_md
+
+
+# ── Finding 5: A17 frozen non-ASCII historical row ───────────────────────
+
+def test_a17_frozen_non_ascii_history_reads_and_append_refusal(
+    client_with_runtime, monkeypatch, tmp_path,
+):
+    """A17: a synthetic frozen non-ASCII stored row keeps READ-ONLY history
+    (detail/versions/diff/resolve/materialization/recovery) with frozen
+    bytes/hash/key/marker/state/findings/provenance and no revalidation. A NEW
+    append under it is 422 ``invalid_slug`` with a complete no-residue snapshot
+    and never reaches the validator/dry/key/artifact-write seams."""
+    from runtime.daemon.routes import custom_skills as routes
+    from runtime.daemon.routes import skills as skills_routes
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import _build_custom_skill_canonical_specs
+    from runtime.skills.canonical_store import CanonicalSkillStore
+    from runtime.skills.custom import service as custom_service
+
+    client, org = client_with_runtime
+    _add_agent(org)
+    conn = getattr(org.db, "_conn", org.db)
+    skill_id = "custom:synthetic-unicode"
+    slug = "café-workflow"
+    first_md = "---\nname: café-workflow\ndescription: stored\n---\n"
+    second_md = "# Frozen legacy heading-first\n\nbody\n"
+    store = ArtifactStore(OrgPaths(org.root).artifacts_dir)
+    key_one = store.put(
+        "custom-skills/cafe-stored/stored/SKILL.md", first_md.encode()
+    ).name
+    key_two = store.put(
+        "custom-skills/cafe-stored/legacy/SKILL.md", second_md.encode()
+    ).name
+    conn.execute(
+        "INSERT INTO custom_skills "
+        "(id,org_slug,slug,name,description,origin_kind,created_at,created_by) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (skill_id, "alpha", slug, "Stored Unicode", "stored", "human",
+         custom_service.now(), "founder"),
+    )
+    conn.execute(
+        """INSERT INTO custom_skill_versions
+           (skill_id,parent_version_id,content_hash,content_artifact_key,skill_md_cache,
+            validation_state,validator_version,validation_findings,created_at,
+            author_kind,author_identity,source_task_id,source_session_id,task_brief_digest)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (skill_id, None, hashlib.sha256(first_md.encode()).hexdigest(), key_one, first_md,
+         "invalid", "THR-055/1.0.0",
+         '["SKILL.md frontmatter repeats the top-level key \'<<\'"]',
+         custom_service.now(), "human", "founder", "TASK-HIST", "sess-hist", "hist-digest"),
+    )
+    version_one = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute(
+        """INSERT INTO custom_skill_versions
+           (skill_id,parent_version_id,content_hash,content_artifact_key,skill_md_cache,
+            validation_state,validator_version,validation_findings,created_at,
+            author_kind,author_identity)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (skill_id, version_one, hashlib.sha256(second_md.encode()).hexdigest(), key_two,
+         second_md, "valid", "THR-055/1.0.0", "[]", custom_service.now(), "human", "founder"),
+    )
+    version_two = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute(
+        "UPDATE custom_skills SET current_version_id=? WHERE id=?", (version_one, skill_id)
+    )
+    conn.commit()
+
+    frozen_skill = dict(conn.execute(
+        "SELECT * FROM custom_skills WHERE id=?", (skill_id,)).fetchone())
+    frozen_versions = [dict(r) for r in conn.execute(
+        "SELECT * FROM custom_skill_versions WHERE skill_id=? ORDER BY id", (skill_id,))]
+
+    # Read-only history is preserved unchanged.
+    detail = client.get(f"{BASE}/{skill_id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["slug"] == slug
+    assert detail.json()["validation_state"] == "invalid"
+    assert client.get(f"{BASE}/{skill_id}/versions").status_code == 200
+    diff = client.get(f"{BASE}/{skill_id}/versions/{version_one}/diff/{version_two}")
+    assert diff.status_code == 200, diff.text
+    assert diff.json()["a"]["content_hash"] == frozen_versions[0]["content_hash"]
+    explain = client.get(f"{BASE}/{skill_id}/eligibility/explain", params={"agent": "dev_agent"})
+    assert explain.status_code == 200, explain.text
+    assert explain.json()["visible"] is False
+    # Materialization is not promised for an INVALID stored row: it is excluded.
+    monkeypatch.setenv("HAPPYRANCH_CANONICAL_STORE_ROOT", str(tmp_path / "canonical"))
+    specs = _build_custom_skill_canonical_specs(
+        store=CanonicalSkillStore(), org_root=org.root, db=org.db, slug="alpha",
+        agent_name="dev_agent", team="engineering", task_id="TASK-A17",
+        session_id="sess-a17", session_context="task",
+    )
+    assert slug not in {spec["slug"] for spec in specs}
+    # Recovery refuses the ineligible (invalid) current with a bounded audit.
+    recover = client.post(
+        "/api/v1/orgs/alpha/skills/recover",
+        json={"slug": slug, "version": str(version_one),
+              "content_hash": frozen_versions[0]["content_hash"]},
+    )
+    assert recover.status_code == 409
+    assert conn.execute(
+        "SELECT reason_codes FROM skill_validation_events WHERE skill_id=? "
+        "ORDER BY id DESC LIMIT 1", (skill_id,)
+    ).fetchone()["reason_codes"] == '["ineligible_current_version"]'
+
+    # Frozen bytes/hash/key/marker/state/findings/provenance never rewritten.
+    assert dict(conn.execute(
+        "SELECT * FROM custom_skills WHERE id=?", (skill_id,)).fetchone()) == frozen_skill
+    assert [dict(r) for r in conn.execute(
+        "SELECT * FROM custom_skill_versions WHERE skill_id=? ORDER BY id", (skill_id,))
+    ] == frozen_versions
+
+    # A NEW append under the stored non-ASCII slug: 422, no residue, and no
+    # downstream validator/dry/key/artifact-write call.
+    validator_calls: list = []
+    key_calls: list = []
+    dry_calls: list = []
+    monkeypatch.setattr(
+        custom_service, "validate_package",
+        lambda *a, **k: validator_calls.append((a, k)) or {
+            "ok": True, "reason_codes": [], "errors": [],
+        },
+    )
+    monkeypatch.setattr(
+        skills_routes, "_dry_materialize", lambda *a, **k: dry_calls.append((a, k))
+    )
+    monkeypatch.setattr(
+        routes, "_artifact_key", lambda *a, **k: key_calls.append(a) or "unused"
+    )
+    write_calls = _no_write_artifact_seam(monkeypatch)
+    before = _residue_snapshot(org, skill_id)
+    append = client.post(
+        f"{BASE}/{skill_id}/versions",
+        json={"skill_md": "---\nname: café-workflow\ndescription: next\n---\n"},
+    )
+    assert append.status_code == 422, append.text
+    assert append.json()["detail"]["code"] == "invalid_slug"
+    assert validator_calls == [] and dry_calls == [] and key_calls == [] and write_calls == []
+    assert _residue_snapshot(org, skill_id) == before
+    assert dict(conn.execute(
+        "SELECT * FROM custom_skills WHERE id=?", (skill_id,)).fetchone()) == frozen_skill
+    assert [dict(r) for r in conn.execute(
+        "SELECT * FROM custom_skill_versions WHERE skill_id=? ORDER BY id", (skill_id,))
+    ] == frozen_versions
+
+
+# ── Finding 6: A18 route ordering / 409 reachability ─────────────────────
+
+def test_a18_admitted_ascii_existing_human_and_protected_slug_409s(
+    client_with_runtime,
+):
+    """A18: an admitted ASCII identity still reaches the existing-human 409
+    ``slug_exists`` and the protected-slug 409, with no residue."""
+    client, org = client_with_runtime
+    first = client.post(
+        BASE, json={"slug": "existing-human", "name": "First", "skill_md": _fm_body("existing-human")}
+    )
+    assert first.status_code == 201, first.text
+    before = _custom_counts(org)
+
+    again = client.post(
+        BASE,
+        json={"slug": "existing-human", "name": "Again",
+              "skill_md": _fm_body("existing-human", "other")},
+    )
+    assert again.status_code == 409, again.text
+    assert again.json()["detail"]["code"] == "slug_exists"
+    assert _custom_counts(org) == before
+
+    protected = client.post(
+        BASE, json={"slug": "start-task", "name": "Start", "skill_md": _fm_body("start-task")}
+    )
+    assert protected.status_code == 409, protected.text
+    assert protected.json()["detail"]["code"] == "protected_slug"
+    assert _custom_counts(org) == before
+
+
+@pytest.mark.parametrize("case,expected_code,expected_status", [
+    ("missing-metadata", "invalid_request", 422),
+    ("unknown-session", "unknown_session", 403),
+    ("cross-org", "cross_org_session", 403),
+    ("recovery", "recovery_purpose_forbidden", 403),
+])
+def test_a18_invalid_identity_keeps_earlier_refusals(
+    client_with_runtime, case, expected_code, expected_status,
+):
+    """A18: a non-conforming logical identity combined with an earlier
+    auth/session/lease/metadata refusal keeps that earlier result — the identity
+    gate is not moved ahead of the existing checks — with no residue."""
+    client, org = client_with_runtime
+    bad_slug = "café-workflow"
+    before = _custom_counts(org)
+    client.headers.pop("Authorization", None)
+
+    if case == "missing-metadata":
+        _activate_agent(org, task_id="TASK-A18", session="sess-a18")
+        response = client.post(
+            _AGENT_CREATE_PATHS[0], params={"session_id": "sess-a18"},
+            json={"slug": bad_slug, "name": "Display"},
+        )
+    elif case == "unknown-session":
+        response = client.post(
+            _AGENT_CREATE_PATHS[0], params={"session_id": "sess-missing"},
+            json={"slug": bad_slug, "name": "Display", "skill_md": _SAFE_ASCII_BODY},
+        )
+    elif case == "cross-org":
+        org.db.insert_task(TaskRecord(id="TASK-A18X", brief="author"))
+        org.sessions.set_active("TASK-A18X", "dev_agent", "sess-cross", org_slug="beta")
+        response = client.post(
+            _AGENT_CREATE_PATHS[0], params={"session_id": "sess-cross"},
+            json={"slug": bad_slug, "name": "Display", "skill_md": _SAFE_ASCII_BODY},
+        )
+    else:
+        org.db.insert_task(TaskRecord(id="TASK-A18R", brief="recover"))
+        org.sessions.register_recovery_session(
+            "TASK-A18R", "dev_agent", "sess-recovery", org_slug="alpha"
+        )
+        response = client.post(
+            _AGENT_CREATE_PATHS[0], params={"session_id": "sess-recovery"},
+            json={"slug": bad_slug, "name": "Display", "skill_md": _SAFE_ASCII_BODY},
+        )
+
+    assert response.status_code == expected_status, response.text
+    assert response.json()["detail"]["code"] == expected_code
+    assert response.json()["detail"]["code"] != "invalid_slug"
+    assert _custom_counts(org) == before
+
+
+def test_a18_append_lookup_and_mutability_refusals_precede_invalid_identity(
+    client_with_runtime,
+):
+    """A18: on ``add_version`` the current-row lookup and ``_mutable`` check
+    precede the stored-slug identity gate. A missing skill is 404, a missing
+    ``skill_md`` on a synthetic non-ASCII row is 422 ``invalid_request``, and a
+    purged row is 410 ``skill_purged`` — none is ``invalid_slug`` and none
+    leaves residue."""
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.skills.custom import service as custom_service
+
+    client, org = client_with_runtime
+    conn = getattr(org.db, "_conn", org.db)
+    before = _custom_counts(org)
+
+    missing = client.post(
+        f"{BASE}/custom:brand-new/versions",
+        json={"skill_md": "---\nname: café-workflow\ndescription: d\n---\n"},
+    )
+    assert missing.status_code == 404
+    assert _custom_counts(org) == before
+
+    def _seed(skill_id: str, *, purged: bool, stored_slug: str) -> None:
+        content = "---\nname: café-workflow\ndescription: stored\n---\n"
+        key = ArtifactStore(OrgPaths(org.root).artifacts_dir).put(
+            f"custom-skills/ordering-stored/{skill_id.replace(':', '-')}/SKILL.md",
+            content.encode(),
+        ).name
+        conn.execute(
+            "INSERT INTO custom_skills "
+            "(id,org_slug,slug,name,description,origin_kind,created_at,created_by,"
+            "purged_at,purge_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (skill_id, "alpha", stored_slug, "Stored", "stored", "human",
+             custom_service.now(), "founder",
+             custom_service.now() if purged else None, "purge:x" if purged else None),
+        )
+        conn.execute(
+            """INSERT INTO custom_skill_versions
+               (skill_id,content_hash,content_artifact_key,skill_md_cache,validation_state,
+                validator_version,validation_findings,created_at,author_kind,author_identity)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (skill_id, hashlib.sha256(content.encode()).hexdigest(), key, content,
+             "invalid", "THR-055/1.0.0", '["stored"]', custom_service.now(),
+             "human", "founder"),
+        )
+        version_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "UPDATE custom_skills SET current_version_id=? WHERE id=?", (version_id, skill_id)
+        )
+        conn.commit()
+
+    _seed("custom:ordering-unicode", purged=False, stored_slug="café-ordering-unicode")
+    present_before = _residue_snapshot(org, "custom:ordering-unicode")
+    no_body = client.post(f"{BASE}/custom:ordering-unicode/versions", json={})
+    assert no_body.status_code == 422, no_body.text
+    assert no_body.json()["detail"]["code"] == "invalid_request"
+    assert _residue_snapshot(org, "custom:ordering-unicode") == present_before
+
+    _seed("custom:ordering-purged", purged=True, stored_slug="café-ordering-purged")
+    purged = client.post(
+        f"{BASE}/custom:ordering-purged/versions",
+        json={"skill_md": "---\nname: café-workflow\ndescription: d\n---\n"},
+    )
+    assert purged.status_code == 410, purged.text
+    assert purged.json()["detail"]["code"] == "skill_purged"
+
+
+# ── Finding 7: R5c/A16/C4-C6 frozen legacy replay ────────────────────────
+
+_LEGACY_REPLAY_BODY = "# Heading-first legacy\n\nbody\n"
+
+
+def _seed_frozen_legacy_version(
+    org, skill_id, *, content, parent_id=None, state="valid", findings="[]",
+    validator_version="THR-055/1.0.0",
+):
+    """Seed a FROZEN historical version directly in the disposable fixture with
+    old marker/findings/state/provenance. The old bytes are never submitted
+    through the new validator to fabricate history."""
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.skills.custom import service as custom_service
+
+    conn = getattr(org.db, "_conn", org.db)
+    digest = hashlib.sha256(content.encode()).hexdigest()
+    key = ArtifactStore(OrgPaths(org.root).artifacts_dir).put(
+        f"custom-skills/legacy-replay/{digest}/SKILL.md", content.encode()
+    ).name
+    conn.execute(
+        """INSERT INTO custom_skill_versions
+           (skill_id,parent_version_id,content_hash,content_artifact_key,skill_md_cache,
+            validation_state,validator_version,validation_findings,created_at,
+            author_kind,author_identity,source_task_id,source_session_id,task_brief_digest)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (skill_id, parent_id, digest, key, content, state, validator_version, findings,
+         custom_service.now(), "human", "founder", "TASK-LEGACY", "sess-legacy", "legacy-brief"),
+    )
+    version_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+    return version_id, digest
+
+
+@pytest.mark.parametrize("supplied", ["", "divergent"])
+@pytest.mark.parametrize("is_current", [True, False])
+@pytest.mark.parametrize("legacy_state", ["valid", "invalid"])
+@pytest.mark.parametrize("surface", ["human-append", "agent-same-owner-append"])
+def test_r5c_frozen_legacy_replay_409_before_artifacts(
+    client_with_runtime, monkeypatch, surface, legacy_state, is_current, supplied,
+):
+    """R5c/A16/C4-C6: a FROZEN legacy version (old marker/findings/state/
+    provenance seeded directly) replayed byte-identically as current or
+    noncurrent is 409 ``version_content_exists`` before any artifact write,
+    including with an explicit blank or divergent request description. The
+    complete version/catalog/eligibility/artifact snapshot is unchanged."""
+    client, org = client_with_runtime
+    _add_agent(org)
+    conn = getattr(org.db, "_conn", org.db)
+    token = client.headers.get("Authorization")
+    valid_md = "---\nname: legacy-replay\ndescription: current valid\n---\n"
+
+    if surface == "human-append":
+        created = client.post(
+            BASE, json={"slug": "legacy-replay", "name": "Legacy Replay", "skill_md": valid_md}
+        )
+    else:
+        _activate_agent(org, task_id="TASK-LEG", session="sess-leg")
+        client.headers.pop("Authorization", None)
+        created = client.post(
+            _AGENT_CREATE_PATHS[0], params={"session_id": "sess-leg"},
+            json={"slug": "legacy-replay", "name": "Legacy Replay", "skill_md": valid_md},
+        )
+        client.headers["Authorization"] = token
+    assert created.status_code == 201, created.text
+    if surface == "human-append":
+        skill_id, valid_version = created.json()["skill_id"], created.json()["version_id"]
+    else:
+        skill_id = created.json()["skill"]["id"]
+        valid_version = created.json()["version"]["id"]
+
+    client.headers["Authorization"] = token
+    _grant_org_allow(client, skill_id, valid_version)
+
+    legacy_findings = (
+        '["SKILL.md must start with a YAML frontmatter fence"]'
+        if legacy_state == "invalid" else "[]"
+    )
+    legacy_version, legacy_digest = _seed_frozen_legacy_version(
+        org, skill_id, content=_LEGACY_REPLAY_BODY, parent_id=valid_version,
+        state=legacy_state, findings=legacy_findings,
+    )
+    if is_current:
+        conn.execute(
+            "UPDATE custom_skills SET current_version_id=? WHERE id=?",
+            (legacy_version, skill_id),
+        )
+        conn.commit()
+
+    before = _residue_snapshot(org, skill_id)
+    before_artifacts = _artifact_bytes_state(org)
+    write_calls = _no_write_artifact_seam(monkeypatch)
+
+    request_body = {"skill_md": _LEGACY_REPLAY_BODY, "description": supplied}
+    if surface == "human-append":
+        replay = client.post(f"{BASE}/{skill_id}/versions", json=request_body)
+    else:
+        client.headers.pop("Authorization", None)
+        replay = client.post(
+            _AGENT_CREATE_PATHS[0], params={"session_id": "sess-leg"},
+            json={"slug": "legacy-replay", "name": "Legacy Replay",
+                  "skill_md": _LEGACY_REPLAY_BODY, "description": supplied},
+        )
+        client.headers["Authorization"] = token
+
+    assert replay.status_code == 409, replay.text
+    assert replay.json()["detail"]["code"] == "version_content_exists"
+    assert write_calls == []
+    assert _residue_snapshot(org, skill_id) == before
+    assert _artifact_bytes_state(org) == before_artifacts
+    frozen = conn.execute(
+        "SELECT content_hash, skill_md_cache, validation_state, validator_version, "
+        "validation_findings, source_task_id, source_session_id, task_brief_digest "
+        "FROM custom_skill_versions WHERE id=?", (legacy_version,)
+    ).fetchone()
+    assert frozen["content_hash"] == legacy_digest
+    assert frozen["skill_md_cache"] == _LEGACY_REPLAY_BODY
+    assert frozen["validation_state"] == legacy_state
+    assert frozen["validator_version"] == "THR-055/1.0.0"
+    assert frozen["validation_findings"] == legacy_findings
+    assert frozen["source_task_id"] == "TASK-LEGACY"
+    assert frozen["source_session_id"] == "sess-legacy"
+    assert frozen["task_brief_digest"] == "legacy-brief"

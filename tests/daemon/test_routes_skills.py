@@ -10,10 +10,130 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+import pytest
 import yaml as _yaml
 from fastapi.testclient import TestClient
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "skills"
+
+
+#: The accepted TASK-8588 §4.3 literal rows (baseline ``name: my-workflow``/
+#: ``description: d`` plus each stated delta), reused verbatim through the real
+#: ``_validate_skill_package`` seam so the ordered reason codes are asserted at
+#: the shipping validator boundary, not only at the pure helper.
+_LITERAL_CONTRACT_ROWS: list[tuple[str, str, list[str]]] = [
+    # 1 baseline
+    ("---\nname: my-workflow\ndescription: d\n---\n", "my-workflow", []),
+    # 2 baseline without description
+    ("---\nname: my-workflow\n---\n", "my-workflow", ["frontmatter_missing_description"]),
+    # 3 description only
+    ("---\ndescription: d\n---\n", "my-workflow", ["frontmatter_missing_name"]),
+    # 4 no opening fence (heading-first retired for new writes)
+    ("# Heading-first body\n\nBody text.\n", "my-workflow", ["skill_md_no_frontmatter"]),
+    # 5 unclosed fence
+    ("---\nname: my-workflow\n", "my-workflow", ["skill_md_unclosed_frontmatter"]),
+    # 6 malformed YAML
+    ("---\nname: [a\ndescription: d\n---\n", "my-workflow", ["skill_md_malformed_frontmatter"]),
+    # 7 malformed doc that merely spells a disallowed key
+    ("---\nname: my-workflow\ndescription: d\nallowed-tools: [Bash\n---\n",
+     "my-workflow", ["skill_md_malformed_frontmatter"]),
+    # 8 hooks: null
+    ("---\nname: my-workflow\ndescription: d\nhooks: null\n---\n",
+     "my-workflow", ["admission_field_not_allowed"]),
+    # 9 allowed-tools: []
+    ("---\nname: my-workflow\ndescription: d\nallowed-tools: []\n---\n",
+     "my-workflow", ["admission_field_not_allowed"]),
+    # 10 four disallowed keys in document order
+    ("---\nname: my-workflow\ndescription: d\n"
+     "allowed-tools: null\nhooks: false\nvendor-x: 1\nfuture-field: \"\"\n---\n",
+     "my-workflow", ["admission_field_not_allowed"] * 4),
+    # 11 vendor key
+    ("---\nname: my-workflow\ndescription: d\nvendor-x: 1\n---\n",
+     "my-workflow", ["admission_field_not_allowed"]),
+    # 12 duplicate name
+    ("---\nname: my-workflow\ndescription: d\nname: b\n---\n",
+     "my-workflow", ["frontmatter_duplicate_key"]),
+    # 13 duplicate excluded key whose last value is empty
+    ("---\nname: my-workflow\ndescription: d\nhooks: {}\nhooks: {}\n---\n",
+     "my-workflow", ["frontmatter_duplicate_key"]),
+    # 14 quoted digit-only string is admitted
+    ("---\nname: \"123\"\ndescription: d\n---\n", "123", []),
+    # 15 unquoted YAML int is a type failure, never coerced
+    ("---\nname: 123\ndescription: d\n---\n", "123", ["frontmatter_invalid_name"]),
+    # 16 YAML bool
+    ("---\nname: true\ndescription: d\n---\n", "my-workflow", ["frontmatter_invalid_name"]),
+    # 17b non-ASCII document name under an admitted ASCII identity
+    ("---\nname: café-workflow\ndescription: d\n---\n",
+     "my-workflow", ["frontmatter_invalid_name"]),
+    # 18 uppercase name with a matching (uppercase) slug
+    ("---\nname: My-Workflow\ndescription: d\n---\n",
+     "My-Workflow", ["frontmatter_invalid_name"]),
+    # 19 hyphen boundaries
+    ("---\nname: -a\ndescription: d\n---\n", "my-workflow", ["frontmatter_invalid_name"]),
+    ("---\nname: a-\ndescription: d\n---\n", "my-workflow", ["frontmatter_invalid_name"]),
+    ("---\nname: a--b\ndescription: d\n---\n", "my-workflow", ["frontmatter_invalid_name"]),
+    # 20 name/slug mismatch
+    ("---\nname: other-workflow\ndescription: d\n---\n",
+     "my-workflow", ["frontmatter_name_slug_mismatch"]),
+    # 21-25 description type/length
+    ("---\nname: my-workflow\ndescription: null\n---\n",
+     "my-workflow", ["frontmatter_invalid_description"]),
+    ("---\nname: my-workflow\ndescription: 5\n---\n",
+     "my-workflow", ["frontmatter_invalid_description"]),
+    ("---\nname: my-workflow\ndescription: \"\"\n---\n",
+     "my-workflow", ["frontmatter_invalid_description"]),
+    ("---\nname: my-workflow\ndescription: \"   \"\n---\n",
+     "my-workflow", ["frontmatter_invalid_description"]),
+    ("---\nname: my-workflow\ndescription: " + "x" * 1025 + "\n---\n",
+     "my-workflow", ["frontmatter_invalid_description"]),
+    # 26-29 optional scalar typing
+    ("---\nname: my-workflow\ndescription: d\nlicense: 1\n---\n",
+     "my-workflow", ["frontmatter_invalid_license"]),
+    ("---\nname: my-workflow\ndescription: d\ncompatibility: 0\n---\n",
+     "my-workflow", ["frontmatter_invalid_compatibility"]),
+    ("---\nname: my-workflow\ndescription: d\ncompatibility: \"\"\n---\n",
+     "my-workflow", ["frontmatter_invalid_compatibility"]),
+    ("---\nname: my-workflow\ndescription: d\ncompatibility: " + "x" * 501 + "\n---\n",
+     "my-workflow", ["frontmatter_invalid_compatibility"]),
+    # 30-35 metadata typing
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {a: 1}\n---\n",
+     "my-workflow", ["frontmatter_invalid_metadata"]),
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {1: x}\n---\n",
+     "my-workflow", ["frontmatter_invalid_metadata"]),
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {a: true}\n---\n",
+     "my-workflow", ["frontmatter_invalid_metadata"]),
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {a: null}\n---\n",
+     "my-workflow", ["frontmatter_invalid_metadata"]),
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {true: x}\n---\n",
+     "my-workflow", ["frontmatter_invalid_metadata"]),
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {a: [x]}\n---\n",
+     "my-workflow", ["frontmatter_invalid_metadata"]),
+    # 36 valid string-to-string metadata
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {a: \"b\", b: \"c\"}\n---\n",
+     "my-workflow", []),
+    # 37/38 standard-recognized and native-mechanism keys are admission-policy
+    ("---\nname: my-workflow\ndescription: d\nallowed-tools: Bash(git status *)\n---\n",
+     "my-workflow", ["admission_field_not_allowed"]),
+    ("---\nname: my-workflow\ndescription: d\nhooks: PreToolUse\n---\n",
+     "my-workflow", ["admission_field_not_allowed"]),
+    # 39/40 prose/string metadata mentions are not top-level declarations
+    ("---\nname: my-workflow\ndescription: \"mentions allowed-tools and hooks\"\n---\n",
+     "my-workflow", []),
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {note: \"allowed-tools\"}\n---\n",
+     "my-workflow", []),
+    # 41 admission finding precedes the missing required field
+    ("---\nname: my-workflow\nallowed-tools: []\n---\n",
+     "my-workflow", ["admission_field_not_allowed", "frontmatter_missing_description"]),
+    # 42 admission finding precedes the optional-field finding
+    ("---\nname: my-workflow\ndescription: d\nallowed-tools: []\nlicense: 1\n---\n",
+     "my-workflow", ["admission_field_not_allowed", "frontmatter_invalid_license"]),
+    # literal duplicate-merge repair rows
+    ("---\nname: my-workflow\ndescription: d\n<<: {}\n<<: {}\n---\n",
+     "my-workflow", ["frontmatter_duplicate_key"]),
+    ("---\nname: my-workflow\ndescription: d\n<<: {name: inherited}\n---\n",
+     "my-workflow", ["admission_field_not_allowed"]),
+]
+
 
 
 def _seed_skills_and_config(
@@ -1242,6 +1362,28 @@ class TestValidationGuard:
                 references={"..": "bad"},
                 assets={},
             )
+
+    @pytest.mark.parametrize("skill_md,expected_slug,expected_codes", _LITERAL_CONTRACT_ROWS)
+    def test_literal_contract_matrix_reason_codes_through_package_validator(
+        self, tmp_home, app, org_state, skill_md, expected_slug, expected_codes,
+    ):
+        """C2: the accepted literal §4.3 rows carry through the real
+        ``_validate_skill_package`` shipping seam and produce exactly the
+        documented ordered reason codes (positive, type, structural,
+        duplicate, admission-ordering and the duplicate-merge repair rows)."""
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug=expected_slug,
+            skill_id=f"custom:{expected_slug}",
+            name=expected_slug,
+            version="1",
+            policy_class="standard_operational",
+            skill_md=skill_md,
+        )
+        assert result["reason_codes"] == expected_codes
+        assert result["ok"] is (expected_codes == [])
 
 
 class TestPhase2FullFlow:
