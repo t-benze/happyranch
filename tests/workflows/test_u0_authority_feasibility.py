@@ -58,6 +58,23 @@ def _u0_hosted_source_contract() -> _U0HostedSourceContract:
         ("6e474df928458a7a122003722957a16853c6f81799c375a2d68273a6da30aa3e",
          "4dd0550d39b80375a2ddaea2c045272f41c40cb84a904542eb50950670295b11"):
             _U0HostedSourceContract(True, True),
+        # Hosted ``pull_request`` merge venue for review-visible base
+        # ``8074f3b7``: the published PR head merged into current ``main``
+        # ``d49d2725fc008543a7e4e5ed73ff5afbc7d7a188`` (tree
+        # ``49f5a6e40e36e1f480bfc0024eb14e81eba4e7dd``).  The only
+        # ``13ea23be..d49d2725`` orchestrator-directory delta is the
+        # config-gated workspace-cleanup reclamation context appended to the
+        # prompt before launch plus three cleanup helpers in ``run_step.py``;
+        # ``orchestrator.py`` is byte-identical and the prior-step serializer
+        # and teardown reporter definitions are unchanged.  The added hook is
+        # disabled under the default config
+        # ``workspace_cleanup_reclamation_actions_enabled=False``, so the same
+        # (expanded prior steps, teardown scratch report) behavior holds.  This
+        # pair is reproduced at the disposable hosted-merge venue recorded in
+        # ``output/TASK-8659/hosted-venue.json``.
+        ("53fab381e3a09e41b86ba5b35df2cc710aaaa9408407be35ef0745d100f01670",
+         "4dd0550d39b80375a2ddaea2c045272f41c40cb84a904542eb50950670295b11"):
+            _U0HostedSourceContract(True, True),
     }
     try:
         return contracts[source_pair]
@@ -66,6 +83,29 @@ def _u0_hosted_source_contract() -> _U0HostedSourceContract:
             "unverified U0 source contract: run_step/orchestrator sha256="
             f"{source_pair!r}"
         ) from error
+
+
+def test_u0_hosted_source_contract_rejects_unknown_source_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unrecorded source pair must refuse, never borrow a default contract.
+
+    The real pinned venues are exercised by the existing authority scenarios;
+    this control proves the closed set has no permissive fallback: arbitrary
+    unknown bytes raise the same ``unverified U0 source contract`` refusal
+    instead of mapping to ``(True, True)`` or any other accepted behavior.
+    """
+    import runtime.orchestrator.orchestrator as orchestrator_module
+    import runtime.orchestrator.run_step as run_step_module
+
+    unknown_run_step = tmp_path / "run_step.py"
+    unknown_orchestrator = tmp_path / "orchestrator.py"
+    unknown_run_step.write_bytes(b"# unrecorded run_step source\n")
+    unknown_orchestrator.write_bytes(b"# unrecorded orchestrator source\n")
+    monkeypatch.setattr(run_step_module, "__file__", str(unknown_run_step))
+    monkeypatch.setattr(orchestrator_module, "__file__", str(unknown_orchestrator))
+    with pytest.raises(AssertionError, match="unverified U0 source contract"):
+        _u0_hosted_source_contract()
 
 
 @dataclasses.dataclass(frozen=True)

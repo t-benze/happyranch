@@ -538,3 +538,69 @@ ledger; U1 templates/versions, U2 activation/identical-byte review, U3
 signatures, U4 revision, U5 reassignment/retry/cancel/recovery, U6 independent
 operator acceptance. TASK8349's early unpushed wording is superseded by its
 dated PR845 publication receipt; historical/failed claims are retained.
+
+### 2026-09-21 hosted-source applicability and caller/state correction (TASK-8659)
+
+Hosted PR CI run `35566339543` (Python 3.14) failed 29 tests in
+`test_u0_authority_feasibility.py` with one closed-set source-contract miss, not
+the earlier Python/R1/Web defects. The GitHub `pull_request` workflow builds the
+merge of the head into the **current base tip**, so the hosted source is the PR
+head merged into `d49d2725fc008543a7e4e5ed73ff5afbc7d7a188` (tree
+`49f5a6e40e36e1f480bfc0024eb14e81eba4e7dd`), whose `run_step.py`/`orchestrator.py`
+digests are `53fab381…` / `4dd0550d…`. That pair was not in the closed contract
+set, so every scenario that consumes the real prior-step serializer or teardown
+reporter aborted at the selector.
+
+The `13ea23be..d49d2725` orchestrator-directory delta was inspected directly:
+`orchestrator.py` is byte-identical; `run_step_impl` gains a config-gated
+`_prepare_workspace_cleanup_reclamation_context(...)` prompt suffix before launch
+and three cleanup helpers, while `_build_agent_prompt` and the teardown reporter
+definitions are unchanged. The added hook is disabled under the default
+`workspace_cleanup_reclamation_actions_enabled=False`, so the (expanded prior
+steps, teardown scratch report) contract is identical. The exact hosted pair is
+therefore accepted as `_U0HostedSourceContract(True, True)`; all prior accepted
+pairs are retained and an unrecorded pair still raises `unverified U0 source
+contract` (covered by
+`test_u0_hosted_source_contract_rejects_unknown_source_pair`). The hosted merge
+was also reproduced at a disposable source-pinned venue (task artifact, not a
+rebase or main integration) and the affected scenarios pass there as well as on
+the local candidate.
+
+Caller diagnostics are now aggregated: `_u0_assert_caller_result` reports
+unexpected results, original worker exceptions, boundary and
+release/join/cleanup/liveness failures in one result for the same-label,
+file-phase and admission contention callers, so an early boundary assertion can
+no longer hide a worker failure. New controls inject a worker failure at the
+same-label lease barrier and a boundary failure in the contender through the
+actual wrapper and require both in the caller's reported diagnostic
+(`test_proposed_same_label_caller_aggregates_worker_and_boundary_failures`), and
+drive a second `Thread.start` that raises after the first real publisher is held
+(`test_proposed_release_join_harness_retains_second_worker_start_failure`): only
+started workers are joined, the original start failure survives, and no owned
+worker stays live. Expected refusal outcomes remain asserted separately.
+
+The finite complete-state assertions are closed rather than expanded. Each of
+the four initial/current-fence × replaced/canonical compensation windows
+captures the publisher invocation token independently at lease acquisition and
+binds the journal `publisher_invocation` and `file_phase_owner` to it (the
+former self-identity comparison is removed). The current-fence windows seed a
+real committed prior admission and journal history and preserve it across
+compensation, both cold recovery interruptions and repeated cold reopen, with
+the preserved admission then denied by `revalidate_authority_dispatch` as
+`dispatch_generation_stale`. Named cold caches are asserted exactly at
+`before_pointer` (still empty) and `before_cache_stamp` (stamped to the recovered
+generation/digest while durability still shows `pointer_committed`). The held
+file-phase case verifies the staged file's **bytes** and that a deferred fence
+leaves the publisher's process cache and committed history untouched; the
+admission-first/reverse-held/terminal boundaries bind the publisher invocation
+independently and assert complete pointer/journal/admission/lease,
+canonical/staging, cache and transaction state with no row compared to itself.
+
+This remains proposal plus isolated executable evidence. Global F4
+operation/dependency membership/new-org activation and the complete effective
+writer/reader/storage/proposed-symbol/lock/compensation map stay **explicitly
+pending** alongside F5 (atomic request/outbox/uncertain launch) and F6
+(historical cutover/old-reader, disable-new-runs/drain, template
+namespace/name/version/CAS); U1--U6 retain their ledger. The study is **NOT
+RUN**, and local counts, this contract acceptance or the candidate head are not
+independent package acceptance. Evidence remains UNACCEPTED / D5 NOT READY.
