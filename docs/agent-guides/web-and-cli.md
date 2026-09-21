@@ -88,9 +88,16 @@ committed Sidebar/AppBar DOM plus `<html lang>` and the real navigator
 read-back, retains a causal negative control (`I18N_W2A_EVIDENCE=negative`:
 wrong first shell, later corrected, must be rejected by the same predicate), and
 covers both locales across 1440x900/390x844, light/dark, root loading/no-org/
-NotFound/help/AddOrg/error/dormant-palette, focus and retained DOM identity
-across a storage-path locale switch, and CJK-font and viewport-containment
-checks. Current contract:
+NotFound/help/AddOrg/error/dormant-palette. In both switch directions it records
+`document.activeElement`, retained DOM node identity, open state and
+selection/value for the help non-default tab, the AddOrg typed slug + mapped
+error and the palette query + non-default selected row, and asserts each switch
+window issues no `PUT /settings/org` and no `POST /api/v1/orgs` (for the palette
+also zero `/api/` requests, cache-only). It exercises the palette's localized X
+close control with native Enter/Space/Escape in both locales with populated and
+empty results (closes once, no selection or navigation) while the search-input
+and non-default-row Enter still select once, and adds CJK-font and
+viewport-containment checks. Current contract:
 `docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
 
 ### Web contract and navigation

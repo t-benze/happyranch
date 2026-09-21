@@ -172,6 +172,22 @@ export function CommandPalette({
         setActiveIndex((i) => (i - 1 + itemRows.length) % itemRows.length);
       }
     } else if (ev.key === 'Enter') {
+      // A natively-activatable descendant owns its own Enter activation. In
+      // particular the dialog's real X close control (Radix
+      // `DialogPrimitive.Close`) must close the palette, and a focused result
+      // option row must select itself. Cancelling the event here would suppress
+      // that native activation and wrongly select the active row while the
+      // close control has focus (W2a R2). The legacy behavior for the search
+      // input and the dialog container is unchanged.
+      const target = ev.target as Element | null;
+      if (
+        target &&
+        target !== ev.currentTarget &&
+        typeof target.closest === 'function' &&
+        target.closest('button, a[href], [role="option"]')
+      ) {
+        return;
+      }
       ev.preventDefault();
       const active = itemRows[activeIndex];
       if (active?.item) {

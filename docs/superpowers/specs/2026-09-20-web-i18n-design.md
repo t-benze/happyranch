@@ -267,15 +267,28 @@ Against a synthetic `/api/v1` stub it asserts the frozen first shell (saved
 `zh-CN` → Chinese/`zh-CN`; saved `en` under a Chinese navigator → English/`en`;
 unset preview under a Chinese navigator → English/`en`), then exercises the
 mounted shell in both locales: root loading copy, populated org navigation,
-no-org, NotFound, the help drawer with a non-default tab preserved across a
-locale switch, the AddOrgDialog with a typed slug and a mapped error preserved
-across a storage-path switch, the ErrorBoundary fallback with the raw stack
+no-org, NotFound, the help drawer with a non-default tab, the AddOrgDialog with a
+typed slug and a mapped error, the ErrorBoundary fallback with the raw stack
 preserved and the localized Retry actually recovering, and the palette with a
-query matching multiple rows and a non-default selected row preserved across a
-switch. Focus (`document.activeElement`) and retained DOM node identity are
-observed for the help tab, the AddOrg input/error and the palette input/selected
-row across both switch directions, using the provider's storage path so the
-test control never steals focus. `I18N_W2A_EVIDENCE=negative` additionally hands
+query matching multiple rows and a non-default selected row. The shell and the
+help/AddOrg/error/palette states run across 1440×900 and 390×844, light and dark
+(including the Chinese wide-dark shell and a representative 390×844 dark
+ErrorBoundary). Locale switching in the focus/identity cases is driven through a
+real `storage` event, not the test control, so the control never steals focus;
+for the help non-default tab, the AddOrg typed slug + mapped error and the
+palette query + non-default selected row the harness records
+`document.activeElement`, retained `data-hrIdentity` node identity, open state
+and the selected/value state BEFORE and AFTER EACH switch direction (an
+en→zh-CN→en or zh-CN→en→zh-CN sequence). It also exercises the palette's actual
+localized X close control in both locales with populated and empty result sets:
+after the settled initial combobox focus it focuses the X by its exact
+accessible name (`Close`/`关闭`), reads the focus back and dispatches native
+Enter/Space/Escape, asserting the palette closes once with zero selection and no
+navigation, while a search-input Enter and an ArrowDown + Enter on a non-default
+row still select exactly once. Switch-window requests are scoped precisely to
+the measured endpoints: each help/AddOrg switch window asserts no
+`PUT /settings/org` and no `POST /api/v1/orgs`, and each palette switch window
+additionally asserts zero `/api/` requests (cache-only). `I18N_W2A_EVIDENCE=negative` additionally hands
 the provider a deliberately mismatched locale and installs the passive
 correction component, so the real shell commits the wrong language first and
 repairs itself; the harness's SAME positive predicate must reject that first
@@ -285,13 +298,13 @@ CJK-capable platform font, and geometry assertions prove no document horizontal
 overflow, no nav link outside the viewport, and dialogs contained within
 1440x900 and 390x844. The state matrix covers the shell and the help/AddOrg/
 error/dormant-palette states in both locales across 1440x900/390x844 and
-light/dark, with PNGs and `receipt.json` bound to the head SHA. The harness
+light/dark, with PNGs and `receipt.json` bound to the head SHA (the current
+positive receipt is 339/339 assertions and 30 PNGs; exact counts are bound to the
+pushed `receipt.json`). The harness
 cannot open the dormant command palette through the shipping hotkey (which stays
 retired and is asserted not to open it); the palette is exercised through the
 pattern-level probe, and its host/section localization is covered by focused
-Vitest. Locale switching in the focus/identity cases is driven through a real
-`storage` event, not the test control, and the harness asserts no request (in
-particular no `PUT /settings/org`) is issued by a switch.
+Vitest.
 
 Frontend readiness map (actual evidence):
 
@@ -302,7 +315,7 @@ Frontend readiness map (actual evidence):
 | Browser two-tab live evidence | covered by unit/integration storage-event tests AND captured same-origin two-tab change/delete/clear/no-echo browser evidence at the head SHA | W1 behavior retained (no native adapter added) |
 | Bilingual foundation browser capture | captured: real-browser story screenshots for saved-en-in-Chinese-env, saved `zh-CN` (CJK font glyphs) and preview-unset English | W2a adds real-app shell/dialog captures across en/zh, 1440x900/390x844 and light/dark (exact count bound to the pushed `receipt.json`) |
 | Production startup first-paint | captured: real `main.tsx`/`createBrowserRouter` startup with synthetic API stub; first COMMITTED bilingual consumer text and `<html lang>` asserted together | W2a reads the ACTUAL first committed Sidebar/AppBar DOM (frozen on first connection, never overwritten by a later correction) with `<html lang>` and the real navigator read-back; a causal `I18N_W2A_EVIDENCE=negative` control proves the same predicate rejects an initially-wrong shell |
-| Mounted-shell switching state | N/A (foundation) | captured: help non-default tab, AddOrg typed slug + mapped error and palette query + non-default selected row preserved across a storage-path locale switch, with `document.activeElement` and retained DOM node identity observed in both directions and no request issued by the switch |
+| Mounted-shell switching state | N/A (foundation) | captured: help non-default tab, AddOrg typed slug + mapped error and palette query + non-default selected row preserved across storage-path locale switches with `document.activeElement`, retained DOM node identity, open state and selection/value observed before AND after each direction; each help/AddOrg switch window asserts no `PUT /settings/org` and no `POST /api/v1/orgs`, and each palette switch window asserts zero `/api/` requests (cache-only) |
 | Native Mac persistence receipt | N/A — N0/N1 (Linux host; not claimed) | NOT RUN — N0/N1 still open |
 
 ## 10. Exclusions
@@ -312,5 +325,6 @@ draft migration, native chrome, CLI/manual translation, route-family
 translation campaign (W2b onboarding/W2c Settings/W3-W4 remain open), preview
 enablement or public selector, deployment, or caller migration of display
 formatters beyond the translated shell. Existing query/data/auth bootstrap
-semantics are preserved; locale switching issues no `PUT /settings/org` and adds
-no network request.
+semantics are preserved; locale switching issues no `PUT /settings/org` and no
+`POST /api/v1/orgs`, and the command palette's cache-only switch issues no
+`/api/` request in the measured window.

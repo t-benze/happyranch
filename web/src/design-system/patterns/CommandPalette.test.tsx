@@ -201,4 +201,79 @@ describe('CommandPalette', () => {
     // The footer keeps the separately supplied text.
     expect(screen.getByRole('dialog').textContent).toContain('close');
   });
+
+  it('lets the actual X close control activate with Enter without selecting (W2a R2)', () => {
+    const onClose = vi.fn();
+    const onSelect = vi.fn();
+    render(<CommandPalette open onClose={onClose} sections={SECTIONS} onSelect={onSelect} />);
+    const close = screen.getByRole('button', { name: 'Close' });
+    close.focus();
+    expect(document.activeElement).toBe(close);
+    fireEvent.keyDown(close, { key: 'Enter' });
+    // The container must neither cancel the native activation nor select a row.
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    // Real browsers fire the button's native click after Enter keydown; that
+    // reaches the Radix Close control and closes exactly once.
+    fireEvent.click(close);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('lets the localized X close control activate with Enter on an empty result set (W2a R2)', () => {
+    const onClose = vi.fn();
+    const onSelect = vi.fn();
+    render(
+      <CommandPalette
+        open
+        onClose={onClose}
+        sections={[]}
+        onSelect={onSelect}
+        closeLabel="关闭"
+      />,
+    );
+    const close = screen.getByRole('button', { name: '关闭' });
+    close.focus();
+    fireEvent.keyDown(close, { key: 'Enter' });
+    expect(onSelect).not.toHaveBeenCalled();
+    fireEvent.click(close);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not intercept Enter while a result option row is focused (W2a R2)', () => {
+    const onClose = vi.fn();
+    const onSelect = vi.fn();
+    render(<CommandPalette open onClose={onClose} sections={SECTIONS} onSelect={onSelect} />);
+    const option = screen.getByRole('option', { name: /Macau ferry/ });
+    option.focus();
+    fireEvent.keyDown(option, { key: 'Enter' });
+    // Deferred to the row's own native activation; no container selection/close.
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(option);
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith('/t/2', expect.objectContaining({ key: 't2' }));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('still selects the active row on Enter from the search input (W2a R2)', () => {
+    const onSelect = vi.fn();
+    render(<CommandPalette open onClose={() => {}} sections={SECTIONS} onSelect={onSelect} />);
+    const input = screen.getByPlaceholderText(/Search threads/i);
+    input.focus();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith('/t/1', expect.objectContaining({ key: 't1' }));
+  });
+
+  it('still selects a nondefault row on ArrowDown + Enter from the search input (W2a R2)', () => {
+    const onSelect = vi.fn();
+    render(<CommandPalette open onClose={() => {}} sections={SECTIONS} onSelect={onSelect} />);
+    const input = screen.getByPlaceholderText(/Search threads/i);
+    input.focus();
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith('/t/2', expect.objectContaining({ key: 't2' }));
+  });
 });

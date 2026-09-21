@@ -107,7 +107,15 @@ control). A backward-compatible optional `DialogContent.closeLabel` supplies the
 localized accessible name for the built-in close control (defaulting to the
 legacy English `Close`); AddOrgDialog, HelpSheet and CommandPalette pass it from
 their callers and the patterns/primitives stay prop-driven with no locale hook
-import. Both env gates are no-ops for every ordinary build. See
+import. The palette's container keydown defers Enter to natively-activatable
+descendants (`button`, `a[href]`, `[role="option"]`), so the localized X close
+control closes on Enter without selecting a row while the search input still
+selects the active row; the browser harness exercises this in both locales with
+populated and empty results and covers the shell/help/AddOrg/palette states
+across 1440x900/390x844 and light/dark in both switch directions, recording
+`document.activeElement`, retained node identity, open state and
+selection/value before and after each switch plus precisely scoped switch-window
+request assertions. Both env gates are no-ops for every ordinary build. See
 `docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
 
 ## What is intentionally not in here
