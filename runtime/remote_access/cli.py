@@ -69,6 +69,15 @@ _SERVICE_QUERY_TIMEOUT_SECONDS = 5.0
 _SERVICE_QUERY_MAX_OUTPUT_BYTES = 4096
 _SERVICE_QUERY_READ_CHUNK_BYTES = 4096
 
+# THR-228 seq275 (TASK8623): cleanup needs its own explicitly bounded kill/reap
+# allowance. The 5-second observation deadline bounds reading and exit
+# observation only; it is never extended to restart reading or to authorize a
+# refused observation. But once it has expired, a still-live owned child must
+# still be killed and then CONFIRMED reaped before the query returns, so this
+# separate finite allowance is measured from whichever is later, the
+# observation deadline or the start of cleanup.
+_SERVICE_QUERY_REAP_GRACE_SECONDS = 5.0
+
 # THR-228 seq275 (TASK8607 F1): the only supported record framing is LF-delimited
 # ``Key=Value`` records. ``str.splitlines()`` would silently normalize these
 # non-LF separators into record boundaries, so they are rejected in the raw
@@ -479,11 +488,17 @@ def _capture_bounded_query_output(
 
 
 def _close_and_reap_query_process(process: subprocess.Popen[bytes], deadline: float) -> None:
-    """Close the owned pipe and reap the owned query child within the deadline.
+    """Close the owned pipe and confirm the owned query child is reaped.
 
-    Runs on every return path. A child still alive after EOF, after cap overflow
-    or after a read timeout is killed and then reaped with a bounded wait; this
-    never reopens an unbounded read/wait/communicate.
+    Runs on every return path. The observation ``deadline`` continues to bound
+    reading and exit observation only; it is never extended to restart reading
+    or to authorize a refused observation. Cleanup gets one separate,
+    explicitly bounded kill/reap allowance so that an already expired
+    observation deadline can never leave the owned child unreaped: a child
+    still alive after EOF, after cap overflow or after a read/exit timeout is
+    killed and then awaited on that allowance. An owned child whose reaping
+    cannot be confirmed within the allowance refuses category-only rather than
+    being silently treated as reaped.
     """
     if process.stdout is not None:
         try:
@@ -495,11 +510,13 @@ def _close_and_reap_query_process(process: subprocess.Popen[bytes], deadline: fl
             process.kill()
         except OSError:
             pass
-    remaining = deadline - time.monotonic()
+    reap_deadline = max(deadline, time.monotonic()) + _SERVICE_QUERY_REAP_GRACE_SECONDS
     try:
-        process.wait(timeout=max(remaining, 0.0))
+        process.wait(timeout=reap_deadline - time.monotonic())
     except (subprocess.TimeoutExpired, OSError):
         pass
+    if process.poll() is None:
+        raise OSError("service state unavailable")
 
 
 def _observe_sidecar_stopped() -> None:
@@ -523,6 +540,12 @@ def _observe_sidecar_stopped() -> None:
     on every path. An EOF that is followed by a child that stays alive is not
     treated as successful completion: the deadline still applies and the child
     is killed and reaped.
+
+    TASK8623 F2: cleanup gets one separate, explicitly bounded kill/reap
+    allowance, so an owned child is confirmed reaped before this returns even
+    when the observation deadline has already expired. That allowance never
+    restarts query reading and never authorizes a refused observation, and an
+    unconfirmed reap refuses category-only instead of being silently ignored.
     """
     argv = [
         "systemctl",

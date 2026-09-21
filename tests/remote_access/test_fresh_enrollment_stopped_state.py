@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import time
+import types
 
 import pytest
 
@@ -622,3 +623,204 @@ def test_valid_output_then_nonzero_exit_refuses(tmp_path: Path) -> None:
     assert (result.returncode, result.stdout, result.stderr.strip()) == (1, "", _CATEGORY)
     assert _snapshot(fixture["case"]) == before
     assert calls.read_text().splitlines() == [_SHOW_ARGV]
+
+
+# ---------------------------------------------------------------------------
+# TASK8623 F2 — the observer confirms its owned child is reaped on return.
+#
+# These cases drive the production ``_observe_sidecar_stopped`` seam in-process
+# against a real controlled ``systemctl`` child. The owned ``Popen`` is captured
+# and its reaped/pipe-closed state is asserted at the instant the observer
+# returns — before any fixture cleanup or test-side wait/poll that could perform
+# the reaping itself. The retained TASK8607 CLI-level cases above cannot see
+# this: they only poll the child PID after the CLI process has exited, by which
+# time process teardown has already reaped it.
+# ---------------------------------------------------------------------------
+
+
+def _observe_owned_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    producer_code: str,
+    **extra_env: str,
+) -> tuple[subprocess.Popen[bytes], OSError | None, float, Path]:
+    """Drive the real observer in-process; capture the exact owned child."""
+    bindir = tmp_path / "bin"
+    producer = _write_producer_systemctl(bindir, producer_code)
+    env, calls = _producer_env(
+        tmp_path, bindir=bindir, producer=producer, tmp_path=tmp_path, **extra_env
+    )
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    owned: list[subprocess.Popen[bytes]] = []
+    real_popen = subprocess.Popen
+
+    def recording_popen(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+        child = real_popen(*args, **kwargs)
+        owned.append(child)
+        return child
+
+    # Localize the patch to the production module's ``subprocess`` reference so
+    # the test process itself keeps the real ``Popen``.
+    monkeypatch.setattr(
+        cli,
+        "subprocess",
+        types.SimpleNamespace(
+            Popen=recording_popen,
+            PIPE=subprocess.PIPE,
+            DEVNULL=subprocess.DEVNULL,
+            TimeoutExpired=subprocess.TimeoutExpired,
+        ),
+    )
+    started = time.monotonic()
+    error: OSError | None = None
+    try:
+        cli._observe_sidecar_stopped()
+    except OSError as exc:
+        error = exc
+    elapsed = time.monotonic() - started
+    assert len(owned) == 1, owned
+    return owned[0], error, elapsed, calls
+
+
+def _assert_owned_child_reaped_now(child: subprocess.Popen[bytes]) -> None:
+    """Ownership assertions only — no wait/poll that could reap for us."""
+    assert child.returncode is not None, "observer returned with owned child unreaped"
+    assert child.stdout is not None and child.stdout.closed, "owned pipe still open"
+
+
+def test_observer_confirms_reaping_on_no_output_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child, error, elapsed, calls = _observe_owned_child(
+        tmp_path,
+        monkeypatch,
+        "import os, time\n"
+        "open(os.environ['PRODUCER_PIDFILE'], 'w').write(str(os.getpid()))\n"
+        "time.sleep(30)\n",
+    )
+    # Ownership first: the observer itself must have killed and reaped its child.
+    _assert_owned_child_reaped_now(child)
+    assert isinstance(error, OSError)
+    assert "service state unavailable" in str(error)
+    assert 4.0 <= elapsed < 20.0, elapsed
+    assert calls.read_text().splitlines() == [_SHOW_ARGV]
+    assert int((tmp_path / "producer.pid").read_text()) == child.pid
+
+
+def test_observer_confirms_reaping_on_slow_partial_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child, error, elapsed, calls = _observe_owned_child(
+        tmp_path,
+        monkeypatch,
+        "import os, time\n"
+        "open(os.environ['PRODUCER_PIDFILE'], 'w').write(str(os.getpid()))\n"
+        "os.write(1, b'LoadState=loaded\\n')\n"
+        "time.sleep(float(os.environ['PRODUCER_SLEEP']))\n"
+        "os.write(1, b'ActiveState=inactive\\nSubState=dead\\n')\n",
+        PRODUCER_SLEEP="30",
+    )
+    _assert_owned_child_reaped_now(child)
+    assert isinstance(error, OSError)
+    assert 4.0 <= elapsed < 20.0, elapsed
+    assert calls.read_text().splitlines() == [_SHOW_ARGV]
+    assert int((tmp_path / "producer.pid").read_text()) == child.pid
+
+
+def test_observer_confirms_reaping_on_eof_with_lingering_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child, error, elapsed, calls = _observe_owned_child(
+        tmp_path,
+        monkeypatch,
+        "import os, time\n"
+        "open(os.environ['PRODUCER_PIDFILE'], 'w').write(str(os.getpid()))\n"
+        "os.write(1, b'LoadState=loaded\\nActiveState=inactive\\nSubState=dead\\n')\n"
+        "os.close(1)\n"
+        "time.sleep(float(os.environ['PRODUCER_SLEEP']))\n",
+        PRODUCER_SLEEP="30",
+    )
+    _assert_owned_child_reaped_now(child)
+    assert isinstance(error, OSError)
+    assert 4.0 <= elapsed < 20.0, elapsed
+    assert calls.read_text().splitlines() == [_SHOW_ARGV]
+    assert int((tmp_path / "producer.pid").read_text()) == child.pid
+
+
+def test_observer_confirms_reaping_on_overflow_while_producer_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child, error, elapsed, calls = _observe_owned_child(
+        tmp_path,
+        monkeypatch,
+        "import os\n"
+        "open(os.environ['PRODUCER_PIDFILE'], 'w').write(str(os.getpid()))\n"
+        "target = int(os.environ['PRODUCER_BYTES'])\n"
+        "chunk = b'x' * 4096\n"
+        "written = 0\n"
+        "while written < target:\n"
+        "    step = min(4096, target - written)\n"
+        "    os.write(1, chunk[:step])\n"
+        "    written += step\n",
+        PRODUCER_BYTES=str(8 * 1024 * 1024),
+    )
+    _assert_owned_child_reaped_now(child)
+    assert isinstance(error, OSError)
+    assert elapsed < 5.0, elapsed
+    assert calls.read_text().splitlines() == [_SHOW_ARGV]
+    assert int((tmp_path / "producer.pid").read_text()) == child.pid
+
+
+def test_observer_confirms_reaping_on_stopped_success_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child, error, elapsed, calls = _observe_owned_child(
+        tmp_path,
+        monkeypatch,
+        "import os\n"
+        "open(os.environ['PRODUCER_PIDFILE'], 'w').write(str(os.getpid()))\n"
+        "os.write(1, b'LoadState=loaded\\nActiveState=inactive\\nSubState=dead\\n')\n",
+    )
+    _assert_owned_child_reaped_now(child)
+    assert error is None
+    assert child.returncode == 0
+    assert elapsed < 5.0, elapsed
+    assert calls.read_text().splitlines() == [_SHOW_ARGV]
+
+
+def test_observer_confirms_reaping_on_nonzero_exit_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child, error, elapsed, calls = _observe_owned_child(
+        tmp_path,
+        monkeypatch,
+        "import os\n"
+        "open(os.environ['PRODUCER_PIDFILE'], 'w').write(str(os.getpid()))\n"
+        "os.write(1, b'LoadState=loaded\\nActiveState=inactive\\nSubState=dead\\n')\n"
+        "raise SystemExit(3)\n",
+    )
+    _assert_owned_child_reaped_now(child)
+    assert isinstance(error, OSError)
+    assert child.returncode == 3
+    assert calls.read_text().splitlines() == [_SHOW_ARGV]
+
+
+def test_close_and_reap_query_process_reaps_when_deadline_expired() -> None:
+    """Direct helper regression mirroring the retained manager red proof."""
+    for _ in range(3):
+        child = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import time; print('entered', flush=True); time.sleep(30)",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        assert child.stdout.readline() == b"entered\n"
+        cli._close_and_reap_query_process(child, time.monotonic() - 0.01)
+        # Inspect the owned state before any test-side wait/poll.
+        assert child.returncode is not None
+        assert child.stdout.closed is True
+        child.wait(timeout=2)
