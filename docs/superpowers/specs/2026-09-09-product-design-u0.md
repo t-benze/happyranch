@@ -550,8 +550,11 @@ synchronized DB callback, and does not acquire the publication coordinator.
 For a profile-store/registry update, the selected future protocol first places
 every dependent org pointer in a durable fail-closed `fenced` state (and drops
 its process cache), then performs the existing profile store/registry work and
-its compensation under the machine-global profile coordinator, releases that
-coordinator, and republishes each org before admitting it again. The isolated
+its compensation under the machine-global profile coordinator, and republishes
+each org before admitting it again **while still holding that coordinator
+lease** — the per-org publication leases are taken one at a time beneath it, so
+a concurrent global operation cannot commit a newer store/registry generation
+between the republisher's selection and its per-org commit. The isolated
 model proves the material edge: a concurrent admission after the pre-fence and
 before republish is rejected. It does not claim a distributed atomic commit,
 global lock nesting, or that the existing production routes already implement
@@ -565,8 +568,9 @@ incrementing/fencing the pointer; against a reserved or later phase it
 explicitly defers without global profile mutation until publication/recovery
 drains. A publisher rechecks that durable identity before reserving the phase
 and again at pointer CAS. An old prepared publisher consequently cannot clear a
-newer fence; only an explicitly profile-validated republisher with the current
-fence identity may return the pointer to ready. This is isolated-model proof,
+newer fence; only a republisher that selected the operation under the
+coordinator lease and binds that operation's own selected `profile_fence` may
+return the pointer to ready. This is isolated-model proof,
 not a claim that current route locks already enforce it.
 
 The isolated schema/helper implement journal, pointer, invocation/PID lease,
@@ -632,7 +636,9 @@ Founder decisions still pending: supported writer boundary, additive runtime
 schema/ownership, machine-global profile lock/cutover, disable-new-runs/drain
 and old-reader behavior, and uncertain-launch handling. Residuals: F4 global
 operation/dependency membership/new-org activation plus complete effective
-writer/reader/storage/proposed-symbol/lock/compensation mapping; F5 atomic
+writer/reader/storage/proposed-symbol/lock/compensation mapping (the 2026-09-21
+F4 consolidated correction below closes the consumer-closure, profile-removal and
+republish-serialization defects for the isolated model); F5 atomic
 request/outbox/uncertain launch; F6 historical cutover/old-reader/implementation
 ledger; U1 templates/versions, U2 activation/identical-byte review, U3
 signatures, U4 revision, U5 reassignment/retry/cancel/recovery, U6 independent
@@ -741,8 +747,8 @@ alone. Proposed (unimplemented) symbols live in
 coordinator-owned durable relations in the machine-global store:
 `workflow_profile_store(profile_name, generation, profile_digest, state)`,
 `workflow_profile_registry(profile_name, published_generation)`,
-`workflow_profile_dependencies(org_namespace, profile_name, bound_generation,
-state)`, `workflow_profile_operations(id, profile_name, operation_kind,
+`workflow_profile_dependencies(org_namespace, profile_name, consumer_identity,
+bound_generation, state)`, `workflow_profile_operations(id, profile_name, operation_kind,
 captured_members, target_generation, state, profile_digest,
 coordinator_invocation, compensation_generation, created_at)`, and
 `workflow_profile_leases(profile_name, owner_token, owner_pid)`. The isolated
@@ -750,28 +756,31 @@ model uses a separate machine-global SQLite file carrying the same proposed
 schema; the dependent-organization authority itself remains exactly the existing
 per-org pointer/journal/lease/canonical-file/cache relations above.
 
-Operation identity is `id`; membership identity is
-`(org_namespace, profile_name, bound_generation)`; the operation's
+Operation identity is `id`; the affected-org set's identity is
+`(org_namespace, profile_name)` while the consumer-requirement identity is
+`(org_namespace, profile_name, consumer_identity)`; the operation's
 `target_generation = store.generation + 1`; `coordinator_invocation` is the
 immutable lease token acquired at the start. The affected-org set is captured
-once, canonically ordered, inside the same `BEGIN IMMEDIATE` that inserts the
-operation row, so a registration that wins the race is included and a later one
-is refused. Acquisition edges are: cross-process `workflow_profile_leases` (one
-coordinator per profile, dead-owner reclaim only) -> short SQLite operation
-transactions -> per-org `workflow_publication_leases` one at a time during the
-pre-fence pass -> store commit -> registry commit -> coordinator release ->
-independent per-org republish, each under its own publication lease. The graph is
-acyclic and never nests: profile lease -> org publication lease; no path takes
-the profile lease while holding an org publication lease; the existing callback
-order `org.db_lock -> binding_lease -> synchronized DB callback` is untouched and
-no coordinator spans clone/network/host-launch/callback.
+once, canonically ordered and deduplicated across consumers, inside the same
+`BEGIN IMMEDIATE` that inserts the operation row, so a registration that wins
+the race is included and a later one is refused. Acquisition edges are:
+cross-process `workflow_profile_leases` (one coordinator per profile, dead-owner
+reclaim only) -> short SQLite operation transactions -> per-org
+`workflow_publication_leases` one at a time during the pre-fence pass -> store
+commit -> registry commit -> per-org republish, each under its own publication
+lease **taken while the coordinator lease is still held** -> coordinator
+release. The graph is acyclic: profile lease -> org publication lease; no path
+takes the profile lease while holding an org publication lease, and the
+publication path never acquires the profile lease; the existing callback order
+`org.db_lock -> binding_lease -> synchronized DB callback` is untouched and no
+coordinator spans clone/network/host-launch/callback.
 
 Pre-fencing reuses the proved machinery: for every captured org,
 `fence_authority_namespace` sets the pointer `fenced`, increments the monotonic
 `profile_fence`, and drops the process cache; a fenced org refuses admission with
-`authority_pointer_not_ready` until an explicitly profile-validated republish
-(`publish_authority_generation` with the current fence) returns it to ready at
-`generation+1`. Linearization points are: capture = operation-row insert commit;
+`authority_pointer_not_ready` until a republish that holds the coordinator lease
+and binds the operation's own selected fence (`publish_authority_generation`
+with that `profile_fence`) returns it to ready at `generation+1`. Linearization points are: capture = operation-row insert commit;
 fence = per-org pointer `fenced` commit; store = profile-store generation advance
 commit; profile publication = `registry.published_generation == store.generation`.
 A new-org activation or a rebind/removal is refused with
@@ -869,61 +878,111 @@ It remains an unimplemented cooperative proposal plus isolated executable
 evidence; current shipping routes gain none of these guarantees and D5 is not
 approved.
 
-**Membership identity.** The isolated fixture's `workflow_profile_dependencies`
-primary key is the tuple `(org_namespace, profile_name)`, not `org_namespace`
-alone. This is the shape the supported runtime already needs: executor
-resolution is per agent, so one organization may depend on several profiles and
-several organizations may depend on one profile. Registering, rebinding or
-removing one consumer never drops another live consumer or another profile of the
-same organization. DDL constrains the tuple key, the state domain and
-`bound_generation >= 0`; the service owns cross-row truthfulness —
-`bound_generation` tracks the profile generation the organization's own authority
-was last coherently published against and advances with a register/rebind store
-commit, while a `remove` store commit marks the dependent rows `removed` and
-leaves them incoherent.
+**Consumer-requirement identity and honest state.** The isolated fixture's
+`workflow_profile_dependencies` primary key is the tuple `(org_namespace,
+profile_name, consumer_identity)`, not `org_namespace` or `(org_namespace,
+profile_name)` alone. This is the shape the supported runtime already needs:
+executor resolution is per agent (`Orchestrator._resolve_executor_name(agent_name)`
+resolves each agent independently), so one organization may run several live
+consumers on one profile, one consumer may depend on several profiles, and
+several organizations may depend on one profile. `consumer_identity` names the
+owning consumer, so two consumers on one `(org, profile)` occupy two rows and one
+consumer's rebind/removal cannot discharge another's; the compatibility default
+`org-default` is the single-consumer schedule identity, not a product
+one-consumer restriction. Registering, rebinding or removing one consumer never
+drops another live consumer or another profile of the same organization. DDL
+constrains the tuple key, the state domain and `bound_generation >= 0`; the
+service owns cross-row truthfulness.
+
+`state` separates *requirement presence* from *binding validity*: `active` (the
+consumer still requires the profile and its binding is coherent), `unbound` (the
+consumer still requires the profile but its binding is invalid because the store
+was removed or moved on — an outstanding requirement that blocks eligibility),
+and `removed` (the consumer explicitly discharged the requirement). A global
+`remove` store commit therefore marks the profile's outstanding rows `unbound`,
+never `removed`: profile deletion is distinct from consumer-requirement removal
+and can never masquerade as an authorized removal of the consumer's need.
+`bound_generation` is the generation the consumer's authority was last coherently
+published against; it advances at an actual coherent publication (a
+register/rebind store commit re-coheres `active` and `unbound` rows, so a renewed
+coherent publication discharges an outstanding requirement) and a `remove` leaves
+it honest rather than rewriting it.
 
 **Transitions share source+target coordination.** `register_profile_dependency`
 refuses while any non-terminal operation is active for the target profile **or
-for any profile the organization already depends on**, so a later registration
-cannot silently change captured membership. `mutate_profile_dependency` validates
-the source dependency identity and that its `bound_generation` equals the current
-source store generation, and for a rebind validates the destination profile's
-actual existence, `active` state, exact generation and registry publication.
-Missing, stale, removed or otherwise incoherent requests leave every row
-unchanged. A rebind destination must be a real published profile, not an
-arbitrary integer binding.
+for any profile the organization already requires** (an `active` or `unbound`
+row), so a later registration cannot silently change captured membership. A
+consumer identity is required for every write. `mutate_profile_dependency` is
+keyed by `(org_namespace, from_profile, consumer_identity)`: it validates the
+consumer's own source row (an `active` source must be coherent with the current
+source store generation; an `unbound` source may be explicitly discharged
+regardless of the dead profile's store state), and for a rebind validates the
+destination profile's actual existence, `active` state, exact generation and
+registry publication. Missing, stale, otherwise-incoherent or already-`removed`
+requests leave every row unchanged. A rebind destination must be a real published
+profile, not an arbitrary integer binding, and one consumer's rebind/removal
+leaves another consumer's row untouched.
 
-**Stale recovery is zero-effect.** `reconcile_profile_operation`,
-`compensate_profile_operation` and `republish_profile_dependents` read the
-authoritative operation/store/registry/membership/ownership state **after**
-acquiring the coordination lease and inside their transactions. A recovery
-resuming behind a second connection that already finished the operation and
-published a newer generation observes terminal/superseded work with zero writes
-instead of committing a stale registry generation over the newer one. A delayed
-republish of a superseded operation refuses with `profile_operation_superseded`.
+**Republish holds the coordinator lease (corrected).** `republish_profile_dependents`
+acquires the machine-global coordinator lease for the operation's profile and
+holds it across every per-org publication; a concurrent global operation on that
+profile is refused `profile_coordinator_busy`, so a delayed republish can never
+read a newer fence and reopen the organization against old canonical bytes. It
+re-reads the selected operation/target generation/captured membership after the
+lease, binds the operation's own selected `profile_fence`, and refuses
+`profile_operation_superseded` with zero effect once a newer generation has
+committed. `reconcile_profile_operation` and `compensate_profile_operation`
+likewise read authoritative operation/store/registry/membership/ownership state
+**after** acquiring the coordination lease and inside their transactions. A
+pre-call stale check, two unlocked reads, or adoption of the latest fence is
+explicitly insufficient.
 
-**Validity through republish and admission.** Republish returns an organization
-to `ready` only while it has at least one dependency coherent with the actual
-current profile store and registry (`active`, exact bound generation, published).
-A globally `removed` still-required profile therefore keeps the organization
-fenced and admission fails with `authority_pointer_not_ready` until a supported
-registration to a coherent published profile and a fresh coordinated operation
-legitimately restore eligibility. Unrelated eligible dependencies are preserved
-and the organization is never reopened from stale snapshot bytes.
+**Complete-closure validity.** Eligibility requires coherence of *every*
+still-required consumer/profile in the organization's selected complete
+effective requirement set, not merely one coherent dependency. Republish returns
+an organization to `ready` only when all of its `active`/`unbound` rows are
+coherent — the profile store `active` at exactly `bound_generation` and the
+registry published at that generation. A globally removed still-required profile
+(now `unbound`) therefore keeps the organization fenced and admission fails with
+`authority_pointer_not_ready` until an explicit consumer rebind/removal or a
+renewed coherent publication discharges it and a fresh coordinated operation
+republishes the organization. Unrelated profiles the organization does not
+require are irrelevant and never universal invalidators; unrelated eligible
+requirements, bound generations, admission history and canonical bytes are
+preserved, and the organization is never reopened from stale snapshot bytes.
 
-**Corrected isolated proof.** The corrected schedules are
+**Corrected isolated proof (TASK-8641/step5, TASK-8720).** The corrected
+schedules are
 `test_proposed_stale_profile_recovery_is_zero_effect_behind_newer_operation`,
 `test_proposed_profile_registration_cannot_bypass_captured_source_barrier`,
 `test_proposed_profile_rebind_validates_real_destination_and_source`,
 `test_proposed_profile_remove_keeps_dependents_fenced_until_supported_registration`,
-`test_proposed_profile_membership_preserves_multiple_profiles_and_consumers`, and
-the live cross-process contention control
-`test_proposed_profile_live_process_contention_excludes_second_coordinator` (a
-real child process holds the durable lease while a second real connection is
-refused `profile_coordinator_busy`, distinct from dead-owner reclaim). Focused
-`tests/workflows/test_u0_migration_recovery.py` profile schedules passed 18/18
-and the three U0 files passed 155 on the corrected candidate under effective
-Python 3.14.4 / SQLite 3.46.1 / pytest 9.0.3. The independent corrected probe
-`output/TASK-8691/probe-f4-corrected.py` reproduces the manager's five
-counterexamples and asserts the corrected outcome for each. Production wiring
-(F4-D) remains unimplemented; F5 and F6 stay pending.
+`test_proposed_profile_membership_preserves_multiple_profiles_and_consumers`
+(now the complete-closure case: an unpublished required `q` keeps an org fenced),
+`test_proposed_profile_removal_preserves_outstanding_requirement_in_same_org`
+(profile removal preserves the outstanding requirement; only an explicit rebind
+plus a coherent republication restores eligibility),
+`test_proposed_delayed_republish_cannot_adopt_a_newer_generation` (a mid-republish
+newer removal from an independent real connection is refused
+`profile_coordinator_busy` with zero effect; the valid publication succeeds; a
+later superseded republish refuses with zero effect and its stale admission is
+refused at dispatch), and
+`test_proposed_two_consumers_same_org_profile_are_independent` (two consumers on
+one `(org, profile)` rebind and remove independently, the affected org is
+captured once, and the other consumer's independent requirement is preserved).
+The live cross-process contention control
+`test_proposed_profile_live_process_contention_excludes_second_coordinator` holds
+a durable lease in a real child while a second real connection is refused
+`profile_coordinator_busy`, distinct from dead-owner reclaim; its pipe reads are
+bounded and a failed release write cannot bypass owned-process wait/cleanup.
+
+The earlier TASK-8691 candidate `8365ebde` receipt (18/18 focused profile
+schedules, 155/155 across the three U0 files, effective Python 3.14.4 / SQLite
+3.46.1 / pytest 9.0.3) is **historical for those bytes only** and does not
+verify this correction. The saved TASK-8691 probe
+`output/TASK-8691/probe-f4-corrected.py` is retained as the narrower receipt it
+actually is — it recovers the interrupted old operation and registers `org-b`
+in its stale-recovery interleaving; it does **not** publish generation 2, so the
+generation-2 supersession claim is evidenced by
+`test_proposed_delayed_republish_cannot_adopt_a_newer_generation`, not by that
+probe. Production wiring (F4-D) remains unimplemented; F5 and F6 stay pending.

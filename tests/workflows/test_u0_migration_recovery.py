@@ -2024,7 +2024,7 @@ def test_proposed_profile_remove_keeps_dependents_fenced_until_supported_registr
     assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-p") == ["org-a"]
     assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="p", operation_kind="remove", snapshot=b"p-removed", operation_id="op-rm") == "published"
     assert coordinator.execute("SELECT generation, state FROM workflow_profile_store WHERE profile_name='p'").fetchone() == (2, "removed")
-    assert coordinator.execute("SELECT profile_name, bound_generation, state FROM workflow_profile_dependencies WHERE org_namespace='org-a'").fetchall() == [("p", 1, "removed")]
+    assert coordinator.execute("SELECT profile_name, bound_generation, state FROM workflow_profile_dependencies WHERE org_namespace='org-a'").fetchall() == [("p", 1, "unbound")]
     # Republish of the remove operation cannot manufacture a ready org from the
     # old canonical bytes; the org stays fenced and admission is refused.
     assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-rm") == []
@@ -2033,9 +2033,11 @@ def test_proposed_profile_remove_keeps_dependents_fenced_until_supported_registr
         admit_authority_request(orgs["org-a"].connection, root=orgs["org-a"].root, cache=orgs["org-a"].cache, namespace="org-a", request_id="bad-removed", request_bytes=b"x", admitted_by="reader", expected_generation=2)
     # The unrelated dependent org-b is preserved ready on the still-live q.
     assert _publication_rows(paths["org-b"])["pointers"][0][4] == "ready"
-    # Only an explicitly supported registration to a coherent, published profile
-    # plus a fresh coordinated operation legitimately restores eligibility.
-    assert register_profile_dependency(coordinator, organization="org-a", profile_name="q", expected_generation=1) == 1
+    # Only an explicit consumer rebind to a coherent, published profile (a bare
+    # registration would leave p unbound) discharges the outstanding p
+    # requirement; a fresh coordinated operation then restores eligibility.
+    assert mutate_profile_dependency(coordinator, organization="org-a", from_profile="p", to_profile="q", expected_generation=1) == "dependency_rebound"
+    assert coordinator.execute("SELECT profile_name, bound_generation, state FROM workflow_profile_dependencies WHERE org_namespace='org-a'").fetchall() == [("q", 1, "active")]
     assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="q", operation_kind="register", snapshot=b"q-v2", operation_id="op-q2") == "published"
     assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-q2") == ["org-a", "org-b"]
     pointer = _publication_rows(paths["org-a"])["pointers"][0]
@@ -2046,10 +2048,16 @@ def test_proposed_profile_remove_keeps_dependents_fenced_until_supported_registr
 
 
 def test_proposed_profile_membership_preserves_multiple_profiles_and_consumers(tmp_path: Path) -> None:
-    """Tuple membership keeps one org on several profiles and several on one."""
+    """One valid required profile cannot discharge another required profile.
+
+    org-a requires both p and q; only p is published.  A coherent p binding must
+    not make org-a eligible while q is an outstanding unpublished requirement,
+    and the unrelated p-only orgs stay eligible.  The still-required q row is
+    preserved untouched.
+    """
     path = tmp_path / "profiles.db"
     coordinator = _adapter(path)
-    orgs, _paths = _seed_profile_orgs(tmp_path, ("org-a", "org-b", "org-c"))
+    orgs, paths = _seed_profile_orgs(tmp_path, ("org-a", "org-b", "org-c"))
     for name in ("org-a", "org-b", "org-c"):
         assert register_profile_dependency(coordinator, organization=name, profile_name="p", expected_generation=0) == 0
     assert register_profile_dependency(coordinator, organization="org-a", profile_name="q", expected_generation=0) == 0
@@ -2059,8 +2067,15 @@ def test_proposed_profile_membership_preserves_multiple_profiles_and_consumers(t
     ]
     assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="p", operation_kind="register", snapshot=b"p-v1", operation_id="op-p") == "published"
     assert json.loads(coordinator.execute("SELECT captured_members FROM workflow_profile_operations WHERE id='op-p'").fetchone()[0]) == ["org-a", "org-b", "org-c"]
-    assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-p") == ["org-a", "org-b", "org-c"]
-    # The unrelated q dependency of org-a is preserved untouched.
+    # The complete effective requirement set governs: org-a's unpublished q keeps
+    # it fenced even though its p binding is coherent; org-b/org-c are eligible.
+    assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-p") == ["org-b", "org-c"]
+    assert _publication_rows(paths["org-a"])["pointers"][0][4] == "fenced"
+    with pytest.raises(ValueError, match="authority_pointer_not_ready"):
+        admit_authority_request(orgs["org-a"].connection, root=orgs["org-a"].root, cache=orgs["org-a"].cache, namespace="org-a", request_id="partial", request_bytes=b"x", admitted_by="reader", expected_generation=2)
+    for name in ("org-b", "org-c"):
+        assert _publication_rows(paths[name])["pointers"][0][4] == "ready"
+    # The still-required q is preserved and blocks closure.
     assert coordinator.execute("SELECT bound_generation, state FROM workflow_profile_dependencies WHERE org_namespace='org-a' AND profile_name='q'").fetchone() == (0, "active")
     # A later registration to p is refused while a captured operation is active.
     with pytest.raises(ProfileOperationInterrupted, match="after_capture"):
@@ -2069,6 +2084,170 @@ def test_proposed_profile_membership_preserves_multiple_profiles_and_consumers(t
         register_profile_dependency(coordinator, organization="org-d", profile_name="p", expected_generation=1)
     for org in orgs.values():
         org.connection.close()
+
+
+def test_proposed_profile_removal_preserves_outstanding_requirement_in_same_org(tmp_path: Path) -> None:
+    """Removing one required profile in a two-profile org must not admit it.
+
+    Both p and q are coherent for org-a.  Removing p leaves org-a's p requirement
+    outstanding (``unbound``): it stays fenced even though its q binding is still
+    coherent, its admission history is preserved, the other org's independent q
+    history is untouched, and only an explicit consumer rebind plus a coherent
+    republication restores the eligible set.
+    """
+    path = tmp_path / "profiles.db"
+    coordinator = _adapter(path)
+    orgs, paths = _seed_profile_orgs(tmp_path, ("org-a", "org-b"))
+    register_profile_dependency(coordinator, organization="org-a", profile_name="p", expected_generation=0)
+    register_profile_dependency(coordinator, organization="org-a", profile_name="q", expected_generation=0)
+    register_profile_dependency(coordinator, organization="org-b", profile_name="q", expected_generation=0)
+    register_profile_dependency(coordinator, organization="org-b", profile_name="r", expected_generation=0)
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="q", operation_kind="register", snapshot=b"q-v1", operation_id="op-q") == "published"
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="p", operation_kind="register", snapshot=b"p-v1", operation_id="op-p") == "published"
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="r", operation_kind="register", snapshot=b"r-v1", operation_id="op-r") == "published"
+    # Both p and q are coherent for org-a once published, so it is eligible.
+    assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-q") == ["org-a", "org-b"]
+    assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-p") == ["org-a"]
+    assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-r") == ["org-b"]
+    assert admit_authority_request(orgs["org-a"].connection, root=orgs["org-a"].root, cache=orgs["org-a"].cache, namespace="org-a", request_id="before-remove", request_bytes=b"x", admitted_by="reader", expected_generation=2) == 2
+    # Remove p: org-a's p requirement is preserved as unbound, so it stays fenced.
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="p", operation_kind="remove", snapshot=b"p-removed", operation_id="op-rm") == "published"
+    assert coordinator.execute("SELECT profile_name, bound_generation, state FROM workflow_profile_dependencies WHERE org_namespace='org-a' ORDER BY profile_name").fetchall() == [("p", 1, "unbound"), ("q", 1, "active")]
+    admissions_before = coordinator.execute("SELECT id, generation FROM workflow_admission_records WHERE namespace='org-a' ORDER BY id").fetchall()
+    assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-rm") == []
+    assert _publication_rows(paths["org-a"])["pointers"][0][4] == "fenced"
+    with pytest.raises(ValueError, match="authority_pointer_not_ready"):
+        admit_authority_request(orgs["org-a"].connection, root=orgs["org-a"].root, cache=orgs["org-a"].cache, namespace="org-a", request_id="during-remove", request_bytes=b"x", admitted_by="reader", expected_generation=3)
+    assert coordinator.execute("SELECT id, generation FROM workflow_admission_records WHERE namespace='org-a' ORDER BY id").fetchall() == admissions_before
+    assert _publication_rows(paths["org-b"])["pointers"][0][4] == "ready"
+    # Explicit consumer rebind p -> r discharges the requirement; a fresh
+    # coordinated r publication restores only the eligible set.
+    assert mutate_profile_dependency(coordinator, organization="org-a", from_profile="p", to_profile="r", expected_generation=1) == "dependency_rebound"
+    assert coordinator.execute("SELECT profile_name, state FROM workflow_profile_dependencies WHERE org_namespace='org-a' ORDER BY profile_name").fetchall() == [("q", "active"), ("r", "active")]
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="r", operation_kind="register", snapshot=b"r-v2", operation_id="op-r2") == "published"
+    assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-r2") == ["org-a", "org-b"]
+    assert _publication_rows(paths["org-a"])["pointers"][0][4] == "ready"
+    for org in orgs.values():
+        org.connection.close()
+
+
+def test_proposed_delayed_republish_cannot_adopt_a_newer_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A validated republish holds its closure; a newer operation cannot interleave.
+
+    While a republish of the selected generation is mid-flight, a second real
+    connection's newer removal is refused ``profile_coordinator_busy`` with zero
+    effect, so the old publisher can never read a newer fence and reopen the org
+    against stale bytes.  After the valid republish, a genuinely newer operation
+    supersedes it, a delayed republish of the old one is refused with zero
+    effect, and the stale admission is refused at dispatch.
+    """
+    import tests.workflows.u0_evidence_helpers as u0_helpers
+
+    path = tmp_path / "profiles.db"
+    coordinator = _adapter(path)
+    orgs, paths = _seed_profile_orgs(tmp_path, ("org-a",))
+    register_profile_dependency(coordinator, organization="org-a", profile_name="p", expected_generation=0)
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="p", operation_kind="register", snapshot=b"p-v1", operation_id="selected") == "published"
+    original = u0_helpers._assert_profile_closure_coherent
+    observed: list[object] = []
+
+    def interleave(conn: sqlite3.Connection, organization: str) -> None:
+        result = original(conn, organization)
+        if not observed:
+            other = _adapter(path)
+            try:
+                try:
+                    observed.append(("newer-op", coordinate_profile_operation(other, orgs=orgs, profile_name="p", operation_kind="remove", snapshot=b"p-removed", operation_id="newer")))
+                except BaseException as exc:  # noqa: BLE001 - the refusal is the evidence
+                    observed.append(("newer-op-refused", str(exc)))
+            finally:
+                other.close()
+        return result
+
+    monkeypatch.setattr(u0_helpers, "_assert_profile_closure_coherent", interleave)
+    try:
+        assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="selected") == ["org-a"]
+    finally:
+        monkeypatch.setattr(u0_helpers, "_assert_profile_closure_coherent", original)
+    # The newer operation was refused while the validated closure was held; no
+    # newer store/registry write exists.
+    assert observed == [("newer-op-refused", "profile_coordinator_busy")]
+    assert coordinator.execute("SELECT generation, state FROM workflow_profile_store WHERE profile_name='p'").fetchone() == (1, "active")
+    assert _publication_rows(paths["org-a"])["pointers"][0][4] == "ready"
+    assert admit_authority_request(orgs["org-a"].connection, root=orgs["org-a"].root, cache=orgs["org-a"].cache, namespace="org-a", request_id="valid", request_bytes=b"x", admitted_by="reader", expected_generation=2) == 2
+    # A genuinely newer removal now publishes and supersedes the old operation.
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="p", operation_kind="remove", snapshot=b"p-removed", operation_id="newer") == "published"
+    assert coordinator.execute("SELECT generation, state FROM workflow_profile_store WHERE profile_name='p'").fetchone() == (2, "removed")
+    before = (
+        coordinator.execute("SELECT profile_name, generation, profile_digest, state FROM workflow_profile_store").fetchall(),
+        coordinator.execute("SELECT profile_name, published_generation FROM workflow_profile_registry").fetchall(),
+        coordinator.execute("SELECT org_namespace, profile_name, consumer_identity, bound_generation, state FROM workflow_profile_dependencies").fetchall(),
+        _publication_rows(paths["org-a"]),
+    )
+    with pytest.raises(ValueError, match="profile_operation_superseded"):
+        republish_profile_dependents(coordinator, orgs=orgs, operation_id="selected")
+    after = (
+        coordinator.execute("SELECT profile_name, generation, profile_digest, state FROM workflow_profile_store").fetchall(),
+        coordinator.execute("SELECT profile_name, published_generation FROM workflow_profile_registry").fetchall(),
+        coordinator.execute("SELECT org_namespace, profile_name, consumer_identity, bound_generation, state FROM workflow_profile_dependencies").fetchall(),
+        _publication_rows(paths["org-a"]),
+    )
+    assert after == before
+    # The committed admission from the superseded publication is refused at
+    # dispatch once the newer removal fences the org.
+    with pytest.raises(ValueError, match="authority_pointer_not_ready"):
+        revalidate_authority_dispatch(orgs["org-a"].connection, root=orgs["org-a"].root, cache=orgs["org-a"].cache, namespace="org-a", request_id="valid")
+    for org in orgs.values():
+        org.connection.close()
+
+
+def test_proposed_two_consumers_same_org_profile_are_independent(tmp_path: Path) -> None:
+    """Two live consumers on one (org, profile) keep independent requirements.
+
+    A second consumer's registration must not collapse into the first; rebinding
+    or removing one consumer leaves the other's requirement and its independent
+    profile intact, and the affected org is captured exactly once.
+    """
+    path = tmp_path / "profiles.db"
+    coordinator = _adapter(path)
+    orgs, _paths = _seed_profile_orgs(tmp_path, ("org-a",))
+    assert register_profile_dependency(coordinator, organization="org-a", profile_name="p", expected_generation=0, consumer_identity="agent-one") == 0
+    assert register_profile_dependency(coordinator, organization="org-a", profile_name="p", expected_generation=0, consumer_identity="agent-two") == 0
+    assert register_profile_dependency(coordinator, organization="org-a", profile_name="q", expected_generation=0, consumer_identity="agent-two") == 0
+    assert coordinator.execute("SELECT consumer_identity, profile_name, state FROM workflow_profile_dependencies WHERE org_namespace='org-a' ORDER BY consumer_identity, profile_name").fetchall() == [
+        ("agent-one", "p", "active"), ("agent-two", "p", "active"), ("agent-two", "q", "active"),
+    ]
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="p", operation_kind="register", snapshot=b"p-v1", operation_id="op-p") == "published"
+    # The affected org is captured exactly once even with two p consumers.
+    assert json.loads(coordinator.execute("SELECT captured_members FROM workflow_profile_operations WHERE id='op-p'").fetchone()[0]) == ["org-a"]
+    # agent-two also requires unpublished q, so org-a is not yet eligible.
+    assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-p") == []
+    assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="q", operation_kind="register", snapshot=b"q-v1", operation_id="op-q") == "published"
+    assert republish_profile_dependents(coordinator, orgs=orgs, operation_id="op-q") == ["org-a"]
+    # Rebind only agent-one's p requirement; agent-two's p requirement remains.
+    assert mutate_profile_dependency(coordinator, organization="org-a", from_profile="p", to_profile="q", expected_generation=1, consumer_identity="agent-one") == "dependency_rebound"
+    assert coordinator.execute("SELECT consumer_identity, profile_name, state FROM workflow_profile_dependencies WHERE org_namespace='org-a' AND state!='removed' ORDER BY consumer_identity, profile_name").fetchall() == [
+        ("agent-one", "q", "active"), ("agent-two", "p", "active"), ("agent-two", "q", "active"),
+    ]
+    # Removing agent-two's p requirement leaves agent-one's independent q intact.
+    assert mutate_profile_dependency(coordinator, organization="org-a", from_profile="p", to_profile=None, expected_generation=1, consumer_identity="agent-two") == "dependency_removed"
+    assert coordinator.execute("SELECT consumer_identity, profile_name, state FROM workflow_profile_dependencies WHERE org_namespace='org-a' AND state!='removed' ORDER BY consumer_identity, profile_name").fetchall() == [
+        ("agent-one", "q", "active"), ("agent-two", "q", "active"),
+    ]
+    for org in orgs.values():
+        org.connection.close()
+
+
+def _bounded_readline(stream: object, timeout: float) -> str:
+    """Read one line from a pipe without an unbounded block on a wedged child."""
+    import select
+
+    ready, _writable, _errored = select.select([stream], [], [], timeout)
+    if not ready:
+        return ""
+    return stream.readline()  # type: ignore[attr-defined]
 
 
 def test_proposed_profile_live_process_contention_excludes_second_coordinator(tmp_path: Path) -> None:
@@ -2094,17 +2273,26 @@ sys.stdin.readline()
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     try:
-        first = child.stdout.readline() if child.stdout is not None else ""
+        first = _bounded_readline(child.stdout, 10.0) if child.stdout is not None else ""
         assert first.strip() == "HELD", child.stderr.read() if child.stderr is not None else ""
         with pytest.raises(ValueError, match="profile_coordinator_busy"):
             coordinate_profile_operation(coordinator, orgs=orgs, profile_name="codex-profile", operation_kind="register", snapshot=b"v1", operation_id="blocked")
         assert coordinator.execute("SELECT COUNT(*) FROM workflow_profile_operations").fetchone() == (0,)
         assert coordinator.execute("SELECT COUNT(*) FROM workflow_profile_leases").fetchone() == (1,)
     finally:
-        if child.stdin is not None:
-            child.stdin.write("\n")
-            child.stdin.flush()
-        child.wait(timeout=10)
+        # A failed release write must never bypass owned-process wait/cleanup.
+        try:
+            if child.stdin is not None:
+                child.stdin.write("\n")
+                child.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+        finally:
+            try:
+                child.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=10)
     assert child.returncode == 0
     assert coordinate_profile_operation(coordinator, orgs=orgs, profile_name="codex-profile", operation_kind="register", snapshot=b"v1", operation_id="fresh") == "published"
     assert coordinator.execute("SELECT COUNT(*) FROM workflow_profile_leases").fetchone() == (0,)
