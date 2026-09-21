@@ -1168,6 +1168,46 @@ integration and automatic authority-hook orchestration remain the NEXT unit; the
 hook stays fail-closed/DARK and the editable-pair editor/browser path remains
 unimplemented.
 
+Checkpoint C3d4b (same unmerged draft PR) wires the accepted POST-FINAL
+receipt-settlement and pending-generation publication bookkeeping into the
+ACTUAL recovery and startup seams.
+`runtime.orchestrator.authority.reconcile_authority_policy_v2_post_final(orch,
+*, root_task_id)` derives the immutable finalized envelope (E) and, through the
+new read-only
+`Database.get_authority_policy_v2_settlement_receipt_identity`, the exact real
+recovery receipt Q, then settles through the EXISTING public
+`settle_authority_policy_v2_continuation_receipt` writer (genuine recovery when
+an exact Q exists, the ordinary branch requiring real completion evidence
+otherwise, and read-only authentication for an already-`callback_consumed` Q)
+and independently discovers/publishes every `needed`/`publishing`/`published`
+`pending(G)` notification through the EXISTING authenticated publisher. It
+evaluates, remints, spends and launches nothing and never runs the ordinary
+decision body; a missing or conflicting settlement proof refuses with the prior
+residue and produces no queue call. `_consume_accepted_completion_recovery`
+routes a `causal` classification to that helper instead of the common
+consumer's skip, and `runtime.daemon.__main__._build_state` binds the REAL
+owning-process identity (`OrgState.authority_v2_origin_boot_id`, via
+`OrgState.bind_authority_v2_owner`) and the existing server-owned
+`_strict_permission_surface_digest` reader before recovery, then runs a
+startup-wide publication pass with `limit=None` so every eligible root is
+covered (no first-32 starvation). A same-boot unexpired lease is never stolen,
+an already admitted generation is never republished/reclaimed, and the tagged
+generation claim at dequeue remains the only admission. The pre-final automatic
+authority hook, refusal/reaper orchestration and the editable-pair
+editor/browser path remain LATER units; the hook stays fail-closed/DARK and the
+dual-text feature remains unaccepted.
+
+`tests/test_authority_v2_post_final_reconciliation.py` drives the REAL
+`_consume_accepted_completion_recovery` and `_sweep_on_startup` callers across
+accepted/already-consumed/ordinary settlement, missing/conflicting-proof
+refusal, lost-queue/new-boot republication, same-boot live-lease, and a real
+queue-failure retry; `tests/test_task_enqueue_boundary.py` finishes the two-org
+proof by draining both same-id orgs through the real
+`Dispatcher.run_step` (tagged generation admission vs ordinary claim, duplicate
+replay, named-org isolation), and `tests/test_authority_v2_shipping.py` adds the
+same accepted-recovery seam over both fresh and full historical-migrated owned
+RuntimeDir venues with a corrupt-settlement refusal.
+
 ## Inline Delegation Chains
 
 A manager can declare a multi-leg workflow in one `delegate` decision using `NextStep.then` and optional per-leg `expect_verdict` gates. The orchestrator auto-advances to the next leg when a child terminates completed with a matching verdict. Since THR-211, auto-advance may also fire from a child whose completion report has durably landed while its task row still reads `in_progress` (the completion-status-lag window) — the recognition is session-safe and at-most-once, and the chain gate consumes the exact authenticated `(task_id, assigned_agent, current_session_id)` report so a newer unrelated row can never advance or clear the chain; see `tests/test_thr211_completion_status_lag.py` for the session-bound regression cases.

@@ -451,6 +451,33 @@ def _sweep_on_startup(
     return recovered_tokens
 
 
+def _publish_v2_generations_on_startup(org, queue: TaskQueue) -> None:
+    """THR-229 checkpoint C3d4b startup publication discovery (every root).
+
+    After the startup sweep and the real owner bindings, independently discover
+    and publish every pending v2 continuation generation for this org through
+    the EXISTING authenticated publisher (real claim -> raw tagged queue put ->
+    exact acknowledgement).  ``limit=None`` guarantees coverage for every
+    eligible root rather than the first 32 targets.
+
+    This admits and launches NOTHING: only the tagged generation claim at
+    dequeue can admit, and a same-boot unexpired lease is never stolen, so a
+    generation already published by the sweep's accepted-recovery path is not
+    duplicated.  Publishing is liveness bookkeeping; a failure to publish leaves
+    the durable pending pointer intact and is retried on the next startup.
+    """
+    orchestrator = getattr(org, "orchestrator", None)
+    if orchestrator is None or queue is None:
+        return
+    from runtime.orchestrator.authority import publish_authority_policy_v2_notifications
+    try:
+        publish_authority_policy_v2_notifications(orchestrator, queue, limit=None)
+    except Exception:
+        logger.exception(
+            "startup v2 generation publication failed for org %s", org.slug,
+        )
+
+
 def _build_state(settings: Settings) -> DaemonState:
     reg = runtimes.load()
     if reg.active is None:
@@ -478,6 +505,12 @@ def _build_state(settings: Settings) -> DaemonState:
     runtime = RuntimeDir.load(reg.active)
     state = DaemonState.from_runtime(runtime, settings)
     for org in state.orgs.values():
+        # THR-229 checkpoint C3d4b: bind the REAL owning-process boot marker
+        # (the existing ``authority_v2_origin_boot_id``) and the existing
+        # server-owned permission-surface reader before any startup recovery or
+        # publication.  These bindings are the production owner setup; they were
+        # previously exercised only by tests/store forwarders.
+        org.bind_authority_v2_owner()
         # THR-229 checkpoint B2b2: initialize the eligible Engineering selector
         # through the existing serialized transaction owner BEFORE any startup
         # recovery/enqueue and before the API becomes available. Initialization
@@ -497,6 +530,12 @@ def _build_state(settings: Settings) -> DaemonState:
         recovered_tokens = _sweep_on_startup(
             org.db, state.queue, org.slug, org.orchestrator,
         )
+        # THR-229 checkpoint C3d4b: publish every pending v2 generation for this
+        # org after the sweep (covers ordinary continuations with no recovery Q,
+        # a lost in-memory queue after a committed ``published``, an old-boot
+        # ``publishing`` lease and exact already-consumed receipts) and before
+        # the API/worker pool admits work.
+        _publish_v2_generations_on_startup(org, state.queue)
         # GitHub #688 Slice B: startup reply-delivery recovery returns the
         # queued/replacement tokens to re-enqueue once the event loop is live
         # (the lifespan enqueues them before thread workers start).

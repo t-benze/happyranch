@@ -382,6 +382,25 @@ def _run_step_orch(store, queue, launches, session=RESERVED):
     return _Orch()
 
 
+def _hold_launch(org, launches):
+    """Double ONLY the external executor boundary on one real org.
+
+    Records the real ``runtime_session_id`` the admission path reserved (if any)
+    and halts the step at the launch seam with ``_StopLaunch`` (a
+    ``BaseException`` that ``run_step`` never swallows), so the durable
+    admission/reservation can be asserted without spawning an executor.
+    """
+
+    def _run_agent(task_id, agent, prompt, **kw):
+        launches.append({
+            "slug": org.slug, "task_id": task_id, "agent": agent,
+            "runtime_session_id": kw.get("runtime_session_id"),
+        })
+        raise _StopLaunch()
+
+    org.orchestrator._run_agent = _run_agent
+
+
 def _generation_claims(store, generation_id):
     """The closed ``generation_claimed`` events for ONE specific generation."""
     return [
@@ -559,6 +578,104 @@ def test_two_loaded_orgs_distinct_pending_generations_isolated(tmp_path, monkeyp
     assert org_b.db.classify_authority_policy_v2_root_dispatch_for_enqueue(
         TASK_ID
     ).generation_id == outcome_b.notification_id
+
+    # Drain BOTH same-id orgs through the REAL Dispatcher.run_step: each admits
+    # its OWN generation exactly once and never the other org's same-id G.
+    from runtime.daemon.dispatcher import Dispatcher
+
+    launches = []
+    _hold_launch(org_a, launches)
+    _hold_launch(org_b, launches)
+    dispatcher = Dispatcher(state)
+    items = {i[0]: i for i in list(state.queue._queue._queue)}
+
+    with pytest.raises(_StopLaunch):
+        dispatcher.run_step("org-a", TASK_ID, items["org-a"][2])
+    a_task = org_a.db.get_task(TASK_ID)
+    assert a_task.status is TaskStatus.IN_PROGRESS
+    assert a_task.current_session_id == launches[-1]["runtime_session_id"]
+    assert len(_generation_claims(_store_a, outcome_a.notification_id)) == 1
+    # Org B is still pending and owns NO claim for org A's generation.
+    assert org_b.db.get_task(TASK_ID).status is TaskStatus.PENDING
+    assert _generation_claims(_store_b, outcome_a.notification_id) == []
+
+    with pytest.raises(_StopLaunch):
+        dispatcher.run_step("org-b", TASK_ID, items["org-b"][2])
+    b_task = org_b.db.get_task(TASK_ID)
+    assert b_task.status is TaskStatus.IN_PROGRESS
+    assert b_task.current_session_id == launches[-1]["runtime_session_id"]
+    assert launches[-1]["slug"] == "org-b"
+    assert len(_generation_claims(_store_b, outcome_b.notification_id)) == 1
+    # Org A's admitted session/claim survives org B's admission unchanged.
+    assert org_a.db.get_task(TASK_ID).current_session_id == a_task.current_session_id
+    assert len(_generation_claims(_store_a, outcome_a.notification_id)) == 1
+    assert _generation_claims(_store_a, outcome_b.notification_id) == []
+
+
+def test_two_loaded_orgs_dispatcher_run_step_admission_isolated(tmp_path, monkeypatch):
+    """Drain a pending-v2 org and an ordinary same-id org through the REAL
+    ``Dispatcher.run_step``.
+
+    The tagged generation fence admits org A's own G exactly once (reserving the
+    runtime session); the ordinary org B uses the ordinary claim with no
+    reserved session.  Named-org rows, sessions, step counts and durable claims
+    stay isolated, and a duplicate/stale replay of the tagged item never
+    launches again.  Only the external executor boundary is doubled.
+    """
+    from runtime.daemon import runner
+    from runtime.daemon.dispatcher import Dispatcher
+
+    state = _bootstrap_two_org_daemon_state(tmp_path, monkeypatch)
+    org_a, org_b = state.orgs["org-a"], state.orgs["org-b"]
+    store_a, outcome_a = _finalized_on(org_a.db)
+    org_b.db.insert_task(TaskRecord(
+        id=TASK_ID, brief="b", team="engineering",
+        assigned_agent="engineering_manager",
+    ))
+    b_before_session = org_b.db.get_task(TASK_ID).current_session_id
+
+    launches = []
+    _hold_launch(org_a, launches)
+    _hold_launch(org_b, launches)
+
+    runner.enqueue_task(state, "org-a", TASK_ID)
+    runner.enqueue_task(state, "org-b", TASK_ID)
+    items = {i[0]: i for i in list(state.queue._queue._queue)}
+    dispatcher = Dispatcher(state)
+
+    with pytest.raises(_StopLaunch):
+        dispatcher.run_step("org-a", TASK_ID, items["org-a"][2])
+    a_task = org_a.db.get_task(TASK_ID)
+    assert a_task.status is TaskStatus.IN_PROGRESS
+    assert a_task.current_session_id
+    assert launches[-1] == {
+        "slug": "org-a", "task_id": TASK_ID, "agent": a_task.assigned_agent,
+        "runtime_session_id": a_task.current_session_id,
+    }
+    assert len(_generation_claims(store_a, outcome_a.notification_id)) == 1
+    # Org B's same-id ordinary row is untouched by org A's admission.
+    b_task = org_b.db.get_task(TASK_ID)
+    assert b_task.status is TaskStatus.PENDING
+    assert b_task.current_session_id == b_before_session
+
+    with pytest.raises(_StopLaunch):
+        dispatcher.run_step("org-b", TASK_ID, items["org-b"][2])
+    b_task = org_b.db.get_task(TASK_ID)
+    assert b_task.status is TaskStatus.IN_PROGRESS
+    assert launches[-1]["slug"] == "org-b"
+    assert launches[-1]["runtime_session_id"] is None
+    # No v2 claim/audit leaked onto the ordinary org; org A is unchanged.
+    assert _generation_claims(store_a, outcome_a.notification_id) == [
+        e for e in _stage_events(store_a, "generation_claimed")
+        if e.get("generation_id") == outcome_a.notification_id
+    ]
+    assert org_a.db.get_task(TASK_ID).current_session_id == a_task.current_session_id
+
+    # Duplicate/stale replay of the SAME tagged item launches nothing new.
+    before = len(launches)
+    dispatcher.run_step("org-a", TASK_ID, items["org-a"][2])
+    assert len(launches) == before
+    assert len(_generation_claims(store_a, outcome_a.notification_id)) == 1
 
 
 def test_publication_cancellation_between_classify_and_claim_second_connection(

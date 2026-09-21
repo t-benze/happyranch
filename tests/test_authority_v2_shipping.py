@@ -2243,6 +2243,177 @@ def _drive_c3d3b_admission(
     return root_id
 
 
+def _drive_c3d4b_post_final_recovery(
+    fixture: _ShippingFixture, *, negative: str | None = None,
+) -> str:
+    """C3d4b post-final recovery seam over the REAL owned runtime.
+
+    The public pre-final stages are staged through controlled public writes
+    (the automatic hook remains dark), then the ACTUAL production
+    ``_consume_accepted_completion_recovery`` seam owns settlement + tagged
+    publication.  The real queue/Dispatcher/run_step then admits the tagged
+    generation exactly once on the held external boundary.  A post-admission
+    replay under a fresh boot must not duplicate admission, and deleting the
+    only settlement proof must refuse with zero queue effect.
+    """
+    fixture.activate_v2_pair()
+    fixture.install_launch_hold()
+    root_id = fixture.create_and_enqueue_root()
+    captured = fixture.wait_for_launch()
+    session_id = captured["session_id"]
+    binding = _binding(fixture, root_id, session_id)
+    assert binding is not None and binding["mode"] == "v2"
+
+    body = _completion_body(binding, root_id)
+    payload = fixture.write_payload(body)
+    result = fixture.run_cli(payload)
+    assert result.returncode == 0, result.stderr
+    assert fixture.last_http()["status"] == 200
+
+    results, attempt, _audits = _admission_counts(fixture, root_id)
+    assert len(results) == 1 and attempt is not None
+    row_id = results[0]["id"]
+    db = fixture.org.db
+
+    # The REAL production owner binding (never a test boot string).
+    fixture.org.bind_authority_v2_owner()
+    assert db._v2_process_boot_id == fixture.org.authority_v2_origin_boot_id
+    assert attempt.origin_boot_id == fixture.org.authority_v2_origin_boot_id
+
+    stage_kwargs = dict(
+        root_task_id=root_id, manager_agent=MANAGER, manager_session_id=session_id,
+        result_id=row_id, origin_boot_id=attempt.origin_boot_id,
+        owner_attempt_id=attempt.owner_attempt_id,
+    )
+    assert db.claim_authority_policy_v2_candidate(**stage_kwargs).status == "claimed"
+    assert db.audit_authority_policy_v2_candidate_claim(**stage_kwargs).status == "claim_audited"
+    assert db.evaluate_authority_policy_v2_candidate(**stage_kwargs).status == "evaluated"
+    assert db.audit_authority_policy_v2_candidate_evaluation(**stage_kwargs).status == "evaluation_audited"
+    assert db.consume_authority_policy_v2_candidate(**stage_kwargs).status == "consumed"
+    assert db.audit_authority_policy_v2_candidate_consumption(**stage_kwargs).status == "consumed_audited"
+    finalized = db.finalize_authority_policy_v2_continuation(**stage_kwargs)
+    assert finalized.status == "continued", finalized
+    generation = finalized.notification_id
+
+    # The exact accepted recovery Q is the ONLY settlement proof; the production
+    # seam (not this test) must settle it.
+    db._conn.execute(
+        """INSERT INTO task_completion_recoveries
+           (task_id, agent, origin_session_id, recovery_session_id,
+            provider_session_id, claimed_at, expires_at, state,
+            accepted_result_id, accepted_result_session_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (root_id, MANAGER, "sess-origin", session_id, "provider-1",
+         "2026-01-01T00:00:00+00:00", "2999-01-01T00:00:00+00:00",
+         "callback_accepted", row_id, session_id),
+    )
+    db._conn.commit()
+
+    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+    from runtime.orchestrator.run_step import _consume_accepted_completion_recovery
+
+    result_row = db._conn.execute(
+        "SELECT * FROM task_results WHERE id=?", (row_id,)
+    ).fetchone()
+    report = completion_report_from_result_row(
+        root_id, dict(result_row), fallback_agent=MANAGER,
+    )
+
+    if negative == "corrupt_settlement":
+        # Delete the only recovery receipt: no genuine Q and no ordinary
+        # completion evidence exists, so the seam must refuse read-only.
+        db._conn.execute(
+            "DELETE FROM task_completion_recoveries WHERE task_id=? AND agent=?",
+            (root_id, MANAGER),
+        )
+        db._conn.commit()
+        _consume_accepted_completion_recovery(
+            fixture.org.orchestrator, root_id, report,
+            agent=MANAGER, session_id=session_id, result_row_id=row_id,
+        )
+        notification = db.get_authority_policy_v2_recovery_notification(generation)
+        assert notification is not None and notification.state == "needed"
+        assert db.get_authority_policy_v2_root_dispatch(root_id).state == "pending"
+        assert db.get_task(root_id).status is TaskStatus.PENDING
+        # Zero queue effect: the held external boundary saw only the original.
+        assert fixture.launch_count() == 1
+        fixture.release_launch()
+        fixture.join_workers()
+        return root_id
+
+    _consume_accepted_completion_recovery(
+        fixture.org.orchestrator, root_id, report,
+        agent=MANAGER, session_id=session_id, result_row_id=row_id,
+    )
+    receipt = db._conn.execute(
+        "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
+        (root_id, MANAGER),
+    ).fetchone()
+    assert receipt["state"] == "callback_consumed"
+    stage_events = [
+        a["payload"]["stage"]
+        for a in db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=root_id, manager_agent=MANAGER,
+        )
+    ]
+    assert stage_events.count("publish_claimed") == 1
+    assert stage_events.count("published") == 1
+
+    # The real second worker consumes the tagged item -> the ONLY generation
+    # admission/settlement, then the held reserved-session launch.
+    reserved = None
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        admitted = db.get_authority_policy_v2_recovery_notification(generation)
+        if (
+            admitted is not None and admitted.state == "settled"
+            and admitted.next_session_id
+        ):
+            reserved = admitted.next_session_id
+            if fixture.captured.get("session_id") == reserved:
+                break
+        time.sleep(0.05)
+    assert reserved is not None, "generation was never admitted"
+    assert reserved != session_id
+    assert db.get_authority_policy_v2_root_dispatch(root_id).state == "admitted"
+    task = db.get_task(root_id)
+    assert task.status is TaskStatus.IN_PROGRESS
+    assert task.current_session_id == reserved
+    stage_events = [
+        a["payload"]["stage"]
+        for a in db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=root_id, manager_agent=MANAGER,
+        )
+    ]
+    assert stage_events.count("generation_claimed") == 1
+    assert stage_events.count("notification_settled") == 1
+    assert fixture.captured["session_id"] == reserved
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_continue_envelopes"
+    ).fetchone()[0] == 1
+
+    # Post-admission replay under a genuinely new boot: already admitted G is
+    # never republished/reclaimed and no second admission occurs.
+    fixture.org.db.bind_authority_policy_v2_process_boot_id("boot-post-admission")
+    _consume_accepted_completion_recovery(
+        fixture.org.orchestrator, root_id, report,
+        agent=MANAGER, session_id=session_id, result_row_id=row_id,
+    )
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_continue_envelopes"
+    ).fetchone()[0] == 1
+    assert [
+        a["payload"]["stage"]
+        for a in db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=root_id, manager_agent=MANAGER,
+        )
+    ].count("generation_claimed") == 1
+
+    fixture.release_launch()
+    fixture.join_workers()
+    return root_id
+
+
 def test_shipping_real_publication_and_generation_admission(tmp_path, monkeypatch):
     fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2)
     fixture.start()
@@ -2260,6 +2431,52 @@ def test_shipping_historically_migrated_publication_admission(tmp_path, monkeypa
     fixture.start()
     try:
         _drive_c3d3b_admission(fixture)
+    finally:
+        fixture.stop()
+
+
+# C3d4b: the ACTUAL accepted-recovery seam owns settlement + tagged publication
+# through the same owned-runtime venue, fresh AND full historical-migrated,
+# with a corrupt-settlement refusal.
+
+def test_shipping_real_post_final_recovery_seam(tmp_path, monkeypatch):
+    fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2)
+    fixture.start()
+    try:
+        _drive_c3d4b_post_final_recovery(fixture)
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_post_final_recovery(tmp_path, monkeypatch):
+    fixture = _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=True, queue_workers=2,
+    )
+    fixture.start()
+    try:
+        _drive_c3d4b_post_final_recovery(fixture)
+    finally:
+        fixture.stop()
+
+
+def test_shipping_post_final_corrupt_settlement_refuses(tmp_path, monkeypatch):
+    fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2)
+    fixture.start()
+    try:
+        _drive_c3d4b_post_final_recovery(fixture, negative="corrupt_settlement")
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_corrupt_settlement_refuses(
+    tmp_path, monkeypatch,
+):
+    fixture = _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=True, queue_workers=2,
+    )
+    fixture.start()
+    try:
+        _drive_c3d4b_post_final_recovery(fixture, negative="corrupt_settlement")
     finally:
         fixture.stop()
 

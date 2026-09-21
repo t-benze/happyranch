@@ -11592,6 +11592,46 @@ class Database:
             self._conn.rollback()
             raise
 
+    # -- THR-229 checkpoint C3d4b: read-only recovery-receipt identity discovery
+    # used by the real post-final orchestration seams (accepted-completion
+    # recovery and startup) to decide whether settlement runs through the genuine
+    # recovery branch (an exact durable Q exists) or the ordinary branch.  It
+    # performs NO transition and grants NO authority: the public settlement
+    # writer independently re-reads and authenticates the complete evidence, so a
+    # stale/partial identity here can only produce a refusal.
+
+    @_synchronized
+    def get_authority_policy_v2_settlement_receipt_identity(
+        self, *, root_task_id: str, manager_agent: str,
+    ) -> dict | None:
+        """Return the exact recovery-receipt (Q) identity for a root, or ``None``.
+
+        ``None`` means the root has NO recovery receipt for this manager: the
+        finalized continuation was settled through the genuine ordinary
+        completion-evidence branch.  ``{"conflict": True}`` means more than one
+        receipt exists, which the caller must refuse rather than guess at.
+        Otherwise the bounded exact ``recovery_session_id`` /
+        ``accepted_result_id`` / ``accepted_result_session_id`` / ``state``
+        columns are returned for the settlement writer's recovery branch.
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM task_completion_recoveries "
+            "WHERE task_id=? AND agent=? ORDER BY id",
+            (root_task_id, manager_agent),
+        ).fetchall()
+        if not rows:
+            return None
+        if len(rows) != 1:
+            return {"conflict": True}
+        row = rows[0]
+        return {
+            "conflict": False,
+            "state": row["state"],
+            "recovery_session_id": row["recovery_session_id"],
+            "accepted_result_id": row["accepted_result_id"],
+            "accepted_result_session_id": row["accepted_result_session_id"],
+        }
+
     # -- THR-229 checkpoint C3d3a: callable authenticated publication
     # bookkeeping.  Discovery is a read-only listing; claim/acknowledge/failure
     # and invalidation are Database-owned synchronized transactions.  NONE of

@@ -2647,7 +2647,7 @@ def run_authority_hook(
 
 
 def publish_authority_policy_v2_notifications(
-    orch, queue, *, limit: int = 32, root_task_id: str | None = None,
+    orch, queue, *, limit: int | None = 32, root_task_id: str | None = None,
 ) -> list[dict]:
     """Real publication entry for pending v2 continuation generations.
 
@@ -2687,7 +2687,12 @@ def publish_authority_policy_v2_notifications(
         # notification yields an EMPTY receipt list, which the caller must
         # treat as a refusal (never an ordinary fallback).
         targets = [t for t in targets if t.root_task_id == root_task_id]
-    for target in targets[: max(0, limit)]:
+    # ``limit`` bounds one call; ``None`` means "every discovered target" so a
+    # startup pass can guarantee coverage for every eligible root (no
+    # first-32-target starvation).  Claim/reclaim remains the authority, so a
+    # re-discovered live-lease row is a bounded refusal, never a duplicate put.
+    scoped = targets if limit is None else targets[: max(0, limit)]
+    for target in scoped:
         claim = db.claim_authority_policy_v2_notification_publication(
             root_task_id=target.root_task_id,
             manager_agent=target.manager_agent,
@@ -2743,6 +2748,125 @@ def publish_authority_policy_v2_notifications(
             "publication_attempt": claim.publication_attempt,
         })
     return receipts
+
+
+# Closed bounded outcomes of the real post-final orchestration (THR-229 C3d4b).
+POST_FINAL_NOT_FINALIZED = "not_finalized"
+POST_FINAL_RECONCILED = "reconciled"
+POST_FINAL_SETTLEMENT_REFUSED = "settlement_refused"
+
+
+def reconcile_authority_policy_v2_post_final(
+    orch, *, root_task_id: str,
+) -> str:
+    """Settle the exact final receipt and publish the pending generation (C3d4b).
+
+    The real accepted-completion-recovery and startup seams call this for a root
+    whose v2 generation is already FINALIZED (an active continuation envelope
+    exists).  It performs ONLY the accepted R4 post-final bookkeeping:
+
+    1. derive the immutable E/attempt identity from durable rows -- never the
+       caller's latest result, the current session or any caller assertion;
+    2. settle the exact recovery receipt through the EXISTING public settlement
+       writer (genuine recovery branch when an exact Q exists; the ordinary
+       branch -- which requires real completion evidence -- when none does), or
+       authenticate an already-``callback_consumed`` settlement read-only;
+    3. independently discover and publish EVERY needed/publishing/published
+       pending-G notification for the root through the EXISTING authenticated
+       publisher (real claim -> raw tagged ``TaskQueue`` put OUTSIDE any
+       transaction -> exact acknowledgement).
+
+    Publication runs whether or not a Q transition happened, so a lost
+    in-memory queue after a committed ``published``, an old-boot ``publishing``
+    lease and an already-consumed receipt are all rediscovered.  It never
+    evaluates, remints, spends, launches, mutates the task outside the writers
+    above, or runs the ordinary decision body.  A missing/conflicting settlement
+    proof refuses with the prior residue and performs no ordinary fallback; the
+    publisher then also refuses on the same proof, so no queue call happens.
+
+    Returns one of the bounded ``POST_FINAL_*`` status strings.
+    """
+    db = getattr(orch, "_db", None)
+    from runtime.infrastructure.database import Database
+    if not isinstance(db, Database):
+        return POST_FINAL_NOT_FINALIZED
+    try:
+        envelope = db.get_authority_policy_v2_continue_envelope_for_root(
+            root_task_id
+        )
+    except Exception:
+        logger.exception(
+            "post-final %s: continuation envelope read failed", root_task_id,
+        )
+        return POST_FINAL_SETTLEMENT_REFUSED
+    if envelope is None:
+        return POST_FINAL_NOT_FINALIZED
+    try:
+        identity = db.get_authority_policy_v2_settlement_receipt_identity(
+            root_task_id=root_task_id, manager_agent=envelope.manager_agent,
+        )
+    except Exception:
+        logger.exception(
+            "post-final %s: settlement receipt identity read failed", root_task_id,
+        )
+        return POST_FINAL_SETTLEMENT_REFUSED
+    settled = False
+    committed_receipt = bool(identity) and not identity.get("conflict") and (
+        identity.get("state") == "callback_consumed"
+    )
+    try:
+        if identity is None:
+            # No recovery receipt at all: the finalized continuation must have
+            # been settled through the genuine ordinary completion evidence.
+            outcome = db.settle_authority_policy_v2_continuation_receipt(
+                root_task_id=root_task_id, manager_agent=envelope.manager_agent,
+                manager_session_id=envelope.manager_session_id,
+                result_id=envelope.result_id,
+            )
+        elif identity.get("conflict"):
+            # More than one receipt: never guess which is authoritative and never
+            # let one matching row settle behind a conflicting sibling.  Refuse
+            # read-only with the prior residue; the publisher independently
+            # refuses on the same conflicting proof, so no queue call happens.
+            outcome = None
+        else:
+            outcome = db.settle_authority_policy_v2_continuation_receipt(
+                root_task_id=root_task_id, manager_agent=envelope.manager_agent,
+                manager_session_id=envelope.manager_session_id,
+                result_id=envelope.result_id,
+                recovery_session_id=identity.get("recovery_session_id"),
+                accepted_result_id=identity.get("accepted_result_id"),
+                accepted_result_session_id=identity.get(
+                    "accepted_result_session_id"
+                ),
+            )
+        settled = getattr(outcome, "status", None) in (
+            "settled", "already_settled_exact",
+        )
+    except Exception:
+        logger.exception(
+            "post-final %s: continuation receipt settlement failed", root_task_id,
+        )
+    queue = getattr(orch, "_queue", None)
+    receipts: list[dict] = []
+    if queue is not None:
+        receipts = publish_authority_policy_v2_notifications(
+            orch, queue, root_task_id=root_task_id, limit=None,
+        )
+    if not settled and committed_receipt:
+        # The exact receipt is already durably ``callback_consumed``.  Its
+        # read-only re-verification through the settlement writer requires N
+        # ``needed``, which the publisher may have legitimately advanced; the
+        # publisher's OWN settlement proof re-authenticated the complete
+        # settlement evidence.  Reconcile when nothing was refused: a refused
+        # claim (corrupt/conflicting/missing proof, live lease, stale token) or a
+        # discovery failure is reported as a refusal, never as settled.
+        refused = any(
+            isinstance(receipt, dict) and receipt.get("status") != "published"
+            for receipt in receipts
+        )
+        settled = not refused
+    return POST_FINAL_RECONCILED if settled else POST_FINAL_SETTLEMENT_REFUSED
 
 
 # Closed bounded outcomes of the common DB-aware enqueue entry (THR-229 C3d4a).

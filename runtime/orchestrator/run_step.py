@@ -629,6 +629,20 @@ def _consume_accepted_completion_recovery(
             "run_step %s: v2 recovery classification failed", task_id,
         )
         _recovery_kind = "foreign"
+    if _recovery_kind == "causal":
+        # THR-229 C3d4b: the causal result R of a FINALIZED v2 continuation is
+        # post-final bookkeeping only -- never the ordinary decision body.  Settle
+        # the exact recovery receipt through the EXISTING public settlement writer
+        # and publish the pending generation through the EXISTING authenticated
+        # publisher, deriving every immutable identity from durable rows.  A
+        # missing/conflicting proof refuses with the prior residue and no normal
+        # effect; the causal R never spends, remints, evaluates or re-enters the
+        # ordinary effect path.
+        from runtime.orchestrator.authority import (
+            reconcile_authority_policy_v2_post_final,
+        )
+        reconcile_authority_policy_v2_post_final(orch, root_task_id=task_id)
+        return
     if _recovery_kind != "no_v2":
         _consume_completion_report(
             orch, task_id, report, result_row_id=_resolved_recovery_row,

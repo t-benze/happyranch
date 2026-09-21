@@ -432,6 +432,17 @@ class AuthorityPolicyStore:
     ) -> AuthorityPolicyV2RootDispatch | None:
         return self._db.get_authority_policy_v2_root_dispatch(root_task_id)
 
+    # -- THR-229 checkpoint C3d4b: read-only recovery-receipt identity discovery
+    # for the real post-final orchestration seams.  The facade never begins,
+    # commits or rolls back.
+
+    def get_v2_settlement_receipt_identity(
+        self, *, root_task_id: str, manager_agent: str,
+    ) -> dict | None:
+        return self._db.get_authority_policy_v2_settlement_receipt_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+        )
+
     # -- THR-229 checkpoint C3d3a: thin forwarders over the DB-owned read-only
     # publication discovery and the callable authenticated publication claim/
     # acknowledgement/failure/invalidation transactions.  The facade never
