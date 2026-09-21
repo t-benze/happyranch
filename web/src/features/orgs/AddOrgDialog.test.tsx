@@ -1,20 +1,21 @@
 import { describe, expect, test, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router-dom';
 import { AddOrgDialog } from './AddOrgDialog';
 import { orgs as orgsApi } from '@/lib/api';
+import { renderWithProviders, savedLocaleAdapter } from '@/test/render';
+import type { Locale } from '@/lib/i18n';
 
 function renderDialog(onClose = vi.fn()) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter>
-        <AddOrgDialog open onOpenChange={onClose} />
-      </MemoryRouter>
-    </QueryClientProvider>,
-  );
+  return renderWithProviders(<AddOrgDialog open onOpenChange={onClose} />, { route: '/' });
+}
+
+/** Explicit zh-CN render for the bilingual W2a assertions. */
+function renderDialogZh(locale: Locale, onClose = vi.fn()) {
+  return renderWithProviders(<AddOrgDialog open onOpenChange={onClose} />, {
+    route: '/',
+    i18n: { adapter: savedLocaleAdapter(locale) },
+  });
 }
 
 beforeEach(() => {
@@ -125,6 +126,26 @@ describe('AddOrgDialog', () => {
 
     await waitFor(() =>
       expect(screen.getByText(/server error/i)).toBeInTheDocument(),
+    );
+  });
+
+  test('renders zh-CN copy while keeping the slug contract and authored value (W2a)', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(orgsApi, 'createOrg').mockRejectedValue(
+      Object.assign(new Error('exists'), { status: 409, code: 'org_exists' }),
+    );
+    renderDialogZh('zh-CN');
+
+    expect(screen.getByText('新建组织')).toBeInTheDocument();
+    expect(screen.getByLabelText('标识符')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '取消' })).toBeInTheDocument();
+    const input = screen.getByLabelText('标识符');
+    await user.type(input, 'taken');
+    // Authored field value is untouched by localization.
+    expect(input).toHaveValue('taken');
+    await user.click(screen.getByRole('button', { name: '创建' }));
+    await waitFor(() =>
+      expect(screen.getByText('标识符为 "taken" 的组织已存在。')).toBeInTheDocument(),
     );
   });
 });

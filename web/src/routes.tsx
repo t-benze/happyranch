@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import {
   Navigate,
   Outlet,
@@ -8,8 +9,9 @@ import {
   useSearchParams,
 } from 'react-router-dom';
 import { AppBar } from '@/design-system/layouts/AppShell/AppBar';
-import { ErrorBoundary } from '@/design-system/layouts/AppShell/ErrorBoundary';
+import { ErrorBoundary, type ErrorBoundaryCopy } from '@/design-system/layouts/AppShell/ErrorBoundary';
 import { Sidebar } from '@/design-system/layouts/AppShell/Sidebar';
+import { useTranslation } from '@/hooks/i18n';
 import { useOrgsList } from '@/hooks/orgs';
 import { OrgProvider } from '@/lib/orgSlug';
 import { AgentsPage } from '@/features/agents/AgentsPage';
@@ -45,14 +47,40 @@ import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
 
 function RootRedirect(): JSX.Element {
   const orgsQuery = useOrgsList();
+  const { t } = useTranslation();
   if (orgsQuery.isLoading) {
-    return <div className="text-fg-muted p-6">Loading…</div>;
+    return <div className="text-fg-muted p-6">{t('shell.loading')}</div>;
   }
   const first = orgsQuery.data?.orgs[0]?.slug;
   if (!first) {
     return <Navigate to="/onboarding" replace />;
   }
   return <Navigate to={`/orgs/${first}/dashboard`} replace />;
+}
+
+/**
+ * Localized boundary for the routed content. The class boundary keeps its
+ * captured error across a locale switch; only the surrounding app-owned copy
+ * is re-supplied here.
+ */
+function AppShellErrorBoundary({
+  resetKey,
+  children,
+}: {
+  resetKey: string;
+  children: ReactNode;
+}): JSX.Element {
+  const { t } = useTranslation();
+  const copy: ErrorBoundaryCopy = {
+    title: t('shell.error.title'),
+    body: t('shell.error.body'),
+    retry: t('shell.error.retry'),
+  };
+  return (
+    <ErrorBoundary resetKey={resetKey} copy={copy}>
+      {children}
+    </ErrorBoundary>
+  );
 }
 
 function OrgLayout(): JSX.Element {
@@ -71,9 +99,9 @@ function AppShell(): JSX.Element {
       <div className="flex min-w-0 flex-1 flex-col">
         <AppBar presentation={/^\/orgs\/[^/]+\/tasks\/?$/.test(location.pathname) ? 'tasks' : undefined} />
         <main className="flex-1 overflow-hidden">
-          <ErrorBoundary resetKey={location.pathname}>
+          <AppShellErrorBoundary resetKey={location.pathname}>
             <Outlet />
-          </ErrorBoundary>
+          </AppShellErrorBoundary>
         </main>
       </div>
       <CommandPaletteHost />
@@ -179,9 +207,16 @@ function SpendRedirect(): JSX.Element {
 }
 
 function NotFound(): JSX.Element {
+  const { t, render } = useTranslation();
   return (
     <div className="text-fg-muted p-6">
-      Not found. <a href="/" className="text-accent hover:underline">Go home</a>.
+      {render('shell.notFound.body', {
+        link: (
+          <a href="/" className="text-accent hover:underline">
+            {t('shell.notFound.goHome')}
+          </a>
+        ),
+      })}
     </div>
   );
 }

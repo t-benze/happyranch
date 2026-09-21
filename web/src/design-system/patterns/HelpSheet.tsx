@@ -39,7 +39,13 @@ export interface ShortcutEntry {
 }
 
 export interface ShortcutSection {
-  /** Tab label — "Global", "Threads", "Tasks", … */
+  /**
+   * Stable section identity (`global`, `threads`, …). Tab VALUE/keys use this
+   * when present, so a localized-`label` change (language switch) never resets
+   * the selected tab. Defaults to `label` for backward compatibility.
+   */
+  id?: string;
+  /** Tab label — "Global", "Threads", "Tasks", … (localized by the caller). */
   label: string;
   shortcuts: ShortcutEntry[];
 }
@@ -49,18 +55,25 @@ interface HelpSheetPropsBase {
   onClose: () => void;
   /** Subtitle shown below the list. Defaults to the focus-restriction note. */
   footnote?: string;
+  /** Optional localized strings; the pattern stays pure and prop-driven. */
+  title?: string;
+  description?: string;
+  emptyLabel?: string;
 }
 
 interface HelpSheetPropsFlat extends HelpSheetPropsBase {
   shortcuts: ShortcutEntry[];
   sections?: never;
   defaultTab?: never;
+  defaultTabId?: never;
 }
 
 interface HelpSheetPropsTabbed extends HelpSheetPropsBase {
   sections: ShortcutSection[];
-  /** Tab to show on open. Defaults to the first section's label. */
+  /** Tab to show on open, matched by section `label`. Defaults to the first section. */
   defaultTab?: string;
+  /** Tab to show on open, matched by stable section `id`. Takes precedence. */
+  defaultTabId?: string;
   shortcuts?: never;
 }
 
@@ -99,15 +112,17 @@ export function HelpSheet(props: HelpSheetProps): JSX.Element {
     <Dialog open={props.open} onOpenChange={(o) => { if (!o) props.onClose(); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Keyboard shortcuts</DialogTitle>
+          <DialogTitle>{props.title ?? 'Keyboard shortcuts'}</DialogTitle>
           <DialogDescription className="sr-only">
-            List of keyboard shortcuts available on this screen.
+            {props.description ?? 'List of keyboard shortcuts available on this screen.'}
           </DialogDescription>
         </DialogHeader>
         {isTabbed ? (
           <TabbedBody
             sections={(props as HelpSheetPropsTabbed).sections}
             defaultTab={(props as HelpSheetPropsTabbed).defaultTab}
+            defaultTabId={(props as HelpSheetPropsTabbed).defaultTabId}
+            emptyLabel={props.emptyLabel}
           />
         ) : (
           <ShortcutList
@@ -122,30 +137,41 @@ export function HelpSheet(props: HelpSheetProps): JSX.Element {
   );
 }
 
+/** Stable tab value: the section `id` when supplied, otherwise the label. */
+function sectionKey(section: ShortcutSection): string {
+  return section.id ?? section.label;
+}
+
 function TabbedBody({
   sections,
   defaultTab,
+  defaultTabId,
+  emptyLabel,
 }: {
   sections: ShortcutSection[];
   defaultTab?: string;
+  defaultTabId?: string;
+  emptyLabel?: string;
 }): JSX.Element {
   const tabs = sections.filter((s) => s.shortcuts.length > 0);
-  const initial = defaultTab && tabs.some((t) => t.label === defaultTab)
-    ? defaultTab
-    : tabs[0]?.label ?? '';
+  const matched =
+    (defaultTabId && tabs.find((t) => sectionKey(t) === defaultTabId)) ||
+    (defaultTab && tabs.find((t) => t.label === defaultTab));
+  const initial = matched ? sectionKey(matched) : tabs[0] ? sectionKey(tabs[0]) : '';
   const [active, setActive] = React.useState<string>(initial);
   // Sync the active tab when the host swaps sections (e.g., route change
-  // alters which feature owns "active").
+  // alters which feature owns "active"). Matching by stable key means a
+  // localized label change keeps the selected tab.
   React.useEffect(() => {
-    if (!tabs.some((t) => t.label === active)) {
-      setActive(tabs[0]?.label ?? '');
+    if (!tabs.some((t) => sectionKey(t) === active)) {
+      setActive(tabs[0] ? sectionKey(tabs[0]) : '');
     }
   }, [tabs, active]);
 
   if (tabs.length === 0) {
     return (
       <p className="text-caption text-text-muted">
-        No shortcuts defined.
+        {emptyLabel ?? 'No shortcuts defined.'}
       </p>
     );
   }
@@ -154,13 +180,13 @@ function TabbedBody({
     <Tabs value={active} onValueChange={setActive}>
       <TabsList className="flex-wrap">
         {tabs.map((s) => (
-          <TabsTrigger key={s.label} value={s.label}>
+          <TabsTrigger key={sectionKey(s)} value={sectionKey(s)}>
             {s.label}
           </TabsTrigger>
         ))}
       </TabsList>
       {tabs.map((s) => (
-        <TabsContent key={s.label} value={s.label}>
+        <TabsContent key={sectionKey(s)} value={sectionKey(s)}>
           <ShortcutList shortcuts={s.shortcuts} />
         </TabsContent>
       ))}

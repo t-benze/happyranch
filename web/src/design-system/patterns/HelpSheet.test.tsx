@@ -1,5 +1,6 @@
+import { useState } from 'react';
 import { describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { HelpSheet, type ShortcutSection } from './HelpSheet';
@@ -69,5 +70,50 @@ describe('HelpSheet', () => {
       />,
     );
     expect(screen.queryByRole('tab', { name: 'Empty' })).toBeNull();
+  });
+
+  it('keeps the selected tab when localized labels change but stable ids stay (W2a)', () => {
+    function Harness(): JSX.Element {
+      const [zh, setZh] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setZh(true)}>
+            to-zh
+          </button>
+          <HelpSheet
+            open
+            onClose={() => {}}
+            defaultTabId="threads"
+            title={zh ? '键盘快捷键' : 'Keyboard shortcuts'}
+            emptyLabel={zh ? '未定义快捷键。' : 'No shortcuts defined.'}
+            sections={[
+              {
+                id: 'global',
+                label: zh ? '全局' : 'Global',
+                shortcuts: [{ keys: ['?'], description: zh ? '显示此帮助' : 'Show this help' }],
+              },
+              {
+                id: 'threads',
+                label: zh ? '会话' : 'Threads',
+                shortcuts: [{ keys: ['N'], description: zh ? '新建会话' : 'New thread' }],
+              },
+            ]}
+          />
+        </>
+      );
+    }
+    render(<Harness />);
+    expect(screen.getByRole('tab', { name: 'Threads' })).toHaveAttribute('data-state', 'active');
+    fireEvent.click(screen.getByText('to-zh'));
+    // Stable id keeps the same tab active after the label is localized.
+    expect(screen.getByRole('tab', { name: '会话' })).toHaveAttribute('data-state', 'active');
+    expect(screen.getByRole('tab', { name: '全局' })).toHaveAttribute('data-state', 'inactive');
+    expect(screen.getByText('新建会话')).toBeInTheDocument();
+    expect(screen.getByText('键盘快捷键')).toBeInTheDocument();
+  });
+
+  it('still honors the legacy label-based `defaultTab`', () => {
+    render(<HelpSheet open onClose={() => {}} sections={SECTIONS} defaultTab="Threads" />);
+    expect(screen.getByRole('tab', { name: 'Threads' })).toHaveAttribute('data-state', 'active');
   });
 });

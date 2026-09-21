@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 
@@ -121,5 +122,45 @@ describe('CommandPalette', () => {
     );
     fireEvent.click(screen.getByText(/refresh hotels/));
     expect(onSelect).toHaveBeenCalledWith('/k/9', expect.objectContaining({ key: 'tk1' }));
+  });
+
+  it('preserves typed query and filtered selection across a localized-string swap (case B)', () => {
+    function Harness(): JSX.Element {
+      const [zh, setZh] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setZh(true)}>
+            to-zh
+          </button>
+          <CommandPalette
+            open
+            onClose={() => {}}
+            sections={SECTIONS}
+            onSelect={() => {}}
+            {...(zh
+              ? {
+                  title: '命令面板',
+                  description: '输入以筛选。',
+                  searchPlaceholder: '搜索会话、任务、智能体、组织、知识库…',
+                  searchLabel: '命令面板搜索',
+                  resultsLabel: '结果',
+                }
+              : {})}
+          />
+        </>
+      );
+    }
+    render(<Harness />);
+    const input = screen.getByPlaceholderText(/Search threads/i);
+    fireEvent.change(input, { target: { value: 'macau' } });
+    expect(input).toHaveValue('macau');
+    expect(screen.getByText(/Macau ferry/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('to-zh'));
+    const zhInput = screen.getByPlaceholderText('搜索会话、任务、智能体、组织、知识库…');
+    // The typed query and the filtered result survive the copy swap (no remount).
+    expect(zhInput).toHaveValue('macau');
+    expect(screen.getByText(/Macau ferry/)).toBeInTheDocument();
+    expect(screen.queryByText(/Hong Kong visa/)).toBeNull();
   });
 });

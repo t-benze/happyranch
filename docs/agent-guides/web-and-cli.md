@@ -38,7 +38,7 @@ The SPA supports mutations, including task cancellation/revisit and Settings.
 Use `web/src/routes.tsx`, API functions, and the OpenAPI snapshot for the current
 surface. The daemon defaults to loopback; remote access uses the connector.
 
-### Internationalization (W1 foundation)
+### Internationalization (W1 foundation + W2a shell)
 
 The web console has a first-party, typed English/Simplified-Chinese contract in
 `web/src/lib/i18n/` (`locale`, `catalog`, `format`, `coverage`) with the
@@ -58,20 +58,28 @@ delegate to it, and `formatCount` takes an optional locale (omitting it keeps
 the legacy host-default behaviour). An unexpected catalog gap renders the
 English message with English plural grammar, never a raw key.
 
-W1 ships the foundation only. **No route or page is translated, no public
-language selector exists, and preview is not enabled.** Route/page translation
-is W2-W4 (W4 completes the coverage manifest); native preference persistence is
-N0/N1; full-mode automatic environment detection is implemented and unit-tested
-but not enabled until W5. `web/src/lib/i18n/coverage.ts` marks every
-not-yet-migrated mounted route namespace `english-only` (copy-bearing
-`index`/`*` included, copy-free redirects `not-applicable`) and lists the actual
-mounted dialogs, so English fallback is never mistaken for coverage. Foundation
-browser evidence (isolated Storybook probe + the real `main.tsx` startup in
-headless Chrome) runs via `web/scripts/i18n-browser-evidence.mjs`; it asserts the
-real asserted `navigator` language input, the first committed bilingual consumer
-text through the real provider/router (an `I18N_BROWSER_EVIDENCE`-gated,
-test-only build injection), and a causal negative control. Current
-contract: `docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
+**W2a** translated the mounted shell — AppBar page titles and controls, Sidebar
+navigation/aria/org-switcher/account copy, the root loading and NotFound
+fallback, the ErrorBoundary fallback copy, the AddOrgDialog, and the shared
+help/palette presentation — and added CJK-capable SYSTEM font fallbacks to
+`web/src/design-system/tokens/tokens.css` (no webfont download or dependency).
+The rest of the console is still English: **onboarding is W2b, Settings and the
+new Preferences section are W2c, route families are W3/W4, and the assistant
+dock body is W4. No public language selector exists and preview is not enabled.**
+Native preference persistence is N0/N1; full-mode automatic environment
+detection is implemented and unit-tested but not enabled until W5.
+`web/src/lib/i18n/coverage.ts` marks exactly the W2a-migrated namespaces
+(`root-shell`, `not-found`, `app-shell`, `help-and-palette`) `translated` and
+every other mounted route namespace `english-only` (copy-free redirects
+`not-applicable`), listing the actual mounted dialogs, so English fallback is
+never mistaken for coverage. Foundation browser evidence (isolated Storybook
+probe + the real `main.tsx` startup in headless Chrome) runs via
+`web/scripts/i18n-browser-evidence.mjs`; W2a shell evidence (both locales, root
+loading/no-org/NotFound/help/AddOrgDialog/ErrorBoundary, state preserved across
+a locale switch, CJK font and viewport-containment checks) runs via
+`web/scripts/w2a-shell-browser-evidence.mjs` under an independent
+`I18N_W2A_EVIDENCE`-gated, test-only build injection. Current contract:
+`docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
 
 ### Web contract and navigation
 

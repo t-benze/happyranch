@@ -18,6 +18,7 @@ import {
 } from '@/design-system/primitives/Dialog';
 import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
+import { useTranslation } from '@/hooks/i18n';
 
 const SLUG_RE = /^[a-z0-9-]{1,40}$/;
 
@@ -31,6 +32,7 @@ export function AddOrgDialog({ open, onOpenChange }: Props): JSX.Element {
   const [serverError, setServerError] = useState<string | null>(null);
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const { t } = useTranslation();
 
   const create = useMutation({
     mutationFn: (body: { slug: string }) => orgsApi.createOrg(body),
@@ -42,18 +44,17 @@ export function AddOrgDialog({ open, onOpenChange }: Props): JSX.Element {
     onError: (err: unknown) => {
       const e = err as { code?: string; status?: number; message?: string };
       if (e.code === 'no_active_runtime') {
-        setServerError('No runtime is active yet — the daemon is still starting up. Try again in a moment.');
+        setServerError(t('org.add.error.noActiveRuntime'));
       } else if (e.code === 'org_dir_has_data') {
-        setServerError(
-          `A directory for "${slug}" already exists and contains data. ` +
-            'It may be listed under broken orgs. Manual cleanup is required.',
-        );
+        setServerError(t('org.add.error.dirHasData', { slug }));
       } else if (e.code === 'org_exists' || e.code === 'org_dir_exists' || e.status === 409) {
-        setServerError(`An org with slug "${slug}" already exists.`);
+        setServerError(t('org.add.error.exists', { slug }));
       } else if (e.code === 'invalid_slug') {
-        setServerError('Slug must match ^[a-z0-9-]{1,40}$.');
+        setServerError(t('org.add.error.invalidSlug'));
       } else {
-        setServerError(e.message ?? 'Could not create org.');
+        // Preserve any exact daemon-supplied detail; only the generic
+        // app-owned fallback translates.
+        setServerError(e.message ?? t('org.add.error.generic'));
       }
     },
   });
@@ -64,10 +65,10 @@ export function AddOrgDialog({ open, onOpenChange }: Props): JSX.Element {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>New org</DialogTitle>
+          <DialogTitle>{t('org.add.title')}</DialogTitle>
         </DialogHeader>
         <div className="space-y-2">
-          <Label htmlFor="org-slug">Slug</Label>
+          <Label htmlFor="org-slug">{t('org.add.slugLabel')}</Label>
           <Input
             id="org-slug"
             value={slug}
@@ -75,25 +76,23 @@ export function AddOrgDialog({ open, onOpenChange }: Props): JSX.Element {
               setSlug(e.target.value);
               setServerError(null);
             }}
-            placeholder="e.g. hk-macau-tourism"
+            placeholder={t('org.add.slugPlaceholder')}
             autoFocus
           />
-          <p className="text-fg-muted text-xs">
-            Lowercase letters, digits, and hyphens. 1–40 characters.
-          </p>
+          <p className="text-fg-muted text-xs">{t('org.add.slugHint')}</p>
           {serverError && (
             <p className="text-tier-red text-sm">{serverError}</p>
           )}
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button
             disabled={!valid || create.isPending}
             onClick={() => create.mutate({ slug })}
           >
-            {create.isPending ? 'Creating…' : 'Create'}
+            {create.isPending ? t('org.add.creating') : t('org.add.create')}
           </Button>
         </DialogFooter>
       </DialogContent>

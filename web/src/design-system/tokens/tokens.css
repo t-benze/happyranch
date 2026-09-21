@@ -174,9 +174,16 @@
   /* TYPOGRAPHY — Hanken Grotesk UI, Newsreader display, JetBrains Mono      */
   /* ====================================================================== */
 
+  /* CJK-capable SYSTEM fallbacks (THR-118 W2a) — no webfont download or new
+     dependency. Latin text keeps Hanken Grotesk/Newsreader first; the CJK
+     families below only take over for Han glyphs (and on hosts where the
+     Latin webfont is absent). */
   --font-sans: "Hanken Grotesk", system-ui, -apple-system,
-               BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-display: "Newsreader", Georgia, "Times New Roman", serif;
+               BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+               "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC",
+               "Source Han Sans SC", "WenQuanYi Micro Hei", sans-serif;
+  --font-display: "Newsreader", Georgia, "Times New Roman", "Songti SC",
+                  "Noto Serif CJK SC", "Source Han Serif SC", serif;
   --font-mono: "JetBrains Mono", ui-monospace,
                "SF Mono", Menlo, Consolas, monospace;
 

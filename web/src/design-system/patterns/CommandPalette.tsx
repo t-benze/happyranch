@@ -46,6 +46,21 @@ interface CommandPaletteProps {
   onSelect: (href: string, item: CommandPaletteItem) => void;
   /** Max items per section in the rendered list. Default 5. */
   perSectionLimit?: number;
+  /**
+   * Optional localized strings. The pattern stays pure/prop-driven: callers
+   * with a locale (the host) supply translated text, and the defaults remain
+   * the W1 English literals for story/test direct use.
+   */
+  title?: string;
+  description?: string;
+  searchPlaceholder?: string;
+  searchLabel?: string;
+  resultsLabel?: string;
+  noMatches?: string;
+  nothingLoaded?: string;
+  navigateLabel?: string;
+  openLabel?: string;
+  closeLabel?: string;
 }
 
 function matches(item: CommandPaletteItem, q: string): boolean {
@@ -67,6 +82,16 @@ export function CommandPalette({
   sections,
   onSelect,
   perSectionLimit = 5,
+  title = 'Command palette',
+  description = 'Type to filter. Use up and down arrows to move. Press Enter to open. Press Escape to close.',
+  searchPlaceholder = 'Search threads, tasks, agents, orgs, KB…',
+  searchLabel = 'Command palette search',
+  resultsLabel = 'Results',
+  noMatches = 'No matches.',
+  nothingLoaded = 'Nothing loaded yet — visit a page first.',
+  navigateLabel = 'navigate',
+  openLabel = 'open',
+  closeLabel = 'close',
 }: CommandPaletteProps): JSX.Element {
   const [query, setQuery] = React.useState('');
   const [activeIndex, setActiveIndex] = React.useState(0);
@@ -151,10 +176,9 @@ export function CommandPalette({
         onKeyDown={handleKeyDown}
         aria-describedby="command-palette-help"
       >
-        <DialogTitle className="sr-only">Command palette</DialogTitle>
+        <DialogTitle className="sr-only">{title}</DialogTitle>
         <DialogDescription id="command-palette-help" className="sr-only">
-          Type to filter. Use up and down arrows to move. Press Enter to open.
-          Press Escape to close.
+          {description}
         </DialogDescription>
         <div className="border-border flex items-center gap-2 border-b px-3 py-2">
           <Search size={16} aria-hidden="true" className="text-fg-muted" />
@@ -163,8 +187,8 @@ export function CommandPalette({
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search threads, tasks, agents, orgs, KB…"
-            aria-label="Command palette search"
+            placeholder={searchPlaceholder}
+            aria-label={searchLabel}
             aria-controls="command-palette-listbox"
             role="combobox"
             aria-expanded={true}
@@ -175,12 +199,12 @@ export function CommandPalette({
         <div
           id="command-palette-listbox"
           role="listbox"
-          aria-label="Results"
+          aria-label={resultsLabel}
           className="max-h-[50vh] overflow-y-auto py-2"
         >
           {itemRows.length === 0 && (
             <div className="text-fg-muted px-4 py-6 text-center text-sm">
-              {query ? 'No matches.' : 'Nothing loaded yet — visit a page first.'}
+              {query ? noMatches : nothingLoaded}
             </div>
           )}
           {rows.map((row) => {
@@ -223,9 +247,9 @@ export function CommandPalette({
           })}
         </div>
         <div className="border-border text-fg-subtle border-t px-3 py-1.5 text-[11px]">
-          <span className="font-mono">↑↓</span> navigate ·{' '}
-          <span className="font-mono">⏎</span> open ·{' '}
-          <span className="font-mono">esc</span> close
+          <span className="font-mono">↑↓</span> {navigateLabel} ·{' '}
+          <span className="font-mono">⏎</span> {openLabel} ·{' '}
+          <span className="font-mono">esc</span> {closeLabel}
         </div>
       </DialogContent>
     </Dialog>

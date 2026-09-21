@@ -28,6 +28,14 @@ const EVIDENCE_MAIN_MISMATCH_ANCHOR = 'const initialLocale = bootstrapDocumentLo
 const EVIDENCE_MAIN_PROVIDER_ANCHOR = '<App initialLocale={initialLocale} />';
 
 /**
+ * Evidence-only W2a shell instrumentation (THR-118). Independent of the W1
+ * `I18N_BROWSER_EVIDENCE` flag, so W1 evidence builds stay byte-identical. It
+ * is a NO-OP unless `I18N_W2A_EVIDENCE=1`.
+ */
+const W2A_EVIDENCE = process.env.I18N_W2A_EVIDENCE === '1';
+const W2A_ROUTES_OUTLET_ANCHOR = '            <Outlet />';
+
+/**
  * Evidence-only build instrumentation for the THR-118 W1 browser harness.
  *
  * It is a NO-OP unless `I18N_BROWSER_EVIDENCE` is set. The default (`unset`),
@@ -55,8 +63,46 @@ function i18nEvidenceInstrumentation() {
     name: 'i18n-browser-evidence-instrumentation',
     enforce: 'pre' as const,
     transform(code: string, id: string) {
-      if (!EVIDENCE_ENABLED) return null;
+      if (!EVIDENCE_ENABLED && !W2A_EVIDENCE) return null;
       const clean = id.split('?')[0].replace(/\\/g, '/');
+
+      if (W2A_EVIDENCE && clean.endsWith('/src/App.tsx')) {
+        if (!code.includes(EVIDENCE_APP_IMPORT) || !code.includes(EVIDENCE_APP_ANCHOR)) {
+          throw new Error('w2a evidence: App.tsx instrumentation anchor not found');
+        }
+        return {
+          code: code
+            .replace(
+              EVIDENCE_APP_IMPORT,
+              `${EVIDENCE_APP_IMPORT}\nimport { ShellEvidenceConsumer } from './test/w2a-shell-evidence-consumer';`,
+            )
+            .replace(
+              EVIDENCE_APP_ANCHOR,
+              `${EVIDENCE_APP_ANCHOR}\n        <ShellEvidenceConsumer />`,
+            ),
+          map: null,
+        };
+      }
+
+      if (W2A_EVIDENCE && clean.endsWith('/src/routes.tsx')) {
+        if (!code.includes(W2A_ROUTES_OUTLET_ANCHOR)) {
+          throw new Error('w2a evidence: routes.tsx Outlet anchor not found');
+        }
+        return {
+          code: code
+            .replace(
+              "import { AppBar } from '@/design-system/layouts/AppShell/AppBar';",
+              "import { AppBar } from '@/design-system/layouts/AppShell/AppBar';\nimport { ShellErrorTrigger } from './test/w2a-shell-evidence-consumer';",
+            )
+            .replace(
+              W2A_ROUTES_OUTLET_ANCHOR,
+              `${W2A_ROUTES_OUTLET_ANCHOR}\n            <ShellErrorTrigger />`,
+            ),
+          map: null,
+        };
+      }
+
+      if (!EVIDENCE_ENABLED) return null;
 
       if (clean.endsWith('/src/App.tsx')) {
         if (!code.includes(EVIDENCE_APP_IMPORT) || !code.includes(EVIDENCE_APP_ANCHOR)) {

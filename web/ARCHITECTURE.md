@@ -75,22 +75,32 @@ interfaces in `src/lib/i18n/format.ts` delegate to it and do not fork a competin
 implementation (`formatCount` takes an OPTIONAL locale so legacy callers keep
 the host-default behaviour). An unexpected runtime gap renders the English
 message with English grammar (`resolveMessage` reports the supplying catalog
-locale), never a raw key. Route/page translation is W2-W4 — not W1. The
-mount-time coverage inventory lives in `src/lib/i18n/coverage.ts`: it separates
-copy-bearing routes (root shell `index`, the `*` NotFound catch-all — both
-`english-only`) from copy-free redirects, disambiguates colliding tokens with
-`<scope>:<token>` qualified identities, and lists the ACTUAL mounted dialog
-components so fallback is never mistaken for coverage. Foundation browser
-evidence runs the isolated
-`src/design-system/i18n/I18nFoundation.stories.tsx` story and the real
+locale), never a raw key. **W2a** translated the mounted shell (AppBar titles,
+Sidebar nav/aria/org-switcher/account, root loading and NotFound, the
+ErrorBoundary fallback copy, AddOrgDialog, and the shared help/palette
+presentation) and added CJK-capable SYSTEM font fallbacks to the tokens;
+onboarding (W2b), Settings/Preferences (W2c), route families (W3/W4) and the
+assistant dock body (W4) remain untranslated. No public language selector exists
+and an unset preference still renders English until W3. The mount-time coverage
+inventory lives in `src/lib/i18n/coverage.ts`: it separates copy-bearing routes
+(root shell `index` and the `*` NotFound catch-all — now `translated`) from
+copy-free redirects, disambiguates colliding tokens with `<scope>:<token>`
+qualified identities, and lists the ACTUAL mounted dialog components so
+fallback is never mistaken for coverage. Foundation browser evidence runs the
+isolated `src/design-system/i18n/I18nFoundation.stories.tsx` story and the real
 `main.tsx` startup through `scripts/i18n-browser-evidence.mjs` (headless Chrome
-over CDP, no new dependency). Every page installs and asserts the real
-`navigator.language`/`navigator.languages` before app modules, and the
-production path is built with `I18N_BROWSER_EVIDENCE` so `vite.config.ts` injects
-the test-only `src/test/i18n-evidence-consumer.tsx` next to `<AppRoutes />`; the
-harness asserts the first COMMITTED consumer text and `<html lang>` together and
-includes a negative control. The env gate is a no-op for every ordinary build.
-See `docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
+over CDP, no new dependency). W2a shell evidence runs the same real startup
+through `scripts/w2a-shell-browser-evidence.mjs` under an independent
+`I18N_W2A_EVIDENCE` build gate. Every page installs and asserts the real
+`navigator.language`/`navigator.languages` before app modules; the W1
+production path is built with `I18N_BROWSER_EVIDENCE` so `vite.config.ts`
+injects the test-only `src/test/i18n-evidence-consumer.tsx` next to
+`<AppRoutes />`, and the W2a path injects
+`src/test/w2a-shell-evidence-consumer.tsx` plus a test-only error trigger inside
+the real boundary. Both harnesses assert first-committed text and `<html lang>`
+together; the W1 harness includes a negative control. Both env gates are no-ops
+for every ordinary build. See
+`docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
 
 ## What is intentionally not in here
 

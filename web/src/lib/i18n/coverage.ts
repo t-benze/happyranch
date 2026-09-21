@@ -2,11 +2,15 @@
  * @/lib/i18n/coverage — the checked mounted-route/namespace coverage manifest
  * (THR-118 W1).
  *
- * W1 ships the translation *foundation*, not a translation campaign. Every
- * mounted product surface is therefore recorded as `english-only`, and
- * redirect-only/catch-all tokens are `not-applicable`. The marker is explicit
- * machine-readable data: fallback English is never treated as coverage, and
- * the accompanying test fails when a newly mounted route token is not
+ * W1 shipped the translation *foundation*, not a translation campaign. W2a
+ * (THR-118) now migrates the mounted shell: the root loading/not-found copy,
+ * the AppShell chrome (AppBar/Sidebar/ErrorBoundary/AddOrgDialog) and the
+ * shared help/palette presentation. Every other mounted product surface and
+ * the not-yet-started later slices (onboarding = W2b, Settings = W2c,
+ * assistant dock body = W4, route families = W3/W4) remain `english-only` —
+ * fallback English is never treated as coverage. Redirect-only/catch-all
+ * tokens are `not-applicable`. The marker is explicit machine-readable data
+ * and the accompanying test fails when a newly mounted route token is not
  * classified here.
  *
  * `routeTokens` are the literal `path="..."` values declared in
@@ -55,15 +59,15 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'root-shell',
     routeTokens: ['index'],
-    status: 'english-only',
-    surfaces: ['RootRedirect (AppShell loading copy: "Loading…")'],
+    status: 'translated',
+    surfaces: ['RootRedirect (AppShell loading copy)'],
   },
   {
     namespace: 'not-found',
     routeTokens: ['*'],
-    status: 'english-only',
+    status: 'translated',
     qualifiedRouteTokens: ['routes.tsx:*'],
-    surfaces: ['NotFound ("Not found. Go home")'],
+    surfaces: ['NotFound (message + Go home link)'],
   },
   {
     namespace: 'redirects',
@@ -217,14 +221,21 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'app-shell',
     routeTokens: [],
-    status: 'english-only',
+    status: 'translated',
     surfaces: ['AppShell', 'AppBar', 'Sidebar', 'ErrorBoundary', 'AddOrgDialog'],
   },
   {
+    namespace: 'help-and-palette',
+    routeTokens: [],
+    status: 'translated',
+    surfaces: ['HelpDrawerHost', 'CommandPaletteHost'],
+  },
+  {
+    // Assistant dock BODY copy is W4; only its shell slot is mounted here.
     namespace: 'system-assistant',
     routeTokens: [],
     status: 'english-only',
-    surfaces: ['AssistantDockHost', 'CommandPaletteHost', 'HelpDrawerHost'],
+    surfaces: ['AssistantDockHost'],
   },
   {
     namespace: 'prototypes',
