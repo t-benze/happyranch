@@ -97,9 +97,17 @@ production path is built with `I18N_BROWSER_EVIDENCE` so `vite.config.ts`
 injects the test-only `src/test/i18n-evidence-consumer.tsx` next to
 `<AppRoutes />`, and the W2a path injects
 `src/test/w2a-shell-evidence-consumer.tsx` plus a test-only error trigger inside
-the real boundary. Both harnesses assert first-committed text and `<html lang>`
-together; the W1 harness includes a negative control. Both env gates are no-ops
-for every ordinary build. See
+the real boundary. The W2a first-commit record is read from the ACTUAL committed
+Sidebar/AppBar DOM (a layout-effect capture that is frozen on first connection
+and never overwritten by a later locale correction), together with `<html lang>`
+and the real navigator read-back; `I18N_W2A_EVIDENCE=negative` additionally
+hands the provider a deliberately mismatched locale and corrects it afterwards,
+so the same positive predicate must reject the first shell (causal negative
+control). A backward-compatible optional `DialogContent.closeLabel` supplies the
+localized accessible name for the built-in close control (defaulting to the
+legacy English `Close`); AddOrgDialog, HelpSheet and CommandPalette pass it from
+their callers and the patterns/primitives stay prop-driven with no locale hook
+import. Both env gates are no-ops for every ordinary build. See
 `docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
 
 ## What is intentionally not in here

@@ -163,4 +163,42 @@ describe('CommandPalette', () => {
     expect(screen.getByText(/Macau ferry/)).toBeInTheDocument();
     expect(screen.queryByText(/Hong Kong visa/)).toBeNull();
   });
+
+  it('keeps the legacy English close control when no localized label is passed (W2a R2)', () => {
+    render(
+      <CommandPalette open onClose={() => {}} sections={SECTIONS} onSelect={() => {}} />,
+    );
+    expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
+  });
+
+  it('localizes the close control from an explicit closeLabel (W2a R2)', () => {
+    render(
+      <CommandPalette
+        open
+        onClose={() => {}}
+        onSelect={() => {}}
+        sections={[]}
+        title="命令面板"
+        closeLabel="关闭"
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull();
+    expect(screen.getByRole('button', { name: '关闭' })).toBeInTheDocument();
+  });
+
+  it('accepts a dedicated closeAriaLabel distinct from the footer text (W2a R2)', () => {
+    render(
+      <CommandPalette
+        open
+        onClose={() => {}}
+        onSelect={() => {}}
+        sections={[]}
+        closeLabel="close"
+        closeAriaLabel="关闭"
+      />,
+    );
+    expect(screen.getByRole('button', { name: '关闭' })).toBeInTheDocument();
+    // The footer keeps the separately supplied text.
+    expect(screen.getByRole('dialog').textContent).toContain('close');
+  });
 });

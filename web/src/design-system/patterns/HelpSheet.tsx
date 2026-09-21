@@ -59,6 +59,8 @@ interface HelpSheetPropsBase {
   title?: string;
   description?: string;
   emptyLabel?: string;
+  /** Optional localized accessible label for the dialog's close control. */
+  closeLabel?: string;
 }
 
 interface HelpSheetPropsFlat extends HelpSheetPropsBase {
@@ -110,7 +112,7 @@ export function HelpSheet(props: HelpSheetProps): JSX.Element {
 
   return (
     <Dialog open={props.open} onOpenChange={(o) => { if (!o) props.onClose(); }}>
-      <DialogContent>
+      <DialogContent closeLabel={props.closeLabel}>
         <DialogHeader>
           <DialogTitle>{props.title ?? 'Keyboard shortcuts'}</DialogTitle>
           <DialogDescription className="sr-only">

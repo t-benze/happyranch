@@ -106,6 +106,7 @@ export function HelpDrawerHost(): JSX.Element {
       description={t('help.description')}
       emptyLabel={t('help.empty')}
       footnote={t('help.footnote')}
+      closeLabel={t('common.close')}
     />
   );
 }

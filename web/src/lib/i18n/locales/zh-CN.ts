@@ -13,6 +13,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'common.cancel': '取消',
   'common.save': '保存',
   'common.dismiss': '关闭',
+  'common.close': '关闭',
   'common.language': '语言',
   'common.languageDescription': '选择界面语言。',
   'common.englishOnlyNotice': '此界面尚未提供中文版本。',

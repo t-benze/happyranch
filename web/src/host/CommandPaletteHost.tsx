@@ -219,6 +219,7 @@ export function CommandPaletteHost(): JSX.Element {
       navigateLabel={t('palette.footer.navigate')}
       openLabel={t('palette.footer.open')}
       closeLabel={t('palette.footer.close')}
+      closeAriaLabel={t('common.close')}
       onSelect={(href) => {
         setOpen(false);
         navigate(href);

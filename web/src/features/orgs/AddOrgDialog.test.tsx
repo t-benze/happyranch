@@ -1,9 +1,9 @@
 import { describe, expect, test, vi, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AddOrgDialog } from './AddOrgDialog';
 import { orgs as orgsApi } from '@/lib/api';
-import { renderWithProviders, savedLocaleAdapter } from '@/test/render';
+import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import type { Locale } from '@/lib/i18n';
 
 function renderDialog(onClose = vi.fn()) {
@@ -147,5 +147,106 @@ describe('AddOrgDialog', () => {
     await waitFor(() =>
       expect(screen.getByText('标识符为 "taken" 的组织已存在。')).toBeInTheDocument(),
     );
+  });
+
+  // --- W2a R1: product-owned error identity follows the locale ---------------
+
+  test('an already-visible mapped error follows en -> zh-CN -> en without resubmission (W2a R1)', async () => {
+    const createSpy = vi.spyOn(orgsApi, 'createOrg').mockRejectedValue(
+      Object.assign(new Error('raw detail'), { status: 409, code: 'org_exists' }),
+    );
+    renderWithProviders(
+      <>
+        <AddOrgDialog open onOpenChange={() => undefined} />
+        <LocaleTestSwitch to="zh-CN" />
+        <LocaleTestSwitch to="en" />
+      </>,
+      { route: '/', i18n: { adapter: savedLocaleAdapter('en') } },
+    );
+
+    const input = screen.getByLabelText('Slug');
+    fireEvent.change(input, { target: { value: 'taken' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    await screen.findByText('An org with slug "taken" already exists.');
+
+    fireEvent.click(screen.getByTestId('test-set-locale-zh-CN'));
+    expect(screen.getByLabelText('标识符')).toBe(input);
+    expect(input).toHaveValue('taken');
+    expect(screen.getByRole('dialog').textContent).toContain('标识符为 "taken" 的组织已存在。');
+
+    fireEvent.click(screen.getByTestId('test-set-locale-en'));
+    expect(screen.getByLabelText('Slug')).toBe(input);
+    expect(input).toHaveValue('taken');
+    expect(screen.getByRole('dialog').textContent).toContain(
+      'An org with slug "taken" already exists.',
+    );
+    // No resubmission on either switch.
+    expect(createSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('error interpolation uses the submitted slug, not a later-edited field (W2a R1)', async () => {
+    let reject: (reason?: unknown) => void = () => undefined;
+    const pending = new Promise((_resolve, rej) => { reject = rej; });
+    vi.spyOn(orgsApi, 'createOrg').mockReturnValue(
+      pending as unknown as ReturnType<typeof orgsApi.createOrg>,
+    );
+    renderDialog();
+
+    const input = screen.getByLabelText(/slug/i);
+    fireEvent.change(input, { target: { value: 'first-slug' } });
+    fireEvent.click(screen.getByRole('button', { name: /create/i }));
+    // Edit the field while the submit is still pending.
+    fireEvent.change(input, { target: { value: 'second-slug' } });
+    reject(Object.assign(new Error('exists'), { status: 409, code: 'org_exists' }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText('An org with slug "first-slug" already exists.'),
+      ).toBeInTheDocument(),
+    );
+    // The authored field keeps the user's newer text.
+    expect(input).toHaveValue('second-slug');
+  });
+
+  test('a generic no-message error translates with the locale (W2a R1)', async () => {
+    vi.spyOn(orgsApi, 'createOrg').mockRejectedValue(
+      Object.assign(new Error(''), { status: 500 }),
+    );
+    renderWithProviders(
+      <>
+        <AddOrgDialog open onOpenChange={() => undefined} />
+        <LocaleTestSwitch to="zh-CN" />
+      </>,
+      { route: '/', i18n: { adapter: savedLocaleAdapter('en') } },
+    );
+    fireEvent.change(screen.getByLabelText('Slug'), { target: { value: 'my-org' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    await screen.findByText('Could not create org.');
+    fireEvent.click(screen.getByTestId('test-set-locale-zh-CN'));
+    expect(screen.getByRole('dialog').textContent).toContain('无法创建组织。');
+  });
+
+  test('an unknown non-empty daemon detail stays verbatim across a locale switch (W2a R1)', async () => {
+    vi.spyOn(orgsApi, 'createOrg').mockRejectedValue(
+      new Error('daemon said: EACCES raw detail'),
+    );
+    renderWithProviders(
+      <>
+        <AddOrgDialog open onOpenChange={() => undefined} />
+        <LocaleTestSwitch to="zh-CN" />
+      </>,
+      { route: '/', i18n: { adapter: savedLocaleAdapter('en') } },
+    );
+    fireEvent.change(screen.getByLabelText('Slug'), { target: { value: 'raw-slug' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    await screen.findByText('daemon said: EACCES raw detail');
+    fireEvent.click(screen.getByTestId('test-set-locale-zh-CN'));
+    expect(screen.getByRole('dialog').textContent).toContain('daemon said: EACCES raw detail');
+  });
+
+  test('the close control exposes a localized accessible name (W2a R2)', () => {
+    renderDialogZh('zh-CN');
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull();
+    expect(screen.getByRole('button', { name: '关闭' })).toBeInTheDocument();
   });
 });

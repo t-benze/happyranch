@@ -3,72 +3,125 @@
  *
  * Never imported by a shipping entry point. The evidence-only Vite transform in
  * `vite.config.ts` injects it adjacent to `<AppRoutes />` inside the real
- * `main.tsx -> App -> AppShell -> I18nProvider` composition, and injects
- * `<ShellErrorTrigger />` inside the real `AppShellErrorBoundary` wrapper, and
- * only when `I18N_BROWSER_EVIDENCE` is set. Every ordinary build, Storybook,
- * Vitest and CI run leaves that variable unset, so this module is absent.
+ * `main.tsx -> App -> createBrowserRouter -> AppShell -> I18nProvider`
+ * composition, and injects `<ShellErrorTrigger />` inside the real
+ * `AppShellErrorBoundary` wrapper, and only when `I18N_W2A_EVIDENCE` is set.
+ * Every ordinary build, Storybook, Vitest and CI run leaves that variable
+ * unset, so this module is absent.
  *
- * It provides:
- *   - a first-render record of the shell copy (`html.lang` + the exact AppBar
- *     title and Sidebar nav labels the first commit will use), captured during
- *     render before any effect can correct it; and
- *   - test-only controls (locale switch, error trigger, palette probe) the
- *     supported `web/scripts/w2a-shell-browser-evidence.mjs` harness drives.
- *     These are not a shipping language selector.
+ * W2a review R3: the record is now the **actual first committed Sidebar/AppBar
+ * output read from the real DOM**, captured in a layout effect the first time
+ * the shell is connected, and together with `<html lang>` at that same instant.
+ * It is frozen on first capture and never overwritten by a later locale
+ * correction, so a shell that renders the wrong language first and repairs
+ * itself later cannot pass the positive acceptance predicate.
+ *
+ * It also provides the test-only controls the supported
+ * `web/scripts/w2a-shell-browser-evidence.mjs` harness drives. These are not a
+ * shipping language selector.
  */
-import { useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useI18n } from '@/hooks/i18n';
-import { pageTitleFromPath } from '@/design-system/layouts/AppShell/AppBar';
 import { CommandPalette } from '@/design-system/patterns/CommandPalette';
-import type { MessageKey } from '@/lib/i18n';
-
-const NAV_KEYS: readonly MessageKey[] = [
-  'shell.nav.home',
-  'shell.nav.threads',
-  'shell.nav.tasks',
-  'shell.nav.jobs',
-  'shell.nav.todos',
-  'shell.nav.agents',
-  'shell.nav.workHours',
-  'shell.nav.skills',
-  'shell.nav.knowledge',
-  'shell.nav.artifacts',
-  'shell.nav.audit',
-  'shell.nav.dreams',
-  'shell.nav.usage',
-  'shell.nav.health',
-  'shell.nav.settings',
-];
 
 declare global {
   interface Window {
     __hrFirstShell?: {
+      /** Actual committed Sidebar anchor labels (nav + footer Settings). */
       navLabels: string[];
-      title: string;
+      /** Actual committed AppBar page title span. */
+      title: string | null;
       locale: string;
       htmlLang: string | null;
+      /** Real navigator read-back at the capture instant. */
+      navigatorLanguage: string | null;
+      navigatorLanguages: string[];
+      /** Provenance marker: this record came from committed DOM, not a probe. */
+      source: 'committed-dom';
       capturedAt: number;
     };
   }
 }
 
+interface CommittedShell {
+  navLabels: string[];
+  title: string | null;
+  htmlLang: string | null;
+}
+
+/**
+ * Read the actually rendered Sidebar/AppBar output. Returns `null` until the
+ * shell has committed; never computes expectations from the catalog.
+ */
+export function readCommittedShell(root: ParentNode = document): CommittedShell | null {
+  const sidebar = root.querySelector('aside[role="navigation"]');
+  const nav = sidebar ? sidebar.querySelector('nav') : null;
+  if (!sidebar || !nav) return null;
+  const navLabels = [...sidebar.querySelectorAll('a')].map((a) => (a.textContent || '').trim());
+  const appBarSpan = root.querySelector('main')?.previousElementSibling?.querySelector('span');
+  return {
+    navLabels,
+    title: appBarSpan ? (appBarSpan.textContent || '').trim() : null,
+    htmlLang: root.ownerDocument
+      ? root.ownerDocument.documentElement.getAttribute('lang')
+      : document.documentElement.getAttribute('lang'),
+  };
+}
+
+function readNavigator(): { navigatorLanguage: string | null; navigatorLanguages: string[] } {
+  try {
+    return {
+      navigatorLanguage: typeof navigator !== 'undefined' ? navigator.language : null,
+      navigatorLanguages:
+        typeof navigator !== 'undefined' && Array.isArray(navigator.languages)
+          ? [...navigator.languages]
+          : [],
+    };
+  } catch {
+    return { navigatorLanguage: null, navigatorLanguages: [] };
+  }
+}
+
 /** First-commit shell record + test-only controls. */
 export function ShellEvidenceConsumer(): JSX.Element {
-  const { locale, t, setLocale } = useI18n();
+  const { locale, setLocale } = useI18n();
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // Always read the provider's live locale at capture time without re-running
+  // the observation effect (which must never overwrite the frozen record).
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
 
-  if (typeof window !== 'undefined' && !window.__hrFirstShell) {
-    window.__hrFirstShell = {
-      navLabels: NAV_KEYS.map((key) => t(key)),
-      title: pageTitleFromPath(window.location.pathname, locale),
-      locale,
-      htmlLang: document.documentElement.getAttribute('lang'),
-      capturedAt:
-        typeof performance !== 'undefined' && typeof performance.now === 'function'
-          ? performance.now()
-          : Date.now(),
+  useLayoutEffect(() => {
+    if (typeof window === 'undefined' || window.__hrFirstShell) return;
+    const capture = (): boolean => {
+      if (window.__hrFirstShell) return true;
+      const committed = readCommittedShell();
+      // Wait for the real shell to connect; once captured it is frozen.
+      if (!committed || committed.navLabels.length === 0) return false;
+      window.__hrFirstShell = {
+        ...committed,
+        locale: localeRef.current,
+        ...readNavigator(),
+        source: 'committed-dom',
+        capturedAt:
+          typeof performance !== 'undefined' && typeof performance.now === 'function'
+            ? performance.now()
+            : Date.now(),
+      };
+      return true;
     };
-  }
+    if (capture()) return;
+    const observer = new MutationObserver(() => {
+      if (capture()) observer.disconnect();
+    });
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['lang'],
+    });
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <div
@@ -102,6 +155,23 @@ export function ShellErrorTrigger(): JSX.Element {
   );
 }
 
+/**
+ * Negative-control-only correction. Injected only in the
+ * `I18N_W2A_EVIDENCE=negative` build, alongside the mismatched provider
+ * resolution that transform also installs in `main.tsx`. A passive effect
+ * corrects the locale after the first commit, so the real shell renders the
+ * wrong language first and repairs itself afterwards — proving the harness's
+ * frozen first-commit predicate is causal (it must reject the first shell)
+ * rather than an eventual snapshot.
+ */
+export function ShellEvidenceCorrection(): null {
+  const { setLocale } = useI18n();
+  useEffect(() => {
+    setLocale('zh-CN');
+  }, [setLocale]);
+  return null;
+}
+
 function PaletteProbe({ open, onOpen }: { open: boolean; onOpen: () => void }): JSX.Element {
   const { t } = useI18n();
   return (
@@ -132,6 +202,7 @@ function PaletteProbe({ open, onOpen }: { open: boolean; onOpen: () => void }): 
         navigateLabel={t('palette.footer.navigate')}
         openLabel={t('palette.footer.open')}
         closeLabel={t('palette.footer.close')}
+        closeAriaLabel={t('common.close')}
       />
     </>
   );

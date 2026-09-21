@@ -61,6 +61,14 @@ interface CommandPaletteProps {
   navigateLabel?: string;
   openLabel?: string;
   closeLabel?: string;
+  /**
+   * Optional localized accessible label for the dialog's X close control.
+   * Distinct from the footer `closeLabel` text. When omitted, the explicitly
+   * supplied `closeLabel` is reused (so a caller that only localizes the footer
+   * still gets a localized close control), and with neither supplied the
+   * primitive's legacy English "Close" is kept.
+   */
+  closeAriaLabel?: string;
 }
 
 function matches(item: CommandPaletteItem, q: string): boolean {
@@ -91,8 +99,13 @@ export function CommandPalette({
   nothingLoaded = 'Nothing loaded yet — visit a page first.',
   navigateLabel = 'navigate',
   openLabel = 'open',
-  closeLabel = 'close',
+  closeLabel,
+  closeAriaLabel,
 }: CommandPaletteProps): JSX.Element {
+  const footerClose = closeLabel ?? 'close';
+  // Explicit aria label wins; an explicitly localized footer `closeLabel` is
+  // reused for the X control; with neither, the Dialog primitive keeps "Close".
+  const dialogCloseLabel = closeAriaLabel ?? closeLabel;
   const [query, setQuery] = React.useState('');
   const [activeIndex, setActiveIndex] = React.useState(0);
   const inputRef = React.useRef<HTMLInputElement | null>(null);
@@ -175,6 +188,7 @@ export function CommandPalette({
         className="top-[20%] max-w-[480px] translate-y-0 gap-0 p-0"
         onKeyDown={handleKeyDown}
         aria-describedby="command-palette-help"
+        closeLabel={dialogCloseLabel}
       >
         <DialogTitle className="sr-only">{title}</DialogTitle>
         <DialogDescription id="command-palette-help" className="sr-only">
@@ -249,7 +263,7 @@ export function CommandPalette({
         <div className="border-border text-fg-subtle border-t px-3 py-1.5 text-[11px]">
           <span className="font-mono">↑↓</span> {navigateLabel} ·{' '}
           <span className="font-mono">⏎</span> {openLabel} ·{' '}
-          <span className="font-mono">esc</span> {closeLabel}
+          <span className="font-mono">esc</span> {footerClose}
         </div>
       </DialogContent>
     </Dialog>

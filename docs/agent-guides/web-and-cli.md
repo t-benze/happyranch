@@ -63,22 +63,34 @@ navigation/aria/org-switcher/account copy, the root loading and NotFound
 fallback, the ErrorBoundary fallback copy, the AddOrgDialog, and the shared
 help/palette presentation — and added CJK-capable SYSTEM font fallbacks to
 `web/src/design-system/tokens/tokens.css` (no webfont download or dependency).
-The rest of the console is still English: **onboarding is W2b, Settings and the
-new Preferences section are W2c, route families are W3/W4, and the assistant
-dock body is W4. No public language selector exists and preview is not enabled.**
-Native preference persistence is N0/N1; full-mode automatic environment
-detection is implemented and unit-tested but not enabled until W5.
+AddOrgDialog, help and palette also localize the built-in dialog close control:
+`DialogContent` gained a backward-compatible optional `closeLabel` prop
+(defaulting to the legacy English `Close`) that callers pass from the catalog,
+and the pattern/primitive layers remain prop-driven with no locale hook import.
+AddOrgDialog stores the product-owned error identity plus the submitted slug and
+re-translates at render time, so an already-visible mapped error follows a
+locale switch without resubmission while unknown external daemon detail stays
+verbatim. The rest of the console is still English: **onboarding is W2b,
+Settings and the new Preferences section are W2c, route families are W3/W4, and
+the assistant dock body is W4. No public language selector exists and preview is
+not enabled.** Native preference persistence is N0/N1; full-mode automatic
+environment detection is implemented and unit-tested but not enabled until W5.
 `web/src/lib/i18n/coverage.ts` marks exactly the W2a-migrated namespaces
 (`root-shell`, `not-found`, `app-shell`, `help-and-palette`) `translated` and
 every other mounted route namespace `english-only` (copy-free redirects
 `not-applicable`), listing the actual mounted dialogs, so English fallback is
 never mistaken for coverage. Foundation browser evidence (isolated Storybook
 probe + the real `main.tsx` startup in headless Chrome) runs via
-`web/scripts/i18n-browser-evidence.mjs`; W2a shell evidence (both locales, root
-loading/no-org/NotFound/help/AddOrgDialog/ErrorBoundary, state preserved across
-a locale switch, CJK font and viewport-containment checks) runs via
+`web/scripts/i18n-browser-evidence.mjs`; W2a shell evidence runs via
 `web/scripts/w2a-shell-browser-evidence.mjs` under an independent
-`I18N_W2A_EVIDENCE`-gated, test-only build injection. Current contract:
+`I18N_W2A_EVIDENCE`-gated, test-only build injection. It reads the actual first
+committed Sidebar/AppBar DOM plus `<html lang>` and the real navigator
+read-back, retains a causal negative control (`I18N_W2A_EVIDENCE=negative`:
+wrong first shell, later corrected, must be rejected by the same predicate), and
+covers both locales across 1440x900/390x844, light/dark, root loading/no-org/
+NotFound/help/AddOrg/error/dormant-palette, focus and retained DOM identity
+across a storage-path locale switch, and CJK-font and viewport-containment
+checks. Current contract:
 `docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
 
 ### Web contract and navigation

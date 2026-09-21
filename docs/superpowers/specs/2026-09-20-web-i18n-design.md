@@ -258,23 +258,40 @@ drives the real built SPA bundle under
 `I18N_W2A_EVIDENCE=1` (an independent evidence-only Vite transform that injects
 the test-only `src/test/w2a-shell-evidence-consumer.tsx` next to `<AppRoutes />`
 and a test-only error trigger inside the real `AppShellErrorBoundary`; it is a
-no-op for every ordinary build). Against a synthetic `/api/v1` stub it asserts,
-at the first committed render, `html.lang` plus the AppBar title and the full
-Sidebar nav labels (saved `zh-CN` → Chinese/`zh-CN`; saved `en` under a Chinese
-navigator → English/`en`; unset preview under a Chinese navigator →
-English/`en`), then exercises the mounted shell in both locales: root loading
-copy, populated org navigation, no-org, NotFound, the help drawer with a
-non-default tab preserved across a locale switch, the AddOrgDialog with a typed
-slug preserved across a switch, the ErrorBoundary fallback with the raw stack
-preserved, and the palette pattern with a typed query preserved across a switch.
-`CSS.getPlatformFontsForNode` proves the Chinese nav glyphs use a CJK-capable
-platform font, and geometry assertions prove no document horizontal overflow,
-no nav link outside the viewport, and dialogs contained within 1440x900 and
-390x844. Nine PNGs (1440x900/390x844, light/dark) plus `receipt.json` bind the
-run to the head SHA. The harness cannot open the dormant command palette through
-the shipping hotkey (which stays retired); the palette is exercised through the
+no-op for every ordinary build). The consumer reads the **actual first committed
+Sidebar/AppBar output from the real DOM** in a layout effect, freezes that
+record on first connection, and never overwrites it when a later effect corrects
+the locale; it records `html.lang` and the real
+`navigator.language`/`navigator.languages` read-back at the same instant.
+Against a synthetic `/api/v1` stub it asserts the frozen first shell (saved
+`zh-CN` → Chinese/`zh-CN`; saved `en` under a Chinese navigator → English/`en`;
+unset preview under a Chinese navigator → English/`en`), then exercises the
+mounted shell in both locales: root loading copy, populated org navigation,
+no-org, NotFound, the help drawer with a non-default tab preserved across a
+locale switch, the AddOrgDialog with a typed slug and a mapped error preserved
+across a storage-path switch, the ErrorBoundary fallback with the raw stack
+preserved and the localized Retry actually recovering, and the palette with a
+query matching multiple rows and a non-default selected row preserved across a
+switch. Focus (`document.activeElement`) and retained DOM node identity are
+observed for the help tab, the AddOrg input/error and the palette input/selected
+row across both switch directions, using the provider's storage path so the
+test control never steals focus. `I18N_W2A_EVIDENCE=negative` additionally hands
+the provider a deliberately mismatched locale and installs the passive
+correction component, so the real shell commits the wrong language first and
+repairs itself; the harness's SAME positive predicate must reject that first
+shell (recorded expected failing exit 1; exit 2 means the fixture itself never
+mismatched). `CSS.getPlatformFontsForNode` proves the Chinese nav glyphs use a
+CJK-capable platform font, and geometry assertions prove no document horizontal
+overflow, no nav link outside the viewport, and dialogs contained within
+1440x900 and 390x844. The state matrix covers the shell and the help/AddOrg/
+error/dormant-palette states in both locales across 1440x900/390x844 and
+light/dark, with PNGs and `receipt.json` bound to the head SHA. The harness
+cannot open the dormant command palette through the shipping hotkey (which stays
+retired and is asserted not to open it); the palette is exercised through the
 pattern-level probe, and its host/section localization is covered by focused
-Vitest.
+Vitest. Locale switching in the focus/identity cases is driven through a real
+`storage` event, not the test control, and the harness asserts no request (in
+particular no `PUT /settings/org`) is issued by a switch.
 
 Frontend readiness map (actual evidence):
 
@@ -283,9 +300,9 @@ Frontend readiness map (actual evidence):
 | Route-wide Chinese rendering | N/A — no route translated in W1 (manifest marks every namespace `english-only`) | mounted-shell only; W2b/W2c/W3/W4 routes still `english-only` |
 | Public language selector | N/A — W3 | N/A — W3 (still absent) |
 | Browser two-tab live evidence | covered by unit/integration storage-event tests AND captured same-origin two-tab change/delete/clear/no-echo browser evidence at the head SHA | W1 behavior retained (no native adapter added) |
-| Bilingual foundation browser capture | captured: real-browser story screenshots for saved-en-in-Chinese-env, saved `zh-CN` (CJK font glyphs) and preview-unset English | W2a adds 9 real-app shell captures (en/zh, 1440x900/390x844, light/dark) |
-| Production startup first-paint | captured: real `main.tsx`/`createBrowserRouter` startup with synthetic API stub; first COMMITTED bilingual consumer text and `<html lang>` asserted together | W2a asserts the first committed shell title + nav labels + `<html lang>` together |
-| Mounted-shell switching state | N/A (foundation) | captured: help tab, AddOrg typed slug and palette query preserved across a locale switch with no remount |
+| Bilingual foundation browser capture | captured: real-browser story screenshots for saved-en-in-Chinese-env, saved `zh-CN` (CJK font glyphs) and preview-unset English | W2a adds real-app shell/dialog captures across en/zh, 1440x900/390x844 and light/dark (exact count bound to the pushed `receipt.json`) |
+| Production startup first-paint | captured: real `main.tsx`/`createBrowserRouter` startup with synthetic API stub; first COMMITTED bilingual consumer text and `<html lang>` asserted together | W2a reads the ACTUAL first committed Sidebar/AppBar DOM (frozen on first connection, never overwritten by a later correction) with `<html lang>` and the real navigator read-back; a causal `I18N_W2A_EVIDENCE=negative` control proves the same predicate rejects an initially-wrong shell |
+| Mounted-shell switching state | N/A (foundation) | captured: help non-default tab, AddOrg typed slug + mapped error and palette query + non-default selected row preserved across a storage-path locale switch, with `document.activeElement` and retained DOM node identity observed in both directions and no request issued by the switch |
 | Native Mac persistence receipt | N/A — N0/N1 (Linux host; not claimed) | NOT RUN — N0/N1 still open |
 
 ## 10. Exclusions

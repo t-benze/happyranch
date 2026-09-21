@@ -14,6 +14,7 @@ export const en = {
   'common.cancel': 'Cancel',
   'common.save': 'Save',
   'common.dismiss': 'Dismiss',
+  'common.close': 'Close',
   'common.language': 'Language',
   'common.languageDescription': 'Choose the interface language.',
   'common.englishOnlyNotice': 'This surface is not yet available in Chinese.',

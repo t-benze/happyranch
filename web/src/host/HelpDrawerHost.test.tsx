@@ -75,6 +75,9 @@ describe('HelpDrawerHost', () => {
     expect(screen.getByText('新建会话')).toBeInTheDocument();
     // Key sequences are unchanged.
     expect(screen.getByText('N')).toBeInTheDocument();
+    // W2a R2: the real mounted close control is localized.
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull();
+    expect(screen.getByRole('button', { name: '关闭' })).toBeInTheDocument();
   });
 
   it('keeps the selected non-default tab and open state across a locale switch (case B)', async () => {
@@ -97,5 +100,7 @@ describe('HelpDrawerHost', () => {
     expect(screen.getByText('关闭打开的任务抽屉或对话框')).toBeInTheDocument();
     // Default tab did not reset to the route's Threads tab.
     expect(screen.getByRole('tab', { name: '会话' })).toHaveAttribute('data-state', 'inactive');
+    // The close control follows the same switch (W2a R2).
+    expect(screen.getByRole('button', { name: '关闭' })).toBeInTheDocument();
   });
 });

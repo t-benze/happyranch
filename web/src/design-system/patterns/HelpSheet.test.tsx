@@ -116,4 +116,15 @@ describe('HelpSheet', () => {
     render(<HelpSheet open onClose={() => {}} sections={SECTIONS} defaultTab="Threads" />);
     expect(screen.getByRole('tab', { name: 'Threads' })).toHaveAttribute('data-state', 'active');
   });
+
+  it('keeps the legacy English close control when no closeLabel is passed (W2a R2)', () => {
+    render(<HelpSheet open onClose={() => {}} sections={SECTIONS} />);
+    expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
+  });
+
+  it('localizes the close control from closeLabel (W2a R2)', () => {
+    render(<HelpSheet open onClose={() => {}} sections={SECTIONS} closeLabel="关闭" />);
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull();
+    expect(screen.getByRole('button', { name: '关闭' })).toBeInTheDocument();
+  });
 });

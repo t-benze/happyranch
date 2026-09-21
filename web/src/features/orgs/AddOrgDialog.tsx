@@ -19,8 +19,63 @@ import {
 import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
 import { useTranslation } from '@/hooks/i18n';
+import type { MessageKey, MessageParams } from '@/lib/i18n';
 
 const SLUG_RE = /^[a-z0-9-]{1,40}$/;
+
+/**
+ * Product-owned error identity plus the parameters captured at submit time.
+ *
+ * W2a review R1: the handler must NOT store a locale-rendered string. The
+ * descriptor keeps the *identity* (and the exact submitted slug) so the copy is
+ * re-translated on every render and follows a locale switch without
+ * resubmission. A genuinely external daemon diagnostic (an unrecognized
+ * non-empty message) is retained verbatim as `raw`.
+ */
+type AddOrgError =
+  | { kind: 'noActiveRuntime' }
+  | { kind: 'dirHasData'; slug: string }
+  | { kind: 'exists'; slug: string }
+  | { kind: 'invalidSlug' }
+  | { kind: 'generic' }
+  | { kind: 'raw'; message: string };
+
+function classifyAddOrgError(
+  err: unknown,
+  submittedSlug: string,
+): AddOrgError {
+  const e = err as { code?: string; status?: number; message?: string };
+  if (e.code === 'no_active_runtime') return { kind: 'noActiveRuntime' };
+  if (e.code === 'org_dir_has_data') return { kind: 'dirHasData', slug: submittedSlug };
+  if (e.code === 'org_exists' || e.code === 'org_dir_exists' || e.status === 409) {
+    return { kind: 'exists', slug: submittedSlug };
+  }
+  if (e.code === 'invalid_slug') return { kind: 'invalidSlug' };
+  // Preserve any exact daemon-supplied detail verbatim; only a missing message
+  // falls back to the app-owned generic copy.
+  const message = typeof e.message === 'string' ? e.message : '';
+  if (message.trim().length > 0) return { kind: 'raw', message };
+  return { kind: 'generic' };
+}
+
+type Translator = (key: MessageKey, params?: MessageParams) => string;
+
+function renderAddOrgError(error: AddOrgError, t: Translator): string {
+  switch (error.kind) {
+    case 'noActiveRuntime':
+      return t('org.add.error.noActiveRuntime');
+    case 'dirHasData':
+      return t('org.add.error.dirHasData', { slug: error.slug });
+    case 'exists':
+      return t('org.add.error.exists', { slug: error.slug });
+    case 'invalidSlug':
+      return t('org.add.error.invalidSlug');
+    case 'generic':
+      return t('org.add.error.generic');
+    case 'raw':
+      return error.message;
+  }
+}
 
 interface Props {
   open: boolean;
@@ -29,7 +84,7 @@ interface Props {
 
 export function AddOrgDialog({ open, onOpenChange }: Props): JSX.Element {
   const [slug, setSlug] = useState('');
-  const [serverError, setServerError] = useState<string | null>(null);
+  const [serverError, setServerError] = useState<AddOrgError | null>(null);
   const qc = useQueryClient();
   const navigate = useNavigate();
   const { t } = useTranslation();
@@ -41,29 +96,18 @@ export function AddOrgDialog({ open, onOpenChange }: Props): JSX.Element {
       onOpenChange(false);
       navigate(`/orgs/${resp.slug}/threads`);
     },
-    onError: (err: unknown) => {
-      const e = err as { code?: string; status?: number; message?: string };
-      if (e.code === 'no_active_runtime') {
-        setServerError(t('org.add.error.noActiveRuntime'));
-      } else if (e.code === 'org_dir_has_data') {
-        setServerError(t('org.add.error.dirHasData', { slug }));
-      } else if (e.code === 'org_exists' || e.code === 'org_dir_exists' || e.status === 409) {
-        setServerError(t('org.add.error.exists', { slug }));
-      } else if (e.code === 'invalid_slug') {
-        setServerError(t('org.add.error.invalidSlug'));
-      } else {
-        // Preserve any exact daemon-supplied detail; only the generic
-        // app-owned fallback translates.
-        setServerError(e.message ?? t('org.add.error.generic'));
-      }
+    onError: (err: unknown, variables) => {
+      // Use the mutation variables, not the (possibly edited) live `slug`.
+      setServerError(classifyAddOrgError(err, variables.slug));
     },
   });
 
   const valid = SLUG_RE.test(slug);
+  const errorText = serverError ? renderAddOrgError(serverError, t) : null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent closeLabel={t('common.close')}>
         <DialogHeader>
           <DialogTitle>{t('org.add.title')}</DialogTitle>
         </DialogHeader>
@@ -80,8 +124,8 @@ export function AddOrgDialog({ open, onOpenChange }: Props): JSX.Element {
             autoFocus
           />
           <p className="text-fg-muted text-xs">{t('org.add.slugHint')}</p>
-          {serverError && (
-            <p className="text-tier-red text-sm">{serverError}</p>
+          {errorText && (
+            <p className="text-tier-red text-sm">{errorText}</p>
           )}
         </div>
         <DialogFooter>
