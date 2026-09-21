@@ -160,6 +160,94 @@ def test_generated_connector_entry_executes_actual_wheel_cli_capability_and_reti
     assert (invalid.returncode, invalid.stderr.strip()) == (1, "error: enrollment_source_retirement_failed")
     assert invalid_source.exists() and not invalid_source.with_name("enrollment.key.retiring").exists()
 
+    # THR-228 seq275: the generated shipping entry must reach the actual
+    # bound affirmative stopped-state observation. A stopped unit performs the
+    # transition with exactly one reload; a query failure refuses category-only
+    # with an unchanged snapshot and no reload.
+    fixture_bin = tmp_path / "fixture-bin"
+    fixture_bin.mkdir()
+    calls = tmp_path / "systemctl.calls"
+    show_file = tmp_path / "systemctl.show"
+    show_file.write_bytes(b"LoadState=loaded\nActiveState=inactive\nSubState=dead\n")
+    fixture_systemctl = fixture_bin / "systemctl"
+    fixture_systemctl.write_text(
+        "#!/bin/sh\n"
+        'printf \'%s\\n\' "$*" >> "$SYSTEMCTL_CALLS"\n'
+        'case "$1" in\n'
+        '  show) cat "$SYSTEMCTL_SHOW_OUTPUT"; exit "$SYSTEMCTL_SHOW_EXIT" ;;\n'
+        '  daemon-reload) exit 0 ;;\n'
+        '  *) exit 99 ;;\n'
+        "esac\n"
+    )
+    fixture_systemctl.chmod(0o700)
+
+    def invoke_with_service(*arguments: str, query_exit: int = 0) -> subprocess.CompletedProcess[str]:
+        calls.write_bytes(b"")
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in {"PYTHONPATH", "CREDENTIALS_DIRECTORY"}
+        }
+        env.update({
+            "PATH": str(fixture_bin) + os.pathsep + env.get("PATH", ""),
+            "SYSTEMCTL_CALLS": str(calls),
+            "SYSTEMCTL_SHOW_OUTPUT": str(show_file),
+            "SYSTEMCTL_SHOW_EXIT": str(query_exit),
+        })
+        return subprocess.run(
+            [sys.executable, "-I", "-c", launcher, str(installed), str(entry), *arguments],
+            cwd=tmp_path,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    fresh_source = fresh / "enrollment.key"
+    fresh_source.write_text("fresh-one-use\n")
+    fresh_source.chmod(0o600)
+    fresh_marker = fresh / "credential.consumed"
+    fresh_marker.write_text("durable\n")
+    fresh_marker.chmod(0o600)
+    fresh_dropin = fresh / "unit.d" / "10-enrollment-credential.conf"
+    fresh_dropin.parent.mkdir()
+    accepted = invoke_with_service(
+        "prepare-fresh-enrollment",
+        "--source", str(fresh_source),
+        "--marker", str(fresh_marker),
+        "--dropin", str(fresh_dropin),
+    )
+    assert (accepted.returncode, accepted.stdout, accepted.stderr) == (0, "", "")
+    assert not fresh_marker.exists()
+    assert fresh_dropin.read_bytes() == b"[Service]\nLoadCredential=enrollment.key:/etc/happyranch/enrollment.key\n"
+    assert fresh_dropin.stat().st_mode & 0o777 == 0o600
+    assert fresh_source.read_text() == "fresh-one-use\n"
+    assert calls.read_text().splitlines() == [
+        "show -p LoadState -p ActiveState -p SubState happyranch-tsnet-sidecar.service",
+        "daemon-reload",
+    ]
+    published_before = (fresh_dropin.read_bytes(), fresh_dropin.stat().st_mode, fresh_source.stat().st_mode)
+    refused = invoke_with_service(
+        "prepare-fresh-enrollment",
+        "--source", str(fresh_source),
+        "--marker", str(fresh_marker),
+        "--dropin", str(fresh_dropin),
+        query_exit=1,
+    )
+    assert (refused.returncode, refused.stdout, refused.stderr.strip()) == (
+        1,
+        "",
+        "error: fresh_enrollment_transition_failed",
+    )
+    assert not fresh_marker.exists()
+    assert (fresh_dropin.read_bytes(), fresh_dropin.stat().st_mode, fresh_source.stat().st_mode) == published_before
+    assert calls.read_text().splitlines() == [
+        "show -p LoadState -p ActiveState -p SubState happyranch-tsnet-sidecar.service"
+    ]
+
 
 def _inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
     sidecar = tmp_path / "sidecar"
@@ -1857,6 +1945,15 @@ def test_interrupted_retirement_reentry_finishes_source_after_dropin_reload(tmp_
     assert not source.exists()
 
 
+def _sidecar_stopped_proof() -> None:
+    """Injected affirmative stopped proof for the unit-level lifecycle cases."""
+    return None
+
+
+def _sidecar_running_proof() -> None:
+    raise OSError("service must be stopped")
+
+
 def test_explicit_fresh_enrollment_replaces_consumed_state(tmp_path: Path) -> None:
     source = tmp_path / "enrollment.key"
     marker = tmp_path / "state" / "credential.consumed"
@@ -1867,7 +1964,7 @@ def test_explicit_fresh_enrollment_replaces_consumed_state(tmp_path: Path) -> No
     reloads: list[str] = []
     _prepare_fresh_enrollment(
         source, marker, dropin=dropin, reload_manager=lambda: reloads.append("reload"),
-        service_is_active=lambda: False,
+        require_service_stopped=_sidecar_stopped_proof,
     )
     assert not marker.exists()
     assert source.read_text() == "fresh-one-use\n"
@@ -1884,7 +1981,7 @@ def test_explicit_fresh_enrollment_refuses_running_service(tmp_path: Path) -> No
     marker.write_text("durable\n"); marker.chmod(0o600)
     with pytest.raises(OSError, match="service must be stopped"):
         _prepare_fresh_enrollment(
-            source, marker, dropin=dropin, service_is_active=lambda: True
+            source, marker, dropin=dropin, require_service_stopped=_sidecar_running_proof
         )
     assert marker.exists() and not dropin.exists()
 

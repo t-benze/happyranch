@@ -57,6 +57,15 @@ def _expected_systemd_credentials_directory(unit: str) -> Path:
 
 _DEFAULT_CONFIG = "~/.happyranch/remote_access/config.json"
 
+# THR-228 seq275: fresh enrollment is a stopped-service-only transition. The
+# consumed-marker/drop-in mutation and the daemon reload are authorized only by
+# one bounded, successful `systemctl show` observation whose explicitly parsed
+# named properties affirmatively prove the sidecar unit is loaded and stopped.
+_SIDECAR_UNIT = "happyranch-tsnet-sidecar.service"
+_SERVICE_STATE_PROPERTIES = ("LoadState", "ActiveState", "SubState")
+_SERVICE_QUERY_TIMEOUT_SECONDS = 5.0
+_SERVICE_QUERY_MAX_OUTPUT_BYTES = 4096
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -370,9 +379,17 @@ def _prepare_fresh_enrollment(
     *,
     dropin: Path,
     reload_manager: Callable[[], None] | None = None,
-    service_is_active: Callable[[], bool] | None = None,
+    require_service_stopped: Callable[[], None] | None = None,
 ) -> None:
-    """Explicitly replace consumed state after an operator installs a fresh source."""
+    """Explicitly replace consumed state after an operator installs a fresh source.
+
+    THR-228 seq275: the marker/drop-in mutation and the daemon reload are
+    reached only after ``require_service_stopped`` (the bounded affirmative
+    production observation by default) proves the sidecar unit is loaded and
+    stopped. Every query error, timeout, unavailable/unknown/malformed or
+    transitional observation raises the existing category-only failure before
+    any filesystem or reload side effect.
+    """
     if (
         not source.is_absolute()
         or source.name != "enrollment.key"
@@ -382,8 +399,7 @@ def _prepare_fresh_enrollment(
         or dropin.name != "10-enrollment-credential.conf"
     ):
         raise OSError("invalid fresh enrollment path")
-    if (service_is_active or _sidecar_is_active)():
-        raise OSError("service must be stopped")
+    (require_service_stopped or _observe_sidecar_stopped)()
     require_credential_capability(source, expected_uid=os.geteuid())
     if marker.exists():
         if marker.is_symlink() or not marker.is_file() or marker.stat().st_mode & 0o777 != 0o600:
@@ -403,17 +419,73 @@ def _prepare_fresh_enrollment(
     (reload_manager or _reload_systemd)()
 
 
-def _sidecar_is_active() -> bool:
+def _observe_sidecar_stopped() -> None:
+    """Return only after a bounded affirmative observation that the sidecar is
+    loaded and stopped (THR-228 seq275).
+
+    Exactly one bounded ``systemctl show`` query requests the three named
+    properties and requires a successful exit plus a strict, duplicate-free
+    parse whose explicit state proves ``LoadState=loaded`` and
+    ``ActiveState=inactive``/``SubState=dead`` — the normal loaded stopped
+    state reached after the composite N3 stop. A nonzero query status, timeout
+    (the child is killed and reaped), missing executable/manager/unit, unknown,
+    missing/empty/duplicate/extra/malformed/oversize record, contradictory
+    combination or any active/transitional/failed state raises the existing
+    category-only failure and never authorizes mutation.
+    """
+    argv = [
+        "systemctl",
+        "show",
+        "-p", "LoadState",
+        "-p", "ActiveState",
+        "-p", "SubState",
+        _SIDECAR_UNIT,
+    ]
     try:
         result = subprocess.run(
-            ["systemctl", "is-active", "--quiet", "happyranch-tsnet-sidecar.service"],
+            argv,
             check=False,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
+            timeout=_SERVICE_QUERY_TIMEOUT_SECONDS,
         )
-    except OSError as exc:
+    except (OSError, subprocess.SubprocessError) as exc:
         raise OSError("service state unavailable") from exc
-    return result.returncode == 0
+    if result.returncode != 0:
+        raise OSError("service state unavailable")
+    _require_stopped_service_properties(result.stdout)
+
+
+def _require_stopped_service_properties(raw: bytes) -> None:
+    """Strictly validate one named-property observation of a stopped unit."""
+    if len(raw) > _SERVICE_QUERY_MAX_OUTPUT_BYTES:
+        raise OSError("service state unavailable")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise OSError("service state unavailable") from exc
+    properties: dict[str, str] = {}
+    for line in text.splitlines():
+        key, separator, value = line.partition("=")
+        if (
+            not line
+            or not separator
+            or key not in _SERVICE_STATE_PROPERTIES
+            or key in properties
+            or not value
+            or not value.isprintable()
+            or any(character.isspace() for character in value)
+        ):
+            raise OSError("service state unavailable")
+        properties[key] = value
+    if set(properties) != set(_SERVICE_STATE_PROPERTIES):
+        raise OSError("service state unavailable")
+    if (
+        properties["LoadState"] != "loaded"
+        or properties["ActiveState"] != "inactive"
+        or properties["SubState"] != "dead"
+    ):
+        raise OSError("service must be stopped")
 
 
 def _reload_systemd() -> None:
