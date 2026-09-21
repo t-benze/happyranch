@@ -34,11 +34,12 @@ export function formatTokensFor(locale: Locale, n: number): string {
 
 /**
  * Exact, grouped integer counter. Never compacts: a count of 1000 renders
- * `1,000` in both locales.
+ * `1,000` in both locales. Delegates to the ONE canonical `formatCount` with
+ * its explicit-locale argument, so the display locale is honored even when the
+ * host `Intl` default is a different language (e.g. `LC_ALL=de_DE`).
  */
 export function formatCountFor(locale: Locale, n: number): string {
-  if (locale === 'en') return formatCount(n);
-  return new Intl.NumberFormat(locale).format(n);
+  return formatCount(n, locale);
 }
 
 export interface LocaleDateFormatOptions {

@@ -72,10 +72,20 @@ value cannot override it.
 
 `src/lib/format.ts` remains the canonical display formatter; the explicit-locale
 interfaces in `src/lib/i18n/format.ts` delegate to it and do not fork a competing
-implementation. Route/page translation is W2-W4 — not W1. The mount-time
-coverage inventory lives in `src/lib/i18n/coverage.ts` and marks every
-not-yet-migrated namespace English-only so fallback is never mistaken for
-coverage. See `docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
+implementation (`formatCount` takes an OPTIONAL locale so legacy callers keep
+the host-default behaviour). An unexpected runtime gap renders the English
+message with English grammar (`resolveMessage` reports the supplying catalog
+locale), never a raw key. Route/page translation is W2-W4 — not W1. The
+mount-time coverage inventory lives in `src/lib/i18n/coverage.ts`: it separates
+copy-bearing routes (root shell `index`, the `*` NotFound catch-all — both
+`english-only`) from copy-free redirects, disambiguates colliding tokens with
+`<scope>:<token>` qualified identities, and lists the ACTUAL mounted dialog
+components so fallback is never mistaken for coverage. Foundation browser
+evidence runs the isolated
+`src/design-system/i18n/I18nFoundation.stories.tsx` story and the real
+`main.tsx` startup through `scripts/i18n-browser-evidence.mjs` (headless Chrome
+over CDP, no new dependency). See
+`docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
 
 ## What is intentionally not in here
 

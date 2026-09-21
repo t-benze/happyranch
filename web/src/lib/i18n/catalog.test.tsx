@@ -131,6 +131,73 @@ describe('plural boundary values', () => {
   });
 });
 
+describe('English fallback keeps English plural grammar (W1 acceptance case 5)', () => {
+  // Reviewer red proof: with the Chinese entry absent, the English message was
+  // rendered with the Chinese plural rule, producing "1 items". The grammar
+  // must come from the locale whose catalog actually supplied the message.
+  function withoutChineseEntry(key: MessageKey): () => void {
+    const zh = catalogs['zh-CN'] as Catalog;
+    const saved = zh[key];
+    Reflect.deleteProperty(zh, key);
+    return () => {
+      zh[key] = saved;
+    };
+  }
+
+  it('translates the English fallback with English one/other selection at 0/1/2', () => {
+    const restore = withoutChineseEntry('common.itemCount');
+    try {
+      expect(translate('zh-CN', 'common.itemCount', { count: 0 })).toBe('0 items');
+      expect(translate('zh-CN', 'common.itemCount', { count: 1 })).toBe('1 item');
+      expect(translate('zh-CN', 'common.itemCount', { count: 2 })).toBe('2 items');
+      expect(translate('zh-CN', 'common.itemCount', { count: 1 })).toBe(
+        translate('en', 'common.itemCount', { count: 1 }),
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it('renders the English fallback with English one/other selection at 0/1/2', () => {
+    const restore = withoutChineseEntry('common.itemCount');
+    try {
+      for (const [count, expected] of [
+        [0, '0 items'],
+        [1, '1 item'],
+        [2, '2 items'],
+      ] as const) {
+        const { container, unmount } = render(
+          <div data-testid="probe">{renderTranslated('zh-CN', 'common.itemCount', { count })}</div>,
+        );
+        expect(container.textContent).toBe(expected);
+        unmount();
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  it('preserves a second named parameter through the English fallback plural form', () => {
+    const restore = withoutChineseEntry('common.filesSelected');
+    try {
+      const { container, unmount } = render(
+        <div>{renderTranslated('zh-CN', 'common.filesSelected', { count: 1, name: 'Ada' })}</div>,
+      );
+      expect(container.textContent).toBe('1 file selected by Ada');
+      unmount();
+      expect(translate('zh-CN', 'common.filesSelected', { count: 3, name: 'Ada' })).toBe(
+        '3 files selected by Ada',
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it('restores the Chinese single-form grammar when the entry is present', () => {
+    expect(translate('zh-CN', 'common.itemCount', { count: 1 })).toBe('1 个项目');
+  });
+});
+
 describe('safe rendering and runtime fallback', () => {
   it('renders malicious markup as literal text (no HTML injection)', () => {
     const payload = '<img src=x onerror="alert(1)">';

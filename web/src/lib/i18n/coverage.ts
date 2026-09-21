@@ -10,10 +10,28 @@
  * classified here.
  *
  * `routeTokens` are the literal `path="..."` values declared in
- * `src/routes.tsx`, `src/prototypes/index.tsx` and the settings sub-route tree.
- * `surfaces` documents reachable shared dialogs/overlays that belong to the
- * namespace (they are inspected in the W2-W4 migration, not discovered by the
- * route-token scan).
+ * `src/routes.tsx`, `src/prototypes/index.tsx` and the settings sub-route tree;
+ * an `<Route index>` contributes the literal token `index`. `surfaces`
+ * documents reachable shared dialogs/overlays that belong to the namespace
+ * (they are inspected in the W2-W4 migration, not discovered by the
+ * route-token scan). Dialog/overlay names are the ACTUAL mounted component
+ * names, and `coverage.test.ts` anchors them to the real consumer sources —
+ * an invented name fails the test.
+ *
+ * ### Colliding tokens (qualified identities)
+ *
+ * React Router reuses the same literal tokens for different behaviours:
+ *  - `*` is the app-wide `NotFound` (copy: "Not found. Go home") in
+ *    `routes.tsx`, but the settings-internal redirect in `SettingsPage.tsx`.
+ *  - `index` is the root `RootRedirect` (copy: "Loading…") in `routes.tsx`,
+ *    but a copy-free redirect inside `SettingsPage.tsx`.
+ *
+ * Where one token needs two classifications the manifest carries a qualified
+ * `<scope>:<token>` identity (see `qualifiedRouteTokens`). Bare
+ * `classifyRouteToken('*')` / `classifyRouteToken('index')` intentionally
+ * resolve to the copy-bearing classification, because those are the surfaces a
+ * fallback render can actually reach; the copy-free variants are asserted
+ * through their qualified identities.
  */
 import type { Locale } from './locale';
 import { translate } from './catalog';
@@ -25,21 +43,33 @@ export interface NamespaceCoverage {
   routeTokens: readonly string[];
   status: CoverageStatus;
   surfaces: readonly string[];
+  /**
+   * `<scope>:<token>` identities for a token whose classification differs from
+   * the bare token (see the file header). Scopes are the route module or the
+   * mounted page name that declares the token.
+   */
+  qualifiedRouteTokens?: readonly string[];
 }
 
 export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
+    namespace: 'root-shell',
+    routeTokens: ['index'],
+    status: 'english-only',
+    surfaces: ['RootRedirect (AppShell loading copy: "Loading…")'],
+  },
+  {
+    namespace: 'not-found',
+    routeTokens: ['*'],
+    status: 'english-only',
+    qualifiedRouteTokens: ['routes.tsx:*'],
+    surfaces: ['NotFound ("Not found. Go home")'],
+  },
+  {
     namespace: 'redirects',
-    routeTokens: ['index', '/orgs/:slug', 'spend', 'schedule', '*'],
+    routeTokens: ['/orgs/:slug', 'spend', 'schedule'],
     status: 'not-applicable',
-    surfaces: [
-      'RootRedirect',
-      'OrgLayout (org-context wrapper, no copy)',
-      'SpendRedirect',
-      'ScheduleRedirect',
-      'NotFound',
-      'settings catch-alls',
-    ],
+    surfaces: ['OrgLayout (org-context wrapper, no copy)', 'NavigateToHome', 'SpendRedirect', 'ScheduleRedirect'],
   },
   {
     namespace: 'onboarding',
@@ -57,25 +87,37 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
     namespace: 'threads',
     routeTokens: ['threads', 'threads/:thread_id'],
     status: 'english-only',
-    surfaces: ['ThreadsPage', 'ThreadDetailPane', 'NewThreadDialog', 'ArchiveDialog', 'AbandonDialog'],
+    surfaces: [
+      'ThreadsPage',
+      'NewThreadDialog',
+      'InviteDialog',
+      'ArchiveDialog',
+      'RemoveParticipantDialog',
+    ],
   },
   {
     namespace: 'tasks',
     routeTokens: ['tasks', 'tasks/:task_id'],
     status: 'english-only',
-    surfaces: ['TasksPage', 'TaskDetailPage', 'TaskCancelDialog', 'TaskRevisitDialog'],
+    surfaces: [
+      'TasksPage',
+      'TaskDetailPage',
+      'CancelTaskDialog',
+      'RevisitTaskDialog',
+      'ResolveEscalationDialog',
+    ],
   },
   {
     namespace: 'todos',
     routeTokens: ['todos', 'todos/:scheduleId'],
     status: 'english-only',
-    surfaces: ['TodosPage'],
+    surfaces: ['TodosPage', 'TodoDetailPage', 'ConfirmDialog', 'EditDialog'],
   },
   {
     namespace: 'kb',
     routeTokens: ['kb', 'kb/:entrySlug/*'],
     status: 'english-only',
-    surfaces: ['KbPage', 'KbComposer'],
+    surfaces: ['KbPage', 'ComposeKbEntryDialog'],
   },
   {
     namespace: 'audit',
@@ -94,19 +136,26 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
       'skills/:skillId',
     ],
     status: 'english-only',
-    surfaces: ['SkillsPage', 'SkillValidationPage', 'SkillDetailPage', 'CustomSkillsPage'],
+    surfaces: [
+      'SkillsPage',
+      'SkillValidationPage',
+      'SkillDetailPage',
+      'CustomSkillsPage',
+      'CustomSkillCreatePage',
+      'CustomSkillDetailPage',
+    ],
   },
   {
     namespace: 'agents',
     routeTokens: ['agents', 'agents/:agent_name', 'agents/:agent_name/team-escalation-policy'],
     status: 'english-only',
-    surfaces: ['AgentsPage', 'AddAgentDialog', 'TeamEscalationPolicyPage'],
+    surfaces: ['AgentsPage', 'TeamEscalationPolicyPage', 'AddAgentDialog', 'NewThreadDialog'],
   },
   {
     namespace: 'jobs',
     routeTokens: ['jobs', 'jobs/:job_id'],
     status: 'english-only',
-    surfaces: ['JobsPage', 'JobDetailPage', 'JobReviewDialog'],
+    surfaces: ['JobsPage', 'JobDetailPage', 'RunJobDialog', 'RejectJobDialog'],
   },
   {
     namespace: 'health',
@@ -130,7 +179,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
     namespace: 'work-hours',
     routeTokens: ['work-hours', 'work-hours/:agent'],
     status: 'english-only',
-    surfaces: ['WorkHoursOverviewPage', 'WakesView', 'AgentDetailPage'],
+    surfaces: ['WorkHoursOverviewPage', 'WorkHoursWakesView', 'WorkHoursAgentDetailPage', 'TierEditorDialog'],
   },
   {
     namespace: 'artifacts',
@@ -140,21 +189,36 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   },
   {
     namespace: 'settings',
-    routeTokens: [
-      'settings/*',
-      'assistant',
-      'daemon-capacity',
-      'organization',
-      'executors',
-      'system',
-    ],
+    routeTokens: ['settings/*', 'assistant', 'daemon-capacity', 'organization', 'executors'],
     status: 'english-only',
     surfaces: [
       'SettingsPage',
-      'SettingsDialog',
-      'PreferencesSection (W2)',
-      'settings system/agents/* redirects',
+      'SettingsSubNav',
+      'AssistantSection',
+      'DaemonCapacitySection',
+      'OrganizationSection',
+      'ExecutorsSection',
+      'ReconfigureDialog',
+      'EligibilityEditorDialog',
     ],
+  },
+  {
+    namespace: 'settings-redirects',
+    routeTokens: ['system'],
+    status: 'not-applicable',
+    qualifiedRouteTokens: [
+      'SettingsPage.tsx:index',
+      'SettingsPage.tsx:system',
+      'SettingsPage.tsx:agents',
+      'SettingsPage.tsx:*',
+    ],
+    surfaces: ['settings index/system/agents/* redirects'],
+  },
+  {
+    namespace: 'app-shell',
+    routeTokens: [],
+    status: 'english-only',
+    surfaces: ['AppShell', 'AppBar', 'Sidebar', 'ErrorBoundary', 'AddOrgDialog'],
   },
   {
     namespace: 'system-assistant',
@@ -170,6 +234,13 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   },
 ] as const;
 
+/** Namespaces that intentionally carry no product copy (never "coverage"). */
+export const NOT_APPLICABLE_NAMESPACES: readonly string[] = [
+  'redirects',
+  'settings-redirects',
+  'prototypes',
+];
+
 function buildTokenIndex(): Map<string, NamespaceCoverage> {
   const index = new Map<string, NamespaceCoverage>();
   for (const entry of COVERAGE_MANIFEST) {
@@ -180,15 +251,47 @@ function buildTokenIndex(): Map<string, NamespaceCoverage> {
   return index;
 }
 
-const TOKEN_INDEX = buildTokenIndex();
+function buildIdentityIndex(): Map<string, NamespaceCoverage> {
+  const index = new Map<string, NamespaceCoverage>();
+  for (const entry of COVERAGE_MANIFEST) {
+    for (const identity of entry.qualifiedRouteTokens ?? []) {
+      if (!index.has(identity)) index.set(identity, entry);
+    }
+  }
+  return index;
+}
 
+const TOKEN_INDEX = buildTokenIndex();
+const IDENTITY_INDEX = buildIdentityIndex();
+
+/** Classify a bare route token (see the file header for collisions). */
 export function classifyRouteToken(token: string): NamespaceCoverage | undefined {
   return TOKEN_INDEX.get(token);
+}
+
+/**
+ * Classify a `<scope>:<token>` identity, falling back to the bare-token
+ * classification (so a scoped scan of a module whose tokens do NOT collide
+ * still resolves). Use this for tokens that collide across modules.
+ */
+export function classifyRouteIdentity(identity: string): NamespaceCoverage | undefined {
+  const qualified = IDENTITY_INDEX.get(identity);
+  if (qualified) return qualified;
+  const bare = TOKEN_INDEX.get(identity);
+  if (bare) return bare;
+  const separator = identity.indexOf(':');
+  if (separator === -1) return undefined;
+  return TOKEN_INDEX.get(identity.slice(separator + 1));
 }
 
 /** Tokens that the manifest does not classify (the check's failure signal). */
 export function unclassifiedRouteTokens(tokens: readonly string[]): string[] {
   return tokens.filter((token) => !TOKEN_INDEX.has(token));
+}
+
+/** Qualified identities that the manifest does not classify. */
+export function unclassifiedRouteIdentities(identities: readonly string[]): string[] {
+  return identities.filter((identity) => classifyRouteIdentity(identity) === undefined);
 }
 
 export interface CoverageSummary {
@@ -217,14 +320,16 @@ export function describeCoverage(locale: Locale, status: CoverageStatus): string
 }
 
 /**
- * Source-scan helper: extract the literal `path="..."` tokens from a route
- * module's source. Used by `coverage.test.ts` against `routes.tsx`,
- * `prototypes/index.tsx` and `SettingsPage.tsx`.
+ * Source-scan helper: extract the literal route tokens from a route module's
+ * source. `path="..."` values are returned verbatim; a bare `<Route index>`
+ * contributes the literal token `index`. Used by `coverage.test.ts` against
+ * `routes.tsx`, `prototypes/index.tsx` and `SettingsPage.tsx`.
  */
 export function extractRouteTokens(source: string): string[] {
   const tokens: string[] = [];
   for (const match of source.matchAll(/path="([^"]*)"/g)) {
     if (!tokens.includes(match[1])) tokens.push(match[1]);
   }
+  if (/<Route\s+index\b/.test(source) && !tokens.includes('index')) tokens.push('index');
   return tokens;
 }

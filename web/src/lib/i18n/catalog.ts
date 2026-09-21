@@ -179,12 +179,36 @@ export function assertCatalogParity(
  * typecheck; an unexpected runtime gap resolves to `undefined` so callers can
  * render nothing rather than a raw key.
  */
-export function lookupMessage(locale: Locale, key: string): MessageValue | undefined {
+export interface ResolvedMessage {
+  value: MessageValue;
+  /**
+   * The catalog locale the value actually came from. When the requested locale
+   * lacks the key the English fallback supplies both the text AND its grammar,
+   * so plural selection must use `locale`, not the requested locale.
+   */
+  locale: Locale;
+}
+
+/**
+ * Resolve a key together with the locale whose catalog supplied it. This is the
+ * fallback-aware primitive: `translate`/`renderTranslated` select the plural
+ * form with `resolved.locale` so an English fallback message never renders
+ * under Chinese plural rules.
+ */
+export function resolveMessage(locale: Locale, key: string): ResolvedMessage | undefined {
   const local = catalogs[locale] as unknown as Record<string, MessageValue | undefined>;
   const value = local?.[key];
-  if (value !== undefined) return value;
+  if (value !== undefined) return { value, locale };
+  if (locale === DEFAULT_LOCALE) return undefined;
   const fallback = catalogs[DEFAULT_LOCALE] as unknown as Record<string, MessageValue | undefined>;
-  return fallback?.[key];
+  const fallbackValue = fallback?.[key];
+  if (fallbackValue === undefined) return undefined;
+  return { value: fallbackValue, locale: DEFAULT_LOCALE };
+}
+
+/** Value-only convenience over `resolveMessage`. */
+export function lookupMessage(locale: Locale, key: string): MessageValue | undefined {
+  return resolveMessage(locale, key)?.value;
 }
 
 export function selectPluralCategory(locale: Locale, count: number): PluralCategory {
@@ -213,9 +237,12 @@ function pluralTemplate(
 
 /** Plain-string translation (safe: output is text, never HTML). */
 export function translate(locale: Locale, key: MessageKey, params: MessageParams = {}): string {
-  const value = lookupMessage(locale, key);
-  if (value === undefined) return '';
-  const template = typeof value === 'string' ? value : pluralTemplate(locale, value, params);
+  const resolved = resolveMessage(locale, key);
+  if (resolved === undefined) return '';
+  const template =
+    typeof resolved.value === 'string'
+      ? resolved.value
+      : pluralTemplate(resolved.locale, resolved.value, params);
   return interpolate(template, params);
 }
 
@@ -247,9 +274,12 @@ export function renderTranslated(
   key: MessageKey,
   params: NodeParams = {},
 ): ReactNode {
-  const value = lookupMessage(locale, key);
-  if (value === undefined) return null;
-  const template = typeof value === 'string' ? value : pluralTemplate(locale, value, params);
+  const resolved = resolveMessage(locale, key);
+  if (resolved === undefined) return null;
+  const template =
+    typeof resolved.value === 'string'
+      ? resolved.value
+      : pluralTemplate(resolved.locale, resolved.value, params);
   return renderTemplate(template, params);
 }
 

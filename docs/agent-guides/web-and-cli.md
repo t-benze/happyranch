@@ -54,16 +54,21 @@ success. Adapter `authority` declares ownership: browser authority keeps
 `localStorage` and cross-tab events authoritative, while a native adapter's
 injected snapshot wins. `web/src/lib/format.ts` remains the canonical display
 formatter; `web/src/lib/i18n/format.ts` adds explicit-locale interfaces that
-delegate to it.
+delegate to it, and `formatCount` takes an optional locale (omitting it keeps
+the legacy host-default behaviour). An unexpected catalog gap renders the
+English message with English plural grammar, never a raw key.
 
 W1 ships the foundation only. **No route or page is translated, no public
 language selector exists, and preview is not enabled.** Route/page translation
 is W2-W4 (W4 completes the coverage manifest); native preference persistence is
 N0/N1; full-mode automatic environment detection is implemented and unit-tested
 but not enabled until W5. `web/src/lib/i18n/coverage.ts` marks every
-not-yet-migrated mounted route namespace `english-only` so English fallback is
-never mistaken for coverage. Current contract:
-`docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
+not-yet-migrated mounted route namespace `english-only` (copy-bearing
+`index`/`*` included, copy-free redirects `not-applicable`) and lists the actual
+mounted dialogs, so English fallback is never mistaken for coverage. Foundation
+browser evidence (isolated Storybook probe + the real `main.tsx` startup in
+headless Chrome) runs via `web/scripts/i18n-browser-evidence.mjs`. Current
+contract: `docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
 
 ### Web contract and navigation
 

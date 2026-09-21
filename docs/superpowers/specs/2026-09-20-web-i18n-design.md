@@ -26,6 +26,7 @@ Delivery status at W1 (keep separate from later phases):
 | Browser preference (`happyranch.ui.locale`) with resilient storage | shipped |
 | Injectable locale preference adapter (native seam) | shipped (browser + test doubles only) |
 | Mounted-route/namespace coverage manifest | shipped |
+| Foundation browser/Storybook evidence (isolated, non-product) | shipped — `web/scripts/i18n-browser-evidence.mjs` + `I18nFoundation.stories.tsx` |
 | Explicit-locale display formatters | shipped (interfaces only; no caller migration) |
 | Route/page translation | **W2-W4** — not shipped |
 | Public language selector / opt-in preview | **W3** — not shipped |
@@ -37,9 +38,9 @@ Delivery status at W1 (keep separate from later phases):
 | Module | Contract |
 | --- | --- |
 | `@/lib/i18n/locale` | `Locale`, `LocaleMode`, `LocaleSource`, `LocaleAuthority`, `LOCALE_STORAGE_KEY`, `SUPPORTED_LOCALES`, `isLocale`, `matchSystemLocale`, `resolveLocale`, `LocalePreferenceAdapter`, `LocaleSnapshot`, `LocaleWriteOutcome`, `browserLocalePreferenceAdapter`, `adapterAuthority`, `readAdapterSnapshot`, `getLocalStorage`, `applyDocumentLocale`, `bootstrapDocumentLocale` |
-| `@/lib/i18n/catalog` | `MessageKey`, `MessageValue`, `PluralForms`, `Catalog`, `catalogs`, `PLURAL_FORMS_BY_LOCALE`, `translate`, `renderTranslated`, `lookupMessage`, `selectPluralCategory`, `interpolate`, `extractPlaceholders`, `validateCatalogParity`, `assertCatalogParity` |
+| `@/lib/i18n/catalog` | `MessageKey`, `MessageValue`, `PluralForms`, `Catalog`, `catalogs`, `PLURAL_FORMS_BY_LOCALE`, `translate`, `renderTranslated`, `lookupMessage`, `resolveMessage`, `selectPluralCategory`, `interpolate`, `extractPlaceholders`, `validateCatalogParity`, `assertCatalogParity` |
 | `@/lib/i18n/format` | `formatTokensFor`, `formatCountFor`, `formatDateTimeFor` |
-| `@/lib/i18n/coverage` | `COVERAGE_MANIFEST`, `classifyRouteToken`, `unclassifiedRouteTokens`, `coverageSummary`, `describeCoverage`, `extractRouteTokens` |
+| `@/lib/i18n/coverage` | `COVERAGE_MANIFEST`, `NOT_APPLICABLE_NAMESPACES`, `classifyRouteToken`, `classifyRouteIdentity`, `unclassifiedRouteTokens`, `unclassifiedRouteIdentities`, `coverageSummary`, `describeCoverage`, `extractRouteTokens` |
 | `@/hooks/i18n` | `I18nProvider` (`adapter`, `mode`, `initialResolution`), `useI18n`, `useLocale`, `useTranslation` |
 | `@/App` | `App`, `AppShell` (production provider/route composition) |
 
@@ -115,23 +116,45 @@ Rules:
 - `translate` returns a plain string; `renderTranslated` returns escaped
   text/React nodes. There is no `dangerouslySetInnerHTML` path.
 - An unexpected runtime gap falls back to English; a key absent from every
-  catalog renders nothing — never a raw key.
+  catalog renders nothing — never a raw key. `resolveMessage` reports the locale
+  whose catalog actually supplied the value, and plural selection uses that
+  locale, so a missing Chinese entry renders the English grammar (`1 item`,
+  never `1 items`) in both `translate` and `renderTranslated`.
 
 ## 6. Coverage manifest
 
 `COVERAGE_MANIFEST` classifies every mounted route namespace as `translated`,
 `english-only`, or `not-applicable`, and records reachable shared dialogs as
 `surfaces`. `coverage.test.ts` scans `routes.tsx`, `prototypes/index.tsx` and
-`SettingsPage.tsx` for `path="..."` tokens and fails when a newly mounted route
-is unclassified. In W1 no product surface is `translated`: every namespace is
-visibly marked `english-only`, so English fallback is never mistaken for
-coverage.
+`SettingsPage.tsx` for `path="..."` tokens (plus the literal `index` route
+token) and fails when a newly mounted route token is unclassified.
+
+Copy-bearing and copy-free routes are separated: the root-shell `index`
+(`RootRedirect` "Loading…") and the app catch-all `*` (`NotFound`) are
+`english-only`, never `not-applicable`; the copy-free `NavigateToHome`/
+`SpendRedirect`/`ScheduleRedirect` and the settings-internal redirects are
+`not-applicable`. Tokens that collide across modules are disambiguated with
+`<scope>:<token>` qualified identities (`routes.tsx:*` vs `SettingsPage.tsx:*`,
+`SettingsPage.tsx:index`, `SettingsPage.tsx:agents`).
+
+Dialog/overlay surfaces are the ACTUAL mounted component names, and the test
+anchors them to the real consumer sources (e.g. `ThreadsPage.tsx` mounts
+`NewThreadDialog`/`InviteDialog`/`ArchiveDialog`/`RemoveParticipantDialog`;
+`TaskDetailPage.tsx` mounts `CancelTaskDialog`/`RevisitTaskDialog`/
+`ResolveEscalationDialog`; `JobDetailPage.tsx` mounts
+`RunJobDialog`/`RejectJobDialog`), so an invented or unreachable name fails the
+test. In W1 no product surface is `translated`: every namespace is visibly
+marked `english-only`, so English fallback is never mistaken for coverage.
 
 ## 7. Formatting contract
 
 - `@/lib/format` remains the canonical formatter. `formatTokensFor('en', …)` and
   `formatCountFor('en', …)` delegate to `formatTokens`/`formatCount`; there is
-  no competing implementation.
+  no competing implementation. `formatCount` gained an OPTIONAL explicit locale
+  argument (`formatCount(n, locale?)`): omitting it keeps the legacy
+  host-locale behaviour for every existing caller byte-for-byte, while passing
+  it makes the grouped output independent of the host `Intl` default (explicit
+  English renders `1,234,567` even under `LC_ALL=de_DE.UTF-8`).
 - Chinese compact display uses 万 / 亿; exact counts stay grouped and exact
   (`1,000` is never compacted).
 - `formatDateTimeFor` requires an explicit locale and IANA timezone and is
@@ -171,15 +194,31 @@ parity and safe rendering, formatting, the coverage manifest, and the adapter
 seam. `scripts/local_ci.sh web` runs lint, typecheck, build,
 `build-storybook` and `vitest run` under Node 24.
 
-Frontend readiness map for foundation-only scope (explicit N/A):
+Foundational browser evidence is provided by
+`web/scripts/i18n-browser-evidence.mjs` (no new dependency: Node 24's built-in
+WebSocket + the installed headless Chrome) against two same-origin servers:
+the built Storybook foundation story
+(`src/design-system/i18n/I18nFoundation.stories.tsx`) and the production SPA
+bundle (`web/dist`) with a synthetic `/api/v1` stub. It asserts saved explicit
+English under a Chinese environment, saved `zh-CN`, unset preview English,
+first React text agreeing with `<html lang>` for the real
+`main.tsx → App → createBrowserRouter` startup, state preservation across a
+locale switch, fail-safe storage read/write failure, real same-origin tab
+change/delete/clear with no echo write, and that Chinese copy is rendered by a
+CJK platform font (captured PNGs + `receipt.json` bound to the head SHA under
+the task evidence directory). This is foundation evidence only: it does not
+claim translated product routes (none exist in W1).
+
+Frontend readiness map for foundation-only scope (actual evidence):
 
 | Readiness item | W1 |
 | --- | --- |
-| Route-wide Chinese rendering | N/A — no route translated in W1 |
+| Route-wide Chinese rendering | N/A — no route translated in W1 (manifest marks every namespace `english-only`) |
 | Public language selector | N/A — W3 |
-| Browser two-tab live evidence | covered by unit/integration storage-event tests; real two-tab capture not required for foundation |
-| Storybook browser screenshot of a translated route | N/A — no translated route surface exists yet; `build-storybook` must still pass |
-| Native Mac persistence receipt | N/A — N0/N1 |
+| Browser two-tab live evidence | covered by unit/integration storage-event tests AND captured same-origin two-tab change/delete/clear/no-echo browser evidence at the head SHA |
+| Bilingual foundation browser capture | captured: real-browser story screenshots for saved-en-in-Chinese-env, saved `zh-CN` (CJK font glyphs) and preview-unset English |
+| Production startup first-paint | captured: real `main.tsx`/`createBrowserRouter` startup with synthetic API stub; first React text and `<html lang>` agree |
+| Native Mac persistence receipt | N/A — N0/N1 (Linux host; not claimed) |
 
 ## 10. Exclusions
 
