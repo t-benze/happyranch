@@ -761,14 +761,6 @@ def _matches_any(path: str | None, roots: dict) -> bool:
 CACHE_BASENAMES = ("node_modules", ".venv")
 
 
-def _containing_worktree_root(target_real: str) -> str | None:
-    stripped = target_real.rstrip("/")
-    if os.path.basename(stripped) not in CACHE_BASENAMES:
-        return None
-    parent = os.path.dirname(stripped)
-    return parent or None
-
-
 def _path_identity(proc, pid: str, path: str, same_ns: bool):
     st = proc.stat_path(path) if same_ns else proc.stat_through_root(pid, path)
     if st.kind != OK:
@@ -815,25 +807,36 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
     target_id = ((getattr(tstat.value, "st_dev", None), getattr(tstat.value, "st_ino", None))
                  if tstat.kind == OK else None)
 
-    # F1: roots that count as "the candidate". The literal target plus, for a
-    # cache candidate, the containing registered worktree.
+    # F1/R2: roots that count as "the candidate". The literal target plus, for a
+    # cache candidate, an EXPLICIT verified containing registered worktree. The
+    # cache's own parent is never silently treated as the registration: an
+    # omitted containing context for a cache is unknown, and a supplied context
+    # that does not contain the target is unknown.
     roots: dict[str, tuple | None] = {target_real: target_id}
     containing_real: str | None = None
     containing_ok = False
-    containing = containing_worktree
-    if containing is None:
-        containing = _containing_worktree_root(target_real)
-    if containing:
-        containing_real = os.path.realpath(os.fspath(containing))
-        if containing_real != target_real:
+    containing_raw = containing_worktree
+    containing_expected: str | None = None
+    containing_missing = False
+    target_is_cache = os.path.basename(target_real.rstrip("/")) in CACHE_BASENAMES
+    if containing_raw is not None:
+        containing_real = os.path.realpath(os.fspath(containing_raw))
+        containing_expected = containing_real
+        if containing_real == target_real:
+            # whole-worktree candidate: the containing worktree is the target
+            containing_real = None
+            containing_expected = target_real
+        elif not target_real.startswith(containing_real.rstrip("/") + "/"):
+            containing_missing = True
+        else:
             cstat = proc.stat_path(containing_real)
             containing_ok = cstat.kind == OK
             cid = ((getattr(cstat.value, "st_dev", None),
                     getattr(cstat.value, "st_ino", None))
                    if containing_ok else None)
             roots[containing_real] = cid
-        else:
-            containing_real = None
+    elif target_is_cache:
+        containing_missing = True
 
     started = clock()
     res = ScanResult(state="unknown", target=target_real)
@@ -862,6 +865,11 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
         res.reasons.append(f"target_unavailable:{tstat.kind}")
         res.cycles.append({"phase": "target", "kind": tstat.kind})
         return res
+    if containing_missing:
+        # R2: a cache candidate always requires explicit verified containing
+        # context; a supplied context must actually contain the candidate. This
+        # is unknown, never a literal-path (or dirname) fallback.
+        res.reasons.append("containing_worktree_required")
     if containing_real is not None and not containing_ok:
         # Missing/ambiguous containing registration is unknown, not a
         # literal-path fallback.
@@ -916,6 +924,10 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
         """Snapshot parent records (e.g. a root sshd listener) so role evidence
         can use the parent chain. Bounded by the finite parent chain."""
         for _ in range(8):
+            if expired():
+                res.reasons.append("deadline_exceeded")
+                res.coverage["truncated"] += 1
+                return
             missing = sorted({r.ppid for r in list(records.values())
                               if r.ppid and r.ppid != "0" and r.ppid not in records},
                              key=int)
@@ -940,6 +952,12 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
         for pid, rec in list(records.items()):
             if rec.uid is None or rec.role is not None or rec.ev is not None:
                 continue
+            # R3: identity gathering performs reads; admit each one against the
+            # shared deadline. An unclassified record is unknown, not clean.
+            if expired():
+                res.reasons.append("deadline_exceeded")
+                res.coverage["truncated"] += 1
+                return
             if rec.uid == (agent_uid,) * 4:
                 ev = _gather_identity(proc, pid, rec, agent_uid)
                 ev.parent_comm, ev.parent_uid, ev.parent_cgroup = parent_facts(rec.ppid)
@@ -986,14 +1004,23 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
         if enum_pass > 0:
             # B3: processes that appeared after the first ingest (bounded churn).
             res.coverage["new_pids_after"] += len(new_pids)
+        deadline_hit = False
         for pid in new_pids:
             processed.add(pid)
+            if expired():
+                # R3: never admit another snapshot read after expiry.
+                res.reasons.append("deadline_exceeded")
+                res.coverage["truncated"] += 1
+                deadline_hit = True
+                continue
             if pid == self_pid:
                 continue
             snapshot(pid)
         classify_pending()
         res.cycles.append({"phase": "enumerate_pass", "pass": enum_pass,
                            "new": len(new_pids)})
+        if deadline_hit:
+            break
     res.coverage["enum_passes"] = enum_pass + 1
 
     # ── tally identity classes for every examined record ────────────────────
@@ -1060,7 +1087,15 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
             res.coverage["unreadable_same_user"] += 1
             res.coverage["denied"] += 1
             continue
-        if _parse_starttime(cur.value) != rec.starttime:
+        cur_start = _parse_starttime(cur.value)
+        if cur_start is None or rec.starttime is None:
+            # F2: a readable stat with an unparseable starttime (now or at
+            # snapshot time) is an incomplete identity; None == None must not
+            # look like a reuse-free match.
+            res.reasons.append(f"identity_malformed_starttime:{pid}")
+            res.coverage["unreadable_same_user"] += 1
+            continue
+        if cur_start != rec.starttime:
             res.reasons.append(f"pid_reuse:{pid}")
             res.coverage["reused_pids"] += 1
             continue
@@ -1095,25 +1130,40 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
             res.reasons.append(f"credential_change_after_scan:{pid}")
             res.coverage["unreadable_same_user"] += 1
 
-    # F3: the candidate AND the containing worktree must still resolve to their
-    # observed identity after collection, read uncached. Replacement,
-    # disappearance or changed resolution is unknown -- this is observation
-    # coherence, not a fence against a later opener or an adversarial final race.
-    for root in list(roots):
-        st = proc.stat_path_fresh(root)
-        if st.kind != OK:
-            res.reasons.append(f"target_identity_lost:{st.kind}:{root}")
-            continue
-        ident = (getattr(st.value, "st_dev", None),
-                 getattr(st.value, "st_ino", None))
-        expected = roots.get(root)
-        if expected is not None and ident != expected:
-            res.reasons.append(f"target_identity_changed:{root}")
-    try:
-        if os.path.realpath(os.fspath(target)) != target_real:
+    # F3/R3: no final revalidation read is admitted after the shared deadline.
+    if expired():
+        res.reasons.append("deadline_exceeded")
+        res.coverage["truncated"] += 1
+    else:
+        # F3: the candidate AND the containing worktree must still resolve to
+        # their observed identity after collection, read uncached. Replacement,
+        # disappearance or changed resolution is unknown -- this is observation
+        # coherence, not a fence against a later opener or an adversarial final
+        # race.
+        for root in list(roots):
+            st = proc.stat_path_fresh(root)
+            if st.kind != OK:
+                res.reasons.append(f"target_identity_lost:{st.kind}:{root}")
+                continue
+            ident = (getattr(st.value, "st_dev", None),
+                     getattr(st.value, "st_ino", None))
+            expected = roots.get(root)
+            if expected is not None and ident != expected:
+                res.reasons.append(f"target_identity_changed:{root}")
+        try:
+            if os.path.realpath(os.fspath(target)) != target_real:
+                res.reasons.append("target_resolution_changed")
+        except OSError:
             res.reasons.append("target_resolution_changed")
-    except OSError:
-        res.reasons.append("target_resolution_changed")
+        # R2: re-resolve the LITERAL supplied containing path too -- a containing
+        # alias retargeted during the member reads must not leave a clear result
+        # behind an unchanged cached root inode.
+        if containing_raw is not None and containing_expected is not None:
+            try:
+                if os.path.realpath(os.fspath(containing_raw)) != containing_expected:
+                    res.reasons.append("containing_resolution_changed")
+            except OSError:
+                res.reasons.append("containing_resolution_changed")
 
     # The last enumeration that contained no unprocessed process defines the
     # observation boundary. Processes that appear after that instant are later
@@ -1188,15 +1238,30 @@ def _still_present(proc, pid: str, tid: str | None) -> bool:
 
 
 def _thread_bracket(proc, pid: str, tid: str):
-    """Return ((starttime, uid_quad), "ok") or (None, kind)."""
+    """Return ((starttime, uid_quad), "ok") or (None, state).
+
+    F2: a complete TID identity requires a parseable starttime AND all four UID
+    fields from a readable status. A denied/error status read, a missing ``Uid:``
+    line, or an unparseable starttime is an incomplete identity -> ``unknown``,
+    never ``ok`` and never a comparison against missing values. Only an actually
+    absent TID ``stat`` is a confirmed disappearance (``gone``).
+    """
     st = proc.read_text(pid, f"task/{tid}/stat", 4096)
     if st.kind == VANISHED:
         return None, "gone"
     if st.kind != OK:
         return None, st.kind
     starttime = _parse_starttime(st.value)
+    if starttime is None:
+        return None, "malformed"
     status = proc.read_text(pid, f"task/{tid}/status", 8192)
-    uid = _parse_uid(status.value) if status.kind == OK else None
+    if status.kind == VANISHED:
+        return None, "gone"
+    if status.kind != OK:
+        return None, status.kind
+    uid = _parse_uid(status.value)
+    if uid is None:
+        return None, "malformed"
     return (starttime, uid), "ok"
 
 
@@ -1205,9 +1270,15 @@ def _scan_member(proc, pid: str, rec: _Rec, roots: dict, bounds: Bounds,
     mnt = proc.readlink(pid, "ns/mnt")
     usr = proc.readlink(pid, "ns/user")
     if mnt.kind == VANISHED or usr.kind == VANISHED:
-        # proven exit mid-scan, not a permission denial or a coverage hole
-        res.coverage["exited"] += 1
-        res.coverage["vanished"] += 1
+        # F2: ENOENT for a namespace link is a missing child reference, not
+        # confirmed exit. Only an actually absent PID proves the process is
+        # gone; a still-present PID with a missing namespace is unknown.
+        if _still_present(proc, pid, None):
+            res.reasons.append(f"ns_vanished_but_present:{pid}")
+            res.coverage["unreadable_same_user"] += 1
+        else:
+            res.coverage["exited"] += 1
+            res.coverage["vanished"] += 1
         return
     if mnt.kind != OK or usr.kind != OK:
         kind = mnt.kind if mnt.kind != OK else usr.kind
@@ -1236,8 +1307,14 @@ def _scan_member(proc, pid: str, rec: _Rec, roots: dict, bounds: Bounds,
 
     threads = proc.listdir(pid, "task", bounds.max_threads)
     if threads.kind == VANISHED:
-        res.coverage["exited"] += 1
-        res.coverage["vanished"] += 1
+        # F2: same rule as the namespace links -- a missing thread listing is
+        # not a confirmed exit while the PID is still observable.
+        if _still_present(proc, pid, None):
+            res.reasons.append(f"threads_vanished_but_present:{pid}")
+            res.coverage["unreadable_same_user"] += 1
+        else:
+            res.coverage["exited"] += 1
+            res.coverage["vanished"] += 1
         return
     if threads.kind != OK:
         res.reasons.append(f"threads_{threads.kind}:{pid}")
@@ -1322,6 +1399,12 @@ def _scan_member(proc, pid: str, rec: _Rec, roots: dict, bounds: Bounds,
             res.coverage["truncated"] += 1
             return
         for line in lines:
+            # R3: every newly admitted maps-line iteration checks the shared
+            # deadline; an in-flight read is never hard-preempted.
+            if expired():
+                res.reasons.append("deadline_exceeded")
+                res.coverage["truncated"] += 1
+                return
             parts = line.split(None, 5)
             if len(parts) >= 6 and _matches_any(parts[5], roots):
                 res.hits.append({"pid": pid, "tid": tid, "kind": "maps",
@@ -1350,6 +1433,12 @@ def _scan_member(proc, pid: str, rec: _Rec, roots: dict, bounds: Bounds,
             res.coverage["truncated"] += 1
             return
         for fd in entries:
+            # R3: a newly admitted FD read is checked against the shared
+            # deadline before it happens; the in-flight read is not preempted.
+            if expired():
+                res.reasons.append("deadline_exceeded")
+                res.coverage["truncated"] += 1
+                return
             link = proc.readlink(pid, f"{rel}/{fd}")
             if link.kind == VANISHED:
                 # a single fd entry closing mid-iteration is a confirmed close

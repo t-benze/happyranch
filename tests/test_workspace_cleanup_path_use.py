@@ -237,9 +237,18 @@ def _cache_proc(cpu, cls=None, member_cwd=CACHE_WT + "/src", **member_kw):
 
 
 def test_f1_cache_candidate_observes_occupied_containing_worktree(cpu):
-    res = cpu.scan(CACHE, proc=_cache_proc(cpu), self_pid=SELF, agent_uid=UID)
+    res = cpu.scan(CACHE, proc=_cache_proc(cpu), self_pid=SELF, agent_uid=UID,
+                   containing_worktree=CACHE_WT)
     assert res.state == "blocked"
     assert res.coverage["containing_worktree"] == CACHE_WT
+
+
+def test_f1_cache_candidate_without_containing_context_is_unknown(cpu):
+    # R2: a cache candidate never silently infers its parent as the registered
+    # containing worktree; explicit verified context is required.
+    res = cpu.scan(CACHE, proc=_cache_proc(cpu), self_pid=SELF, agent_uid=UID)
+    assert res.state == "unknown"
+    assert "containing_worktree_required" in res.reasons
 
 
 def test_f1_explicit_containing_worktree_argument(cpu):
@@ -249,10 +258,12 @@ def test_f1_explicit_containing_worktree_argument(cpu):
 
 
 def test_f1_missing_containing_worktree_is_unknown_not_fallback(cpu):
-    # The cache itself resolves but its containing worktree does not: unknown.
+    # The cache itself resolves but its explicit containing worktree does not:
+    # unknown, never a literal-path fallback.
     proc = cpu.FakeProc({SELF: _spec(SELF), "600": _spec("600")},
                         stat_map={CACHE: (2049, 77)})
-    res = cpu.scan(CACHE, proc=proc, self_pid=SELF, agent_uid=UID)
+    res = cpu.scan(CACHE, proc=proc, self_pid=SELF, agent_uid=UID,
+                   containing_worktree=CACHE_WT)
     assert res.state == "unknown"
     assert "containing_worktree_unavailable" in res.reasons
 
@@ -408,7 +419,8 @@ def test_f3_containing_worktree_replaced_during_scan_is_unknown(cpu):
     res = cpu.scan(CACHE,
                    proc=_cache_proc(cpu, _ContainingReplacement,
                                     member_cwd="/home/benze"),
-                   self_pid=SELF, agent_uid=UID)
+                   self_pid=SELF, agent_uid=UID,
+                   containing_worktree=CACHE_WT)
     assert res.state == "unknown"
     assert any("target_identity_changed" in r for r in res.reasons)
 
@@ -571,3 +583,123 @@ def test_shipping_cli_invocation_passes_containing_worktree(cpu, monkeypatch,
     assert rc == 3
     assert payload["state"] == "blocked"
     assert payload["coverage"]["containing_worktree"] == CACHE_WT
+
+
+# ── R1: incomplete identity is never a clean result ────────────────────────
+
+
+@pytest.mark.parametrize("rel", ["ns/mnt", "ns/user", "task"])
+def test_r1_still_present_pid_with_enoent_child_reference_is_unknown(cpu, rel):
+    proc = cpu.FakeProc({SELF: _spec(SELF), "600": _spec("600")},
+                        vanish=[("600", rel)], stat_map=dict(STAT_MAP))
+    res = cpu.scan(TARGET, proc=proc, self_pid=SELF, agent_uid=UID)
+    assert res.state == "unknown"
+    assert any("vanished_but_present" in r for r in res.reasons), res.reasons
+    assert res.coverage["same_user"] >= 1
+
+
+def test_r1_denied_thread_status_is_unknown(cpu):
+    proc = _threaded_proc(cpu)
+    proc.deny.add(("600", "task/601/status"))
+    res = cpu.scan(TARGET, proc=proc, self_pid=SELF, agent_uid=UID)
+    assert res.state == "unknown"
+    assert any("thread_identity_denied" in r for r in res.reasons), res.reasons
+
+
+def test_r1_malformed_thread_credentials_is_unknown(cpu):
+    proc = _threaded_proc(cpu)
+    proc.spec["600"]["threads"]["601"]["uid"] = []
+    res = cpu.scan(TARGET, proc=proc, self_pid=SELF, agent_uid=UID)
+    assert res.state == "unknown"
+    assert any("thread_identity_malformed" in r for r in res.reasons), res.reasons
+
+
+def test_r1_unparseable_thread_starttime_is_unknown(cpu):
+    class _BadThreadStat(_HC.FakeProc):
+        def read_text(self, pid, rel, limit):
+            if pid == "600" and rel == "task/601/stat":
+                return _HC.Outcome(_HC.OK, "malformed")
+            return super().read_text(pid, rel, limit)
+
+    res = cpu.scan(TARGET, proc=_threaded_proc(cpu, _BadThreadStat),
+                   self_pid=SELF, agent_uid=UID)
+    assert res.state == "unknown"
+    assert any("thread_identity_malformed" in r for r in res.reasons), res.reasons
+
+
+def test_r1_unparseable_leader_starttime_is_unknown(cpu):
+    class _BadLeaderStat(_HC.FakeProc):
+        def read_text(self, pid, rel, limit):
+            if pid == "600" and rel == "stat":
+                return _HC.Outcome(_HC.OK, "malformed")
+            return super().read_text(pid, rel, limit)
+
+    proc = _BadLeaderStat({SELF: _spec(SELF), "600": _spec("600")},
+                          stat_map=dict(STAT_MAP))
+    res = cpu.scan(TARGET, proc=proc, self_pid=SELF, agent_uid=UID)
+    assert res.state == "unknown"
+    assert any("malformed_starttime" in r for r in res.reasons), res.reasons
+
+
+# ── R2: containing literal revalidation ────────────────────────────────────
+
+
+def test_r2_containing_alias_retarget_is_unknown(cpu, tmp_path):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(first)
+
+    class _AliasChange(_HC.FakeProc):
+        changed = False
+
+        def readlink(self, pid, rel):
+            if pid == "600" and rel == "cwd" and not self.changed:
+                self.changed = True
+                alias.unlink()
+                alias.symlink_to(second)
+            return super().readlink(pid, rel)
+
+    target = str(first / "node_modules")
+    proc = _AliasChange({SELF: _spec(SELF), "600": _spec("600")},
+                        stat_map={target: (1, 46), str(first): (1, 44),
+                                  str(second): (1, 45)})
+    res = cpu.scan(target, proc=proc, self_pid=SELF, agent_uid=UID,
+                   containing_worktree=str(alias))
+    assert res.state == "unknown"
+    assert "containing_resolution_changed" in res.reasons, res.reasons
+
+
+# ── R3: no newly admitted reads after deadline exhaustion ──────────────────
+
+
+def test_r3_fd_deadline_admits_no_reads_after_expiry(cpu):
+    class _Clock:
+        now = 0.0
+
+        def __call__(self):
+            return self.now
+
+    clock = _Clock()
+
+    class _FDDeadline(_HC.FakeProc):
+        late_reads: list = []
+
+        def readlink(self, pid, rel):
+            if clock.now and rel.startswith("fd/"):
+                self.late_reads.append(rel)
+            if pid == "600" and rel == "fd/3":
+                clock.now = 100.0
+            return super().readlink(pid, rel)
+
+    proc = _FDDeadline(
+        {SELF: _spec(SELF), "600": _spec("600", fds={
+            str(i): "/elsewhere/%d" % i for i in range(3, 103)})},
+        stat_map=dict(STAT_MAP))
+    res = cpu.scan(TARGET, proc=proc, self_pid=SELF, agent_uid=UID, clock=clock,
+                   bounds=cpu.Bounds(deadline_seconds=1.0))
+    assert res.state == "unknown"
+    assert "deadline_exceeded" in res.reasons
+    assert proc.late_reads == []

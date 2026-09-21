@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -73,7 +74,11 @@ def test_non_force_only_and_no_broad_deletion(body):
     assert "worktree remove" in normalized
     assert "Never** `--force`" in normalized or "Never `--force`" in normalized
     assert "rm -rf" in normalized
-    assert "never deletes production residue" in normalized
+    # R6: the no-production-residue prohibition is scoped to THIS implementation
+    # and witness task, not a permanent veto on the skill's future authorized use.
+    assert "implementation and witness task" in normalized
+    assert "deletes no production residue" in normalized
+    assert "never deletes production residue" not in normalized
 
 
 def test_approved_exception_names_and_roles(body):
@@ -150,54 +155,149 @@ def test_materializes_into_both_provider_roots_for_no_repo_workspace(tmp_path):
 
 # ── F5: behavioral execution of the DELIVERED procedure ───────────────────
 #
-# These tests parse the literal gate commands out of the SHIPPED SKILL.md and
-# execute them against a real isolated Git fixture. The task-output
-# ``eligibility.py`` is not consulted; prompt-string presence alone is not proof.
+# These tests extract the shipped ``procedure-commands`` control flow out of the
+# real SKILL.md and execute it against a real isolated Git fixture with labelled
+# synthetic authoritative-response fixtures (happyranch recall/audit, gh). The
+# task-output ``eligibility.py`` is not consulted and no test-only copy of the
+# decision algorithm is used: the shipped shell runs, and the shipped helper is
+# the real one.
+#
+# Per the controlling repair brief, an unknown REAL scan is a refusal test and
+# never a positive control. On a sandboxed host whose PID1 is not the host init
+# the shipped helper correctly returns ``unknown``; the positive removal control
+# is therefore the separate non-elevated host witness, while these tests prove
+# that every refusal branch (including an unknown scan) issues no mutation.
 
+PROC_BEGIN = "<!-- procedure-commands:begin -->"
+PROC_END = "<!-- procedure-commands:end -->"
 ELIG_BEGIN = "<!-- eligibility-commands:begin -->"
 ELIG_END = "<!-- eligibility-commands:end -->"
 G = ["git", "-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture"]
 
+OLD = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() - 30 * 86400))
 
-def _shipped_gates(body: str) -> dict:
+
+def _shipped_procedure(body: str) -> str:
+    assert PROC_BEGIN in body and PROC_END in body
+    block = body[body.index(PROC_BEGIN):body.index(PROC_END)]
+    match = re.search(r"```bash\n(.*?)```", block, re.S)
+    assert match, "no bash procedure block in SKILL.md"
+    return match.group(1)
+
+
+def _shipped_gate_text(body: str) -> str:
     assert ELIG_BEGIN in body and ELIG_END in body
     block = body[body.index(ELIG_BEGIN):body.index(ELIG_END)]
     match = re.search(r"```bash\n(.*?)```", block, re.S)
     assert match, "no bash eligibility block in SKILL.md"
+    return match.group(1)
+
+
+def test_procedure_uses_the_documented_gate_commands(body):
+    # The executable procedure extracts its gates from the documented block, so
+    # the two can never drift: assert the procedure references the block markers
+    # and the documented block still carries every gate name.
+    procedure = _shipped_procedure(body)
+    assert "eligibility-commands:begin" in procedure
+    assert "eligibility-commands:end" in procedure
+    names = re.findall(r"^# gate (.+)$", _shipped_gate_text(body), re.M)
+    assert len(names) >= 12, names
+    for required in ("workspace-scope", "non-primary", "registration",
+                     "ownership", "not-symlink", "same-filesystem", "clean",
+                     "durable-head", "no-open-pr", "retention-age",
+                     "current-use-scan"):
+        assert required in names
+
+
+def _shipped_gate_map(body: str) -> dict:
     gates: dict[str, list[str]] = {}
     current = None
-    for raw in match.group(1).splitlines():
+    for raw in _shipped_gate_text(body).splitlines():
         line = raw.strip()
         if line.startswith("# gate "):
             current = line[len("# gate "):].strip()
             gates[current] = []
         elif current and line:
             gates[current].append(line)
-    assert len(gates) >= 12, gates
     return {name: "\n".join(lines) for name, lines in gates.items()}
+
+
+def _run_shipped_gate(body, name, env):
+    gates = _shipped_gate_map(body)
+    return subprocess.run(["bash", "-c", gates[name]], env=env,
+                          capture_output=True, text=True)
+
+
+def test_r5_ownership_and_retention_gates_use_authoritative_facts(body, tmp_path):
+    # R5: the literal gates must establish their named facts from the
+    # authoritative task record, never from a directory mtime or shared OS UID.
+    ts_old = time.strftime("%Y-%m-%dT%H:%M:%S+00:00",
+                           time.gmtime(time.time() - 30 * 86400))
+    ts_young = time.strftime("%Y-%m-%dT%H:%M:%S+00:00",
+                             time.gmtime(time.time() - 3600))
+    ts_mid = time.strftime("%Y-%m-%dT%H:%M:%S+00:00",
+                           time.gmtime(time.time() - 3 * 86400))
+    good = tmp_path / "good.json"
+    good.write_text(json.dumps({"assigned_agent": "dev_agent",
+                                "status": "completed", "completed_at": ts_old}))
+    young = tmp_path / "young.json"
+    young.write_text(json.dumps({"assigned_agent": "dev_agent",
+                                 "status": "completed", "completed_at": ts_young}))
+    nonterm = tmp_path / "nonterm.json"
+    nonterm.write_text(json.dumps({"assigned_agent": "dev_agent",
+                                   "status": "in_progress",
+                                   "completed_at": None}))
+    base = dict(os.environ, AGENT="dev_agent")
+
+    def run(name, task_json, age=None):
+        env = dict(base, TASK_JSON=str(task_json))
+        if age is not None:
+            env["AGE_SECONDS"] = str(age)
+        return _run_shipped_gate(body, name, env)
+
+    assert run("ownership", good).returncode == 0
+    other = tmp_path / "other.json"
+    other.write_text(json.dumps({"assigned_agent": "someone_else",
+                                 "status": "completed", "completed_at": ts_old}))
+    assert run("ownership", other).returncode != 0
+    assert run("retention-age", good, age=86400).returncode == 0
+    mid = tmp_path / "mid.json"
+    mid.write_text(json.dumps({"assigned_agent": "dev_agent",
+                               "status": "completed", "completed_at": ts_mid}))
+    assert run("retention-age", mid, age=86400).returncode == 0
+    assert run("retention-age", mid, age=7 * 86400).returncode != 0
+    assert run("retention-age", young, age=86400).returncode != 0
+    assert run("retention-age", nonterm, age=86400).returncode != 0
+
+
+def test_r5_no_open_pr_gate_binds_to_primary_repository(body, tmp_path):
+    primary = tmp_path / "repos" / "demo"
+    primary.mkdir(parents=True)
+    _git("init", "-b", "main", str(primary))
+    (primary / "README.md").write_text("x\n")
+    _git("add", "-A", cwd=primary)
+    _git("commit", "-m", "base", cwd=primary)
+    _git("branch", "task/TASK-X", cwd=primary)
+    _git("remote", "add", "origin",
+         "https://github.com/demo/fixture.git", cwd=primary)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text("#!/bin/sh\necho \"$*\" > \"$GH_LOG\"\necho 0\n")
+    gh.chmod(0o755)
+    env = dict(os.environ, PRIMARY=str(primary), CONTAINING=str(primary),
+               PATH=str(bin_dir) + os.pathsep + os.environ.get("PATH", ""),
+               GH_LOG=str(tmp_path / "gh.log"))
+    result = _run_shipped_gate(body, "no-open-pr", env)
+    assert result.returncode == 0, result.stderr
+    logged = (tmp_path / "gh.log").read_text()
+    assert "--repo demo/fixture" in logged, logged
 
 
 def _git(*args, cwd=None):
     result = subprocess.run(G + list(args), cwd=cwd, capture_output=True, text=True)
     assert result.returncode == 0, f"git {args} failed: {result.stderr}"
     return result
-
-
-def _write_stubs(bin_dir: Path) -> None:
-    gh = bin_dir / "gh"
-    gh.write_text(
-        "#!/bin/sh\n"
-        "if [ \"$F5_OPEN_PR\" = \"1\" ]; then echo 1; else echo 0; fi\n")
-    gh.chmod(0o755)
-    py = bin_dir / "python3"
-    py.write_text(
-        "#!/bin/sh\n"
-        "case \"$*\" in\n"
-        "  *\"st_uid==os.getuid()\"*) [ \"$F5_FOREIGN_UID\" = \"1\" ] && exit 1 ;;\n"
-        "  *\"st_dev==os.stat\"*) [ \"$F5_DIFF_DEV\" = \"1\" ] && exit 1 ;;\n"
-        "esac\n"
-        "exec \"$F5_REAL_PYTHON\" \"$@\"\n")
-    py.chmod(0o755)
 
 
 def _build_procedure_fixture(root: Path) -> dict:
@@ -214,6 +314,10 @@ def _build_procedure_fixture(root: Path) -> dict:
     _git("commit", "-m", "base", cwd=primary)
     _git("remote", "add", "origin", str(origin), cwd=primary)
     _git("push", "-u", "origin", "main", cwd=primary)
+    # Bind the owning repository for the gh PR lookup while keeping origin/main
+    # reachable (the remote-tracking ref already exists locally).
+    _git("remote", "set-url", "origin",
+         "https://github.com/demo/fixture.git", cwd=primary)
     wt_root = primary / ".claude" / "worktrees"
     wt_root.mkdir(parents=True)
 
@@ -225,149 +329,239 @@ def _build_procedure_fixture(root: Path) -> dict:
     eligible = add_wt("TASK-ELIGIBLE", "task/TASK-ELIGIBLE")
     dirty = add_wt("TASK-DIRTY", "task/TASK-DIRTY")
     (dirty / "scratch.txt").write_text("uncommitted\n")
-    young = add_wt("TASK-YOUNG", "task/TASK-YOUNG")
-    local = add_wt("TASK-LOCAL", "task/TASK-LOCAL")
-    (local / "extra.txt").write_text("local only\n")
-    _git("add", "-A", cwd=local)
-    _git("commit", "-m", "local only", cwd=local)
-    unregistered = wt_root / "TASK-UNREGISTERED"
-    unregistered.mkdir()
-    link = wt_root / "TASK-LINK"
-    link.symlink_to(eligible)
-    (eligible / "node_modules").mkdir()
-    (eligible / "node_modules" / "pkg.txt").write_text("cache\n")
-    badcache_parent = eligible / "subcache"
-    (badcache_parent / "node_modules").mkdir(parents=True)
+    alias = workspace / "repos-alias"
+    alias.symlink_to(workspace / "repos")
     return {"workspace": workspace, "primary": primary, "origin": origin,
-            "eligible": eligible, "dirty": dirty, "young": young, "local": local,
-            "unregistered": unregistered, "link": link,
-            "badcache": badcache_parent / "node_modules"}
+            "eligible": eligible, "dirty": dirty, "alias": alias}
 
 
-def _gate_env(fx: dict, bin_dir: Path, candidate: Path, containing: Path,
-              *, age_seconds: int = 604800, extra=None) -> dict:
+def _write_stubs(bin_dir: Path) -> None:
+    hr = bin_dir / "happyranch"
+    hr.write_text(
+        "#!/bin/sh\n"
+        "last=\"\"\n"
+        "for a in \"$@\"; do last=\"$a\"; done\n"
+        "case \"$1\" in\n"
+        "  recall)\n"
+        "    exec python3 -c 'import json,os,sys\n"
+        "m=json.load(open(os.environ[\"WC_TASK_MAP\"]))\n"
+        "print(json.dumps(m.get(sys.argv[1], {\"error\": \"missing\"})))' \"$last\" ;;\n"
+        "  audit)\n"
+        "    exec cat \"$WC_AUDIT\" ;;\n"
+        "  *) echo 'unsupported' >&2; exit 1 ;;\n"
+        "esac\n")
+    hr.chmod(0o755)
+    gh = bin_dir / "gh"
+    gh.write_text(
+        "#!/bin/sh\n"
+        "echo \"gh $*\" >> \"$GH_LOG\"\n"
+        "repo=\"\"; prev=\"\"\n"
+        "for a in \"$@\"; do [ \"$prev\" = \"--repo\" ] && repo=\"$a\"; prev=\"$a\"; done\n"
+        "[ -n \"$repo\" ] || { echo 'missing --repo' >&2; exit 1; }\n"
+        "if [ \"${WC_OPEN_PR:-0}\" = \"1\" ]; then echo 1; else echo 0; fi\n")
+    gh.chmod(0o755)
+    git = bin_dir / "git"
+    git.write_text(
+        "#!/bin/sh\n"
+        "echo \"git $*\" >> \"$GIT_LOG\"\n"
+        "exec /usr/bin/git \"$@\"\n")
+    git.chmod(0o755)
+
+
+def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
+                   marker: str | None, agent: str = "dev_agent",
+                   task_map: dict | None = None, audit=None,
+                   candidate: Path, containing: Path,
+                   acting: str = "TASK-ACTING", open_pr: int = 0):
+    task_map = task_map if task_map is not None else {}
+    audit = audit if audit is not None else []
+    (tmp_path / "task-map.json").write_text(json.dumps(task_map))
+    (tmp_path / "audit.json").write_text(json.dumps(audit))
+    proc_src = tmp_path / "proc.sh"
+    proc_src.write_text(_shipped_procedure(body))
+    wc_tmp = tmp_path / "wc-tmp"
+    wc_tmp.mkdir(exist_ok=True)
+    git_log = tmp_path / "git.log"
+    git_log.write_text("")
+    gh_log = tmp_path / "gh.log"
+    gh_log.write_text("")
     env = dict(os.environ)
     env.update({
-        "SKILL": str(SKILL_DIR),
+        "PATH": str(bin_dir) + os.pathsep + env.get("PATH", ""),
+        "CLEANUP_MARKER": marker or "",
         "WORKSPACE": str(fx["workspace"]),
         "PRIMARY": str(fx["primary"]),
-        "CANDIDATE": str(candidate),
-        "CONTAINING": str(containing),
-        "AGE_SECONDS": str(age_seconds),
-        "F5_REAL_PYTHON": sys.executable,
-        "PATH": str(bin_dir) + os.pathsep + env.get("PATH", ""),
+        "AGENT": agent,
+        "ORG": "test-org",
+        "SKILL": str(SKILL_DIR),
+        "ACTING_TASK": acting,
+        "GIT_LOG": str(git_log),
+        "GH_LOG": str(gh_log),
+        "WC_TASK_MAP": str(tmp_path / "task-map.json"),
+        "WC_AUDIT": str(tmp_path / "audit.json"),
+        "WC_OPEN_PR": str(open_pr),
+        "TMPDIR": str(wc_tmp),
     })
-    if extra:
-        env.update(extra)
-    return env
+    script = (
+        f'. {shlex.quote(str(proc_src))}\n'
+        f'run_cleanup_candidate {shlex.quote(str(candidate))} '
+        f'{shlex.quote(str(containing))}\n'
+        'printf "RC=%s\\n" "$?"\n'
+    )
+    result = subprocess.run(["bash", "-c", script], env=env,
+                            capture_output=True, text=True)
+    rc_line = [ln for ln in result.stdout.splitlines() if ln.startswith("RC=")]
+    rc = int(rc_line[-1].split("=", 1)[1]) if rc_line else None
+    return {"rc": rc, "stdout": result.stdout, "stderr": result.stderr,
+            "git_log": git_log.read_text(), "gh_log": gh_log.read_text()}
 
 
-def _run_gate(command: str, env: dict):
-    return subprocess.run(["bash", "-c", command], env=env,
-                          capture_output=True, text=True)
+def _occurrences(*task_ids: str) -> list[dict]:
+    return [{"task_id": tid, "action": "workspace_cleanup_triggered"}
+            for tid in task_ids]
 
 
-def test_f5_delivered_gates_execute_against_real_fixture(tmp_path, body):
-    gates = _shipped_gates(body)
+def _terminal_task(agent: str, *, age_days: int = 30) -> dict:
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S+00:00",
+                       time.gmtime(time.time() - age_days * 86400))
+    return {"assigned_agent": agent, "status": "completed", "completed_at": ts}
+
+
+def test_f5_procedure_refuses_without_marker_and_never_mutates(tmp_path, body):
     fx = _build_procedure_fixture(tmp_path)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _write_stubs(bin_dir)
-    trace: list[dict] = []
-    old = time.time() - 30 * 86400
-    os.utime(fx["eligible"], (old, old))
-    os.utime(fx["eligible"] / "node_modules", (old, old))
-
-    # Valid cache control: every applicable shipped gate passes.
-    cache = fx["eligible"] / "node_modules"
-    cache_gates = ("workspace-scope", "non-primary", "registration", "ownership",
-                   "not-symlink", "same-filesystem", "clean", "durable-head",
-                   "no-open-pr", "retention-age",
-                   "cache-immediate-parent-manifest")
-    for name in cache_gates:
-        env = _gate_env(fx, bin_dir, cache, fx["eligible"], age_seconds=86400)
-        result = _run_gate(gates[name], env)
-        trace.append({"gate": name, "scenario": "valid_cache_control",
-                      "exit": result.returncode, "stderr": result.stderr.strip()})
-        assert result.returncode == 0, (name, result.stdout, result.stderr)
-
-    # The shipping current-use scan gate runs end to end and returns a valid state.
-    scan = _run_gate(gates["current-use-scan"],
-                     _gate_env(fx, bin_dir, cache, fx["eligible"],
-                               age_seconds=86400))
-    trace.append({"gate": "current-use-scan", "scenario": "valid_cache_control",
-                  "exit": scan.returncode})
-    assert scan.returncode in (0, 2, 3)
-    assert scan.returncode != 1
-
-    # Valid whole-worktree control (immediate-parent manifest does not apply).
-    for name in cache_gates[:-1]:
-        env = _gate_env(fx, bin_dir, fx["eligible"], fx["eligible"])
-        result = _run_gate(gates[name], env)
-        trace.append({"gate": name, "scenario": "valid_worktree_control",
-                      "exit": result.returncode, "stderr": result.stderr.strip()})
-        assert result.returncode == 0, (name, result.stdout, result.stderr)
-
-    before_registration = _git("worktree", "list", "--porcelain",
-                               cwd=fx["primary"]).stdout
-
-    def assert_refused(name: str, candidate: Path, scenario: str,
-                       containing: Path | None = None, **extra) -> None:
-        env = _gate_env(fx, bin_dir, candidate, containing or candidate, **extra)
-        result = _run_gate(gates[name], env)
-        assert Path(candidate).exists() or Path(candidate).is_symlink(), \
-            f"{name} mutated the candidate"
+    before = _git("worktree", "list", "--porcelain", cwd=fx["primary"]).stdout
+    for marker in (None, "SOMETHING ELSE (manual-dispatch)"):
+        res = _run_procedure(tmp_path, body, fx, bin_dir, marker=marker,
+                             candidate=fx["eligible"], containing=fx["eligible"])
+        assert res["rc"] == 2, res
+        assert "worktree remove" not in res["git_log"], res["git_log"]
+        assert fx["eligible"].exists()
         assert _git("worktree", "list", "--porcelain",
-                    cwd=fx["primary"]).stdout == before_registration, \
-            f"{name} changed worktree registration"
-        trace.append({"gate": name, "scenario": scenario,
-                      "exit": result.returncode})
-        assert result.returncode != 0, (name, scenario, result.stderr)
-
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    assert_refused("workspace-scope", outside, "protected/foreign root")
-    assert_refused("non-primary", fx["primary"], "primary checkout")
-    assert_refused("registration", fx["unregistered"], "unregistered dir")
-    assert_refused("ownership", fx["eligible"], "cross-owner (synthetic uid)",
-                   extra={"F5_FOREIGN_UID": "1"})
-    assert_refused("not-symlink", fx["link"], "symlink target")
-    assert_refused("same-filesystem", fx["eligible"], "shared/other device",
-                   extra={"F5_DIFF_DEV": "1"})
-    assert_refused("clean", fx["dirty"], "dirty worktree")
-    assert_refused("durable-head", fx["local"], "local-only/unreachable HEAD")
-    assert_refused("no-open-pr", fx["eligible"], "open PR (synthetic gh)",
-                   extra={"F5_OPEN_PR": "1"})
-    assert_refused("retention-age", fx["young"], "insufficient age")
-    assert_refused("cache-immediate-parent-manifest", fx["badcache"],
-                   "missing immediate-parent manifest", age_seconds=86400)
-
-    # Every gate passed for the control, so the literal non-force removal runs.
-    removal = subprocess.run(
-        ["git", "-C", str(fx["primary"]), "worktree", "remove",
-         str(fx["eligible"])], capture_output=True, text=True)
-    trace.append({"gate": "literal-removal", "scenario": "valid_control",
-                  "exit": removal.returncode, "stderr": removal.stderr.strip()})
-    assert removal.returncode == 0
-    assert not fx["eligible"].exists()
-    assert str(fx["eligible"]) not in _git(
-        "worktree", "list", "--porcelain", cwd=fx["primary"]).stdout
-
-    trace_path = tmp_path / "f5-trace.json"
-    trace_path.write_text(json.dumps(trace, indent=2) + "\n")
-    durable = os.environ.get("TASK8711_F5_TRACE")
-    if durable:
-        Path(durable).write_text(json.dumps(trace, indent=2) + "\n")
-    assert len(trace) == 34, [t["gate"] for t in trace]
+                    cwd=fx["primary"]).stdout == before
+        assert "inventory_only" in res["stdout"]
 
 
-def test_f5_procedure_refuses_unmarked_manual_and_requires_exact_markers(body):
-    normalized = " ".join(body.split())
-    lines = {ln.strip() for ln in body.splitlines()}
-    # exact markers only; nothing else grants authority
-    assert "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)" in lines
-    assert "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)" in lines
-    assert "inventory-only" in normalized
-    assert "No other skill, task, or prompt grants" in normalized
-    # the shipped gate block is the action-time procedure
-    assert ELIG_BEGIN in body and ELIG_END in body
+def test_f5_procedure_refuses_before_action_for_each_branch(tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    agent = "dev_agent"
+    before = _git("worktree", "list", "--porcelain", cwd=fx["primary"]).stdout
+
+    def run(**kw):
+        kw.setdefault("marker", MANUAL_FIRST_LINE)
+        kw.setdefault("candidate", fx["eligible"])
+        kw.setdefault("containing", fx["eligible"])
+        res = _run_procedure(tmp_path, body, fx, bin_dir, **kw)
+        return res
+
+    good_map = {"TASK-ELIGIBLE": _terminal_task(agent),
+                "TASK-OCC-1": _terminal_task(agent),
+                "TASK-OCC-2": _terminal_task(agent)}
+
+    # R7: fewer than two distinct prior terminal occurrences -> report-only.
+    r = run(task_map=good_map, audit=_occurrences("TASK-OCC-1"))
+    assert r["rc"] == 2 and "report_only" in r["stdout"], r
+    assert "worktree remove" not in r["git_log"]
+
+    # R6.5: a nonterminal same-owner peer refuses.
+    bad_peer = dict(good_map)
+    bad_peer["TASK-OCC-2"] = {"assigned_agent": agent, "status": "in_progress",
+                              "completed_at": None}
+    r = run(task_map=bad_peer, audit=_occurrences("TASK-OCC-1", "TASK-OCC-2"))
+    assert r["rc"] == 2 and "nonterminal_peer" in r["stdout"], r
+    assert "worktree remove" not in r["git_log"]
+
+    # duplicates collapse: the same occurrence twice is still one.
+    r = run(task_map=good_map, audit=_occurrences("TASK-OCC-1", "TASK-OCC-1"))
+    assert r["rc"] == 2 and "report_only_ordinal:1" in r["stdout"], r
+
+    # R5: authoritative owner mismatch (OS UID is never used).
+    r = run(task_map={"TASK-ELIGIBLE": _terminal_task("someone_else")},
+            audit=_occurrences("TASK-OCC-1", "TASK-OCC-2"))
+    assert r["rc"] == 2 and "owner_mismatch" in r["stdout"], r
+    assert "worktree remove" not in r["git_log"]
+
+    # R5: nonterminal owning task refuses.
+    nonterm = dict(good_map)
+    nonterm["TASK-ELIGIBLE"] = {"assigned_agent": agent, "status": "in_progress",
+                                "completed_at": None}
+    r = run(task_map=nonterm, audit=_occurrences("TASK-OCC-1", "TASK-OCC-2"))
+    assert r["rc"] == 2 and "target_nonterminal" in r["stdout"], r
+
+    # gate refusal: dirty worktree (all joins complete).
+    dirty_map = dict(good_map)
+    dirty_map["TASK-DIRTY"] = _terminal_task(agent)
+    r = _run_procedure(tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+                       candidate=fx["dirty"], containing=fx["dirty"],
+                       task_map=dirty_map,
+                       audit=_occurrences("TASK-OCC-1", "TASK-OCC-2"))
+    assert r["rc"] == 2 and "eligibility_gate" in r["stdout"], r
+    assert "worktree remove" not in r["git_log"]
+
+    # R4: an UNKNOWN real scan (this sandbox's PID1 is not the host init) is a
+    # refusal, never a positive control -- the previous unconditional removal is
+    # exactly what this asserts can no longer happen.
+    r = run(task_map=good_map, audit=_occurrences("TASK-OCC-1", "TASK-OCC-2"))
+    assert r["rc"] == 2 and "eligibility_gate" in r["stdout"], r
+    assert "worktree remove" not in r["git_log"]
+    assert fx["eligible"].exists()
+    assert _git("worktree", "list", "--porcelain",
+                cwd=fx["primary"]).stdout == before
+
+
+def test_f5_pr_query_is_bound_to_primary_repository(tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    agent = "dev_agent"
+    good_map = {"TASK-ELIGIBLE": _terminal_task(agent),
+                "TASK-OCC-1": _terminal_task(agent),
+                "TASK-OCC-2": _terminal_task(agent)}
+    r = _run_procedure(tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+                       candidate=fx["eligible"], containing=fx["eligible"],
+                       task_map=good_map,
+                       audit=_occurrences("TASK-OCC-1", "TASK-OCC-2"))
+    # The PR lookup must name the owning repository, never the workspace cwd.
+    assert r["gh_log"], "gh was not invoked while evaluating no-open-pr"
+    assert "--repo demo/fixture" in r["gh_log"], r["gh_log"]
+    assert "worktree remove" not in r["git_log"]
+
+
+def test_f5_procedure_refuses_symlinked_ancestor(tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    agent = "dev_agent"
+    good_map = {"TASK-ELIGIBLE": _terminal_task(agent),
+                "TASK-OCC-1": _terminal_task(agent),
+                "TASK-OCC-2": _terminal_task(agent)}
+    aliased = (fx["alias"] / "demo" / ".claude" / "worktrees" / "TASK-ELIGIBLE")
+    r = _run_procedure(tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+                       candidate=aliased, containing=aliased,
+                       task_map=good_map,
+                       audit=_occurrences("TASK-OCC-1", "TASK-OCC-2"))
+    assert r["rc"] == 2, r
+    assert "worktree remove" not in r["git_log"]
+    assert fx["alias"].is_symlink()
+    assert fx["eligible"].exists()
+
+
+def test_f5_procedure_refuses_on_scan_unknown_before_action(tmp_path, body):
+    # Directly assert the shipped scan gate is non-zero in this sandbox and that
+    # the procedure refuses without issuing the literal removal.
+    fx = _build_procedure_fixture(tmp_path)
+    scan = subprocess.run(
+        [sys.executable, str(HELPER), "--target", str(fx["eligible"]),
+         "--containing-worktree", str(fx["eligible"]), "--json"],
+        capture_output=True, text=True)
+    assert scan.returncode != 0, scan.stdout
+    payload = json.loads(scan.stdout)
+    assert payload["state"] == "unknown"
+    assert "host_context_unestablished" in " ".join(payload["reasons"])
