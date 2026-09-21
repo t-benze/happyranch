@@ -1286,29 +1286,37 @@ async function main() {
       const slugIdentity = await tagIdentity(page.sessionId, '#org-slug', 'slug');
       await evaluate(page.sessionId, `document.querySelector('#org-slug').focus()`);
       const slugFocus = await tagActiveElement(page.sessionId, 'slugfocus');
-      const networkBeforeSwitch = networkRequests.length;
+      check('S12 AddOrg dialog open after mapped error (baseline)', await dialogOpen(page.sessionId), true);
+      check('S12 AddOrg actual active element is the slug input (baseline)', await tagActiveElement(page.sessionId, 'slugfocus'), slugFocus);
       await capture(page, 'en-add-org-error-1440-light');
+
+      const beforeForward = networkRequests.length;
       await switchLocaleViaStorage(page.sessionId, 'zh-CN');
       await waitForValue(page.sessionId, `[...document.querySelectorAll('[role="dialog"]')].some((d) => d.textContent.includes('标识符为 "taken" 的组织已存在。'))`, { label: 'zh add-org error' });
+      const forwardWindow = switchRequestWindow(beforeForward);
       check('S12 AddOrg input identity survives locale switch', await identityOf(page.sessionId, '#org-slug'), slugIdentity);
       check('S12 AddOrg typed slug survives locale switch', await evaluate(page.sessionId, `document.querySelector('#org-slug') ? document.querySelector('#org-slug').value : null`), 'taken');
-      check('S12 AddOrg focus survives locale switch', await tagActiveElement(page.sessionId, 'slugfocus'), slugFocus);
+      check('S12 AddOrg actual active element survives locale switch', await tagActiveElement(page.sessionId, 'slugfocus'), slugFocus);
+      check('S12 AddOrg dialog open after locale switch', await dialogOpen(page.sessionId), true);
+      check('S12 no org create resubmission in switch', forwardWindow.orgCreate, 0);
+      check('S12 no PUT /settings/org in switch', forwardWindow.settingsPut, 0);
+
+      const beforeReverse = networkRequests.length;
       await switchLocaleViaStorage(page.sessionId, 'en');
       await waitForValue(page.sessionId, `[...document.querySelectorAll('[role="dialog"]')].some((d) => d.textContent.includes('An org with slug "taken" already exists.'))`, { label: 'en add-org error again' });
+      const reverseWindow = switchRequestWindow(beforeReverse);
       check('S12 AddOrg identity survives the reverse switch', await identityOf(page.sessionId, '#org-slug'), slugIdentity);
-      const newRequests = networkRequests.slice(networkBeforeSwitch);
-      check(
-        'S12 locale switch issues no org create resubmission',
-        newRequests.filter((r) => r.method === 'POST' && r.url.includes('/api/v1/orgs')).length,
-        0,
-      );
-      check('S12 locale switch issues no PUT /settings/org', newRequests.filter((r) => r.method === 'PUT' && r.url.includes('/settings/org')).length, 0);
+      check('S12 AddOrg typed slug survives the reverse switch', await evaluate(page.sessionId, `document.querySelector('#org-slug') ? document.querySelector('#org-slug').value : null`), 'taken');
+      check('S12 AddOrg actual active element survives the reverse switch', await tagActiveElement(page.sessionId, 'slugfocus'), slugFocus);
+      check('S12 AddOrg dialog open after the reverse switch', await dialogOpen(page.sessionId), true);
+      check('S12 no org create resubmission in reverse switch', reverseWindow.orgCreate, 0);
+      check('S12 no PUT /settings/org in reverse switch', reverseWindow.settingsPut, 0);
       await capture(page, 'en-add-org-error-after-switch-1440-light');
       await closePage(page);
       syntheticCreateOrgError = null;
     }
 
-    // --- S13: palette selection/query/identity + dormant hotkey ------------
+    // --- S13: palette selection/query/identity + dormant hotkey, BOTH ways --
     {
       const page = await openApp({
         url: `${appUrl}orgs/demo-org/dashboard`,
@@ -1325,21 +1333,43 @@ async function main() {
       await setInputValue(page.sessionId, 'input[role="combobox"]', 'TASK');
       await evaluate(page.sessionId, `(() => { const i=document.querySelector('input[role="combobox"]'); i.focus(); i.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); return true; })()`);
       await sleep(150);
-      await tagIdentity(page.sessionId, 'input[role="combobox"]', 'palinput');
+      const inputIdentity = await tagIdentity(page.sessionId, 'input[role="combobox"]', 'palinput');
       await evaluate(page.sessionId, `(() => { const s=[...document.querySelectorAll('[role="option"]')].find(o=>o.getAttribute('aria-selected')==='true'); if (s && !s.dataset.hrIdentity) s.dataset.hrIdentity='palopt-'+Math.random().toString(36).slice(2); return true; })()`);
       const before = await paletteState(page.sessionId);
       check('S13 palette query matches multiple rows', before.optionCount, 2);
       check('S13 palette nondefault row selected', before.selectedText, 'TASK-2 · 更新签证规则');
-      check('S13 palette input focused before switch', (await activeElementInfo(page.sessionId))?.role, 'combobox');
+      check('S13 palette actual active element is the tagged input before switch', (await activeElementInfo(page.sessionId))?.identity, before.inputIdentity);
       await capture(page, 'zh-palette-selected-1440-light');
+
+      const beforeOther = networkRequests.length;
       await switchLocaleViaStorage(page.sessionId, 'en');
       await waitForValue(page.sessionId, `document.querySelector('input[role="combobox"]').getAttribute('placeholder')==='Search threads, tasks, agents, orgs, KB…'`, { label: 'palette en placeholder' });
-      const after = await paletteState(page.sessionId);
-      check('S13 palette query survives locale switch', after.query, 'TASK');
-      check('S13 palette selected row identity survives locale switch', after.selectedIdentity, before.selectedIdentity);
-      check('S13 palette selected row value survives locale switch', after.selectedText, before.selectedText);
-      check('S13 palette input identity survives locale switch', after.inputIdentity, before.inputIdentity);
-      check('S13 palette input focus survives locale switch', (await activeElementInfo(page.sessionId))?.role, 'combobox');
+      const other = await paletteState(page.sessionId);
+      const otherWindow = switchRequestWindow(beforeOther);
+      check('S13 palette query survives locale switch', other.query, 'TASK');
+      check('S13 palette selected row identity survives locale switch', other.selectedIdentity, before.selectedIdentity);
+      check('S13 palette selected row value survives locale switch', other.selectedText, before.selectedText);
+      check('S13 palette input identity survives locale switch', other.inputIdentity, inputIdentity);
+      check('S13 palette actual active element survives locale switch', (await activeElementInfo(page.sessionId))?.identity, inputIdentity);
+      check('S13 palette dialog open after locale switch', await dialogOpen(page.sessionId), true);
+      check('S13 no PUT /settings/org in switch window', otherWindow.settingsPut, 0);
+      check('S13 no org create in switch window', otherWindow.orgCreate, 0);
+      check('S13 no /api/ requests in switch window', otherWindow.anyApi, 0);
+
+      const beforeBack = networkRequests.length;
+      await switchLocaleViaStorage(page.sessionId, 'zh-CN');
+      await waitForValue(page.sessionId, `document.querySelector('input[role="combobox"]').getAttribute('placeholder')==='搜索会话、任务、智能体、组织、知识库…'`, { label: 'palette zh placeholder again' });
+      const back = await paletteState(page.sessionId);
+      const backWindow = switchRequestWindow(beforeBack);
+      check('S13 palette query survives reverse switch', back.query, 'TASK');
+      check('S13 palette selected row identity survives reverse switch', back.selectedIdentity, before.selectedIdentity);
+      check('S13 palette selected row value survives reverse switch', back.selectedText, before.selectedText);
+      check('S13 palette input identity survives reverse switch', back.inputIdentity, inputIdentity);
+      check('S13 palette actual active element survives reverse switch', (await activeElementInfo(page.sessionId))?.identity, inputIdentity);
+      check('S13 palette dialog open after reverse switch', await dialogOpen(page.sessionId), true);
+      check('S13 no PUT /settings/org in reverse window', backWindow.settingsPut, 0);
+      check('S13 no org create in reverse window', backWindow.orgCreate, 0);
+      check('S13 no /api/ requests in reverse window', backWindow.anyApi, 0);
       await closePage(page);
     }
 
@@ -1506,6 +1536,7 @@ async function main() {
         await waitForValue(page.sessionId, `[...document.querySelectorAll('[role="dialog"]')].some((d) => d.textContent.includes(${JSON.stringify(copy.error)}))`, { label: `S17 ${label} first-locale mapped error again` });
         const returnWindow = switchRequestWindow(beforeReturn);
         check(`S17 ${label} slug identity survives reverse switch`, await identityOf(page.sessionId, '#org-slug'), slugIdentity);
+        check(`S17 ${label} actual slug focus survives reverse switch`, await tagActiveElement(page.sessionId, 'slugfocus'), slugFocus);
         check(`S17 ${label} slug value survives reverse switch`, await evaluate(page.sessionId, `document.querySelector('#org-slug') ? document.querySelector('#org-slug').value : null`), 'taken');
         check(`S17 ${label} dialog open after reverse switch`, await dialogOpen(page.sessionId), true);
         check(`S17 ${label} no org create resubmission in reverse switch`, returnWindow.orgCreate, 0);
@@ -1643,17 +1674,20 @@ async function main() {
           check(`S19 ${stateLabel} Space closeCount`, await evaluate(page.sessionId, 'window.__hrPaletteCloseCount || 0'), 1);
           check(`S19 ${stateLabel} Space selectCount`, await evaluate(page.sessionId, 'window.__hrPaletteSelectCount || 0'), 0);
           check(`S19 ${stateLabel} Space dialog closed`, await dialogOpen(page.sessionId), false);
+          check(`S19 ${stateLabel} Space pathname unchanged`, await evaluate(page.sessionId, 'location.pathname'), pathBefore);
 
           await resetPaletteEvents(page.sessionId);
           await clickSelector(page.sessionId, '[data-testid="w2a-open-palette"]');
           await waitForValue(page.sessionId, `!!document.querySelector('input[role="combobox"]')`, { label: `S19 ${stateLabel} palette reopen Escape` });
           await waitForValue(page.sessionId, `document.activeElement?.getAttribute('role')==='combobox'`, { label: `S19 ${stateLabel} Escape combobox focus` });
+          check(`S19 ${stateLabel} Escape actual X focus`, await focusPaletteClose(page.sessionId, closeLabel), closeLabel);
           await nativeKey(page.sessionId, 'Escape');
           await sleep(200);
           check(`S19 ${stateLabel} Escape events`, await paletteEvents(page.sessionId), ['close']);
           check(`S19 ${stateLabel} Escape closeCount`, await evaluate(page.sessionId, 'window.__hrPaletteCloseCount || 0'), 1);
           check(`S19 ${stateLabel} Escape selectCount`, await evaluate(page.sessionId, 'window.__hrPaletteSelectCount || 0'), 0);
           check(`S19 ${stateLabel} Escape dialog closed`, await dialogOpen(page.sessionId), false);
+          check(`S19 ${stateLabel} Escape pathname unchanged`, await evaluate(page.sessionId, 'location.pathname'), pathBefore);
 
           if (!empty) {
             await resetPaletteEvents(page.sessionId);

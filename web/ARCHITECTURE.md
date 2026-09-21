@@ -110,12 +110,15 @@ their callers and the patterns/primitives stay prop-driven with no locale hook
 import. The palette's container keydown defers Enter to natively-activatable
 descendants (`button`, `a[href]`, `[role="option"]`), so the localized X close
 control closes on Enter without selecting a row while the search input still
-selects the active row; the browser harness exercises this in both locales with
-populated and empty results and covers the shell/help/AddOrg/palette states
-across 1440x900/390x844 and light/dark in both switch directions, recording
-`document.activeElement`, retained node identity, open state and
-selection/value before and after each switch plus precisely scoped switch-window
-request assertions. Both env gates are no-ops for every ordinary build. See
+selects the active row; the browser harness exercises this (S19: both locales,
+populated and empty results) and covers the shell/help (S11/S16), AddOrg (S12
+wide-light; S17 zh-narrow-light/en-narrow-dark/zh-wide-dark) and palette (S13
+wide-light; S18 zh-narrow-light/en-narrow-dark/zh-wide-dark) states across the
+observed 1440x900/390x844 light/dark combinations in both switch directions,
+recording the actual `document.activeElement`, retained node identity, open state
+and selection/value before and after each switch plus precisely scoped
+switch-window request assertions (positive receipt 375/375 assertions, 30 PNGs).
+Both env gates are no-ops for every ordinary build. See
 `docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
 
 ## What is intentionally not in here

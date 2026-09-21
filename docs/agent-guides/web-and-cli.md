@@ -87,17 +87,21 @@ probe + the real `main.tsx` startup in headless Chrome) runs via
 committed Sidebar/AppBar DOM plus `<html lang>` and the real navigator
 read-back, retains a causal negative control (`I18N_W2A_EVIDENCE=negative`:
 wrong first shell, later corrected, must be rejected by the same predicate), and
-covers both locales across 1440x900/390x844, light/dark, root loading/no-org/
-NotFound/help/AddOrg/error/dormant-palette. In both switch directions it records
+covers both locales across the observed 1440x900/390x844 light/dark
+combinations for root loading/no-org/NotFound/help (S11/S16)/AddOrg
+(S12/S17)/error/dormant-palette. In both switch directions it records the actual
 `document.activeElement`, retained DOM node identity, open state and
-selection/value for the help non-default tab, the AddOrg typed slug + mapped
-error and the palette query + non-default selected row, and asserts each switch
-window issues no `PUT /settings/org` and no `POST /api/v1/orgs` (for the palette
-also zero `/api/` requests, cache-only). It exercises the palette's localized X
-close control with native Enter/Space/Escape in both locales with populated and
-empty results (closes once, no selection or navigation) while the search-input
-and non-default-row Enter still select once, and adds CJK-font and
-viewport-containment checks. Current contract:
+selection/value for the help non-default tab (S16), the AddOrg typed slug +
+mapped error (S12 wide-light; S17 zh-narrow-light/en-narrow-dark/zh-wide-dark)
+and the palette query + non-default selected row (S13 wide-light; S18
+zh-narrow-light/en-narrow-dark/zh-wide-dark), and asserts each switch window
+issues no `PUT /settings/org` and no `POST /api/v1/orgs` (the palette windows
+also assert zero `/api/` requests, cache-only, per direction). It exercises the
+palette's localized X close control (S19) with native Enter/Space/Escape in both
+locales with populated and empty results (closes once, zero selection, unchanged
+pathname) while the search-input and non-default-row Enter still select once, and
+adds CJK-font and viewport-containment checks. Positive receipt: 375/375
+assertions, 30 PNGs. Current contract:
 `docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
 
 ### Web contract and navigation
