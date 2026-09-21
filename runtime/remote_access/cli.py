@@ -31,9 +31,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import select
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -65,6 +67,25 @@ _SIDECAR_UNIT = "happyranch-tsnet-sidecar.service"
 _SERVICE_STATE_PROPERTIES = ("LoadState", "ActiveState", "SubState")
 _SERVICE_QUERY_TIMEOUT_SECONDS = 5.0
 _SERVICE_QUERY_MAX_OUTPUT_BYTES = 4096
+_SERVICE_QUERY_READ_CHUNK_BYTES = 4096
+
+# THR-228 seq275 (TASK8607 F1): the only supported record framing is LF-delimited
+# ``Key=Value`` records. ``str.splitlines()`` would silently normalize these
+# non-LF separators into record boundaries, so they are rejected in the raw
+# observation before any split. CR/CRLF, VT (0x0b), FF (0x0c), FS (0x1c),
+# GS (0x1d), RS (0x1e), NEL (U+0085), LS (U+2028) and PS (U+2029) are never
+# legitimate in an affirmative ``systemctl show`` observation.
+_SERVICE_QUERY_UNSUPPORTED_RECORD_SEPARATORS = (
+    "\r",
+    "\x0b",
+    "\x0c",
+    "\x1c",
+    "\x1d",
+    "\x1e",
+    "\x85",
+    "\u2028",
+    "\u2029",
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -419,6 +440,68 @@ def _prepare_fresh_enrollment(
     (reload_manager or _reload_systemd)()
 
 
+def _capture_bounded_query_output(
+    process: subprocess.Popen[bytes], deadline: float
+) -> tuple[bytes, bool]:
+    """Read at most ``cap + 1`` bytes from an owned query under one deadline.
+
+    Returns ``(retained_bytes, overflowed)``. The read never exceeds the
+    retention limit and never blocks past ``deadline``; an over-cap producer is
+    reported as overflow so the caller can stop and reap it. Normal kernel pipe
+    buffering is allowed — the retained bytes are only an upper bound, not a
+    claim about how many bytes the child produced.
+    """
+    if process.stdout is None:  # pragma: no cover - always created with PIPE
+        raise OSError("service state unavailable")
+    descriptor = process.stdout.fileno()
+    retention_limit = _SERVICE_QUERY_MAX_OUTPUT_BYTES + 1
+    captured = bytearray()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise OSError("service state unavailable")
+        try:
+            readable, _, _ = select.select([descriptor], [], [], remaining)
+        except (OSError, ValueError) as exc:
+            raise OSError("service state unavailable") from exc
+        if not readable:
+            raise OSError("service state unavailable")
+        allowance = retention_limit - len(captured)
+        try:
+            chunk = os.read(descriptor, min(_SERVICE_QUERY_READ_CHUNK_BYTES, allowance))
+        except OSError as exc:
+            raise OSError("service state unavailable") from exc
+        if not chunk:
+            return bytes(captured), False
+        captured.extend(chunk)
+        if len(captured) >= retention_limit:
+            return bytes(captured), True
+
+
+def _close_and_reap_query_process(process: subprocess.Popen[bytes], deadline: float) -> None:
+    """Close the owned pipe and reap the owned query child within the deadline.
+
+    Runs on every return path. A child still alive after EOF, after cap overflow
+    or after a read timeout is killed and then reaped with a bounded wait; this
+    never reopens an unbounded read/wait/communicate.
+    """
+    if process.stdout is not None:
+        try:
+            process.stdout.close()
+        except OSError:
+            pass
+    if process.poll() is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
+    remaining = deadline - time.monotonic()
+    try:
+        process.wait(timeout=max(remaining, 0.0))
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
 def _observe_sidecar_stopped() -> None:
     """Return only after a bounded affirmative observation that the sidecar is
     loaded and stopped (THR-228 seq275).
@@ -429,9 +512,17 @@ def _observe_sidecar_stopped() -> None:
     ``ActiveState=inactive``/``SubState=dead`` — the normal loaded stopped
     state reached after the composite N3 stop. A nonzero query status, timeout
     (the child is killed and reaped), missing executable/manager/unit, unknown,
-    missing/empty/duplicate/extra/malformed/oversize record, contradictory
-    combination or any active/transitional/failed state raises the existing
-    category-only failure and never authorizes mutation.
+    missing/empty/duplicate/extra/malformed/oversize/contradictory record,
+    unsupported non-LF record framing, or any active/transitional/failed state
+    raises the existing category-only failure and never authorizes mutation.
+
+    TASK8607 F2: the query is an owned child whose stdout is read incrementally
+    under one absolute finite deadline shared by reading and exit observation.
+    At most ``_SERVICE_QUERY_MAX_OUTPUT_BYTES + 1`` bytes are retained, an
+    over-cap producer is stopped and reaped, and the owned child/pipe are closed
+    on every path. An EOF that is followed by a child that stays alive is not
+    treated as successful completion: the deadline still applies and the child
+    is killed and reaped.
     """
     argv = [
         "systemctl",
@@ -441,31 +532,64 @@ def _observe_sidecar_stopped() -> None:
         "-p", "SubState",
         _SIDECAR_UNIT,
     ]
+    deadline = time.monotonic() + _SERVICE_QUERY_TIMEOUT_SECONDS
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             argv,
-            check=False,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            timeout=_SERVICE_QUERY_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    except OSError as exc:
         raise OSError("service state unavailable") from exc
-    if result.returncode != 0:
-        raise OSError("service state unavailable")
-    _require_stopped_service_properties(result.stdout)
+    raw = b""
+    refusal: OSError | None = None
+    try:
+        raw, overflowed = _capture_bounded_query_output(process, deadline)
+        if overflowed:
+            refusal = OSError("service state unavailable")
+        else:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                refusal = OSError("service state unavailable")
+            else:
+                try:
+                    returncode = process.wait(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    refusal = OSError("service state unavailable")
+                else:
+                    if returncode != 0:
+                        refusal = OSError("service state unavailable")
+    finally:
+        _close_and_reap_query_process(process, deadline)
+    if refusal is not None:
+        raise refusal
+    _require_stopped_service_properties(raw)
 
 
 def _require_stopped_service_properties(raw: bytes) -> None:
-    """Strictly validate one named-property observation of a stopped unit."""
+    """Strictly validate one named-property observation of a stopped unit.
+
+    Raw record framing is validated before any normalization: only LF-delimited
+    records are supported (with an optional single trailing LF). Every other
+    ``str.splitlines()`` separator is refused outright rather than being
+    normalized into a record boundary.
+    """
     if len(raw) > _SERVICE_QUERY_MAX_OUTPUT_BYTES:
         raise OSError("service state unavailable")
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise OSError("service state unavailable") from exc
+    if any(
+        separator in text for separator in _SERVICE_QUERY_UNSUPPORTED_RECORD_SEPARATORS
+    ):
+        raise OSError("service state unavailable")
     properties: dict[str, str] = {}
-    for line in text.splitlines():
+    records = text.split("\n")
+    if records and records[-1] == "":
+        records.pop()
+    for line in records:
         key, separator, value = line.partition("=")
         if (
             not line

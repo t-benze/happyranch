@@ -213,6 +213,7 @@ _REFUSALS: list[tuple[str, bytes, int]] = [
     ("oversize", b"ActiveState=" + b"a" * 5000 + b"\n", 0),
     ("nonzero-exit-affirmative-looking", _STOPPED, 1),
     ("nonzero-exit-empty", b"", 3),
+    ("empty-final-record", b"LoadState=loaded\nActiveState=inactive\nSubState=dead\n\n", 0),
 ]
 
 
@@ -351,3 +352,273 @@ def test_observe_sidecar_stopped_refuses_query_error(tmp_path: Path, monkeypatch
         monkeypatch.setenv(key, value)
     with pytest.raises(OSError, match="service state unavailable"):
         cli._observe_sidecar_stopped()
+
+
+# ---------------------------------------------------------------------------
+# TASK8607 F1 — raw record framing is validated before any normalization.
+# ---------------------------------------------------------------------------
+
+_UNSUPPORTED_FRAMING: list[tuple[str, bytes]] = [
+    ("carriage-return", b"LoadState=loaded\rActiveState=inactive\rSubState=dead\n"),
+    ("crlf", b"LoadState=loaded\r\nActiveState=inactive\r\nSubState=dead\r\n"),
+    ("file-separator", b"LoadState=loaded\x1cActiveState=inactive\x1cSubState=dead\n"),
+    ("group-separator", b"LoadState=loaded\x1dActiveState=inactive\x1dSubState=dead\n"),
+    ("record-separator", b"LoadState=loaded\x1eActiveState=inactive\x1eSubState=dead\n"),
+    ("vertical-tab", b"LoadState=loaded\x0bActiveState=inactive\x0bSubState=dead\n"),
+    ("form-feed", b"LoadState=loaded\x0cActiveState=inactive\x0cSubState=dead\n"),
+    ("nel", b"LoadState=loaded\xc2\x85ActiveState=inactive\xc2\x85SubState=dead\n"),
+    (
+        "unicode-line-separator",
+        "LoadState=loaded\u2028ActiveState=inactive\u2028SubState=dead\n".encode(),
+    ),
+    (
+        "unicode-paragraph-separator",
+        "LoadState=loaded\u2029ActiveState=inactive\u2029SubState=dead\n".encode(),
+    ),
+    ("embedded-nul", b"LoadState=loaded\nActiveState=inactive\nSubState=dead\x00\n"),
+    ("embedded-escape", b"LoadState=loaded\nActiveState=inactive\nSubState=dead\x1bevil\n"),
+]
+
+
+@pytest.mark.parametrize(
+    ("label", "show_output"),
+    _UNSUPPORTED_FRAMING,
+    ids=[case[0] for case in _UNSUPPORTED_FRAMING],
+)
+def test_unsupported_record_framing_refuses_unchanged(
+    tmp_path: Path, label: str, show_output: bytes
+) -> None:
+    """A non-LF separator must never be normalized into a record boundary."""
+    bindir = tmp_path / "bin"
+    _write_systemctl(bindir)
+    fixture = _enrollment_case(tmp_path, marker=True, dropin=True)
+    env, calls = _fixture_env(tmp_path, bindir=bindir, show_output=show_output)
+    before = _snapshot(fixture["case"])
+    for attempt in (1, 2):
+        result = _invoke_cli(fixture, env)
+        assert (result.returncode, result.stdout) == (1, ""), (label, attempt, result.stderr)
+        assert result.stderr.strip() == _CATEGORY, (label, attempt, result.stderr)
+        assert _snapshot(fixture["case"]) == before, (label, attempt)
+        assert not fixture["dropin"].with_name(fixture["dropin"].name + ".new").exists()
+    assert calls.read_text().splitlines() == [_SHOW_ARGV, _SHOW_ARGV], label
+
+
+@pytest.mark.parametrize(
+    ("label", "show_output"),
+    [
+        ("trailing-lf", _STOPPED),
+        ("no-trailing-lf", b"LoadState=loaded\nActiveState=inactive\nSubState=dead"),
+        (
+            "reordered-no-trailing-lf",
+            b"SubState=dead\nActiveState=inactive\nLoadState=loaded",
+        ),
+    ],
+    ids=["trailing-lf", "no-trailing-lf", "reordered-no-trailing-lf"],
+)
+def test_supported_final_record_forms_authorize_transition(
+    tmp_path: Path, label: str, show_output: bytes
+) -> None:
+    """The chosen supported format is LF-delimited records with an optional
+    single trailing LF; every property permutation stays order-independent."""
+    bindir = tmp_path / "bin"
+    _write_systemctl(bindir)
+    fixture = _enrollment_case(tmp_path, marker=True, dropin=False)
+    env, calls = _fixture_env(tmp_path, bindir=bindir, show_output=show_output)
+    result = _invoke_cli(fixture, env)
+    assert (result.returncode, result.stdout, result.stderr) == (0, "", ""), label
+    assert not fixture["marker"].exists()
+    assert fixture["dropin"].read_bytes() == _DROPIN_BYTES
+    assert calls.read_text().splitlines() == [_SHOW_ARGV, "daemon-reload"], label
+
+
+# ---------------------------------------------------------------------------
+# TASK8607 F2 — bounded streaming capture, one absolute deadline, owned reaping.
+# ---------------------------------------------------------------------------
+
+
+def _write_producer_systemctl(bindir: Path, code: str) -> Path:
+    """Install a closed fixture whose ``show`` execs one owned Python producer.
+
+    ``exec`` replaces the shell, so the producer is our direct child and its PID
+    is stable for reaping observation. It never touches the host manager.
+    """
+    bindir.mkdir(parents=True, exist_ok=True)
+    producer = bindir / "producer.py"
+    producer.write_text(code, encoding="utf-8")
+    script = bindir / "systemctl"
+    script.write_text(
+        "#!/bin/sh\n"
+        'printf \'%s\\n\' "$*" >> "$SYSTEMCTL_CALLS"\n'
+        'if [ "$1" = "show" ]; then\n'
+        '  exec "$PRODUCER_PYTHON" "$PRODUCER_SCRIPT"\n'
+        "fi\n"
+        "exit 0\n"
+    )
+    script.chmod(0o700)
+    return producer
+
+
+def _producer_env(
+    root: Path, *, bindir: Path, producer: Path, tmp_path: Path, **extra: str
+) -> tuple[dict[str, str], Path]:
+    env, calls = _fixture_env(root, bindir=bindir, show_output=b"")
+    env.update(
+        {
+            "PRODUCER_PYTHON": sys.executable,
+            "PRODUCER_SCRIPT": str(producer),
+            "PRODUCER_PIDFILE": str(tmp_path / "producer.pid"),
+            "PRODUCER_DONE": str(tmp_path / "producer.done"),
+            **extra,
+        }
+    )
+    return env, calls
+
+
+def _assert_reaped(pid_file: Path) -> None:
+    pid = int(pid_file.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
+def test_streaming_producer_over_cap_is_stopped_and_reaped(tmp_path: Path) -> None:
+    """A sustained over-cap stream must be cut off during capture, not drained."""
+    bindir = tmp_path / "bin"
+    producer = _write_producer_systemctl(
+        bindir,
+        "import os\n"
+        "open(os.environ['PRODUCER_PIDFILE'], 'w').write(str(os.getpid()))\n"
+        "target = int(os.environ['PRODUCER_BYTES'])\n"
+        "chunk = b'x' * 4096\n"
+        "written = 0\n"
+        "while written < target:\n"
+        "    step = min(4096, target - written)\n"
+        "    os.write(1, chunk[:step])\n"
+        "    written += step\n"
+        "open(os.environ['PRODUCER_DONE'], 'w').write('delivered')\n",
+    )
+    fixture = _enrollment_case(tmp_path, marker=True, dropin=True)
+    env, calls = _producer_env(
+        tmp_path,
+        bindir=bindir,
+        producer=producer,
+        tmp_path=tmp_path,
+        PRODUCER_BYTES=str(8 * 1024 * 1024),
+    )
+    before = _snapshot(fixture["case"])
+    started = time.monotonic()
+    result = _invoke_cli(fixture, env)
+    elapsed = time.monotonic() - started
+    assert (result.returncode, result.stdout, result.stderr.strip()) == (1, "", _CATEGORY)
+    assert _snapshot(fixture["case"]) == before
+    # The 8 MiB producer never reached its completion marker: the reader stopped
+    # at the cap instead of draining the whole stream.
+    assert not (tmp_path / "producer.done").exists()
+    assert not fixture["dropin"].with_name(fixture["dropin"].name + ".new").exists()
+    assert calls.read_text().splitlines() == [_SHOW_ARGV]
+    assert elapsed < 5.0, elapsed
+    _assert_reaped(tmp_path / "producer.pid")
+
+
+def test_capture_retains_at_most_cap_plus_one(tmp_path: Path) -> None:
+    """Focused finite-retention assertion for the bounded reader itself."""
+    code = (
+        "import os\n"
+        "target = int(os.environ['PRODUCER_BYTES'])\n"
+        "chunk = b'y' * 4096\n"
+        "written = 0\n"
+        "while written < target:\n"
+        "    step = min(4096, target - written)\n"
+        "    os.write(1, chunk[:step])\n"
+        "    written += step\n"
+    )
+    long_process = subprocess.Popen(
+        [sys.executable, "-c", code],
+        env={**os.environ, "PRODUCER_BYTES": str(64 * 1024)},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    deadline = time.monotonic() + 5.0
+    retained, overflowed = cli._capture_bounded_query_output(long_process, deadline)
+    cli._close_and_reap_query_process(long_process, deadline)
+    assert overflowed is True
+    assert len(retained) == cli._SERVICE_QUERY_MAX_OUTPUT_BYTES + 1
+
+    short_process = subprocess.Popen(
+        [sys.executable, "-c", code],
+        env={**os.environ, "PRODUCER_BYTES": "137"},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    deadline = time.monotonic() + 5.0
+    retained, overflowed = cli._capture_bounded_query_output(short_process, deadline)
+    cli._close_and_reap_query_process(short_process, deadline)
+    assert overflowed is False
+    assert retained == b"y" * 137
+
+
+def test_slow_partial_output_refuses_on_absolute_deadline(tmp_path: Path) -> None:
+    bindir = tmp_path / "bin"
+    producer = _write_producer_systemctl(
+        bindir,
+        "import os, time\n"
+        "open(os.environ['PRODUCER_PIDFILE'], 'w').write(str(os.getpid()))\n"
+        "os.write(1, b'LoadState=loaded\\n')\n"
+        "time.sleep(float(os.environ['PRODUCER_SLEEP']))\n"
+        "os.write(1, b'ActiveState=inactive\\nSubState=dead\\n')\n",
+    )
+    fixture = _enrollment_case(tmp_path, marker=True, dropin=True)
+    env, calls = _producer_env(
+        tmp_path, bindir=bindir, producer=producer, tmp_path=tmp_path, PRODUCER_SLEEP="30"
+    )
+    before = _snapshot(fixture["case"])
+    started = time.monotonic()
+    result = _invoke_cli(fixture, env)
+    elapsed = time.monotonic() - started
+    assert (result.returncode, result.stderr.strip()) == (1, _CATEGORY)
+    assert _snapshot(fixture["case"]) == before
+    assert calls.read_text().splitlines() == [_SHOW_ARGV]
+    assert 4.0 <= elapsed < 20.0, elapsed
+    _assert_reaped(tmp_path / "producer.pid")
+
+
+def test_eof_with_lingering_child_refuses_and_reaps(tmp_path: Path) -> None:
+    """Valid-looking output is not sufficient: the owned child must also exit."""
+    bindir = tmp_path / "bin"
+    producer = _write_producer_systemctl(
+        bindir,
+        "import os, time\n"
+        "open(os.environ['PRODUCER_PIDFILE'], 'w').write(str(os.getpid()))\n"
+        "os.write(1, b'LoadState=loaded\\nActiveState=inactive\\nSubState=dead\\n')\n"
+        "os.close(1)\n"
+        "time.sleep(float(os.environ['PRODUCER_SLEEP']))\n",
+    )
+    fixture = _enrollment_case(tmp_path, marker=True, dropin=True)
+    env, calls = _producer_env(
+        tmp_path, bindir=bindir, producer=producer, tmp_path=tmp_path, PRODUCER_SLEEP="30"
+    )
+    before = _snapshot(fixture["case"])
+    started = time.monotonic()
+    result = _invoke_cli(fixture, env)
+    elapsed = time.monotonic() - started
+    assert (result.returncode, result.stderr.strip()) == (1, _CATEGORY)
+    assert _snapshot(fixture["case"]) == before
+    assert calls.read_text().splitlines() == [_SHOW_ARGV]
+    assert 4.0 <= elapsed < 20.0, elapsed
+    _assert_reaped(tmp_path / "producer.pid")
+
+
+def test_valid_output_then_nonzero_exit_refuses(tmp_path: Path) -> None:
+    bindir = tmp_path / "bin"
+    producer = _write_producer_systemctl(
+        bindir,
+        "import os\n"
+        "os.write(1, b'LoadState=loaded\\nActiveState=inactive\\nSubState=dead\\n')\n"
+        "raise SystemExit(3)\n",
+    )
+    fixture = _enrollment_case(tmp_path, marker=True, dropin=True)
+    env, calls = _producer_env(tmp_path, bindir=bindir, producer=producer, tmp_path=tmp_path)
+    before = _snapshot(fixture["case"])
+    result = _invoke_cli(fixture, env)
+    assert (result.returncode, result.stdout, result.stderr.strip()) == (1, "", _CATEGORY)
+    assert _snapshot(fixture["case"]) == before
+    assert calls.read_text().splitlines() == [_SHOW_ARGV]

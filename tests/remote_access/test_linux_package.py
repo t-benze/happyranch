@@ -47,6 +47,23 @@ def _stage_system_credentials(root: Path, *, enrollment: bool = False) -> None:
         (config / "enrollment.key").chmod(0o600)
 
 
+def _tree_snapshot(root: Path) -> dict[str, list[object]]:
+    """Complete lstat identity (type/mode/uid/gid + bytes) of a fixture tree."""
+    entries: dict[str, list[object]] = {}
+    for path in [root, *sorted(root.rglob("*"))]:
+        info = path.lstat()
+        value: list[object] = [
+            stat.S_IFMT(info.st_mode),
+            stat.S_IMODE(info.st_mode),
+            info.st_uid,
+            info.st_gid,
+        ]
+        if stat.S_ISREG(info.st_mode):
+            value.append(path.read_bytes())
+        entries[str(path.relative_to(root))] = value
+    return entries
+
+
 def test_connector_builder_installs_real_wheel_without_ambient_pip(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -247,6 +264,49 @@ def test_generated_connector_entry_executes_actual_wheel_cli_capability_and_reti
     assert calls.read_text().splitlines() == [
         "show -p LoadState -p ActiveState -p SubState happyranch-tsnet-sidecar.service"
     ]
+
+    # TASK8607 F1: the builder-generated shipping entry must validate raw record
+    # framing before normalization. Each non-LF separator is refused
+    # category-only with a complete unchanged snapshot and no reload, twice.
+    for label, malformed in (
+        ("file-separator", b"LoadState=loaded\x1cActiveState=inactive\x1cSubState=dead\n"),
+        ("vertical-tab", b"LoadState=loaded\x0bActiveState=inactive\x0bSubState=dead\n"),
+        ("form-feed", b"LoadState=loaded\x0cActiveState=inactive\x0cSubState=dead\n"),
+        (
+            "unicode-line-separator",
+            "LoadState=loaded\u2028ActiveState=inactive\u2028SubState=dead\n".encode(),
+        ),
+    ):
+        show_file.write_bytes(malformed)
+        case_root = tmp_path / f"framing-{label}"
+        case_root.mkdir()
+        case_source = case_root / "enrollment.key"
+        case_source.write_text("fresh-one-use\n")
+        case_source.chmod(0o600)
+        case_marker = case_root / "credential.consumed"
+        case_marker.write_text("durable\n")
+        case_marker.chmod(0o600)
+        case_dropin = case_root / "unit.d" / "10-enrollment-credential.conf"
+        case_dropin.parent.mkdir()
+        malformed_arguments = (
+            "prepare-fresh-enrollment",
+            "--source", str(case_source),
+            "--marker", str(case_marker),
+            "--dropin", str(case_dropin),
+        )
+        before_framing = _tree_snapshot(case_root)
+        for attempt in (1, 2):
+            malformed_result = invoke_with_service(*malformed_arguments)
+            assert (
+                malformed_result.returncode,
+                malformed_result.stdout,
+                malformed_result.stderr.strip(),
+            ) == (1, "", "error: fresh_enrollment_transition_failed"), (label, attempt)
+            assert _tree_snapshot(case_root) == before_framing, (label, attempt)
+            assert not case_dropin.with_name(case_dropin.name + ".new").exists()
+        assert calls.read_text().splitlines() == [
+            "show -p LoadState -p ActiveState -p SubState happyranch-tsnet-sidecar.service"
+        ], label
 
 
 def _inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
