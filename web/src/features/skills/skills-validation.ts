@@ -83,7 +83,7 @@ const REASON_COPY: Record<string, string> = {
     'The skill guide frontmatter uses a field that is not supported here.',
   frontmatter_missing_name: 'The skill guide frontmatter needs a name.',
   frontmatter_invalid_name:
-    'The skill guide name must be lower-case letters, digits or hyphens, and match the slug.',
+    'The skill guide name must be lower-case ASCII letters, digits or hyphens, and match the slug.',
   frontmatter_name_slug_mismatch: 'The skill guide name must match the slug.',
   frontmatter_missing_description: 'The skill guide frontmatter needs a description.',
   frontmatter_invalid_description:
@@ -100,6 +100,11 @@ const REASON_COPY: Record<string, string> = {
   invalid_asset_value: 'An asset entry has an invalid value.',
   invalid_asset_filename: 'An asset points to an invalid file name.',
   slug_collision: 'This slug is already used by another skill.',
+  // THR-262 seq43 Option A: the request-identity admission code. The logical
+  // slug must be literal ASCII; this is a HappyRanch rule, not a skill-guide
+  // syntax error, so the copy stays plain-language and copy-gate-safe.
+  invalid_slug:
+    'The slug can use only lower-case ASCII letters a-z, digits 0-9 and single hyphens, and must be 1-64 characters.',
   system_contract_forbidden:
     'A custom skill cannot be saved as a system contract.',
   materialization_error:

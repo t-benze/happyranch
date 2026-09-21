@@ -32,6 +32,7 @@ from runtime.skills.skill_md import (
     SKILL_MD_NO_HEADING,
     SKILL_MD_UNCLOSED_FRONTMATTER,
     frontmatter_admission_violations,
+    is_valid_logical_slug,
     parse_skill_frontmatter,
     skill_md_contract_violations,
 )
@@ -147,14 +148,98 @@ def test_contract_accepts_conforming_documents(skill_md):
 
 
 def test_contract_matrix_slug_aware_rows():
+    # A2: quoted digit-only and mixed ASCII values are strings / admitted.
     assert _codes("---\nname: \"123\"\ndescription: d\n---\n", slug="123") == []
-    assert _codes("---\nname: café-workflow\ndescription: d\n---\n", slug="café-workflow") == []
+    assert _codes("---\nname: a-1\ndescription: d\n---\n", slug="a-1") == []
+    # A2/15: an unquoted YAML int is a type failure, never coerced.
+    assert _codes("---\nname: 123\ndescription: d\n---\n", slug="123") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    # A8/A9/A10/A11/A12/A13: a non-ASCII frontmatter name is an ordinary
+    # document finding. The separate request-identity 422 invalid_slug boundary
+    # is covered by the route tests; here the document-only check runs with the
+    # (possibly non-ASCII) expected slug.
+    assert _codes("---\nname: café-workflow\ndescription: d\n---\n", slug="café-workflow") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    assert _codes("---\nname: cafe\u0301-workflow\ndescription: d\n---\n", slug="my-workflow") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    assert _codes("---\nname: 库存盘点\ndescription: d\n---\n", slug="库存盘点") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    assert _codes("---\nname: ｗf-1\ndescription: d\n---\n", slug="my-workflow") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    assert _codes("---\nname: wf-٣\ndescription: d\n---\n", slug="my-workflow") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    assert _codes("---\nname: wf-²\ndescription: d\n---\n", slug="my-workflow") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    assert _codes("---\nname: а-b\ndescription: d\n---\n", slug="my-workflow") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    # A7: uppercase ASCII is refused; no case folding.
     assert _codes("---\nname: My-Workflow\ndescription: d\n---\n", slug="My-Workflow") == [
         FRONTMATTER_INVALID_NAME
     ]
+    # A6/A19: hyphen boundaries and consecutive hyphens.
+    for bad in ("-a", "a-", "a--b"):
+        assert _codes(f"---\nname: {bad}\ndescription: d\n---\n", slug="my-workflow") == [
+            FRONTMATTER_INVALID_NAME
+        ]
+    # A9b: full-string match — trailing newline / whitespace is non-conforming.
+    assert _codes("---\nname: \"my-workflow\\n\"\ndescription: d\n---\n", slug="my-workflow") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    assert _codes("---\nname: \"my-workflow \"\ndescription: d\n---\n", slug="my-workflow") == [
+        FRONTMATTER_INVALID_NAME
+    ]
+    # A15: an ASCII name that differs from the slug.
     assert _codes("---\nname: other-workflow\ndescription: d\n---\n", slug="my-workflow") == [
         FRONTMATTER_NAME_SLUG_MISMATCH
     ]
+
+
+@pytest.mark.parametrize("value", [
+    # A1/A2/A4: conforming boundaries (length 1 and 64, digit-only/mixed).
+    "a", "my-workflow", "123", "a-1", "inventory-count",
+    "a" * 64, "a" * 62 + "-b",
+])
+def test_logical_slug_predicate_accepts_conforming_ascii(value):
+    assert is_valid_logical_slug(value) is True
+    assert _codes(f'---\nname: "{value}"\ndescription: d\n---\n', slug=value) == []
+
+
+@pytest.mark.parametrize("value", [
+    # A5: 65 grammar-conforming characters exceed the 1-64 bound.
+    "a" * 65, "a" * 63 + "-b",
+    # A6: hyphen boundaries / consecutive hyphens.
+    "-a", "a-", "a--b", "-", "--",
+    # A7: uppercase ASCII (no lowercasing).
+    "My-Workflow", "ABC", "aB",
+    # A8: precomposed accent.
+    "café-workflow",
+    # A9: decomposed accent (no NFC/NFKC).
+    "cafe\u0301-workflow",
+    # A9b: trailing/leading newline or whitespace (full-string; no `$` loophole).
+    "my-workflow\n", "my-workflow ", " my-workflow", "my-workflow\r",
+    # A10: CJK.
+    "库存盘点",
+    # A11: fullwidth letters / digits (no width folding).
+    "ａｂｃ", "１２３", "ｗf-1",
+    # A12: Arabic-Indic digits (ASCII 0-9 only).
+    "١٢٣", "wf-٣",
+    # A13: Cyrillic lookalikes.
+    "а-b", "аbc",
+    # THR262seq48 concrete values within the accepted non-ASCII categories.
+    "wf-²",
+    # Non-string / empty values are refused.
+    "", None, 123, ["a"], {"a": 1},
+])
+def test_logical_slug_predicate_refuses_non_conforming(value):
+    assert is_valid_logical_slug(value) is False
 
 
 # ── admission ordering + grouping ───────────────────────────────────────

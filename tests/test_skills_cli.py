@@ -1575,3 +1575,66 @@ class TestSkillsCreateTransport:
         assert version["validator_version"] == "THR-262/1.0.0"
         # The shipped example bytes are persisted unchanged.
         assert version["skill_md_cache"] == expected["skill_md"]
+
+    def test_non_ascii_slug_transport_receipts_422_invalid_slug(
+        self, live_daemon, tmp_path, capsys,
+    ):
+        """F4 / C1b A8+A17: the real CLI transport shows the approved HTTP 422
+        ``invalid_slug`` receipt for a non-ASCII initial identity AND for a
+        same-owner append identity, without inventing an update verb. The
+        headingless ASCII success path above is unchanged.
+
+        The append case seeds a synthetic historical row whose stored slug is
+        non-ASCII, so the shipped create verb would have appended had the
+        identity been admitted; the gate precedes validation/persistence and
+        the stored row/pointer/description are never touched."""
+        from runtime.skills.custom import service as custom_service
+
+        org = live_daemon
+        conn = getattr(org.db, "_conn", org.db)
+
+        # (1) Non-ASCII initial create through the shipped CLI verb.
+        with pytest.raises(SystemExit) as initial_exit:
+            self._run_create(self._package(tmp_path, "café-cli", "unicode-init"), "sess-cli")
+        assert initial_exit.value.code == 1
+        err = capsys.readouterr().err
+        assert "422" in err and "invalid_slug" in err
+        assert conn.execute(
+            "SELECT count(*) FROM custom_skills WHERE slug='café-cli'"
+        ).fetchone()[0] == 0
+
+        # (2) Same-owner append identity: seed a stored non-ASCII row, then
+        #     drive the same CLI verb again.
+        skill_id = "custom:cli-unicode"
+        conn.execute(
+            "INSERT INTO custom_skills "
+            "(id,org_slug,slug,name,description,origin_kind,origin_agent,created_at,created_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (skill_id, "alpha", "café-cli", "CLI Unicode", "stored-one",
+             "agent", "dev_agent", custom_service.now(), "dev_agent"),
+        )
+        conn.execute(
+            """INSERT INTO custom_skill_versions
+               (skill_id,content_hash,content_artifact_key,skill_md_cache,validation_state,
+                validator_version,validation_findings,created_at,author_kind,author_identity)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (skill_id, "a" * 64, "custom-skills/cafe-cli/stored/SKILL.md",
+             "---\nname: café-cli\ndescription: stored-one\n---\n", "valid",
+             "THR-262/1.0.0", "[]", custom_service.now(), "agent", "dev_agent"),
+        )
+        version_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "UPDATE custom_skills SET current_version_id=? WHERE id=?", (version_id, skill_id)
+        )
+        conn.commit()
+
+        with pytest.raises(SystemExit) as append_exit:
+            self._run_create(self._package(tmp_path, "café-cli", "unicode-two"), "sess-cli")
+        assert append_exit.value.code == 1
+        err = capsys.readouterr().err
+        assert "422" in err and "invalid_slug" in err
+        row = conn.execute(
+            "SELECT current_version_id, description FROM custom_skills WHERE id=?", (skill_id,)
+        ).fetchone()
+        assert row["current_version_id"] == version_id
+        assert row["description"] == "stored-one"

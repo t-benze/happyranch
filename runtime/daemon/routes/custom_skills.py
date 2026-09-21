@@ -14,7 +14,7 @@ from runtime.daemon.auth import _require_human, require_token
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.skills.custom import service
 from runtime.skills.eligibility import EligibilityRecipient, EligibilityRule, SkillEligibilityState, resolve_custom_skill_eligibility
-from runtime.skills.skill_md import parse_skill_frontmatter
+from runtime.skills.skill_md import is_valid_logical_slug, parse_skill_frontmatter
 
 router = APIRouter(prefix="/custom-skills", dependencies=[require_token()])
 agent_custom_skills_router = APIRouter(prefix="/custom-skills")
@@ -22,6 +22,35 @@ _FORBIDDEN_IDENTITY = frozenset({"task_id","session_id","proposer_agent","agent"
 
 def _error(code: str, status_code: int, detail: str | None = None):
     raise HTTPException(status_code=status_code, detail={"code": code, "detail": detail or code})
+
+
+#: Literal HappyRanch logical-slug admission message (seq43 Option A). It names
+#: the permitted grammar and states that this is a HappyRanch admission rule,
+#: not an Agent Skills standard-syntax error (the standard permits Unicode).
+_HAPPYRANCH_SLUG_RULE = (
+    "HappyRanch logical skill slugs must be 1-64 characters of ASCII lower-case "
+    "letters, ASCII digits and single hyphens (a-z, 0-9, '-'), with no leading, "
+    "trailing or consecutive hyphen. This is a HappyRanch admission rule; the "
+    "Agent Skills standard permits Unicode names."
+)
+
+
+def _reject_invalid_logical_slug(slug_value: object) -> None:
+    """Refuse a non-conforming logical new-write identity (seq43 Option A).
+
+    The logical identity is the portable slug of the new write, never the
+    catalog display label or the canonical digest leaf. This gate runs after
+    the existing auth/identity/lease/metadata checks (and, on the stored-slug
+    append, after the current-row lookup plus mutability check) but BEFORE
+    ``service.validate_package`` and therefore before dry materialization,
+    ``_artifact_key`` construction, the protected-slug/existing-human 409s and
+    any ``BEGIN IMMEDIATE``. A malformed identity is a request-identity 4xx
+    (``invalid_slug``), never a document finding and never a 500, and it leaves
+    no durable or artifact residue. The predicate is the one shared full-string
+    ASCII grammar in ``runtime.skills.skill_md.is_valid_logical_slug``.
+    """
+    if not is_valid_logical_slug(slug_value):
+        _error("invalid_slug", 422, _HAPPYRANCH_SLUG_RULE)
 
 
 def _purge_contract(conn) -> None:
@@ -268,6 +297,7 @@ def create_agent_custom_skill(slug: str, session_id: str, org: OrgDep, request: 
         # is compared on a valid candidate. ``None`` here means "not supplied".
         requested_description = body.get("description")
         if not skill_slug or not body.get("name") or not skill_md: _error("invalid_request", 422)
+        _reject_invalid_logical_slug(skill_slug)
         validation_result = service.validate_package(
             org, slug=skill_slug, name=body["name"], skill_md=skill_md,
         )
@@ -356,6 +386,7 @@ def create_human(slug: str, body: dict = Body(...), org: OrgDep = None, _: None 
     skill_slug, skill_md = body.get("slug", ""), body.get("skill_md", "")
     requested_description = body.get("description")
     if not skill_slug or not body.get("name") or not skill_md: _error("invalid_request", 422)
+    _reject_invalid_logical_slug(skill_slug)
     validation_result = service.validate_package(
         org, slug=skill_slug, name=body["name"], skill_md=skill_md,
     )
@@ -446,6 +477,7 @@ def add_version(skill_id: str, body: dict = Body(...), org: OrgDep = None, _: No
     skill_md=body.get("skill_md", "")
     requested_description=body.get("description")
     if not skill_md: _error("invalid_request",422)
+    _reject_invalid_logical_slug(row["slug"])
     validation_result = service.validate_package(
         org, slug=row["slug"], name=row["name"], skill_md=skill_md,
     )

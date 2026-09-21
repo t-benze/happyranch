@@ -2522,93 +2522,262 @@ def test_replay_description_matrix_conflicts_before_artifacts(
     assert _residue_snapshot(org, skill_id) == before
 
 
-def test_unicode_route_case_validates_and_dry_materializes(
+#: Non-conforming logical identities (seq43 Option A §4.3.1 rows A5-A13, plus
+#: the THR262seq48 concrete values ``wf-٣`` / ``wf-²`` / ``ｗf-1`` within
+#: already-accepted non-ASCII categories).
+_NONCONFORMING_LOGICAL_IDENTITIES = [
+    "a" * 65,                 # A5 over-length
+    "a" * 63 + "-b",          # A5 over-length, otherwise grammar-conforming
+    "-a", "a-", "a--b",       # A6 hyphen boundaries / consecutive hyphen
+    "My-Workflow",            # A7 uppercase ASCII (no lowercasing)
+    "café-workflow",          # A8 precomposed accent
+    "cafe\u0301-workflow",    # A9 decomposed accent (no NFC/NFKC)
+    "my-workflow\n", "my-workflow ",  # A9b full-string (no `$` loophole)
+    "库存盘点",                # A10 CJK
+    "ａｂｃ", "１２３", "ｗf-1",   # A11 fullwidth letters/digits
+    "١٢٣", "wf-٣",            # A12 Arabic-Indic digits
+    "а-b",                    # A13 Cyrillic lookalike
+    "wf-²",                   # THR262seq48 superscript
+]
+
+_SAFE_ASCII_BODY = "---\nname: my-workflow\ndescription: d\n---\n"
+
+
+def test_unicode_request_identity_rejected_before_materialization_no_residue(
     client_with_runtime, monkeypatch, tmp_path,
 ):
-    """R5d/C1-C3: the named café-workflow Unicode case is driven through the
-    real validation/route seam (`service.validate_package`, the exact function
-    every authoring route calls) including its dry-materialization assemble
-    check. The contract accepts it and dry-materialization is clean.
+    """seq43 Option A / C1b A8: the named café-workflow request identity is
+    refused by the route-level logical-slug gate with 422 ``invalid_slug``
+    BEFORE ``service.validate_package``, dry materialization, ``_artifact_key``
+    construction or any durable write — zero residue anywhere.
 
-    NEW FINDING (returned for manager disposition, not patched here):
-    persisting a Unicode slug through the HTTP route is blocked by the
-    out-of-radius `runtime/infrastructure/artifact_store.py` ASCII name guard
-    (``_NAME_RE = ^[A-Za-z0-9._-]+$``) because ``_artifact_key`` embeds the raw
-    slug. This test pins the exact bounded outcome (exact HTTP 500, the exact
-    ``InvalidArtifactName`` seam/exception, zero durable/artifact residue) so
-    an unrelated failure cannot satisfy it, and so the manager can authorize
-    either an artifact-store name-policy change or an approved key encoding.
+    This REPLACES the historical diagnostic expectation (HTTP 500 /
+    ``InvalidArtifactName`` from the unchanged read-only ArtifactStore name
+    guard). That prior failure receipt is retained as historical evidence in
+    ``output/TASK-8597/repair-evidence.md``; it is never asserted as a passing
+    assertion here, and the case is neither deleted, skipped nor suppressed.
     """
-    from fastapi.testclient import TestClient
-
-    from runtime.daemon.routes import custom_skills as routes
-    from runtime.infrastructure.artifact_store import ArtifactStore, InvalidArtifactName
     from runtime.orchestrator._paths import OrgPaths
+    from runtime.daemon.routes import custom_skills as routes
     from runtime.skills.custom import service
+    from runtime.skills.skill_md import is_valid_logical_slug, parse_skill_frontmatter
 
     client, org = client_with_runtime
     _add_agent(org)
     monkeypatch.setenv("HAPPYRANCH_CANONICAL_STORE_ROOT", str(tmp_path / "canonical"))
     skill_md = "---\nname: café-workflow\ndescription: unicode café route\n---\n"
 
-    # The real route validation seam accepts the Unicode name and its
-    # dry-materialization assemble-check succeeds (no materialization_error).
-    result = service.validate_package(
-        org, slug="café-workflow", name="café-workflow", skill_md=skill_md
-    )
-    assert result["ok"] is True, result
-    assert "materialization_error" not in result["reason_codes"]
-    assert result["frontmatter"]["name"] == "café-workflow"
-    assert result["frontmatter"]["description"] == "unicode café route"
+    # The one shared literal ASCII full-string predicate refuses the identity.
+    assert is_valid_logical_slug("café-workflow") is False
+    # The document parses; the name is exactly the non-conforming identity.
+    assert parse_skill_frontmatter(skill_md)["name"] == "café-workflow"
 
-    # The exact deterministic artifact key the shipping route builds embeds
-    # the raw slug; that key is what ArtifactStore rejects.
-    key = routes._artifact_key("café-workflow", skill_md)
-    assert key == (
-        "custom-skills/café-workflow/"
-        + hashlib.sha256(skill_md.encode()).hexdigest()
-        + "/SKILL.md"
+    # Instrument every downstream seam the refusal must never reach.
+    validator_calls: list = []
+    key_calls: list = []
+    monkeypatch.setattr(
+        service, "validate_package",
+        lambda *a, **k: validator_calls.append((a, k)) or {
+            "ok": True, "reason_codes": [], "errors": [],
+        },
     )
+    monkeypatch.setattr(
+        routes, "_artifact_key",
+        lambda slug, content: key_calls.append((slug, content)) or "unused",
+    )
+    write_calls = _no_write_artifact_seam(monkeypatch)
 
-    # The real HTTP route cannot persist the Unicode slug: `_write_artifact`
-    # -> `ArtifactStore.put` -> `validate_name` rejects the non-ASCII path
-    # segment and the route's generic handler re-raises after rollback. Assert
-    # the EXACT status (500, never a 4xx admission/divergence code and never
-    # 201) so an unrelated failure cannot satisfy this test.
     before = _residue_snapshot(org, None)
-    fault = _fault_client(client)
-    response = fault.post(
+    response = client.post(
         BASE, json={"slug": "café-workflow", "name": "café-workflow", "skill_md": skill_md}
     )
-    assert response.status_code == 500, response.text
-    assert response.text == "Internal Server Error"
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "invalid_slug"
+    assert "ASCII" in detail["detail"]
+    assert "HappyRanch admission" in detail["detail"]
 
-    # Tie the HTTP failure to the exact shipping seam, exception class and
-    # message by re-driving the identical request on a client that re-raises.
-    strict = TestClient(client.app, raise_server_exceptions=True)
-    strict.headers.update(client.headers)
-    with pytest.raises(InvalidArtifactName) as excinfo:
-        strict.post(
-            BASE, json={"slug": "café-workflow", "name": "café-workflow", "skill_md": skill_md}
-        )
-    assert excinfo.value.__class__.__module__ == "runtime.infrastructure.artifact_store"
-    assert type(excinfo.value).__name__ == "InvalidArtifactName"
-    assert str(excinfo.value) == f"invalid_name: {key!r}"
-    assert ArtifactStore.__module__ == "runtime.infrastructure.artifact_store"
-
-    # The ArtifactStore validator alone reproduces the exact rejection.
-    store = ArtifactStore(OrgPaths(org.root).artifacts_dir)
-    with pytest.raises(InvalidArtifactName) as name_exc:
-        store.validate_name(key)
-    assert str(name_exc.value) == f"invalid_name: {key!r}"
-
-    # Complete durable + artifact rollback: zero residue anywhere, and in
-    # particular no artifact retained under the non-ASCII slug directory.
+    # No validate/dry/key/artifact write was reached, and no residue remains.
+    assert validator_calls == [] and key_calls == [] and write_calls == []
     assert _residue_snapshot(org, None) == before
     assert not any("café" in artifact for artifact in _artifact_keys(org))
     assert not (
         OrgPaths(org.root).artifacts_dir / "custom-skills" / "café-workflow"
     ).exists()
+
+
+@pytest.mark.parametrize("path", [
+    f"{BASE}/agent-create",
+    "/api/v1/orgs/alpha/skills/agent",
+])
+@pytest.mark.parametrize("bad_slug", _NONCONFORMING_LOGICAL_IDENTITIES)
+def test_agent_endpoints_reject_invalid_logical_slug_before_validation(
+    client_with_runtime, monkeypatch, path, bad_slug,
+):
+    """A5-A13 across BOTH agent create/append endpoints: a malformed logical
+    identity is 422 ``invalid_slug`` before validation, with no
+    validate/dry/key/write call and no residue."""
+    from runtime.daemon.routes import custom_skills as routes
+    from runtime.skills.custom import service
+
+    client, org = client_with_runtime
+    org.db.insert_task(TaskRecord(id="TASK-SLUG", brief="author a skill"))
+    org.sessions.set_active("TASK-SLUG", "dev_agent", "sess-slug", org_slug="alpha")
+    client.headers.pop("Authorization", None)
+
+    validator_calls: list = []
+    key_calls: list = []
+    monkeypatch.setattr(
+        service, "validate_package",
+        lambda *a, **k: validator_calls.append((a, k)) or {
+            "ok": True, "reason_codes": [], "errors": [],
+        },
+    )
+    monkeypatch.setattr(
+        routes, "_artifact_key", lambda *a, **k: key_calls.append(a) or "unused"
+    )
+    write_calls = _no_write_artifact_seam(monkeypatch)
+
+    before = _residue_snapshot(org, None)
+    response = client.post(
+        path, params={"session_id": "sess-slug"},
+        json={"slug": bad_slug, "name": "Display label", "skill_md": _SAFE_ASCII_BODY},
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "invalid_slug"
+    assert validator_calls == [] and key_calls == [] and write_calls == []
+    assert _residue_snapshot(org, None) == before
+
+
+@pytest.mark.parametrize("bad_slug", _NONCONFORMING_LOGICAL_IDENTITIES)
+def test_human_create_rejects_invalid_logical_slug_before_validation(
+    client_with_runtime, monkeypatch, bad_slug,
+):
+    """A5-A13 on the human create route: the same gate, same no-residue 422."""
+    from runtime.daemon.routes import custom_skills as routes
+    from runtime.skills.custom import service
+
+    client, org = client_with_runtime
+    validator_calls: list = []
+    key_calls: list = []
+    monkeypatch.setattr(
+        service, "validate_package",
+        lambda *a, **k: validator_calls.append((a, k)) or {
+            "ok": True, "reason_codes": [], "errors": [],
+        },
+    )
+    monkeypatch.setattr(
+        routes, "_artifact_key", lambda *a, **k: key_calls.append(a) or "unused"
+    )
+    write_calls = _no_write_artifact_seam(monkeypatch)
+
+    before = _residue_snapshot(org, None)
+    response = client.post(
+        BASE, json={"slug": bad_slug, "name": "Display label", "skill_md": _SAFE_ASCII_BODY}
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "invalid_slug"
+    assert validator_calls == [] and key_calls == [] and write_calls == []
+    assert _residue_snapshot(org, None) == before
+
+
+def test_stored_non_ascii_slug_append_rejected_without_rewriting_history(
+    client_with_runtime,
+):
+    """A17: a synthetic historical row whose stored slug is non-ASCII keeps all
+    reads; a NEW append under it is 422 ``invalid_slug`` with zero residue, and
+    the stored row/version bytes are never rewritten or revalidated."""
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.skills.custom import service as custom_service
+
+    client, org = client_with_runtime
+    conn = getattr(org.db, "_conn", org.db)
+    skill_id = "custom:synthetic-unicode"
+    content = "---\nname: café-workflow\ndescription: stored\n---\n"
+    artifact_key = ArtifactStore(OrgPaths(org.root).artifacts_dir).put(
+        "custom-skills/cafe-stored/stored/SKILL.md", content.encode(),
+    ).name
+    conn.execute(
+        "INSERT INTO custom_skills "
+        "(id,org_slug,slug,name,description,origin_kind,created_at,created_by) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (skill_id, "alpha", "café-workflow", "Stored Unicode", "stored",
+         "human", custom_service.now(), "founder"),
+    )
+    conn.execute(
+        """INSERT INTO custom_skill_versions
+           (skill_id,content_hash,content_artifact_key,skill_md_cache,validation_state,
+            validator_version,validation_findings,created_at,author_kind,author_identity)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (skill_id, hashlib.sha256(content.encode()).hexdigest(), artifact_key, content,
+         "invalid", "THR-262/1.0.0", '["stored"]', custom_service.now(), "human", "founder"),
+    )
+    version_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("UPDATE custom_skills SET current_version_id=? WHERE id=?", (version_id, skill_id))
+    conn.commit()
+
+    # Historical reads are preserved unchanged.
+    detail = client.get(f"{BASE}/{skill_id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["slug"] == "café-workflow"
+    assert client.get(f"{BASE}/{skill_id}/versions").status_code == 200
+
+    stored_row_before = dict(conn.execute(
+        "SELECT * FROM custom_skills WHERE id=?", (skill_id,)).fetchone())
+    versions_before = [dict(r) for r in conn.execute(
+        "SELECT * FROM custom_skill_versions WHERE skill_id=? ORDER BY id", (skill_id,))]
+    before = _residue_snapshot(org, skill_id)
+
+    append = client.post(
+        f"{BASE}/{skill_id}/versions",
+        json={"skill_md": "---\nname: café-workflow\ndescription: next\n---\n"},
+    )
+    assert append.status_code == 422, append.text
+    assert append.json()["detail"]["code"] == "invalid_slug"
+
+    assert _residue_snapshot(org, skill_id) == before
+    assert dict(conn.execute(
+        "SELECT * FROM custom_skills WHERE id=?", (skill_id,)).fetchone()) == stored_row_before
+    assert [dict(r) for r in conn.execute(
+        "SELECT * FROM custom_skill_versions WHERE skill_id=? ORDER BY id", (skill_id,))
+    ] == versions_before
+
+
+@pytest.mark.parametrize("doc_name,expected_message", [
+    # A14 / document row 17b: admitted ASCII identity + Unicode document name.
+    ("café-workflow", "ASCII lower-case"),
+    # A15: admitted ASCII identity + ASCII name that differs from the slug.
+    ("other-workflow", "must equal the logical slug"),
+    # A5b: admitted ASCII identity + 65-char document name (over the bound).
+    ("a" * 65, "ASCII lower-case"),
+])
+def test_admitted_ascii_identity_with_invalid_document_name_is_201_evidence(
+    client_with_runtime, doc_name, expected_message,
+):
+    """A5b/A14/A15: an ASCII-conforming request identity whose frontmatter
+    ``name`` is invalid or mismatching stays on the 201 immutable
+    invalid-evidence path (dark first version) — never a request-identity 4xx
+    and never a zero-residue claim."""
+    client, org = client_with_runtime
+    response = client.post(
+        BASE, json={
+            "slug": "my-workflow", "name": "Display label",
+            "skill_md": f"---\nname: {doc_name}\ndescription: d\n---\n",
+        },
+    )
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["validation_state"] == "invalid"
+    conn = getattr(org.db, "_conn", org.db)
+    findings = json.loads(conn.execute(
+        "SELECT validation_findings FROM custom_skill_versions WHERE id=?",
+        (payload["version_id"],),
+    ).fetchone()[0])
+    assert len(findings) == 1
+    assert expected_message in findings[0]
+    # Initial invalid creation is the current (dark) pointer.
+    assert payload["current_version_id"] == payload["version_id"]
 
 
 def test_excluded_key_first_invalid_and_append_preserve_dual_root_identity(

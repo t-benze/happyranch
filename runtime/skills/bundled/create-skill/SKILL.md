@@ -89,8 +89,15 @@ persistence.
   column-zero `---` YAML frontmatter fence, contain a YAML mapping with the
   required `name` and `description` fields, and close the fence with `---`.
   The body after the fence is optional; the former body-heading requirement
-  is retired. `name` must be 1–64 lower-case letters, digits or hyphens with
-  no leading/trailing hyphen and no `--`, and must equal `slug`; `description`
+  is retired. `slug` and frontmatter `name` must both be 1–64 characters of
+  ASCII lower-case letters (`a-z`), ASCII digits (`0-9`) and single hyphens,
+  with no leading, trailing or consecutive hyphen — a literal full-string match
+  with no Unicode normalization, case folding or transliteration — and `name`
+  must equal `slug`. This ASCII-only rule is a HappyRanch admission restriction
+  (the Agent Skills standard permits Unicode names); a non-conforming `slug` is
+  refused with HTTP 422 `invalid_slug` before any validation or write, while a
+  non-conforming frontmatter `name` under an admitted ASCII `slug` is ordinary
+  invalid-evidence. `description`
   must be a non-empty line of at most 1024 characters. The only permitted
   top-level frontmatter keys are `name`, `description`, `license`,
   `compatibility` and `metadata`; any other key (including `allowed-tools` and
@@ -169,6 +176,12 @@ the entire transaction rolls back with zero residue.
   `version_content_exists` with zero residue: no artifact write or rewrite,
   no new version row, no new event/audit row, no current-version change.
 - Missing/empty required metadata (`slug`, `name`, `skill_md`) → HTTP 422 with structured error codes.
+- Non-conforming logical `slug` (non-ASCII, lookalike, fullwidth, non-ASCII
+  digit, uppercase ASCII, over-length, leading/trailing/consecutive hyphen, or
+  a synthetic non-conforming stored slug on an append) → HTTP 422
+  `invalid_slug` before validation, artifact-key construction or any durable
+  write, with zero residue. This is a HappyRanch admission rule, not a
+  SKILL.md syntax error.
 - Document-contract validation failure → the candidate is appended as immutable invalid-version evidence (HTTP 201, `validation_state: invalid`); it never becomes the current version when a valid one exists.
 - Server error → HTTP 500 with detail.
 

@@ -93,6 +93,8 @@ describe('reasonCodeLabel', () => {
       'frontmatter_invalid_license',
       'frontmatter_invalid_compatibility',
       'frontmatter_invalid_metadata',
+      // seq43 Option A request-identity admission code.
+      'invalid_slug',
     ];
     for (const code of codes) {
       const line = reasonCodeLabel(code);
@@ -108,6 +110,11 @@ describe('reasonCodeLabel', () => {
     expect(reasonCodeLabel('admission_field_not_allowed')).toBe(
       'The skill guide frontmatter uses a field that is not supported here.',
     );
+    // The document name copy names ASCII explicitly (seq43 Option A).
+    expect(reasonCodeLabel('frontmatter_invalid_name')).toContain('ASCII');
+    // The request-identity code names the literal ASCII grammar.
+    expect(reasonCodeLabel('invalid_slug')).toContain('ASCII');
+    expect(reasonCodeLabel('invalid_slug')).toContain('a-z');
   });
   test('materialization / contract-predicate codes avoid forbidden tokens', () => {
     const mat = reasonCodeLabel('materialization_error');

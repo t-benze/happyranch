@@ -130,4 +130,31 @@ describe('CustomSkillCreatePage (THR-262 description payload)', () => {
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/Could not create this custom skill/i);
   });
+
+  test('a 422 invalid_slug response surfaces the ASCII identity message', async () => {
+    server.use(
+      http.post(API, () =>
+        HttpResponse.json(
+          {
+            detail: {
+              code: 'invalid_slug',
+              detail:
+                'HappyRanch logical skill slugs must be 1-64 characters of ASCII lower-case letters, ASCII digits and single hyphens (a-z, 0-9, \'-\')...',
+            },
+          },
+          { status: 422 },
+        ),
+      ),
+    );
+    mount();
+    const user = userEvent.setup();
+    await fill(user);
+    await user.click(screen.getByRole('button', { name: /Create custom skill/i }));
+
+    // The seq43 Option A request-identity refusal surfaces through the
+    // existing error flow with plain-language ASCII grammar copy.
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/lower-case ASCII letters/i);
+    expect(alert).not.toHaveTextContent(/Could not create this custom skill/i);
+  });
 });

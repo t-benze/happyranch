@@ -12,9 +12,15 @@ NEW custom-skill writes):
   top-level key is admission-policy invalid **by presence**, independent of its
   value or type. This is a HappyRanch admission restriction, not a claim that
   the field is malformed in the standard.
-* ``name`` must be a YAML string, 1-64 lower-case (Unicode) alphanumeric
-  characters or hyphens, no leading/trailing hyphen, no ``--``, and must equal
-  the logical workspace slug.
+* ``name`` must be a YAML string, 1-64 characters over the literal ASCII
+  grammar ``^[a-z0-9]+(?:-[a-z0-9]+)*$`` (lower-case ASCII letters, ASCII
+  digits and single interior hyphens; no leading/trailing/``--`` hyphen), and
+  must equal the logical workspace slug. This ASCII rule is an explicit
+  **HappyRanch admission restriction**, not Agent Skills standard conformance:
+  the standard and its linked ``skills-ref`` accept Unicode names, and
+  HappyRanch neither normalizes (NFC/NFKC) nor transliterates. The same
+  exported full-string predicate gates the logical request slug at the
+  authoring routes (422 ``invalid_slug`` before any write).
 * ``description`` must be a non-empty (after strip) YAML string of at most 1024
   characters.
 * Optional fields are validated only when present: ``license`` (string),
@@ -96,8 +102,10 @@ _MESSAGES: dict[str, str] = {
     ),
     FRONTMATTER_MISSING_NAME: "SKILL.md frontmatter is missing the required 'name' field",
     FRONTMATTER_INVALID_NAME: (
-        "SKILL.md frontmatter 'name' must be 1-64 lower-case letters, digits or "
-        "hyphens, with no leading/trailing hyphen and no '--'"
+        "SKILL.md frontmatter 'name' must be 1-64 ASCII lower-case letters, "
+        "ASCII digits or single hyphens (a-z, 0-9, '-'), with no leading, "
+        "trailing or consecutive hyphen. This is a HappyRanch admission rule; "
+        "the Agent Skills standard permits Unicode names."
     ),
     FRONTMATTER_NAME_SLUG_MISMATCH: (
         "SKILL.md frontmatter 'name' must equal the logical slug '{slug}'"
@@ -299,18 +307,29 @@ def _admission_findings(root_keys: list) -> list[tuple[str, str]]:
     ]
 
 
-def _valid_name_charset(name: str) -> bool:
-    if not (1 <= len(name) <= 64):
+#: The one literal ASCII logical-slug grammar, applied as a FULL-STRING match
+#: (``re.fullmatch``, never a bare ``$`` on a multi-line string) so a trailing
+#: newline, carriage return or whitespace is non-conforming. Shared by the
+#: document ``name`` rule here and the route-level logical request-identity
+#: gate (``runtime/daemon/routes/custom_skills.py``). Lower-case ASCII letters,
+#: ASCII digits and single interior hyphens only, length 1-64, with no leading,
+#: trailing or consecutive hyphen. No Unicode normalization or transliteration.
+_LOGICAL_SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+_LOGICAL_SLUG_MAX_LENGTH = 64
+
+
+def is_valid_logical_slug(value: object) -> bool:
+    """True when ``value`` is a conforming HappyRanch ASCII logical slug.
+
+    Literal full-string match over ``^[a-z0-9]+(?:-[a-z0-9]+)*$`` with length
+    1-64. ASCII ``a-z``/``0-9``/``-`` only: Unicode letters, Unicode digits,
+    fullwidth forms, decomposed accents, Cyrillic lookalikes, uppercase ASCII
+    and over-length values are all refused, and nothing is normalized,
+    case-folded or transliterated.
+    """
+    if not isinstance(value, str) or not (1 <= len(value) <= _LOGICAL_SLUG_MAX_LENGTH):
         return False
-    if name.startswith("-") or name.endswith("-") or "--" in name:
-        return False
-    for ch in name:
-        if ch == "-" or ch.isdigit():
-            continue
-        if ch.isalpha() and ch.islower():
-            continue
-        return False
-    return True
+    return _LOGICAL_SLUG_RE.fullmatch(value) is not None
 
 
 def _required_findings(
@@ -321,7 +340,7 @@ def _required_findings(
         findings.append((FRONTMATTER_MISSING_NAME, _MESSAGES[FRONTMATTER_MISSING_NAME]))
     else:
         name = parsed["name"]
-        if not isinstance(name, str) or not _valid_name_charset(name):
+        if not isinstance(name, str) or not is_valid_logical_slug(name):
             findings.append((FRONTMATTER_INVALID_NAME, _MESSAGES[FRONTMATTER_INVALID_NAME]))
         elif expected_slug is not None and name != expected_slug:
             findings.append(
