@@ -555,6 +555,15 @@ def test_shipping_cli_invocation_passes_containing_worktree(cpu, monkeypatch,
                                                             capsys):
     import json
 
+    # ``main`` derives the scan subject from the *invoking* user, exactly as the
+    # shipped procedure runs. Pin that derivation to the deterministic fixture
+    # identity so the outcome never depends on the CI runner's uid (GitHub
+    # ``runner`` uid 1001 vs fixture 1000) — the same reason the ``_scan``
+    # helper injects ``agent_uid=UID`` explicitly. The shipped argument
+    # parsing, containing-worktree plumbing and exit-code mapping are still
+    # exercised unchanged.
+    monkeypatch.setattr(cpu.os, "getuid", lambda: UID)
+    monkeypatch.setattr(cpu.os, "getpid", lambda: int(SELF))
     proc = _cache_proc(cpu)
     monkeypatch.setattr(cpu, "RealProc", lambda *a, **k: proc)
     rc = cpu.main(["--target", CACHE, "--containing-worktree", CACHE_WT, "--json"])
