@@ -10,6 +10,7 @@ member is unknown.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -71,7 +72,11 @@ def _deny_all(pid):
 
 
 def _scan(cpu, proc, **kw):
-    return cpu.scan(TARGET, proc=proc, self_pid=SELF, **kw)
+    # Inject the fixture uid explicitly. ``scan`` otherwise falls back to
+    # ``os.getuid()``, which differs from the fixture uid on CI runners
+    # (runner uid 1001 vs fixture 1000) and would classify every fake
+    # same-user process as ``other_user``.
+    return cpu.scan(TARGET, proc=proc, self_pid=SELF, agent_uid=UID, **kw)
 
 
 def _exempt_roles(res):
@@ -164,6 +169,30 @@ def test_role_mismatch_is_counted(cpu):
     res = _scan(cpu, _proc(cpu, p))
     assert res.coverage["role_mismatch"] == 1
     assert res.exempt == []
+
+
+def test_scan_membership_uses_injected_agent_uid_not_host_uid(cpu):
+    """Membership must come from the injected ``agent_uid``.
+
+    CI runs the suite as a different uid than the fixture (GitHub ``runner``
+    uid 1001 vs fixture 1000). The scan must classify the deterministic
+    FakeProc population from the injected uid, never the host process uid.
+    """
+    other_uid = 4242 if os.getuid() != 4242 else 4243
+    user_slice = f"/user.slice/user-{other_uid}.slice"
+    app = f"{user_slice}/user@{other_uid}.service/app.slice"
+    p = _spec("640", uid=other_uid, comm="ssh-agent",
+              cgroup=f"{app}/ssh-agent.service")
+    res = cpu.scan(TARGET, proc=_proc(cpu, p), self_pid=SELF,
+                   agent_uid=other_uid)
+    assert res.coverage["agent_uid"] == other_uid
+    assert _exempt_roles(res) == ["ssh-agent"]
+    assert res.coverage["same_user"] == 1
+    # The same population is out of scope under a different agent uid.
+    foreign = cpu.scan(TARGET, proc=_proc(cpu, p), self_pid=SELF,
+                       agent_uid=os.getuid())
+    assert foreign.exempt == []
+    assert foreign.coverage["other_user"] == 1
 
 
 def test_classify_helper_exact_pairs(cpu):
