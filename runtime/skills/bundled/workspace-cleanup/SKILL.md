@@ -79,14 +79,23 @@ quarantine, or repair preserved work.
 
 ## Current-use observation
 
-Before acting, run the bundled read-only helper:
+Before acting, run the bundled read-only helper. A whole-worktree candidate is
+passed as its own target. A literal `node_modules`/`.venv` cache candidate MUST
+also name its containing registered worktree so that use anywhere in that
+worktree (for example a process whose `cwd` is a sibling `src/`) blocks even
+though the cache directory itself is untouched:
 
 ```
-python3 scripts/check_path_use.py --target <literal-path> --json
+python3 scripts/check_path_use.py --target <literal-path> --containing-worktree <containing-worktree-path> --json
 ```
+
+For a whole-worktree candidate the containing worktree is the candidate itself,
+so `--containing-worktree` may be omitted.
 
 It returns exactly one of `clear_observation`, `blocked`, or `unknown`
-(never `safe`), and exit `0` only for `clear_observation`.
+(never `safe`), and exit `0` only for `clear_observation`. A cache candidate
+whose containing worktree cannot be resolved is `unknown` -- never a
+literal-path fallback.
 
 - **Complete same-user population.** Every process running as your user must be
   read, except confirmed-exited processes and the fixed login/session daemons
@@ -116,6 +125,57 @@ It returns exactly one of `clear_observation`, `blocked`, or `unknown`
 This is a **snapshot** with a disclosed later-opener/write-interruption and
 data-loss residual risk. It is not a claim of OS-wide absence or future
 non-use, and it is not executable-identity authentication.
+
+## Eligibility gates (literal commands)
+
+Every gate below is re-derived at action time, before the current-use scan and
+again immediately before each action. Each command is the literal check; a
+non-zero exit refuses. `$CANDIDATE` is the literal cache or worktree path;
+`$CONTAINING` is the containing registered worktree (equal to `$CANDIDATE` for a
+whole-worktree candidate). Worktree-level gates (`non-primary`, `registration`,
+`clean`, `durable-head`, `no-open-pr`) inspect `$CONTAINING`; per-path gates
+(`workspace-scope`, `ownership`, `not-symlink`, `same-filesystem`,
+`retention-age`, `cache-immediate-parent-manifest`, `current-use-scan`) inspect
+`$CANDIDATE`. `$PRIMARY` is the owning primary checkout, `$WORKSPACE` is your own
+agent workspace, and `$AGE_SECONDS` is `86400` for a cache or `604800` for a
+whole worktree. The commands are POSIX/Linux/macOS portable and use `python3`
+for uid, device and age so they never depend on a platform-specific `stat`.
+
+<!-- eligibility-commands:begin -->
+```bash
+# gate workspace-scope
+case "$CANDIDATE" in "$WORKSPACE"/repos/*/.claude/worktrees/*) ;; *) false ;; esac
+# gate non-primary
+python3 -c 'import os,sys; sys.exit(0 if os.path.realpath(sys.argv[1])!=os.path.realpath(sys.argv[2]) else 1)' "$CONTAINING" "$PRIMARY"
+# gate registration
+git -C "$PRIMARY" worktree list --porcelain | grep -Fxq "worktree $CONTAINING"
+# gate ownership
+python3 -c 'import os,sys; sys.exit(0 if os.stat(sys.argv[1]).st_uid==os.getuid() else 1)' "$CANDIDATE"
+# gate not-symlink
+test ! -L "$CANDIDATE"
+# gate same-filesystem
+python3 -c 'import os,sys; sys.exit(0 if os.stat(sys.argv[1]).st_dev==os.stat(sys.argv[2]).st_dev else 1)' "$CANDIDATE" "$PRIMARY"
+# gate clean
+test -z "$(git -C "$CONTAINING" status --porcelain)"
+# gate durable-head
+git -C "$CONTAINING" merge-base --is-ancestor HEAD origin/main
+# gate no-open-pr
+test "$(gh pr list --head "$(git -C "$CONTAINING" rev-parse --abbrev-ref HEAD)" --state open --json number --jq 'length')" -eq 0
+# gate retention-age
+python3 -c 'import os,sys,time; sys.exit(0 if time.time()-os.stat(sys.argv[1]).st_mtime >= float(sys.argv[2]) else 1)' "$CANDIDATE" "$AGE_SECONDS"
+# gate cache-immediate-parent-manifest
+test -f "$(dirname "$CANDIDATE")/package-lock.json" || test -f "$(dirname "$CANDIDATE")/pnpm-lock.yaml" || test -f "$(dirname "$CANDIDATE")/yarn.lock" || test -f "$(dirname "$CANDIDATE")/uv.lock" || test -f "$(dirname "$CANDIDATE")/poetry.lock" || test -f "$(dirname "$CANDIDATE")/requirements.txt"
+# gate current-use-scan
+python3 "$SKILL/scripts/check_path_use.py" --target "$CANDIDATE" --containing-worktree "$CONTAINING" --json
+```
+<!-- eligibility-commands:end -->
+
+`cache-immediate-parent-manifest` applies only to a `node_modules`/`.venv`
+cache; skip it for a whole worktree. Every other gate applies to both. A
+non-exempt unreadable same-user process, a missing/ambiguous containing
+worktree or any saturated listing makes the scan `unknown` -> skip; a positive
+non-exempt use makes it `blocked` -> skip; only `clear_observation` with every
+gate exit 0 permits the non-force action.
 
 ## Authorized actions (non-force only)
 

@@ -626,6 +626,11 @@ exact bounded cgroup role (`sshd-session`, `systemd --user`, `(sd-pam)`,
 `gcr-ssh-agent.service`). A qualifying exception is deliberately uninspected —
 unreadable `exe`/namespace is not a veto and is not executable-identity
 authentication; every other unreadable same-user process is `unknown` and skips,
-root is outside the scan, and positive non-exempt use blocks. This is a snapshot
+root is outside the scan, and positive non-exempt use blocks. For a
+`node_modules`/`.venv` cache candidate the helper additionally resolves and
+identity-binds its containing registered worktree, so use anywhere in that
+worktree blocks; an unresolvable containing worktree is `unknown`, never a
+literal-path fallback. A conflicting applicable systemd/unified cgroup path
+never grants an exception. This is a snapshot
 with accepted later-opener/write-interruption residual, never an OS-wide-absence
 or future-non-use guarantee.
