@@ -412,6 +412,23 @@ export function DaemonCapacitySection(): JSX.Element {
    * it as the external change it is.
    */
   const ownWriteInFlightRef = useRef(false);
+  /**
+   * C3, corrected: the REVISION of this editor's own accepted write.
+   *
+   * In-flight-ness alone is not a sound ownership test. `useEffect` is a
+   * PASSIVE effect: in a real browser the cache notification commits, the
+   * awaited submit continuation resumes and clears the in-flight flag, and only
+   * then is the effect flushed — so the editor met its OWN accepted write with
+   * the flag already down and recorded a phantom "Configuration changed
+   * elsewhere" against the revision it had just saved, leaving the guard armed
+   * after a successful save. (jsdom flushes in a different order, which is why
+   * the mounted tests did not see it; the real-browser harness gates it as an
+   * incoherent post-save surface.) Ownership is therefore recorded by the
+   * accepted revision itself, which no scheduling order can invalidate. A
+   * SECOND mounted editor never submits, so it never owns a revision and still
+   * treats the write as the external change it is.
+   */
+  const ownAcceptedWriteRef = useRef<string | null>(null);
 
   // Retain the last USABLE observation — snapshot AND its receipt — so an
   // unusable or failed read can still show labelled prior values, each with the
@@ -577,7 +594,7 @@ export function DaemonCapacitySection(): JSX.Element {
     // that distinction.
     const observation = observationRef.current;
     if (
-      ownWriteInFlightRef.current
+      (ownWriteInFlightRef.current || ownAcceptedWriteRef.current === observed.revision)
       && observation?.origin === 'write'
       && observation.sourceRevision === observed.revision
     ) {
@@ -792,6 +809,9 @@ export function DaemonCapacitySection(): JSX.Element {
       // (S5-R1/R8) and is fenced here. A genuinely newer read settling AFTER
       // this point is re-recorded by the read-acceptance effect, so protection
       // for real newer observations is preserved.
+      // Own the accepted revision BEFORE any state update, so the effect sees
+      // ownership whenever it is flushed relative to this continuation.
+      ownAcceptedWriteRef.current = classified.snapshot.revision;
       acceptBase(baseFromSnapshot(classified.snapshot));
       setReason('');
       setFieldErrors({});

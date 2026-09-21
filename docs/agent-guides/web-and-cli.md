@@ -182,10 +182,14 @@ The Settings surface ships as a full page (`web/src/features/settings/SettingsPa
   rebase and accept-latest; an accepted write then clears the reconciliation
   state its own response made obsolete and finishes in a coherent clean state.
   The suppression that stops the SUBMITTING editor mislabelling its own accepted
-  write as an external change is scoped to that editor's in-flight write: a
-  second editor mounted on the SAME client treats the write as the external
-  change it is, adopting it when clean and recording it for an explicit choice
-  when dirty, rather than staying stale on the older base and revision.
+  write as an external change is scoped to the REVISION that editor's own write
+  had accepted — not to the window in which the request happened to be in
+  flight, because the read-acceptance effect can be flushed after that window
+  closes and would then meet the editor's own saved revision as an external
+  change. A second editor mounted on the SAME client never owns that revision,
+  so it treats the write as the external change it is, adopting it when clean
+  and recording it for an explicit choice when dirty, rather than staying stale
+  on the older base and revision.
   Draft consequence arithmetic uses the RESOLVED per-key next-start values, so
   an environment-shadowed key contributes the environment's value rather than
   the draft the environment will shadow.
@@ -201,16 +205,39 @@ The Settings surface ships as a full page (`web/src/features/settings/SettingsPa
   confirmation dialog too, including the dialog Close control the shared
   primitive renders: the dialog is PORTALLED, so it inherits nothing from the
   panel wrapper and is styled and measured explicitly.
-  `scripts/screenshot-harness/capacity-states.mjs` gates both — it walks and
-  operates the full keyboard control set (including the acknowledgment,
-  Check saved values, rebase / accept-latest, the details disclosure and the
-  dialog's own controls) at both desktop widths in both themes, measures every
-  focus ring after cumulative opacity, and self-tests its own computed-visibility
-  predicate against positive and negative clipping controls. Because the shell
-  scrolls internally, a state whose evidence is a top-of-panel banner — the
-  retained-receipt / unverified-read / unrepresentable-value notices — declares
-  that banner as its capture subject, and a subject that is not inside the
-  captured frame fails the run.
+  `scripts/screenshot-harness/capacity-states.mjs` gates both, at both desktop
+  widths in both themes. It declares the finite set of keyboard OPERATIONS it
+  requires — the details disclosure; the acknowledgment that enables Save;
+  Check saved values after a real uncertain write, with its deliberate rebase
+  and the separate manual save that follows; conflict rebase; conflict
+  accept-latest and the separate manual save that follows it; the leave
+  dialog's Stay and its confirmed departure — independently of what any run
+  records, so a required operation that is missing fails the run exactly like
+  one that failed, and deleting a scenario cannot delete its expectation. Where
+  an operation has a pure verdict (Check semantics, the C1 receipt sequence)
+  the gate recomputes it from the recorded evidence rather than trusting a
+  recorded pass, and a focused failed-reread control proves that cached values
+  beside an error are not a successful Check. While the real portalled dialog
+  is open — in its own isolated context, so a measurement can never confirm a
+  departure — every dialog string is contrast-sampled and the enabled
+  `Discard and continue` is measured through real rest / hover / active pointer
+  phases; a missing sample, a missing phase or a failed one fails the run. It
+  measures every focus ring after cumulative opacity, and self-tests its own
+  computed-visibility predicate against positive and negative clipping
+  controls. `--gate-selftest <MANIFEST.json>` runs that same acceptance gate
+  over a recorded manifest and over finite corruptions of it — missing
+  operations, a removed scenario, a failed operation, a weakened Check
+  assertion, a missing walk, missing dialog samples, a C1 receipt that went
+  backwards — and fails unless every one of them is fatal and the unchanged
+  manifest passes. Because the shell scrolls internally, a state whose evidence
+  is a top-of-panel banner — the retained-receipt / unverified-read /
+  unrepresentable-value notices — declares that banner as its capture subject,
+  and a subject that is not inside the captured frame fails the run. Two states
+  drive the receipt rule end to end under a pinned browser clock: a usable
+  read, a BYTE-IDENTICAL successful 200 (proved identical by the served body
+  hash, not by unchanged values), then a failed read whose retained values must
+  still carry the identical response's OWN receipt, and finally a usable
+  recovery that advances it.
 - **Assistant** — assistant status, setup/recovery, and assistant executor binding.
 - **Org** (editable, Phase 2) — org-level settings: session timeout override, dreaming schedule (enabled, schedule time/timezone, catch-up-on-startup, agent mode, include/exclude agent names), browser-managed threads config (enabled and invocation timeout), and **working_hours** (THR-035: the Work-Hours Config UI — feature on/off switch, org-level eligibility selector, and the raw per-tier schedule blocks `default` / `teams` / `overrides`).
 - **Executors** — effective machine executor registry, custom CLI lifecycle, and recovery.
