@@ -3274,6 +3274,37 @@ def _api_root_rollup(app, auth_headers, root_id="ROOT-A"):
     return tasks[root_id]["severity_rollup"]
 
 
+def _api_seed_revisit_history(org_state, successor, predecessor) -> None:
+    """Seed the supported revisit audit rows on a same-parent successor link.
+
+    Uses the shipped AuditLogger API (never a raw insert) so the detail
+    endpoint's ``revisit_of`` / ``revisit_spawned`` reads observe real history.
+    """
+    from runtime.infrastructure.audit_logger import AuditLogger
+
+    AuditLogger(org_state.db).log_revisit_of(
+        successor,
+        predecessor_root=predecessor,
+        flagged=predecessor,
+        cascade=[predecessor],
+        prior_status="failed",
+        founder_note="retry the failed attempt",
+    )
+    AuditLogger(org_state.db).log_revisit_spawned(predecessor, successor)
+
+
+def _api_task_detail(app, auth_headers, task_id):
+    r = TestClient(app).get(
+        f"/api/v1/orgs/alpha/tasks/{task_id}", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    return r.json()
+
+
+def _api_audit_actions(body, action):
+    return [e for e in body["audit_log"] if e["action"] == action]
+
+
 @pytest.mark.parametrize("successor_status", ["completed", "superseded"])
 def test_api_rollup_c1_linked_recovery_not_stale_failed(
     tmp_home, app, org_state, auth_headers, successor_status,
@@ -3317,7 +3348,25 @@ def test_api_rollup_c2_active_retry_exact_in_progress(
         revisit="F1",
         block_kind=BlockKind(succ_block) if succ_block else None,
     )
+    _api_seed_revisit_history(org_state, "S1", "F1")
     assert _api_root_rollup(app, auth_headers) == "in_progress"
+
+    # The active retry's history survives the roots read, read back through
+    # the shipped task-detail endpoint (never solely db.get_task).
+    root_detail = _api_task_detail(app, auth_headers, "ROOT-A")
+    assert root_detail["task"]["status"] == "in_progress"
+    failed_detail = _api_task_detail(app, auth_headers, "F1")
+    assert failed_detail["task"]["status"] == "failed"
+    assert failed_detail["direct_revisits"] == ["S1"]
+    spawned = _api_audit_actions(failed_detail, "revisit_spawned")
+    assert [e["payload"]["new_root"] for e in spawned] == ["S1"]
+    successor_detail = _api_task_detail(app, auth_headers, "S1")
+    assert successor_detail["task"]["status"] == succ_status
+    assert successor_detail["task"]["revisit_of_task_id"] == "F1"
+    assert successor_detail["revisit_chain"] == ["S1", "F1"]
+    assert successor_detail["predecessor_prior_status"] == "failed"
+    revisit_of = _api_audit_actions(successor_detail, "revisit_of")
+    assert [e["payload"]["prior_status"] for e in revisit_of] == ["failed"]
 
 
 def test_api_rollup_c3_retry_fails_again_transition(
@@ -3643,7 +3692,29 @@ def test_api_rollup_c8_cancelled_only_successor(
         org_state, "S1", status=TaskStatus.CANCELLED, parent="ROOT-A",
         revisit="F1",
     )
+    _api_seed_revisit_history(org_state, "S1", "F1")
     assert _api_root_rollup(app, auth_headers) == "in_progress"
+
+    # The cancelled successor row/history is preserved and readable through the
+    # shipped endpoints; cancellation is never successful retirement.
+    root_detail = _api_task_detail(app, auth_headers, "ROOT-A")
+    assert root_detail["task"]["status"] == "in_progress"
+    failed_detail = _api_task_detail(app, auth_headers, "F1")
+    assert failed_detail["task"]["status"] == "failed"
+    assert failed_detail["direct_revisits"] == ["S1"]
+    assert [
+        e["payload"]["new_root"]
+        for e in _api_audit_actions(failed_detail, "revisit_spawned")
+    ] == ["S1"]
+    cancelled_detail = _api_task_detail(app, auth_headers, "S1")
+    assert cancelled_detail["task"]["status"] == "cancelled"
+    assert cancelled_detail["task"]["revisit_of_task_id"] == "F1"
+    assert cancelled_detail["revisit_chain"] == ["S1", "F1"]
+    assert cancelled_detail["predecessor_prior_status"] == "failed"
+    assert [
+        e["payload"]["prior_status"]
+        for e in _api_audit_actions(cancelled_detail, "revisit_of")
+    ] == ["failed"]
 
 
 def test_api_rollup_c8_cancelled_plus_failed_parallel(
@@ -3661,10 +3732,19 @@ def test_api_rollup_c8_cancelled_plus_failed_parallel(
         org_state, "S1", status=TaskStatus.CANCELLED, parent="ROOT-A",
         revisit="F1",
     )
+    # The competing successor shares predecessor F1 (same parent), so the
+    # cancellation must not clear the still-unresolved FAILED sibling.
     _api_seed_rollup_task(
         org_state, "F2", status=TaskStatus.FAILED, parent="ROOT-A",
+        revisit="F1",
     )
     assert _api_root_rollup(app, auth_headers) == "failed"
+    assert org_state.db.get_task("F1").status == TaskStatus.FAILED
+    assert org_state.db.get_task("F2").status == TaskStatus.FAILED
+    assert set(org_state.db.get_direct_revisits("F1")) == {"S1", "F2"}
+    detail = _api_task_detail(app, auth_headers, "F1")
+    assert detail["task"]["status"] == "failed"
+    assert set(detail["direct_revisits"]) == {"S1", "F2"}
 
 
 def test_api_rollup_c8_cancelled_plus_escalated_parallel(
@@ -3682,10 +3762,21 @@ def test_api_rollup_c8_cancelled_plus_escalated_parallel(
         org_state, "S1", status=TaskStatus.CANCELLED, parent="ROOT-A",
         revisit="F1",
     )
+    # The competing successor shares predecessor F1 (same parent); the
+    # escalation survives the cancellation.
     _api_seed_rollup_task(
         org_state, "E1", status=TaskStatus.ESCALATED, parent="ROOT-A",
+        revisit="F1",
     )
     assert _api_root_rollup(app, auth_headers) == "escalated"
+    assert org_state.db.get_task("F1").status == TaskStatus.FAILED
+    assert org_state.db.get_task("S1").status == TaskStatus.CANCELLED
+    assert org_state.db.get_task("E1").status == TaskStatus.ESCALATED
+    assert set(org_state.db.get_direct_revisits("F1")) == {"S1", "E1"}
+    detail = _api_task_detail(app, auth_headers, "E1")
+    assert detail["task"]["status"] == "escalated"
+    assert detail["task"]["revisit_of_task_id"] == "F1"
+    assert detail["revisit_chain"] == ["E1", "F1"]
 
 
 def test_api_rollup_c8_cross_parent_link_ignored(
@@ -3762,6 +3853,7 @@ def test_api_rollup_c9a_in_progress_root_refetch_transitions(
         org_state, "S1", status=TaskStatus.IN_PROGRESS, parent="ROOT-A",
         revisit="F1",
     )
+    _api_seed_revisit_history(org_state, "S1", "F1")
     assert _api_root_rollup(app, auth_headers) == "in_progress"
     org_state.db.update_task("S1", status=TaskStatus.COMPLETED)
     assert _api_root_rollup(app, auth_headers) == "in_progress"
@@ -3773,13 +3865,31 @@ def test_api_rollup_c9a_in_progress_root_refetch_transitions(
     assert org_state.db.get_task("ROOT-A").status == TaskStatus.IN_PROGRESS
     assert org_state.db.get_task("S1").status == TaskStatus.COMPLETED
     assert org_state.db.get_task("F2").status == TaskStatus.FAILED
-    # History retained: the failed rows and the revisit chain still read back.
-    detail = TestClient(app).get(
-        "/api/v1/orgs/alpha/tasks/F1", headers=auth_headers,
-    )
-    assert detail.status_code == 200
-    assert org_state.db.get_task("F1").status == TaskStatus.FAILED
-    assert org_state.db.get_direct_revisits("F1") == ["S1"]
+    # The failed leaf, revisit chain and seeded audit history survive the
+    # accepted transitions, read back through the shipped detail endpoint.
+    failed_detail = _api_task_detail(app, auth_headers, "F1")
+    assert failed_detail["task"]["status"] == "failed"
+    assert failed_detail["direct_revisits"] == ["S1"]
+    assert failed_detail["revisit_chain"] == ["F1"]
+    assert [
+        e["payload"]["new_root"]
+        for e in _api_audit_actions(failed_detail, "revisit_spawned")
+    ] == ["S1"]
+    successor_detail = _api_task_detail(app, auth_headers, "S1")
+    assert successor_detail["task"]["status"] == "completed"
+    assert successor_detail["task"]["revisit_of_task_id"] == "F1"
+    assert successor_detail["revisit_chain"] == ["S1", "F1"]
+    assert successor_detail["predecessor_prior_status"] == "failed"
+    assert [
+        e["payload"]["prior_status"]
+        for e in _api_audit_actions(successor_detail, "revisit_of")
+    ] == ["failed"]
+    recurrence_detail = _api_task_detail(app, auth_headers, "F2")
+    assert recurrence_detail["task"]["status"] == "failed"
+    assert recurrence_detail["task"]["revisit_of_task_id"] is None
+    assert recurrence_detail["revisit_chain"] == ["F2"]
+    # The root's own row is never rewritten by the derive.
+    assert _api_task_detail(app, auth_headers, "ROOT-A")["task"]["status"] == "in_progress"
 
 
 def test_api_rollup_c9b_completed_root_refetch_transitions(
@@ -3798,6 +3908,7 @@ def test_api_rollup_c9b_completed_root_refetch_transitions(
         org_state, "S1", status=TaskStatus.IN_PROGRESS, parent="ROOT-A",
         revisit="F1",
     )
+    _api_seed_revisit_history(org_state, "S1", "F1")
     assert _api_root_rollup(app, auth_headers) == "in_progress"
     org_state.db.update_task("S1", status=TaskStatus.COMPLETED)
     assert _api_root_rollup(app, auth_headers) == "completed"
@@ -3807,6 +3918,24 @@ def test_api_rollup_c9b_completed_root_refetch_transitions(
     assert _api_root_rollup(app, auth_headers) == "failed"
     assert org_state.db.get_task("ROOT-A").status == TaskStatus.COMPLETED
     assert org_state.db.get_task("S1").status == TaskStatus.COMPLETED
+    # The completed root, its recovered lineage and the seeded audit history
+    # survive through the shipped detail endpoint.
+    assert _api_task_detail(app, auth_headers, "ROOT-A")["task"]["status"] == "completed"
+    failed_detail = _api_task_detail(app, auth_headers, "F1")
+    assert failed_detail["task"]["status"] == "failed"
+    assert failed_detail["direct_revisits"] == ["S1"]
+    assert [
+        e["payload"]["new_root"]
+        for e in _api_audit_actions(failed_detail, "revisit_spawned")
+    ] == ["S1"]
+    successor_detail = _api_task_detail(app, auth_headers, "S1")
+    assert successor_detail["task"]["status"] == "completed"
+    assert successor_detail["task"]["revisit_of_task_id"] == "F1"
+    assert successor_detail["revisit_chain"] == ["S1", "F1"]
+    assert successor_detail["predecessor_prior_status"] == "failed"
+    recurrence_detail = _api_task_detail(app, auth_headers, "F2")
+    assert recurrence_detail["task"]["status"] == "failed"
+    assert recurrence_detail["task"]["revisit_of_task_id"] is None
 
 
 def test_api_rollup_c11_out_of_subtree_successor_ignored(

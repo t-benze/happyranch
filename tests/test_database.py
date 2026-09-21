@@ -3650,23 +3650,41 @@ def test_list_roots_rollup_c8_cancelled_only_successor(db):
 
 
 def test_list_roots_rollup_c8_cancelled_plus_failed_parallel(db):
+    """Cancelled and FAILED successors share predecessor F1 (same parent), so
+    the cancellation cannot clear the still-unresolved FAILED successor."""
     _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
     _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
     _insert_rollup_task(
         db, "S1", status=TaskStatus.CANCELLED, parent="ROOT-1", revisit="F1",
     )
-    _insert_rollup_task(db, "F2", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "F2", status=TaskStatus.FAILED, parent="ROOT-1", revisit="F1",
+    )
     assert _rollup_of(db) == "failed"
+    # Shared-predecessor topology and the stored rows/links are unchanged.
+    assert db.get_task("F1").status == TaskStatus.FAILED
+    assert db.get_task("F2").status == TaskStatus.FAILED
+    assert db.get_task("S1").status == TaskStatus.CANCELLED
+    assert set(db.get_direct_revisits("F1")) == {"S1", "F2"}
 
 
 def test_list_roots_rollup_c8_cancelled_plus_escalated_parallel(db):
+    """Cancelled and ESCALATED successors share predecessor F1 (same parent);
+    the escalation survives the cancellation."""
     _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
     _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
     _insert_rollup_task(
         db, "S1", status=TaskStatus.CANCELLED, parent="ROOT-1", revisit="F1",
     )
-    _insert_rollup_task(db, "E1", status=TaskStatus.ESCALATED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "E1", status=TaskStatus.ESCALATED, parent="ROOT-1", revisit="F1",
+    )
     assert _rollup_of(db) == "escalated"
+    # Shared-predecessor topology and the stored rows/links are unchanged.
+    assert db.get_task("F1").status == TaskStatus.FAILED
+    assert db.get_task("E1").status == TaskStatus.ESCALATED
+    assert db.get_task("S1").status == TaskStatus.CANCELLED
+    assert set(db.get_direct_revisits("F1")) == {"S1", "E1"}
 
 
 def test_list_roots_rollup_c8_cross_parent_link_ignored(db):
