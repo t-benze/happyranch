@@ -151,6 +151,153 @@ describe('captured destination and late-result ownership (C8)', () => {
     expect(localStorage.getItem('happyranch:draft:beta:THR-001')).toBe('B draft');
   });
 
+  test('a departed upload never reads the replacement view selections when selection ids remount (R1)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(...orgHandlers('alpha', ['THR-001']), ...orgHandlers('beta', ['THR-001']));
+    const uploads: string[] = [];
+    const sends: { org: string; body: unknown }[] = [];
+    let releaseAlpha: () => void = () => {};
+    const heldAlpha = new Promise<void>((resolve) => { releaseAlpha = resolve; });
+    server.use(
+      http.post('/api/v1/orgs/alpha/artifacts', async ({ request }) => {
+        const name = requestedName(request);
+        uploads.push('alpha/' + name);
+        // Hold alpha's first upload across the org switch.
+        if (name.endsWith('a.txt')) await heldAlpha;
+        return HttpResponse.json({ name, size_bytes: 3, modified_at: 'now' });
+      }),
+      http.post('/api/v1/orgs/beta/artifacts', async ({ request }) => {
+        const name = requestedName(request);
+        uploads.push('beta/' + name);
+        return HttpResponse.json({ name, size_bytes: 3, modified_at: 'now' });
+      }),
+      http.post('/api/v1/orgs/alpha/threads/THR-001/send', async ({ request }) => {
+        sends.push({ org: 'alpha', body: await request.json() });
+        return HttpResponse.json({ thread_id: 'THR-001', seq: 2 });
+      }),
+      http.post('/api/v1/orgs/beta/threads/THR-001/send', async ({ request }) => {
+        sends.push({ org: 'beta', body: await request.json() });
+        return HttpResponse.json({ detail: { code: 'thread_not_open' } }, { status: 400 });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(
+      <>
+        <AppRoutes />
+        <NavTo to="/orgs/beta/threads/THR-001" label="nav-beta" />
+      </>,
+      { route: '/orgs/alpha/threads/THR-001' },
+    );
+    await user.upload(await screen.findByLabelText(/Attach files/i), [
+      new File(['AAA'], 'a.txt', { type: 'text/plain' }),
+      new File(['BBB'], 'b.txt', { type: 'text/plain' }),
+    ]);
+    fireEvent.click(screen.getByRole('button', { name: /^Send$/i }));
+    await waitFor(() => expect(uploads).toHaveLength(1));
+
+    // Beta's remounted Composer restarts selection ids at `sel-1`; it must not
+    // be read by alpha's still-running upload loop.
+    await user.click(await screen.findByRole('button', { name: 'nav-beta' }));
+    const betaAttach = await screen.findByLabelText(/Attach files/i);
+    await waitFor(() => expect(betaAttach).not.toBeDisabled());
+    await user.upload(betaAttach, [
+      new File(['XXX'], 'x.txt', { type: 'text/plain' }),
+      new File(['YYY'], 'y.txt', { type: 'text/plain' }),
+    ]);
+    await user.click(screen.getByRole('button', { name: /^Send$/i }));
+    await screen.findByText('This thread is no longer open.');
+
+    releaseAlpha();
+    await waitFor(() => expect(sends.filter((s) => s.org === 'alpha')).toHaveLength(1));
+
+    const alphaSend = sends.find((s) => s.org === 'alpha')!;
+    const betaSend = sends.find((s) => s.org === 'beta')!;
+    expect((alphaSend.body as { attachments: { display_name: string }[] }).attachments.map((r) => r.display_name)).toEqual(['a.txt', 'b.txt']);
+    expect((betaSend.body as { attachments: { display_name: string }[] }).attachments.map((r) => r.display_name)).toEqual(['x.txt', 'y.txt']);
+    // Alpha's own B is uploaded (4 total) rather than silently substituted by beta's y.txt.
+    expect(uploads).toHaveLength(4);
+    expect(uploads.filter((u) => u.endsWith('b.txt'))).toHaveLength(1);
+  });
+
+  test('a held send response in one org does not leak pending into the replacement org (R3)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(...orgHandlers('alpha', ['THR-001']), ...orgHandlers('beta', ['THR-001']));
+    const sends: { org: string; body: unknown }[] = [];
+    let releaseAlphaSend: () => void = () => {};
+    let releaseBetaSend: () => void = () => {};
+    const heldAlphaSend = new Promise<void>((resolve) => { releaseAlphaSend = resolve; });
+    const heldBetaSend = new Promise<void>((resolve) => { releaseBetaSend = resolve; });
+    server.use(
+      http.post('/api/v1/orgs/alpha/artifacts', async ({ request }) =>
+        HttpResponse.json({ name: requestedName(request), size_bytes: 3, modified_at: 'now' }),
+      ),
+      http.post('/api/v1/orgs/beta/artifacts', async ({ request }) =>
+        HttpResponse.json({ name: requestedName(request), size_bytes: 3, modified_at: 'now' }),
+      ),
+      http.post('/api/v1/orgs/alpha/threads/THR-001/send', async ({ request }) => {
+        sends.push({ org: 'alpha', body: await request.json() });
+        await heldAlphaSend;
+        return HttpResponse.json({ thread_id: 'THR-001', seq: 2 });
+      }),
+      http.post('/api/v1/orgs/beta/threads/THR-001/send', async ({ request }) => {
+        sends.push({ org: 'beta', body: await request.json() });
+        await heldBetaSend;
+        return HttpResponse.json({ thread_id: 'THR-001', seq: 2 });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(
+      <>
+        <AppRoutes />
+        <NavTo to="/orgs/beta/threads/THR-001" label="nav-beta" />
+      </>,
+      { route: '/orgs/alpha/threads/THR-001' },
+    );
+    const alphaComposer = await screen.findByLabelText(/Compose follow-up/i);
+    await user.type(alphaComposer, 'alpha held');
+    await user.upload(
+      screen.getByLabelText(/Attach files/i),
+      new File(['AAA'], 'a.txt', { type: 'text/plain' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^Send$/i }));
+    await waitFor(() => expect(sends.filter((s) => s.org === 'alpha')).toHaveLength(1));
+
+    // The actual alpha POST response is still held; the replacement org must be
+    // usable immediately (it shares thread id THR-001 and the mutation observer).
+    await user.click(await screen.findByRole('button', { name: 'nav-beta' }));
+    const betaComposer = await screen.findByLabelText(/Compose follow-up/i);
+    await waitFor(() => expect(betaComposer).not.toBeDisabled());
+    await user.type(betaComposer, 'beta draft');
+    await user.upload(
+      screen.getByLabelText(/Attach files/i),
+      new File(['XXX'], 'x.txt', { type: 'text/plain' }),
+    );
+    await waitFor(() => expect(localStorage.getItem('happyranch:draft:beta:THR-001')).toBe('beta draft'), { timeout: 1500 });
+
+    // Beta starts its OWN held submission; alpha's late finalizer must not
+    // unlock beta's pending run.
+    fireEvent.click(screen.getByRole('button', { name: /^Send$/i }));
+    await waitFor(() => expect(sends.filter((s) => s.org === 'beta')).toHaveLength(1));
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Send$/i })).toBeDisabled());
+
+    releaseAlphaSend();
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Send$/i })).toBeDisabled());
+    expect(screen.queryByText('This thread is no longer open.')).toBeNull();
+
+    releaseBetaSend();
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Send$/i })).not.toBeDisabled());
+    const alphaSend = sends.find((s) => s.org === 'alpha')!;
+    const betaSend = sends.find((s) => s.org === 'beta')!;
+    expect((alphaSend.body as { attachments: { display_name: string }[] }).attachments.map((r) => r.display_name)).toEqual(['a.txt']);
+    expect((betaSend.body as { attachments: { display_name: string }[] }).attachments.map((r) => r.display_name)).toEqual(['x.txt']);
+    await waitFor(() =>
+      expect((screen.getByLabelText(/Compose follow-up/i) as HTMLTextAreaElement).value).toBe(''),
+    );
+    expect(screen.queryByText('x.txt')).toBeNull();
+  });
+
   test('A -> B -> A does not let the stale A success clear the new A draft (C8.1b)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(...orgHandlers('alpha', ['THR-001', 'THR-002']));

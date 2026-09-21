@@ -90,10 +90,13 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
   const bodyId = `${idBase}-body`;
 
   useEffect(() => {
-    // Every open/close/prefill transition invalidates in-flight work. Bumping
+    // Every open/close/prefill/org transition invalidates in-flight work. Bumping
     // BEFORE the `!open` early return means a close that is never reopened also
     // abandons the submission, so a late completion cannot close, navigate,
-    // reset or consume a departed dialog's state.
+    // reset or consume a departed dialog's state. Org (`slug`) is part of the
+    // ownership key: an org switch during an upload must invalidate the
+    // captured submission even when `open`/`prefill` are unchanged, so a late
+    // alpha success cannot navigate the beta view back to alpha.
     dialogGenRef.current += 1;
     submittingRef.current = false;
     setUploading(false);
@@ -105,7 +108,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
     setBody(prefill?.body ?? '');
     setPendingAttachments([]);
     setErrorMsg(null);
-  }, [open, prefill]);
+  }, [open, prefill, slug]);
 
   // Full unmount must also abandon any in-flight submission.
   useEffect(() => () => { dialogGenRef.current += 1; }, []);
@@ -139,12 +142,18 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
     let failedUpload: PendingAttachment | null = null;
     try {
       const refs: ThreadAttachmentRef[] = [];
-      const reserved = new Set<string>(attachmentNamesRef.current.values());
+      // Run-owned snapshot; every read below uses this copy. Selection ids
+      // restart on a fresh dialog (`nsel-1`), so reading the shared maps after
+      // an await could substitute a reopened dialog's selection (mirrors the
+      // ThreadsPage repair).
+      const runRefs = new Map(attachmentRefsRef.current);
+      const runNames = new Map(attachmentNamesRef.current);
+      const reserved = new Set(runNames.values());
       for (const pending of pendingAttachments) {
         failedUpload = pending;
-        let ref = attachmentRefsRef.current.get(pending.id);
+        let ref = runRefs.get(pending.id);
         if (!ref) {
-          let artifactName = attachmentNamesRef.current.get(pending.id);
+          let artifactName = runNames.get(pending.id);
           if (!artifactName) {
             artifactName = allocateArtifactName(
               'thread-draft',
@@ -152,8 +161,9 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
               reserved,
               allocatedNamesRef.current,
             );
-            if (isCurrent()) attachmentNamesRef.current.set(pending.id, artifactName);
           }
+          runNames.set(pending.id, artifactName);
+          if (isCurrent()) attachmentNamesRef.current.set(pending.id, artifactName);
           allocatedNamesRef.current.add(artifactName);
           const uploaded = await artifactsApi.uploadArtifact(capturedSlug, {
             file: pending.file,
@@ -165,6 +175,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
             display_name: pending.file.name,
             content_type: attachmentContentType(pending.file),
           };
+          runRefs.set(pending.id, ref);
           if (isCurrent()) attachmentRefsRef.current.set(pending.id, ref);
           reserved.add(uploaded.name);
         }
@@ -224,6 +235,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
     }
     const capturedSlug = slug;
 
+    setUploading(true);
     try {
       const result = await compose.mutateAsync({
         subject: `Reflection - ${agentName}`,
@@ -243,11 +255,16 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
         );
         submittingRef.current = false;
       }
+    } finally {
+      if (isCurrent()) setUploading(false);
     }
   }, [reflection, compose, onCreated, onClose, slug]);
 
-  // Upload phase + compose phase both disable the dialog's controls.
-  const inFlight = uploading || compose.isPending;
+  // The dialog's OWN run state owns pending presentation for the whole
+  // upload+compose (and Reflection) lifecycle. The surviving mutation
+  // observer's `compose.isPending` would leak a closed/reopened dialog's
+  // pending state into the replacement dialog.
+  const inFlight = uploading;
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent>

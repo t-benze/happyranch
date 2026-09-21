@@ -586,10 +586,12 @@ export function ThreadsPage(): JSX.Element {
   };
   const [composerError, setComposerError] = useState<string | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
-  // True while the upload phase of a submission is in flight, so the composer
-  // disables attach/send/remove from the first click (React Query's isPending
-  // only flips after the uploads finish).
-  const [uploadPending, setUploadPending] = useState(false);
+  // True for the WHOLE owned run (upload + send + late finalizer), so the
+  // composer disables attach/send/remove from the first click. It is owned
+  // synchronous run state rather than the surviving mutation observer's
+  // `isPending`, whose pending flag would otherwise leak a departed run into
+  // the replacement view (same thread id across orgs keeps one observer).
+  const [submissionPending, setSubmissionPending] = useState(false);
   // Per-selection upload results/names are retained across a failed attempt so
   // a retry re-uploads only the selections that do not already have a ref.
   const attachmentRefsRef = useRef<Map<string, ThreadAttachmentRef>>(new Map());
@@ -610,7 +612,7 @@ export function ThreadsPage(): JSX.Element {
     attachmentRefsRef.current.clear();
     attachmentNamesRef.current.clear();
     setPendingAttachments([]);
-    setUploadPending(false);
+    setSubmissionPending(false);
     setComposerError(null);
   }, [threadId, slug]);
 
@@ -673,19 +675,27 @@ export function ThreadsPage(): JSX.Element {
     const capturedThreadId = threadId;
     const generation = (submissionGenRef.current += 1);
     const isCurrent = () => submissionGenRef.current === generation;
+    // Run-owned snapshot of the retained ref/name maps. Every read below uses
+    // this copy only. Composer selection ids restart at `sel-1` on remount, so
+    // reading the shared view maps after an await could otherwise substitute a
+    // replacement view's selection (reviewer reproduction: alpha sent [a, y]).
+    // Writes back to the view maps stay generation-guarded so a departed run
+    // cannot seed the replacement cache.
+    const runRefs = new Map(attachmentRefsRef.current);
+    const runNames = new Map(attachmentNamesRef.current);
+    const reserved = new Set(runNames.values());
     setComposerError(null);
-    setUploadPending(true);
+    setSubmissionPending(true);
     // Identifies the selection whose upload failed; cleared once uploads
     // succeed so a later send failure is never blamed on the last file.
     let failedUpload: PendingAttachment | null = null;
     try {
       const refs: ThreadAttachmentRef[] = [];
-      const reserved = new Set<string>(attachmentNamesRef.current.values());
       for (const pending of attachments) {
         failedUpload = pending;
-        let ref = attachmentRefsRef.current.get(pending.id);
+        let ref = runRefs.get(pending.id);
         if (!ref) {
-          let artifactName = attachmentNamesRef.current.get(pending.id);
+          let artifactName = runNames.get(pending.id);
           if (!artifactName) {
             artifactName = allocateArtifactName(
               capturedThreadId,
@@ -693,11 +703,12 @@ export function ThreadsPage(): JSX.Element {
               reserved,
               allocatedNamesRef.current,
             );
-            // Only the owning view may publish into the shared cache maps; a
-            // departed submission's allocation must not be adopted by the view
-            // that replaced it.
-            if (isCurrent()) attachmentNamesRef.current.set(pending.id, artifactName);
           }
+          runNames.set(pending.id, artifactName);
+          // Only the owning view may publish into the shared cache maps; a
+          // departed submission's allocation must not be adopted by the view
+          // that replaced it.
+          if (isCurrent()) attachmentNamesRef.current.set(pending.id, artifactName);
           allocatedNamesRef.current.add(artifactName);
           const uploaded = await artifactsApi.uploadArtifact(capturedSlug, {
             file: pending.file,
@@ -709,6 +720,7 @@ export function ThreadsPage(): JSX.Element {
             display_name: pending.file.name,
             content_type: attachmentContentType(pending.file),
           };
+          runRefs.set(pending.id, ref);
           if (isCurrent()) attachmentRefsRef.current.set(pending.id, ref);
           reserved.add(uploaded.name);
         }
@@ -736,7 +748,7 @@ export function ThreadsPage(): JSX.Element {
       }
       throw err;
     } finally {
-      if (isCurrent()) setUploadPending(false);
+      if (isCurrent()) setSubmissionPending(false);
     }
   };
 
@@ -989,7 +1001,7 @@ export function ThreadsPage(): JSX.Element {
               threadId={threadId ?? ''}
               orgSlug={slug ?? ''}
               disabled={activeThread.data?.status !== 'open'}
-              pending={uploadPending || sendFollowUp.isPending}
+              pending={submissionPending}
               errorMessage={composerError}
               helper={S.composerHelper}
               onSend={onSendFollowUp}

@@ -542,17 +542,21 @@ Traps:
   one never removes the other.
 - A partially failed attempt retains each already-uploaded selection's ref by selection id, so a retry
   re-uploads only the selections without a ref and preserves the send order. Removing a failed or
-  completed selection invalidates only that selection's cached ref.
+  completed selection invalidates only that selection's cached ref. Each submission reads a run-owned
+  snapshot of those ref/name caches, so a departed run cannot observe a replacement view's selections
+  even though `Composer` selection ids restart at `sel-1` on remount.
 - Each selection's artifact name is reserved once (`allocateArtifactName`) and reused verbatim, and the
   page never reuses a name it has already allocated. The allocator searches upward past the former
   1000-index ceiling until it finds a free candidate, so it never returns an occupied name; without this, a
   same-second retry could regenerate a retained name and `ArtifactStore.put` would replace the retained
   artifact's bytes.
-- `Composer.submit` has a synchronous in-flight latch and the pages track the upload phase, so a
-  double-click / Enter+Send during a held upload produces exactly one submission and disables
+- `Composer.submit` has a synchronous in-flight latch and the pages own the run's pending presentation, so
+  a double-click / Enter+Send during a held upload produces exactly one submission and disables
   attach/send/remove until it settles. The latch is released on failure and reset when the destination
   changes, so a submission left in flight by a departed view cannot block the replacement view's first
-  submit.
+  submit. Pending is the run's own state, not the surviving mutation observer's `isPending`, so a held send
+  (or compose) in a departed org/thread — including the same thread id in another org — cannot disable the
+  replacement view.
 - Each submission captures its destination `(orgSlug, threadId/dialog, payload)` at first submit; uploads,
   the send and the new-thread compose use that snapshot, and late results only mutate the originating view
   while it is still mounted and active. The destination is an ORG-scoped generation, not just a thread id:

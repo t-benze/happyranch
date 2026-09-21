@@ -5,7 +5,7 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
@@ -20,6 +20,11 @@ function NavTo({ to, label, testId }: { to: string; label: string; testId?: stri
       {label}
     </button>
   );
+}
+
+function LocationProbe() {
+  const location = useLocation();
+  return <span data-testid="review-location">{location.pathname}</span>;
 }
 
 function stubBaseHandlers() {
@@ -64,6 +69,28 @@ function stubCreatedThread(threadId: string) {
 
 function requestedName(request: Request): string {
   return new URL(request.url).searchParams.get('name') ?? '';
+}
+
+type CapturedPart = { field: string; filename: string; originalName: string; size: number };
+
+/** Observe the real FormData preparation seam (actual File name + size). */
+function captureFormParts() {
+  const parts: CapturedPart[] = [];
+  const originalSet = FormData.prototype.set;
+  const spy = vi
+    .spyOn(FormData.prototype, 'set')
+    .mockImplementation(function (this: FormData, field: string, value: unknown, filename?: string) {
+      if (value instanceof File) {
+        parts.push({
+          field,
+          filename: filename ?? value.name,
+          originalName: value.name,
+          size: value.size,
+        });
+      }
+      return originalSet.call(this, field, value as Blob, filename);
+    });
+  return { parts, restore: () => spy.mockRestore() };
 }
 
 async function openDialog(user: ReturnType<typeof userEvent.setup>) {
@@ -133,10 +160,11 @@ describe('NewThreadDialog attachments', () => {
     });
   });
 
-  test('a 413 upload rejection sends no compose and keeps the dialog open (C2 new-thread)', async () => {
+  test('a 413 upload rejection sends no compose, keeps the dialog open and retains the File (C2.4 new-thread)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubBaseHandlers();
     let composeCount = 0;
+    const { parts, restore } = captureFormParts();
     server.use(
       http.post(`/api/v1/orgs/${SLUG}/artifacts`, () =>
         HttpResponse.json(
@@ -153,21 +181,35 @@ describe('NewThreadDialog attachments', () => {
       }),
     );
 
-    const user = userEvent.setup();
-    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads` });
-    await openDialog(user);
-    await user.type(screen.getByLabelText(/^Subject$/i), 'Hi');
-    await user.type(screen.getByLabelText(/^Recipients/i), 'agent_a');
-    await user.upload(
-      screen.getByLabelText(/Attach files/i),
-      new File(['0123456789'], 'big.txt', { type: 'text/plain' }),
-    );
-    await user.click(screen.getByRole('button', { name: /^Send$/i }));
+    try {
+      const user = userEvent.setup();
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads` });
+      await openDialog(user);
+      await user.type(screen.getByLabelText(/^Subject$/i), 'Hi');
+      await user.type(screen.getByLabelText(/^Recipients/i), 'agent_a');
+      await user.upload(
+        screen.getByLabelText(/Attach files/i),
+        new File(['0123456789'], 'big.txt', { type: 'text/plain' }),
+      );
+      await user.click(screen.getByRole('button', { name: /^Send$/i }));
 
-    const error = await screen.findByText(/too large to upload/i);
-    expect(error.textContent).toContain('big.txt');
-    expect(composeCount).toBe(0);
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
+      const error = await screen.findByText(/too large to upload/i);
+      expect(error.textContent).toContain('big.txt');
+      expect(composeCount).toBe(0);
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      expect(parts).toHaveLength(1);
+      expect(parts[0].originalName).toBe('big.txt');
+      expect(parts[0].size).toBe(10);
+      expect(screen.getAllByText(/big\.txt/).length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByLabelText(/^Subject$/i)).toHaveValue('Hi');
+      expect(screen.getByLabelText(/Attach files/i)).not.toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Remove attachment' })).not.toBeDisabled();
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /^Send$/i })).not.toBeDisabled(),
+      );
+    } finally {
+      restore();
+    }
   });
 
   test('a closed/reopened dialog is not closed by the abandoned submission (C8.3)', async () => {
@@ -215,7 +257,7 @@ describe('NewThreadDialog attachments', () => {
 });
 
 describe('NewThreadDialog — remaining failure seams, retry and abandonment (TASK-8616)', () => {
-  test('an invoked preparation failure fetches nothing and names the file (C2.1)', async () => {
+  test('an invoked preparation failure fetches nothing and names the file (C2.1 new-thread)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubBaseHandlers();
     let artifactFetches = 0;
@@ -230,7 +272,17 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
         return HttpResponse.json({ thread_id: 'THR-NEW', started_at: 'now', pending_replies: 1 });
       }),
     );
-    const setSpy = vi.spyOn(FormData.prototype, 'set').mockImplementationOnce(() => {
+    let capturedName = '';
+    let capturedSize = -1;
+    const setSpy = vi.spyOn(FormData.prototype, 'set').mockImplementationOnce(function (
+      _field: string,
+      value: string | Blob,
+      _filename?: string,
+    ) {
+      if (value instanceof File) {
+        capturedName = value.name;
+        capturedSize = value.size;
+      }
       throw new Error('simulated preparation failure');
     });
     try {
@@ -247,20 +299,27 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
       expect(error.textContent).toContain('prep.txt');
       expect(artifactFetches).toBe(0);
       expect(composeCount).toBe(0);
+      expect(capturedName).toBe('prep.txt');
+      expect(capturedSize).toBe(3);
+      expect(screen.getAllByText(/prep\.txt/).length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByLabelText(/^Subject$/i)).toHaveValue('Hi');
       // Controls are released for a retry.
       await waitFor(() =>
         expect(screen.getByRole('button', { name: /^Send$/i })).not.toBeDisabled(),
       );
+      expect(screen.getByLabelText(/Attach files/i)).not.toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Remove attachment' })).not.toBeDisabled();
     } finally {
       setSpy.mockRestore();
     }
   });
 
-  test('a transport-unknown upload attempts once and never composes (C2.2)', async () => {
+  test('a transport-unknown upload attempts once, never composes and retains the File (C2.2 new-thread)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubBaseHandlers();
     let uploadCount = 0;
     let composeCount = 0;
+    const { parts, restore } = captureFormParts();
     server.use(
       http.post(`/api/v1/orgs/${SLUG}/artifacts`, () => {
         uploadCount += 1;
@@ -271,25 +330,39 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
         return HttpResponse.json({ thread_id: 'THR-NEW', started_at: 'now', pending_replies: 1 });
       }),
     );
-    const user = userEvent.setup();
-    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads` });
-    await openDialog(user);
-    await fillDialog(user, 'Hi');
-    await user.upload(
-      screen.getByLabelText(/Attach files/i),
-      new File(['abc'], 'note.txt', { type: 'text/plain' }),
-    );
-    await user.click(screen.getByRole('button', { name: /^Send$/i }));
-    await screen.findByText(/Failed to fetch/i);
-    expect(uploadCount).toBe(1);
-    expect(composeCount).toBe(0);
-    expect(screen.getAllByText(/note\.txt/).length).toBeGreaterThanOrEqual(1);
+    try {
+      const user = userEvent.setup();
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads` });
+      await openDialog(user);
+      await fillDialog(user, 'Hi');
+      await user.upload(
+        screen.getByLabelText(/Attach files/i),
+        new File(['abc'], 'note.txt', { type: 'text/plain' }),
+      );
+      await user.click(screen.getByRole('button', { name: /^Send$/i }));
+      await screen.findByText(/Failed to fetch/i);
+      expect(uploadCount).toBe(1);
+      expect(composeCount).toBe(0);
+      expect(screen.getAllByText(/note\.txt/).length).toBeGreaterThanOrEqual(1);
+      expect(parts).toHaveLength(1);
+      expect(parts[0].originalName).toBe('note.txt');
+      expect(parts[0].size).toBe(3);
+      expect(screen.getByLabelText(/^Subject$/i)).toHaveValue('Hi');
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /^Send$/i })).not.toBeDisabled(),
+      );
+      expect(screen.getByLabelText(/Attach files/i)).not.toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Remove attachment' })).not.toBeDisabled();
+    } finally {
+      restore();
+    }
   });
 
-  test('a 400 upload rejection maps the code and keeps the dialog open (C2.3)', async () => {
+  test('a 400 upload rejection maps the code, keeps the dialog open and retains the File (C2.3 new-thread)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubBaseHandlers();
     let composeCount = 0;
+    const { parts, restore } = captureFormParts();
     server.use(
       http.post(`/api/v1/orgs/${SLUG}/artifacts`, () =>
         HttpResponse.json({ detail: { code: 'invalid_artifact_name' } }, { status: 400 }),
@@ -299,20 +372,33 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
         return HttpResponse.json({ thread_id: 'THR-NEW', started_at: 'now', pending_replies: 1 });
       }),
     );
-    const user = userEvent.setup();
-    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads` });
-    await openDialog(user);
-    await fillDialog(user, 'Hi');
-    await user.upload(
-      screen.getByLabelText(/Attach files/i),
-      new File(['abc'], 'weird?.txt', { type: 'text/plain' }),
-    );
-    await user.click(screen.getByRole('button', { name: /^Send$/i }));
-    const error = await screen.findByText(/name is not allowed/i);
-    expect(error.textContent).toContain('weird?.txt');
-    expect(composeCount).toBe(0);
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(screen.getAllByText(/weird\?\.txt/).length).toBeGreaterThanOrEqual(1);
+    try {
+      const user = userEvent.setup();
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads` });
+      await openDialog(user);
+      await fillDialog(user, 'Hi');
+      await user.upload(
+        screen.getByLabelText(/Attach files/i),
+        new File(['abc'], 'weird?.txt', { type: 'text/plain' }),
+      );
+      await user.click(screen.getByRole('button', { name: /^Send$/i }));
+      const error = await screen.findByText(/name is not allowed/i);
+      expect(error.textContent).toContain('weird?.txt');
+      expect(composeCount).toBe(0);
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      expect(screen.getAllByText(/weird\?\.txt/).length).toBeGreaterThanOrEqual(1);
+      expect(parts).toHaveLength(1);
+      expect(parts[0].originalName).toBe('weird?.txt');
+      expect(parts[0].size).toBe(3);
+      expect(screen.getByLabelText(/^Subject$/i)).toHaveValue('Hi');
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /^Send$/i })).not.toBeDisabled(),
+      );
+      expect(screen.getByLabelText(/Attach files/i)).not.toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Remove attachment' })).not.toBeDisabled();
+    } finally {
+      restore();
+    }
   });
 
   test('a retained selection is not re-uploaded on retry and both refs compose (C3.1 new-thread)', async () => {
@@ -358,6 +444,176 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
     expect(uploadedNames).toHaveLength(3);
     const refs = (composeBody as { attachments: { display_name: string }[] }).attachments;
     expect(refs.map((r) => r.display_name)).toEqual(['a.txt', 'b.txt']);
+  });
+
+  test('three new-thread files with the middle failing once make 4 uploads and one compose [A,B,C] (C3.2 new-thread)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubBaseHandlers();
+    stubCreatedThread('THR-NEW');
+    const uploadedNames: string[] = [];
+    let composeBody: unknown = null;
+    let composeCount = 0;
+    let bFailed = false;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/artifacts`, async ({ request }) => {
+        const name = requestedName(request);
+        uploadedNames.push(name);
+        if (name.endsWith('b.txt') && !bFailed) {
+          bFailed = true;
+          return HttpResponse.error();
+        }
+        return HttpResponse.json({ name, size_bytes: 3, modified_at: 'now' });
+      }),
+      http.post(`/api/v1/orgs/${SLUG}/threads`, async ({ request }) => {
+        composeCount += 1;
+        composeBody = await request.json();
+        return HttpResponse.json(
+          { thread_id: 'THR-NEW', started_at: 'now', pending_replies: 1 },
+          { status: 201 },
+        );
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads` });
+    await openDialog(user);
+    await fillDialog(user, 'Hi');
+    await user.upload(screen.getByLabelText(/Attach files/i), [
+      new File(['aaa'], 'a.txt', { type: 'text/plain' }),
+      new File(['bbb'], 'b.txt', { type: 'text/plain' }),
+      new File(['ccc'], 'c.txt', { type: 'text/plain' }),
+    ]);
+    await user.click(screen.getByRole('button', { name: /^Send$/i }));
+    await screen.findByText(/Failed to fetch/i);
+    // Zero compose on the failed attempt; the failed selection is retained.
+    expect(composeCount).toBe(0);
+    expect(screen.getAllByText(/b\.txt/).length).toBeGreaterThanOrEqual(1);
+    await user.click(screen.getByRole('button', { name: /^Send$/i }));
+    await waitFor(() => expect(composeCount).toBe(1));
+    expect(uploadedNames).toHaveLength(4);
+    const refs = (composeBody as { attachments: { artifact_name: string; display_name: string }[] }).attachments;
+    // Exact retained-ref identity: A reused, B retried under its retained name,
+    // C uploaded once — one compose carrying all three in selection order.
+    expect(refs.map((r) => r.artifact_name)).toEqual([
+      uploadedNames[0],
+      uploadedNames[2],
+      uploadedNames[3],
+    ]);
+    expect(refs.map((r) => r.display_name)).toEqual(['a.txt', 'b.txt', 'c.txt']);
+  });
+
+  test('new-thread removal invalidates only its own selection and preserves the completed ref (C3.4 new-thread)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubBaseHandlers();
+    stubCreatedThread('THR-NEW');
+    const uploadedNames: string[] = [];
+    let composeBody: unknown = null;
+    let composeCount = 0;
+    let bFailed = false;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/artifacts`, async ({ request }) => {
+        const name = requestedName(request);
+        uploadedNames.push(name);
+        if (name.endsWith('b.txt') && !bFailed) {
+          bFailed = true;
+          return HttpResponse.error();
+        }
+        return HttpResponse.json({ name, size_bytes: 3, modified_at: 'now' });
+      }),
+      http.post(`/api/v1/orgs/${SLUG}/threads`, async ({ request }) => {
+        composeCount += 1;
+        composeBody = await request.json();
+        return HttpResponse.json(
+          { thread_id: 'THR-NEW', started_at: 'now', pending_replies: 1 },
+          { status: 201 },
+        );
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads` });
+    await openDialog(user);
+    await fillDialog(user, 'Hi');
+    await user.upload(screen.getByLabelText(/Attach files/i), [
+      new File(['aaa'], 'a.txt', { type: 'text/plain' }),
+      new File(['bbb'], 'b.txt', { type: 'text/plain' }),
+    ]);
+    await user.click(screen.getByRole('button', { name: /^Send$/i }));
+    await screen.findByText(/Failed to fetch/i);
+    expect(composeCount).toBe(0);
+    // Remove the failed B (no request), add replacement C, retry.
+    const removeButtons = screen.getAllByRole('button', { name: 'Remove attachment' });
+    await user.click(removeButtons[1]);
+    await user.upload(
+      screen.getByLabelText(/Attach files/i),
+      new File(['ccc'], 'c.txt', { type: 'text/plain' }),
+    );
+    await user.click(screen.getByRole('button', { name: /^Send$/i }));
+    await waitFor(() => expect(composeCount).toBe(1));
+    expect(uploadedNames).toHaveLength(3);
+    const refs = (composeBody as { attachments: { artifact_name: string; display_name: string }[] }).attachments;
+    expect(refs.map((r) => r.display_name)).toEqual(['a.txt', 'c.txt']);
+    expect(refs[0].artifact_name).toBe(uploadedNames[0]);
+  });
+
+  test('a 404 artifact_not_found compose keeps the refs until remove/reselect/reupload (C4.2 new-thread)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubBaseHandlers();
+    stubCreatedThread('THR-NEW');
+    const uploadedNames: string[] = [];
+    let composeBody: unknown = null;
+    let composeCount = 0;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/artifacts`, async ({ request }) => {
+        const name = requestedName(request);
+        uploadedNames.push(name);
+        return HttpResponse.json({ name, size_bytes: 3, modified_at: 'now' });
+      }),
+      http.post(`/api/v1/orgs/${SLUG}/threads`, async ({ request }) => {
+        composeCount += 1;
+        composeBody = await request.json();
+        if (composeCount <= 2) {
+          return HttpResponse.json({ detail: { code: 'artifact_not_found' } }, { status: 404 });
+        }
+        return HttpResponse.json(
+          { thread_id: 'THR-NEW', started_at: 'now', pending_replies: 1 },
+          { status: 201 },
+        );
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads` });
+    await openDialog(user);
+    await fillDialog(user, 'Hi');
+    await user.upload(screen.getByLabelText(/Attach files/i), [
+      new File(['aaa'], 'a.txt', { type: 'text/plain' }),
+      new File(['bbb'], 'b.txt', { type: 'text/plain' }),
+    ]);
+    await user.click(screen.getByRole('button', { name: /^Send$/i }));
+    const error = await screen.findByText(/no longer available; remove it and attach it again/i);
+    // A compose rejection must not be labelled with the last uploaded file.
+    expect(error.textContent?.startsWith('b.txt:')).toBe(false);
+    expect(composeCount).toBe(1);
+    expect(uploadedNames).toHaveLength(2);
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Subject$/i)).toHaveValue('Hi');
+    expect(screen.getAllByRole('button', { name: 'Remove attachment' })).toHaveLength(2);
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Send$/i })).not.toBeDisabled());
+
+    // Retry unchanged: the missing ref persists and reuses both completed refs.
+    await user.click(screen.getByRole('button', { name: /^Send$/i }));
+    await waitFor(() => expect(composeCount).toBe(2));
+    expect(uploadedNames).toHaveLength(2);
+
+    // Remove B, reselect/reupload it, then retry succeeds with A's ref intact.
+    await user.click(screen.getAllByRole('button', { name: 'Remove attachment' })[1]);
+    await user.upload(
+      screen.getByLabelText(/Attach files/i),
+      new File(['bbb2'], 'b.txt', { type: 'text/plain' }),
+    );
+    await user.click(screen.getByRole('button', { name: /^Send$/i }));
+    await waitFor(() => expect(composeCount).toBe(3));
+    expect(uploadedNames).toHaveLength(3);
+    const refs = (composeBody as { attachments: { artifact_name: string }[] }).attachments;
+    expect(refs.map((r) => r.artifact_name)).toEqual([uploadedNames[0], uploadedNames[2]]);
   });
 
   test('closing without reopening abandons the dialog but the compose still finishes once (C8.3b)', async () => {
@@ -468,6 +724,7 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
       <>
         <AppRoutes />
         <NavTo to="/orgs/beta/threads" label="nav-beta-org" testId="nav-beta-org" />
+        <LocationProbe />
       </>,
       { route: `/orgs/${SLUG}/threads` },
     );
@@ -481,10 +738,18 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
     // Switch org while the upload is held. The modal dialog marks the rest of
     // the page aria-hidden, so dispatch the navigation directly.
     fireEvent.click(document.querySelector('[data-testid="nav-beta-org"]') as HTMLElement);
+    await waitFor(() =>
+      expect(screen.getByTestId('review-location')).toHaveTextContent('/orgs/beta/threads'),
+    );
     releaseUpload(undefined);
     await waitFor(() => expect(composeUrls).toHaveLength(1));
     // The compose URL stays at the org captured at first submit.
     expect(composeUrls[0]).toBe(`/api/v1/orgs/${SLUG}/threads`);
+    // Org departure invalidates result ownership: the late alpha success must
+    // NOT navigate the beta view back to alpha's created thread.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(screen.getByTestId('review-location').textContent).toBe('/orgs/beta/threads');
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(composeBody).toMatchObject({
       subject: 'Captured subject',
       recipients: ['agent_a'],
