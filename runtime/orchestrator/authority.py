@@ -2693,12 +2693,27 @@ def publish_authority_policy_v2_notifications(
     # re-discovered live-lease row is a bounded refusal, never a duplicate put.
     scoped = targets if limit is None else targets[: max(0, limit)]
     for target in scoped:
-        claim = db.claim_authority_policy_v2_notification_publication(
-            root_task_id=target.root_task_id,
-            manager_agent=target.manager_agent,
-            manager_session_id=target.manager_session_id,
-            result_id=target.result_id,
-        )
+        # THR-229 C3d4b correction B: a per-target raised failure is a BOUNDED
+        # refusal, never a whole-pass abort.  The claim/acknowledgement
+        # transactions own their own rollback, so one bad target must not starve
+        # every unrelated eligible root discovered later in the same startup
+        # pass.  Nothing here becomes ordinary decision/evaluation/spend/remint
+        # permission: a refusal is returned to the caller, which still requires
+        # an actual authenticated publication of the exact generation.
+        try:
+            claim = db.claim_authority_policy_v2_notification_publication(
+                root_task_id=target.root_task_id,
+                manager_agent=target.manager_agent,
+                manager_session_id=target.manager_session_id,
+                result_id=target.result_id,
+            )
+        except Exception as exc:
+            receipts.append({
+                "status": "publication_claim_failed",
+                "reason": type(exc).__name__,
+                "notification_id": target.notification_id,
+            })
+            continue
         if claim.status != "claimed":
             receipts.append({
                 "status": claim.status,
@@ -2716,7 +2731,33 @@ def publish_authority_policy_v2_notifications(
                 },
             )
         except Exception as exc:
-            failure = db.record_authority_policy_v2_notification_publication_failure(
+            try:
+                failure = (
+                    db.record_authority_policy_v2_notification_publication_failure(
+                        root_task_id=target.root_task_id,
+                        manager_agent=target.manager_agent,
+                        manager_session_id=target.manager_session_id,
+                        result_id=target.result_id,
+                        publication_attempt=claim.publication_attempt,
+                        publisher_boot_id=claim.publisher_boot_id,
+                    )
+                )
+                reason = failure.reason
+            except Exception as record_exc:
+                # A failure-bookkeeping write failure keeps the prior
+                # ``publishing`` lease safely reclaimable and must not abort
+                # the pass; the original queue error stays authoritative.
+                reason = type(record_exc).__name__
+            receipts.append({
+                "status": "publish_failed",
+                "reason": reason,
+                "notification_id": target.notification_id,
+                "publication_attempt": claim.publication_attempt,
+                "error": type(exc).__name__,
+            })
+            continue
+        try:
+            ack = db.acknowledge_authority_policy_v2_notification_publication(
                 root_task_id=target.root_task_id,
                 manager_agent=target.manager_agent,
                 manager_session_id=target.manager_session_id,
@@ -2724,22 +2765,18 @@ def publish_authority_policy_v2_notifications(
                 publication_attempt=claim.publication_attempt,
                 publisher_boot_id=claim.publisher_boot_id,
             )
+        except Exception as exc:
+            # The raw tagged put already happened; the retained claim/lease
+            # stays recoverable and reclaimable, so a restart republishes and
+            # the non-bypassable generation fence still admits only once.
             receipts.append({
-                "status": "publish_failed",
-                "reason": failure.reason,
+                "status": "publication_acknowledgement_failed",
+                "reason": type(exc).__name__,
                 "notification_id": target.notification_id,
+                "generation_id": claim.generation_id,
                 "publication_attempt": claim.publication_attempt,
-                "error": type(exc).__name__,
             })
             continue
-        ack = db.acknowledge_authority_policy_v2_notification_publication(
-            root_task_id=target.root_task_id,
-            manager_agent=target.manager_agent,
-            manager_session_id=target.manager_session_id,
-            result_id=target.result_id,
-            publication_attempt=claim.publication_attempt,
-            publisher_boot_id=claim.publisher_boot_id,
-        )
         receipts.append({
             "status": ack.status,
             "reason": ack.reason,

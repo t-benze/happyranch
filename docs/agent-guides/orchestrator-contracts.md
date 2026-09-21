@@ -1236,6 +1236,36 @@ replay, named-org isolation), and `tests/test_authority_v2_shipping.py` adds the
 same accepted-recovery seam over both fresh and full historical-migrated owned
 RuntimeDir venues with a corrupt-settlement refusal.
 
+C3d4b correction B (same unmerged draft PR). Publication is now PER-TARGET
+resilient so one bad target can never starve the unrelated eligible roots
+discovered later in the same startup pass. A raised claim, queue or
+acknowledgement failure is caught at the publisher loop, converted into a
+bounded receipt (`publication_claim_failed`, `publish_failed`,
+`publication_acknowledgement_failed`) and the pass continues; previously a single
+raised exception aborted `publish_authority_policy_v2_notifications` and every
+later root went unpublished until the next boot (`_publish_v2_generations_on_startup`
+only logged the top-level failure). The claim/ack transactions own their own
+rollback, so a failed claim still performs ZERO queue calls, a queue failure keeps
+the bounded audited failure record and the prior committed settlement, and an
+acknowledgement failure leaves the raw tagged put done, the lease reclaimable and
+the non-bypassable generation fence admitting exactly once. A bounded refusal is
+still never permission: `reconcile_authority_policy_v2_post_final` requires a real
+writer settlement or an actual authenticated publication of the exact generation,
+so a per-target failure cannot become a false `reconciled` result or ordinary
+decision/evaluation/spend/remint authority.
+
+`tests/test_authority_v2_post_final_reconciliation.py` also injects receipt
+settlement, publication claim, raw queue put, publication acknowledgement and
+generation-admission settlement failures at their real couplings; covers
+cancellation, affirmative owner/session loss and a malformed admitted reservation
+identity as read-only refusals; proves a genuinely produced generation B
+progresses on its own path while old A's committed generation is byte-unchanged;
+proves a reopened, DISTINCT `Database` + real `OrgState` over the SAME persisted
+file (with `bind_authority_v2_owner`'s server-owned permission-digest binding)
+rediscovers a lost in-memory queue; and seeds 34 genuinely finalized roots so the
+real startup publisher delivers every eligible root past the first 32 while an
+early same-boot live lease is refused.
+
 ## Inline Delegation Chains
 
 A manager can declare a multi-leg workflow in one `delegate` decision using `NextStep.then` and optional per-leg `expect_verdict` gates. The orchestrator auto-advances to the next leg when a child terminates completed with a matching verdict. Since THR-211, auto-advance may also fire from a child whose completion report has durably landed while its task row still reads `in_progress` (the completion-status-lag window) — the recognition is session-safe and at-most-once, and the chain gate consumes the exact authenticated `(task_id, assigned_agent, current_session_id)` report so a newer unrelated row can never advance or clear the chain; see `tests/test_thr211_completion_status_lag.py` for the session-bound regression cases.
