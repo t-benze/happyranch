@@ -3586,10 +3586,164 @@ def _drive_later_lifecycle(fixture: _ShippingFixture) -> dict:
     assert parent_launch["session_id"] != staged["session_id"]
     assert parent_launch["session_id"] != staged["reserved"]
     assert db.get_task(staged["root_id"]).current_session_id == parent_launch["session_id"]
+
+    # ── Actual ROOT terminal-v2 ``later`` lifecycle (TASK-8575 Part B) ──
+    # Everything above completes a v1 CHILD (whose gate is ``no_v2``).  The
+    # relaunched ROOT is the real terminal-v2 lineage context: generation A is
+    # applied and its pointer retired, so this NEW root invocation is the
+    # ``later`` continuation context guarded by the report-binding check.
+    root_id = staged["root_id"]
+    root_session = parent_launch["session_id"]
+    # The supported launch published the session; nothing was patched by hand.
+    assert db.get_task(root_id).current_session_id == root_session
+    assert db.get_task(root_id).assigned_agent == MANAGER
+    assert fixture.org.sessions.get_active(root_id, MANAGER) == root_session
+    # A legitimately later ordinary invocation carries the ACTIVE v2 policy's
+    # launch binding -- the dual-text policy family, NOT a THR-229 continuation
+    # generation binding.  It is classified by the terminal-v2 ``later`` gate.
+    later_binding = _binding(fixture, root_id, root_session)
+    assert later_binding is not None, later_binding
+    assert later_binding.get("mode") == "v2", later_binding.get("mode")
+
+    root_enqueues_before = len([c for c in calls if c[1] == root_id])
+    root_body = _reserved_decision_body(later_binding, root_id, "done")
+    root_run = fixture.run_cli(
+        fixture.write_payload(root_body, name="root-later.json")
+    )
+    assert root_run.returncode == 0, root_run.stderr
+    assert fixture.last_http()["status"] == 200
+    root_rows = db.get_task_results(root_id)
+    assert root_rows[-1]["session_id"] == root_session
+    r3 = root_rows[-1]
+    assert r3["id"] > staged["r2"]
+
+    # The REAL root gate genuinely classifies the retained R3 as ``later``
+    # BEFORE any effect -- the terminal-v2 ROOT context, not the child's no_v2.
+    ctx = db.authority_policy_v2_completion_dispatch_context(
+        root_task_id=root_id, result_row_id=r3["id"],
+    )
+    assert ctx.kind == "later", ctx
+
+    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+    from runtime.orchestrator import run_step as _run_step
+
+    genuine_report = completion_report_from_result_row(
+        root_id, dict(r3), fallback_agent=MANAGER,
+    )
+    changed_row = dict(r3)
+    changed_row["output_summary"] = "changed later root body"
+    changed_report = completion_report_from_result_row(
+        root_id, changed_row, fallback_agent=MANAGER,
+    )
+    before_status = db.get_task(root_id).status
+    # Common-consumer report-binding check (genuine persisted R3 + CHANGED
+    # supplied report) refuses at the REAL gate with ZERO normal-body effect.
+    _run_step._consume_completion_report(
+        fixture.org.orchestrator, root_id, changed_report, result_row_id=r3["id"],
+    )
+    assert db.get_task(root_id).status is before_status is TaskStatus.IN_PROGRESS
+    assert db.get_task(root_id).current_session_id == root_session
+    assert len(db.get_task_results(root_id)) == len(root_rows)
+    assert len([c for c in calls if c[1] == root_id]) == root_enqueues_before
+
+    # HTTP replay of the SAME later session while the invocation is still held
+    # is suppressed at the ROUTE's own session/idempotency seam -- distinct
+    # from the common-consumer report-binding check above -- with no extra
+    # result/effect.
+    http_replay = fixture.run_cli(
+        fixture.write_payload(root_body, name="root-later-replay.json")
+    )
+    assert len(db.get_task_results(root_id)) == len(root_rows)
+    assert db.get_task(root_id).status is TaskStatus.IN_PROGRESS
+    assert fixture.last_http()["status"] in (200, 409)
+    assert http_replay.returncode == 0 or fixture.last_http()["status"] == 409
+
+    # Actual-ROOT invalid provenance at the REAL route seam: a never-spawned
+    # session (unbound), a wrong agent, and a wrong/other session are all
+    # refused with ZERO result/enqueue effect.  This is root-later negative
+    # proof, not an invalid-child-only HTTP proof.
+    for bad_session, bad_agent in (
+        ("sess-never-spawned", MANAGER),
+        (root_session, WORKER),
+        ("sess-other-valid-looking", MANAGER),
+    ):
+        bad = fixture.run_cli(fixture.write_payload(
+            {
+                "task_id": root_id, "session_id": bad_session, "agent": bad_agent,
+                "status": "completed", "confidence": 90,
+                "summary": "invalid root later completion",
+                "decision": {"action": "done", "summary": "must not apply"},
+            },
+            name=f"root-later-bad-{bad_agent}-{bad_session}.json",
+        ))
+        assert bad.returncode != 0
+        assert fixture.last_http()["status"] in (400, 409)
+        assert len(db.get_task_results(root_id)) == len(root_rows)
+        assert len([c for c in calls if c[1] == root_id]) == root_enqueues_before
+    assert db.get_task(root_id).status is TaskStatus.IN_PROGRESS
+
+    # Actual-ROOT stale/unbound identities at the REAL classifier: the causal
+    # R1 and the receipt R2 are never ordinary permission, and an absent row is
+    # ``foreign``.  Consuming with a stale receipt identity adds no effect.
+    assert db.authority_policy_v2_completion_dispatch_context(
+        root_task_id=root_id, result_row_id=staged["causal_id"],
+    ).kind == "causal"
+    assert db.authority_policy_v2_completion_dispatch_context(
+        root_task_id=root_id, result_row_id=staged["r2"],
+    ).kind == "receipt"
+    assert db.authority_policy_v2_completion_dispatch_context(
+        root_task_id=root_id, result_row_id=10**9,
+    ).kind == "foreign"
+    _run_step._consume_completion_report(
+        fixture.org.orchestrator, root_id, genuine_report,
+        result_row_id=staged["r2"],
+    )
+    assert db.get_task(root_id).status is TaskStatus.IN_PROGRESS
+    assert len(db.get_task_results(root_id)) == len(root_rows)
+    assert len([c for c in calls if c[1] == root_id]) == root_enqueues_before
+
+    # Release ONLY the root invocation: the REAL run_step consumes R3 through
+    # the terminal-v2 ``later`` branch and runs the EXISTING normal body (done)
+    # exactly once.
+    fixture.release_session(root_session)
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        if db.get_task(root_id).status is TaskStatus.COMPLETED:
+            break
+        time.sleep(0.05)
+    assert db.get_task(root_id).status is TaskStatus.COMPLETED
+    # No extra enqueue beyond the child's single parent wake.
+    assert len([c for c in calls if c[1] == root_id]) == root_enqueues_before
+
+    # A post-terminal HTTP replay is refused by the route's task-active gate
+    # with no new result/effect.
+    after_http = fixture.run_cli(
+        fixture.write_payload(root_body, name="root-later-post-terminal.json")
+    )
+    assert len(db.get_task_results(root_id)) == len(root_rows)
+    assert db.get_task(root_id).status is TaskStatus.COMPLETED
+    assert after_http.returncode != 0
+    assert fixture.last_http()["status"] == 409
+
+    # A common-consumer replay of the SAME genuine report after terminal state
+    # adds no effect (the lineage is no longer ordinary-capable).
+    _run_step._consume_completion_report(
+        fixture.org.orchestrator, root_id, genuine_report, result_row_id=r3["id"],
+    )
+    assert db.get_task(root_id).status is TaskStatus.COMPLETED
+    assert len(db.get_task_results(root_id)) == len(root_rows)
+    assert len([c for c in calls if c[1] == root_id]) == root_enqueues_before
+
+    # Old generation-A evidence is unchanged.
+    assert db.get_authority_policy_v2_root_dispatch(root_id).state == "retired"
+    envelope = db.get_authority_policy_v2_continue_envelope(staged["envelope_id"])
+    assert envelope.decision_state == "applied"
+
     return {
-        "root_id": staged["root_id"], "child_id": child_id,
+        "root_id": root_id, "child_id": child_id,
         "child_result_id": child_result_id,
-        "parent_session": parent_launch["session_id"],
+        "root_result_id": r3["id"],
+        "parent_session": root_session,
     }
 
 
@@ -3629,6 +3783,7 @@ def test_shipping_real_later_lifecycle_after_terminal_generation(tmp_path, monke
     try:
         result = _drive_later_lifecycle(fixture)
         assert result["child_result_id"] > 0
+        assert result["root_result_id"] > 0
         assert result["parent_session"]
     finally:
         fixture.stop()
@@ -3643,6 +3798,7 @@ def test_shipping_historically_migrated_later_lifecycle(tmp_path, monkeypatch):
     try:
         result = _drive_later_lifecycle(fixture)
         assert result["child_result_id"] > 0
+        assert result["root_result_id"] > 0
         assert result["parent_session"]
     finally:
         fixture.stop()

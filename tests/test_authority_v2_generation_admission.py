@@ -639,6 +639,123 @@ def test_direct_run_step_tagged_item_with_null_generation_refuses(tmp_path):
     _direct_run_step_negatives(tmp_path, {"authority_v2_generation": None})
 
 
+# ── TASK-8575 Part A: untagged refusal REQUESTS independent publication ──
+
+
+def test_direct_run_step_untagged_pending_requests_publication_without_admission(
+    tmp_path, monkeypatch,
+):
+    """R4 liveness: an untagged item on a ``pending(G)`` root REQUESTS the
+    existing authenticated publisher but admits/launches NOTHING itself, and
+    only a separately consumed fresh TAGGED item then wins exactly once."""
+    from runtime.orchestrator.run_step import run_step_impl
+
+    # Prompt/reclamation preparation belongs to the launch path, not to the
+    # admission boundary under test: stub them so the tagged phase reaches the
+    # real `_run_agent` launch seam, where `_StopLaunch` observes it.
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._build_agent_prompt",
+        lambda *a, **k: "stub prompt",
+    )
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step."
+        "_prepare_workspace_cleanup_reclamation_context",
+        lambda *a, **k: "",
+    )
+
+    store, row, attempt, outcome = _finalized(tmp_path)
+    store.bind_v2_process_boot_id(BOOT_A)
+    queue = _RecordingQueue()
+    launches: list = []
+
+    class _StopLaunch(BaseException):
+        pass
+
+    class _Orch:
+        _db = store._db
+        _slug = "test-org"
+        _audit = types.SimpleNamespace()
+        _settings = types.SimpleNamespace(max_orchestration_steps=10)
+        _queue = queue
+
+        def _build_session_id(self):
+            return RESERVED
+
+        def _run_agent(self, *a, **k):
+            launches.append("run_agent")
+            raise _StopLaunch()
+
+    before_step = _task_row(store)["orchestration_step_count"]
+
+    # 1. Raw untagged item: publication is requested, nothing is admitted.
+    run_step_impl(_Orch(), TASK_ID, metadata=None)
+    assert len(queue.items) == 1, queue.items
+    slug, task_id, md = queue.items[0]
+    assert (slug, task_id) == ("test-org", TASK_ID)
+    assert md["authority_v2_generation"] == outcome.notification_id
+    assert md["publication_attempt"] == 1
+    assert launches == []
+    task = _task_row(store)
+    assert task["status"] == TaskStatus.PENDING.value
+    assert task["orchestration_step_count"] == before_step
+    assert task["current_session_id"] != RESERVED
+    assert _dispatch(store).state == "pending"
+    assert _notification(store, outcome).state == "published"
+    assert _stage_events(store, "generation_claimed") == []
+
+    # 2. The separately consumed fresh tagged item admits then launches once.
+    try:
+        run_step_impl(_Orch(), TASK_ID, metadata=dict(md))
+    except _StopLaunch:
+        pass
+    assert launches == ["run_agent"]
+    admitted = _task_row(store)
+    assert admitted["status"] == TaskStatus.IN_PROGRESS.value
+    assert admitted["current_session_id"] == RESERVED
+    assert admitted["orchestration_step_count"] == before_step + 1
+    assert len(_stage_events(store, "generation_claimed")) == 1
+
+    # 3. A replay of the same tagged item cannot win again.
+    run_step_impl(_Orch(), TASK_ID, metadata=dict(md))
+    assert launches == ["run_agent"]
+    assert len(_stage_events(store, "generation_claimed")) == 1
+    assert _task_row(store)["orchestration_step_count"] == before_step + 1
+
+
+def test_direct_run_step_ordinary_cas_loser_requests_no_publication(tmp_path, monkeypatch):
+    """An ordinary CAS loser (no pending pointer) must NOT become a duplicate
+    enqueue through a blindly invoked common producer: it requests NOTHING."""
+    from runtime.orchestrator.run_step import run_step_impl
+
+    store, row, attempt, outcome = _finalized(tmp_path)
+    _write_dispatch(
+        store, _dispatch(store).model_copy(update={"state": "retired"})
+    )
+    db = store._db
+    monkeypatch.setattr(db, "try_claim_for_step", lambda *a, **k: False)
+    queue = _RecordingQueue()
+    launches: list = []
+
+    class _Orch:
+        _db = db
+        _slug = "test-org"
+        _audit = types.SimpleNamespace()
+        _settings = types.SimpleNamespace(max_orchestration_steps=10)
+        _queue = queue
+
+        def _build_session_id(self):
+            return RESERVED
+
+        def _run_agent(self, *a, **k):
+            launches.append("run_agent")
+            return None, None
+
+    run_step_impl(_Orch(), TASK_ID, metadata=None)
+    assert queue.items == []
+    assert launches == []
+    assert _task_row(store)["status"] == TaskStatus.PENDING.value
+
+
 # ── TASK-8552 correction: complete row/evidence pre-state ────────────────
 
 

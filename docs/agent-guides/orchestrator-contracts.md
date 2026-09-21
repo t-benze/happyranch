@@ -1126,20 +1126,47 @@ continuation producer, the `tasks` route successor/continue sites and the
 `__main__` startup sweep ordinary/parked enqueues. The raw `TaskQueue.put_nowait`
 remains the transport (including the authenticated publisher's own call and the
 separate dream/schedule/wake queues, which are different domains), and the
-run-step/DB claim remains the non-bypassable backstop. `tests/test_task_enqueue_
-boundary.py` covers the classification and every boundary outcome against the
-real Database/publisher seams; `tests/test_authority_v2_shipping.py` adds the
+run-step/DB claim remains the non-bypassable backstop. Accepted R4 also requires
+the DEQUEUE side to request independent discovery/publication: when `run_step`'s
+UNTAGGED ordinary `Database.try_claim_for_step` refuses because the target root
+has a live `pending(G)` pointer, `run_step_impl` calls the EXISTING
+`publish_authority_policy_v2_notifications(orch, queue, root_task_id=...)`
+publisher and returns WITHOUT admitting or launching anything — it never adopts
+G, never rewrites the stale/untagged metadata and never falls back to an
+ordinary launch. Only that specific pending classification requests publication
+(a genuine ordinary CAS loser, or absent/admitted/retired/malformed/unreadable
+state, requests NOTHING and can never become a duplicate ordinary enqueue
+through a blindly invoked common producer), and only a genuine durable
+`Database` drives it. `tests/test_task_enqueue_boundary.py` covers the
+classification and every boundary outcome against the real Database/publisher
+seams, and adds Part C interleavings over a SECOND genuine `Database`
+connection on the same file: cancellation and authenticated replacement-
+generation-B pointer advance between producer classification and the
+publication claim both refuse with ZERO queue calls, plus two loaded orgs with
+the SAME textual task id resolved through the real runner entry/queues into
+their OWN Database/generation/queue (one org's generation can never choose or
+publish the other's target, and the idle-runner contract still refuses before
+any queue call). `tests/test_authority_v2_generation_admission.py` adds the real
+dequeue seam: a raw untagged pending item requests publication while a
+separately consumed fresh TAGGED item admits and launches exactly once, and a
+delayed tagged generation A consumed after replacement B is pending refuses at
+the tagged admission fence. `tests/test_authority_v2_shipping.py` adds the
 delegate+failed-acknowledgement branch over both fresh and full
 historical-migrated venues with actual enqueue/body-entry counters that must not
-increase across reopen/refusal/replay, plus the real post-terminal LATER lifecycle
-over both venues (a real delegated child launch -> `_run_agent` session publication
--> real subprocess CLI/HTTP completion -> persisted result -> real common consumer
--> real parent-wake effect, then the ordinary re-launch of the root through the
-retired pointer), with an unbound/wrong-owner zero-effect negative and a
-changed-body no-extra-effect negative. The full startup/accepted-recovery
-attempt/receipt/refusal discovery, reaper integration and automatic authority-hook
-orchestration remain the NEXT unit; the hook stays fail-closed/DARK and the
-editable-pair editor/browser path remains unimplemented.
+increase across reopen/refusal/replay, and the REAL post-terminal LATER
+lifecycle over both venues, continuing past the child/root-relaunch precondition
+into the actual relaunched ROOT: a real manager R3 subprocess CLI -> HTTP ->
+persisted root result -> the REAL common consumer's terminal-v2 `later`
+classification (asserted from the real classifier BEFORE any effect) -> the
+existing normal body (`done`) exactly once, with no manual owner/session/status
+patch, unchanged generation-A evidence and no extra enqueue; the changed-supplied
+-report report-binding refusal (zero normal-body/task/child/queue effect) is
+asserted at the real gate, distinct from the route's own duplicate suppression,
+and actual-ROOT unbound/wrong-agent/wrong-session/stale negatives are included.
+The full startup/accepted-recovery attempt/receipt/refusal discovery, reaper
+integration and automatic authority-hook orchestration remain the NEXT unit; the
+hook stays fail-closed/DARK and the editable-pair editor/browser path remains
+unimplemented.
 
 ## Inline Delegation Chains
 

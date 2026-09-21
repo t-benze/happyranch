@@ -23,6 +23,8 @@ founder THR-243 seq42, never PASS.
 """
 from __future__ import annotations
 
+import types
+
 import pytest
 
 from runtime.infrastructure.database import Database
@@ -38,13 +40,19 @@ from tests.test_authority_v2_generation_admission import (
     _PublishOrch,
     _finalized,
     _published,
+    _publishing,
     _admit,
+    _task_row,
     RESERVED,
 )
 from tests.test_authority_v2_publication_bookkeeping import (
     BOOT_A,
+    REPLACEMENT_GENERATION,
     TASK_ID,
     _dispatch,
+    _notification,
+    _point_dispatch_at_replacement,
+    _stage_events,
     _write_dispatch,
 )
 
@@ -326,3 +334,199 @@ def test_boundary_caller_supplied_legacy_shape_is_used(tmp_path):
     assert status == ENQUEUE_DISPATCH_ORDINARY
     queue.put_nowait.assert_called_once_with("test-org", "TASK-PLAIN")
     queue.enqueue.assert_not_called()
+
+
+# --------------------------------------------------------------------------
+# TASK-8575 Part C: deterministic producer/publish and dequeue/claim
+# interleavings over a second genuine Database connection, plus two-org
+# target isolation.  The real public-stage seams are used; no fabricated
+# pointer-only classification and no replacement of the shipping readers.
+# --------------------------------------------------------------------------
+
+
+def test_two_loaded_orgs_same_task_id_isolated(tmp_path):
+    """Two loaded orgs with the SAME textual task id resolve to their OWN
+    Database/generation/queue through the real runner entry: one org's pending
+    generation can never choose or publish the other org's target."""
+    from runtime.daemon import runner
+
+    (tmp_path / "a").mkdir()
+    store_a, row, attempt, outcome = _finalized(tmp_path / "a")
+    store_a.bind_v2_process_boot_id(BOOT_A)
+    queue_a = _RecordingQueue()
+    state_a = _StubState(_PublishOrch(store_a._db, slug="org-a"), queue_a)
+
+    db_b = Database(tmp_path / "org-b.db")
+    db_b.insert_task(TaskRecord(
+        id=TASK_ID, brief="b", team="engineering",
+        assigned_agent="engineering_manager",
+    ))
+    queue_b = _RecordingQueue()
+    state_b = _StubState(_PublishOrch(db_b, slug="org-b"), queue_b)
+
+    runner.enqueue_task(state_a, "org-a", TASK_ID)
+    assert len(queue_a.items) == 1
+    slug_a, tid_a, md_a = queue_a.items[0]
+    assert (slug_a, tid_a) == ("org-a", TASK_ID)
+    assert md_a["authority_v2_generation"] == outcome.notification_id
+    # The other loaded org's DB / generation / queue is untouched.
+    assert queue_b.items == []
+    assert db_b.classify_authority_policy_v2_root_dispatch_for_enqueue(
+        TASK_ID
+    ).kind == "absent"
+
+    # The ordinary org emits the unchanged ordinary/v1 tuple and never adopts
+    # the other org's generation.
+    runner.enqueue_task(state_b, "org-b", TASK_ID)
+    assert queue_b.items == [("org-b", TASK_ID, None)]
+    assert len(queue_a.items) == 1
+    assert md_a["authority_v2_generation"] == outcome.notification_id
+    assert store_a._db.classify_authority_policy_v2_root_dispatch_for_enqueue(
+        TASK_ID
+    ).kind == "pending"
+
+
+def test_publication_cancellation_between_classify_and_claim_second_connection(
+    tmp_path,
+):
+    """A second genuine Database over the SAME file cancels the root AFTER the
+    producer classifies ``pending(G)`` and BEFORE the publication claim.  The
+    claim re-authenticates current target evidence and refuses: ZERO queue
+    calls, no notification advance, no admission."""
+    db2 = Database(tmp_path / "c2.db")
+
+    store, row, attempt, outcome = _finalized(tmp_path)
+    store.bind_v2_process_boot_id(BOOT_A)
+    assert db2 is not store._db
+
+    real_classify = (
+        store._db.classify_authority_policy_v2_root_dispatch_for_enqueue
+    )
+
+    def _classify_then_cancel(root_task_id):
+        result = real_classify(root_task_id)
+        assert result.kind == "pending"
+        db2._conn.execute(
+            "UPDATE tasks SET cancelled_at=? WHERE id=?",
+            ("2026-09-20T00:00:00+00:00", TASK_ID),
+        )
+        db2._conn.commit()
+        return result
+
+    store._db.classify_authority_policy_v2_root_dispatch_for_enqueue = (
+        _classify_then_cancel
+    )
+    try:
+        queue = _RecordingQueue()
+        status = enqueue_task_generation_aware(
+            _PublishOrch(store._db), queue, "test-org", TASK_ID,
+        )
+    finally:
+        del store._db.classify_authority_policy_v2_root_dispatch_for_enqueue
+
+    assert status == ENQUEUE_DISPATCH_REFUSED
+    assert queue.items == []
+    assert _notification(store, outcome).state == "needed"
+    assert _stage_events(store, "publish_claimed") == []
+    assert _stage_events(store, "generation_claimed") == []
+
+
+def test_publication_pointer_replacement_between_classify_and_claim(
+    tmp_path,
+):
+    """A second genuine Database connection advances the root dispatch pointer
+    to authentic replacement generation B between classification and claim.  A
+    delayed generation-A publication cannot be upgraded: the claim refuses with
+    zero queue calls and B stays untouched."""
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+
+    db2 = Database(tmp_path / "c2.db")
+
+    store, row, attempt, outcome = _finalized(tmp_path)
+    store.bind_v2_process_boot_id(BOOT_A)
+    store2 = AuthorityPolicyStore(db2)
+    assert db2 is not store._db
+
+    real_classify = (
+        store._db.classify_authority_policy_v2_root_dispatch_for_enqueue
+    )
+
+    def _classify_then_replace(root_task_id):
+        result = real_classify(root_task_id)
+        assert result.kind == "pending"
+        replacement = store2.get_v2_recovery_notification(
+            outcome.notification_id
+        )
+        _point_dispatch_at_replacement(store2, replacement)
+        return result
+
+    store._db.classify_authority_policy_v2_root_dispatch_for_enqueue = (
+        _classify_then_replace
+    )
+    try:
+        queue = _RecordingQueue()
+        status = enqueue_task_generation_aware(
+            _PublishOrch(store._db), queue, "test-org", TASK_ID,
+        )
+    finally:
+        del store._db.classify_authority_policy_v2_root_dispatch_for_enqueue
+
+    assert status == ENQUEUE_DISPATCH_REFUSED
+    assert queue.items == []
+    dispatch = _dispatch(store)
+    assert dispatch.state == "pending"
+    assert dispatch.generation_id == REPLACEMENT_GENERATION
+    assert _stage_events(store, "publish_claimed") == []
+    assert _stage_events(store, "generation_claimed") == []
+
+
+def test_direct_run_step_delayed_tagged_a_after_replacement_b_refuses(tmp_path):
+    """A delayed raw queue item tagged with generation A is consumed after the
+    root pointer names authentic replacement B: the tagged admission fence
+    refuses, launches nothing, and never adopts/upgrades to B."""
+    from runtime.orchestrator.run_step import run_step_impl
+
+    store, row, attempt, outcome, claimed = _publishing(tmp_path)
+    _point_dispatch_at_replacement(store, _notification(store, outcome))
+    before_step = _task_row(store)["orchestration_step_count"]
+    queue = _RecordingQueue()
+    launches: list = []
+
+    class _Orch:
+        _db = store._db
+        _slug = "test-org"
+        _audit = types.SimpleNamespace()
+        _settings = types.SimpleNamespace(max_orchestration_steps=10)
+        _queue = queue
+
+        def _build_session_id(self):
+            return RESERVED
+
+        def _run_agent(self, *a, **k):
+            launches.append("run_agent")
+            return None, None
+
+    run_step_impl(
+        _Orch(), TASK_ID,
+        metadata={"authority_v2_generation": outcome.notification_id},
+    )
+    assert launches == []
+    assert queue.items == []
+    assert _task_row(store)["status"] == "pending"
+    assert _task_row(store)["orchestration_step_count"] == before_step
+    assert _dispatch(store).generation_id == REPLACEMENT_GENERATION
+    assert _stage_events(store, "generation_claimed") == []
+
+
+def test_runner_idle_state_refuses_enqueue_without_queue_call(tmp_path):
+    """The idle-runner contract is preserved: an idle daemon rejects the
+    enqueue before any classification or queue call."""
+    from runtime.daemon import runner
+
+    db = _plain_root(tmp_path)
+    queue = _RecordingQueue()
+    state = _StubState(_PublishOrch(db), queue)
+    state.is_idle = True
+    with pytest.raises(RuntimeError):
+        runner.enqueue_task(state, "test-org", "TASK-PLAIN")
+    assert queue.items == []

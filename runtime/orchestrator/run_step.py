@@ -91,6 +91,57 @@ def _enqueue_task_generation_aware(
     )
 
 
+def _request_pending_v2_publication(orch: "Orchestrator", task_id: str) -> None:
+    """THR-229 R4 liveness: request INDEPENDENT discovery/publication.
+
+    An untagged queue item whose ordinary claim was refused because the target
+    root has a live ``pending(G)`` v2 dispatch pointer must never adopt G and
+    must never fall back to an ordinary launch.  Accepted R4 instead requires
+    this dequeue to REQUEST the EXISTING authenticated publisher for the target
+    (which independently resolves durable state, claims, raw-puts the tagged G
+    and acknowledges).  The tagged ``try_claim_v2_continuation_generation``
+    commit remains the ONLY admission; this request admits/launches nothing.
+
+    A genuine ordinary CAS loser (no pending pointer), and any
+    malformed/unreadable/absent/admitted/retired state, requests NOTHING and
+    can therefore never become a duplicate ordinary enqueue.  Only a genuine
+    durable ``Database`` drives the classification; a mock/duck-typed
+    orchestrator is not permission to consult durable v2 state.
+    """
+    from runtime.infrastructure.database import Database
+
+    db = getattr(orch, "_db", None)
+    if not isinstance(db, Database):
+        return
+    queue = getattr(orch, "_queue", None)
+    if queue is None:
+        return
+    try:
+        classification = db.classify_authority_policy_v2_root_dispatch_for_enqueue(
+            task_id
+        )
+    except Exception:
+        logger.exception(
+            "run_step %s: v2 dispatch classification failed", task_id,
+        )
+        return
+    if getattr(classification, "kind", None) != "pending":
+        return
+    try:
+        from runtime.orchestrator.authority import (
+            publish_authority_policy_v2_notifications,
+        )
+        publish_authority_policy_v2_notifications(
+            orch, queue, root_task_id=task_id,
+        )
+    except Exception:
+        # Liveness is best-effort: a publication-request failure must never
+        # turn a correct fail-closed refusal into an admission or a crash.
+        logger.exception(
+            "run_step %s: pending v2 publication request failed", task_id,
+        )
+
+
 def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
     # metadata: optional resume context (trigger, triggering_job_id); read by the CAS-win audit hook in Task 11.
     db = orch._db
@@ -237,6 +288,12 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             "run_step %s: lost claim race (another worker is advancing it)",
             task_id,
         )
+        # THR-229 R4: the ordinary claim also refuses a root whose durable
+        # pointer is ``pending(G)``.  That specific refusal is NOT a lost race:
+        # request independent discovery/publication for the target so the live
+        # generation can be tagged and admitted through its own fence.  This
+        # dequeue admits/launches nothing and never rewrites the stale item.
+        _request_pending_v2_publication(orch, task_id)
         return
 
     # Spec §5.2: write task_resumed_from_jobs audit row immediately after the
