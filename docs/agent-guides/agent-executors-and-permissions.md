@@ -571,6 +571,26 @@ For Claude, allow rules must be generated in two places:
 
 Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in `runtime/orchestrator/workspace_adapters.py`. Do not hand-edit either; `happyranch init-agent` rewrites them.
 
+**Lasting grants and the per-executor effect.** `allow_rules` is the only
+supported lasting-grant channel, and it changes through the team-manager-gated
+`manage-agent` update path (see `runtime/skills/bundled/manage-agent/SKILL.md`):
+a worker cannot re-grant itself, the target must belong to the manager's team,
+`expected_revision` must be a fresh 64-hex revision, and a manager changing its
+own rules (or another manager's) needs a founder escalation. A one-off blocked
+operation instead uses one reviewed bounded **job**
+(`runtime/skills/bundled/jobs/SKILL.md`), which authorizes only that command and
+never expands ongoing permissions.
+
+An `allow_rules` update does **not** produce the same live effect on every
+executor:
+
+| Executor | Effect of an `allow_rules` update |
+| --- | --- |
+| `claude` | `--allowedTools` is rebuilt on every launch by `ClaudeExecutor.run` from `allow_rules_for_agent(..., cli=True)`, so the rule is live on the next session. The `.claude/settings.json` `permissions.allow` list is generated too but is not honoured in headless `-p` mode. |
+| `codex` | The effective surface is the CLI sandbox flag (`CodexExecutor.run`); `allow_rules` is not wired into it. A lasting Codex grant needs a concrete founder escalation to the actual permission-model surface. |
+| `pi` | `PiExecutor` exposes no HappyRanch-managed permission surface; a lasting Pi grant needs a concrete founder escalation, separate from Codex. |
+| `opencode` | The effective surface is the generated `opencode.json` (`OpencodeWorkspaceAdapter.write_opencode_json`). An `allow_rules`-only `manage-agent` update does not re-run the workspace bootstrap (regeneration is gated on a system-prompt or executor change), so the grant is inert until a bootstrap-forcing change or `happyranch init-agent`. This is an open limitation, not repaired here. |
+
 When adding orchestrator capabilities, keep them under the `happyranch` binary so they stay inside the baseline allow rule. Only add a raw-tool prefix when the operation cannot be wrapped in `happyranch`.
 
 Agent-side completion payloads must be single-line `happyranch` invocations. The Claude permission matcher treats newlines and shell separators as separate commands. New callbacks with multiple arguments should use `--from-file <path>`.
