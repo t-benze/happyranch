@@ -34,7 +34,14 @@ export function formatTokens(n: number): string {
  * Exact, thousands-grouped integer counter: `1000 → "1,000"`. Counts stay
  * precise (never compacted) — Health / session / event counts must read the
  * literal figure.
+ *
+ * `locale` is an OPTIONAL explicit display locale (THR-118 W1). Omitting it
+ * keeps the legacy host-locale behaviour byte-for-byte (`n.toLocaleString()`),
+ * so no existing caller changes. Supplying it makes the grouping deterministic
+ * and independent of the host environment (`formatCount(1234567, 'en')` is
+ * `"1,234,567"` even under a German `LC_ALL`). This is a *display* helper:
+ * exact identifiers/config values/machine inputs are never routed through it.
  */
-export function formatCount(n: number): string {
-  return n.toLocaleString();
+export function formatCount(n: number, locale?: string): string {
+  return locale === undefined ? n.toLocaleString() : n.toLocaleString(locale);
 }

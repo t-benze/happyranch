@@ -45,6 +45,53 @@ design and `web/DESIGN_SYSTEM.md` for the design-system migration plan.
 > `@/features/`. Primitives may not import patterns, layouts, hooks, or
 > `@/lib/api`. Patterns may import primitives but not layouts.
 
+## Internationalization (i18n)
+
+Web copy uses the first-party typed contract in `src/lib/i18n/` (`locale`,
+`catalog`, `format`, `coverage`) plus the `I18nProvider` in `src/hooks/i18n.tsx`
+(`<html lang>`, `setLocale`, `t`/`render`). English (`en`) and Simplified
+Chinese (`zh-CN`) catalogs are static and co-loaded; keys are typed, parameters
+are named, and plurals declare explicit per-locale forms with a parity check.
+
+The initial locale is resolved synchronously before the first React text
+(`bootstrapDocumentLocale` in `src/main.tsx`) from the saved
+`happyranch.ui.locale` value; production runs in preview mode, so an unset
+preference renders English regardless of the environment. That one resolution
+is handed through `App` → `AppShell` → `I18nProvider` (`initialResolution`) so
+the provider never rereads a changed adapter snapshot. Storage failures degrade
+to an in-memory session with an honest persistence result, and same-origin
+`storage` events sync other tabs without write loops. Persistence
+acknowledgements are sequenced, so a superseded write, an external change, or
+unmount can never report a stale durable success.
+
+Adapter ownership (`LocalePreferenceAdapter.authority`) decides who owns the
+persisted choice: the browser adapter keeps `localStorage` authoritative and
+consumes cross-tab events, while a `native` adapter's injected snapshot is
+authoritative and browser values/events are ignored so a stale origin-scoped
+value cannot override it.
+
+`src/lib/format.ts` remains the canonical display formatter; the explicit-locale
+interfaces in `src/lib/i18n/format.ts` delegate to it and do not fork a competing
+implementation (`formatCount` takes an OPTIONAL locale so legacy callers keep
+the host-default behaviour). An unexpected runtime gap renders the English
+message with English grammar (`resolveMessage` reports the supplying catalog
+locale), never a raw key. Route/page translation is W2-W4 — not W1. The
+mount-time coverage inventory lives in `src/lib/i18n/coverage.ts`: it separates
+copy-bearing routes (root shell `index`, the `*` NotFound catch-all — both
+`english-only`) from copy-free redirects, disambiguates colliding tokens with
+`<scope>:<token>` qualified identities, and lists the ACTUAL mounted dialog
+components so fallback is never mistaken for coverage. Foundation browser
+evidence runs the isolated
+`src/design-system/i18n/I18nFoundation.stories.tsx` story and the real
+`main.tsx` startup through `scripts/i18n-browser-evidence.mjs` (headless Chrome
+over CDP, no new dependency). Every page installs and asserts the real
+`navigator.language`/`navigator.languages` before app modules, and the
+production path is built with `I18N_BROWSER_EVIDENCE` so `vite.config.ts` injects
+the test-only `src/test/i18n-evidence-consumer.tsx` next to `<AppRoutes />`; the
+harness asserts the first COMMITTED consumer text and `<html lang>` together and
+includes a negative control. The env gate is a no-op for every ordinary build.
+See `docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
+
 ## What is intentionally not in here
 
 - Agent-callback endpoints (`/report-completion`, `/manage-agent`,
