@@ -74,6 +74,26 @@ function requestedName(request: Request): string {
   return new URL(request.url).searchParams.get('name') ?? '';
 }
 
+/** Observe the ACTUAL mocked compose response delivery, not compose ingress.
+ *  `delivered` resolves once MSW hands the response back; `stop` removes the
+ *  listener and must run in the case's `finally`. */
+function observeComposeDelivery(): { delivered: Promise<void>; stop: () => void } {
+  let resolveDelivered!: () => void;
+  const delivered = new Promise<void>((resolve) => {
+    resolveDelivered = resolve;
+  });
+  const observer = ({ request }: { request: Request }) => {
+    if (
+      request.method === 'POST' &&
+      new URL(request.url).pathname === `/api/v1/orgs/${SLUG}/threads`
+    ) {
+      resolveDelivered();
+    }
+  };
+  server.events.on('response:mocked', observer);
+  return { delivered, stop: () => server.events.removeListener('response:mocked', observer) };
+}
+
 type CapturedPart = {
   field: string;
   filename: string;
@@ -111,12 +131,18 @@ function captureFormParts() {
   return { parts, restore: () => spy.mockRestore() };
 }
 
-/** The chip whose remove button is in scope (never an error line). */
+/** The chip carrying `fileName` as its original name (never an error line).
+ *  Safe when several chips are retained: it selects the chip whose own remove
+ *  control is in scope rather than a single global match. */
 function chipFor(fileName: string): HTMLElement {
-  const remove = screen.getByRole('button', { name: 'Remove attachment' });
-  const chip = remove.closest('span');
-  if (!chip) throw new Error('attachment chip not found');
-  within(chip).getByText(fileName);
+  const removeButtons = screen.getAllByRole('button', { name: 'Remove attachment' });
+  const chip = removeButtons
+    .map((remove) => remove.closest('span'))
+    .find(
+      (candidate): candidate is HTMLElement =>
+        candidate !== null && within(candidate).queryByText(fileName) !== null,
+    );
+  if (!chip) throw new Error(`attachment chip not found for ${fileName}`);
   return chip;
 }
 
@@ -219,6 +245,7 @@ describe('NewThreadDialog attachments', () => {
       await openDialog(user);
       await user.type(screen.getByLabelText(/^Subject$/i), 'Hi');
       await user.type(screen.getByLabelText(/^Recipients/i), 'agent_a');
+      await user.type(screen.getByLabelText(/^Body \(Markdown\)$/i), 'body 413');
       await user.upload(
         screen.getByLabelText(/Attach files/i),
         new File(['0123456789'], 'big.txt', { type: 'text/plain' }),
@@ -237,6 +264,8 @@ describe('NewThreadDialog attachments', () => {
       expect(parts[0].originalName).toBe('big.txt');
       expect(parts[0].size).toBe(10);
       expect(screen.getByLabelText(/^Subject$/i)).toHaveValue('Hi');
+      // R3: the nonempty Body is retained after the observed first failure.
+      expect(screen.getByLabelText(/^Body \(Markdown\)$/i)).toHaveValue('body 413');
       expect(screen.getByLabelText(/Attach files/i)).not.toBeDisabled();
       expect(screen.getByRole('button', { name: 'Remove attachment' })).not.toBeDisabled();
       await waitFor(() =>
@@ -256,6 +285,12 @@ describe('NewThreadDialog attachments', () => {
       expect(parts[1].size).toBe(10);
       expect(parts[1].filename).toBe(parts[0].filename);
       expect(await parts[1].bytes).toEqual(await parts[0].bytes);
+      // R3: the exact retained Body survives the failed retry and released
+      // terminal handling.
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /^Send$/i })).not.toBeDisabled(),
+      );
+      expect(screen.getByLabelText(/^Body \(Markdown\)$/i)).toHaveValue('body 413');
     } finally {
       restore();
     }
@@ -283,8 +318,9 @@ describe('NewThreadDialog attachments', () => {
         const newHeld = new Promise<void>((resolve) => { releaseNew = resolve; });
         const bodies: {
           subject?: string;
+          recipients?: string[];
           body_markdown?: string;
-          attachments?: { display_name: string }[];
+          attachments?: { display_name: string; artifact_name: string }[];
         }[] = [];
         const uploadNames: string[] = [];
         let responses = 0;
@@ -306,8 +342,9 @@ describe('NewThreadDialog attachments', () => {
           http.post(`/api/v1/orgs/${SLUG}/threads`, async ({ request }) => {
             const body = (await request.json()) as {
               subject?: string;
+              recipients?: string[];
               body_markdown?: string;
-              attachments?: { display_name: string }[];
+              attachments?: { display_name: string; artifact_name: string }[];
             };
             bodies.push(body);
             if (bodies.length === 1) {
@@ -402,6 +439,14 @@ describe('NewThreadDialog attachments', () => {
             ['First', 'old body', ['a.txt']],
             ['Second', 'new body', ['b.txt']],
           ]);
+          // R1: each request carried the ref its OWN upload returned, and the
+          // actual recipients. Retry-equality against the replacement body
+          // alone would only prove the replacement is self-consistent.
+          expect(uploadNames[0]).not.toBe(uploadNames[1]);
+          expect(bodies[0].recipients).toEqual(['agent_a']);
+          expect(bodies[1].recipients).toEqual(['agent_a']);
+          expect(bodies[0].attachments?.[0].artifact_name).toBe(uploadNames[0]);
+          expect(bodies[1].attachments?.[0].artifact_name).toBe(uploadNames[1]);
 
           // Manual retry reuses the retained ref with no extra upload.
           await user.click(screen.getByRole('button', { name: /^Send$/i }));
@@ -464,7 +509,7 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
       const user = userEvent.setup();
       renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads` });
       await openDialog(user);
-      await fillDialog(user, 'Hi');
+      await fillDialog(user, 'Hi', 'body prep');
       await user.upload(
         screen.getByLabelText(/Attach files/i),
         new File(['abc'], 'prep.txt', { type: 'text/plain' }),
@@ -482,6 +527,8 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
       expect(parts[0].originalName).toBe('prep.txt');
       expect(parts[0].size).toBe(3);
       expect(screen.getByLabelText(/^Subject$/i)).toHaveValue('Hi');
+      // R3: the nonempty Body is retained after the observed first failure.
+      expect(screen.getByLabelText(/^Body \(Markdown\)$/i)).toHaveValue('body prep');
       // Controls are released for a retry.
       await waitFor(() =>
         expect(screen.getByRole('button', { name: /^Send$/i })).not.toBeDisabled(),
@@ -502,6 +549,11 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
       expect(parts[1].originalName).toBe('prep.txt');
       expect(parts[1].size).toBe(3);
       expect(parts[1].filename).toBe(parts[0].filename);
+      // R3: the exact retained Body survives the repeated preparation failure.
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /^Send$/i })).not.toBeDisabled(),
+      );
+      expect(screen.getByLabelText(/^Body \(Markdown\)$/i)).toHaveValue('body prep');
     } finally {
       setSpy.mockRestore();
     }
@@ -530,7 +582,7 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
       const user = userEvent.setup();
       renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads` });
       await openDialog(user);
-      await fillDialog(user, 'Hi');
+      await fillDialog(user, 'Hi', 'body transport');
       await user.upload(
         screen.getByLabelText(/Attach files/i),
         new File(['abc'], 'note.txt', { type: 'text/plain' }),
@@ -546,6 +598,8 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
       expect(parts[0].originalName).toBe('note.txt');
       expect(parts[0].size).toBe(3);
       expect(screen.getByLabelText(/^Subject$/i)).toHaveValue('Hi');
+      // R3: the nonempty Body is retained after the observed first failure.
+      expect(screen.getByLabelText(/^Body \(Markdown\)$/i)).toHaveValue('body transport');
       await waitFor(() =>
         expect(screen.getByRole('button', { name: /^Send$/i })).not.toBeDisabled(),
       );
@@ -565,6 +619,12 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
       expect(parts[1].size).toBe(3);
       expect(parts[1].filename).toBe(parts[0].filename);
       expect(await parts[1].bytes).toEqual(await parts[0].bytes);
+      // R3: the exact retained Body survives the failed retry and released
+      // terminal handling.
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /^Send$/i })).not.toBeDisabled(),
+      );
+      expect(screen.getByLabelText(/^Body \(Markdown\)$/i)).toHaveValue('body transport');
     } finally {
       restore();
     }
@@ -593,7 +653,7 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
       const user = userEvent.setup();
       renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads` });
       await openDialog(user);
-      await fillDialog(user, 'Hi');
+      await fillDialog(user, 'Hi', 'body 400');
       await user.upload(
         screen.getByLabelText(/Attach files/i),
         new File(['abc'], 'weird?.txt', { type: 'text/plain' }),
@@ -611,6 +671,8 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
       expect(parts[0].originalName).toBe('weird?.txt');
       expect(parts[0].size).toBe(3);
       expect(screen.getByLabelText(/^Subject$/i)).toHaveValue('Hi');
+      // R3: the nonempty Body is retained after the observed first failure.
+      expect(screen.getByLabelText(/^Body \(Markdown\)$/i)).toHaveValue('body 400');
       await waitFor(() =>
         expect(screen.getByRole('button', { name: /^Send$/i })).not.toBeDisabled(),
       );
@@ -630,6 +692,12 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
       expect(parts[1].size).toBe(3);
       expect(parts[1].filename).toBe(parts[0].filename);
       expect(await parts[1].bytes).toEqual(await parts[0].bytes);
+      // R3: the exact retained Body survives the failed retry and released
+      // terminal handling.
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /^Send$/i })).not.toBeDisabled(),
+      );
+      expect(screen.getByLabelText(/^Body \(Markdown\)$/i)).toHaveValue('body 400');
     } finally {
       restore();
     }
@@ -871,33 +939,40 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
       }),
     );
     const user = userEvent.setup();
-    renderWithProviders(
-      <>
-        <AppRoutes />
-        <LocationProbe />
-      </>,
-      { route: `/orgs/${SLUG}/threads` },
-    );
-    await openDialog(user);
-    await fillDialog(user, 'Abandoned');
-    await user.upload(
-      screen.getByLabelText(/Attach files/i),
-      new File(['abc'], 'note.txt', { type: 'text/plain' }),
-    );
-    await user.click(screen.getByRole('button', { name: /^Send$/i }));
-    // Close and DO NOT reopen.
-    await user.click(screen.getByRole('button', { name: /^Cancel$/i }));
-    expect(screen.queryByLabelText(/^Subject$/i)).toBeNull();
-    expect(screen.queryByRole('button', { name: /^Cancel$/i })).toBeNull();
-    releaseUpload(undefined);
-    // The captured submission still finishes for its destination, but the
-    // departed dialog must not be closed, navigated or reset by it.
-    await waitFor(() => expect(composeCount).toBe(1));
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
-    expect(screen.queryByLabelText(/^Subject$/i)).toBeNull();
-    // Final callback/location behavior after the old terminal handling: the
-    // departed dialog's 201 must not call onCreated -> navigate to the thread.
-    expect(screen.getByTestId('review-location').textContent).toBe(`/orgs/${SLUG}/threads`);
+    const { delivered, stop } = observeComposeDelivery();
+    try {
+      renderWithProviders(
+        <>
+          <AppRoutes />
+          <LocationProbe />
+        </>,
+        { route: `/orgs/${SLUG}/threads` },
+      );
+      await openDialog(user);
+      await fillDialog(user, 'Abandoned');
+      await user.upload(
+        screen.getByLabelText(/Attach files/i),
+        new File(['abc'], 'note.txt', { type: 'text/plain' }),
+      );
+      await user.click(screen.getByRole('button', { name: /^Send$/i }));
+      // Close and DO NOT reopen.
+      await user.click(screen.getByRole('button', { name: /^Cancel$/i }));
+      expect(screen.queryByLabelText(/^Subject$/i)).toBeNull();
+      expect(screen.queryByRole('button', { name: /^Cancel$/i })).toBeNull();
+      releaseUpload(undefined);
+      // The captured submission still finishes for its destination. Observe the
+      // ACTUAL mocked response delivery (not compose ingress) before asserting.
+      await delivered;
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
+      expect(composeCount).toBe(1);
+      expect(screen.queryByLabelText(/^Subject$/i)).toBeNull();
+      // Final callback/location behavior after the old terminal handling: the
+      // departed dialog's 201 must not call onCreated -> navigate to the thread.
+      expect(screen.getByTestId('review-location').textContent).toBe(`/orgs/${SLUG}/threads`);
+    } finally {
+      releaseUpload(undefined);
+      stop();
+    }
   });
 
   for (const oldReject of [false, true]) {
@@ -966,43 +1041,51 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
         ),
       );
       const user = userEvent.setup();
-      renderWithProviders(
-        <>
-          <AppRoutes />
-          <NavTo to="/orgs/beta/threads" label="nav-beta-org" testId="nav-beta-org" />
-          <LocationProbe />
-        </>,
-        { route: `/orgs/${SLUG}/threads` },
-      );
-      await openDialog(user);
-      await fillDialog(user, 'Captured subject', 'Captured body');
-      await user.upload(
-        screen.getByLabelText(/Attach files/i),
-        new File(['abc'], 'note.txt', { type: 'text/plain' }),
-      );
-      await user.click(screen.getByRole('button', { name: /^Send$/i }));
-      // Switch org while the upload is held. The modal dialog marks the rest of
-      // the page aria-hidden, so dispatch the navigation directly.
-      fireEvent.click(document.querySelector('[data-testid="nav-beta-org"]') as HTMLElement);
-      await waitFor(() =>
-        expect(screen.getByTestId('review-location')).toHaveTextContent('/orgs/beta/threads'),
-      );
-      releaseUpload(undefined);
-      await waitFor(() => expect(composeUrls).toHaveLength(1));
-      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
-      // The compose URL stays at the org captured at first submit.
-      expect(composeUrls[0]).toBe(`/api/v1/orgs/${SLUG}/threads`);
-      // Org departure invalidates result ownership: neither the late alpha
-      // success nor the late alpha rejection may navigate, error, or reset the
-      // replacement beta view.
-      expect(screen.getByTestId('review-location').textContent).toBe('/orgs/beta/threads');
-      expect(screen.getByRole('dialog')).toBeInTheDocument();
-      expect(screen.queryByText('That file name is not allowed.')).toBeNull();
-      expect(composeBody).toMatchObject({
-        subject: 'Captured subject',
-        recipients: ['agent_a'],
-        body_markdown: 'Captured body',
-      });
+      const { delivered, stop } = observeComposeDelivery();
+      try {
+        renderWithProviders(
+          <>
+            <AppRoutes />
+            <NavTo to="/orgs/beta/threads" label="nav-beta-org" testId="nav-beta-org" />
+            <LocationProbe />
+          </>,
+          { route: `/orgs/${SLUG}/threads` },
+        );
+        await openDialog(user);
+        await fillDialog(user, 'Captured subject', 'Captured body');
+        await user.upload(
+          screen.getByLabelText(/Attach files/i),
+          new File(['abc'], 'note.txt', { type: 'text/plain' }),
+        );
+        await user.click(screen.getByRole('button', { name: /^Send$/i }));
+        // Switch org while the upload is held. The modal dialog marks the rest of
+        // the page aria-hidden, so dispatch the navigation directly.
+        fireEvent.click(document.querySelector('[data-testid="nav-beta-org"]') as HTMLElement);
+        await waitFor(() =>
+          expect(screen.getByTestId('review-location')).toHaveTextContent('/orgs/beta/threads'),
+        );
+        releaseUpload(undefined);
+        // Observe the ACTUAL mocked response delivery, not compose ingress.
+        await delivered;
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
+        expect(composeUrls).toHaveLength(1);
+        // The compose URL stays at the org captured at first submit.
+        expect(composeUrls[0]).toBe(`/api/v1/orgs/${SLUG}/threads`);
+        // Org departure invalidates result ownership: neither the late alpha
+        // success nor the late alpha rejection may navigate, error, or reset the
+        // replacement beta view.
+        expect(screen.getByTestId('review-location').textContent).toBe('/orgs/beta/threads');
+        expect(screen.getByRole('dialog')).toBeInTheDocument();
+        expect(screen.queryByText('That file name is not allowed.')).toBeNull();
+        expect(composeBody).toMatchObject({
+          subject: 'Captured subject',
+          recipients: ['agent_a'],
+          body_markdown: 'Captured body',
+        });
+      } finally {
+        releaseUpload(undefined);
+        stop();
+      }
     });
   }
 
@@ -1044,43 +1127,51 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
       }),
     );
     const user = userEvent.setup();
-    renderWithProviders(
-      <>
-        <AppRoutes />
-        <NavTo to="/orgs/beta/threads" label="nav-beta-org" testId="nav-beta-org" />
-        <NavTo to="/orgs/alpha/threads" label="nav-alpha-org" testId="nav-alpha-org" />
-        <LocationProbe />
-      </>,
-      { route: `/orgs/${SLUG}/threads` },
-    );
-    await openDialog(user);
-    await fillDialog(user, 'First A', 'first body');
-    await user.upload(
-      screen.getByLabelText(/Attach files/i),
-      new File(['abc'], 'note.txt', { type: 'text/plain' }),
-    );
-    await user.click(screen.getByRole('button', { name: /^Send$/i }));
-    // A -> B -> A while the first A upload is held. Each slug change advances
-    // the dialog's ownership generation.
-    fireEvent.click(document.querySelector('[data-testid="nav-beta-org"]') as HTMLElement);
-    await waitFor(() =>
-      expect(screen.getByTestId('review-location')).toHaveTextContent('/orgs/beta/threads'),
-    );
-    fireEvent.click(document.querySelector('[data-testid="nav-alpha-org"]') as HTMLElement);
-    await waitFor(() =>
-      expect(screen.getByTestId('review-location')).toHaveTextContent('/orgs/alpha/threads'),
-    );
-    // The reopened-at-alpha dialog is a new generation with empty fields.
-    await fillDialog(user, 'Second A', 'second body');
-    releaseUpload(undefined);
-    await waitFor(() => expect(composeUrls).toHaveLength(1));
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
-    // The stale A success must not close, navigate or reset the new A dialog.
-    expect(composeUrls[0]).toBe(`/api/v1/orgs/${SLUG}/threads`);
-    expect(screen.getByTestId('review-location').textContent).toBe('/orgs/alpha/threads');
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByLabelText(/^Subject$/i)).toHaveValue('Second A');
-    expect(screen.getByLabelText(/^Body \(Markdown\)$/i)).toHaveValue('second body');
+    const { delivered, stop } = observeComposeDelivery();
+    try {
+      renderWithProviders(
+        <>
+          <AppRoutes />
+          <NavTo to="/orgs/beta/threads" label="nav-beta-org" testId="nav-beta-org" />
+          <NavTo to="/orgs/alpha/threads" label="nav-alpha-org" testId="nav-alpha-org" />
+          <LocationProbe />
+        </>,
+        { route: `/orgs/${SLUG}/threads` },
+      );
+      await openDialog(user);
+      await fillDialog(user, 'First A', 'first body');
+      await user.upload(
+        screen.getByLabelText(/Attach files/i),
+        new File(['abc'], 'note.txt', { type: 'text/plain' }),
+      );
+      await user.click(screen.getByRole('button', { name: /^Send$/i }));
+      // A -> B -> A while the first A upload is held. Each slug change advances
+      // the dialog's ownership generation.
+      fireEvent.click(document.querySelector('[data-testid="nav-beta-org"]') as HTMLElement);
+      await waitFor(() =>
+        expect(screen.getByTestId('review-location')).toHaveTextContent('/orgs/beta/threads'),
+      );
+      fireEvent.click(document.querySelector('[data-testid="nav-alpha-org"]') as HTMLElement);
+      await waitFor(() =>
+        expect(screen.getByTestId('review-location')).toHaveTextContent('/orgs/alpha/threads'),
+      );
+      // The reopened-at-alpha dialog is a new generation with empty fields.
+      await fillDialog(user, 'Second A', 'second body');
+      releaseUpload(undefined);
+      // Observe the ACTUAL mocked response delivery, not compose ingress.
+      await delivered;
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
+      expect(composeUrls).toHaveLength(1);
+      // The stale A success must not close, navigate or reset the new A dialog.
+      expect(composeUrls[0]).toBe(`/api/v1/orgs/${SLUG}/threads`);
+      expect(screen.getByTestId('review-location').textContent).toBe('/orgs/alpha/threads');
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      expect(screen.getByLabelText(/^Subject$/i)).toHaveValue('Second A');
+      expect(screen.getByLabelText(/^Body \(Markdown\)$/i)).toHaveValue('second body');
+    } finally {
+      releaseUpload(undefined);
+      stop();
+    }
   });
 
   test('a full dialog unmount abandons the submission and never reopens or navigates', async () => {
@@ -1103,29 +1194,65 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
         );
       }),
     );
+    // Observable departure callbacks: a late 201 that called either one is
+    // recorded rather than hidden behind an unmounted DOM.
+    const onCreated = vi.fn();
+    const onClose = vi.fn();
+    function Harness() {
+      const [showDialog, setShowDialog] = useState(true);
+      return (
+        <>
+          {showDialog ? (
+            <NewThreadDialog open onClose={onClose} onCreated={onCreated} agents={[]} />
+          ) : null}
+          <button type="button" data-testid="unmount-dialog" onClick={() => setShowDialog(false)}>
+            unmount dialog
+          </button>
+        </>
+      );
+    }
+
     const user = userEvent.setup();
-    const view = renderWithProviders(
-      <>
-        <AppRoutes />
-        <LocationProbe />
-      </>,
-      { route: `/orgs/${SLUG}/threads` },
-    );
-    await openDialog(user);
-    await fillDialog(user, 'Unmount me', 'held body');
-    await user.upload(
-      screen.getByLabelText(/Attach files/i),
-      new File(['abc'], 'note.txt', { type: 'text/plain' }),
-    );
-    await user.click(screen.getByRole('button', { name: /^Send$/i }));
-    view.unmount();
-    // The captured submission still completes for its destination, but the
-    // dead dialog must not reopen, navigate or reset anything.
-    releaseUpload(undefined);
-    await waitFor(() => expect(composeCount).toBe(1));
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
-    expect(screen.queryByLabelText(/^Subject$/i)).toBeNull();
-    expect(screen.queryByRole('dialog')).toBeNull();
+    const { delivered, stop } = observeComposeDelivery();
+    try {
+      renderWithProviders(
+        <Routes>
+          <Route
+            path="/orgs/:slug/threads"
+            element={
+              <OrgProvider>
+                <Harness />
+                <LocationProbe />
+              </OrgProvider>
+            }
+          />
+        </Routes>,
+        { route: `/orgs/${SLUG}/threads` },
+      );
+      await fillDialog(user, 'Unmount me', 'held body');
+      await user.upload(
+        screen.getByLabelText(/Attach files/i),
+        new File(['abc'], 'note.txt', { type: 'text/plain' }),
+      );
+      await user.click(screen.getByRole('button', { name: /^Send$/i }));
+      // Unmount ONLY the dialog; the router + LocationProbe survive so a late
+      // onCreated/onClose navigation is still observable.
+      fireEvent.click(screen.getByTestId('unmount-dialog'));
+      releaseUpload(undefined);
+      // Observe the ACTUAL mocked response delivery, not compose ingress.
+      await delivered;
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
+      expect(composeCount).toBe(1);
+      // Zero late departed callbacks, and the surviving router did not move.
+      expect(onCreated).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+      expect(screen.getByTestId('review-location').textContent).toBe(`/orgs/${SLUG}/threads`);
+      expect(screen.queryByLabelText(/^Subject$/i)).toBeNull();
+      expect(screen.queryByRole('dialog')).toBeNull();
+    } finally {
+      releaseUpload(undefined);
+      stop();
+    }
   });
 
   test('a forward dialog keeps the captured forwarded fields/subject/recipients/body after departure and a prefill change', async () => {
@@ -1163,15 +1290,19 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
       forwarded_from_id: 'THR-CHANGED',
       forwarded_from_kind: 'thread' as const,
     };
+    // Observable departure callbacks: a stale success that called either one
+    // would be recorded here rather than hidden behind a no-op.
+    const onCreated = vi.fn();
+    const onClose = vi.fn();
     function Harness() {
       const [prefill, setPrefill] = useState(ORIGINAL);
       return (
         <>
           <NewThreadDialog
             open
-            onClose={() => undefined}
+            onClose={onClose}
             prefill={prefill}
-            onCreated={() => undefined}
+            onCreated={onCreated}
             agents={[]}
           />
           <button type="button" data-testid="change-prefill" onClick={() => setPrefill(CHANGED)}>
@@ -1183,56 +1314,68 @@ describe('NewThreadDialog — remaining failure seams, retry and abandonment (TA
     }
 
     const user = userEvent.setup();
-    renderWithProviders(
-      <Routes>
-        <Route
-          path="/orgs/:slug/threads"
-          element={
-            <OrgProvider>
-              <Harness />
-              <LocationProbe />
-            </OrgProvider>
-          }
-        />
-      </Routes>,
-      { route: `/orgs/${SLUG}/threads` },
-    );
-    // Prefill seeds the dialog fields.
-    await waitFor(() =>
-      expect(screen.getByLabelText(/^Subject$/i)).toHaveValue(ORIGINAL.subject),
-    );
-    await user.upload(
-      screen.getByLabelText(/Attach files/i),
-      new File(['abc'], 'note.txt', { type: 'text/plain' }),
-    );
-    await user.click(screen.getByRole('button', { name: /^Send$/i }));
-    // Change the prefill while the upload is held: the dialog resets to the new
-    // prefill and invalidates the run, but the in-flight compose must still use
-    // the fields captured at first submit.
-    fireEvent.click(screen.getByTestId('change-prefill'));
-    await waitFor(() =>
-      expect(screen.getByLabelText(/^Subject$/i)).toHaveValue(CHANGED.subject),
-    );
-    // Also DEPART the org while the upload is held. The dialog is modal, so
-    // dispatch the navigation directly (same as C8.2b).
-    fireEvent.click(document.querySelector('[data-testid="depart"]') as HTMLElement);
-    await waitFor(() =>
-      expect(screen.getByTestId('review-location')).toHaveTextContent('/orgs/beta/threads'),
-    );
-    releaseUpload(undefined);
-    await waitFor(() => expect(composeBody).not.toBeNull());
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
-    expect(composeBody).toMatchObject({
-      subject: ORIGINAL.subject,
-      recipients: ORIGINAL.recipients,
-      body_markdown: ORIGINAL.body,
-      forwarded_from_id: ORIGINAL.forwarded_from_id,
-      forwarded_from_kind: ORIGINAL.forwarded_from_kind,
-    });
-    // The stale completion must not close, navigate or reset the changed dialog.
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByLabelText(/^Subject$/i)).toHaveValue(CHANGED.subject);
-    expect(screen.getByTestId('review-location').textContent).toBe('/orgs/beta/threads');
+    const { delivered, stop } = observeComposeDelivery();
+    try {
+      renderWithProviders(
+        <Routes>
+          <Route
+            path="/orgs/:slug/threads"
+            element={
+              <OrgProvider>
+                <Harness />
+                <LocationProbe />
+              </OrgProvider>
+            }
+          />
+        </Routes>,
+        { route: `/orgs/${SLUG}/threads` },
+      );
+      // Prefill seeds the dialog fields.
+      await waitFor(() =>
+        expect(screen.getByLabelText(/^Subject$/i)).toHaveValue(ORIGINAL.subject),
+      );
+      await user.upload(
+        screen.getByLabelText(/Attach files/i),
+        new File(['abc'], 'note.txt', { type: 'text/plain' }),
+      );
+      await user.click(screen.getByRole('button', { name: /^Send$/i }));
+      // Change the prefill while the upload is held: the dialog resets to the new
+      // prefill and invalidates the run, but the in-flight compose must still use
+      // the fields captured at first submit.
+      fireEvent.click(screen.getByTestId('change-prefill'));
+      await waitFor(() =>
+        expect(screen.getByLabelText(/^Subject$/i)).toHaveValue(CHANGED.subject),
+      );
+      // Also DEPART the org while the upload is held. The dialog is modal, so
+      // dispatch the navigation directly (same as C8.2b).
+      fireEvent.click(document.querySelector('[data-testid="depart"]') as HTMLElement);
+      await waitFor(() =>
+        expect(screen.getByTestId('review-location')).toHaveTextContent('/orgs/beta/threads'),
+      );
+      releaseUpload(undefined);
+      // Observe the ACTUAL mocked response delivery, not compose ingress.
+      await delivered;
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
+      expect(composeBody).toMatchObject({
+        subject: ORIGINAL.subject,
+        recipients: ORIGINAL.recipients,
+        body_markdown: ORIGINAL.body,
+        forwarded_from_id: ORIGINAL.forwarded_from_id,
+        forwarded_from_kind: ORIGINAL.forwarded_from_kind,
+      });
+      // The stale completion must neither close/navigate (callbacks) nor reset
+      // the changed replacement fields; the location stays beta.
+      expect(onCreated).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      expect(screen.getByLabelText(/^Subject$/i)).toHaveValue(CHANGED.subject);
+      expect(screen.getByLabelText(/^Recipients/i)).toHaveValue(CHANGED.recipients.join(', '));
+      expect(screen.getByLabelText(/^Body \(Markdown\)$/i)).toHaveValue(CHANGED.body);
+      expect(screen.getByTestId('review-location').textContent).toBe('/orgs/beta/threads');
+    } finally {
+      releaseUpload(undefined);
+      stop();
+    }
   });
 });
 
@@ -1354,6 +1497,13 @@ describe('NewThreadDialog — frozen-clock name collisions (C3.3 new-thread)', (
       await user.click(screen.getByRole('button', { name: /^Send$/i }));
       await screen.findByText(/Failed to fetch/i);
       expect(composeCount).toBe(0);
+      // R2: BOTH retained selections keep their own visible chip under their
+      // ORIGINAL names, as distinct chip elements with two remove controls.
+      const removeButtons = screen.getAllByRole('button', { name: 'Remove attachment' });
+      expect(removeButtons).toHaveLength(2);
+      const chipA = chipFor('a b.txt');
+      const chipB = chipFor('a-b.txt');
+      expect(chipA).not.toBe(chipB);
       await user.click(screen.getByRole('button', { name: /^Send$/i }));
       await waitFor(() => expect(composeCount).toBe(1));
 

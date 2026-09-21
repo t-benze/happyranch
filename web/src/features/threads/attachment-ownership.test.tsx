@@ -355,6 +355,10 @@ describe('captured destination and late-result ownership (C8)', () => {
           // Each submission stayed at its captured destination URL.
           expect(alphaSend.url).toBe('/api/v1/orgs/alpha/threads/THR-001/send');
           expect(betaSend.url).toBe('/api/v1/orgs/beta/threads/THR-001/send');
+          // R1: each request actually carried its OWN captured draft body. The
+          // textarea/localStorage checks below inspect different state.
+          expect((alphaSend.body as { body_markdown: string }).body_markdown).toBe('alpha held');
+          expect((betaSend.body as { body_markdown: string }).body_markdown).toBe('beta draft');
           expect(
             (alphaSend.body as { attachments: { display_name: string }[] }).attachments.map(
               (r) => r.display_name,
