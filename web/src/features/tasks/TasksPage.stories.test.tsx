@@ -1,14 +1,26 @@
 import { composeStories } from '@storybook/react';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ReactElement } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, test } from 'vitest';
+import { I18nProvider } from '@/hooks/i18n';
 import * as stories from '@/design-system/TasksList.stories';
 
 const { Populated, Empty, Loading, InitialErrorRetry, LongContent, NoEscalated } = composeStories(stories);
+
+/**
+ * `composeStories` applies only story-level decorators; the real Storybook
+ * preview decorator supplies `<I18nProvider>` globally, and the TasksList
+ * story decorator renders `<AppBar>` (a locale consumer). Mirror that provider
+ * here rather than weakening the `useI18n` fail-closed contract.
+ */
+function renderStory(story: ReactElement) {
+  return render(<I18nProvider><MemoryRouter>{story}</MemoryRouter></I18nProvider>);
+}
 describe('C14 Tasks stories render shipping components with local state', () => {
   test('populated and filtering stay truthful', async () => {
-    render(<MemoryRouter><Populated /></MemoryRouter>);
+    renderStory(<Populated />);
     await screen.findByText('End of list');
     expect(screen.getByText('Tasks')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Open assistant' })).not.toBeInTheDocument();
@@ -22,25 +34,25 @@ describe('C14 Tasks stories render shipping components with local state', () => 
     expect(screen.queryByText('No tasks')).not.toBeInTheDocument();
   });
   test('loading excludes empty and error', () => {
-    render(<MemoryRouter><Loading /></MemoryRouter>);
+    renderStory(<Loading />);
     expect(screen.getByText('Loading…')).toBeInTheDocument();
     expect(screen.queryByText('No tasks')).not.toBeInTheDocument();
     expect(screen.queryByText('Could not load tasks')).not.toBeInTheDocument();
   });
   test('empty is successful', async () => {
-    render(<MemoryRouter><Empty /></MemoryRouter>);
+    renderStory(<Empty />);
     await screen.findByText('No tasks');
     expect(screen.queryByText('Could not load tasks')).not.toBeInTheDocument();
   });
   test('initial error has functional local retry', async () => {
-    render(<MemoryRouter><InitialErrorRetry /></MemoryRouter>);
+    renderStory(<InitialErrorRetry />);
     await screen.findByText('Could not load tasks');
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await screen.findByText('End of list');
     expect(screen.queryByText('Could not load tasks')).not.toBeInTheDocument();
   });
   test('long fixture preserves all seven statuses and full identity access', async () => {
-    render(<MemoryRouter><LongContent /></MemoryRouter>);
+    renderStory(<LongContent />);
     await screen.findByText('End of list');
     // Waiting-on-you roots are owned by their independent exact-status
     // traversal; they now render as the first group INSIDE the shared list
@@ -58,7 +70,7 @@ describe('C14 Tasks stories render shipping components with local state', () => 
     expect(document.querySelectorAll('[data-tasks-responsive-list] .opacity-60')).toHaveLength(1);
   });
   test('escalated group renders first with shared styling, absent when attention is empty', async () => {
-    const { unmount } = render(<MemoryRouter><Populated /></MemoryRouter>);
+    const { unmount } = renderStory(<Populated />);
     await screen.findByText('End of list');
     const list = screen.getByTestId('tasks-responsive-list');
     const escalatedSection = list.querySelector('[aria-labelledby="waiting-on-you-heading"]') as HTMLElement | null;
@@ -72,7 +84,7 @@ describe('C14 Tasks stories render shipping components with local state', () => 
     expect(within(list).getAllByRole('heading')[0]).toHaveTextContent('Waiting on you');
     unmount();
 
-    render(<MemoryRouter><NoEscalated /></MemoryRouter>);
+    renderStory(<NoEscalated />);
     await screen.findByText('End of list');
     const noEscalatedList = screen.getByTestId('tasks-responsive-list');
     expect(within(noEscalatedList).queryByRole('heading', { name: /Waiting on you/ })).toBeNull();

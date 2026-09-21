@@ -4,7 +4,7 @@
  * the real `<I18nProvider>` (so tests exercise the production locale wiring).
  */
 import { render, type RenderOptions, type RenderResult } from '@testing-library/react';
-import type { ReactElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { I18nProvider, useI18n } from '@/hooks/i18n';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
@@ -51,6 +51,16 @@ export function renderWithProviders(
     </MemoryRouter>,
     rest,
   );
+}
+
+/**
+ * Test-only locale boundary for harnesses that build their own router/client
+ * instead of `renderWithProviders`. The production `App.tsx` wraps
+ * `<AppRoutes />` in `<I18nProvider>`; bespoke mounts mirror that here rather
+ * than weakening the provider's fail-closed `useI18n` contract.
+ */
+export function I18nTestBoundary({ children }: { children: ReactNode }): JSX.Element {
+  return <I18nProvider>{children}</I18nProvider>;
 }
 
 /**

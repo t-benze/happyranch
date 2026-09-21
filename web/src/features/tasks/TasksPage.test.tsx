@@ -4,7 +4,7 @@ import { http, HttpResponse } from 'msw';
 import { Link, MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
-import { renderWithProviders } from '@/test/render';
+import { I18nTestBoundary, renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
 import * as api from '@/lib/api';
@@ -199,7 +199,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
     }
     const queryClient = makeQueryClient();
     render(<MemoryRouter initialEntries={[`/orgs/${SLUG}/tasks`]}><AppProvider client={queryClient}>
-      <Routes><Route path="/orgs/:slug/tasks" element={<ResolveButton />} /></Routes><AppRoutes />
+      <Routes><Route path="/orgs/:slug/tasks" element={<ResolveButton />} /></Routes><I18nTestBoundary><AppRoutes /></I18nTestBoundary>
     </AppProvider></MemoryRouter>);
     await screen.findByText('Escalation now resolved');
     expect(screen.getAllByText('Escalation now resolved')).toHaveLength(1);
@@ -237,7 +237,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
     render(
       <MemoryRouter initialEntries={['/orgs/org-a/tasks']}>
         <AppProvider client={queryClient}>
-          <Link to="/orgs/org-b/tasks">Go org b</Link><AppRoutes />
+          <Link to="/orgs/org-b/tasks">Go org b</Link><I18nTestBoundary><AppRoutes /></I18nTestBoundary>
         </AppProvider>
       </MemoryRouter>,
     );
@@ -287,7 +287,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
     });
     const queryClient = makeQueryClient();
     render(<MemoryRouter initialEntries={['/orgs/org-a/tasks']}><AppProvider client={queryClient}>
-      <Link to="/orgs/org-b/tasks">Go org b</Link><AppRoutes />
+      <Link to="/orgs/org-b/tasks">Go org b</Link><I18nTestBoundary><AppRoutes /></I18nTestBoundary>
     </AppProvider></MemoryRouter>);
 
     await waitFor(() => expect(requests.filter((request) => request.slug === 'org-a')).toHaveLength(2));
@@ -539,7 +539,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
       }
       const mounted = render(
         <MemoryRouter initialEntries={[`/orgs/${SLUG}/tasks`]}>
-          <AppProvider client={queryClient}><Location /><AppRoutes /></AppProvider>
+          <AppProvider client={queryClient}><Location /><I18nTestBoundary><AppRoutes /></I18nTestBoundary></AppProvider>
         </MemoryRouter>,
       );
       const user = userEvent.setup();
@@ -2730,7 +2730,9 @@ describe('TaskDetailPage — Activity route isolation (TASK-4827)', () => {
       <MemoryRouter initialEntries={[`/orgs/${SLUG}/tasks/${FIRST_TASK.task_id}`]}>
         <AppProvider client={makeQueryClient()}>
           <Link to={`/orgs/${SLUG}/tasks/${SECOND_TASK.task_id}`}>Open second task</Link>
-          <AppRoutes />
+          <I18nTestBoundary>
+            <AppRoutes />
+          </I18nTestBoundary>
         </AppProvider>
       </MemoryRouter>,
     );
