@@ -3349,6 +3349,507 @@ def test_list_roots_severity_rollup_ignores_revisit_chain(db):
     assert root1._severity_rollup == 'completed'
 
 
+# ── THR-266 / TASK-8671: current-status severity rollup derive (C1-C12) ──
+#
+# The rollup excludes ONLY a historical FAILED descendant whose forward
+# same-parent revisit lineage leaves no unresolved FAILED leaf. Every other
+# status, the root's own severity, all escalations, unrelated active siblings
+# and root-level revisit behavior are preserved. Cases mirror the accepted
+# design `engineering_manager/output/TASK-8671/design-correction/case-design.md`
+# (SHA256 1e0ef4de…b17263).
+
+_ROLLUP_BASE_TIME = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def _insert_rollup_task(
+    db: Database,
+    task_id: str,
+    *,
+    status: TaskStatus,
+    parent: str | None = None,
+    revisit: str | None = None,
+    block_kind: BlockKind | None = None,
+    assigned_agent: str | None = None,
+    created_at: datetime | None = None,
+) -> None:
+    created = created_at or _ROLLUP_BASE_TIME
+    db.insert_task(TaskRecord(
+        id=task_id,
+        brief=f"{task_id} brief",
+        status=status,
+        parent_task_id=parent,
+        revisit_of_task_id=revisit,
+        block_kind=block_kind,
+        assigned_agent=assigned_agent,
+        created_at=created,
+        updated_at=created,
+    ))
+
+
+def _rollup_of(db: Database, root_id: str = "ROOT-1") -> str:
+    roots = {r.id: r for r in db.list_roots()}
+    return roots[root_id]._severity_rollup
+
+
+# C1 — a same-parent linked COMPLETED/SUPERSEDED recovery removes the stale
+# failed subtitle; the root's own in_progress status wins.
+@pytest.mark.parametrize("successor_status", [TaskStatus.COMPLETED, TaskStatus.SUPERSEDED])
+def test_list_roots_rollup_c1_linked_recovery_not_stale_failed(
+    db, successor_status,
+):
+    _insert_rollup_task(
+        db, "ROOT-1", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+    )
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "S1", status=successor_status, parent="ROOT-1", revisit="F1",
+    )
+    assert _rollup_of(db) == "in_progress"
+
+
+# C2 — an active same-parent retry is current recovery; the root's own status
+# controls the exact string and the successor's block_kind never leaks.
+@pytest.mark.parametrize("succ_status,succ_block", [
+    (TaskStatus.PENDING, None),
+    (TaskStatus.IN_PROGRESS, None),
+    (TaskStatus.IN_PROGRESS, BlockKind.DELEGATED),
+    (TaskStatus.IN_PROGRESS, BlockKind.BLOCKED_ON_JOB),
+])
+def test_list_roots_rollup_c2_active_retry_exact_in_progress(
+    db, succ_status, succ_block,
+):
+    _insert_rollup_task(
+        db, "ROOT-1", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+    )
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "S1", status=succ_status, parent="ROOT-1", revisit="F1",
+        block_kind=succ_block,
+    )
+    roots = {r.id: r for r in db.list_roots()}
+    assert roots["ROOT-1"]._severity_rollup == "in_progress"
+    # The successor's block_kind is its own; it must not leak onto the root.
+    assert roots["ROOT-1"].block_kind == BlockKind.DELEGATED
+
+
+# C3 — retry-fails-again restores truthful unresolved failure at the exact
+# final transition. No COMPLETED/SUPERSEDED row is ever flipped to FAILED.
+def test_list_roots_rollup_c3_retry_fails_again_transition(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "F2", status=TaskStatus.FAILED, parent="ROOT-1", revisit="F1",
+    )
+    _insert_rollup_task(
+        db, "F3", status=TaskStatus.IN_PROGRESS, parent="ROOT-1", revisit="F2",
+    )
+    assert _rollup_of(db) == "in_progress"
+    db.update_task("F3", status=TaskStatus.FAILED)
+    assert _rollup_of(db) == "failed"
+    _insert_rollup_task(
+        db, "F4", status=TaskStatus.COMPLETED, parent="ROOT-1", revisit="F3",
+    )
+    assert _rollup_of(db) == "in_progress"
+    # The fixture never flips a terminal row; F3 went non-terminal -> FAILED.
+    assert db.get_task("F4").status == TaskStatus.COMPLETED
+
+
+# C4 — an unresolved failure survives an unrelated newer completed/running
+# sibling, even with the same agent and no revisit link.
+@pytest.mark.parametrize("sibling_status", [TaskStatus.COMPLETED, TaskStatus.IN_PROGRESS])
+def test_list_roots_rollup_c4_unrelated_newer_sibling(db, sibling_status):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(
+        db, "F1", status=TaskStatus.FAILED, parent="ROOT-1",
+        assigned_agent="dev_agent", created_at=_ROLLUP_BASE_TIME,
+    )
+    _insert_rollup_task(
+        db, "N1", status=sibling_status, parent="ROOT-1",
+        assigned_agent="dev_agent",
+        created_at=_ROLLUP_BASE_TIME + timedelta(hours=1),
+    )
+    assert _rollup_of(db) == "failed"
+
+
+# C5 — an independent parallel failed/escalated branch survives another
+# branch's recovery.
+@pytest.mark.parametrize("branch_b_status,expected", [
+    (TaskStatus.FAILED, "failed"),
+    (TaskStatus.ESCALATED, "escalated"),
+])
+def test_list_roots_rollup_c5_parallel_branch_survives(
+    db, branch_b_status, expected,
+):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F_A", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "S_A", status=TaskStatus.COMPLETED, parent="ROOT-1", revisit="F_A",
+    )
+    _insert_rollup_task(
+        db, "B1", status=branch_b_status, parent="ROOT-1",
+    )
+    assert _rollup_of(db) == expected
+
+
+# C5b — an escalated explicitly linked successor contributes escalated.
+def test_list_roots_rollup_c5b_escalated_linked_successor(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "S1", status=TaskStatus.ESCALATED, parent="ROOT-1", revisit="F1",
+    )
+    assert _rollup_of(db) == "escalated"
+
+
+# C6a — observed TASK-8589 shape: a failed manager's COMPLETED parent-task
+# children are never retirement evidence; only its active revisit successor is.
+def test_list_roots_rollup_c6a_observed_8589_shape(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "M1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(db, "M1c1", status=TaskStatus.COMPLETED, parent="M1")
+    _insert_rollup_task(db, "M1c2", status=TaskStatus.COMPLETED, parent="M1")
+    _insert_rollup_task(
+        db, "M1r", status=TaskStatus.IN_PROGRESS, parent="ROOT-1", revisit="M1",
+    )
+    _insert_rollup_task(db, "M1r_child", status=TaskStatus.IN_PROGRESS, parent="M1r")
+    _insert_rollup_task(db, "W", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "Wr1", status=TaskStatus.COMPLETED, parent="ROOT-1", revisit="W",
+    )
+    _insert_rollup_task(
+        db, "Wr2", status=TaskStatus.IN_PROGRESS, parent="ROOT-1", revisit="W",
+    )
+    assert _rollup_of(db) == "in_progress"
+
+
+# C6b — synthetic replacement manager with the required successor step.
+def test_list_roots_rollup_c6b_synthetic_replacement_manager(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "M2", status=TaskStatus.IN_PROGRESS, parent="ROOT-1")
+    _insert_rollup_task(db, "X", status=TaskStatus.FAILED, parent="M2")
+    assert _rollup_of(db) == "failed"
+    _insert_rollup_task(
+        db, "Xr", status=TaskStatus.IN_PROGRESS, parent="M2", revisit="X",
+    )
+    assert _rollup_of(db) == "in_progress"
+    db.update_task("Xr", status=TaskStatus.COMPLETED)
+    assert _rollup_of(db) == "in_progress"
+
+
+# C6c — nested retry-fails-again then completed recovery.
+def test_list_roots_rollup_c6c_nested_retry_fails_again(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "M1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "M1r", status=TaskStatus.FAILED, parent="ROOT-1", revisit="M1",
+    )
+    assert _rollup_of(db) == "failed"
+    _insert_rollup_task(
+        db, "M1r2", status=TaskStatus.COMPLETED, parent="ROOT-1", revisit="M1r",
+    )
+    assert _rollup_of(db) == "in_progress"
+
+
+# C6d — a completed manager revisit does not blanket-retire the old manager's
+# unresolved failed child; its escalation survives; its own link resolves it.
+def test_list_roots_rollup_c6d_unresolved_old_child_boundary(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "M1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(db, "C", status=TaskStatus.FAILED, parent="M1")
+    _insert_rollup_task(
+        db, "M1r", status=TaskStatus.COMPLETED, parent="ROOT-1", revisit="M1",
+    )
+    assert _rollup_of(db) == "failed"
+    _insert_rollup_task(
+        db, "Cr", status=TaskStatus.COMPLETED, parent="M1", revisit="C",
+    )
+    assert _rollup_of(db) == "in_progress"
+
+
+def test_list_roots_rollup_c6d_variant_escalated_old_child(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "M1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(db, "C", status=TaskStatus.ESCALATED, parent="M1")
+    _insert_rollup_task(
+        db, "M1r", status=TaskStatus.COMPLETED, parent="ROOT-1", revisit="M1",
+    )
+    assert _rollup_of(db) == "escalated"
+
+
+# C6e — completed parent-task children alone never retire a failed manager.
+def test_list_roots_rollup_c6e_completed_child_alone_does_not_retire(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "M", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(db, "C", status=TaskStatus.COMPLETED, parent="M")
+    assert _rollup_of(db) == "failed"
+
+
+# C7 — multiple successors of one failed predecessor: a completed successor
+# never erases a still-unresolved failed parallel successor.
+@pytest.mark.parametrize("succ_statuses,expected", [
+    ((TaskStatus.COMPLETED, TaskStatus.FAILED), "failed"),
+    ((TaskStatus.COMPLETED, TaskStatus.IN_PROGRESS), "in_progress"),
+    ((TaskStatus.COMPLETED, TaskStatus.SUPERSEDED), "in_progress"),
+    ((TaskStatus.COMPLETED,), "in_progress"),
+])
+def test_list_roots_rollup_c7_multiple_successors(db, succ_statuses, expected):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    for idx, st in enumerate(succ_statuses, start=1):
+        _insert_rollup_task(
+            db, f"S{idx}", status=st, parent="ROOT-1", revisit="F1",
+        )
+    assert _rollup_of(db) == expected
+
+
+# C7b — no latest-wins tie-break: identical created_at, order-independent; a
+# completed successor retires regardless of age. No timestamp/agent consulted.
+@pytest.mark.parametrize("order", [
+    (TaskStatus.COMPLETED, TaskStatus.FAILED),
+    (TaskStatus.FAILED, TaskStatus.COMPLETED),
+])
+def test_list_roots_rollup_c7b_identical_timestamp(db, order):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(
+        db, "F1", status=TaskStatus.FAILED, parent="ROOT-1",
+        created_at=_ROLLUP_BASE_TIME,
+    )
+    for idx, st in enumerate(order, start=1):
+        _insert_rollup_task(
+            db, f"S{idx}", status=st, parent="ROOT-1", revisit="F1",
+            created_at=_ROLLUP_BASE_TIME,
+        )
+    assert _rollup_of(db) == "failed"
+
+
+def test_list_roots_rollup_c7b_older_completed_successor_retires(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(
+        db, "F1", status=TaskStatus.FAILED, parent="ROOT-1",
+        created_at=_ROLLUP_BASE_TIME + timedelta(hours=1),
+    )
+    _insert_rollup_task(
+        db, "S1", status=TaskStatus.COMPLETED, parent="ROOT-1", revisit="F1",
+        created_at=_ROLLUP_BASE_TIME,
+    )
+    assert _rollup_of(db) == "in_progress"
+
+
+# C8 — cancelled-successor empty-unresolved-leaf effect, parallel mixes,
+# invalid/cross-parent links, cycles, no-child fallback, root-own preservation.
+def test_list_roots_rollup_c8_cancelled_only_successor(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "S1", status=TaskStatus.CANCELLED, parent="ROOT-1", revisit="F1",
+    )
+    assert _rollup_of(db) == "in_progress"
+    # Cancellation is not successful retirement; the row/history is preserved.
+    assert db.get_task("S1").status == TaskStatus.CANCELLED
+    assert db.get_task("F1").status == TaskStatus.FAILED
+
+
+def test_list_roots_rollup_c8_cancelled_plus_failed_parallel(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "S1", status=TaskStatus.CANCELLED, parent="ROOT-1", revisit="F1",
+    )
+    _insert_rollup_task(db, "F2", status=TaskStatus.FAILED, parent="ROOT-1")
+    assert _rollup_of(db) == "failed"
+
+
+def test_list_roots_rollup_c8_cancelled_plus_escalated_parallel(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "S1", status=TaskStatus.CANCELLED, parent="ROOT-1", revisit="F1",
+    )
+    _insert_rollup_task(db, "E1", status=TaskStatus.ESCALATED, parent="ROOT-1")
+    assert _rollup_of(db) == "escalated"
+
+
+def test_list_roots_rollup_c8_cross_parent_link_ignored(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(db, "M1", status=TaskStatus.IN_PROGRESS, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "S1", status=TaskStatus.COMPLETED, parent="M1", revisit="F1",
+    )
+    assert _rollup_of(db) == "failed"
+
+
+def test_list_roots_rollup_c8_invalid_target_ignored(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "S1", status=TaskStatus.COMPLETED, parent="ROOT-1", revisit="MISSING",
+    )
+    assert _rollup_of(db) == "failed"
+
+
+def test_list_roots_rollup_c8_self_loop_conservative(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(
+        db, "A", status=TaskStatus.FAILED, parent="ROOT-1", revisit="A",
+    )
+    assert _rollup_of(db) == "failed"
+
+
+def test_list_roots_rollup_c8_two_cycle_conservative(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(
+        db, "A", status=TaskStatus.FAILED, parent="ROOT-1", revisit="B",
+    )
+    _insert_rollup_task(
+        db, "B", status=TaskStatus.FAILED, parent="ROOT-1", revisit="A",
+    )
+    assert _rollup_of(db) == "failed"
+
+
+@pytest.mark.parametrize("own_status", [
+    TaskStatus.IN_PROGRESS,
+    TaskStatus.ESCALATED,
+    TaskStatus.COMPLETED,
+    TaskStatus.CANCELLED,
+    TaskStatus.SUPERSEDED,
+])
+def test_list_roots_rollup_c8_no_child_fallback_root_own(db, own_status):
+    _insert_rollup_task(db, "ROOT-1", status=own_status)
+    assert _rollup_of(db) == own_status.value
+
+
+def test_list_roots_rollup_c8_root_own_escalated_survives(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.ESCALATED)
+    _insert_rollup_task(db, "C1", status=TaskStatus.COMPLETED, parent="ROOT-1")
+    assert _rollup_of(db) == "escalated"
+
+
+# C11 — same-root boundary and admissible-link endpoints. Root-level revisit
+# never affects a predecessor root; a successor outside the subtree cannot
+# retire a failed descendant.
+def test_list_roots_rollup_c11_out_of_subtree_successor_ignored(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    # A separate ROOT whose revisit link targets ROOT-1's failed child.
+    _insert_rollup_task(
+        db, "ROOT-2", status=TaskStatus.COMPLETED, revisit="F1",
+    )
+    assert _rollup_of(db, "ROOT-1") == "failed"
+    assert _rollup_of(db, "ROOT-2") == "completed"
+
+
+def test_list_roots_rollup_c11_matching_none_parents_never_admit(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.COMPLETED)
+    _insert_rollup_task(
+        db, "ROOT-2", status=TaskStatus.FAILED, revisit="ROOT-1",
+    )
+    assert _rollup_of(db, "ROOT-1") == "completed"
+    assert _rollup_of(db, "ROOT-2") == "failed"
+
+
+# C12 — malformed cycles and exact finite iterative work bounds without
+# silently truncating severity.
+def test_list_roots_rollup_c12a_deep_1201_revisit_chain(db):
+    """1201 > CPython default recursion limit (~1000): a recursive
+    _collect_leaf implementation would raise RecursionError here."""
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    for i in range(1, 1202):
+        _insert_rollup_task(
+            db, f"F{i}",
+            status=TaskStatus.FAILED if i == 1201 else TaskStatus.COMPLETED,
+            parent="ROOT-1",
+            revisit=(f"F{i - 1}" if i > 1 else None),
+        )
+    desc = db._get_subtree_tasks("ROOT-1")
+    assert len(desc) == 1201
+    assert _rollup_of(db) == "failed"
+
+
+def test_list_roots_rollup_c12b_wide_2048_snapshot_bounds(db):
+    """The complete 2048-node snapshot is resolved; get_children <= D+1 and
+    get_task <= D exactly, with every node/edge examined once."""
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    for i in range(1, 2049):
+        if i == 1:
+            status = TaskStatus.FAILED
+        elif i == 2:
+            status = TaskStatus.IN_PROGRESS
+        else:
+            status = TaskStatus.COMPLETED
+        _insert_rollup_task(
+            db, f"W{i}", status=status, parent="ROOT-1",
+            revisit=(f"W{i - 1}" if i in (3, 5, 7) else None),
+        )
+    calls = {"children": 0, "task": 0}
+    orig_children = db.get_children
+    orig_task = db.get_task
+
+    def counted_children(task_id):
+        calls["children"] += 1
+        return orig_children(task_id)
+
+    def counted_task(task_id):
+        calls["task"] += 1
+        return orig_task(task_id)
+
+    db.get_children = counted_children
+    db.get_task = counted_task
+    try:
+        rollup = _rollup_of(db)
+    finally:
+        del db.get_children
+        del db.get_task
+    assert rollup == "failed"
+    assert calls["children"] == 2049   # D + 1
+    assert calls["task"] == 2048       # D
+
+
+def test_list_roots_rollup_c12c_direct_helper_parent_cycle(db):
+    """An unreachable two-row parent component, supplied directly to the
+    private helper. list_roots can never reach it (roots have NULL parent)."""
+    _insert_rollup_task(db, "A", status=TaskStatus.FAILED, parent="B")
+    _insert_rollup_task(db, "B", status=TaskStatus.FAILED, parent="A")
+    calls = {"children": 0, "task": 0}
+    orig_children = db.get_children
+    orig_task = db.get_task
+
+    def counted_children(task_id):
+        calls["children"] += 1
+        return orig_children(task_id)
+
+    def counted_task(task_id):
+        calls["task"] += 1
+        return orig_task(task_id)
+
+    db.get_children = counted_children
+    db.get_task = counted_task
+    try:
+        result = db._get_subtree_tasks("A")
+    finally:
+        del db.get_children
+        del db.get_task
+    assert [t.id for t in result] == ["B"]
+    assert len(result) == 1
+    assert calls["children"] <= 2
+    assert calls["task"] <= 1
+
+
+def test_list_roots_rollup_c12d_revisit_cycles_keep_failed(db):
+    """A malformed reachable revisit cycle fails conservative (keeps failed)."""
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(
+        db, "A", status=TaskStatus.FAILED, parent="ROOT-1", revisit="B",
+    )
+    _insert_rollup_task(
+        db, "B", status=TaskStatus.FAILED, parent="ROOT-1", revisit="A",
+    )
+    _insert_rollup_task(
+        db, "C", status=TaskStatus.FAILED, parent="ROOT-1", revisit="C",
+    )
+    assert _rollup_of(db) == "failed"
+
+
 # ── THR-129 lock instrumentation tests ──────────────────────────────────
 
 

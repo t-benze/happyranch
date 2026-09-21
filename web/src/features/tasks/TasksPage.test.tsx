@@ -7,6 +7,8 @@ import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
+import { TaskCard } from '@/design-system/patterns/TaskCard';
+import { TaskListRow } from './TaskListRow';
 import * as api from '@/lib/api';
 import { __resetTokenCacheForTests } from '@/lib/auth';
 import { useResolveEscalation } from '@/hooks/tasks';
@@ -2757,5 +2759,233 @@ describe('TaskDetailPage — Activity route isolation (TASK-4827)', () => {
     });
     expect(screen.getByText('task_4819_activity')).toBeInTheDocument();
     expect(screen.queryByText('task_4809_activity')).not.toBeInTheDocument();
+  });
+});
+
+// ── THR-266 / TASK-8671: stale subtask-failed presentation ──────────────
+//
+// The root row shows "subtask <status>" iff severity_rollup differs from the
+// root's own status. Once the derive curates stale FAILED contributions, a
+// retired lineage no longer renders "subtask failed"; the root's own waiting
+// qualifier is preserved. Cases C1/C2/C3/C9a/C9b/C10 of the accepted design
+// (`engineering_manager/output/TASK-8671/design-correction/case-design.md`,
+// SHA256 1e0ef4de…b17263).
+
+describe('THR-266 current-status subtask rollup presentation', () => {
+  const mutable: { tasks: TaskRecord[] } = { tasks: [] };
+
+  function rootsHandler(tasks: TaskRecord[]) {
+    return http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+      const params = new URL(request.url).searchParams;
+      if (params.get('status') === 'escalated') {
+        return HttpResponse.json({ tasks: [], next_cursor: null });
+      }
+      return HttpResponse.json({ tasks, next_cursor: null });
+    });
+  }
+
+  function mountWithClient(route: string) {
+    const qc = makeQueryClient();
+    qc.setQueryDefaults(['orgs'], { staleTime: Infinity });
+    qc.setQueryData(['orgs'], { orgs: [{ slug: SLUG, root: '/x' }] });
+    const utils = render(
+      <MemoryRouter initialEntries={[route]}>
+        <AppProvider client={qc}><AppRoutes /></AppProvider>
+      </MemoryRouter>,
+    );
+    return { qc, ...utils };
+  }
+
+  async function refetchRoots(qc: ReturnType<typeof makeQueryClient>) {
+    await act(async () => {
+      await qc.refetchQueries({ queryKey: ['tasks-roots-infinite'], exact: false });
+    });
+  }
+
+  test('C1/C2 rendered root shows no stale subtitle and keeps its own qualifier', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(rootsHandler([rootTask({
+      task_id: 'TASK-0700',
+      status: 'in_progress',
+      block_kind: 'delegated',
+      severity_rollup: 'in_progress',
+      brief: 'Active root with a linked recovery',
+    })]));
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await screen.findByText('Active root with a linked recovery');
+    expect(screen.queryByText('subtask failed')).not.toBeInTheDocument();
+    expect(screen.getByText('in_progress')).toBeInTheDocument();
+    // The qualifier comes from the root's OWN status/block_kind.
+    expect(screen.getByText('waiting on subtasks')).toBeInTheDocument();
+  });
+
+  test('C3 refetch drops then restores the stale subtitle from live payloads', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    mutable.tasks = [rootTask({
+      task_id: 'TASK-0710',
+      status: 'in_progress',
+      block_kind: 'delegated',
+      severity_rollup: 'failed',
+      brief: 'Retry transition root',
+    })];
+    server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+      const params = new URL(request.url).searchParams;
+      if (params.get('status') === 'escalated') {
+        return HttpResponse.json({ tasks: [], next_cursor: null });
+      }
+      return HttpResponse.json({ tasks: mutable.tasks, next_cursor: null });
+    }));
+    const { qc } = mountWithClient(`/orgs/${SLUG}/tasks`);
+    await screen.findByText('Retry transition root');
+    expect(screen.getByText('subtask failed')).toBeInTheDocument();
+
+    mutable.tasks = [rootTask({
+      task_id: 'TASK-0710',
+      status: 'in_progress',
+      block_kind: 'delegated',
+      severity_rollup: 'in_progress',
+      brief: 'Retry transition root',
+    })];
+    await refetchRoots(qc);
+    await waitFor(() => expect(screen.queryByText('subtask failed')).not.toBeInTheDocument());
+    expect(screen.getByText('waiting on subtasks')).toBeInTheDocument();
+    expect(screen.getByText('in_progress')).toBeInTheDocument();
+
+    mutable.tasks = [rootTask({
+      task_id: 'TASK-0710',
+      status: 'in_progress',
+      block_kind: 'delegated',
+      severity_rollup: 'failed',
+      brief: 'Retry transition root',
+    })];
+    await refetchRoots(qc);
+    await waitFor(() => expect(screen.getByText('subtask failed')).toBeInTheDocument());
+  });
+
+  test('C9a in_progress/delegated root refetch keeps qualifier, toggles subtitle', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const step = (rollup: string) => [rootTask({
+      task_id: 'TASK-0720',
+      status: 'in_progress',
+      block_kind: 'delegated',
+      severity_rollup: rollup,
+      brief: 'Fixed in-progress root',
+    })];
+    mutable.tasks = step('failed');
+    server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+      const params = new URL(request.url).searchParams;
+      if (params.get('status') === 'escalated') {
+        return HttpResponse.json({ tasks: [], next_cursor: null });
+      }
+      return HttpResponse.json({ tasks: mutable.tasks, next_cursor: null });
+    }));
+    const { qc } = mountWithClient(`/orgs/${SLUG}/tasks`);
+    await screen.findByText('Fixed in-progress root');
+    expect(screen.getByText('subtask failed')).toBeInTheDocument();
+    expect(screen.getByText('waiting on subtasks')).toBeInTheDocument();
+    expect(screen.getByText('in_progress')).toBeInTheDocument();
+
+    // Steps 2 and 3: active retry then completed recovery -> no stale failed.
+    for (const rollup of ['in_progress', 'in_progress']) {
+      mutable.tasks = step(rollup);
+      await refetchRoots(qc);
+      await waitFor(() => expect(screen.queryByText('subtask failed')).not.toBeInTheDocument());
+      expect(screen.getByText('waiting on subtasks')).toBeInTheDocument();
+      expect(screen.getByText('in_progress')).toBeInTheDocument();
+    }
+
+    // Step 4: a newly failed delegated attempt (recurrence) restores it.
+    mutable.tasks = step('failed');
+    await refetchRoots(qc);
+    await waitFor(() => expect(screen.getByText('subtask failed')).toBeInTheDocument());
+    expect(screen.getByText('waiting on subtasks')).toBeInTheDocument();
+  });
+
+  test('C9b completed root refetch shows no waiting qualifier at any step', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const step = (rollup: string) => [rootTask({
+      task_id: 'TASK-0730',
+      status: 'completed',
+      block_kind: null,
+      severity_rollup: rollup,
+      brief: 'Fixed completed root',
+    })];
+    mutable.tasks = step('failed');
+    server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+      const params = new URL(request.url).searchParams;
+      if (params.get('status') === 'escalated') {
+        return HttpResponse.json({ tasks: [], next_cursor: null });
+      }
+      return HttpResponse.json({ tasks: mutable.tasks, next_cursor: null });
+    }));
+    const { qc } = mountWithClient(`/orgs/${SLUG}/tasks`);
+    await screen.findByText('Fixed completed root');
+    expect(screen.getByText('subtask failed')).toBeInTheDocument();
+    expect(screen.queryByText('waiting on subtasks')).not.toBeInTheDocument();
+
+    for (const rollup of ['in_progress', 'completed']) {
+      mutable.tasks = step(rollup);
+      await refetchRoots(qc);
+      await waitFor(() => expect(screen.queryByText('subtask failed')).not.toBeInTheDocument());
+      expect(screen.queryByText('waiting on subtasks')).not.toBeInTheDocument();
+      expect(screen.getByText('completed')).toBeInTheDocument();
+    }
+
+    mutable.tasks = step('failed');
+    await refetchRoots(qc);
+    await waitFor(() => expect(screen.getByText('subtask failed')).toBeInTheDocument());
+    expect(screen.queryByText('waiting on subtasks')).not.toBeInTheDocument();
+  });
+
+  test('C10 TaskCard and TaskListRow keep their documented separate consumer behavior', async () => {
+    // (a) legacy/stale payload: the card badge shows the rollup it is given.
+    const stale = rootTask({
+      status: 'in_progress', block_kind: 'delegated',
+      severity_rollup: 'failed', brief: 'Card root',
+    });
+    const a = renderWithProviders(<TaskCard task={stale} to="/orgs/x/tasks/TASK-0091" />);
+    expect(a.getByText('failed')).toBeInTheDocument();
+    a.unmount();
+
+    // (b) corrected payload: badge in_progress + waiting qualifier.
+    const corrected = rootTask({
+      status: 'in_progress', block_kind: 'delegated',
+      severity_rollup: 'in_progress', brief: 'Card root',
+    });
+    const b = renderWithProviders(<TaskCard task={corrected} to="/orgs/x/tasks/TASK-0091" />);
+    expect(b.getByText('in_progress')).toBeInTheDocument();
+    expect(b.getByText('· waiting on subtasks')).toBeInTheDocument();
+    b.unmount();
+
+    // D2 variant: root-own completed, rollup in_progress, delegated.
+    const variant = rootTask({
+      status: 'completed', block_kind: 'delegated',
+      severity_rollup: 'in_progress', brief: 'Variant root',
+    });
+    const card = renderWithProviders(<TaskCard task={variant} to="/orgs/x/tasks/TASK-0091" />);
+    expect(card.getByText('in_progress')).toBeInTheDocument();
+    expect(card.getByText('· waiting on subtasks')).toBeInTheDocument();
+    card.unmount();
+
+    const row = renderWithProviders(
+      <TaskListRow
+        task={variant}
+        to="/orgs/x/tasks/TASK-0091"
+        taskRoutes={{ detail: (id: string) => `/orgs/x/tasks/${id}` }}
+      />,
+    );
+    expect(row.getByText('completed')).toBeInTheDocument();
+    expect(row.getByText('subtask in progress')).toBeInTheDocument();
+    expect(row.queryByText('waiting on subtasks')).not.toBeInTheDocument();
+    row.unmount();
+
+    // null block_kind: the card qualifier is absent.
+    const noBlock = rootTask({
+      status: 'in_progress', block_kind: null,
+      severity_rollup: 'in_progress', brief: 'No block root',
+    });
+    const c = renderWithProviders(<TaskCard task={noBlock} to="/orgs/x/tasks/TASK-0091" />);
+    expect(c.getByText('in_progress')).toBeInTheDocument();
+    expect(c.queryByText('· waiting on subtasks')).not.toBeInTheDocument();
   });
 });
