@@ -3015,9 +3015,12 @@ def _drive_c3d3c2_dispatch(fixture: _ShippingFixture, *, action="done", mode="he
             # REAL refusal writer runs (the injected boundary only affects the
             # ``decision_applied`` audit, never the interruption audit).
             # ACTUAL reopen: establish deterministic old-invocation/transaction
-            # quiescence (release every held launch, drain the real queue), then
-            # open a genuinely distinct Database over the SAME persisted owned-
-            # RuntimeDir database and run the REAL rebound common consumer
+            # quiescence WITHOUT releasing the held causal/child launches — the
+            # tagged reserved invocation has already returned and its queue item
+            # reached task_done, and the delegated child (if any) is awaited into
+            # its own held launch (session_start/initial heartbeat committed).
+            # Then open a genuinely distinct Database over the SAME persisted
+            # owned-RuntimeDir database and run the REAL rebound common consumer
             # there.  No active fixture worker races replacement/close and no
             # elapsed sleep stands in for the barrier.
             db._conn = real_conn
