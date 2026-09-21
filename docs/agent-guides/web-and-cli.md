@@ -216,20 +216,26 @@ The Settings surface ships as a full page (`web/src/features/settings/SettingsPa
   accepted them, so a newer verified read supersedes an older 409 body for both
   rebase and accept-latest; an accepted write then clears the reconciliation
   state its own response made obsolete and finishes in a coherent clean state.
-  The suppression that stops the SUBMITTING editor mislabelling its own accepted
-  write as an external change is bound to that write's own SETTLEMENT — the
-  provider observation it settled as, identified by its settlement sequence —
-  not to the window in which the request happened to be in flight (the
-  read-acceptance effect can be flushed after that window closes) and not to
-  the revision it accepted. A revision is a content hash of the saved
-  configuration, so any editor that later restores the same bytes produces the
-  same revision again; that later write is a different settlement and every
-  editor observes it, including the one that first saved those bytes. Any other
-  editor mounted on the SAME client — whether or not it has saved before —
-  treats a write it did not settle as the external change it is, adopting it
-  when clean and recording it for an explicit choice when dirty, rather than
-  staying stale on an older base and revision; its next deliberate save then
-  carries the adopted (or explicitly chosen) revision.
+  The SUBMITTING editor recognises its own write by the exact request: the
+  capacity mutation slot (`CapacityMutationLike.settlementOf`; the shared
+  `MutationLike` is not widened) reports which provider settlement that request
+  object produced, recorded before the cache write, so the editor skips exactly
+  that one observation whenever its render is flushed — never a window in
+  which the request happened to be in flight and never the revision it
+  accepted. A revision is a content hash, so another editor saving or restoring
+  the same bytes is a different settlement and is observed normally. Every
+  observation that is not this editor's own settlement — including another
+  editor's write that lands while this editor's request is still pending — is
+  handled at once by the ordinary rules: adopted when clean, recorded for an
+  explicit choice when dirty or unresolved. Nothing is held back awaiting the
+  outcome, so a rejected, unknown or unusable own result leaves that external
+  write available and still requires an explicit rebase / accept-latest before
+  any further PUT. An accepted own write fences only observations that settled
+  BEFORE its own settlement; one that settled after it is adopted by the
+  now-clean editor instead of being cleared. Any other editor mounted on the
+  SAME client therefore treats a write it did not settle as the external change
+  it is, rather than staying stale on an older base and revision; its next
+  deliberate save carries the adopted (or explicitly chosen) revision.
   Draft consequence arithmetic uses the RESOLVED per-key next-start values, so
   an environment-shadowed key contributes the environment's value rather than
   the draft the environment will shadow.

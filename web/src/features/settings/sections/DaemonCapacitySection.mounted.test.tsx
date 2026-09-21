@@ -1009,6 +1009,383 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     }
   });
 
+  // -------------------------------------------------------------------------
+  // C3-N — another editor's accepted write lands while THIS editor's own
+  // request is still pending. Ownership is the exact request, so that write is
+  // observed at once; nothing is held back to be lost when the own request is
+  // later rejected, unknown or accepted.
+  // -------------------------------------------------------------------------
+
+  /**
+   * A stateful venue whose FIRST PUT is held by `gate`. Every later PUT is
+   * judged against what is persisted NOW: a matching quoted `If-Match` persists
+   * the submitted pair at its content revision; anything else is a real 409
+   * carrying the latest snapshot. `failGets` makes that many next GETs fail.
+   */
+  function overlapVenue(gate: Promise<Response>) {
+    const state = { current: savedAt(3, 10), failGets: 0 };
+    stubVenue({
+      get: () => {
+        if (state.failGets > 0) {
+          state.failGets -= 1;
+          return HttpResponse.json({ detail: { code: 'config_parse_failed' } }, { status: 500 });
+        }
+        return HttpResponse.json(state.current);
+      },
+      put: (i) => {
+        if (i === 0) return gate;
+        const request = puts()[i];
+        if (request.ifMatch !== `"${state.current.revision}"`) {
+          return HttpResponse.json(
+            { detail: { code: 'stale_revision', latest: state.current } },
+            { status: 409 },
+          );
+        }
+        const body = JSON.parse(request.rawBody) as {
+          queue_workers: number; host_global_session_cap: number;
+        };
+        state.current = savedAt(body.queue_workers, body.host_global_session_cap);
+        return HttpResponse.json(state.current);
+      },
+    });
+    return state;
+  }
+
+  /**
+   * First editor at A/3/10 submits 5/12 ('first may fail') and its response is
+   * HELD. A still-mounted second editor on the SAME client (ordering not reset)
+   * then saves `external` and is accepted. Both editors stay mounted.
+   */
+  async function overlappedByAcceptedExternalWrite(
+    clock: { now: number },
+    external: [number, number] = [7, 14],
+  ) {
+    const gate = deferred<Response>();
+    const state = overlapVenue(gate.promise);
+    const first = mount();
+    await ready();
+    const firstUi = within(first.container);
+    await setPair('5', '12');
+    await saveWith('first may fail');
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(puts()[0].ifMatch).toBe(`"${REV_A}"`);
+
+    const second = mountSecond(first.client);
+    const secondUi = within(second.container);
+    await waitFor(() => expect(workersIn(second.container)).toHaveValue('3'));
+    clock.now += 60000;
+    await setPairIn(second.container, String(external[0]), String(external[1]));
+    await userEvent.type(reasonIn(second.container), 'second accepted');
+    await userEvent.click(secondUi.getByRole('button', { name: /Save for next restart/ }));
+    const externalRevision = PAIR_REVISIONS[`${external[0]}/${external[1]}`];
+    await expectCleanTerminal(second.container, first.client,
+      { w: external[0], h: external[1], revision: externalRevision, receiptAt: clock.now });
+    expect(puts()).toHaveLength(2);
+    const externalSeq = capacityObservation(SLUG)?.settledSeq ?? Infinity;
+
+    // The first editor's own request is still pending; its draft and reason
+    // are untouched.
+    expect(firstUi.getByText('Saving for next restart…')).toBeInTheDocument();
+    expect(workersIn(first.container)).toHaveValue('5');
+    expect(capIn(first.container)).toHaveValue('12');
+    expect(reasonIn(first.container)).toHaveValue('first may fail');
+    return { gate, state, first, firstUi, second, secondUi, externalRevision, externalSeq };
+  }
+
+  /** After a NON-accepted own result: external evidence available, nothing sent. */
+  async function expectExternalKeptAndWriteRefused(root: HTMLElement, puts0: number) {
+    const ui = within(root);
+    expect(workersIn(root)).toHaveValue('5');
+    expect(capIn(root)).toHaveValue('12');
+    expect(reasonIn(root)).toHaveValue('first may fail');
+    // Save is refused at the handler until an explicit choice: NO PUT. (The
+    // defect sent a third PUT here at quoted A with the 5/12 body.)
+    await userEvent.click(ui.getByRole('button', { name: /Save for next restart/ }));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(puts()).toHaveLength(puts0);
+    expect(ui.getByText(/Reconcile the saved values before saving again/)).toBeInTheDocument();
+    expect(ui.getByText('Configuration changed elsewhere.')).toBeInTheDocument();
+    expect(ui.getByText('Accepted base').parentElement?.textContent).toContain('Task session slots 3');
+    expect(ui.getByText('Currently saved').parentElement?.textContent).toContain('Task session slots 7');
+    // Submission provenance is retained exactly as for any non-accepted result.
+    expect(ui.getByText(/You submitted Task session slots 5/)).toBeInTheDocument();
+    expect(ui.queryByText(/^Saved for next restart/)).not.toBeInTheDocument();
+    expect(ui.getByRole('button', { name: /Keep my draft, rebase onto latest/ })).toBeVisible();
+    expect(ui.getByText(/Unsaved changes/)).toBeInTheDocument();
+    const unload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(true);
+  }
+
+  /** Explicit rebase (no PUT), then a SEPARATE manual save at `latest`, ending clean at 5/12 @ B. */
+  async function rebaseThenManualSave(
+    clock: { now: number },
+    ctx: Awaited<ReturnType<typeof overlappedByAcceptedExternalWrite>>,
+    latestRevision: string,
+  ) {
+    const { first, firstUi, second, secondUi } = ctx;
+    const before = puts().length;
+    await userEvent.click(firstUi.getByRole('button', { name: /Keep my draft, rebase onto latest/ }));
+    await waitFor(() => expect(firstUi.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument());
+    expect(puts()).toHaveLength(before);
+    expect(workersIn(first.container)).toHaveValue('5');
+    expect(capIn(first.container)).toHaveValue('12');
+    expect(reasonIn(first.container)).toHaveValue('first may fail');
+    expect(firstUi.queryByText(/You submitted/)).not.toBeInTheDocument();
+    expect(firstUi.getByText(/Unsaved changes/)).toBeInTheDocument();
+
+    clock.now += 60000;
+    await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+    await waitFor(() => expect(puts()).toHaveLength(before + 1));
+    expect(puts()[before].ifMatch).toBe(`"${latestRevision}"`);
+    expect(JSON.parse(puts()[before].rawBody)).toEqual({
+      queue_workers: 5,
+      host_global_session_cap: 12,
+      rationale: 'first may fail',
+      confirm_environment_shadow: false,
+    });
+    await expectCleanTerminal(first.container, first.client,
+      { w: 5, h: 12, revision: REV_B, receiptAt: clock.now });
+    // The clean second editor adopts the first editor's accepted write.
+    await waitFor(() => expect(workersIn(second.container)).toHaveValue('5'));
+    expect(capIn(second.container)).toHaveValue('12');
+    expect(reasonIn(second.container)).toHaveValue('');
+    expect(secondUi.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+    expect(secondUi.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    expect(secondUi.getByRole('button', { name: /Save for next restart/ })).toBeEnabled();
+    expectGuardDisarmed();
+    expect(puts()).toHaveLength(before + 1);
+    expect(undeclared).toEqual([]);
+  }
+
+  test('C3-N a REJECTED own request keeps the external write it overlapped: no stale PUT, explicit rebase, then a separate save at the external revision', async () => {
+    const clock = { now: 1800000000000 };
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => clock.now);
+    try {
+      const ctx = await overlappedByAcceptedExternalWrite(clock);
+      const externalReceipt = clock.now;
+      ctx.gate.resolve(HttpResponse.json(
+        { detail: { code: 'config_write_failed', artifact_state: 'absent' } },
+        { status: 503 },
+      ));
+      await ctx.firstUi.findByText(/Configuration storage failed\. This request did not publish new values\./);
+      await waitFor(() => expect(ctx.first.client.isMutating()).toBe(0));
+      // Cache/provider still hold the external B; the rejection advanced nothing.
+      expect(ctx.first.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision)
+        .toBe(REV_C);
+      expect(capacityObservation(SLUG)?.receiptAt).toBe(externalReceipt);
+      expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_C);
+      await expectExternalKeptAndWriteRefused(ctx.first.container, 2);
+      // The still-mounted second editor is untouched by the first's rejection.
+      expect(workersIn(ctx.second.container)).toHaveValue('7');
+      expect(ctx.secondUi.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+
+      await rebaseThenManualSave(clock, ctx, REV_C);
+      ctx.second.unmount();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('C3-N accept-latest branch: no PUT, clean at the external 7/14, then a NEW intentional edit saves at its revision', async () => {
+    const clock = { now: 1800000000000 };
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => clock.now);
+    try {
+      const ctx = await overlappedByAcceptedExternalWrite(clock);
+      const { first, firstUi, second, secondUi } = ctx;
+      ctx.gate.resolve(HttpResponse.json(
+        { detail: { code: 'config_write_failed', artifact_state: 'absent' } },
+        { status: 503 },
+      ));
+      await firstUi.findByText(/Configuration storage failed/);
+      await waitFor(() => expect(first.client.isMutating()).toBe(0));
+      await expectExternalKeptAndWriteRefused(first.container, 2);
+
+      await userEvent.click(firstUi.getByRole('button', { name: /Discard draft, accept latest/ }));
+      await waitFor(() => expect(workersIn(first.container)).toHaveValue('7'));
+      expect(capIn(first.container)).toHaveValue('14');
+      expect(reasonIn(first.container)).toHaveValue('');
+      expect(puts()).toHaveLength(2);
+      expect(firstUi.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+      expect(firstUi.queryByText(/You submitted/)).not.toBeInTheDocument();
+      expect(firstUi.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+      expect(firstUi.getByRole('button', { name: /Save for next restart/ })).toBeEnabled();
+      expectGuardDisarmed();
+
+      clock.now += 60000;
+      await setPairIn(first.container, '8', '15');
+      await userEvent.type(reasonIn(first.container), 'after accepting latest');
+      await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+      await waitFor(() => expect(puts()).toHaveLength(3));
+      expect(puts()[2].ifMatch).toBe(`"${REV_C}"`);
+      expect(JSON.parse(puts()[2].rawBody)).toEqual({
+        queue_workers: 8,
+        host_global_session_cap: 15,
+        rationale: 'after accepting latest',
+        confirm_environment_shadow: false,
+      });
+      await expectCleanTerminal(first.container, first.client,
+        { w: 8, h: 15, revision: REV_E, receiptAt: clock.now });
+      await waitFor(() => expect(workersIn(second.container)).toHaveValue('8'));
+      expect(secondUi.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+      expectGuardDisarmed();
+      expect(undeclared).toEqual([]);
+      second.unmount();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test.each([
+    {
+      name: 'typed publication-uncertain',
+      response: () => HttpResponse.json(
+        { detail: { code: 'config_publication_uncertain', artifact_state: 'absent' } },
+        { status: 503 },
+      ),
+      banner: /The new configuration was published, but durability, verification, or cleanup did not complete\./,
+    },
+    {
+      name: 'unclassified failure (unknown)',
+      response: () => HttpResponse.json({ detail: { code: 'internal_error' } }, { status: 500 }),
+      banner: /^Save result unknown\. Your draft is retained\./,
+    },
+    {
+      name: 'unusable 200 (unknown)',
+      response: () => HttpResponse.json({ ...savedAt(5, 12), revision: undefined }),
+      banner: /^Save result unknown\. Your draft is retained\./,
+    },
+  ])('C3-N an $name own result keeps the overlapped external write distinct from the pinned submission and unresolved publication; no retry until an explicit choice', async ({ response, banner }) => {
+    const clock = { now: 1800000000000 };
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => clock.now);
+    try {
+      const ctx = await overlappedByAcceptedExternalWrite(clock);
+      const { first, firstUi } = ctx;
+      ctx.gate.resolve(response());
+      await firstUi.findByText(banner);
+      await waitFor(() => expect(first.client.isMutating()).toBe(0));
+      // No causal-save claim; external evidence still available.
+      await expectExternalKeptAndWriteRefused(first.container, 2);
+      expect(firstUi.getByText(banner)).toBeInTheDocument();
+      expect(first.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision)
+        .toBe(REV_C);
+
+      // A FAILED reread promotes nothing and offers no target: still no PUT.
+      ctx.state.failGets = 1;
+      await userEvent.click(firstUi.getByRole('button', { name: 'Check saved values' }));
+      await firstUi.findByText(/Could not refresh\. Current state unverified\./);
+      expect(firstUi.queryByRole('button', { name: /Keep my draft, rebase onto latest/ })).not.toBeInTheDocument();
+      expect(firstUi.getByRole('button', { name: /Save for next restart/ })).toBeDisabled();
+      fireEvent.submit(firstUi.getByRole('button', { name: /Save for next restart/ }).closest('form')!);
+      await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+      expect(puts()).toHaveLength(2);
+      expect(workersIn(first.container)).toHaveValue('5');
+      expect(firstUi.getByText(banner)).toBeInTheDocument();
+
+      // A usable reread restores the explicit choice; the unresolved outcome stays.
+      await userEvent.click(firstUi.getByRole('button', { name: 'Check saved values' }));
+      await waitFor(() => expect(firstUi.queryByText(/Could not refresh/)).not.toBeInTheDocument());
+      await firstUi.findByRole('button', { name: /Keep my draft, rebase onto latest/ });
+      expect(firstUi.getByText(banner)).toBeInTheDocument();
+      expect(firstUi.getByText(/You submitted Task session slots 5/)).toBeInTheDocument();
+      expect(puts()).toHaveLength(2);
+
+      await rebaseThenManualSave(clock, ctx, REV_C);
+      expect(firstUi.queryByText(banner)).not.toBeInTheDocument();
+      ctx.second.unmount();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('C3-N an ACCEPTED own request after the overlapped external write fences it as obsolete and ends clean at its own settlement', async () => {
+    const clock = { now: 1800000000000 };
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => clock.now);
+    try {
+      const ctx = await overlappedByAcceptedExternalWrite(clock);
+      const { first, firstUi, second, secondUi } = ctx;
+      // Observed at once while the own request is pending (it is not this
+      // editor's settlement), exactly like a read landing during a write.
+      await firstUi.findByText('Configuration changed elsewhere.');
+      expect(firstUi.getByText('Currently saved').parentElement?.textContent)
+        .toContain('Task session slots 7');
+      clock.now += 60000;
+      ctx.state.current = savedAt(5, 12);
+      ctx.gate.resolve(HttpResponse.json(savedAt(5, 12)));
+      await expectCleanTerminal(first.container, first.client,
+        { w: 5, h: 12, revision: REV_B, receiptAt: clock.now });
+      expect(capacityObservation(SLUG)?.settledSeq).toBeGreaterThan(ctx.externalSeq);
+      expect(firstUi.queryByText('Currently saved')).not.toBeInTheDocument();
+      await waitFor(() => expect(workersIn(second.container)).toHaveValue('5'));
+      expect(secondUi.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+      expectGuardDisarmed();
+
+      // Its next deliberate save carries its OWN accepted revision.
+      clock.now += 60000;
+      await setPairIn(first.container, '9', '15');
+      await userEvent.type(reasonIn(first.container), 'after own accepted');
+      await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+      await waitFor(() => expect(puts()).toHaveLength(3));
+      expect(puts()[2].ifMatch).toBe(`"${REV_B}"`);
+      await expectCleanTerminal(first.container, first.client,
+        { w: 9, h: 15, revision: REV_D, receiptAt: clock.now });
+      expect(undeclared).toEqual([]);
+      second.unmount();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test.each(['rejected', 'accepted'] as const)('C3-N EQUAL revision bytes from another settlement are not mistaken for the %s own request', async (own) => {
+    const clock = { now: 1800000000000 };
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => clock.now);
+    try {
+      // The second editor saves the SAME 5/12 first: content revision B, the
+      // very revision the first editor's pending request would produce.
+      const ctx = await overlappedByAcceptedExternalWrite(clock, [5, 12]);
+      const { first, firstUi, second } = ctx;
+      if (own === 'rejected') {
+        ctx.gate.resolve(HttpResponse.json(
+          { detail: { code: 'config_write_failed', artifact_state: 'absent' } },
+          { status: 503 },
+        ));
+        await firstUi.findByText(/Configuration storage failed/);
+        await waitFor(() => expect(first.client.isMutating()).toBe(0));
+        expect(firstUi.getByText('Configuration changed elsewhere.')).toBeInTheDocument();
+        await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+        await firstUi.findByText(/Reconcile the saved values before saving again/);
+        expect(puts()).toHaveLength(2);
+        await userEvent.click(firstUi.getByRole('button', { name: /Keep my draft, rebase onto latest/ }));
+        expect(puts()).toHaveLength(2);
+        // Same pair as the new base, but the reason is still unsaved work.
+        expect(firstUi.getByText(/Unsaved changes/)).toBeInTheDocument();
+        clock.now += 60000;
+        await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+        await waitFor(() => expect(puts()).toHaveLength(3));
+        expect(puts()[2].ifMatch).toBe(`"${REV_B}"`);
+        expect(JSON.parse(puts()[2].rawBody)).toEqual({
+          queue_workers: 5, host_global_session_cap: 12, rationale: 'first may fail',
+          confirm_environment_shadow: false,
+        });
+      } else {
+        clock.now += 60000;
+        ctx.gate.resolve(HttpResponse.json(savedAt(5, 12)));
+      }
+      // A NEW settlement of the same content revision, clean in both editors.
+      await expectCleanTerminal(first.container, first.client,
+        { w: 5, h: 12, revision: REV_B, receiptAt: clock.now });
+      expect(capacityObservation(SLUG)?.settledSeq).toBeGreaterThan(ctx.externalSeq);
+      expect(workersIn(second.container)).toHaveValue('5');
+      expect(within(second.container).queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+      expectGuardDisarmed();
+      expect(puts()).toHaveLength(own === 'rejected' ? 3 : 2);
+      expect(undeclared).toEqual([]);
+      second.unmount();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   /**
    * Drive the accepted during-PUT ordering scenario to its FINAL settled state.
    *

@@ -9,8 +9,9 @@
  * Every mount goes through `renderGuarded` because the component calls
  * `useBlocker`, which requires a data router (see `capacityTestMount.tsx`).
  */
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useSyncExternalStore } from 'react';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { ApiError } from '@/lib/api';
 import { DaemonCapacitySection } from './DaemonCapacitySection';
@@ -79,7 +80,7 @@ function loaded(overrides: Record<string, unknown> = {}, observation: unknown = 
     isFetching: false,
     observation,
   });
-  hooks.mutation.mockReturnValue({ mutateAsync, isPending: false });
+  hooks.mutation.mockReturnValue({ mutateAsync, isPending: false, settlementOf: () => null });
 }
 
 function mount() {
@@ -990,5 +991,149 @@ describe('17 — navigation guard (beforeunload half)', () => {
     mount();
     expect(screen.getByRole('heading', { name: 'Capacity' })).toBeInTheDocument();
     expect(saveButton()).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C3-N — own-settlement ordering branches whose timing the mounted venue
+// cannot pin: a real browser can deliver a render between the provider settling
+// this editor's write and the submit continuation, in either order. The hook
+// is driven through a store so the SAME mounted component re-renders with an
+// exact observation, and `settlementOf` reports the provider's record.
+// ---------------------------------------------------------------------------
+describe('C3-N — own settlement vs. other observations (ordering branches)', () => {
+  const REV_X = `sha256:${'9'.repeat(64)}`;
+  const pairSnapshot = (w: number, h: number, revision: string) => validSnapshot({
+    revision,
+    persisted_yaml: { queue_workers: w, host_global_session_cap: h },
+    next_start: { queue_workers: w, host_global_session_cap: h },
+    restart_pending: true,
+  });
+
+  function drivenVenue() {
+    let value: Record<string, unknown> = {
+      data: validSnapshot(), isLoading: false, isError: false, error: null,
+      refetch: vi.fn(), isFetching: false,
+      observation: { issuedSeq: 1, settledSeq: 2, origin: 'read', outcome: 'usable', receiptAt: 1, sourceRevision: REV_A },
+    };
+    const listeners = new Set<() => void>();
+    hooks.query.mockImplementation(() => useSyncExternalStore(
+      (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
+      () => value,
+    ));
+    let settlement: { settledSeq: number; outcome: 'usable' | 'unusable' } | null = null;
+    let gate!: (value: unknown) => void;
+    mutateAsync.mockImplementation(() => new Promise((resolve) => { gate = resolve; }));
+    hooks.mutation.mockReturnValue({ mutateAsync, isPending: false, settlementOf: () => settlement });
+    return {
+      /** Publish one provider observation with its snapshot. */
+      observe(snapshot: Record<string, unknown>, observation: Record<string, unknown>) {
+        act(() => {
+          value = { ...value, data: snapshot, observation };
+          listeners.forEach((listener) => listener());
+        });
+      },
+      settleOwn(settledSeq: number) { settlement = { settledSeq, outcome: 'usable' }; },
+      async respond(result: unknown) { await act(async () => { gate(result); }); },
+    };
+  }
+
+  test('an observation that settled AFTER the own write, recorded while it was pending, is ADOPTED when the write is accepted — not fenced as obsolete', async () => {
+    const venue = drivenVenue();
+    mount();
+    const user = userEvent.setup();
+    await user.clear(workers());
+    await user.type(workers(), '5');
+    await user.clear(cap());
+    await user.type(cap(), '12');
+    await fillAndSave('own');
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+
+    // The provider settles THIS request at seq 8; before the continuation runs,
+    // a render delivers another write that settled LATER (seq 10) at 9/9.
+    venue.settleOwn(8);
+    venue.observe(pairSnapshot(9, 9, REV_X),
+      { issuedSeq: 10, settledSeq: 10, origin: 'write', outcome: 'usable', receiptAt: 2, sourceRevision: REV_X });
+    await screen.findByText('Configuration changed elsewhere.');
+
+    await venue.respond(pairSnapshot(5, 12, REV_B));
+    await screen.findByText(/^Saved for next restart/);
+    await waitFor(() => expect(workers()).toHaveValue('9'));
+    expect(cap()).toHaveValue('9');
+    expect(reasonBox()).toHaveValue('');
+    expect(screen.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/You submitted/)).not.toBeInTheDocument();
+
+    // Its next deliberate save is built on the newer, adopted revision.
+    await user.clear(workers());
+    await user.type(workers(), '4');
+    await fillAndSave('after newer');
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(2));
+    expect(mutateAsync.mock.calls[1][0]).toMatchObject({ revision: REV_X, queue_workers: 4, host_global_session_cap: 9 });
+  });
+
+  test('a late render of an observation that settled BEFORE the accepted own write never re-arms the clean saved state', async () => {
+    const venue = drivenVenue();
+    mount();
+    const user = userEvent.setup();
+    await user.clear(workers());
+    await user.type(workers(), '5');
+    await user.clear(cap());
+    await user.type(cap(), '12');
+    await fillAndSave('own');
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+
+    // The own write settled at seq 8; a stale render still carries seq 6.
+    venue.settleOwn(8);
+    venue.observe(pairSnapshot(9, 9, REV_X),
+      { issuedSeq: 6, settledSeq: 6, origin: 'write', outcome: 'usable', receiptAt: 2, sourceRevision: REV_X });
+    expect(screen.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+
+    await venue.respond(pairSnapshot(5, 12, REV_B));
+    await screen.findByText(/^Saved for next restart/);
+    // Then the own settlement itself renders: still no phantom.
+    venue.observe(pairSnapshot(5, 12, REV_B),
+      { issuedSeq: 8, settledSeq: 8, origin: 'write', outcome: 'usable', receiptAt: 3, sourceRevision: REV_B });
+    expect(workers()).toHaveValue('5');
+    expect(cap()).toHaveValue('12');
+    expect(screen.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+    await fillAndSave('next');
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(2));
+    expect(mutateAsync.mock.calls[1][0]).toMatchObject({ revision: REV_B });
+  });
+
+  test('the own settlement rendered BEFORE the continuation is not an external change, while a different settlement of the SAME revision is', async () => {
+    const venue = drivenVenue();
+    mount();
+    const user = userEvent.setup();
+    await user.clear(workers());
+    await user.type(workers(), '5');
+    await user.clear(cap());
+    await user.type(cap(), '12');
+    await fillAndSave('own');
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+
+    venue.settleOwn(8);
+    venue.observe(pairSnapshot(5, 12, REV_B),
+      { issuedSeq: 8, settledSeq: 8, origin: 'write', outcome: 'usable', receiptAt: 2, sourceRevision: REV_B });
+    expect(screen.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+    await venue.respond(pairSnapshot(5, 12, REV_B));
+    await screen.findByText(/^Saved for next restart/);
+    expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
+
+    // Another editor moves it to 7/14, then restores 5/12 — the same revision
+    // bytes at a DIFFERENT settlement. This clean editor adopts both.
+    venue.observe(pairSnapshot(7, 14, REV_C),
+      { issuedSeq: 11, settledSeq: 11, origin: 'write', outcome: 'usable', receiptAt: 3, sourceRevision: REV_C });
+    await waitFor(() => expect(workers()).toHaveValue('7'));
+    venue.observe(pairSnapshot(5, 12, REV_B),
+      { issuedSeq: 13, settledSeq: 13, origin: 'write', outcome: 'usable', receiptAt: 4, sourceRevision: REV_B });
+    await waitFor(() => expect(workers()).toHaveValue('5'));
+    expect(screen.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
+    await fillAndSave('after restore');
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(2));
+    expect(mutateAsync.mock.calls[1][0]).toMatchObject({ revision: REV_B, queue_workers: 5 });
   });
 });

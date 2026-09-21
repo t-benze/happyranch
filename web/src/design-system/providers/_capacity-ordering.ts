@@ -69,6 +69,30 @@ export interface CapacityQueryLike<T> {
   observation: CapacityObservation | null;
 }
 
+/** The settlement one capacity write REQUEST produced. Local ordering only (S5-R6). */
+export interface CapacityWriteSettlement {
+  settledSeq: number;
+  /** Whether that settlement was accepted as a usable snapshot. */
+  outcome: 'usable' | 'unusable';
+}
+
+/**
+ * The capacity slot's mutation shape: `MutationLike` plus `settlementOf`.
+ *
+ * C3: the observation is module-scoped by org, so every mounted editor sees
+ * every write. `settlementOf(request)` answers, for the exact request object an
+ * editor passed to `mutateAsync`, which settlement THAT request produced — or
+ * null when it has not settled with a response (pending, rejected, failed). The
+ * editor that issued the request can therefore recognise its own settlement
+ * exactly, instead of inferring it from timing or from a content revision.
+ * `MutationLike` itself is deliberately NOT widened.
+ */
+export interface CapacityMutationLike<TArgs extends object, TResult> {
+  mutateAsync: (args: TArgs) => Promise<TResult>;
+  isPending: boolean;
+  settlementOf: (request: TArgs) => CapacityWriteSettlement | null;
+}
+
 export const capacityQueryKey = (slug: string): readonly [string, string] => [
   'daemon-capacity',
   slug,
@@ -203,6 +227,27 @@ export function recordUnusableCapacityWrite(slug: string, settledSeq: number): v
     receiptAt: ledger.observation?.receiptAt ?? null,
     sourceRevision: null,
   };
+}
+
+/**
+ * Settlements keyed by the exact request object that produced them. Weakly
+ * held: a record lives exactly as long as the editor keeps its request.
+ */
+const writeSettlements = new WeakMap<object, CapacityWriteSettlement>();
+
+/**
+ * Record which settlement `request` produced. Called BEFORE the cache write, so
+ * by the time any observer can render that settlement its owner is known.
+ */
+export function recordCapacityWriteSettlement(
+  request: object,
+  settlement: CapacityWriteSettlement,
+): void {
+  writeSettlements.set(request, settlement);
+}
+
+export function capacityWriteSettlement(request: object): CapacityWriteSettlement | null {
+  return writeSettlements.get(request) ?? null;
 }
 
 export function capacityObservation(slug: string): CapacityObservation | null {

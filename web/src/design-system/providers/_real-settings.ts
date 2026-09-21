@@ -19,12 +19,15 @@ import {
   acceptCapacityWrite,
   capacityObservation,
   capacityQueryKey,
+  capacityWriteSettlement,
   isUsableCapacitySnapshot,
   isDroppedCapacityRead,
   nextCapacitySeq,
   publishCapacityRead,
   publishCapacityReadFailure,
+  recordCapacityWriteSettlement,
   recordUnusableCapacityWrite,
+  type CapacityMutationLike,
   type CapacityQueryLike,
 } from './_capacity-ordering';
 
@@ -117,11 +120,11 @@ function useDaemonCapacity(): CapacityQueryLike<DaemonCapacitySnapshot> {
   };
 }
 
-function useUpdateDaemonCapacity() {
+function useUpdateDaemonCapacity(): CapacityMutationLike<DaemonCapacityWrite, DaemonCapacitySnapshot> {
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   const key = capacityQueryKey(slug);
-  return useMutation({
+  const mutation = useMutation({
     mutationFn: async (body: DaemonCapacityWrite) => {
       await qc.cancelQueries({ queryKey: key });
       const data = await settingsApi.putDaemonCapacity(slug, body);
@@ -132,7 +135,14 @@ function useUpdateDaemonCapacity() {
       // fences later reads, but it never becomes an accepted observation and
       // never reaches the cache — the caller classifies it as an unknown
       // outcome instead.
-      if (isUsableCapacitySnapshot(data)) {
+      // C3: record which settlement THIS request produced before anything can
+      // render it, so the issuing editor recognises its own settlement exactly.
+      const usable = isUsableCapacitySnapshot(data);
+      recordCapacityWriteSettlement(body, {
+        settledSeq,
+        outcome: usable ? 'usable' : 'unusable',
+      });
+      if (usable) {
         acceptCapacityWrite(slug, settledSeq, data, Date.now());
       } else {
         // R7: acceptance uses the SAME capacity-local semantic classifier the
@@ -149,6 +159,11 @@ function useUpdateDaemonCapacity() {
       if (isUsableCapacitySnapshot(data)) qc.setQueryData(key, data);
     },
   });
+  return {
+    mutateAsync: mutation.mutateAsync,
+    isPending: mutation.isPending,
+    settlementOf: capacityWriteSettlement,
+  };
 }
 
 function useNextWakes(

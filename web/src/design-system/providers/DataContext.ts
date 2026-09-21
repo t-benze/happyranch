@@ -566,7 +566,9 @@ export interface SettingsApi {
   useDaemonCapacity: () => import('./_capacity-ordering').CapacityQueryLike<
     import('@/lib/api/types').DaemonCapacitySnapshot
   >;
-  useUpdateDaemonCapacity: () => MutationLike<
+  /** Capacity slot only: `MutationLike` plus the settlement each request
+   *  produced (C3). `MutationLike` itself is deliberately NOT widened. */
+  useUpdateDaemonCapacity: () => import('./_capacity-ordering').CapacityMutationLike<
     import('@/lib/api/types').DaemonCapacityWrite,
     import('@/lib/api/types').DaemonCapacitySnapshot
   >;

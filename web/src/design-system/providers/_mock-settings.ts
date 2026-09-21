@@ -121,6 +121,11 @@ const DAEMON_CAPACITY_FIXTURE: DaemonCapacitySnapshot = {
 /** Browser-safe stand-in for the no-op mutation callbacks previously supplied by `vi.fn()`. */
 function noop(): void {}
 
+/** The mock performs no network write, so no request ever has a settlement. */
+function noSettlement(): null {
+  return null;
+}
+
 export const mockSettingsApi: SettingsApi = {
   useSettings: () => ok(FIXTURE),
   useUpdateOrgSettings: () => ({
@@ -138,6 +143,7 @@ export const mockSettingsApi: SettingsApi = {
   useUpdateDaemonCapacity: () => ({
     mutateAsync: (_capacity: DaemonCapacityWrite) => Promise.resolve(DAEMON_CAPACITY_FIXTURE),
     isPending: false,
+    settlementOf: noSettlement,
   }),
   useNextWakes: () => ok(NEXT_WAKES_FIXTURE),
 };
