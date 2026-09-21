@@ -133,7 +133,12 @@ Initial ordinary failures show an
 explicit Retry; failed ordinary refreshes retain cached rows and a stale warning;
 failed ordinary pagination retains loaded rows and requires its separate page Retry.
 Manual refresh retries the active context's loaded pages. Subtask severity
-rollups are count-free; task detail owns subtask browsing. No New task flow is
+rollups are count-free and reflect the worst **current** status of the root's
+`parent_task_id` subtree; a historical FAILED descendant whose same-parent
+revisit lineage leaves no unresolved FAILED leaf does not dominate, while the
+root's own severity and all escalations are preserved (see
+`features-and-invariants.md` §Bounded failure-recovery). Task detail owns
+subtask browsing. No New task flow is
 exposed by this list.
 
 ### Thread-detail system rows

@@ -325,11 +325,13 @@ def list_roots(
     block_kind: str | None = None,
 ) -> dict:
     """Return root tasks only (parent_task_id IS NULL) with a per-root
-    severity rollup reflecting the worst status of each root's subtree.
+    severity rollup reflecting the worst CURRENT status of each root's subtree.
 
     The rollup is a DERIVE over existing child statuses — no schema change.
-    Each task dict includes a ``severity_rollup`` field (the worst status
-    among the root and its entire parent_task_id subtree).
+    Each task dict includes a ``severity_rollup`` field (the worst current
+    status among the root and its parent_task_id subtree; a historical FAILED
+    descendant whose same-parent revisit lineage leaves no unresolved FAILED
+    leaf does not dominate). The field name and response shape are unchanged.
     """
     tasks = org.db.list_roots(
         limit=limit, assigned_agent=assigned_agent, before_task_id=before,
