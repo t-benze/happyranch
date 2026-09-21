@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import re
+import os
 import sqlite3
 import subprocess
 import sys
 import threading
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import pytest
@@ -488,17 +490,52 @@ def _publication_rows(path: Path) -> dict[str, list[tuple[object, ...]]]:
         check.close()
 
 
-def _release_and_join(
-    release: threading.Event, worker: threading.Thread, errors: list[BaseException],
-    boundary_error: BaseException | None = None,
+def _start_worker(worker: threading.Thread, started: list[threading.Thread]) -> None:
+    """Record a worker only once its ``start`` actually succeeded."""
+    worker.start()
+    started.append(worker)
+
+
+def _release_all_and_join(
+    releases: Iterable[threading.Event], started_workers: Iterable[threading.Thread],
+    errors: list[BaseException], boundary_error: BaseException | None = None,
+    cleanups: Iterable[Callable[[], None]] = (),
 ) -> None:
-    """Always drain a real contender and retain every observed failure."""
-    release.set()
-    worker.join(5)
-    if worker.is_alive():
-        errors.append(AssertionError("contender_join_timeout"))
+    """Unconditionally release/join every owned model worker and retain every failure.
+
+    Only workers whose ``start`` succeeded are joined, so a worker that was never
+    started can never raise ``cannot join thread before it is started`` and mask
+    the original worker/boundary evidence.  Every owned event is released, every
+    cleanup step still runs after an earlier cleanup failure, and worker,
+    original-boundary, release, join, cleanup and liveness failures are
+    aggregated instead of short-circuited.
+    """
+    for release in releases:
+        try:
+            release.set()
+        except BaseException as exc:
+            errors.append(exc)
+    workers = list(started_workers)
+    join_failures: set[str] = set()
+    for worker in workers:
+        try:
+            worker.join(5)
+        except BaseException as exc:
+            errors.append(exc)
+            continue
+        if worker.is_alive():
+            join_failures.add(worker.name)
+            errors.append(AssertionError(f"{worker.name}_join_timeout"))
     if boundary_error is not None:
         errors.append(boundary_error)
+    for cleanup in cleanups:
+        try:
+            cleanup()
+        except BaseException as exc:
+            errors.append(exc)
+    for worker in workers:
+        if worker.is_alive() and worker.name not in join_failures:
+            errors.append(AssertionError(f"{worker.name}_still_live"))
 
 
 def test_proposed_publication_generation_fences_admission_and_preserves_committed_owner(tmp_path: Path) -> None:
@@ -595,6 +632,122 @@ def test_proposed_initial_and_current_fence_interruption_recovery_is_legal_and_i
         assert rows["pointers"] == [("engineering", expected + 1, f"legal-{initial}-{stage}", sha256_bytes(b"next"), "ready", 0 if initial else 1)]
         assert admit_authority_request(conn, root=files, cache=cache, namespace="engineering", request_id=f"admit-{initial}-{stage}", request_bytes=b"request", admitted_by="reader", expected_generation=expected + 1) == expected + 1
     conn.close()
+
+
+@pytest.mark.parametrize("initial,profile_fence", ((True, None), (False, 1)))
+@pytest.mark.parametrize("stage", ("replaced", "canonical"))
+def test_proposed_compensation_legal_transitions_recover_through_cold_reopens(
+    tmp_path: Path, initial: bool, profile_fence: int | None, stage: str,
+) -> None:
+    path, files, warm_cache = tmp_path / f"compensate-{initial}-{stage}.db", tmp_path / "canonical", {}
+    conn = _adapter(path)
+    expected = 0
+    if not initial:
+        assert publish_authority_generation(conn, root=files, cache=warm_cache, namespace="engineering", expected_generation=0, snapshot=b"base", publisher="bootstrap", journal_id="base") == 1
+        fence_authority_namespace(conn, cache=warm_cache, namespace="engineering", reason="profile-change")
+        expected = 1
+    assert warm_cache == {}
+    journal_id = f"compensate-{initial}-{stage}"
+    publisher = "profile-republish" if not initial else "bootstrap"
+    with pytest.raises(PublicationInterrupted, match=stage):
+        publish_authority_generation(conn, root=files, cache=warm_cache, namespace="engineering", expected_generation=expected, snapshot=b"next", publisher=publisher, journal_id=journal_id, profile_fence=profile_fence, interrupt_at=stage)
+    interrupted = _publication_rows(path)
+    interrupted_file = (files / "engineering.authority.json").read_bytes()
+    assert interrupted_file == b"next" and interrupted["admissions"] == [] and interrupted["leases"] == []
+    assert interrupted["pointers"] == ([] if initial else [("engineering", 1, "base", sha256_bytes(b"base"), "fenced", 1)])
+    # The interrupted attempt is a legal owned forward-recovery window: the only
+    # durable effect is the invocation-bound journal snapshot at a post-file stage.
+    assert interrupted["journals"][-1][:5] == (journal_id, "engineering", expected + 1, expected, sha256_bytes(b"next"))
+    assert interrupted["journals"][-1][5:8] == (publisher, interrupted["journals"][-1][6], "canonical_published" if stage == "canonical" else "file_phase_reserved")
+    assert interrupted["journals"][-1][8:12] == ("workflow_recovery", b"next", 0 if initial else 1, interrupted["journals"][-1][11])
+
+    assert compensate_authority_publication(conn, root=files, namespace="engineering", journal_id=journal_id, publisher=publisher) == "forward_recovery_required"
+    compensated = _publication_rows(path)
+    assert compensated["journals"][:-1] == interrupted["journals"][:-1]
+    assert compensated["journals"][-1] == (
+        interrupted["journals"][-1][:7]
+        + ("forward_recovery_required",)
+        + interrupted["journals"][-1][8:]
+    )
+    assert compensated["pointers"] == interrupted["pointers"] and compensated["admissions"] == interrupted["admissions"] and compensated["leases"] == []
+    assert (files / "engineering.authority.json").read_bytes() == interrupted_file == b"next"
+    assert not list(files.glob("*.staging"))
+    assert warm_cache == {} and not conn.in_transaction
+    conn.close()
+
+    # A separate cold connection and cold cache must refuse to advance before the
+    # pointer, then again before the cache stamp, preserving prior history.
+    first_cold = _adapter(path)
+    with pytest.raises(PublicationInterrupted, match="before_pointer"):
+        recover_authority_publication(first_cold, root=files, cache={}, namespace="engineering", interrupt_at="before_pointer")
+    held_before_pointer = _publication_rows(path)
+    assert held_before_pointer == compensated
+    assert (files / "engineering.authority.json").read_bytes() == b"next"
+    assert not list(files.glob("*.staging")) and not first_cold.in_transaction
+    first_cold.close()
+
+    second_cold = _adapter(path)
+    with pytest.raises(PublicationInterrupted, match="before_cache_stamp"):
+        recover_authority_publication(second_cold, root=files, cache={}, namespace="engineering", interrupt_at="before_cache_stamp")
+    held_before_stamp = _publication_rows(path)
+    assert held_before_stamp["pointers"] == [("engineering", expected + 1, journal_id, sha256_bytes(b"next"), "ready", 0 if initial else 1)]
+    assert held_before_stamp["journals"][:-1] == interrupted["journals"][:-1]
+    assert held_before_stamp["journals"][-1] == (
+        compensated["journals"][-1][:7] + ("pointer_committed",) + compensated["journals"][-1][8:]
+    )
+    assert held_before_stamp["admissions"] == interrupted["admissions"] and held_before_stamp["leases"] == []
+    assert (files / "engineering.authority.json").read_bytes() == b"next" and not second_cold.in_transaction
+    second_cold.close()
+
+    third_cold = _adapter(path)
+    cold_cache: dict[str, tuple[int, str]] = {}
+    assert recover_authority_publication(third_cold, root=files, cache=cold_cache, namespace="engineering") == "recovered_coherent"
+    terminal = _publication_rows(path)
+    assert terminal["pointers"] == [("engineering", expected + 1, journal_id, sha256_bytes(b"next"), "ready", 0 if initial else 1)]
+    assert terminal["journals"][:-1] == interrupted["journals"][:-1]
+    assert terminal["journals"][-1] == (
+        compensated["journals"][-1][:7] + ("cache_installed",) + compensated["journals"][-1][8:]
+    )
+    assert terminal["admissions"] == interrupted["admissions"] and terminal["leases"] == []
+    assert (files / "engineering.authority.json").read_bytes() == b"next" and not list(files.glob("*.staging"))
+    assert cold_cache == {"engineering": (expected + 1, sha256_bytes(b"next"))} and not third_cold.in_transaction
+    third_cold.close()
+
+    final_cold = _adapter(path)
+    final_cache: dict[str, tuple[int, str]] = {}
+    assert recover_authority_publication(final_cold, root=files, cache=final_cache, namespace="engineering") == "rehydrated_coherent"
+    assert _publication_rows(path) == terminal and final_cache == cold_cache and not final_cold.in_transaction
+    final_cold.close()
+
+
+def test_proposed_compensation_refuses_wrong_owner_and_arbitrary_lineage_without_effect(tmp_path: Path) -> None:
+    """Wrong-owner and arbitrary canonical-byte compensation stay zero-effect."""
+    path, files, cache = tmp_path / "wrong-owner.db", tmp_path / "canonical", {}
+    conn = _adapter(path)
+    assert publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"base", publisher="bootstrap", journal_id="base") == 1
+    with pytest.raises(PublicationInterrupted, match="prepared"):
+        publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"next", publisher="agents-route", journal_id="owned", interrupt_at="prepared")
+    before = _publication_rows(path)
+    before_file = (files / "engineering.authority.json").read_bytes()
+    with pytest.raises(ValueError, match="stale_compensation_fenced"):
+        compensate_authority_publication(conn, root=files, namespace="engineering", journal_id="owned", publisher="teams-route")
+    assert _publication_rows(path) == before
+    assert (files / "engineering.authority.json").read_bytes() == before_file == b"base" and cache == {"engineering": (1, sha256_bytes(b"base"))}
+    assert not conn.in_transaction
+    conn.close()
+
+    initial_path, initial_files, initial_cache = tmp_path / "arbitrary.db", tmp_path / "initial-canonical", {}
+    initial = _adapter(initial_path)
+    with pytest.raises(PublicationInterrupted, match="replaced"):
+        publish_authority_generation(initial, root=initial_files, cache=initial_cache, namespace="engineering", expected_generation=0, snapshot=b"owned", publisher="bootstrap", journal_id="owned", interrupt_at="replaced")
+    (initial_files / "engineering.authority.json").write_bytes(b"arbitrary")
+    initial_before = _publication_rows(initial_path)
+    with pytest.raises(ValueError, match="initial_predecessor_incoherent"):
+        compensate_authority_publication(initial, root=initial_files, namespace="engineering", journal_id="owned", publisher="bootstrap")
+    assert _publication_rows(initial_path) == initial_before
+    assert (initial_files / "engineering.authority.json").read_bytes() == b"arbitrary"
+    assert initial_cache == {} and not initial.in_transaction
+    initial.close()
 
 
 def test_proposed_recovery_refuses_corrupt_committed_snapshot_without_rollback(tmp_path: Path) -> None:
@@ -746,27 +899,37 @@ def test_proposed_profile_fence_rejects_a_prepared_old_profile_publisher_before_
         finally:
             conn.close()
 
-    worker = threading.Thread(target=old_profile_publisher)
-    worker.start()
-    assert arrived.wait(5)
+    worker = threading.Thread(target=old_profile_publisher, name="u0-old-profile")
+    started: list[threading.Thread] = []
     fence = sqlite3.connect(path)
     fence.execute("PRAGMA foreign_keys=ON")
     boundary_errors: list[BaseException] = []
     try:
+        _start_worker(worker, started)
+        assert arrived.wait(5)
         fence_authority_namespace(fence, cache={}, namespace="engineering", reason="profile-change")
     except BaseException as exc:
         boundary_errors.append(exc)
     finally:
-        _release_and_join(release, worker, boundary_errors)
+        _release_all_and_join((release,), started, boundary_errors)
         fence.close()
-    assert not boundary_errors and not worker.is_alive() and len(outcomes) == 1
+    assert started == [worker] and not worker.is_alive()
+    assert not boundary_errors and len(outcomes) == 1
     assert isinstance(outcomes[0], ValueError) and str(outcomes[0]) == "profile_fence_stale_publisher"
+    # Fence-before-file must leave no later stale effect: the aborted journal can
+    # never reserve the file phase, write staging, or move the pointer/cache.
     residue = _publication_rows(path)
     assert residue["pointers"] == [("engineering", 1, "base", sha256_bytes(b"stable"), "fenced", 1)]
     assert seed.execute("SELECT profile_fence FROM workflow_authority_pointers WHERE namespace='engineering'").fetchone() == (1,)
-    assert residue["journals"][-1][0] == "stale-journal" and residue["journals"][-1][7] == "aborted"
+    assert residue["journals"][0][:6] == ("base", "engineering", 1, 0, sha256_bytes(b"stable"), "bootstrap")
+    assert residue["journals"][0][6] == residue["journals"][0][11] and residue["journals"][0][6].startswith("bootstrap:")
+    assert residue["journals"][0][7:] == ("cache_installed", "workflow_recovery", b"stable", 0, residue["journals"][0][11])
+    assert residue["journals"][1][:6] == ("stale-journal", "engineering", 2, 1, sha256_bytes(b"stale"), "old-profile")
+    assert residue["journals"][1][6].startswith("old-profile:")
+    assert residue["journals"][1][7:] == ("aborted", "workflow_recovery", b"stale", 0, None)
     assert residue["admissions"] == [] and residue["leases"] == []
     assert (files / "engineering.authority.json").read_bytes() == b"stable"
+    assert not list(files.glob("*.staging")) and cache == {"engineering": (1, sha256_bytes(b"stable"))}
     with pytest.raises(ValueError, match="authority_pointer_not_ready"):
         admit_authority_request(seed, root=files, cache=cache, namespace="engineering", request_id="stale-request", request_bytes=b"x", admitted_by="reader", expected_generation=1)
     assert publish_authority_generation(seed, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"profile-current", publisher="profile-republish", journal_id="current-journal", profile_fence=1) == 2
@@ -777,41 +940,72 @@ def test_proposed_file_phase_ownership_defers_profile_fence_until_publisher_drai
     path, files, cache = tmp_path / f"phase-{held_stage}.db", tmp_path / "canonical", {}
     seed = _adapter(path)
     assert publish_authority_generation(seed, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"base", publisher="bootstrap", journal_id="base") == 1
+    seeded = _publication_rows(path)
+    seeded_cache = dict(cache)
     arrived, release = threading.Event(), threading.Event()
     outcomes: list[object] = []
+    owners: list[str] = []
+    held_worker_state: list[bool] = []
 
     def publisher() -> None:
         conn = _adapter(path)
+
+        def on_stage(stage: str) -> None:
+            if stage != held_stage:
+                return
+            held_worker_state.append(conn.in_transaction)
+            arrived.set()
+            if not release.wait(5):
+                raise AssertionError("phase_release_timeout")
+
         try:
-            outcomes.append(publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"owned", publisher="agents-route", journal_id=f"owned-{held_stage}", stage_hook=lambda stage: (arrived.set(), (_ for _ in ()).throw(AssertionError("phase_release_timeout")) if not release.wait(5) else None) if stage == held_stage else None))
+            outcomes.append(publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"owned", publisher="agents-route", journal_id=f"owned-{held_stage}", stage_hook=on_stage, on_lease_acquired=owners.append))
         except BaseException as exc:
             outcomes.append(exc)
         finally:
             conn.close()
 
     worker = threading.Thread(target=publisher, name=f"u0-phase-{held_stage}")
-    worker.start()
-    assert arrived.wait(5)
+    started: list[threading.Thread] = []
     fence = _adapter(path)
     boundary_errors: list[BaseException] = []
     try:
+        _start_worker(worker, started)
+        assert arrived.wait(5)
         with pytest.raises(ValueError, match="profile_fence_deferred:file_phase_reserved"):
             fence_authority_namespace(fence, cache={}, namespace="engineering", reason="profile-change")
+        # The phase owner is the invocation token captured at acquisition, not
+        # whichever value the lease/journal row under test happens to hold.
+        assert len(owners) == 1 and owners[0].startswith("agents-route:")
+        owner = owners[0]
         held = _publication_rows(path)
-        assert held["journals"][-1][0] == f"owned-{held_stage}" and held["journals"][-1][7] == "file_phase_reserved"
-        assert held["journals"][-1][9:] == (b"owned", 0, held["journals"][-1][11])
-        assert held["pointers"] == [("engineering", 1, "base", sha256_bytes(b"base"), "ready", 0)]
+        assert held["leases"] == [("engineering", owner, os.getpid())]
+        assert held["journals"] == [
+            seeded["journals"][0],
+            (f"owned-{held_stage}", "engineering", 2, 1, sha256_bytes(b"owned"), "agents-route", owner, "file_phase_reserved", "workflow_recovery", b"owned", 0, owner),
+        ]
+        assert held["pointers"] == seeded["pointers"]
+        assert held["admissions"] == [] and cache == seeded_cache
+        assert held_worker_state == [False] and not fence.in_transaction
+        assert (files / "engineering.authority.json").read_bytes() == (b"base" if held_stage == "staged" else b"owned")
+        assert list(files.glob("*.staging")) == ([] if held_stage == "canonical_replaced" else [files / f"engineering.authority.json.owned-{held_stage}.staging"])
     except BaseException as exc:
         boundary_errors.append(exc)
     finally:
-        _release_and_join(release, worker, boundary_errors)
+        _release_all_and_join((release,), started, boundary_errors)
         fence.close()
+    assert started == [worker] and not worker.is_alive()
     assert not boundary_errors and outcomes == [2]
     assert (files / "engineering.authority.json").read_bytes() == b"owned"
     fence_authority_namespace(seed, cache=cache, namespace="engineering", reason="profile-change")
     after = _publication_rows(path)
     assert after["pointers"] == [("engineering", 2, f"owned-{held_stage}", sha256_bytes(b"owned"), "fenced", 1)]
-    assert after["journals"][-1][9:] == (b"owned", 0, after["journals"][-1][11])
+    assert after["journals"] == [
+        seeded["journals"][0],
+        (f"owned-{held_stage}", "engineering", 2, 1, sha256_bytes(b"owned"), "agents-route", owner, "cache_installed", "workflow_recovery", b"owned", 0, owner),
+    ]
+    assert after["admissions"] == [] and after["leases"] == [] and cache == {}
+    assert not seed.in_transaction
     seed.close()
 
 
@@ -819,13 +1013,24 @@ def test_proposed_admission_owned_transaction_and_publisher_contend_in_both_orde
     path, files, cache = tmp_path / "admission-contends.db", tmp_path / "canonical", {}
     seed = _adapter(path)
     assert publish_authority_generation(seed, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"base", publisher="bootstrap", journal_id="base") == 1
-    admission_arrived, release_admission, publisher_started = threading.Event(), threading.Event(), threading.Event()
+    seeded = _publication_rows(path)
+    admission_arrived, release_admission, publisher_arrived = threading.Event(), threading.Event(), threading.Event()
     outcomes: list[object] = []
+    held_admission_state: list[bool] = []
 
     def admission_first() -> None:
         conn = _adapter(path)
+
+        def on_admission_stage(stage: str) -> None:
+            if stage != "admission_begin_immediate":
+                return
+            held_admission_state.append(conn.in_transaction)
+            admission_arrived.set()
+            if not release_admission.wait(5):
+                raise AssertionError("admission_release_timeout")
+
         try:
-            outcomes.append(admit_authority_request(conn, root=files, cache=cache, namespace="engineering", request_id="admission-first", request_bytes=b"request", admitted_by="reader", expected_generation=1, stage_hook=lambda stage: (admission_arrived.set(), (_ for _ in ()).throw(AssertionError("admission_release_timeout")) if not release_admission.wait(5) else None) if stage == "admission_begin_immediate" else None))
+            outcomes.append(admit_authority_request(conn, root=files, cache=cache, namespace="engineering", request_id="admission-first", request_bytes=b"request", admitted_by="reader", expected_generation=1, stage_hook=on_admission_stage))
         except BaseException as exc:
             outcomes.append(exc)
         finally:
@@ -833,25 +1038,48 @@ def test_proposed_admission_owned_transaction_and_publisher_contend_in_both_orde
 
     def publisher_second() -> None:
         conn = _adapter(path)
-        publisher_started.set()
         try:
-            outcomes.append(publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"after-admission", publisher="agents-route", journal_id="after-admission"))
+            outcomes.append(publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"after-admission", publisher="agents-route", journal_id="after-admission", stage_hook=lambda stage: publisher_arrived.set() if stage == "lease_begin_immediate" else None))
         except BaseException as exc:
             outcomes.append(exc)
         finally:
             conn.close()
 
     first, second = threading.Thread(target=admission_first, name="u0-admission-first"), threading.Thread(target=publisher_second, name="u0-publisher-second")
-    first.start()
-    assert admission_arrived.wait(5)
-    second.start()
-    assert publisher_started.wait(5)
-    held = _publication_rows(path)
-    assert held["pointers"] == [("engineering", 1, "base", sha256_bytes(b"base"), "ready", 0)]
-    assert held["journals"][-1][9:11] == (b"base", 0) and held["journals"][-1][11]
-    _release_and_join(release_admission, first, outcomes)
-    second.join(5)
-    assert not first.is_alive() and not second.is_alive() and outcomes == [1, 2]
+    started: list[threading.Thread] = []
+    admission_errors: list[BaseException] = []
+    try:
+        _start_worker(first, started)
+        assert admission_arrived.wait(5)
+        _start_worker(second, started)
+        # The publisher arrives at its original lease BEGIN IMMEDIATE while the
+        # admission owns BEGIN IMMEDIATE, so the held observation precedes release.
+        assert publisher_arrived.wait(5), "publisher did not reach its lease BEGIN IMMEDIATE call"
+        held = _publication_rows(path)
+        assert held == {
+            "pointers": [("engineering", 1, "base", sha256_bytes(b"base"), "ready", 0)],
+            "journals": seeded["journals"],
+            "admissions": [], "leases": [],
+        }
+        assert held_admission_state == [True]
+        assert cache == {"engineering": (1, sha256_bytes(b"base"))} and outcomes == []
+    except BaseException as exc:
+        admission_errors.append(exc)
+    finally:
+        _release_all_and_join((release_admission,), started, admission_errors)
+    assert started == [first, second] and not first.is_alive() and not second.is_alive()
+    assert not admission_errors and outcomes == [1, 2]
+    admitted = _publication_rows(path)
+    assert admitted["pointers"] == [("engineering", 2, "after-admission", sha256_bytes(b"after-admission"), "ready", 0)]
+    assert admitted["journals"][0] == seeded["journals"][0]
+    journal = admitted["journals"][1]
+    assert journal[:6] == ("after-admission", "engineering", 2, 1, sha256_bytes(b"after-admission"), "agents-route")
+    assert journal[6].startswith("agents-route:") and journal[6] == journal[11]
+    assert journal[7:] == ("cache_installed", "workflow_recovery", b"after-admission", 0, journal[6])
+    assert admitted["admissions"] == [("admission-first", "engineering", 1, sha256_bytes(b"request"), "reader")]
+    assert admitted["leases"] == []
+    assert (files / "engineering.authority.json").read_bytes() == b"after-admission"
+    assert cache == {"engineering": (2, sha256_bytes(b"after-admission"))} and not seed.in_transaction
 
     publisher_arrived, release_publisher = threading.Event(), threading.Event()
     reverse: list[object] = []
@@ -866,42 +1094,197 @@ def test_proposed_admission_owned_transaction_and_publisher_contend_in_both_orde
             conn.close()
 
     worker = threading.Thread(target=publisher_first, name="u0-publisher-first")
-    worker.start()
-    assert publisher_arrived.wait(5)
+    started_reverse: list[threading.Thread] = []
     denied = _adapter(path)
+    reverse_errors: list[BaseException] = []
     try:
+        _start_worker(worker, started_reverse)
+        assert publisher_arrived.wait(5)
         with pytest.raises(ValueError, match="publication_fenced:file_phase_reserved"):
             admit_authority_request(denied, root=files, cache=cache, namespace="engineering", request_id="denied-after-publisher", request_bytes=b"request", admitted_by="reader", expected_generation=2)
         assert _publication_rows(path)["admissions"] == [("admission-first", "engineering", 1, sha256_bytes(b"request"), "reader")]
+        assert not denied.in_transaction
+    except BaseException as exc:
+        reverse_errors.append(exc)
     finally:
-        _release_and_join(release_publisher, worker, reverse)
+        _release_all_and_join((release_publisher,), started_reverse, reverse_errors)
         denied.close()
-    assert reverse == [3]
+    assert started_reverse == [worker] and not worker.is_alive()
+    assert not reverse_errors and reverse == [3]
+    terminal = _publication_rows(path)
+    assert terminal["pointers"] == [("engineering", 3, "publisher-first", sha256_bytes(b"publisher-first"), "ready", 0)]
+    # The admission committed before this publication keeps its exact record but
+    # is now stale: dispatch revalidation denies it without deleting history.
+    assert terminal["admissions"] == admitted["admissions"] == [("admission-first", "engineering", 1, sha256_bytes(b"request"), "reader")]
+    assert terminal["journals"][0] == seeded["journals"][0] and terminal["journals"][1] == admitted["journals"][1]
+    assert terminal["leases"] == []
+    with pytest.raises(ValueError, match="dispatch_generation_stale"):
+        revalidate_authority_dispatch(seed, root=files, cache=cache, namespace="engineering", request_id="admission-first")
+    assert _publication_rows(path) == terminal
+    assert (files / "engineering.authority.json").read_bytes() == b"publisher-first"
+    assert cache == {"engineering": (3, sha256_bytes(b"publisher-first"))} and not seed.in_transaction
     seed.close()
 
 
-def test_proposed_release_join_harness_retains_worker_boundary_and_cleanup_errors() -> None:
+def test_proposed_release_join_harness_retains_worker_boundary_and_cleanup_errors(tmp_path: Path) -> None:
+    path, files, cache = tmp_path / "cleanup-wrapper.db", tmp_path / "canonical", {}
+    seed = _adapter(path)
+    assert publish_authority_generation(seed, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"base", publisher="bootstrap", journal_id="base") == 1
     arrived, release = threading.Event(), threading.Event()
     errors: list[BaseException] = []
+    cleanups_ran: list[str] = []
 
-    def failing_contender() -> None:
-        arrived.set()
-        assert release.wait(5)
-        try:
+    def failing_publisher() -> None:
+        conn = _adapter(path)
+
+        def on_stage(stage: str) -> None:
+            if stage != "canonical_replaced":
+                return
+            arrived.set()
+            if not release.wait(5):
+                raise AssertionError("cleanup_release_timeout")
             raise RuntimeError("injected_worker_failure")
+
+        try:
+            publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"next", publisher="agents-route", journal_id="cleanup-wrapper", stage_hook=on_stage)
         except BaseException as exc:
             errors.append(exc)
+        finally:
+            conn.close()
 
-    worker = threading.Thread(target=failing_contender, name="u0-injected-contender")
-    worker.start()
-    assert arrived.wait(5)
+    worker = threading.Thread(target=failing_publisher, name="u0-cleanup-wrapper")
+    started: list[threading.Thread] = []
+    boundary: BaseException | None = None
+    fence = _adapter(path)
     try:
-        raise ValueError("injected_boundary_failure")
-    except BaseException as boundary:
-        _release_and_join(release, worker, errors, boundary)
-    assert not worker.is_alive()
-    errors.append(RuntimeError("injected_cleanup_failure"))
-    assert {str(error) for error in errors} == {"injected_worker_failure", "injected_boundary_failure", "injected_cleanup_failure"}
+        _start_worker(worker, started)
+        assert arrived.wait(5)
+        fence_authority_namespace(fence, cache={}, namespace="engineering", reason="profile-change")
+    except BaseException as exc:
+        boundary = exc
+    finally:
+        _release_all_and_join(
+            (release,), started, errors, boundary,
+            cleanups=(
+                lambda: (_ for _ in ()).throw(RuntimeError("injected_cleanup_failure")),
+                lambda: cleanups_ran.append("second_cleanup"),
+            ),
+        )
+        fence.close()
+    assert started == [worker] and not worker.is_alive()
+    assert {str(error) for error in errors} == {"injected_worker_failure", "profile_fence_deferred:file_phase_reserved", "injected_cleanup_failure"}
+    assert cleanups_ran == ["second_cleanup"]
+    assert _publication_rows(path)["leases"] == [] and not seed.in_transaction
+    seed.close()
+
+
+def test_proposed_release_join_harness_cleans_up_after_failed_arrival_and_unstarted_worker(tmp_path: Path) -> None:
+    """A started worker that never arrives plus a second real worker never started."""
+    path, files, cache = tmp_path / "cleanup-arrival.db", tmp_path / "canonical", {}
+    seed = _adapter(path)
+    assert publish_authority_generation(seed, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"base", publisher="bootstrap", journal_id="base") == 1
+    arrived, release = threading.Event(), threading.Event()
+    errors: list[BaseException] = []
+    cleanups_ran: list[str] = []
+
+    def failing_arrival() -> None:
+        conn = _adapter(path)
+
+        def on_stage(stage: str) -> None:
+            if stage == "lease_acquired":
+                raise RuntimeError("injected_arrival_setup_failure")
+
+        try:
+            publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"next", publisher="agents-route", journal_id="arrival-failure", stage_hook=on_stage)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            conn.close()
+
+    worker = threading.Thread(target=failing_arrival, name="u0-arrival-failure")
+    never_started = threading.Thread(target=lambda: None, name="u0-never-started")
+    started: list[threading.Thread] = []
+    boundary: BaseException | None = None
+    try:
+        _start_worker(worker, started)
+        assert arrived.wait(2), "publisher never reached the arrival barrier"
+    except BaseException as exc:
+        boundary = exc
+    finally:
+        # The never-started worker is deliberately absent from ``started`` so the
+        # join-all seam cannot raise ``cannot join thread before it is started``.
+        _release_all_and_join(
+            (release,), started, errors, boundary,
+            cleanups=(
+                lambda: (_ for _ in ()).throw(RuntimeError("injected_cleanup_failure")),
+                lambda: cleanups_ran.append("second_cleanup"),
+            ),
+        )
+    assert started == [worker] and not worker.is_alive() and not never_started.is_alive()
+    assert {str(error).splitlines()[0] for error in errors} == {"injected_arrival_setup_failure", "publisher never reached the arrival barrier", "injected_cleanup_failure"}
+    assert cleanups_ran == ["second_cleanup"]
+    assert _publication_rows(path)["leases"] == [] and not seed.in_transaction
+    seed.close()
+
+
+def test_proposed_release_join_harness_cleans_up_after_second_worker_setup_failure(tmp_path: Path) -> None:
+    """A held first worker plus a second real wrapper failing before its arrival."""
+    path, files, cache = tmp_path / "cleanup-second.db", tmp_path / "canonical", {}
+    seed = _adapter(path)
+    assert publish_authority_generation(seed, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"base", publisher="bootstrap", journal_id="base") == 1
+    held, release_holder, second_arrived = threading.Event(), threading.Event(), threading.Event()
+    results: list[object] = []
+    errors: list[BaseException] = []
+
+    def held_publisher() -> None:
+        conn = _adapter(path)
+
+        def on_stage(stage: str) -> None:
+            if stage != "journal_prepared":
+                return
+            held.set()
+            if not release_holder.wait(5):
+                raise AssertionError("held_release_timeout")
+
+        try:
+            results.append(publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"next", publisher="agents-route", journal_id="held-publisher", stage_hook=on_stage))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            conn.close()
+
+    def failing_second() -> None:
+        conn = _adapter(path)
+
+        def on_stage(stage: str) -> None:
+            if stage == "admission_begin_immediate":
+                raise RuntimeError("injected_second_setup_failure")
+
+        try:
+            results.append(admit_authority_request(conn, root=files, cache=cache, namespace="engineering", request_id="second-setup-failure", request_bytes=b"request", admitted_by="reader", expected_generation=1, stage_hook=on_stage))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            conn.close()
+
+    holder = threading.Thread(target=held_publisher, name="u0-held-publisher")
+    second = threading.Thread(target=failing_second, name="u0-second-setup")
+    started: list[threading.Thread] = []
+    boundary: BaseException | None = None
+    try:
+        _start_worker(holder, started)
+        assert held.wait(5)
+        _start_worker(second, started)
+        assert second_arrived.wait(2), "second worker never reached its setup barrier"
+    except BaseException as exc:
+        boundary = exc
+    finally:
+        _release_all_and_join((release_holder,), started, errors, boundary)
+    assert started == [holder, second] and not holder.is_alive() and not second.is_alive()
+    assert results == [2]
+    assert {str(error).splitlines()[0] for error in errors} == {"injected_second_setup_failure", "second worker never reached its setup barrier"}
+    assert _publication_rows(path)["leases"] == [] and not seed.in_transaction
+    seed.close()
 
 
 def test_proposed_concurrent_same_label_publishers_and_admission_are_fenced_at_real_barriers(tmp_path: Path) -> None:
@@ -921,20 +1304,21 @@ def test_proposed_concurrent_same_label_publishers_and_admission_are_fenced_at_r
         finally:
             conn.close()
 
-    worker = threading.Thread(target=first_publisher)
-    worker.start()
-    assert lease_arrived.wait(5)
+    worker = threading.Thread(target=first_publisher, name="u0-same-label-winner")
+    started_first: list[threading.Thread] = []
     contender = sqlite3.connect(path)
     contender.execute("PRAGMA foreign_keys=ON")
     first_boundary_errors: list[BaseException] = []
     try:
+        _start_worker(worker, started_first)
+        assert lease_arrived.wait(5)
         with pytest.raises(ValueError, match="publication_lease_busy"):
             publish_authority_generation(contender, root=files, cache={}, namespace="engineering", expected_generation=1, snapshot=b"loser", publisher="agents-route", journal_id="same-label-loser")
     except BaseException as exc:
         first_boundary_errors.append(exc)
     finally:
-        _release_and_join(release_lease, worker, first_boundary_errors)
-    assert not first_boundary_errors
+        _release_all_and_join((release_lease,), started_first, first_boundary_errors)
+    assert started_first == [worker] and not first_boundary_errors
     assert not worker.is_alive() and outcomes == [2]
     canonical_arrived, release_canonical = threading.Event(), threading.Event()
     outcomes.clear()
@@ -949,20 +1333,21 @@ def test_proposed_concurrent_same_label_publishers_and_admission_are_fenced_at_r
         finally:
             conn.close()
 
-    worker = threading.Thread(target=second_publisher)
-    worker.start()
-    assert canonical_arrived.wait(5)
+    worker = threading.Thread(target=second_publisher, name="u0-admission-fenced")
+    started_second: list[threading.Thread] = []
     admission = sqlite3.connect(path)
     admission.execute("PRAGMA foreign_keys=ON")
     second_boundary_errors: list[BaseException] = []
     try:
+        _start_worker(worker, started_second)
+        assert canonical_arrived.wait(5)
         with pytest.raises(ValueError, match="publication_fenced:file_phase_reserved"):
             admit_authority_request(admission, root=files, cache=cache, namespace="engineering", request_id="blocked-during-publish", request_bytes=b"request", admitted_by="workflow-route", expected_generation=2)
     except BaseException as exc:
         second_boundary_errors.append(exc)
     finally:
-        _release_and_join(release_canonical, worker, second_boundary_errors)
-    assert not second_boundary_errors
+        _release_all_and_join((release_canonical,), started_second, second_boundary_errors)
+    assert started_second == [worker] and not second_boundary_errors
     assert not worker.is_alive() and outcomes == [3]
     residue = _publication_rows(path)
     assert [row[0] for row in residue["journals"]] == ["base", "winner", "third"]

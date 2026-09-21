@@ -488,13 +488,38 @@ profile schedules prove both outcomes: a fence at `journal_prepared` wins and
 the old publisher has no file/cache/admission effect; at `staged` and
 replacement-before-stamp the durable phase owner wins, the fence truthfully
 defers, and later succeeds after drain. The interruption table covers absent
-initial and explicit current-fence predecessors, `before_pointer` and
-`before_cache_stamp`, repeated recovery, and complete rows including snapshot
-bytes/profile-fence/phase owner. The actual admission-owned `BEGIN IMMEDIATE`
-contends with the publisher in both orders; release/join harnesses retain
-worker, boundary, and cleanup errors. This remains local evidence, not a
-complete Phase-1 publication proof, a general legacy/Phase-2 serialization
-claim, or F5 request/outbox/uncertain-launch completion.
+initial and explicit current-fence predecessors.
+`test_proposed_compensation_legal_transitions_recover_through_cold_reopens`
+drives each initial/current-fence × replacement/canonical window through the
+same selected-snapshot/fence compensation verifier, returning
+`forward_recovery_required` without rollback, then drives both `before_pointer`
+and `before_cache_stamp` recovery interruptions across separate cold connections
+and cold caches before repeated cold reopen reaches the coherent ready state,
+preserving prior journal rows and committed admission identities.
+`test_proposed_compensation_refuses_wrong_owner_and_arbitrary_lineage_without_effect`
+retains the wrong-owner and malformed/arbitrary-canonical-byte refusals with zero
+durable or file effect. The phase-owner rows bind the publisher invocation token
+captured at lease acquisition (not re-read from the row under test) to its
+durable lease and journal owner; canonical/staging bytes, cache, admission and
+transaction state are independently asserted.
+`test_proposed_profile_fence_rejects_a_prepared_old_profile_publisher_before_file_mutation`
+proves the pre-file fence wins with no later stale file/pointer/cache effect. The
+actual admission-owned `BEGIN IMMEDIATE` contends with the publisher at its
+original lease-acquisition call in both winner orders
+(`test_proposed_admission_owned_transaction_and_publisher_contend_in_both_orders`),
+and the committed admission-first record is then denied by
+`revalidate_authority_dispatch` as `dispatch_generation_stale` with unchanged
+residue. The release-all/join-all wrapper
+(`test_proposed_release_join_harness_retains_worker_boundary_and_cleanup_errors`,
+`test_proposed_release_join_harness_cleans_up_after_failed_arrival_and_unstarted_worker`,
+`test_proposed_release_join_harness_cleans_up_after_second_worker_setup_failure`)
+joins only actually started workers, aggregates worker/boundary/release/join/
+cleanup/liveness failures, continues remaining cleanup after an individual
+cleanup failure, and leaves no owned worker live. JOB1831 is a historical
+publication receipt for the preceding `27a32344` bytes (130 U0 passes; local CI
+exit 0), not verification for later corrections. This remains local evidence,
+not a complete Phase-1 publication proof, a general legacy/Phase-2
+serialization claim, or F5 request/outbox/uncertain-launch completion.
 
 The three retained cancellation schedules now compare the complete typed audit
 payload to the invocation-owned pre-corruption writer capture, with separate
@@ -505,7 +530,9 @@ intact.
 
 Founder decisions still pending: supported writer boundary, additive runtime
 schema/ownership, machine-global profile lock/cutover, disable-new-runs/drain
-and old-reader behavior, and uncertain-launch handling. Residuals: F5 atomic
+and old-reader behavior, and uncertain-launch handling. Residuals: F4 global
+operation/dependency membership/new-org activation plus complete effective
+writer/reader/storage/proposed-symbol/lock/compensation mapping; F5 atomic
 request/outbox/uncertain launch; F6 historical cutover/old-reader/implementation
 ledger; U1 templates/versions, U2 activation/identical-byte review, U3
 signatures, U4 revision, U5 reassignment/retry/cancel/recovery, U6 independent

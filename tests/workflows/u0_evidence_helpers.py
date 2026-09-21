@@ -234,9 +234,18 @@ def _pid_is_live(pid: int) -> bool:
     return True
 
 
-def _acquire_publication_lease(conn: sqlite3.Connection, namespace: str, owner: str) -> None:
-    """Acquire one invocation-owned lease, reclaiming only a proven dead owner."""
+def _acquire_publication_lease(
+    conn: sqlite3.Connection, namespace: str, owner: str, *, on_begin_immediate: Callable[[], None] | None = None,
+) -> None:
+    """Acquire one invocation-owned lease, reclaiming only a proven dead owner.
+
+    ``on_begin_immediate`` is a test-only observation immediately before the
+    helper's original lease-acquisition ``BEGIN IMMEDIATE``; it lets the
+    deterministic harness prove real admission-versus-publication contention.
+    """
     _require_idle(conn)
+    if on_begin_immediate is not None:
+        on_begin_immediate()
     conn.execute("BEGIN IMMEDIATE")
     try:
         row = conn.execute(
@@ -407,6 +416,7 @@ def publish_authority_generation(
     expected_generation: int, snapshot: bytes, publisher: str, journal_id: str,
     interrupt_at: str | None = None, stage_hook: Callable[[str], None] | None = None,
     profile_fence: int | None = None,
+    on_lease_acquired: Callable[[str], None] | None = None,
 ) -> int:
     """Publish one proposed generation in crash-visible, forward-only stages.
 
@@ -414,12 +424,21 @@ def publish_authority_generation(
     is deliberately later, so admission fences pointer-visible but incoherent
     publications.  No lock spans filesystem work, a network operation, clone,
     or later launch.
+
+    ``on_lease_acquired`` is a test-only observation of the immutable invocation
+    token the caller actually acquired; it lets evidence bind the durable phase
+    owner to the original invocation instead of re-reading the row under test.
     """
     _require_idle(conn)
     if interrupt_at not in {None, "process_exit_after_lease", "process_exit_prepared", "prepared", "staged", "replaced", "canonical", "pointer", "cache_written"}:
         raise ValueError("unknown_publication_interrupt")
     owner = f"{publisher}:{uuid.uuid4().hex}"
-    _acquire_publication_lease(conn, namespace, owner)
+    _acquire_publication_lease(
+        conn, namespace, owner,
+        on_begin_immediate=(lambda: stage_hook("lease_begin_immediate")) if stage_hook is not None else None,
+    )
+    if on_lease_acquired is not None:
+        on_lease_acquired(owner)
     try:
         if stage_hook is not None:
             stage_hook("lease_acquired")
@@ -593,7 +612,7 @@ def compensate_authority_publication(
         conn.execute("BEGIN IMMEDIATE")
         try:
             row = conn.execute(
-                "SELECT expected_generation, snapshot_bytes, snapshot_digest, state, publisher FROM workflow_publication_journals WHERE id=? AND namespace=?",
+                "SELECT expected_generation, snapshot_bytes, snapshot_digest, state, publisher, profile_fence FROM workflow_publication_journals WHERE id=? AND namespace=?",
                 (journal_id, namespace),
             ).fetchone()
             current, pointer_id, pointer_digest, pointer_state, _profile_fence = _pointer(conn, namespace)
@@ -604,6 +623,7 @@ def compensate_authority_publication(
             _verify_predecessor(
                 conn, root, namespace, row[0],
                 require_canonical=row[3] == "prepared" and not active_has_replaced_canonical,
+                active_snapshot=row[1], active_profile_fence=row[5],
             )
             if row[3] in {"prepared", "file_phase_reserved"}:
                 if path.is_file() and path.read_bytes() == row[1]:
