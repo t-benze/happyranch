@@ -59,6 +59,8 @@ export interface MentionTextareaProps {
   id?: string;
   /** Used when no `id`/external label exists. */
   ariaLabel?: string;
+  /** Localized label for the @-mention suggestion list (English default). */
+  mentionListLabel?: string;
   /** Lets a parent focus the textarea (e.g. the R keyboard shortcut). */
   registerFocus?: (focus: () => void) => void;
   className?: string;
@@ -75,6 +77,7 @@ export function MentionTextarea({
   autoFocus,
   id,
   ariaLabel,
+  mentionListLabel,
   registerFocus,
   className,
 }: MentionTextareaProps): JSX.Element {
@@ -165,6 +168,7 @@ export function MentionTextarea({
           matches={mentionMatches}
           onSelect={acceptMention}
           onDismiss={() => setMention(null)}
+          ariaLabel={mentionListLabel}
         />
       )}
     </>

@@ -43,6 +43,27 @@ interface DraftHandle {
   clearDraft: () => void;
 }
 
+/**
+ * Optional product-copy overrides (THR-118 W3a). Every field defaults to the
+ * historical English copy, so callers that omit `labels` render unchanged.
+ * The pattern stays hook-free: the owning feature resolves translations.
+ */
+export interface ComposerLabels {
+  /** Placeholder shown while the composer is disabled (thread closed). */
+  closedPlaceholder?: string;
+  /** Default placeholder when neither `placeholder` nor `helper` is given. */
+  defaultPlaceholder?: string;
+  attachFiles?: string;
+  textareaAria?: string;
+  send?: string;
+  sendTitle?: string;
+  abortReply?: string;
+  aborting?: string;
+  removeAttachment?: string;
+  /** Label for the @-mention suggestion list. */
+  mentionList?: string;
+}
+
 export interface PendingAttachment {
   id: string;
   file: File;
@@ -91,7 +112,11 @@ function useThreadDraft(orgSlug: string, threadId: string): DraftHandle {
 interface ComposerProps {
   disabled?: boolean;
   pending?: boolean;
-  /** Optional error message (typically from a failed send). */
+  /**
+   * Optional error message (typically from a failed send). Rendered whenever it
+   * is non-null/undefined — including the empty string (a raw diagnostic is
+   * shown byte-for-byte). Pass `null`/omit to render no error slot.
+   */
   errorMessage?: string | null;
   /** Helper text shown below the textarea when no error is set. */
   helper?: string;
@@ -131,6 +156,8 @@ interface ComposerProps {
    * the assistant dock) omit this prop.
    */
   abortReplies?: { active: boolean; isPending: boolean; onAbort: () => void };
+  /** Optional localized product copy; omitted fields keep the English defaults. */
+  labels?: ComposerLabels;
 }
 
 export function Composer({
@@ -147,7 +174,19 @@ export function Composer({
   threadId = '',
   orgSlug,
   abortReplies,
+  labels,
 }: ComposerProps): JSX.Element {
+  const L = {
+    closedPlaceholder: labels?.closedPlaceholder ?? 'Thread is closed.',
+    defaultPlaceholder: labels?.defaultPlaceholder ?? 'Write a message…',
+    attachFiles: labels?.attachFiles ?? 'Attach files',
+    textareaAria: labels?.textareaAria ?? 'Compose follow-up',
+    send: labels?.send ?? 'Send',
+    sendTitle: labels?.sendTitle ?? 'Send (Enter)',
+    abortReply: labels?.abortReply ?? 'Abort reply',
+    aborting: labels?.aborting ?? 'Aborting…',
+    removeAttachment: labels?.removeAttachment ?? REMOVE_ATTACHMENT_LABEL,
+  };
   const { draft, setDraft, clearDraft } = useThreadDraft(orgSlug, threadId);
   const canSend = Boolean(draft.trim() || attachments.length);
 
@@ -214,7 +253,7 @@ export function Composer({
   // compact input carries the broadcast semantics without a separate line.
   const composerPlaceholder =
     placeholder ??
-    (disabled ? 'Thread is closed.' : (helper ?? 'Write a message…'));
+    (disabled ? L.closedPlaceholder : (helper ?? L.defaultPlaceholder));
 
   return (
     <div className="flex flex-col gap-2">
@@ -230,7 +269,7 @@ export function Composer({
               <button
                 type="button"
                 className="text-text-muted hover:text-text"
-                aria-label={REMOVE_ATTACHMENT_LABEL}
+                aria-label={L.removeAttachment}
                 onClick={() => removeAttachment(item.id)}
                 disabled={disabled || pending}
               >
@@ -247,11 +286,11 @@ export function Composer({
       <div className="border-border-default bg-surface-raised focus-within:border-accent-default flex items-end gap-1 rounded-lg border py-1 pr-1 pl-2 transition-colors">
         <label
           className="text-text-muted hover:text-text-secondary hover:bg-surface-hover mb-0.5 inline-flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors"
-          title="Attach files"
+          title={L.attachFiles}
         >
           <Paperclip className="h-4 w-4" aria-hidden="true" />
           <input
-            aria-label="Attach files"
+            aria-label={L.attachFiles}
             type="file"
             multiple
             className="sr-only"
@@ -280,7 +319,8 @@ export function Composer({
           disabled={disabled || pending}
           rows={1}
           placeholder={composerPlaceholder}
-          ariaLabel="Compose follow-up"
+          ariaLabel={L.textareaAria}
+          mentionListLabel={labels?.mentionList}
           registerFocus={registerFocus}
           className="text-body text-text-primary placeholder:text-text-muted w-full resize-none bg-transparent py-1.5 focus:outline-none disabled:opacity-50"
         />
@@ -297,8 +337,8 @@ export function Composer({
             type="button"
             onClick={abortReplies.onAbort}
             disabled={abortReplies.isPending}
-            aria-label={abortReplies.isPending ? 'Aborting…' : 'Abort reply'}
-            title={abortReplies.isPending ? 'Aborting…' : 'Abort reply'}
+            aria-label={abortReplies.isPending ? L.aborting : L.abortReply}
+            title={abortReplies.isPending ? L.aborting : L.abortReply}
             className="border-border-default bg-surface-raised text-feedback-danger hover:border-feedback-danger hover:bg-danger-soft mb-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border transition-colors disabled:opacity-50"
           >
             <Square className="h-4 w-4" aria-hidden="true" />
@@ -308,17 +348,21 @@ export function Composer({
           type="button"
           onClick={submit}
           disabled={disabled || !canSend || pending}
-          aria-label="Send"
-          title="Send (Enter)"
+          aria-label={L.send}
+          title={L.sendTitle}
           className="bg-accent text-accent-fg hover:bg-accent-hover disabled:bg-surface-hover disabled:text-text-muted mb-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors"
         >
           <ArrowRight className="h-4 w-4" aria-hidden="true" />
         </button>
       </div>
 
-      {/* Send error surfaces below the pill; the broadcast copy is the placeholder. */}
-      {errorMessage && (
-        <span className="text-caption text-feedback-danger">{errorMessage}</span>
+      {/* Send error surfaces below the pill; the broadcast copy is the placeholder.
+          Rendered whenever an error is SET (non-null), not by text truthiness,
+          so a raw diagnostic that is the empty string still owns its slot. */}
+      {errorMessage != null && (
+        <span data-testid="composer-error" className="text-caption text-feedback-danger">
+          {errorMessage}
+        </span>
       )}
     </div>
   );

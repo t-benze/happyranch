@@ -23,6 +23,20 @@ import { CrescentMoonBadge } from './CrescentMoonBadge';
 import { IdBadge } from './IdBadge';
 import { PageHeader } from './PageHeader';
 
+/**
+ * Optional product-copy overrides (THR-118 W3a). Omitted fields keep the
+ * historical English copy so other callers render unchanged.
+ */
+export interface ThreadHeaderLabels {
+  statusOpen?: string;
+  statusArchived?: string;
+  noParticipants?: string;
+  archiveSummary?: string;
+  titleInput?: string;
+  save?: string;
+  cancel?: string;
+}
+
 interface ThreadHeaderProps {
   threadId: string;
   subject: string;
@@ -43,6 +57,8 @@ interface ThreadHeaderProps {
    *  `renaming` true so the typed value stays for retry. */
   renameError?: string | null;
   renameSaving?: boolean;
+  /** Optional localized product copy (display only; `status` stays machine). */
+  labels?: ThreadHeaderLabels;
 }
 
 export function ThreadHeader({
@@ -60,7 +76,17 @@ export function ThreadHeader({
   onRenameCancel,
   renameError,
   renameSaving = false,
+  labels,
 }: ThreadHeaderProps): JSX.Element {
+  const L = {
+    statusOpen: labels?.statusOpen ?? 'active',
+    statusArchived: labels?.statusArchived ?? 'archived',
+    noParticipants: labels?.noParticipants ?? 'no participants',
+    archiveSummary: labels?.archiveSummary ?? 'Archive summary:',
+    titleInput: labels?.titleInput ?? 'Thread title',
+    save: labels?.save ?? 'Save',
+    cancel: labels?.cancel ?? 'Cancel',
+  };
   const statusPillCls =
     status === 'open'
       ? 'bg-accent-soft text-accent-text'
@@ -87,14 +113,14 @@ export function ThreadHeader({
           }
         }}
         maxLength={120}
-        aria-label="Thread title"
+        aria-label={L.titleInput}
         className="border-border-default bg-surface text-body-sm text-text-primary min-w-0 flex-1 rounded-md border px-2 py-1"
       />
       <Button size="sm" onClick={onRenameSave} disabled={renameSaving || !renameDraft.trim()}>
-        Save
+        {L.save}
       </Button>
       <Button size="sm" variant="ghost" onClick={onRenameCancel} disabled={renameSaving}>
-        Cancel
+        {L.cancel}
       </Button>
       {renameError && (
         <span role="alert" className="text-feedback-danger text-xs">
@@ -109,7 +135,7 @@ export function ThreadHeader({
       <span
         className={`inline-flex items-center rounded-full px-2 py-px text-xs leading-relaxed font-semibold ${statusPillCls}`}
       >
-        {status === 'open' ? 'active' : 'archived'}
+        {status === 'open' ? L.statusOpen : L.statusArchived}
       </span>
     </span>
   );
@@ -122,14 +148,14 @@ export function ThreadHeader({
           <div className="flex flex-wrap items-center gap-2">
             <IdBadge id={threadId} kind="thread" />
             <span aria-hidden="true">·</span>
-            <span>{participants.join(', ') || 'no participants'}</span>
+            <span>{participants.join(', ') || L.noParticipants}</span>
           </div>
         }
         actions={actions}
       />
       {archiveSummary && (
         <p className="border-border-default bg-surface-raised text-caption text-text-muted mt-2 rounded-md border p-2">
-          <strong className="text-text-primary">Archive summary:</strong>{' '}
+          <strong className="text-text-primary">{L.archiveSummary}</strong>{' '}
           {archiveSummary}
         </p>
       )}

@@ -37,6 +37,18 @@ import { CrescentMoonBadge } from './CrescentMoonBadge';
 import { IdBadge } from './IdBadge';
 import { toneClass } from './semanticTone';
 
+/**
+ * Optional product-copy overrides (THR-118 W3a). Omitted fields keep the
+ * historical English copy. `statusLabel` is DISPLAY-only — the machine
+ * `status` prop still drives the dot/tone logic.
+ */
+export interface InboxRowLabels {
+  statusLabel?: string;
+  fromDream?: string;
+  last?: string;
+  needsYou?: string;
+}
+
 interface InboxRowProps {
   threadId: string;
   subject: string;
@@ -61,6 +73,8 @@ interface InboxRowProps {
    */
   onSelect?: () => void;
   participants?: string[];
+  /** Optional localized product copy. */
+  labels?: InboxRowLabels;
 }
 
 const FROM_DREAM_PILL =
@@ -79,7 +93,9 @@ export function InboxRow({
   href,
   onSelect,
   participants = [],
+  labels,
 }: InboxRowProps): JSX.Element {
+  const fromDreamLabel = labels?.fromDream ?? 'from dream';
   const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     if (e.defaultPrevented) return;
     if (e.button !== 0) return; // ignore non-primary clicks
@@ -127,17 +143,17 @@ export function InboxRow({
             <span
               className={`inline-flex items-center rounded-full px-2 py-px text-xs leading-relaxed font-semibold ${toneClass(status)}`}
             >
-              {status}
+              {labels?.statusLabel ?? status}
             </span>
             {fromDream && (
               <span className={FROM_DREAM_PILL}>
                 <CrescentMoonBadge className="h-3 w-3" />
-                from dream
+                {fromDreamLabel}
               </span>
             )}
             {lastSpeaker && (
               <span className="text-caption text-text-muted inline-flex items-center gap-1">
-                last
+                {labels?.last ?? 'last'}
                 <span className="text-text-secondary font-mono">
                   {lastSpeaker.name}
                 </span>
@@ -158,7 +174,7 @@ export function InboxRow({
     return rowEl;
   }
 
-  const statusLabel = status === 'open' ? 'active' : 'done';
+  const statusLabel = labels?.statusLabel ?? (status === 'open' ? 'active' : 'done');
   const statusPillCls =
     status === 'open'
       ? 'bg-accent-soft text-accent-text'
@@ -176,7 +192,7 @@ export function InboxRow({
         <div className="flex min-w-0 items-center gap-2">
           {needsYou && (
             <span
-              aria-label="needs you"
+              aria-label={labels?.needsYou ?? 'needs you'}
               className="bg-accent inline-block h-1.5 w-1.5 shrink-0 rounded-full"
             />
           )}
@@ -188,7 +204,7 @@ export function InboxRow({
           {fromDream && (
             <span className={FROM_DREAM_PILL}>
               <CrescentMoonBadge className="h-3 w-3" />
-              from dream
+              {fromDreamLabel}
             </span>
           )}
           <span

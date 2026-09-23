@@ -1,6 +1,6 @@
-# Web i18n — foundation + W2a shell + W2b onboarding + W2c Settings contract
+# Web i18n — foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads contract
 
-> Status: current (W1 foundation + W2a mounted-shell + W2b onboarding + W2c Settings/Preferences migration)
+> Status: current (W1 foundation + W2a mounted-shell + W2b onboarding + W2c Settings/Preferences + W3a Dashboard/Threads migration)
 > Current Source: `web/src/lib/i18n/`, `web/src/hooks/i18n.tsx`, the mounted
 > shell/onboarding consumers, this spec.
 > Supersedes: the `Internationalization layer` non-goal in
@@ -10,8 +10,9 @@
 > (AppBar/Sidebar/root/not-found/ErrorBoundary/AddOrgDialog/help/palette);
 > **W2b** translated the onboarding route (`/onboarding` plus the shared
 > ConnectFlow it mounts); **W2c** translated Settings and built the
-> production-gated Preferences language selector (preview-gated until W3).
-> Later slices (W3 route families + public opt-in preview, W4 remaining
+> production-gated Preferences language selector (preview-gated until W3b);
+> **W3a** translated the mounted Dashboard and Threads route families.
+> Later slices (W3b Tasks/Jobs + public opt-in preview, W4 remaining
 > surfaces, W5 full coverage/default resolution) and native preference
 > persistence (N0/N1) are still open. The W1 sections below are retained as the historical W1 contract
 > and updated per phase.
@@ -69,12 +70,37 @@ Delivery status at W1 (keep separate from later phases):
 | Onboarding translation (W2b: OnboardingPage/ConnectRuntimeStep/shared ConnectFlow) | **shipped — W2b** |
 | Settings translation (W2c: page chrome + Assistant/Organization/Executors/Capacity sections) | **shipped — W2c** (Work Hours-owned `EligibilityEditorDialog` stays English until W4) |
 | Settings ▸ Preferences language selector (W2c) | **built, preview-gated** — mounted only in builds with `VITE_ENABLE_I18N_PREFERENCES=true` (tests/evidence); absent from ordinary production builds |
-| Route/page translation | **W3/W4** — not shipped (route families, assistant dock body) |
-| Public language selector / opt-in preview | **W3** — not shipped (W3 opens the W2c gate after acceptance) |
+| Dashboard + Threads route families (W3a: DashboardPage, ThreadsPage list/detail/composer/strips, Archive/Invite/RemoveParticipant dialogs, shared NewThreadDialog) | **shipped — W3a** |
+| Other route/page translation | **W3b/W4** — not shipped (Tasks/Jobs are W3b; other route families and the assistant dock body are W4) |
+| Public language selector / opt-in preview | **W3b** — not shipped (W3b opens the W2c gate after acceptance) |
 | Full-mode automatic environment detection | implemented + unit-tested, **not enabled** in production (W5) |
 | Native preference persistence (Swift/message handler) | **N0/N1** — not shipped |
 
-**W2c** (this phase) translates the Settings surface and prepares the W3
+**W3a** (this phase) translates the mounted Dashboard and Threads route
+families — Dashboard cards/narratives/actions and loading/first-run/error/Retry
+copy; Threads list/detail panes, filters, pin sections, status presentation,
+reply-delivery/responder strips, the reply Composer, rename/pin/archive/resume/
+invite/remove flows and the shared `NewThreadDialog`, including accessibility
+copy — through the typed catalog with named params and explicit plurals. Pure
+design-system patterns receive localized labels as optional props (English
+defaults keep other callers unchanged); no hook enters a primitive/pattern.
+Thread errors are held as `ThreadErrorView` descriptors from
+`lib/threadErrors.ts` (`classifyThreadError` → mapped catalog key/params or
+`raw` text; `renderThreadError(view, t)` at render time), so a mapped
+validation/error message re-translates in place without resubmission while a
+raw daemon diagnostic (`HTTP <status>` for unmapped codes, a non-ApiError
+string, an empty string or one byte-equal to catalog copy) is shown verbatim.
+Authored thread titles, message Markdown, speaker/participant/agent names,
+thread/task/job/artifact IDs, filenames/paths/hrefs, raw reply-delivery/audit
+payloads, machine/status values and keyboard shortcut sequences stay
+byte-for-byte; display-only dates/counts use the explicit-locale formatters.
+A locale switch never keys/remounts the page, never loses selection, drafts,
+attachments, open dialogs or focus, and issues no request. The CLAUDE.md
+thread rename/pin invariants are untouched. The Preferences gate stays closed,
+there is no secondary-pages disclosure and unset stays English: W3b owns
+Tasks/Jobs plus the public opt-in preview.
+
+**W2c** translates the Settings surface and prepares the W3
 selector:
 
 - `SettingsPage` header/meta, sub-nav heading and labels, API loading/error
@@ -225,8 +251,9 @@ anchors them to the real consumer sources (e.g. `ThreadsPage.tsx` mounts
 `TaskDetailPage.tsx` mounts `CancelTaskDialog`/`RevisitTaskDialog`/
 `ResolveEscalationDialog`; `JobDetailPage.tsx` mounts
 `RunJobDialog`/`RejectJobDialog`), so an invented or unreachable name fails the
-test. After W2c exactly six namespaces are `translated` (`root-shell`,
-`not-found`, `onboarding`, `app-shell`, `help-and-palette`, `settings`); every
+test. After W3a exactly eight namespaces are `translated` (`root-shell`,
+`not-found`, `onboarding`, `app-shell`, `help-and-palette`, `settings`,
+`dashboard`, `threads`); every
 later slice and route family is still visibly `english-only`, so English
 fallback is never mistaken for coverage. The `settings` namespace includes the
 gated `preferences` token and `PreferencesSection`; the shared
@@ -417,13 +444,14 @@ Frontend readiness map (actual evidence):
 | Mounted-shell switching state | N/A (foundation) | captured: help non-default tab (S16), AddOrg typed slug + mapped error (S12 wide-light; S17 zh-narrow-light/en-narrow-dark/zh-wide-dark) and palette query + non-default selected row (S13 wide-light; S18 zh-narrow-light/en-narrow-dark/zh-wide-dark) preserved across storage-path locale switches with the actual `document.activeElement`, retained DOM node identity, open state and selection/value observed before AND after each direction; each help/AddOrg switch window asserts no `PUT /settings/org` and no `POST /api/v1/orgs`, and each palette switch window asserts zero `/api/` requests (cache-only), per direction |
 | Onboarding switching state (W2b) | N/A | captured: S4 mapped error, S5 raw `API 500`, S6 success, S8 built-in waiting, S9 custom form and S10 prereq/create state each run en→zh-CN→en with actual focus, stable test-only node identity where applicable, open phase/mode and state-specific raw bytes retained; a separate per-direction window proves zero settings/org/connect/mint mutation and zero `/api/` requests; PNGs and `receipt.json` are bound to the head SHA |
 | Settings + Preferences (W2c) | N/A | Vitest: gate-off sub-nav absence + direct-URL replace redirect (unit and real `AppRoutes`), gate-on index/redirect/back/forward, Preferences under settings API loading/error/empty/ok, both switch directions with radio/sub-nav node identity + focus + route, zero requests in the switch window, keyboard Space selection, honest durable/failed persistence, storage-event sync without write-back, per-section zh-CN copy with raw detail verbatim, an already-visible Work Hours banner and executor product fallbacks re-translating in both directions with no resave/remount/request while raw diagnostics (incl. catalog-equal and empty) stay verbatim; browser: `web/scripts/w2c-preferences-browser-evidence.mjs` against the preview and ordinary dists plus a `--defect-dist` causal negative (Organization banner and Executors raw-diagnostic cases included; receipt/PNG hashes bound to the pushed head) |
+| Dashboard + Threads (W3a) | N/A | Vitest: Dashboard loading/error+Retry/first-run/populated in both locales with entity values verbatim; Threads list/detail states, composer and NewThreadDialog draft/attachment/focus/node identity across both switch directions with zero requests then exactly one create/reply; dialogs open across switches; mapped errors re-translate while raw (catalog-equal/empty/`HTTP <status>`) diagnostics stay verbatim; browser: `web/scripts/w3a-core-browser-evidence.mjs` against the ordinary dist (plus a Preferences-gate preview control) with receipt/PNG hashes bound to the pushed head |
 | Native Mac persistence receipt | N/A — N0/N1 (Linux host; not claimed) | NOT RUN — N0/N1 still open |
 
 ## 10. Exclusions
 
 No new dependency, daemon/API/schema/auth/permission/transport change, theme or
 draft migration, native chrome, CLI/manual translation, route-family
-translation campaign (W3-W4 remain open), preview
+translation campaign beyond W3a (W3b Tasks/Jobs and W4 remain open), preview
 enablement or public selector (W2c's Preferences selector is built but
 production-gated), deployment, or caller migration of display
 formatters beyond the translated shell and onboarding. Existing query/data/auth

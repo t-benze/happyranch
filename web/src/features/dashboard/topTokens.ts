@@ -37,6 +37,13 @@ export interface RollupRow {
   null_claude_max_created_at?: string | null;
 }
 
+/**
+ * Sentinel thread identity for a rollup row with no thread. Kept verbatim as
+ * the machine key (sort tie-break / React key / CLI parity); the panel maps it
+ * to a localized display label at render time.
+ */
+export const NO_THREAD_ID = '(no thread)';
+
 /** What the panel renders per row. */
 export interface TopTokenRow {
   threadId: string;
@@ -104,7 +111,7 @@ export function classifyModel(row: RollupRow): string {
 export function toTopRows(rollup: RollupRow[], topN: number): TopTokenRow[] {
   return rollup
     .map((r) => ({
-      threadId: r.thread_id ?? '(no thread)',
+      threadId: r.thread_id ?? NO_THREAD_ID,
       modelLabel: classifyModel(r),
       sessions: r.sessions,
       inputTokens: r.input_tokens,

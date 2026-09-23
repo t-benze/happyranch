@@ -26,7 +26,7 @@ import { MessageBubble, type MessageVariant } from '@/design-system/patterns/Mes
 import { StatValue } from '@/design-system/patterns/StatValue';
 import { ThreadHeader } from '@/design-system/patterns/ThreadHeader';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
-import { artifacts as artifactsApi, ApiError } from '@/lib/api';
+import { artifacts as artifactsApi } from '@/lib/api';
 import type {
   ReplyDeliveryEntry,
   ThreadAttachment,
@@ -59,8 +59,15 @@ import { ResponderStatusStrip } from './ResponderStatusStrip';
 import { ReplyDeliveryStrip, replyDeliveryCaption } from './ReplyDeliveryStrip';
 import { ResumeButton } from './ResumeButton';
 import { selectInFlightResponders } from './inFlightResponders';
-import { describeError, THREADS_STRINGS as S } from './strings';
 import { TypingBubble } from '@/design-system/patterns/TypingBubble';
+import { useTranslation } from '@/hooks/i18n';
+import { formatCountFor, type Locale, type MessageKey, type MessageParams } from '@/lib/i18n';
+import { formatElapsed } from '@/lib/elapsed';
+import {
+  classifyThreadError,
+  renderThreadError,
+  type ThreadErrorView,
+} from '@/lib/threadErrors';
 
 /* ------------------------------------------------------------------ */
 /*  helpers                                                            */
@@ -83,7 +90,15 @@ function useNowMs(active: boolean): number {
 // status vocabulary); the internal key stays 'done' to avoid churn.
 type InboxBucket = 'all' | 'open' | 'done';
 const INBOX_BUCKETS: InboxBucket[] = ['all', 'open', 'done'];
-const BUCKET_LABEL: Record<InboxBucket, string> = { all: 'All', open: 'Open', done: 'Archived' };
+const BUCKET_LABEL_KEY: Record<InboxBucket, MessageKey> = {
+  all: 'threads.page.bucket.all',
+  open: 'threads.page.bucket.open',
+  done: 'threads.page.bucket.done',
+};
+
+/** Translator shape shared by the pure helpers below (THR-118 W3a). */
+type Translate = (key: MessageKey, params?: MessageParams) => string;
+type RenderTranslated = (key: MessageKey, params?: Record<string, React.ReactNode>) => React.ReactNode;
 
 function threadStatusOrFallback(status: string): 'open' | 'archived' {
   if (status === 'open' || status === 'archived') return status;
@@ -99,14 +114,34 @@ function threadStatusOrFallback(status: string): 'open' | 'archived' {
  * Per-row participant names come from the bounded list projection; previews
  * and counts remain omitted because the list payload does not back them.
  */
-function relativeStartLabel(iso: string, nowMs: number): string {
+function relativeStartLabel(iso: string, nowMs: number, t: Translate): string {
   const min = Math.round((nowMs - new Date(iso).getTime()) / 60000);
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min}m ago`;
+  if (min < 1) return t('threads.page.time.justNow');
+  if (min < 60) return t('threads.page.time.minutesAgo', { count: min });
   const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr}h ago`;
+  if (hr < 24) return t('threads.page.time.hoursAgo', { count: hr });
   const d = Math.round(hr / 24);
-  return `${d}d ago`;
+  return t('threads.page.time.daysAgo', { count: d });
+}
+
+/** Display label for a machine responder status (the value itself never changes). */
+const RESPONDER_STATUS_KEY: Record<string, MessageKey> = {
+  queued: 'threads.page.responder.queued',
+  working: 'threads.page.responder.working',
+  replied: 'threads.page.responder.replied',
+  declined: 'threads.page.responder.declined',
+  failed: 'threads.page.responder.failed',
+};
+
+function responderStatusLabel(status: string, t: Translate): string {
+  const key = RESPONDER_STATUS_KEY[status];
+  // An unknown future status renders verbatim (never a guessed translation).
+  return key ? t(key) : status;
+}
+
+/** Explicit-locale timestamp display (host timezone, as before). */
+function localeTimestamp(locale: Locale, iso: string): string {
+  return new Date(iso).toLocaleString(locale);
 }
 
 /**
@@ -197,8 +232,8 @@ function taskStatusLabel(status: string): string {
  * and take the first letter of the first two segments (engineering_manager →
  * EM, product_lead → PL). Presentational only — no fabricated identity.
  */
-function speakerInitials(name: string): string {
-  if (name === 'founder') return 'YOU';
+function speakerInitials(name: string, youLabel: string): string {
+  if (name === 'founder') return youLabel;
   const parts = name.split(/[_\s.-]+/).filter(Boolean);
   if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
   return name.slice(0, 2).toUpperCase();
@@ -226,13 +261,14 @@ function latestResponderStatusByAgent(messages: ThreadMessage[]): Map<string, st
  * are decor. `aria-hidden` because the speaker name is announced by the bubble.
  */
 function TurnAvatar({ name }: { name: string }): JSX.Element {
+  const { t } = useTranslation();
   const bg = participantChipRole(name) === 'founder' ? 'bg-agent-founder' : 'bg-agent-worker';
   return (
     <span
       aria-hidden="true"
       className={`text-overline flex h-6 w-6 shrink-0 items-center justify-center rounded-full font-bold text-white ${bg}`}
     >
-      {speakerInitials(name)}
+      {speakerInitials(name, t('threads.page.avatar.you'))}
     </span>
   );
 }
@@ -301,6 +337,7 @@ function InboxSkeleton(): JSX.Element {
 /* ------------------------------------------------------------------ */
 
 export function ThreadsPage(): JSX.Element {
+  const { t, locale } = useTranslation();
   const routes = useThreadRoutes();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -552,10 +589,12 @@ export function ThreadsPage(): JSX.Element {
   // controls drive them.
   const renameMutation = useRenameThread(threadId ?? '');
   const pinMutation = useSetThreadPinned(threadId ?? '');
-  const [pinError, setPinError] = useState<string | null>(null);
+  // Product messages are held as catalog KEYS and rendered at render time so a
+  // locale switch retranslates them in place (THR-118 W3a).
+  const [pinError, setPinError] = useState<MessageKey | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renameDraft, setRenameDraft] = useState('');
-  const [renameError, setRenameError] = useState<string | null>(null);
+  const [renameError, setRenameError] = useState<MessageKey | null>(null);
   const startRename = () => {
     setRenameDraft(activeThread.data?.subject ?? '');
     setRenameError(null);
@@ -569,7 +608,7 @@ export function ThreadsPage(): JSX.Element {
       setRenaming(false);
     } catch {
       // On failure retain the typed value and show the inline error (retry).
-      setRenameError(S.renameFailed);
+      setRenameError('threads.page.renameFailed');
     }
   };
   const cancelRename = () => {
@@ -581,10 +620,12 @@ export function ThreadsPage(): JSX.Element {
     try {
       await pinMutation.mutateAsync({ pinned });
     } catch {
-      setPinError(S.pinFailed);
+      setPinError('threads.page.pinFailed');
     }
   };
-  const [composerError, setComposerError] = useState<string | null>(null);
+  // Locale-neutral error descriptor, rendered through renderThreadError on
+  // every render: mapped copy retranslates; raw diagnostics stay byte-exact.
+  const [composerError, setComposerError] = useState<ThreadErrorView | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   // True for the WHOLE owned run (upload + send + late finalizer), so the
   // composer disables attach/send/remove from the first click. It is owned
@@ -739,12 +780,17 @@ export function ThreadsPage(): JSX.Element {
       }
     } catch (err) {
       if (isCurrent()) {
-        const label = failedUpload ? `${failedUpload.file.name}: ` : '';
-        if (err instanceof ApiError) {
-          setComposerError(label + describeError(err.code, `HTTP ${err.status}`));
-        } else {
-          setComposerError(label + String(err));
-        }
+        setComposerError({
+          ...(failedUpload
+            ? {
+                label: {
+                  key: 'threads.page.composer.uploadFailed' as MessageKey,
+                  params: { name: failedUpload.file.name },
+                },
+              }
+            : {}),
+          detail: classifyThreadError(err),
+        });
       }
       throw err;
     } finally {
@@ -777,6 +823,16 @@ export function ThreadsPage(): JSX.Element {
   // /threads (no thread selected). When a thread IS selected the list column
   // collapses entirely (THREADDET-01 transcript-focus view): the detail column
   // takes the full width and the inbox is not rendered.
+  // The list maps below name each thread `t`; alias the translator there.
+  const tr = t;
+  const rowLabels = (status: string) => ({
+    statusLabel:
+      threadStatusOrFallback(status) === 'open'
+        ? tr('threads.page.row.statusOpen')
+        : tr('threads.page.row.statusArchived'),
+    fromDream: tr('threads.page.row.fromDream'),
+    last: tr('threads.page.row.last'),
+  });
   const inbox = (
       <aside className="bg-surface-sunken flex h-full flex-col">
         {/* THR-099 a-threads list cap: the pinned header and the scroll body
@@ -794,19 +850,23 @@ export function ThreadsPage(): JSX.Element {
                 Direction-A reference and the KB/Audit surfaces. */}
             <div className="min-w-0 flex-1">
               <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
-                {S.headerEyebrow(counts.all, dreamOpenedCount)}
+                {t('threads.page.eyebrow', {
+                  count: counts.all,
+                  total: formatCountFor(locale, counts.all),
+                  dream: formatCountFor(locale, dreamOpenedCount),
+                })}
               </p>
               <h1 className="font-display text-display text-text-primary mt-1 font-medium">
-                {S.pageTitle}
+                {t('threads.page.title')}
               </h1>
             </div>
             <Button
               size="sm"
               onClick={openNew}
-              aria-label="New thread"
-              title="New thread (N)"
+              aria-label={t('threads.page.newThreadAria')}
+              title={t('threads.page.newThreadTitle')}
             >
-              {S.newThread}
+              {t('threads.page.newThread')}
             </Button>
           </div>
           {/* THR-099: segmented All/Open/Archived pills on the LEFT, compact
@@ -821,7 +881,7 @@ export function ThreadsPage(): JSX.Element {
               value={bucket}
               onValueChange={(v) => changeBucket(v as InboxBucket)}
             >
-              <TabsList variant="segmented" aria-label="Status filter">
+              <TabsList variant="segmented" aria-label={t('threads.page.statusFilterAria')}>
                 {INBOX_BUCKETS.map((b) => {
                   const loading =
                     b === 'all'
@@ -831,9 +891,9 @@ export function ThreadsPage(): JSX.Element {
                         : openQuery.isLoading;
                   return (
                     <TabsTrigger key={b} variant="segmented" value={b}>
-                      {BUCKET_LABEL[b]}
+                      {t(BUCKET_LABEL_KEY[b])}
                       <span className="ml-1 text-xs tabular-nums opacity-60">
-                        {loading ? '…' : counts[b]}
+                        {loading ? '…' : formatCountFor(locale, counts[b])}
                       </span>
                     </TabsTrigger>
                   );
@@ -845,15 +905,15 @@ export function ThreadsPage(): JSX.Element {
               type="text"
               value={filter}
               onChange={(e) => changeFilter(e.target.value)}
-              placeholder={S.filterPlaceholder}
+              placeholder={t('threads.page.filterPlaceholder')}
               className="text-caption h-7 w-full shrink-0 px-2 py-1 sm:w-44"
-              aria-label="Filter threads"
+              aria-label={t('threads.page.filterAria')}
             />
           </div>
           </ContentWrap>
         </header>
           {/* THR-209: visible pin-failure banner (optimistic rollback). */}
-          <PinErrorBanner message={pinError} />
+          <PinErrorBanner message={pinError ? t(pinError) : null} />
         {/* Scroll body — same <ContentWrap> cap as the pinned header so the
             list column sits directly under the header at the 1180
             `max-w-content` cap with 26px padding. The flex sizer owns the
@@ -866,8 +926,8 @@ export function ThreadsPage(): JSX.Element {
           {/* Error with retry — §2.5.5 */}
           {bucketError && (
             <div className="space-y-3 p-4 text-center">
-              <p className="text-feedback-danger text-sm">{S.errorTitle}</p>
-              <p className="text-text-muted text-xs">{S.errorBody}</p>
+              <p className="text-feedback-danger text-sm">{t('threads.page.list.errorTitle')}</p>
+              <p className="text-text-muted text-xs">{t('threads.page.list.errorBody')}</p>
               <Button
                 size="sm"
                 variant="outline"
@@ -877,7 +937,7 @@ export function ThreadsPage(): JSX.Element {
                   })
                 }
               >
-                {S.retry}
+                {t('threads.page.retry')}
               </Button>
             </div>
           )}
@@ -885,10 +945,10 @@ export function ThreadsPage(): JSX.Element {
           {/* Empty — calm §2.5.5 */}
           {!bucketLoading && !bucketError && threads.length === 0 && (
             <EmptyState
-              title={S.emptyTitle}
+              title={t('threads.page.list.emptyTitle')}
               body={
                 <span>
-                  {filter ? S.filterEmpty : S.emptyBody}
+                  {filter ? t('threads.page.list.filterEmpty') : t('threads.page.list.emptyBody')}
                 </span>
               }
             />
@@ -904,7 +964,7 @@ export function ThreadsPage(): JSX.Element {
             <div className="overflow-hidden rounded-sm border border-border-default divide-y divide-border-default">
               {pinnedThreads.length > 0 && (
                 <h2 className="text-text-muted px-1 pt-2 pb-1 text-xs font-semibold tracking-wider uppercase">
-                  {S.pinnedSection}
+                  {t('threads.page.list.pinnedSection')}
                 </h2>
               )}
               {pinnedThreads.map((t) => {
@@ -923,18 +983,19 @@ export function ThreadsPage(): JSX.Element {
                     fromDream={!!t.composed_from_dream_id}
                     meta={
                       <span className="whitespace-nowrap tabular-nums">
-                        {relativeStartLabel(t.started_at, nowMs)}
+                        {relativeStartLabel(t.started_at, nowMs, tr)}
                       </span>
                     }
                     href={path}
                     onSelect={() => { rememberRowNavigationScroll(); navigate(path); }}
                     participants={t.participants}
+                    labels={rowLabels(t.status)}
                   />
                 );
               })}
               {pinnedThreads.length > 0 && unpinnedThreads.length > 0 && (
                 <h2 className="text-text-muted px-1 pt-2 pb-1 text-xs font-semibold tracking-wider uppercase">
-                  Threads
+                  {t('threads.page.list.threadsSection')}
                 </h2>
               )}
               {unpinnedThreads.map((t) => {
@@ -953,12 +1014,13 @@ export function ThreadsPage(): JSX.Element {
                     fromDream={!!t.composed_from_dream_id}
                     meta={
                       <span className="whitespace-nowrap tabular-nums">
-                        {relativeStartLabel(t.started_at, nowMs)}
+                        {relativeStartLabel(t.started_at, nowMs, tr)}
                       </span>
                     }
                     href={path}
                     onSelect={() => { rememberRowNavigationScroll(); navigate(path); }}
                     participants={t.participants}
+                    labels={rowLabels(t.status)}
                   />
                 );
               })}
@@ -990,11 +1052,11 @@ export function ThreadsPage(): JSX.Element {
           onRenameDraftChange={setRenameDraft}
           onRenameSave={() => void saveRename()}
           onRenameCancel={cancelRename}
-          renameError={renameError}
+          renameError={renameError ? t(renameError) : null}
           renameSaving={renameMutation.isPending}
           onTogglePin={(pinned) => void togglePin(pinned)}
           pinPending={pinMutation.isPending}
-          pinError={pinError}
+          pinError={pinError ? t(pinError) : null}
           composer={
             <Composer
               agents={composerAgents}
@@ -1002,8 +1064,19 @@ export function ThreadsPage(): JSX.Element {
               orgSlug={slug ?? ''}
               disabled={activeThread.data?.status !== 'open'}
               pending={submissionPending}
-              errorMessage={composerError}
-              helper={S.composerHelper}
+              errorMessage={composerError !== null ? renderThreadError(composerError, t) : null}
+              helper={t('threads.page.composer.helper')}
+              labels={{
+                closedPlaceholder: t('threads.page.composer.closed'),
+                attachFiles: t('threads.page.composer.attach'),
+                textareaAria: t('threads.page.composer.textareaAria'),
+                send: t('threads.page.composer.send'),
+                sendTitle: t('threads.page.composer.sendTitle'),
+                abortReply: t('threads.page.composer.abort'),
+                aborting: t('threads.page.composer.aborting'),
+                removeAttachment: t('threads.page.composer.removeAttachment'),
+                mentionList: t('threads.newThread.mentionList'),
+              }}
               onSend={onSendFollowUp}
               attachments={pendingAttachments}
               onAttachmentsChange={onAttachmentsChange}
@@ -1130,6 +1203,7 @@ function DetailColumn({
   composer,
   slug,
 }: DetailColumnProps): JSX.Element {
+  const { t, locale } = useTranslation();
   const queryClient = useQueryClient();
   // Real produced artifacts aggregated from the transcript (THREADDET-02).
   // Computed before the early returns so the hook order stays stable.
@@ -1153,7 +1227,7 @@ function DetailColumn({
         to={backHref}
         className="text-text-muted hover:text-text-primary text-xs transition-colors"
       >
-        ‹ All threads
+        {t('threads.page.detail.back')}
       </Link>
     </div>
   );
@@ -1168,7 +1242,7 @@ function DetailColumn({
           <div className="bg-bg-raised h-3 w-48 rounded" />
         </div>
         <div className="flex flex-1 items-center justify-center">
-          <p className="text-text-muted text-body">{S.loadingMessages}</p>
+          <p className="text-text-muted text-body">{t('threads.page.detail.loadingMessages')}</p>
         </div>
       </section>
     );
@@ -1180,7 +1254,7 @@ function DetailColumn({
       <section className="flex h-full flex-col">
         {backNav}
         <div className="flex flex-1 flex-col items-center justify-center space-y-3 p-4">
-          <p className="text-feedback-danger text-body">{S.detailError}</p>
+          <p className="text-feedback-danger text-body">{t('threads.page.detail.error')}</p>
           <Button
             size="sm"
             variant="outline"
@@ -1193,7 +1267,7 @@ function DetailColumn({
               });
             }}
           >
-            {S.retry}
+            {t('threads.page.retry')}
           </Button>
         </div>
       </section>
@@ -1232,6 +1306,15 @@ function DetailColumn({
         onRenameCancel={onRenameCancel}
         renameError={renameError}
         renameSaving={renameSaving}
+        labels={{
+          statusOpen: t('threads.page.header.statusOpen'),
+          statusArchived: t('threads.page.header.statusArchived'),
+          noParticipants: t('threads.page.header.noParticipants'),
+          archiveSummary: t('threads.page.header.archiveSummary'),
+          titleInput: t('threads.page.header.titleInput'),
+          save: t('threads.page.header.save'),
+          cancel: t('threads.page.header.cancel'),
+        }}
         actions={
           <div className="flex flex-wrap items-center gap-1">
             {/* Invite moved into the Participants rail (a-thread-detail);
@@ -1243,21 +1326,21 @@ function DetailColumn({
               size="sm"
               onClick={onRenameStart}
               disabled={renaming}
-              title="Rename thread"
+              title={t('threads.page.action.renameTitle')}
             >
-              {S.renameAction}
+              {t('threads.page.action.rename')}
             </Button>
             <Button
               variant="ghost"
               size="sm"
               onClick={() => onTogglePin(!thread.pinned)}
               disabled={pinPending}
-              aria-label={thread.pinned ? S.unpinAction : S.pinAction}
-              title={thread.pinned ? S.unpinAction : S.pinAction}
+              aria-label={thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
+              title={thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
             >
-              {thread.pinned ? S.unpinAction : S.pinAction}
+              {thread.pinned ? t('threads.page.action.unpin') : t('threads.page.action.pin')}
             </Button>
-            <Button variant="ghost" size="sm" onClick={onArchive} disabled={!open} title="Archive (A)">Archive</Button>
+            <Button variant="ghost" size="sm" onClick={onArchive} disabled={!open} title={t('threads.page.action.archiveTitle')}>{t('threads.page.action.archive')}</Button>
             {thread.status === 'archived' && <ResumeButton threadId={thread.thread_id} />}
           </div>
         }
@@ -1282,14 +1365,14 @@ function DetailColumn({
         {/* Properties rail — 244px wide, Direction-A Pasture. Structured as
             Participants (avatars) · properties · Artifacts (THREADDET-02). */}
         <aside
-          aria-label="Thread properties"
+          aria-label={t('threads.page.rail.aria')}
           className="border-border-default bg-surface-sunken w-rail flex shrink-0 flex-col gap-3 overflow-auto border-l p-4"
         >
           {/* Participants — LED + mono name + latest-response status (THR-061
               a-thread-detail .prow). Status is derived from responder_status
               (honest); founder is labelled by role. Remove ✕ preserved. */}
           <div>
-            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Participants</h3>
+            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.participants')}</h3>
             {thread.participants.length > 0 ? (
               <ul className="space-y-0.5">
                 {thread.participants.map((p) => {
@@ -1298,8 +1381,13 @@ function DetailColumn({
                   // founder is the viewer, shown as "you" with a role label.
                   const respStatus = statusByAgent.get(p) ?? null;
                   const led = participantLed(p, respStatus);
-                  const statusLabel = p === 'founder' ? 'founder' : respStatus;
-                  const displayName = p === 'founder' ? 'you' : p;
+                  const statusLabel =
+                    p === 'founder'
+                      ? t('threads.page.rail.founderRole')
+                      : respStatus
+                        ? responderStatusLabel(respStatus, t)
+                        : null;
+                  const displayName = p === 'founder' ? t('threads.page.rail.you') : p;
                   return (
                     <li key={p} className="flex items-center gap-2 py-1">
                       <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${led}`} />
@@ -1309,8 +1397,8 @@ function DetailColumn({
                         {open && p !== 'founder' && (
                           <button
                             type="button"
-                            aria-label={`Remove ${p}`}
-                            title={`Remove ${p}`}
+                            aria-label={t('threads.page.rail.removeParticipant', { name: p })}
+                            title={t('threads.page.rail.removeParticipant', { name: p })}
                             onClick={() => onRemoveParticipant(p)}
                             className="text-text-muted hover:text-feedback-danger rounded px-1 text-xs leading-none transition-colors"
                           >
@@ -1323,7 +1411,7 @@ function DetailColumn({
                 })}
               </ul>
             ) : (
-              <p className="text-text-muted text-xs">none</p>
+              <p className="text-text-muted text-xs">{t('threads.page.rail.none')}</p>
             )}
             {/* Invite participant — moved from the header into the rail to
                 match a-thread-detail. Open-thread only; opens the InviteDialog. */}
@@ -1331,14 +1419,14 @@ function DetailColumn({
               <button
                 type="button"
                 onClick={onInvite}
-                title="Invite participant (I)"
+                title={t('threads.page.rail.inviteTitle')}
                 className="border-border-default text-text-secondary hover:bg-surface-raised mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-xs transition-colors"
               >
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                   <circle cx="9" cy="8" r="3" />
                   <path d="M3.5 20a5.5 5.5 0 0110 0M18 8v6M15 11h6" />
                 </svg>
-                Invite participant
+                {t('threads.page.rail.invite')}
               </button>
             )}
           </div>
@@ -1350,9 +1438,9 @@ function DetailColumn({
               transcript tail mirrors this same list, and the per-message
               responder strips keep terminal history. */}
           {replyDelivery.length > 0 && (
-            <div aria-label="Reply delivery">
+            <div aria-label={t('threads.page.rail.replyDelivery')}>
               <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">
-                Reply delivery
+                {t('threads.page.rail.replyDelivery')}
               </h3>
               <ReplyDeliveryStrip entries={replyDelivery} nowMs={nowMs} />
             </div>
@@ -1373,15 +1461,15 @@ function DetailColumn({
               remains a product question flagged in the PR. */}
           <div>
             <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">
-              Linked tasks
+              {t('threads.page.rail.linkedTasks')}
               {threadTasks.data && threadTasks.data.length > 0 && (
-                <span className="text-text-disabled ml-1 tabular-nums normal-case">({threadTasks.data.length})</span>
+                <span className="text-text-disabled ml-1 tabular-nums normal-case">({formatCountFor(locale, threadTasks.data.length)})</span>
               )}
             </h3>
             {threadTasks.isLoading ? (
-              <p className="text-text-muted text-xs">Loading…</p>
+              <p className="text-text-muted text-xs">{t('threads.page.rail.tasksLoading')}</p>
             ) : threadTasks.isError ? (
-              <p className="text-feedback-danger text-xs">Couldn’t load tasks</p>
+              <p className="text-feedback-danger text-xs">{t('threads.page.rail.tasksError')}</p>
             ) : threadTasks.data && threadTasks.data.length > 0 ? (
               <ul className="flex max-h-24 flex-col gap-1.5 overflow-y-auto pr-1">
                 {[...threadTasks.data]
@@ -1415,7 +1503,7 @@ function DetailColumn({
                   ))}
               </ul>
             ) : (
-              <p className="text-text-muted text-xs">No tasks dispatched from this thread yet</p>
+              <p className="text-text-muted text-xs">{t('threads.page.rail.tasksEmpty')}</p>
             )}
           </div>
 
@@ -1427,24 +1515,24 @@ function DetailColumn({
               on main, so no number is invented. Status is shown in the header
               pill, so it is not duplicated here. */}
           <div>
-            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">This thread</h3>
+            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.thisThread')}</h3>
             <dl className="space-y-1">
               {typeof freshTokens.data === 'number' && (
                 <div className="flex items-center justify-between gap-2">
-                  <dt className="text-text-muted text-xs">Fresh tokens</dt>
+                  <dt className="text-text-muted text-xs">{t('threads.page.rail.freshTokens')}</dt>
                   <dd className="text-text-secondary text-xs">
-                    <StatValue value={freshTokens.data} align="inline" />
+                    <StatValue value={freshTokens.data} align="inline" locale={locale} />
                   </dd>
                 </div>
               )}
               <div className="flex items-center justify-between gap-2">
-                <dt className="text-text-muted text-xs">Cost</dt>
-                <dd className="text-text-disabled text-xs">not metered</dd>
+                <dt className="text-text-muted text-xs">{t('threads.page.rail.cost')}</dt>
+                <dd className="text-text-disabled text-xs">{t('threads.page.rail.notMetered')}</dd>
               </div>
               <div className="flex items-center justify-between gap-2">
-                <dt className="text-text-muted text-xs">Opened</dt>
+                <dt className="text-text-muted text-xs">{t('threads.page.rail.opened')}</dt>
                 <dd className="text-text-secondary text-xs">
-                  {new Date(thread.started_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                  {new Date(thread.started_at).toLocaleDateString(locale, { month: 'short', day: 'numeric' })}
                 </dd>
               </div>
             </dl>
@@ -1455,7 +1543,7 @@ function DetailColumn({
               text entries (the transcript bubbles carry the download links). */}
           {artifacts.length > 0 && (
             <div>
-              <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Artifacts</h3>
+              <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.artifacts')}</h3>
               <ul className="space-y-1">
                 {artifacts.map((a) => (
                   <li
@@ -1472,17 +1560,17 @@ function DetailColumn({
 
           {/* Thread ID */}
           <div>
-            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">ID</h3>
+            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.id')}</h3>
             <p className="text-text-secondary font-mono text-xs">{thread.thread_id}</p>
           </div>
 
           {/* Dream marker */}
           {isDreamOriginated && (
             <div>
-              <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Origin</h3>
+              <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.origin')}</h3>
               <span className="bg-accent-soft text-accent-text inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold">
                 <CrescentMoonBadge className="h-3 w-3" />
-                dream
+                {t('threads.page.rail.dream')}
               </span>
             </div>
           )}
@@ -1490,7 +1578,7 @@ function DetailColumn({
           {/* Archive summary */}
           {thread.summary && (
             <div>
-              <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Summary</h3>
+              <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.summary')}</h3>
               <p className="text-text-secondary text-xs leading-relaxed">{thread.summary}</p>
             </div>
           )}
@@ -1516,6 +1604,7 @@ interface TranscriptProps {
 }
 
 function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, replyDelivery }: TranscriptProps): JSX.Element {
+  const { t, locale } = useTranslation();
   const endRef = useRef<HTMLDivElement>(null);
 
   // Live pair-level obligations from the STORE projection (queued/running).
@@ -1551,6 +1640,11 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
     '|' +
     inferredInFlight.map((s) => `${s.agent_name}:${s.purpose}:${s.status}`).join(',');
 
+  const typingAria = (agent: string, working: boolean) =>
+    working
+      ? t('threads.page.typing.replyingAria', { agent })
+      : t('threads.page.typing.queuedAria', { agent });
+
   useEffect(() => {
     if (typeof endRef.current?.scrollIntoView === 'function') {
       endRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -1561,7 +1655,7 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
   if (loading && messages.length === 0) {
     return (
       <div className="flex h-full items-center justify-center">
-        <p className="text-text-muted text-caption">{S.loadingMessages}</p>
+        <p className="text-text-muted text-caption">{t('threads.page.detail.loadingMessages')}</p>
       </div>
     );
   }
@@ -1569,7 +1663,7 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
   if (!loading && messages.length === 0) {
     return (
       <div className="flex h-full items-center justify-center">
-        <p className="text-text-muted text-caption">{S.noMessages}</p>
+        <p className="text-text-muted text-caption">{t('threads.page.detail.noMessages')}</p>
       </div>
     );
   }
@@ -1612,6 +1706,11 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
                     body={m.body_markdown}
                     declineReason={m.decline_reason}
                     attachments={m.attachments}
+                    labels={{
+                      declined: t('threads.page.message.declined'),
+                      systemEvent: t('threads.page.system.event'),
+                    }}
+                    formatTimestamp={(iso) => localeTimestamp(locale, iso)}
                     onAttachmentDownload={slug && threadId ? (attachment) => {
                       if (attachment.thread_attachment_id) {
                         artifactsApi.downloadThreadAttachment(slug, threadId, attachment.thread_attachment_id, attachment.display_name);
@@ -1644,7 +1743,8 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
               // Honest store-projected caption: queued carries the coalesced
               // count + inclusive range (never an active-subprocess claim),
               // running carries the claimed immutable range.
-              caption={replyDeliveryCaption(e, nowMs)}
+              caption={replyDeliveryCaption(e, t, nowMs)}
+              ariaLabel={typingAria(e.agent_name, e.state === 'running')}
               // "Abort reply" moved INTO the composer input pill (THR-099 Phase A,
               // founder seq57). The generic `trailing` slot is intentionally left
               // unused here — no abort control renders beside the replying row.
@@ -1664,6 +1764,14 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
               status={s.status as 'queued' | 'working'}
               startedAt={s.started_at}
               nowMs={nowMs}
+              caption={
+                s.status === 'working'
+                  ? t('threads.page.typing.replying', {
+                      elapsed: formatElapsed(s.started_at, nowMs ?? Date.now()),
+                    }).trimEnd()
+                  : t('threads.page.typing.queued')
+              }
+              ariaLabel={typingAria(s.agent_name, s.status === 'working')}
               // "Abort reply" moved INTO the composer input pill (THR-099 Phase A,
               // founder seq57). The generic `trailing` slot is intentionally left
               // unused here — no abort control renders beside the replying row.
@@ -1687,9 +1795,10 @@ interface SystemDividerProps {
 }
 
 function SystemDivider({ timestamp, systemPayload, slug }: SystemDividerProps): JSX.Element {
-  const description = describeSystem(systemPayload, slug);
+  const { t, render, locale } = useTranslation();
+  const description = describeSystem(systemPayload, slug, t, render);
   return (
-    <div className="my-1 w-full min-w-0" title={new Date(timestamp).toLocaleString()}>
+    <div className="my-1 w-full min-w-0" title={localeTimestamp(locale, timestamp)}>
       <div aria-hidden="true" className="bg-border-subtle mb-2 h-px w-full" />
       <div className="text-text-muted text-mono-sm break-words font-mono">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mr-1.5 inline-block align-text-bottom" aria-hidden="true">
@@ -1698,7 +1807,7 @@ function SystemDivider({ timestamp, systemPayload, slug }: SystemDividerProps): 
           <path d="M22 21v-2a4 4 0 00-3-3.9" />
         </svg>
         <span className="text-text-secondary whitespace-pre-wrap">{description}</span>{' '}
-        <span className="text-text-disabled">· {S.systemEventLabel} event · broadcast to all</span>
+        <span className="text-text-disabled">{t('threads.page.system.suffix')}</span>
       </div>
     </div>
   );
@@ -1721,75 +1830,75 @@ function messageVariant(m: ThreadMessage): MessageVariant {
 /*  System event descriptions                                          */
 /* ------------------------------------------------------------------ */
 
-function describeSystem(payload: Record<string, unknown> | null, slug?: string): React.ReactNode {
-  if (!payload) return 'system event';
+function describeSystem(
+  payload: Record<string, unknown> | null,
+  slug: string | undefined,
+  t: Translate,
+  render: RenderTranslated,
+): React.ReactNode {
+  // Product event phrasing is translated; payload values (agent names, task
+  // ids, summaries, reasons, unknown tags / raw JSON) render verbatim.
+  if (!payload) return t('threads.page.system.event');
   const tag = String(payload.kind_tag ?? payload.event ?? '');
+  const taskLinkFor = (taskId: string): React.ReactNode =>
+    slug && taskId
+      ? <Link to={`/orgs/${slug}/tasks/${taskId}`} className="underline">{taskId}</Link>
+      : taskId;
   switch (tag) {
     case 'invited':
-      return `invited ${payload.agent}`;
+      return t('threads.page.system.invited', { agent: String(payload.agent) });
     case 'participant_added':
-      return `added ${payload.agent_name}`;
+      return t('threads.page.system.participantAdded', { agent: String(payload.agent_name) });
     case 'participant_removed':
-      return `removed ${payload.agent_name}`;
+      return t('threads.page.system.participantRemoved', { agent: String(payload.agent_name) });
     case 'archive_requested':
-      return 'archive requested';
+      return t('threads.page.system.archiveRequested');
     case 'archived':
-      return 'archived';
+      return t('threads.page.system.archived');
     case 'resumed':
-      return 'resumed';
+      return t('threads.page.system.resumed');
     case 'task_dispatched': {
       const taskId = String(payload.task_id ?? '');
-      const taskLink = slug && taskId
-        ? <Link to={`/orgs/${slug}/tasks/${taskId}`} className="underline">{taskId}</Link>
-        : taskId;
-      return <>dispatched {taskLink}</>;
+      return render('threads.page.system.taskDispatched', { task: taskLinkFor(taskId) });
     }
     case 'task_completed': {
       const taskId = String(payload.task_id ?? '');
-      const taskLink = slug && taskId
-        ? <Link to={`/orgs/${slug}/tasks/${taskId}`} className="underline">{taskId}</Link>
-        : taskId;
       const summary = payload.final_output_summary
         ? String(payload.final_output_summary)
         : null;
       return (
         <>
-          task {taskLink} completed{summary ? ` · ${summary}` : ''}
+          {render('threads.page.system.taskCompleted', { task: taskLinkFor(taskId) })}
+          {summary ? ` · ${summary}` : ''}
         </>
       );
     }
     case 'task_failed': {
       const taskId = String(payload.task_id ?? '');
-      const taskLink = slug && taskId
-        ? <Link to={`/orgs/${slug}/tasks/${taskId}`} className="underline">{taskId}</Link>
-        : taskId;
-      const cancelledSuffix = payload.cancelled ? ' · founder-cancelled' : '';
+      const cancelledSuffix = payload.cancelled ? t('threads.page.system.founderCancelled') : '';
       const revisitTaskId = payload.revisit_task_id ? String(payload.revisit_task_id) : null;
       const chainLength = typeof payload.revisit_chain_length === 'number' ? payload.revisit_chain_length : 1;
       let revisitSuffix: React.ReactNode = null;
       if (revisitTaskId) {
-        const successorLink = slug
-          ? <Link to={`/orgs/${slug}/tasks/${revisitTaskId}`} className="underline">{revisitTaskId}</Link>
-          : revisitTaskId;
-        revisitSuffix = <> · revisiting as {successorLink}</>;
+        revisitSuffix = render('threads.page.system.revisiting', { task: taskLinkFor(revisitTaskId) });
       } else if (chainLength > 1) {
-        revisitSuffix = ' · no further revisits';
+        revisitSuffix = t('threads.page.system.noFurtherRevisits');
       }
       return (
         <>
-          task {taskLink} failed{cancelledSuffix}{revisitSuffix}
+          {render('threads.page.system.taskFailed', { task: taskLinkFor(taskId) })}
+          {cancelledSuffix}
+          {revisitSuffix}
         </>
       );
     }
     case 'task_escalated': {
       const taskId = String(payload.task_id ?? '');
-      const taskLink = slug && taskId
-        ? <Link to={`/orgs/${slug}/tasks/${taskId}`} className="underline">{taskId}</Link>
-        : taskId;
       const reason = payload.reason ? String(payload.reason) : null;
       return (
         <>
-          task {taskLink} escalated{reason ? ` · ${reason}` : ''}
+          {render('threads.page.system.taskEscalated', { task: taskLinkFor(taskId) })}
+          {reason ? ` · ${reason}` : ''}
         </>
       );
     }
