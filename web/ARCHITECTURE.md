@@ -92,7 +92,8 @@ stays English until W4) and built the client-only Settings ▸ Preferences
 language selector (`sections/PreferencesSection.tsx`). `SettingsPage` mounts the
 `preferences` route OUTSIDE the `useSettings` loading/error/data gate, so it
 works while the settings API is loading, failing or empty; the other panels
-keep that gate. The selector is closed in production until W3:
+keep that gate. The selector is closed in production until W3b (W3a translates
+Dashboard/Threads but does not open it):
 `languagePreferenceGate.ts` mounts it only when the build sets
 `VITE_ENABLE_I18N_PREFERENCES=true` (tests use `vi.stubEnv`; the W2c browser
 harness builds a separate preview dist), ordinary builds tree-shake it out, and

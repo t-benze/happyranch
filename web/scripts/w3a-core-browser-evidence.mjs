@@ -25,7 +25,8 @@
  *       preference under a Chinese navigator renders English;
  *   D   Dashboard loading / error→Retry / first-run empty / populated in en and
  *       zh-CN; an en→zh-CN→en and zh-CN→en→zh-CN switch keeps tagged nodes,
- *       entity/ID bytes and issues no mutation or settings request;
+ *       entity/ID and raw audit event_kind bytes and issues no mutation or
+ *       settings request;
  *   L   Threads list loading / error→Retry / empty / filter-empty / populated
  *       (pinned section, selection) in both locales;
  *   T   thread detail: authored title, Markdown, names, IDs, filename, href
@@ -694,6 +695,7 @@ async function main() {
         check(`D ${first}→${target} "Today" heading node retained + retranslated`, await evaluate(page, `(() => { const r = window.__hrRefs.today.deref(); return Boolean(r && r.isConnected && r.textContent.trim() === ${JSON.stringify(tr(target, 'dashboard.today.title'))}); })()`), true);
         check(`D ${first}→${target} <main> node retained`, await evaluate(page, PRED.identity('main')), true);
         check(`D ${first}→${target} entity/ID bytes present`, await evaluate(page, `[${entities.map((e) => JSON.stringify(e)).join(',')}].every((e) => document.body.textContent.includes(e))`), true);
+        check(`D ${first}→${target} raw audit event_kind leaf byte-exact (task_completed, never spaced)`, await evaluate(page, `(() => { const leaves = [...document.querySelectorAll('main li span')].filter((e) => e.children.length === 0).map((e) => e.textContent); return leaves.includes('task_completed') && leaves.includes('task_failed') && !leaves.includes('task completed'); })()`), true);
         check(`D ${first}→${target} zero /api requests in switch window`, zeroApiPredicate(delta), true);
         current.switchWindows = [...(current.switchWindows || []), { label: `${first}→${target}`, delta }];
       }

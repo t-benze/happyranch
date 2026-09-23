@@ -124,7 +124,7 @@ export function localizedElapsed(
 }
 
 /** Bounded failure categories with product labels. An unrecognized category
- *  keeps the legacy humanized raw value (underscores → spaces) verbatim. */
+ *  is a raw machine value and is shown byte-for-byte (underscores kept). */
 const FAILURE_CATEGORY_KEYS: Record<string, MessageKey> = {
   no_callback: 'threads.delivery.category.noCallback',
   no_callback_after_reprompt: 'threads.delivery.category.noCallbackAfterReprompt',
@@ -159,7 +159,7 @@ export function replyDeliveryCaption(
       const raw = e.current_failure_category;
       if (!raw) return t('threads.delivery.retry', { range });
       const key = FAILURE_CATEGORY_KEYS[raw];
-      const category = key ? t(key) : raw.replaceAll('_', ' ');
+      const category = key ? t(key) : raw;
       return t('threads.delivery.retryCategory', { range, category });
     }
   }

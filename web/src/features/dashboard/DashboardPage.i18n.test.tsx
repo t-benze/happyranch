@@ -288,6 +288,45 @@ describe('DashboardPage i18n (W3a)', () => {
     expect(screen.getByRole('button', { name: '继续并解决' })).toBeInTheDocument();
   });
 
+  // Raw audit machine value: an underscore-bearing event_kind sentinel must be
+  // rendered byte-for-byte (never `task completed`) in both locales and across
+  // both switch directions, while the surrounding product copy retranslates.
+  test.each([
+    ['en', 'zh-CN'],
+    ['zh-CN', 'en'],
+  ] as const)('%s → %s → back keeps the raw audit event_kind byte-exact with no request', async (from, to) => {
+    const RAW_KIND = 'task_completed';
+    const s = populatedSummary();
+    s.recent_activity = [{ ...s.recent_activity[0], event_kind: RAW_KIND }];
+    server.use(http.get(SUMMARY_PATH, () => HttpResponse.json(s)));
+    const ledger = recordRequests();
+    renderDashboard(from);
+
+    const title = { en: 'Recent activity', 'zh-CN': '近期动态' } as const;
+    const main = await screen.findByTestId('dashboard-main');
+    await within(main).findByText(title[from]);
+    const rail = screen.getByTestId('dashboard-rail');
+    await within(rail).findByText(
+      from === 'en' ? 'No token usage in window.' : '此时间窗口内没有 Token 用量。',
+    );
+    const kind = within(main).getByText(RAW_KIND);
+    expect(kind.textContent).toBe(RAW_KIND);
+    expect(within(main).queryByText('task completed')).not.toBeInTheDocument();
+
+    const before = ledger.length;
+    act(() => screen.getByTestId(`test-set-locale-${to}`).click());
+    await waitFor(() => expect(within(main).getByText(title[to])).toBeInTheDocument());
+    expect(within(main).getByText(RAW_KIND)).toBe(kind);
+    expect(kind.textContent).toBe(RAW_KIND);
+    expect(within(main).queryByText('task completed')).not.toBeInTheDocument();
+
+    act(() => screen.getByTestId(`test-set-locale-${from}`).click());
+    await waitFor(() => expect(within(main).getByText(title[from])).toBeInTheDocument());
+    expect(within(main).getByText(RAW_KIND)).toBe(kind);
+    expect(kind.textContent).toBe(RAW_KIND);
+    expect(ledger.slice(before)).toEqual([]);
+  });
+
   test('en → zh-CN → en retranslates in place with verbatim entities and no request', async () => {
     server.use(http.get(SUMMARY_PATH, () => HttpResponse.json(populatedSummary())));
     const ledger = recordRequests();

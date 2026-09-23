@@ -323,9 +323,8 @@ export function DashboardPage(): JSX.Element {
                       </span>
                       {r.verdict && <ActivityVerdictPill verdict={r.verdict} />}
                       <span className="text-text-primary">{r.who}</span>
-                      <span className="text-text-muted">
-                        {r.event_kind.replace(/_/g, ' ')}
-                      </span>
+                      {/* Raw audit machine value — rendered byte-for-byte. */}
+                      <span className="text-text-muted">{r.event_kind}</span>
                       {r._thread_dream_id && (
                         <CrescentMoonBadge
                           className="h-3 w-3"

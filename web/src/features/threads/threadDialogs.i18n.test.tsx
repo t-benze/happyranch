@@ -328,7 +328,7 @@ describe('strips + ResumeButton in zh-CN', () => {
     expect(screen.getByText('已合并 3 条消息 · 消息 1–4')).toBeInTheDocument();
     expect(screen.getByText('等待当前交流结束 · 消息 9')).toBeInTheDocument();
     expect(screen.getByText('需要重试 · 消息 2–5 · 基础设施故障')).toBeInTheDocument();
-    expect(screen.getByText('需要重试 · 消息 1–4 · brand new cause')).toBeInTheDocument();
+    expect(screen.getByText('需要重试 · 消息 1–4 · brand_new_cause')).toBeInTheDocument();
     for (const name of ['frontend_engineer', 'qa_engineer', 'consultant_head', 'support_lead', 'ops_x']) {
       expect(screen.getByText(name).textContent).toBe(name);
     }
@@ -336,7 +336,47 @@ describe('strips + ResumeButton in zh-CN', () => {
 
     await switchTo('en');
     expect(screen.getByText('replying 1m · messages 1–3')).toBeInTheDocument();
-    expect(screen.getByText('retry required · messages 1–4 · brand new cause')).toBeInTheDocument();
+    expect(screen.getByText('retry required · messages 1–4 · brand_new_cause')).toBeInTheDocument();
+  });
+
+  // Causal pair for the raw-category contract: the same entries are switched in
+  // both directions. The unknown underscore-bearing sentinel must survive every
+  // switch byte-for-byte (never `brand new cause`), while the known closed
+  // category re-translates in place with no request (the strip has no mutation).
+  const RAW_CATEGORY = 'brand_new_cause';
+  const rawEntries = () => [
+    delivery({ agent_name: 'support_lead', state: 'retry_required', from_seq: 2, through_seq: 5, current_failure_category: 'infra_fail' }),
+    delivery({ agent_name: 'ops_x', state: 'retry_required',
+      current_failure_category: RAW_CATEGORY as unknown as ReplyDeliveryEntry['current_failure_category'] }),
+  ];
+  const EN = { known: 'retry required · messages 2–5 · infra fail', raw: `retry required · messages 1–4 · ${RAW_CATEGORY}` };
+  const ZH = { known: '需要重试 · 消息 2–5 · 基础设施故障', raw: `需要重试 · 消息 1–4 · ${RAW_CATEGORY}` };
+
+  test.each([
+    ['en', 'zh-CN', EN, ZH],
+    ['zh-CN', 'en', ZH, EN],
+  ] as const)('ReplyDeliveryStrip %s → %s → back: raw category bytes survive, known category retranslates, no request', async (from, to, a, b) => {
+    const ledger = recordRequests();
+    mount(() => <ReplyDeliveryStrip nowMs={nowMs} entries={rawEntries()} />, from);
+    const rawNode = screen.getByText(a.raw);
+    expect(rawNode.textContent).toBe(a.raw);
+    expect(screen.getByText(a.known)).toBeInTheDocument();
+    const items = screen.getAllByRole('listitem');
+
+    await switchTo(to);
+    expect(screen.getByText(b.raw).textContent).toBe(b.raw);
+    expect(screen.getByText(b.known)).toBeInTheDocument();
+    expect(screen.queryByText(a.known)).not.toBeInTheDocument();
+    expect(screen.queryByText(/brand new cause/)).not.toBeInTheDocument();
+
+    await switchTo(from);
+    expect(screen.getByText(a.raw).textContent).toBe(a.raw);
+    expect(screen.getByText(a.known)).toBeInTheDocument();
+    expect(screen.queryByText(/brand new cause/)).not.toBeInTheDocument();
+    // Same rows (no remount) and zero requests across both switch windows.
+    expect(screen.getAllByRole('listitem')).toEqual(items);
+    expect(items.every((n) => n.isConnected)).toBe(true);
+    expect(ledger).toEqual([]);
   });
 
   test('ResponderStatusStrip localizes labels; agent names and rc stay raw', () => {

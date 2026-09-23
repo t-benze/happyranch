@@ -103,7 +103,8 @@ Preferences** language selector (`sections/PreferencesSection.tsx`: English /
 splits the Settings shell so the `preferences` route renders OUTSIDE the
 `useSettings` loading/error/data gate; every other panel keeps that gate
 unchanged. Choosing a language never writes org settings or issues any API
-request. **The selector is closed in production until W3:**
+request. **The selector is closed in production until W3b** (W3a translates
+Dashboard/Threads but does not open it):
 `src/features/settings/languagePreferenceGate.ts` mounts the sub-nav entry and
 route only when the build sets `VITE_ENABLE_I18N_PREFERENCES=true` (the
 existing `VITE_ENABLE_PROTOTYPES`/`VITE_ENABLE_KB_COMPOSE` build-flag pattern).
@@ -115,7 +116,7 @@ separate preview dist with the flag and checks that the ordinary dist excludes
 the component. It also proves that state-held Settings messages follow a locale
 switch (the Organization Work Hours banner re-translates in place) while raw
 daemon diagnostics stay verbatim, with causal negatives for a pre-translated
-banner (`--defect-dist`) and a translated diagnostic. There is no W3 secondary-pages disclosure yet, no browser/system
+banner (`--defect-dist`) and a translated diagnostic. There is no W3b secondary-pages disclosure yet, no browser/system
 language defaulting (unset/invalid stays English), and no preview is live.
 
 **W3a** translated the mounted Dashboard and Threads route families (`features/dashboard/**`, `features/threads/**` list/detail/composer/strips/dialogs and the shared `shared/threads/NewThreadDialog.tsx` it mounts); pure design-system patterns (Composer, ThreadHeader, InboxRow, StatValue, CrescentMoonBadge, RecipientsInput, MentionTextarea, …) take optional localized label props with English defaults, so their other callers are unchanged. Thread errors are held as locale-neutral `ThreadErrorView` descriptors (`lib/threadErrors.ts`: mapped catalog key/params, or `raw` text rendered byte-for-byte even when empty or equal to a catalog string) and rendered at render time. Authored thread titles, message Markdown, names, IDs, filenames/hrefs, raw delivery payloads and machine values stay verbatim; a locale switch keeps drafts, attachments, selection, open dialogs and focus and issues no request. W3a browser evidence runs `scripts/w3a-core-browser-evidence.mjs` against the ORDINARY dist (storage-event switching, no in-app instrumentation) with a Preferences-gate positive control dist. **W3b** (Tasks/Jobs plus the public opt-in preview) remains open, so the Preferences gate stays closed and an unset preference still renders English.

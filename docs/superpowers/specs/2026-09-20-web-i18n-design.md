@@ -52,7 +52,7 @@ byte-for-byte verbatim; mapped categories re-translate on a switch with no
 resubmission. Neither phase
 translates the assistant dock body (W4) or any route family (W3/W4); neither
 adds a public language selector, and an unset preference still renders English
-until W3.
+until W3b (W3a, which translates Dashboard/Threads, does not change this).
 
 Delivery status at W1 (keep separate from later phases):
 
@@ -64,7 +64,7 @@ Delivery status at W1 (keep separate from later phases):
 | Injectable locale preference adapter (native seam) | shipped (browser + test doubles only) |
 | Mounted-route/namespace coverage manifest | shipped |
 | Foundation browser/Storybook evidence (isolated, non-product) | shipped — `web/scripts/i18n-browser-evidence.mjs` + `I18nFoundation.stories.tsx` + an `I18N_BROWSER_EVIDENCE`-gated test-only first-commit consumer |
-| Explicit-locale display formatters | shipped (interfaces only; no caller migration) |
+| Explicit-locale display formatters | shipped (W1 interfaces; display callers migrated in the translated shell/onboarding and, in W3a, Dashboard/Threads) |
 | Mounted shell translation (W2a: AppBar/Sidebar/root/not-found/ErrorBoundary/AddOrgDialog/help/palette) | **shipped — W2a** |
 | CJK-capable system font fallbacks (no download) | **shipped — W2a** |
 | Onboarding translation (W2b: OnboardingPage/ConnectRuntimeStep/shared ConnectFlow) | **shipped — W2b** |
@@ -100,7 +100,7 @@ thread rename/pin invariants are untouched. The Preferences gate stays closed,
 there is no secondary-pages disclosure and unset stays English: W3b owns
 Tasks/Jobs plus the public opt-in preview.
 
-**W2c** translates the Settings surface and prepares the W3
+**W2c** translates the Settings surface and prepares the W3b
 selector:
 
 - `SettingsPage` header/meta, sub-nav heading and labels, API loading/error
@@ -137,7 +137,7 @@ selector:
   `/orgs/:slug/settings/preferences` URL is replace-redirected to Assistant by
   the existing catch-all, and the ordinary production bundle contains no
   Preferences component (only catalog strings). Vitest activates it with
-  `vi.stubEnv`; the W2c harness builds a separate preview dist. W3 removes the
+  `vi.stubEnv`; the W2c harness builds a separate preview dist. W3b removes the
   gate after its acceptance and adds the secondary-pages disclosure; W2c adds
   neither the disclosure nor any browser/system-language defaulting.
 
@@ -434,10 +434,10 @@ raw-`Error.message` and prompt-byte negatives deterministically.
 
 Frontend readiness map (actual evidence):
 
-| Readiness item | W1 | W2a/W2b |
+| Readiness item | W1 | W2a/W2b/W2c/W3a |
 | --- | --- | --- |
-| Route-wide Chinese rendering | N/A — no route translated in W1 (manifest marks every namespace `english-only`) | mounted shell + onboarding only; Settings/Preferences, route families and the assistant dock body still `english-only` |
-| Public language selector | N/A — W3 | N/A — W3 (still absent) |
+| Route-wide Chinese rendering | N/A — no route translated in W1 (manifest marks every namespace `english-only`) | mounted shell + onboarding (W2a/W2b), Settings (W2c) and Dashboard/Threads (W3a); Tasks/Jobs (W3b), other route families and the assistant dock body (W4) still `english-only` |
+| Public language selector | N/A — W3b | N/A — W3b (W2c Preferences selector built but production-gated; still absent from ordinary builds) |
 | Browser two-tab live evidence | covered by unit/integration storage-event tests AND captured same-origin two-tab change/delete/clear/no-echo browser evidence at the head SHA | W1 behavior retained (no native adapter added) |
 | Bilingual foundation browser capture | captured: real-browser story screenshots for saved-en-in-Chinese-env, saved `zh-CN` (CJK font glyphs) and preview-unset English | W2a/W2b add real-app shell/dialog and onboarding captures across en/zh, 1440x900/390x844 and light/dark (exact count bound to the pushed `receipt.json`) |
 | Production startup first-paint | captured: real `main.tsx`/`createBrowserRouter` startup with synthetic API stub; first COMMITTED bilingual consumer text and `<html lang>` asserted together | W2a reads the ACTUAL first committed Sidebar/AppBar DOM (frozen on first connection, never overwritten by a later correction) with `<html lang>` and the real navigator read-back; a causal `I18N_W2A_EVIDENCE=negative` control proves the same predicate rejects an initially-wrong shell |
@@ -454,7 +454,8 @@ draft migration, native chrome, CLI/manual translation, route-family
 translation campaign beyond W3a (W3b Tasks/Jobs and W4 remain open), preview
 enablement or public selector (W2c's Preferences selector is built but
 production-gated), deployment, or caller migration of display
-formatters beyond the translated shell and onboarding. Existing query/data/auth
+formatters beyond the translated shell, onboarding and the W3a Dashboard/Threads
+route families. Existing query/data/auth
 bootstrap
 semantics are preserved; locale switching issues no `PUT /settings/org` and no
 `POST /api/v1/orgs`, and the command palette's cache-only switch issues no
