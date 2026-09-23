@@ -33,18 +33,25 @@ import {
 } from '@/hooks/runtime-executors';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from '@/hooks/i18n';
+import type { MessageKey } from '@/lib/i18n';
 
-/** Extract a human-readable message from an ApiError or any thrown value. */
-function errMessage(err: unknown, fallback: string): string {
+/** A failure message held in state: a raw daemon/API diagnostic shown
+ *  byte-for-byte, or a product-owned fallback held as a catalog key and
+ *  translated at render so a visible message follows a locale switch. */
+type HeldError = { raw: string } | { key: MessageKey };
+
+/** Extract the raw diagnostic from an ApiError or any thrown Error; a thrown
+ *  value that carries none falls back to the product-owned `fallback` key. */
+function errMessage(err: unknown, fallback: MessageKey): HeldError {
   if (err instanceof ApiError) {
-    if (typeof err.detail === 'string') return err.detail;
+    if (typeof err.detail === 'string') return { raw: err.detail };
     if (err.detail && typeof err.detail === 'object' && 'msg' in err.detail) {
-      return String((err.detail as { msg: unknown }).msg);
+      return { raw: String((err.detail as { msg: unknown }).msg) };
     }
-    return err.message;
+    return { raw: err.message };
   }
-  if (err instanceof Error) return err.message;
-  return fallback;
+  if (err instanceof Error) return { raw: err.message };
+  return { key: fallback };
 }
 
 /** Extract the stable adapter id from a profile that backs a custom CLI. */
@@ -100,7 +107,7 @@ function ProfileRow({
 }): JSX.Element {
   const { t, render } = useTranslation();
   const [confirming, setConfirming] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<HeldError | null>(null);
   const remove = useRemoveRuntimeProfile();
   const qc = useQueryClient();
   const adapter = findAdapter(profile, adapters);
@@ -118,7 +125,7 @@ function ProfileRow({
       if (err instanceof ApiError && err.status === 404) {
         void qc.invalidateQueries({ queryKey: RUNTIME_PROFILES_KEY });
       } else {
-        setError(errMessage(err, t('settings.executors.profiles.removeFailed')));
+        setError(errMessage(err, 'settings.executors.profiles.removeFailed'));
         return;
       }
     }
@@ -212,14 +219,14 @@ function ProfileRow({
         )}
       </div>
 
-      {error && (
+      {error !== null && (
         <p
           className="text-feedback-danger mt-2 flex items-center gap-1.5 text-sm"
           role="alert"
           data-testid={`profile-remove-error-${profile.name}`}
         >
           <XCircle size={14} aria-hidden />
-          {error}
+          {'raw' in error ? error.raw : t(error.key)}
         </p>
       )}
     </div>

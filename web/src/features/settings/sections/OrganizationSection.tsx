@@ -122,7 +122,9 @@ export function OrganizationSection({ org }: Props): JSX.Element {
   const [confirmDisable, setConfirmDisable] = useState(false);
   const workHoursToggleRef = useRef<HTMLButtonElement>(null);
   const [editEligibility, setEditEligibility] = useState(false);
-  const [whSavedMsg, setWhSavedMsg] = useState<string | null>(null);
+  // Semantic status, not rendered copy: the banner is translated at render so
+  // an already-visible banner follows a locale switch without a resave.
+  const [whSaved, setWhSaved] = useState(false);
   const [whError, setWhError] = useState<string | null>(null);
 
   const closeConfirmDisable = useCallback(() => {
@@ -134,7 +136,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
     setWhError(null);
     try {
       await mutation.mutateAsync({ working_hours: { enabled: next } });
-      setWhSavedMsg(t('settings.organization.workHoursSaved'));
+      setWhSaved(true);
     } catch (err: unknown) {
       setWhError(extractServerErrors(err).join('; '));
     }
@@ -383,8 +385,8 @@ export function OrganizationSection({ org }: Props): JSX.Element {
         })}
       </p>
 
-      {whSavedMsg && (
-        <SavedBanner message={whSavedMsg} />
+      {whSaved && (
+        <SavedBanner message={t('settings.organization.workHoursSaved')} />
       )}
       {whError && (
         <div
@@ -505,7 +507,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
           wh={wh}
           allAgents={allAgentNames}
           onSaved={() => {
-            setWhSavedMsg(t('settings.organization.workHoursSaved'));
+            setWhSaved(true);
           }}
         />
       )}

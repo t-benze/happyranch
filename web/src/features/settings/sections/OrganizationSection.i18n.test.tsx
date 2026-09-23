@@ -175,3 +175,148 @@ describe('OrganizationSection i18n (W2c)', () => {
     expect(screen.getByRole('button', { name: 'Save changes' })).toBeInTheDocument();
   });
 });
+
+// ── TASK-8791: an already-visible Work Hours success banner re-translates ──
+// The banner is state-held product copy. It must be stored as a semantic
+// status and translated at render, so a locale switch re-renders it in the
+// new language without a second save, a remount or any request.
+
+const WH_SAVED_EN = 'Saved ✓ — takes effect at the next scheduler pass (≈ within ~60s).';
+const WH_SAVED_ZH = '已保存 ✓ — 将在下一次调度器轮询时生效（≈ 约 60 秒内）。';
+
+function withWorkHoursEnabled(enabled: boolean): OrgSettings {
+  return {
+    ...ORG,
+    working_hours: { ...(ORG.working_hours as object), enabled },
+  } as unknown as OrgSettings;
+}
+
+function renderWithOrg(locale: 'en' | 'zh-CN', org: OrgSettings) {
+  return renderWithProviders(
+    <>
+      <Routes>
+        <Route
+          path="/orgs/:slug/settings/organization"
+          element={<OrganizationSection org={org} />}
+        />
+      </Routes>
+      <LocaleTestSwitch to="zh-CN" />
+      <LocaleTestSwitch to="en" />
+    </>,
+    {
+      route: `/orgs/${SLUG}/settings/organization`,
+      i18n: { adapter: savedLocaleAdapter(locale) },
+    },
+  );
+}
+
+/** Ledger of every request the section issues; sliced per switch window. */
+function recordRequests(): string[] {
+  const ledger: string[] = [];
+  server.events.on('request:start', ({ request }) => {
+    ledger.push(`${request.method} ${new URL(request.url).pathname}`);
+  });
+  return ledger;
+}
+
+function workHoursBanner(): HTMLElement {
+  const banners = screen
+    .getAllByRole('status')
+    .filter((el) => el.textContent === WH_SAVED_EN || el.textContent === WH_SAVED_ZH);
+  expect(banners).toHaveLength(1);
+  return banners[0]!;
+}
+
+describe('OrganizationSection Work Hours saved banner relocalizes (TASK-8791)', () => {
+  let puts: unknown[];
+  beforeEach(() => {
+    puts = [];
+    server.use(
+      http.put(`/api/v1/orgs/${SLUG}/settings/org`, async ({ request }) => {
+        puts.push(await request.json());
+        return HttpResponse.json(ORG);
+      }),
+    );
+  });
+
+  test('en → zh-CN → en: visible banner re-translates with no resave, remount or request', async () => {
+    const user = userEvent.setup();
+    const ledger = recordRequests();
+    renderWithOrg('en', withWorkHoursEnabled(true));
+
+    const toggle = await screen.findByRole('switch', { name: 'Work Hours' });
+    await user.click(toggle);
+    await user.click(await screen.findByRole('button', { name: 'Disable' }));
+
+    await waitFor(() => expect(workHoursBanner().textContent).toBe(WH_SAVED_EN));
+    expect(puts).toEqual([{ working_hours: { enabled: false } }]);
+    const banner = workHoursBanner();
+    await waitFor(() => expect(toggle).toHaveFocus());
+
+    const before = ledger.length;
+    act(() => screen.getByTestId('test-set-locale-zh-CN').click());
+    await waitFor(() => expect(banner.textContent).toBe(WH_SAVED_ZH));
+    expect(workHoursBanner()).toBe(banner);
+    expect(screen.getByRole('switch', { name: '工时' })).toBe(toggle);
+    expect(toggle).toHaveFocus();
+    expect(screen.queryByText(WH_SAVED_EN)).not.toBeInTheDocument();
+
+    act(() => screen.getByTestId('test-set-locale-en').click());
+    await waitFor(() => expect(banner.textContent).toBe(WH_SAVED_EN));
+    expect(workHoursBanner()).toBe(banner);
+    expect(screen.getByRole('switch', { name: 'Work Hours' })).toBe(toggle);
+    expect(toggle).toHaveFocus();
+    expect(screen.queryByText(WH_SAVED_ZH)).not.toBeInTheDocument();
+
+    // No second save and no request of any kind in the switch windows.
+    expect(puts).toHaveLength(1);
+    expect(ledger.slice(before)).toEqual([]);
+  });
+
+  test('zh-CN → en → zh-CN: visible banner re-translates with no resave, remount or request', async () => {
+    const user = userEvent.setup();
+    const ledger = recordRequests();
+    renderWithOrg('zh-CN', withWorkHoursEnabled(false));
+
+    const toggle = await screen.findByRole('switch', { name: '工时' });
+    await user.click(toggle);
+
+    await waitFor(() => expect(workHoursBanner().textContent).toBe(WH_SAVED_ZH));
+    expect(puts).toEqual([{ working_hours: { enabled: true } }]);
+    const banner = workHoursBanner();
+    expect(toggle).toHaveFocus();
+
+    const before = ledger.length;
+    act(() => screen.getByTestId('test-set-locale-en').click());
+    await waitFor(() => expect(banner.textContent).toBe(WH_SAVED_EN));
+    expect(workHoursBanner()).toBe(banner);
+    expect(screen.getByRole('switch', { name: 'Work Hours' })).toBe(toggle);
+    expect(toggle).toHaveFocus();
+
+    act(() => screen.getByTestId('test-set-locale-zh-CN').click());
+    await waitFor(() => expect(banner.textContent).toBe(WH_SAVED_ZH));
+    expect(workHoursBanner()).toBe(banner);
+    expect(toggle).toHaveFocus();
+
+    expect(puts).toHaveLength(1);
+    expect(ledger.slice(before)).toEqual([]);
+  });
+
+  test('eligibility onSaved banner re-translates en → zh-CN without a resave', async () => {
+    const user = userEvent.setup();
+    renderWithOrg('en', withWorkHoursEnabled(true));
+
+    await user.click(await screen.findByRole('button', { name: 'Edit eligibility' }));
+    await user.click(await screen.findByRole('button', { name: 'Review impact…' }));
+    await user.click(await screen.findByRole('button', { name: 'Confirm & save' }));
+
+    await waitFor(() => expect(workHoursBanner().textContent).toBe(WH_SAVED_EN));
+    expect(puts).toHaveLength(1);
+    const banner = workHoursBanner();
+
+    act(() => screen.getByTestId('test-set-locale-zh-CN').click());
+    await waitFor(() => expect(banner.textContent).toBe(WH_SAVED_ZH));
+    expect(workHoursBanner()).toBe(banner);
+    expect(puts).toHaveLength(1);
+  });
+});

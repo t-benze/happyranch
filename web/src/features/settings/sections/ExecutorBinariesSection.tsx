@@ -30,19 +30,26 @@ import {
   type ExecutorBinaryKind,
 } from '@/hooks/executor-binaries';
 import { useTranslation } from '@/hooks/i18n';
+import type { MessageKey } from '@/lib/i18n';
 
-/** Extract a human-readable message from an ApiError (422 detail is a string)
- *  or any thrown value. */
-function errMessage(err: unknown, fallback: string): string {
+/** A failure message held in state: a raw daemon/API diagnostic shown
+ *  byte-for-byte, or a product-owned fallback held as a catalog key and
+ *  translated at render so a visible message follows a locale switch. */
+type HeldError = { raw: string } | { key: MessageKey };
+
+/** Extract the raw diagnostic from an ApiError (422 detail is a string) or
+ *  any thrown Error; a thrown value that carries none falls back to the
+ *  product-owned `fallback` key. */
+function errMessage(err: unknown, fallback: MessageKey): HeldError {
   if (err instanceof ApiError) {
-    if (typeof err.detail === 'string') return err.detail;
+    if (typeof err.detail === 'string') return { raw: err.detail };
     if (err.detail && typeof err.detail === 'object' && 'msg' in err.detail) {
-      return String((err.detail as { msg: unknown }).msg);
+      return { raw: String((err.detail as { msg: unknown }).msg) };
     }
-    return err.message;
+    return { raw: err.message };
   }
-  if (err instanceof Error) return err.message;
-  return fallback;
+  if (err instanceof Error) return { raw: err.message };
+  return { key: fallback };
 }
 
 type Validity = 'valid' | 'invalid' | 'unregistered';
@@ -92,8 +99,8 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
       : 'invalid';
 
   const [path, setPath] = useState('');
-  const [check, setCheck] = useState<{ valid: boolean; error: string | null } | null>(null);
-  const [registerError, setRegisterError] = useState<string | null>(null);
+  const [check, setCheck] = useState<{ valid: boolean; error: HeldError | null } | null>(null);
+  const [registerError, setRegisterError] = useState<HeldError | null>(null);
 
   const validate = useValidateExecutorBinary();
   const register = useRegisterExecutorBinary();
@@ -107,9 +114,9 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
     setCheck(null);
     try {
       const res = await validate.mutateAsync({ path: trimmed });
-      setCheck({ valid: res.valid, error: res.error });
+      setCheck({ valid: res.valid, error: res.error === null ? null : { raw: res.error } });
     } catch (err) {
-      setCheck({ valid: false, error: errMessage(err, t('settings.executors.binaries.validationFailed')) });
+      setCheck({ valid: false, error: errMessage(err, 'settings.executors.binaries.validationFailed') });
     }
   };
 
@@ -122,7 +129,7 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
     } catch (err) {
       // The register route validates server-side and returns 422 with a
       // human-readable reason (not absolute / missing / not executable).
-      setRegisterError(errMessage(err, t('settings.executors.binaries.registerFailed')));
+      setRegisterError(errMessage(err, 'settings.executors.binaries.registerFailed'));
     }
   };
 
@@ -232,19 +239,23 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
             )}
             {check.valid
               ? t('settings.executors.binaries.checkValid')
-              : (check.error ?? t('settings.executors.binaries.checkInvalid'))}
+              : check.error === null
+                ? t('settings.executors.binaries.checkInvalid')
+                : 'raw' in check.error
+                  ? check.error.raw
+                  : t(check.error.key)}
           </p>
         )}
 
         {/* Register failure (server-side validation) */}
-        {registerError && (
+        {registerError !== null && (
           <p
             className="text-feedback-danger flex items-center gap-1.5 text-sm"
             role="alert"
             data-testid={`binary-register-error-${kind}`}
           >
             <XCircle size={14} aria-hidden />
-            {registerError}
+            {'raw' in registerError ? registerError.raw : t(registerError.key)}
           </p>
         )}
         </div>
