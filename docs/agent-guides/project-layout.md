@@ -56,7 +56,7 @@ Tracked source is split by product surface:
 |   |-- platform/                # process/session backends and platform enforcement
 |   |-- portability/             # org portability classification helpers
 |   |-- remote_access/           # managed remote-access client and packaging support
-|   |-- remote_jobs/             # remote-job contracts and transport/controller implementation
+|   |-- remote_jobs/             # pure v1 remote-job contracts; no transport/controller yet
 |   |-- skills/                  # bundled contracts, managed catalog packages, and skill machinery
 |   |   |-- bundled/             # release-owned instructions and supporting assets
 |   |   `-- <managed-slug>/      # catalog package when skill.yaml is present
