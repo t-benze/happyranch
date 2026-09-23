@@ -132,6 +132,26 @@ OUTCOME_EVALUATOR_FAILURE = "evaluator_failure"
 OUTCOME_AUDIT_FAILURE = "audit_failure"
 OUTCOME_CAPTURE_FAILURE = "capture_failure"
 
+# THR-229 checkpoint C3d5a: the closed RETURN vocabulary of
+# ``run_authority_hook``.  ``continue_same_root``/``escalate`` keep the
+# unchanged v1 semantics.  A session whose AUTHENTICATED immutable launch
+# binding selects the v2 family is served entirely by the accepted pre-final/
+# final v2 stages; its bounded outcomes tell the directly coupled common
+# consumer that the authoritative v2 path handled the result so ordinary
+# escalation/notification must NOT run:
+#   * ``v2_continued`` -- the final continuation committed (or was exactly
+#     replayed) and post-final settlement/publication was attempted;
+#   * ``v2_refused``   -- durable refusal housekeeping committed a terminal
+#     refusal for the unfinalized attempt;
+#   * ``v2_pending``   -- the attempt/stage identity could not be safely
+#     finalized and refusal itself could not commit; the prior durable state is
+#     preserved as a bounded housekeeping obligation (later discovery unit).
+HOOK_ESCALATE = "escalate"
+HOOK_CONTINUE_SAME_ROOT = "continue_same_root"
+HOOK_V2_CONTINUED = "v2_continued"
+HOOK_V2_REFUSED = "v2_refused"
+HOOK_V2_PENDING = "v2_pending"
+
 AUDIT_ACTION_HOOK_OUTCOME = "authority_hook"
 AUDIT_ACTION_CONTINUED_SAME_ROOT = "authority_continued_same_root"
 AUDIT_ACTION_ENVELOPE_CONSUMED = "authority_continue_envelope_consumed"
@@ -1988,6 +2008,228 @@ def _is_successor_root(db, task_id: str) -> bool:
     return row is not None
 
 
+# THR-229 checkpoint C3d5a: closed mapping from one bounded v2 STAGE refusal
+# code into the terminal housekeeping refusal vocabulary.  The mapping is
+# total (any unmapped code fails closed to the generic pre-final interruption)
+# and never accepts caller prose.
+_V2_STAGE_REFUSAL_TO_HOUSEKEEPING = {
+    "owner_lost": "owner_lost",
+    "cancelled": "cancelled",
+    "claim_failed": "claim_failed",
+    "claim_audit_missing": "claim_audit_missing",
+    "evaluation_failed": "evaluation_failed",
+    "evaluation_audit_missing": "evaluation_audit_missing",
+    "evaluation_missing": "evaluation_audit_missing",
+    "consume_failed": "consume_failed",
+    "final_commit_failed": "final_commit_failed",
+    "identity_mismatch": "identity_mismatch",
+    "transaction_owned": "identity_mismatch",
+    "evidence_drift": "identity_mismatch",
+    "schema_drift": "identity_mismatch",
+    "already_claimed": "interrupted_pre_final",
+    "already_audited": "interrupted_pre_final",
+    "already_evaluated": "interrupted_pre_final",
+    "already_consumed": "interrupted_pre_final",
+}
+
+# The accepted pre-final stage sequence with the exact expected success status
+# of each Database-owned writer.  The writers themselves refuse any skipped or
+# repeated transition; this table only names the literal progression.
+_V2_PRE_FINAL_STAGE_SEQUENCE = (
+    ("claim", "claimed", "claim_v2_candidate"),
+    ("claim_audit", "claim_audited", "audit_v2_candidate_claim"),
+    ("evaluate", "evaluated", "evaluate_v2_candidate"),
+    ("evaluation_audit", "evaluation_audited", "audit_v2_candidate_evaluation"),
+    ("consume", "consumed", "consume_v2_candidate"),
+    ("consumed_audit", "consumed_audited", "audit_v2_candidate_consumption"),
+)
+
+
+def _v2_request_refusal(
+    orch: "Orchestrator", task: "TaskRecord", agent: str, *,
+    result_row_id: int | None, owner_attempt_id: str | None, code: str,
+) -> str:
+    """Request durable refusal housekeeping for one unfinalized v2 attempt.
+
+    This never falls back to the ordinary escalation path.  ``v2_refused``
+    means the terminal refusal committed (or was exactly replayed);
+    ``v2_pending`` means safe attribution could not be established (or the
+    refusal transaction itself failed), so the prior durable state is preserved
+    and a later discovery unit owns the bounded obligation.
+    """
+    db = orch._db
+    if result_row_id is None:
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            error="v2 hook has no causal result row id; refusal housekeeping pending",
+        )
+        return HOOK_V2_PENDING
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    try:
+        outcome = AuthorityPolicyStore(db).finalize_v2_attempt_refusal(
+            root_task_id=task.id,
+            manager_agent=task.assigned_agent or agent,
+            manager_session_id=task.current_session_id or "",
+            result_id=result_row_id,
+            refusal_code=code,
+            owner_attempt_id=owner_attempt_id,
+        )
+    except Exception as exc:
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            error=f"v2 refusal housekeeping failed: {exc}",
+        )
+        return HOOK_V2_PENDING
+    status = getattr(outcome, "status", None)
+    if status in ("refused", "owner_lost", "already_refused"):
+        return HOOK_V2_REFUSED
+    # housekeeping_pending (or an unknown bounded value): prior state intact.
+    return HOOK_V2_PENDING
+
+
+def _run_authority_hook_v2(
+    orch: "Orchestrator",
+    task: "TaskRecord",
+    agent: str,
+    result_row_id: int | None,
+) -> str:
+    """The accepted automatic v2 pre-final -> final -> post-final path.
+
+    Selected from the AUTHENTICATED immutable launch binding (never a claimed
+    wire family, the live selector or a caller-provided self-evaluation).  The
+    persisted normalized callback report/attempt is authoritative: the Database
+    stage writers re-read the causal result body, the immutable binding, the
+    pinned release/activation/selector identity and the retained mechanical
+    eligibility at every boundary, so a caller-provided report or a second
+    self-evaluation can never manufacture or replace the evaluation.  No second
+    model invocation, phrase/clause allowlist, live-selector substitution,
+    adverse-review/partial-work/raw-DDL veto or second evaluator is introduced.
+    """
+    db = orch._db
+    if result_row_id is None:
+        return _v2_request_refusal(
+            orch, task, agent, result_row_id=None, owner_attempt_id=None,
+            code="identity_mismatch",
+        )
+    try:
+        attempt = db.get_authority_policy_v2_attempt_for_result(result_row_id)
+    except Exception:
+        attempt = None
+    if attempt is None:
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            error="v2 launch binding has no authenticated admitted attempt",
+        )
+        return _v2_request_refusal(
+            orch, task, agent, result_row_id=result_row_id,
+            owner_attempt_id=None, code="identity_mismatch",
+        )
+    # The attempt's own authenticated identity is the only identity used; a
+    # drift from the current task/session is a fail-closed refusal, never a
+    # fresh authority.
+    if (
+        attempt.root_task_id != task.id
+        or attempt.manager_agent != (task.assigned_agent or agent)
+        or attempt.manager_session_id != (task.current_session_id or "")
+    ):
+        return _v2_request_refusal(
+            orch, task, agent, result_row_id=result_row_id,
+            owner_attempt_id=attempt.owner_attempt_id, code="identity_mismatch",
+        )
+    if attempt.finalization_state == "continued":
+        # Already-final causal replay: existing exact post-final reconciliation,
+        # never a stage replay or a second mint.
+        try:
+            reconcile_authority_policy_v2_post_final(orch, root_task_id=task.id)
+        except Exception:
+            logger.exception("v2 hook %s: post-final reconciliation failed", task.id)
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CONTINUED_SAME_ROOT,
+        )
+        return HOOK_V2_CONTINUED
+    if attempt.finalization_state in ("refused", "owner_lost"):
+        return HOOK_V2_REFUSED
+
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    store = AuthorityPolicyStore(db)
+    max_revise_rounds = int(
+        authority_policy_v2_claim_eligibility(orch).get("max_revise_rounds", 0)
+    )
+    stage_kwargs = dict(
+        root_task_id=task.id,
+        manager_agent=attempt.manager_agent,
+        manager_session_id=attempt.manager_session_id,
+        result_id=result_row_id,
+        origin_boot_id=attempt.origin_boot_id,
+        owner_attempt_id=attempt.owner_attempt_id,
+        max_revise_rounds=max_revise_rounds,
+    )
+    for stage_name, expected_status, forwarder_name in _V2_PRE_FINAL_STAGE_SEQUENCE:
+        forwarder = getattr(store, forwarder_name)
+        try:
+            outcome = forwarder(**stage_kwargs)
+        except Exception as exc:
+            _record_hook_outcome(
+                db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+                error=f"v2 stage {stage_name} raised: {exc}",
+            )
+            return _v2_request_refusal(
+                orch, task, agent, result_row_id=result_row_id,
+                owner_attempt_id=attempt.owner_attempt_id,
+                code="interrupted_pre_final",
+            )
+        status = getattr(outcome, "status", None)
+        if status == "refused":
+            code = _V2_STAGE_REFUSAL_TO_HOUSEKEEPING.get(
+                getattr(outcome, "refusal_code", None), "interrupted_pre_final",
+            )
+            return _v2_request_refusal(
+                orch, task, agent, result_row_id=result_row_id,
+                owner_attempt_id=attempt.owner_attempt_id, code=code,
+            )
+        if status != expected_status:
+            _record_hook_outcome(
+                db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+                error=f"v2 stage {stage_name} unexpected status {status!r}",
+            )
+            return _v2_request_refusal(
+                orch, task, agent, result_row_id=result_row_id,
+                owner_attempt_id=attempt.owner_attempt_id,
+                code="interrupted_pre_final",
+            )
+    # ---- Final continuation (atomic; mints E/N/D and returns the root Pending) ----
+    try:
+        final = store.finalize_v2_continuation(**stage_kwargs)
+    except Exception as exc:
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            error=f"v2 final continuation raised: {exc}",
+        )
+        return _v2_request_refusal(
+            orch, task, agent, result_row_id=result_row_id,
+            owner_attempt_id=attempt.owner_attempt_id,
+            code="final_commit_failed",
+        )
+    final_status = getattr(final, "status", None)
+    if final_status not in ("continued", "already_continued"):
+        return _v2_request_refusal(
+            orch, task, agent, result_row_id=result_row_id,
+            owner_attempt_id=attempt.owner_attempt_id,
+            code="final_commit_failed",
+        )
+    # A committed final continuation is not undone (nor ordinarily escalated)
+    # because settlement/publication remains pending.  The existing C3d4b
+    # post-final seam owns exact settlement and authenticated publication.
+    try:
+        reconcile_authority_policy_v2_post_final(orch, root_task_id=task.id)
+    except Exception:
+        logger.exception("v2 hook %s: post-final reconciliation failed", task.id)
+    _record_hook_outcome(
+        db, task_id=task.id, agent=agent, outcome=OUTCOME_CONTINUED_SAME_ROOT,
+    )
+    return HOOK_V2_CONTINUED
+
+
 def run_authority_hook(
     orch: "Orchestrator",
     task: "TaskRecord",
@@ -2010,19 +2252,52 @@ def run_authority_hook(
     ``capture_failure`` outcome and never creates a candidate.
     """
     policy = POLICY_BY_TEAM.get(task.team)
-    if policy is None:
-        # No release-controlled policy for this team: hook not applicable.
-        return "escalate"
 
     db = orch._db
+    # ---- 0. Select the policy FAMILY from the AUTHENTICATED immutable
+    # result/session launch binding BEFORE any legacy snapshot handling.  A v2
+    # binding is served by the accepted pre-final/final v2 stages; the v1
+    # snapshot reader explicitly refuses a v2 binding, so it must never run for
+    # this session.  A mixed/malformed binding identity fails closed to the
+    # ordinary escalation path (recorded capture failure) but does NOT run the
+    # v1 candidate machinery.
+    from runtime.orchestrator.active_authority_policy import (
+        load_session_policy_binding, load_session_policy_snapshot, policy_from_release,
+        SELF_EVALUATION_CONTRACT_DIGEST, SELF_EVALUATION_CONTRACT_ID,
+        SELF_EVALUATION_CONTRACT_VERSION,
+    )
+    try:
+        session_binding = load_session_policy_binding(
+            db=db, task_id=task.id, session_id=task.current_session_id or "",
+            agent_name=agent,
+        )
+    except Exception as exc:
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            policy=policy, error=f"policy family resolution failed: {exc}",
+        )
+        return HOOK_ESCALATE
+    binding_mode = (
+        session_binding.get("mode") if isinstance(session_binding, dict) else None
+    )
+    if binding_mode == "v2":
+        return _run_authority_hook_v2(orch, task, agent, result_row_id)
+    if binding_mode not in (None, "legacy_static", "db_release"):
+        # Mixed/malformed/unknown family evidence: never a v1 fallback.
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            policy=policy,
+            error=f"unsupported policy binding family {binding_mode!r}",
+        )
+        return HOOK_ESCALATE
+
+    if policy is None:
+        # No release-controlled policy for this team: hook not applicable.
+        return HOOK_ESCALATE
+
     active_activation = None
     active_release = None
     try:
-        from runtime.orchestrator.active_authority_policy import (
-            load_session_policy_binding, load_session_policy_snapshot, policy_from_release,
-            SELF_EVALUATION_CONTRACT_DIGEST, SELF_EVALUATION_CONTRACT_ID,
-            SELF_EVALUATION_CONTRACT_VERSION,
-        )
         from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
         policy_store = AuthorityPolicyStore(db)
         launch_snapshot = load_session_policy_snapshot(
@@ -2033,16 +2308,12 @@ def run_authority_hook(
             active_activation = launch_snapshot.activation
             active_release = launch_snapshot.release
             policy = policy_from_release(active_release)
-        session_binding = load_session_policy_binding(
-            db=db, task_id=task.id, session_id=task.current_session_id or "",
-            agent_name=agent,
-        )
     except Exception as exc:
         _record_hook_outcome(
             db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
             policy=policy, error=f"active policy resolution failed: {exc}",
         )
-        return "escalate"
+        return HOOK_ESCALATE
     current = db.get_task(task.id)
     if current is None:
         return "escalate"

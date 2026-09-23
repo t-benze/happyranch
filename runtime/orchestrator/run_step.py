@@ -1414,6 +1414,18 @@ def _consume_completion_report_body(
             # returned to pending for its next manager decision step and was
             # re-enqueued. The escalation is NOT committed.
             return
+        if hook_outcome in ("v2_continued", "v2_refused", "v2_pending"):
+            # THR-229 C3d5a: a session whose authenticated launch binding
+            # selected the v2 family is served entirely by the accepted
+            # pre-final/final v2 path.  ``v2_continued`` committed the final
+            # continuation (post-final settlement/publication may still be
+            # pending); ``v2_refused`` committed durable refusal housekeeping;
+            # ``v2_pending`` could not safely finalize and refusal itself did
+            # not commit, leaving a bounded housekeeping obligation with the
+            # prior state intact.  In every case the ordinary root escalation,
+            # audit and notification path must NOT run, and no ordinary enqueue
+            # fallback is authorized.
+            return
         # Atomic CAS: transition to ESCALATED only if not cancelled
         # or terminal. Closes the post-_is_already_terminal race (Codex P2 on
         # PR #34) by serializing against /cancel via the Database RLock.

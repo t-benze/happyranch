@@ -929,10 +929,21 @@ def _provenance(fixture: _ShippingFixture) -> dict:
 
 
 def _run_positive_core(fixture: _ShippingFixture) -> dict:
-    """The accepted R3 real launch -> CLI -> admission -> fail-closed consumer
-    flow.  Shared by the fresh and the historically migrated venues."""
+    """The accepted real launch -> CLI -> admission -> AUTOMATIC continuation.
+
+    Shared by the fresh and the historically migrated venues.  The v2 authority
+    hook is NOT bypassed: the real run-step consumer runs it, the accepted
+    pre-final/final stages commit, the exact receipt settles, the authenticated
+    publisher publishes ONE tagged generation, the real TaskQueue/Dispatcher
+    admits it exactly once (held at the external launch boundary), and a real
+    next-result CLI callback spends the envelope and applies the reserved
+    decision once.  The provider launch remains the sole external double."""
     receipt = fixture.activate_v2_pair()
     assert receipt.get("family") == "v2" or receipt.get("activation_id")
+    # Production owner bindings: the trusted daemon-process boot identity and the
+    # server-owned permission-surface reader.  The real daemon entry point binds
+    # these once per live OrgState; the isolated fixture binds them explicitly.
+    fixture.org.bind_authority_v2_owner()
 
     # Install the sole launch hold BEFORE enqueue so the real queue cannot win
     # the race and launch the provider process before the double is installed.
@@ -1011,35 +1022,128 @@ def _run_positive_core(fixture: _ShippingFixture) -> dict:
     assert (len(after_results), after_results[0]["id"], after_attempt.owner_attempt_id,
             len(after_audits), after_audits[0]["id"]) == before
 
-    # Release the held launch: `_run_agent` reads the durable result and the
-    # actual run-step consumer handles it.  The current hook fail-closes the
-    # unsupported v2 assessment, so the root ESCALATES with no continuation.
-    fixture.release_launch()
-    fixture.join_workers()
+    # ---- THR-229 C3d5a: the REAL automatic v2 continuation ----
+    # Resume ONLY the causal invocation.  Its real run-step consumer reaches the
+    # authority hook, which selects the v2 family from the AUTHENTICATED launch
+    # binding and runs the accepted pre-final stages + final continuation +
+    # settlement + publication.  The reserved generation is published through
+    # the real TaskQueue, admitted exactly once and launches ONE reserved
+    # session that stays held at the external launch boundary.  No manual public
+    # stage staging, no mocked hook, no fake policy outcome and no synthetic
+    # positive receipt is used anywhere in this acceptance path.
+    causal_result_id = results[0]["id"]
+    enqueue_calls: list[tuple] = []
+    real_put_nowait = fixture.state.queue.put_nowait
 
-    settled = fixture.org.db.get_task(root_id)
-    assert settled.status is TaskStatus.ESCALATED, settled.status
-    assert fixture.org.db.get_active_authority_continue_envelope(root_id) is None
-    # No continuation work was manufactured.
-    assert fixture.org.db.get_task(root_id).current_session_id == session_id
-    assert fixture.org.db.get_latest_task_result(root_id, MANAGER, session_id)["id"] == results[0]["id"]
-    # The authority hook really ran on the v2-bound escalation and fail-closed:
-    # its recorded outcome is never a same-root continuation.
+    def _counting_put_nowait(slug, task_id, *, metadata=None):
+        enqueue_calls.append((slug, task_id, metadata))
+        return real_put_nowait(slug, task_id, metadata=metadata)
+
+    fixture.state.queue.put_nowait = _counting_put_nowait  # type: ignore[assignment]
+
+    fixture.release_session(session_id)
+    reserved_launch = fixture.wait_for_launch_for(root_id, after=1)
+    reserved = reserved_launch["session_id"]
+    assert reserved != session_id
+
+    db = fixture.org.db
+
+    def _count(table: str) -> int:
+        return db._conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+
+    # The causal attempt advanced through the complete accepted stage sequence
+    # exactly once under the original uninterrupted owner.
+    raw = db._conn.execute(
+        "SELECT stage, finalization_state FROM authority_policy_v2_attempts "
+        "WHERE result_id=?", (causal_result_id,),
+    ).fetchone()
+    assert raw["stage"] == "consumed_audited", raw["stage"]
+    assert raw["finalization_state"] == "continued"
+    # One candidate/evaluation/envelope/generation.
+    assert _count("authority_policy_v2_candidates") == 1
+    assert _count("authority_policy_v2_evaluations") == 1
+    assert _count("authority_policy_v2_continue_envelopes") == 1
+    assert _count("authority_policy_v2_recovery_notifications") == 1
+    envelope = db.get_authority_policy_v2_continue_envelope_for_root(root_id)
+    assert envelope is not None and envelope.lifecycle_state == "active"
+    notification = db.get_authority_policy_v2_recovery_notification_for_envelope(
+        envelope.envelope_id,
+    )
+    assert notification is not None
+    assert notification.state in ("admitted", "settled")
+    assert notification.next_session_id == reserved
+    # Exactly one admission/step/session: the root is in_progress under the
+    # single reserved causal owner/session.
+    current = db.get_task(root_id)
+    assert current.status is TaskStatus.IN_PROGRESS
+    assert current.current_session_id == reserved
+    assert current.block_kind is None
+    assert current.orchestration_step_count == 2
+    # Exactly ONE tagged generation publication on the real queue.
+    tagged = [
+        call for call in enqueue_calls
+        if isinstance(call[2], dict) and call[2].get("authority_v2_generation")
+    ]
+    assert len(tagged) == 1, enqueue_calls
+    assert tagged[0][2]["authority_v2_generation"] == notification.notification_id
+    # Exactly one closed ``continued`` result-stage event.
+    stages = [
+        audit["payload"].get("stage")
+        for audit in db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=root_id, manager_agent=MANAGER,
+        )
+    ]
+    assert stages.count("continued") == 1
+    # The authority hook really ran on the v2-bound escalation and continued.
     hook_rows = [
-        audit for audit in fixture.org.db.get_audit_logs(root_id)
+        audit for audit in db.get_audit_logs(root_id)
         if audit["action"] == "authority_hook"
     ]
     assert hook_rows, "authority hook outcome was not recorded"
-    assert hook_rows[-1]["payload"]["outcome"] != "continued_same_root"
-    # Consumer reached the documented terminal fail-closed v2 state.
-    assert settled.block_kind is None
+    assert hook_rows[-1]["payload"]["outcome"] == "continued_same_root"
+    # The ordinary escalation path never ran.
+    assert not [
+        audit for audit in db.get_audit_logs(root_id)
+        if audit["action"] == "escalation"
+    ]
+
+    # ---- Real next-result CLI callback -> existing spend/claim/done/applied ----
+    reserved_binding = _binding(fixture, root_id, reserved)
+    assert reserved_binding is not None and reserved_binding["mode"] == "v2"
+    reserved_payload = fixture.write_payload(
+        _reserved_decision_body(reserved_binding, root_id, "done"),
+        name="completion-reserved-auto.json",
+    )
+    reserved_result = fixture.run_cli(reserved_payload)
+    assert reserved_result.returncode == 0, reserved_result.stderr
+    assert fixture.last_http()["status"] == 200
+    r2_rows = db.get_task_results(root_id)
+    r2 = r2_rows[-1]["id"]
+    assert r2_rows[-1]["session_id"] == reserved
+    assert r2 != causal_result_id
+
+    fixture.release_session(reserved)
+    fixture.join_workers()
+
+    # The winning continuation spent the envelope and the reserved decision was
+    # applied exactly once: the normal done effect committed and no successor,
+    # second envelope or second admission was manufactured.
+    spent = db.get_authority_policy_v2_continue_envelope(envelope.envelope_id)
+    assert spent.lifecycle_state == "consumed"
+    assert spent.spending_result_id == r2
+    assert spent.decision_state == "applied"
+    final = db.get_task(root_id)
+    assert final.status is TaskStatus.COMPLETED
+    assert db.get_active_authority_continue_envelope(root_id) is None
+    assert _count("authority_policy_v2_continue_envelopes") == 1
+    assert _count("authority_policy_v2_recovery_notifications") == 1
     return {
-        "root_id": root_id, "session_id": session_id, "binding": binding,
-        "results": results,
+        "root_id": root_id, "session_id": session_id, "reserved": reserved,
+        "binding": binding, "results": results,
     }
 
 
-def test_shipping_real_launch_cli_admission_and_fail_closed_consumer(shipping):
+def test_shipping_real_launch_cli_admission_and_automatic_continuation(shipping):
     fixture = shipping
     provenance = _provenance(fixture)
     assert Path(provenance["executable"]).resolve() == Path(sys.executable).resolve()
@@ -1054,13 +1158,13 @@ def test_shipping_real_launch_cli_admission_and_fail_closed_consumer(shipping):
     _run_positive_core(fixture)
 
 
-def test_shipping_historically_migrated_schema_fail_closed_consumer(
+def test_shipping_historically_migrated_schema_automatic_continuation(
     tmp_path, monkeypatch,
 ):
     """The SAME real venue over a FULL historical schema migrated forward.
 
     Proves the fixture wires into the owned R3 shipping venue and that the
-    documented fail-closed v2 consumer outcome holds on a migrated DB.
+    automatic v2 continuation holds on a migrated DB.
     """
     from runtime.orchestrator.authority import (
         _V2_MIGRATED_TABLE_CREATE_SQL,
@@ -1273,17 +1377,21 @@ def _drive_c3b_claim(
             a["payload"]["stage"]
             for a in _admission_counts(fixture, root_id)[2]
         ] == ["admitted", "claim_audited"]
-        fixture.release_launch()
-        fixture.join_workers()
-        assert db.get_task(root_id).status is TaskStatus.ESCALATED
+        # THR-229 C3d5a isolated stage barrier: the causal launch stays HELD, so
+        # the real consumer never runs the now-automatic v2 hook inside this
+        # retained-eligibility driver.  Its public-boundary assertion is the
+        # callable-stage refusal with the exact prior residue.
         assert db.get_active_authority_continue_envelope(root_id) is None
         return root_id, candidate.candidate_id
 
     # C3c: the four callable pre-final stage methods against the same genuine
     # persisted transport evidence, still while the external launch is held.
-    # This proves the stages consume real result/assessment/binding evidence; it
-    # does NOT prove shipping-hook continuation or an actual Pending/enqueue
-    # (those remain later finalization/refusal/recovery work).
+    # This proves the stages consume real result/assessment/binding evidence.
+    # THR-229 C3d5a: the causal launch is deliberately kept HELD at the end of
+    # this driver (an explicit isolated stage barrier) so these staged-writer
+    # public-boundary assertions do not depend on the now-automatic shipping
+    # hook; the automatic continuation path is proven by the dedicated
+    # ``..._automatic_continuation`` acceptance cases.
     stage_kwargs = dict(
         root_task_id=root_id, manager_agent=MANAGER, manager_session_id=session_id,
         result_id=row_id, origin_boot_id=attempt.origin_boot_id,
@@ -1342,10 +1450,10 @@ def _drive_c3b_claim(
     task = db.get_task(root_id)
     assert task.status is TaskStatus.IN_PROGRESS
     assert task.current_session_id == session_id
-    fixture.release_launch()
-    fixture.join_workers()
-    settled = db.get_task(root_id)
-    assert settled.status is TaskStatus.ESCALATED
+    # THR-229 C3d5a isolated stage barrier: the causal launch stays HELD so this
+    # staged-writer driver keeps its callable-stage public-boundary assertions and
+    # does not depend on the now-automatic shipping hook.  The automatic
+    # continuation path is proven by the dedicated acceptance cases.
     assert db.get_active_authority_continue_envelope(root_id) is None
     return root_id, candidate.candidate_id
 
