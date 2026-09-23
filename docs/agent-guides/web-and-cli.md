@@ -112,7 +112,10 @@ Ordinary builds tree-shake the component out, and a direct
 redirect (Assistant). Vitest opens the gate per test with `vi.stubEnv`; the W2c
 browser harness (`web/scripts/w2c-preferences-browser-evidence.mjs`) builds a
 separate preview dist with the flag and checks that the ordinary dist excludes
-the component. There is no W3 secondary-pages disclosure yet, no browser/system
+the component. It also proves that state-held Settings messages follow a locale
+switch (the Organization Work Hours banner re-translates in place) while raw
+daemon diagnostics stay verbatim, with causal negatives for a pre-translated
+banner (`--defect-dist`) and a translated diagnostic. There is no W3 secondary-pages disclosure yet, no browser/system
 language defaulting (unset/invalid stays English), and no preview is live.
 
 The rest of the console is still English: **route families are W3/W4 and the

@@ -85,7 +85,13 @@ selector:
   identifiers, executor/agent/profile names, paths, commands, config keys,
   revisions and every capacity number stay byte-for-byte verbatim; messages held
   in component state are stored as keys/params (or locale functions) so an
-  already-visible message re-translates on a switch without resubmission.
+  already-visible message re-translates on a switch without resubmission. The
+  Organization Work Hours success banner is held as a boolean status; the
+  Executors remove/validate/register failures are held as
+  `{ raw: string } | { key: MessageKey }` (the Assistant `RegisterError` shape),
+  so a product fallback re-translates while a raw diagnostic — even one whose
+  bytes equal a catalog string, or an empty one — is shown verbatim and never
+  replaced by fallback copy.
 - `sections/PreferencesSection.tsx`: a fieldset of two native radios whose
   labels are the endonyms `English` / `简体中文` (each with its own `lang`, not
   translated), described by localized help, with a localized `role="status"`
@@ -410,7 +416,7 @@ Frontend readiness map (actual evidence):
 | Production startup first-paint | captured: real `main.tsx`/`createBrowserRouter` startup with synthetic API stub; first COMMITTED bilingual consumer text and `<html lang>` asserted together | W2a reads the ACTUAL first committed Sidebar/AppBar DOM (frozen on first connection, never overwritten by a later correction) with `<html lang>` and the real navigator read-back; a causal `I18N_W2A_EVIDENCE=negative` control proves the same predicate rejects an initially-wrong shell |
 | Mounted-shell switching state | N/A (foundation) | captured: help non-default tab (S16), AddOrg typed slug + mapped error (S12 wide-light; S17 zh-narrow-light/en-narrow-dark/zh-wide-dark) and palette query + non-default selected row (S13 wide-light; S18 zh-narrow-light/en-narrow-dark/zh-wide-dark) preserved across storage-path locale switches with the actual `document.activeElement`, retained DOM node identity, open state and selection/value observed before AND after each direction; each help/AddOrg switch window asserts no `PUT /settings/org` and no `POST /api/v1/orgs`, and each palette switch window asserts zero `/api/` requests (cache-only), per direction |
 | Onboarding switching state (W2b) | N/A | captured: S4 mapped error, S5 raw `API 500`, S6 success, S8 built-in waiting, S9 custom form and S10 prereq/create state each run en→zh-CN→en with actual focus, stable test-only node identity where applicable, open phase/mode and state-specific raw bytes retained; a separate per-direction window proves zero settings/org/connect/mint mutation and zero `/api/` requests; PNGs and `receipt.json` are bound to the head SHA |
-| Settings + Preferences (W2c) | N/A | Vitest: gate-off sub-nav absence + direct-URL replace redirect (unit and real `AppRoutes`), gate-on index/redirect/back/forward, Preferences under settings API loading/error/empty/ok, both switch directions with radio/sub-nav node identity + focus + route, zero requests in the switch window, keyboard Space selection, honest durable/failed persistence, storage-event sync without write-back, per-section zh-CN copy with raw detail verbatim; browser: `web/scripts/w2c-preferences-browser-evidence.mjs` against the preview and ordinary dists (receipt/PNG hashes bound to the pushed head) |
+| Settings + Preferences (W2c) | N/A | Vitest: gate-off sub-nav absence + direct-URL replace redirect (unit and real `AppRoutes`), gate-on index/redirect/back/forward, Preferences under settings API loading/error/empty/ok, both switch directions with radio/sub-nav node identity + focus + route, zero requests in the switch window, keyboard Space selection, honest durable/failed persistence, storage-event sync without write-back, per-section zh-CN copy with raw detail verbatim, an already-visible Work Hours banner and executor product fallbacks re-translating in both directions with no resave/remount/request while raw diagnostics (incl. catalog-equal and empty) stay verbatim; browser: `web/scripts/w2c-preferences-browser-evidence.mjs` against the preview and ordinary dists plus a `--defect-dist` causal negative (Organization banner and Executors raw-diagnostic cases included; receipt/PNG hashes bound to the pushed head) |
 | Native Mac persistence receipt | N/A — N0/N1 (Linux host; not claimed) | NOT RUN — N0/N1 still open |
 
 ## 10. Exclusions

@@ -918,6 +918,7 @@ async function main() {
         const observed = await evaluate(page, `(${BANNER_EXPR}).map((el) => el.textContent)`);
         current.defectBannerText = observed;
         negative('H-defect stale pre-translated banner fails the zh-CN banner predicate', await evaluate(page, PRED_H.banner('zh-CN')), control);
+        await evaluate(page, `(() => { const b = ${BANNER_EXPR}; if (b[0]) b[0].scrollIntoView({ block: 'center' }); return true; })()`);
         await capture(page, 'defect-b8ee7294-zh-org-banner-stale-1440-light', { dist: 'defect', viewport: '1440x900', theme: 'light', locale: 'zh-CN', state: 'rejected-head-stale-english-banner (negative control)' });
         await closePage(page);
       }
@@ -962,7 +963,11 @@ async function main() {
         check(`I →${target} zero /api requests in switch window`, zeroApiPredicate(delta), true);
       }
       check('I product chrome did localize (control)', await evaluate(page, `document.querySelector('[data-testid="binary-manual-claude"] summary').textContent.includes('高级')`), true);
-      await capture(page, 'zh-executors-raw-diagnostics-1440-light', { dist: 'preview', viewport: '1440x900', theme: 'light', locale: 'zh-CN', state: 'raw-daemon-diagnostics-verbatim-after-switch' });
+      for (const [sel, name] of [[REG, 'register'], [REM, 'remove']]) {
+        await evaluate(page, `(() => { document.querySelector(${JSON.stringify(sel)}).scrollIntoView({ block: 'center' }); return true; })()`);
+        await sleep(200);
+        await capture(page, `zh-executors-raw-${name}-diagnostic-1440-light`, { dist: 'preview', viewport: '1440x900', theme: 'light', locale: 'zh-CN', state: `raw-daemon-${name}-diagnostic-verbatim-after-switch` });
+      }
       // Causal negative: an accidentally translated diagnostic fails the raw predicate.
       const control = await evaluate(page, RAW(REG, RAW_REGISTER));
       await evaluate(page, `(() => { const el = document.querySelector(${JSON.stringify(REG)}); el.lastChild.textContent = ${JSON.stringify(FALLBACK_ZH.register)}; return true; })()`);

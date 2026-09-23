@@ -120,7 +120,14 @@ the explicit `VITE_ENABLE_I18N_PREFERENCES=true` activation and the ordinary
 dist (which must redirect `/settings/preferences` and contain no Preferences
 component); it drives the real radios with CDP input and records focus, node
 identity, `<html lang>`, persistence status and a zero-request switch window,
-plus causal negatives for a wrong locale, a remount and an API write. Every page installs and asserts the real
+plus causal negatives for a wrong locale, a remount and an API write. It also
+drives Settings ▸ Organization and ▸ Executors: an already-visible Work Hours
+success banner must re-translate on a second-tab `storage` switch in both
+directions (same banner/switch/dirty-input nodes, value, focus, one PUT, zero
+switch-window requests), and raw executor diagnostics byte-equal to the English
+fallback must stay verbatim. With `--defect-dist` (a preview build of a head
+that stored the pre-translated banner) the same banner predicate must fail;
+an injected translated diagnostic must fail the raw predicate. Every page installs and asserts the real
 `navigator.language`/`navigator.languages` before app modules; the W1
 production path is built with `I18N_BROWSER_EVIDENCE` so `vite.config.ts`
 injects the test-only `src/test/i18n-evidence-consumer.tsx` next to
