@@ -164,7 +164,12 @@ Initial ordinary failures show an
 explicit Retry; failed ordinary refreshes retain cached rows and a stale warning;
 failed ordinary pagination retains loaded rows and requires its separate page Retry.
 Manual refresh retries the active context's loaded pages. Subtask severity
-rollups are count-free; task detail owns subtask browsing. No New task flow is
+rollups are count-free and reflect the worst **current** status of the root's
+`parent_task_id` subtree; a historical FAILED descendant whose same-parent
+revisit lineage leaves no unresolved FAILED leaf does not dominate, while the
+root's own severity and all escalations are preserved (see
+`features-and-invariants.md` §Bounded failure-recovery). Task detail owns
+subtask browsing. No New task flow is
 exposed by this list.
 
 ### Thread-detail system rows
@@ -206,8 +211,127 @@ fidelity.
 
 ### Settings
 
-The Settings surface ships as a full page (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*` route, entered from the footer-pinned **Settings** item in the Sidebar, with exactly three left sub-nav panels: Assistant · Organization · Executors. The Settings root, retired `system` and `agents` subroutes, and unknown subroutes resolve to Assistant with replace navigation. (`SettingsDialog` is retained unmounted for direct tests; it is not an application or prototype entry point.) It shows:
+The Settings surface ships as a full page (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*` route, entered from the footer-pinned **Settings** item in the Sidebar, with exactly four left sub-nav panels, in this order: Daemon / Capacity · Assistant · Organization · Executors. The Settings root, retired `system` and `agents` subroutes, and unknown subroutes resolve to Assistant with replace navigation. (`SettingsDialog` is retained unmounted for direct tests; it is not an application or prototype entry point.) It shows:
 
+- **Daemon / Capacity** — stages the paired daemon-wide `queue_workers` and
+  `host_global_session_cap` values for a future operator-controlled restart.
+  Saving never applies live and the page cannot restart the daemon: the running
+  readouts are observations and are unchanged by a save. The panel holds `base`
+  (accepted only from a usable read or a usable success), the operator's
+  `draft`, `latest` observations and an immutable `submission` record
+  separately; a later read never silently rebases a dirty or unresolved draft,
+  and only an explicit rebase / accept-latest moves `base`. Concurrency is the
+  daemon's quoted strong `If-Match` revision. Numeric input is validated as
+  canonical positive-decimal TEXT before any `Number` conversion, so an
+  operator value outside the exactly-representable range is refused with the
+  entered text preserved rather than silently rounded; that bound is an EDITOR
+  representation limit and is not an API maximum. A server numeric that did not
+  survive `JSON.parse` as a safe integer is withheld rather than displayed
+  rounded — see the capacity note in `runtime-and-configuration.md` for the
+  residual limitation this does NOT close. "Usable" means the same thing at
+  every entry point: one capacity-local classifier decides it, and the provider
+  applies it before a read observation is called usable or a write result
+  enters the capacity cache, so a response the editor rejects can never become
+  accepted cached data.
+  Three refusals are load-bearing and are enforced at the request handler, not
+  only on the control. A refresh that FAILED leaves the last usable values on
+  screen under a `Last known` label with the receipt of the response that
+  actually produced them — the retained values carry their own receipt even when
+  a later request succeeds with an unusable body (that response still advances
+  the separate provider receipt, but never relabels the retained values), and a
+  byte-identical successful response still dates those retained values with its
+  OWN receipt even though React Query structurally shares the value object —
+  keeps the draft, reason and acknowledgment, and
+  blocks the write until a genuinely successful, usable read recovers — a
+  refetch result that merely carries cached data beside an error is not a
+  success. An unresolved publication outcome (typed `config_publication_uncertain`,
+  or a lost response / unclassified failure) is held as its own state: repeated
+  refused Save clicks and an ordinary Discard change the banner and reset the
+  editor but never resolve it, because neither establishes what the daemon
+  persisted. And `latest` observations are ordered by the order this editor
+  accepted them, so a newer verified read supersedes an older 409 body for both
+  rebase and accept-latest; an accepted write then clears the reconciliation
+  state its own response made obsolete and finishes in a coherent clean state.
+  The SUBMITTING editor recognises its own write by the exact request: the
+  capacity mutation slot (`CapacityMutationLike.settlementOf`; the shared
+  `MutationLike` is not widened) reports which provider settlement that request
+  object produced, recorded before the cache write, so the editor skips exactly
+  that one observation whenever its render is flushed — never a window in
+  which the request happened to be in flight and never the revision it
+  accepted. A revision is a content hash, so another editor saving or restoring
+  the same bytes is a different settlement and is observed normally. A
+  receipt of the editor's own base revision is ordinarily a no-op (no notice,
+  no target), but equality to the base is not proof that nothing happened
+  since: when a pending reconciliation target names another revision, a later
+  observation restoring the base bytes supersedes that target like any later
+  observation, so rebase and accept-latest act on the restored revision
+  rather than on an obsolete one, and the explicit choice is still required. Every
+  observation that is not this editor's own settlement — including another
+  editor's write that lands while this editor's request is still pending — is
+  handled at once by the ordinary rules: adopted when clean, recorded for an
+  explicit choice when dirty or unresolved. Nothing is held back awaiting the
+  outcome, so a rejected, unknown or unusable own result leaves that external
+  write available and still requires an explicit rebase / accept-latest before
+  any further PUT. An accepted own write fences only observations that settled
+  BEFORE its own settlement; one that settled after it is adopted by the
+  now-clean editor instead of being cleared. Any other editor mounted on the
+  SAME client therefore treats a write it did not settle as the external change
+  it is, rather than staying stale on an older base and revision; its next
+  deliberate save carries the adopted (or explicitly chosen) revision.
+  Draft consequence arithmetic uses the RESOLVED per-key next-start values, so
+  an environment-shadowed key contributes the environment's value rather than
+  the draft the environment will shadow.
+  Leaving the panel with an unsaved draft — or with an unresolved publication
+  outcome — is intercepted by a confirmation dialog. **Stay on page** keeps the
+  route, keeps the values, reason and acknowledgment byte-identical, and
+  returns focus to the control that had it before the dialog opened;
+  **Discard and continue** completes the navigation. The panel carries its own
+  focus-ring and primary-action tone treatment, selected from existing tokens at
+  the call site rather than by changing a shared primitive or token definition,
+  because the shared ring token is translucent enough to fall below the accepted
+  3:1 ring threshold on this screen's surfaces. That treatment covers the
+  confirmation dialog too, including the dialog Close control the shared
+  primitive renders: the dialog is PORTALLED, so it inherits nothing from the
+  panel wrapper and is styled and measured explicitly.
+  `scripts/screenshot-harness/capacity-states.mjs` gates both, at both desktop
+  widths in both themes. It declares the finite set of keyboard OPERATIONS it
+  requires — the details disclosure; the acknowledgment that enables Save;
+  Check saved values after a real uncertain write, with its deliberate rebase
+  and the separate manual save that follows; conflict rebase; conflict
+  accept-latest and the separate manual save that follows it; the leave
+  dialog's Stay and its confirmed departure — independently of what any run
+  records, so a required operation that is missing fails the run exactly like
+  one that failed. An unfiltered run is judged against that complete inventory
+  at every viewport and theme whatever scenario list it executed, so deleting a
+  scenario — its definition, its callback or its records — fails the run rather
+  than deleting its expectation; only an explicitly filtered run narrows, and it
+  is labelled partial and never reported as acceptance. Where
+  an operation has a pure verdict (Check semantics, the C1 receipt sequence)
+  the gate recomputes it from the recorded evidence rather than trusting a
+  recorded pass, and a focused failed-reread control proves that cached values
+  beside an error are not a successful Check. While the real portalled dialog
+  is open — in its own isolated context, so a measurement can never confirm a
+  departure — every dialog string is contrast-sampled and the enabled
+  `Discard and continue` is measured through real rest / hover / active pointer
+  phases; a missing sample, a missing phase or a failed one fails the run. It
+  measures every focus ring after cumulative opacity, and self-tests its own
+  computed-visibility predicate against positive and negative clipping
+  controls. `--gate-selftest <MANIFEST.json>` runs that same acceptance gate
+  over a recorded manifest and over finite corruptions of it — missing
+  operations, a removed scenario callback, a deleted scenario passed to the
+  gate exactly as the run would then pass it, a full-run caller narrowing
+  viewports or themes, a failed operation, a weakened Check
+  assertion, a missing walk, missing dialog samples, a C1 receipt that went
+  backwards — and fails unless every one of them is fatal and the unchanged
+  manifest passes. Because the shell scrolls internally, a state whose evidence
+  is a top-of-panel banner — the retained-receipt / unverified-read /
+  unrepresentable-value notices — declares that banner as its capture subject,
+  and a subject that is not inside the captured frame fails the run. Two states
+  drive the receipt rule end to end under a pinned browser clock: a usable
+  read, a BYTE-IDENTICAL successful 200 (proved identical by the served body
+  hash, not by unchanged values), then a failed read whose retained values must
+  still carry the identical response's OWN receipt, and finally a usable
+  recovery that advances it.
 - **Assistant** — assistant status, setup/recovery, and assistant executor binding.
 - **Org** (editable, Phase 2) — org-level settings: session timeout override, dreaming schedule (enabled, schedule time/timezone, catch-up-on-startup, agent mode, include/exclude agent names), browser-managed threads config (enabled and invocation timeout), and **working_hours** (THR-035: the Work-Hours Config UI — feature on/off switch, org-level eligibility selector, and the raw per-tier schedule blocks `default` / `teams` / `overrides`).
 - **Executors** — effective machine executor registry, custom CLI lifecycle, and recovery.

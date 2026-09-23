@@ -158,7 +158,9 @@ function AssistantPanel(): JSX.Element {
 }
 
 function DaemonCapacityPanel(): JSX.Element {
-  return <div className="max-w-2xl p-6"><h2 className="font-display mb-1 text-lg font-semibold">Daemon / Capacity</h2><p className="text-text-secondary mb-6 text-sm">Stage the paired daemon-wide capacity values for a future operator-controlled restart.</p><DaemonCapacitySection /></div>;
+  // The capacity section owns its own heading and description, matching the
+  // approved desktop target. Repeating them here produced two stacked headers.
+  return <div className="max-w-3xl p-6"><DaemonCapacitySection /></div>;
 }
 
 function OrganizationPanel({ org }: { org: OrgSettings }): JSX.Element {
