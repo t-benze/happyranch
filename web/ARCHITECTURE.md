@@ -7,7 +7,7 @@ design and `web/DESIGN_SYSTEM.md` for the design-system migration plan.
 ## Layers (strict)
 
 1. **`src/lib/api/<X>.ts`** — Daemon route mirror. One TS module per
-   `src/daemon/routes/<X>.py`. Pure functions over a shared `request()` helper.
+   `runtime/daemon/routes/<X>.py`. Pure functions over a shared `request()` helper.
    Returns typed objects. No React.
 2. **`src/design-system/`** — Code-owned design system. Replaces the previous
    `src/components/` folder. Splits into:
