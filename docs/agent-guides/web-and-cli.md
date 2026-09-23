@@ -723,6 +723,15 @@ pagination/error retry independently. Legacy history and outcomes appear only
 for an authenticated legacy-family projection. Unsupported, mixed, corrupt,
 unknown and worker targets fail closed without an editable fallback.
 
+For a v2-bound manager escalation, the injected role guidance supplies the
+binding identities and requires one structured `manager_self_evaluation` beside
+the ordinary `decision`. `happyranch report-completion --from-file` preserves
+that member for strict server validation; omission, explicit null, malformed or
+uncertain evidence fails closed. The CLI does not embed policy prose, a clause
+identifier, a canonical continuation phrase, or a second evaluator. Worker and
+ordinary non-escalation callbacks omit this field unless their injected contract
+explicitly requires it.
+
 The checked-in browser receipt driver is
 `web/scripts/screenshot-harness/shot-thr229-v2-policy.mjs`. It uses an owned
 runtime/database, loopback daemon and Vite proxy with real bootstrap auth; it
@@ -730,7 +739,11 @@ proves empty bootstrap, paired persistence and full-reload readback/history, a
 two-text atomic rollback at the control-audit boundary followed by exact retry,
 invalid-token 401 with no row, and worker 404 with no editor. This checkpoint
 does not close the combined THR-229 feature, final parity, review/QA, merge or
-rollout gates.
+rollout gates. Source merge is not activation: compatible daemon, CLI, and
+manager-launch code must be deployed and old launch/completion consumers drained
+before any future production save/activation. Rollback is compatible-code-only;
+this candidate performs no deployment, save, activation, or natural production
+continuation.
 
 ## Agent-Side Callbacks
 

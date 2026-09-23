@@ -50,8 +50,11 @@ failure, refuses the launch with no partial initializer instead of manufacturing
 empty state or silently selecting legacy. Repeat/reopen reuses the same
 deterministic initializer with no duplicate rows, an already-selected v2 family
 stays v2, and an ineligible roster initializes no unrelated team. Dynamic launch,
-immutable launch binding and full recovery admission remain later (C) work; this
-startup seam does not claim them.
+immutable launch binding, strict completion admission, automatic continuation,
+authenticated tagged generation admission, next-result spend, and startup/reaper
+recovery are implemented in the PR878 candidate. They consume the exact selected
+and session-pinned identity; startup initialization itself still grants none of
+that authority.
 
 The B2b2 client decodes the current projection and both history streams as
 discriminated `empty`/`legacy_v1`/`v2` types, rejecting malformed, mixed,
@@ -66,13 +69,13 @@ two texts together with distinct stable create/activation IDs and
 in transport. Real/mock hooks exist for the v2 control and v2 history, and a
 successful v2 control invalidates the current projection plus the v2 history
 stream while each family keeps its own pagination. The selector epoch stays
-distinct from the legacy family epoch. A selected v2 family renders read-only
-here (no fabricated v1 draft or v1 mutation); the complete two-text
-edit/save/activation UX and its browser acceptance remain D debt, and v2
-outcomes stay honestly legacy until C supplies them.
+distinct from the legacy family epoch. A selected v2 family renders the complete
+paired editor and never fabricates a v1 draft or v1 mutation. The current
+candidate also projects authenticated v2 history; legacy outcomes remain
+scoped to an authenticated legacy-family projection. Mixed, corrupt,
+unsupported, or ineligible targets fail closed without fallback.
 
-Selector-aware control API (B2b1 backend; B2b2 client mirrors the read/control
-contract and its full two-text editor remains deferred debt):
+Selector-aware control API and paired editor:
 
 - `GET .../team-escalation-policy` returns the discriminated `family`
   (`empty`/`legacy_v1`/`v2`), the observed `selector_id`/`selector_epoch` and,
@@ -103,4 +106,7 @@ refusals (`invalid_cursor` versus `policy_store_unavailable`).
 
 Landing this code, redeploying it, and creating/activating a production policy
 are distinct events. This delivery does
-not create or activate a production policy and does not deploy anything.
+not create or activate a production policy and does not deploy anything. Before
+any future activation, deploy compatible code to every manager launch and
+completion consumer and drain all old consumers. Source merge is not rollout;
+rollback is compatible-code-only once v2 state may have been persisted.

@@ -273,8 +273,38 @@ activate a production policy. Authority hook/store/route/envelope tests cover th
 negative cases. There is no universal post-session detector for arbitrary
 external side effects or role-based pathname enforcement.
 
-The staged THR-229 v2 value contract is separate from that live v1 path until
-its later authenticated consumer lands. It has two
+#### THR-229 current candidate contract
+
+The open PR878 candidate joins the v2 path end to end. An authenticated v2
+launch binding selects the strict completion carrier; the persisted dual
+assessment drives one automatic claim/evaluate/consume/finalize sequence; exact
+post-final settlement publishes one tagged generation; the real queue and
+Dispatcher admit it once; and the next real completion result spends, claims,
+applies, and acknowledges the single-use envelope. Startup and zombie recovery
+may only rediscover/refuse or reconcile those same durable identities. There is
+no second evaluator, magic reason, clause identifier, adverse-review veto, or
+raw-DDL veto. `REQUEST_CHANGES`, partial-work observations, and the accepted
+historical schema-layout inequality remain diagnostics; current owner/session,
+cancellation, active-work, budgets, protected drift, atomicity, replay, and
+closed audit evidence remain authoritative.
+
+The dedicated eligible-manager page edits the two values only as a pair and
+uses the authenticated selector projection/history. Landing or merging source
+does not save or activate a production policy. A future activation requires
+compatible binaries everywhere and drained old manager launch and completion
+consumers; rollback is to compatible code, not an old consumer against new
+persisted v2 state. Deployment, activation, and natural production continuation
+are not claimed by this source contract.
+
+The checkpoint narrative below is preserved as historical implementation
+provenance. Every statement in a named checkpoint that a later stage, automatic
+hook, recovery caller, or editor was dark, future, deferred, or unimplemented
+describes that checkpoint only and is superseded by the current candidate
+contract above.
+
+#### Historical THR-229 checkpoint record
+
+The staged THR-229 v2 value contract introduced two
 editable release texts, `What to escalate` and `What not to escalate`, which
 are a strict pair: `AuthorityPolicyV2Release` (in `runtime/models.py`) forbids
 unknown fields, requires both texts together, bounds the title/text scalars and

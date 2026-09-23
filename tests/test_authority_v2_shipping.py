@@ -22,9 +22,9 @@ task/session/agent/full_prompt, and holds the launch until the test has:
   * proved exactly one durable result / attempt / admitted audit.
 
 The launch is then released with a real ``ExecutorResult``; ``_run_agent``
-reads the durable result and the real run-step consumer handles it.  The
-current authority hook still fail-closes an unsupported v2 assessment, so the
-documented outcome is ESCALATE with NO continuation.
+reads the durable result and the real run-step consumer handles it.  Accepted
+v2 assessments run the complete automatic continuation, tagged admission and
+single-use next-result spend; malformed or ineligible evidence fails closed.
 
 Replay negatives (exact retry read-only, changed decision refusal) run through
 that same real CLI/HTTP path.  A separate disposable fixture covers the
@@ -255,11 +255,11 @@ def _sanitized_env(home: Path) -> dict[str, str]:
 class _ShippingFixture:
     """One fully owned shipping venue: owned runtime, server, queue, launch hold.
 
-    Reusable by later continuation cases: subclasses/callers may add a
-    REQUEST_CHANGES child or a historically migrated disposable DB before
-    ``create_and_enqueue_root`` and swap ``_completion_body``, while this unit
-    deliberately implements only the fail-closed consumer outcome (no
-    fabricated Pending/enqueue continuation).
+    Reusable by continuation cases: callers may add a ``REQUEST_CHANGES`` child
+    or a historically migrated disposable DB before ``create_and_enqueue_root``
+    and swap ``_completion_body``. Positive cases use the real automatic
+    Pending/publication/admission path; negatives preserve the fail-closed
+    outcome without fabricating queue state.
     """
 
     def __init__(
@@ -1188,6 +1188,226 @@ def test_shipping_historically_migrated_schema_automatic_continuation(
             _V2_MIGRATED_TABLE_CREATE_SQL["thread_messages"]
         )
         _run_positive_core(fixture)
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_request_changes_is_diagnostic(
+    tmp_path, monkeypatch,
+):
+    """C04: adverse child review and historical raw DDL are diagnostics only.
+
+    The ordinary child, its parent wake, the root's automatic v2 continuation,
+    the tagged admission, and the reserved next-result spend all cross the real
+    shipping boundaries.  The external provider launch remains the fixture's
+    sole double.
+    """
+    from runtime.orchestrator.authority import (
+        _V2_MIGRATED_TABLE_CREATE_SQL,
+        _v2_build_reference_inventories,
+        _v2_capture_inventory,
+    )
+
+    fixture = _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=True, queue_workers=3,
+        dequeue_gate=True,
+    )
+    fixture.start()
+    try:
+        db = fixture.org.db
+        inventory = _v2_capture_inventory(db._conn)
+        references = _v2_build_reference_inventories()
+        # The accepted historical raw-DDL inequality identifies this migrated
+        # venue.  It is evidence, never a veto or an alternate evaluator.
+        assert inventory["tables"]["threads"]["xinfo"] == (
+            references[1]["tables"]["threads"]["xinfo"]
+        )
+        assert inventory["tables"]["threads"]["xinfo"] != (
+            references[0]["tables"]["threads"]["xinfo"]
+        )
+        assert inventory["tables"]["thread_messages"]["sql"] == (
+            _V2_MIGRATED_TABLE_CREATE_SQL["thread_messages"]
+        )
+
+        fixture.activate_v2_pair()
+        fixture.org.bind_authority_v2_owner()
+        fixture.install_launch_hold()
+        root_id = fixture.create_and_enqueue_root()
+        first_root = fixture.wait_for_launch_for(root_id)
+        first_session = first_root["session_id"]
+        first_binding = _binding(fixture, root_id, first_session)
+        assert first_binding is not None and first_binding["mode"] == "v2"
+
+        # A genuine ordinary manager decision creates and enqueues the child.
+        # No self-assessment is supplied because this is not an escalation.
+        delegate = {
+            "task_id": root_id, "session_id": first_session, "agent": MANAGER,
+            "status": "completed", "confidence": 90,
+            "summary": "delegate the bounded implementation check",
+            "decision": {
+                "action": "delegate", "agent": WORKER,
+                "prompt": "perform the bounded implementation check",
+            },
+        }
+        delegated = fixture.run_cli(
+            fixture.write_payload(delegate, name="c04-delegate.json")
+        )
+        assert delegated.returncode == 0, delegated.stderr
+        fixture.release_session(first_session)
+        fixture.await_run_step_returns(root_id, 1)
+        child_id = db.get_children(root_id)[0]
+        child_launch = fixture.wait_for_launch_for(child_id, after=1)
+        child_session = child_launch["session_id"]
+        assert _binding(fixture, child_id, child_session) is None
+
+        # The real child reports an adverse workflow verdict.  Completion is
+        # still successful, and the normal child->parent wake owns the next root
+        # launch; the verdict is retained as a diagnostic audit fact.
+        child_body = {
+            "task_id": child_id, "session_id": child_session, "agent": WORKER,
+            "status": "completed", "confidence": 90,
+            "summary": "bounded check needs changes",
+            "verdict": "REQUEST_CHANGES",
+            "decision": {"action": "done"},
+        }
+        child_done = fixture.run_cli(
+            fixture.write_payload(child_body, name="c04-child.json")
+        )
+        assert child_done.returncode == 0, child_done.stderr
+        child_rows = db.get_task_results(child_id)
+        assert len(child_rows) == 1 and child_rows[0]["verdict"] == "REQUEST_CHANGES"
+        before_parent_wake = fixture.launch_count()
+        fixture.release_session(child_session)
+        parent_launch = fixture.wait_for_launch_for(
+            root_id, after=before_parent_wake,
+        )
+        reviews = [
+            row for row in db.get_audit_logs(child_id)
+            if row["action"] == "review_verdict"
+        ]
+        assert len(reviews) == 1
+        assert reviews[0]["payload"]["verdict"] == "REQUEST_CHANGES"
+        assert db.get_task(child_id).status is TaskStatus.COMPLETED
+
+        parent_session = parent_launch["session_id"]
+        parent_binding = _binding(fixture, root_id, parent_session)
+        assert parent_binding is not None and parent_binding["mode"] == "v2"
+
+        # Observe the real authenticated publication and hold only its dequeue,
+        # so Pending is proven before admission rather than inferred afterward.
+        published = threading.Event()
+        enqueue_calls: list[tuple] = []
+        inner = fixture.state.queue._queue
+        real_put = inner.put_nowait
+
+        def _observe_put(item):
+            enqueue_calls.append(tuple(item))
+            result = real_put(item)
+            metadata = item[2]
+            if isinstance(metadata, dict) and metadata.get(
+                "authority_v2_generation"
+            ):
+                published.set()
+            return result
+
+        fixture.monkeypatch.setattr(inner, "put_nowait", _observe_put)
+        fixture.tagged_dequeue_blocked = True
+
+        root_body = _completion_body(parent_binding, root_id)
+        # Deliberately arbitrary prose: continuation comes from the structured
+        # dual assessment and daemon fences, never a magic phrase.
+        root_body["decision"]["reason"] = (
+            "the retained migration note deserves another ordinary pass"
+        )
+        root_done = fixture.run_cli(
+            fixture.write_payload(root_body, name="c04-root.json")
+        )
+        assert root_done.returncode == 0, root_done.stderr
+        causal_rows = db.get_task_results(root_id)
+        causal_id = causal_rows[-1]["id"]
+        fixture.release_session(parent_session)
+        assert published.wait(timeout=_JOIN_SECONDS), (
+            "tagged generation was not published"
+        )
+        fixture.await_run_step_returns(root_id, 2)
+
+        pending = db.get_task(root_id)
+        assert pending.status is TaskStatus.PENDING
+        assert pending.id == root_id
+        tagged = [
+            call for call in enqueue_calls
+            if isinstance(call[2], dict)
+            and call[2].get("authority_v2_generation")
+        ]
+        assert len(enqueue_calls) == len(tagged) == 1, enqueue_calls
+        envelope = db.get_authority_policy_v2_continue_envelope_for_root(root_id)
+        assert envelope is not None and envelope.result_id == causal_id
+        notification = db.get_authority_policy_v2_recovery_notification_for_envelope(
+            envelope.envelope_id
+        )
+        assert notification is not None and notification.state == "published"
+        assert db.get_authority_policy_v2_root_dispatch(root_id).state == "pending"
+        assert fixture.launch_count() == 3  # root, child, parent wake; no G yet
+        assert len(db.get_children(root_id)) == 1
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE parent_task_id IS NULL"
+        ).fetchone()[0] == 1
+
+        # Release the dequeue gate.  The real Dispatcher admits G exactly once,
+        # reserves one next session and reaches the held provider boundary.
+        fixture.tagged_dequeue_blocked = False
+        reserved_launch = fixture.wait_for_launch_for(root_id, after=3)
+        reserved = reserved_launch["session_id"]
+        admitted = db.get_authority_policy_v2_recovery_notification(
+            notification.notification_id
+        )
+        assert admitted.state in ("admitted", "settled")
+        assert admitted.next_session_id == reserved
+        assert db.get_task(root_id).orchestration_step_count == 3
+        assert fixture.launch_count() == 4
+
+        # A genuine next-result callback is idempotent at HTTP admission, then
+        # spends and applies the reserved decision exactly once in the common
+        # consumer.
+        reserved_binding = _binding(fixture, root_id, reserved)
+        assert reserved_binding is not None
+        reserved_body = _reserved_decision_body(
+            reserved_binding, root_id, "done"
+        )
+        reserved_payload = fixture.write_payload(
+            reserved_body, name="c04-reserved.json",
+        )
+        first = fixture.run_cli(reserved_payload)
+        replay = fixture.run_cli(reserved_payload)
+        assert first.returncode == replay.returncode == 0
+        reserved_rows = db.get_task_results(root_id)
+        assert sum(row["session_id"] == reserved for row in reserved_rows) == 1
+        spending_result_id = reserved_rows[-1]["id"]
+        fixture.release_session(reserved)
+        fixture.await_reserved_invocation_done()
+        fixture.join_workers()
+
+        spent = db.get_authority_policy_v2_continue_envelope(envelope.envelope_id)
+        assert spent.lifecycle_state == "consumed"
+        assert spent.decision_state == "applied"
+        assert spent.spending_result_id == spending_result_id
+        assert db.get_task(root_id).status is TaskStatus.COMPLETED
+        assert len(db.get_children(root_id)) == 1
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM authority_policy_v2_candidates"
+        ).fetchone()[0] == 1
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM authority_policy_v2_evaluations"
+        ).fetchone()[0] == 1
+        hook_rows = [
+            row for row in db.get_audit_logs(root_id)
+            if row["action"] == "authority_hook"
+        ]
+        assert hook_rows[-1]["payload"]["outcome"] == "continued_same_root"
+        assert not [
+            row for row in db.get_audit_logs(root_id)
+            if row["action"] == "escalation"
+        ]
     finally:
         fixture.stop()
 
