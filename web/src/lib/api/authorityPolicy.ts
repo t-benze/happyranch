@@ -17,6 +17,12 @@ export interface AuthorityPolicyTemplate {
 export type AuthorityPolicyFamily = 'empty' | 'legacy_v1' | 'v2';
 export type AuthorityPolicyControlAction = 'bootstrap' | 'activate' | 'reactivate_rollback';
 export const AUTHORITY_POLICY_ACTOR_ATTRIBUTION = 'shared local operator credential';
+export const AUTHORITY_POLICY_V2_STARTER = {
+  policy_id: 'engineering-dual-text',
+  title: 'Engineering escalation policy',
+  what_to_escalate: 'Escalate when the next action requires a product or external-contract change, significant architecture change, or substantial development effort beyond the approved scope. Also escalate decisions explicitly reserved for the founder that lack applicable authorization. Existing approval carries through ordinary implementation and recovery within its scope.',
+  what_not_to_escalate: 'Continue implementation, debugging, review corrections, testing, CI waits, evidence collection and worker reassignment within approved scope. Failed reviews, retries, incomplete worker results and recoverable execution failures alone do not require founder escalation. Continue to enforce the required review, QA and merge gates.',
+} as const;
 
 export interface LegacyAuthorityPolicyRelease {
   id: string;
@@ -208,6 +214,25 @@ export interface V2ActivationControlRequest {
   acknowledge_shared_credential_attribution: true;
 }
 
+export interface V2AuthorityPolicyControlReceipt {
+  team: 'engineering';
+  kind: 'v2_create_activate' | 'v2_activate';
+  create_request_id: string | null;
+  create_request_digest: string | null;
+  activation_request_id: string;
+  activation_request_digest: string;
+  release_id: string;
+  policy_digest: string;
+  release_version: number;
+  activation_id: string;
+  activation_digest: string;
+  selector_id: string;
+  selector_epoch: number;
+  action: AuthorityPolicyControlAction;
+  previous_selector_id: string | null;
+  created_at: string;
+}
+
 export interface V2AuthorityPolicyControlResponse {
   control: 'v2_create_activate' | 'v2_activate';
   family: 'v2';
@@ -215,12 +240,15 @@ export interface V2AuthorityPolicyControlResponse {
   selector_id: string;
   selector_epoch: number;
   previous_selector_id: string | null;
-  receipt: Record<string, unknown>;
+  receipt: V2AuthorityPolicyControlReceipt;
 }
 
 const INVALID_POLICY_RESPONSE = 'Invalid team escalation policy response';
 const INVALID_V2_CONTROL_RESPONSE = 'Invalid authority policy v2 control response';
 const APS_SELECTOR_ID = /^APS-[0-9a-f]{64}$/;
+const APV2_RELEASE_ID = /^APV2-[0-9a-f]{64}$/;
+const APV2_ACTIVATION_ID = /^APV2A-[0-9a-f]{64}$/;
+const LOWER_HEX_DIGEST = /^[0-9a-f]{64}$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -572,6 +600,39 @@ export function decodeV2AuthorityPolicyControlResponse(
     !(value.previous_selector_id === null ||
       (isNonEmptyString(value.previous_selector_id) && APS_SELECTOR_ID.test(value.previous_selector_id))) ||
     !isRecord(value.receipt)
+  ) {
+    throw new Error(INVALID_V2_CONTROL_RESPONSE);
+  }
+  const receipt = value.receipt;
+  if (
+    receipt.team !== 'engineering' ||
+    (receipt.kind !== 'v2_create_activate' && receipt.kind !== 'v2_activate') ||
+    !(receipt.create_request_id === null || isNonEmptyString(receipt.create_request_id)) ||
+    !(receipt.create_request_digest === null ||
+      (isNonEmptyString(receipt.create_request_digest) && LOWER_HEX_DIGEST.test(receipt.create_request_digest))) ||
+    (receipt.create_request_id === null) !== (receipt.create_request_digest === null) ||
+    !isNonEmptyString(receipt.activation_request_id) ||
+    !isNonEmptyString(receipt.activation_request_digest) ||
+    !LOWER_HEX_DIGEST.test(receipt.activation_request_digest) ||
+    !isNonEmptyString(receipt.release_id) || !APV2_RELEASE_ID.test(receipt.release_id) ||
+    !isNonEmptyString(receipt.policy_digest) || !LOWER_HEX_DIGEST.test(receipt.policy_digest) ||
+    receipt.release_id !== `APV2-${receipt.policy_digest}` ||
+    !isPositiveInteger(receipt.release_version) ||
+    !isNonEmptyString(receipt.activation_id) || !APV2_ACTIVATION_ID.test(receipt.activation_id) ||
+    !isNonEmptyString(receipt.activation_digest) || !LOWER_HEX_DIGEST.test(receipt.activation_digest) ||
+    receipt.activation_id !== `APV2A-${receipt.activation_digest}` ||
+    !isNonEmptyString(receipt.selector_id) || !APS_SELECTOR_ID.test(receipt.selector_id) ||
+    !isPositiveInteger(receipt.selector_epoch) ||
+    (receipt.action !== 'bootstrap' && receipt.action !== 'activate' &&
+      receipt.action !== 'reactivate_rollback') ||
+    !(receipt.previous_selector_id === null ||
+      (isNonEmptyString(receipt.previous_selector_id) && APS_SELECTOR_ID.test(receipt.previous_selector_id))) ||
+    !isNonEmptyString(receipt.created_at) ||
+    receipt.selector_id !== value.selector_id ||
+    receipt.selector_epoch !== value.selector_epoch ||
+    receipt.previous_selector_id !== value.previous_selector_id ||
+    receipt.kind !== value.control ||
+    (value.control === 'v2_create_activate' && receipt.create_request_id === null)
   ) {
     throw new Error(INVALID_V2_CONTROL_RESPONSE);
   }

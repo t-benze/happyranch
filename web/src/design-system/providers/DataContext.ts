@@ -415,7 +415,9 @@ export interface AuthorityPolicyApi {
   useTeamEscalationPolicyHistory: (agent: { name: string; team: string; role: string } | undefined) =>
     InfiniteQueryLike<import('@/lib/api/authorityPolicy').AuthorityPolicyHistoryResponse>;
   useTeamEscalationPolicyV2History: (agent: { name: string; team: string; role: string } | undefined) =>
-    InfiniteQueryLike<import('@/lib/api/authorityPolicy').AuthorityPolicyV2HistoryResponse>;
+    InfiniteQueryLike<import('@/lib/api/authorityPolicy').AuthorityPolicyV2HistoryResponse> & {
+      refetch: () => Promise<unknown>;
+    };
   useTeamEscalationPolicyOutcomes: (agent: { name: string; team: string; role: string } | undefined) =>
     InfiniteQueryLike<import('@/lib/api/authorityPolicy').AuthorityPolicyOutcomesResponse>;
 }

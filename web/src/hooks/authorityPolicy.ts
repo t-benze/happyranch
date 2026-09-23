@@ -1,6 +1,15 @@
 import { useData } from '@/design-system/providers/DataContext';
-export type { AuthorityPolicyTemplate } from '@/lib/api/authorityPolicy';
-export { authorityPolicyActiveEpoch, isEligiblePolicyManager } from '@/lib/api/authorityPolicy';
+export type {
+  AuthorityPolicyTemplate,
+  TeamEscalationPolicyResponse,
+  V2AuthorityPolicyControlResponse,
+  V2PairedControlRequest,
+} from '@/lib/api/authorityPolicy';
+export {
+  AUTHORITY_POLICY_V2_STARTER,
+  authorityPolicyActiveEpoch,
+  isEligiblePolicyManager,
+} from '@/lib/api/authorityPolicy';
 
 export const useTeamEscalationPolicy: ReturnType<typeof useData>['authorityPolicy']['useTeamEscalationPolicy'] =
   (agent) => useData().authorityPolicy.useTeamEscalationPolicy(agent);

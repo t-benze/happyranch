@@ -264,6 +264,18 @@ describe('team escalation policy query gate', () => {
     expect(hook.result.current.data?.pages.flatMap((page) => page.items).map((row) => row.release_id)).toEqual(['APV2-2', 'APV2-1']);
   });
 
+  it('retries the initial v2 history page without consulting legacy history', async () => {
+    vi.mocked(api.getTeamEscalationPolicyV2History)
+      .mockRejectedValueOnce(new Error('v2 history unavailable'))
+      .mockResolvedValueOnce({ items: [{ release_id: 'APV2-1' }] as never, next_cursor: null });
+    const hook = setupV2History();
+    await waitFor(() => expect(hook.result.current.isError).toBe(true));
+    await hook.result.current.refetch();
+    await waitFor(() => expect(hook.result.current.data?.pages[0].items[0].release_id).toBe('APV2-1'));
+    expect(api.getTeamEscalationPolicyV2History).toHaveBeenCalledTimes(2);
+    expect(api.getTeamEscalationPolicyHistory).not.toHaveBeenCalled();
+  });
+
   it('preserves history page one across cursor failure and native retry appends page two once', async () => {
     vi.mocked(api.getTeamEscalationPolicyHistory)
       .mockResolvedValueOnce({ items: [{ release_id: 'APR-2' }] as never, next_cursor: 'history-cursor' })

@@ -110,7 +110,7 @@ export const realAuthorityPolicyApi: AuthorityPolicyApi = {
     return { data: q.data ? { pages: q.data.pages } : undefined, isLoading: q.isLoading,
       isError: q.isError, error: (q.error as Error | null) ?? null,
       fetchNextPage: () => q.fetchNextPage(), hasNextPage: !!q.hasNextPage,
-      isFetchingNextPage: q.isFetchingNextPage };
+      isFetchingNextPage: q.isFetchingNextPage, refetch: () => q.refetch() };
   },
   useTeamEscalationPolicyOutcomes: (agent) => {
     const { slug = '' } = useParams<{ slug: string }>();
