@@ -31,8 +31,9 @@ design and `web/DESIGN_SYSTEM.md` for the design-system migration plan.
    domain. Owns pages, dialogs, and TanStack Query hooks. May import only from
    `@/lib/`, `@/design-system/`, `@/shared/`, and `@/hooks/`. **No
    cross-feature imports.**
-5. **`src/lib/utils.ts`** — `cn` helper for class-name composition (used by
-   primitives only).
+5. **`src/lib/`** — Feature-neutral helpers, including `utils.ts` (`cn`) and
+   `modelClassification.ts` (the canonical token-rollup model labels shared by
+   Usage and Dashboard).
 
 ## Boundary rule
 
@@ -44,6 +45,15 @@ design and `web/DESIGN_SYSTEM.md` for the design-system migration plan.
 > `@/shared/` modules may import hooks, lib, and design-system but never
 > `@/features/`. Primitives may not import patterns, layouts, hooks, or
 > `@/lib/api`. Patterns may import primitives but not layouts.
+
+The repository-local `feature-boundaries/no-cross-feature-imports` ESLint rule
+mechanically checks every static import and export-from declaration below
+`src/features/<domain>/`. It resolves both `@/features/<domain>/...` aliases
+and relative paths, allows same-domain and neutral-layer edges, and remains
+active when a nearby comment disables `no-restricted-imports`. Type-only
+imports are static declarations and are covered. Runtime `import()` expressions
+are intentionally excluded because they are non-static loading; ordinary lint,
+typecheck, build, and tests still cover their syntax and resolution.
 
 ## Internationalization (i18n)
 
