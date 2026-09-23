@@ -41,10 +41,10 @@ scripts/local_ci.sh help         # List targets and caveats
 
 | Target | GHA job | Commands |
 |--------|---------|----------|
-| `all` (default) | `python-unit` + `web` | `uv sync --frozen; uv run pytest tests/ -v -n 4` then `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
-| `python` | `python-unit` | `uv sync --frozen; uv run pytest tests/ -v -n 4` |
+| `all` (default) | `python-unit` + `web` | `uv sync --frozen; uv run pytest tests/ -v -n 4 --basetemp <fresh per-run dir>` then `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
+| `python` | `python-unit` | `uv sync --frozen; uv run pytest tests/ -v -n 4 --basetemp <fresh per-run dir>` |
 | `web` | `web` (Node 24) | `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
-| `integration` | `nightly-integration` | `uv sync --frozen; uv run pytest tests/ -v -m integration` |
+| `integration` | `nightly-integration` | `uv sync --frozen; uv run pytest tests/ -v -m integration --basetemp <fresh per-run dir>` |
 
 Local commands run the same test commands as the corresponding GitHub Actions job
 on your installed Python interpreter (3.12+). They **cannot** select or replace
@@ -52,6 +52,36 @@ the hosted version matrix or canonical-store validation. GitHub PR CI runs
 `python-unit` on Python **3.14**, `web` on Node 24, and Linux/macOS Canonical
 Store Validation on their named platforms; push-to-main runs the Python tests
 across **3.12/3.13/3.14**. GitHub CI is authoritative.
+
+## Per-run pytest scratch lifecycle
+
+Pytest normally creates its per-session scratch under a shared
+`pytest-of-<user>/pytest-<n>` tree in `TMPDIR` and can leave large amounts of it
+behind. The `python`, `integration`, and `all` targets avoid that by passing an
+explicit `--basetemp` to their single `uv run pytest` invocation:
+
+- The directory is freshly and uniquely created for that invocation with
+  `mktemp -d` beneath the effective `TMPDIR` (normally the runtime-bound
+  canonical `<workspace>/.happyranch/task-tmp/TASK-N`). Two sequential runs
+  never share a directory.
+- The wrapper removes exactly that created directory — never `TMPDIR` itself
+  and never any sibling or pre-existing content — on normal success, on a
+  nonzero `uv sync`/pytest failure, and on a catchable `HUP`/`INT`/`TERM`.
+  Removal is idempotent.
+- The meaningful original status is preserved: a failing run keeps its nonzero
+  exit status, and an interrupted run keeps the conventional `128+signal`
+  status.
+- Basetemp creation or cleanup failure is explicit and nonzero; it can never be
+  reported as a clean local-CI pass.
+- `web`, `help`, and invalid targets create no pytest basetemp.
+
+**Honesty boundary.** Cleanup is driven by a shell `EXIT` trap plus
+`HUP`/`INT`/`TERM` traps. It therefore cannot observe or clean up after
+uncatchable termination — `SIGKILL`, power loss, kernel crash, or any other
+termination that bypasses the traps. Scratch left behind in those cases is
+expected and is not handled automatically; the wrapper makes no guarantee
+about it. Nothing here inspects, moves, quarantines, restores, or deletes any
+other scratch, pre-existing `pytest-of-*` tree, or historical backlog.
 
 ### `all` (default)
 
@@ -63,13 +93,16 @@ with a running production daemon).
 ### `python`
 
 Runs the full Python unit test suite with `uv sync --frozen` and
-`uv run pytest tests/ -v -n 4`. Uses your local installed Python interpreter;
+`uv run pytest tests/ -v -n 4 --basetemp <fresh per-run dir>`. Uses your local
+installed Python interpreter;
 does **not** reproduce the GHA 3.12/3.13/3.14 matrix. `pyproject.toml`
 addopts exclude integration tests by default (`-m 'not integration'`), so
 this is unit-only. `-n 4` (pytest-xdist) runs the suite across 4 worker
 processes, matching the standard GitHub-hosted runner's vCPU count; the
 suite is written to be worker-safe (per-test `tmp_path`, no shared ports or
-fixed filesystem paths).
+fixed filesystem paths). The fresh `--basetemp` (see "Per-run pytest scratch
+lifecycle") is created under the effective `TMPDIR` and removed when the
+invocation ends.
 
 ### `web`
 
@@ -84,7 +117,9 @@ mode and hangs.
 
 Runs Python integration tests (`-m integration`). The target spawns its own
 isolated daemon (via HAPPYRANCH_DAEMON_HOME). The target is explicit — it is **not**
-included in the `all` default.
+included in the `all` default. Like `python`, it receives a fresh per-run
+`--basetemp` under the effective `TMPDIR` that is removed when the invocation
+ends (see "Per-run pytest scratch lifecycle").
 
 ## Git hooks
 
@@ -120,6 +155,12 @@ publication-process requirements.
 - **Single Python version.** `python` and `integration` targets use the
   installed `uv` + Python interpreter. They do not reproduce the GHA
   `python-version` matrix.
+- **Per-run pytest scratch.** `python`, `integration`, and `all` create a fresh
+  `--basetemp` under the effective `TMPDIR` and remove exactly that directory on
+  success, failure, and catchable `HUP`/`INT`/`TERM`. Uncatchable termination
+  (`SIGKILL`, power loss, kernel crash) is outside the guarantee. The wrapper
+  never touches `TMPDIR` itself, sibling content, pre-existing `pytest-of-*`
+  trees, or any historical backlog. See "Per-run pytest scratch lifecycle".
 - **Frozen lockfile.** `uv sync --frozen` requires an up-to-date
   `uv.lock`. Run `uv lock` first if you've changed dependencies in
   `pyproject.toml`.
