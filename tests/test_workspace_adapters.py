@@ -1283,3 +1283,169 @@ def test_instruction_pair_unreadable_regular_fails_closed(tmp_dir):
     assert (ws / "CLAUDE.md").read_text() == "original claude\n"
     assert not (ws / "CLAUDE.md").is_symlink()
     assert not list(ws.glob("*.bak"))
+
+
+# ── TASK-8744 F2: caught link-conversion faults retain exact old state ──────
+#
+# The canonical writer must never unlink the pre-existing CLAUDE.md before the
+# replacement link exists. These shipping-path tests inject an ordinary failure
+# at each step of the owned-sibling staging protocol and assert the recorded old
+# raw link/bytes/type/mode/uid survive, no owned temp/staging residue remains,
+# preservation copies are retained, and no external target is mutated.
+
+
+def _instruction_path_state(path: Path):
+    """Return a comparable (kind, payload, mode, uid) snapshot via lstat."""
+    import stat as _stat
+
+    if not os.path.lexists(path):
+        return ("absent", None, None, None)
+    st = os.lstat(path)
+    if _stat.S_ISLNK(st.st_mode):
+        return ("symlink", os.readlink(path), st.st_mode & 0o7777, st.st_uid)
+    if _stat.S_ISREG(st.st_mode):
+        return ("regular", path.read_bytes(), st.st_mode & 0o7777, st.st_uid)
+    return ("other", None, st.st_mode & 0o7777, st.st_uid)
+
+
+def _owned_temp_residue(ws: Path) -> list[str]:
+    return sorted(
+        p.name
+        for p in ws.iterdir()
+        if ".happyranch-" in p.name and not p.name.endswith(".bak")
+    )
+
+
+def _seed_fault_form(ws: Path, external: Path, form: str) -> None:
+    agents = ws / "AGENTS.md"
+    claude = ws / "CLAUDE.md"
+    if form == "stale":
+        agents.write_text("canonical\n")
+        (ws / "OTHER.md").write_text("other\n")
+        os.symlink("OTHER.md", claude)
+    elif form == "broken":
+        agents.write_text("canonical\n")
+        os.symlink("MISSING.md", claude)
+    elif form == "cyclic":
+        agents.write_text("canonical\n")
+        os.symlink("CLAUDE.md", claude)
+    elif form == "reverse":
+        # The reverse topology: registerable recordable raw link at AGENTS.md.
+        claude.write_text("old claude regular\n")
+        os.symlink("CLAUDE.md", agents)
+    elif form == "absolute":
+        agents.write_text("canonical\n")
+        os.symlink(str(agents), claude)
+    elif form == "external":
+        agents.write_text("canonical\n")
+        os.symlink(str(external), claude)
+    elif form == "differing_regulars":
+        agents.write_text("old agents\n")
+        claude.write_text("old claude\n")
+    else:  # pragma: no cover
+        raise AssertionError(form)
+
+
+@pytest.mark.parametrize(
+    "form",
+    ["stale", "broken", "cyclic", "reverse", "absolute", "external", "differing_regulars"],
+)
+@pytest.mark.parametrize("injection", ["stage", "replace"])
+def test_instruction_pair_claude_link_fault_retains_exact_old_state(
+    tmp_dir, monkeypatch, form, injection,
+):
+    import runtime.orchestrator.workspace_adapters as wa
+
+    ws = tmp_dir / f"w_{form}_{injection}"
+    ws.mkdir()
+    external = tmp_dir / f"ext_{form}_{injection}.md"
+    external.write_text("external bytes\n")
+    _seed_fault_form(ws, external, form)
+    claude = ws / "CLAUDE.md"
+    claude_before = _instruction_path_state(claude)
+    external_before = external.read_bytes()
+
+    if injection == "stage":
+        def boom(*_a, **_k):
+            raise OSError("injected link staging failure")
+
+        monkeypatch.setattr(wa, "_stage_canonical_claude_link", boom)
+    else:
+        real_replace = wa.os.replace
+
+        def replace_boom(src, dst, *a, **k):
+            if str(dst).endswith("CLAUDE.md"):
+                raise OSError("injected link replace failure")
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr(wa.os, "replace", replace_boom)
+
+    with pytest.raises(InstructionPairConflict) as excinfo:
+        write_canonical_instruction_pair(ws, "canonical\n")
+    assert str(claude) in str(excinfo.value), excinfo.value
+    assert "link creation failed" in str(excinfo.value), excinfo.value
+
+    # Exact retained old state of the failure target (bytes/type/raw link/mode/uid).
+    assert _instruction_path_state(claude) == claude_before
+    # No owned temp/staging residue survives.
+    assert _owned_temp_residue(ws) == []
+    # External target never written through.
+    assert external.read_bytes() == external_before
+    # The pair is honestly still non-canonical.
+    assert not canonical_instruction_pair_ok(ws)
+
+
+def test_instruction_pair_reverse_agents_symlink_fault_retains_old_link(
+    tmp_dir, monkeypatch,
+):
+    """``AGENTS.md -> CLAUDE.md`` must be atomically replaced, never unlinked
+    before the new regular file exists."""
+    import runtime.orchestrator.workspace_adapters as wa
+
+    ws = tmp_dir / "w"
+    ws.mkdir()
+    (ws / "CLAUDE.md").write_text("old claude regular\n")
+    os.symlink("CLAUDE.md", ws / "AGENTS.md")
+    agents = ws / "AGENTS.md"
+    agents_before = _instruction_path_state(agents)
+
+    real_replace = wa.os.replace
+
+    def replace_boom(src, dst, *a, **k):
+        if str(dst).endswith("AGENTS.md"):
+            raise OSError("injected agents replace failure")
+        return real_replace(src, dst, *a, **k)
+
+    monkeypatch.setattr(wa.os, "replace", replace_boom)
+
+    with pytest.raises(InstructionPairConflict):
+        write_canonical_instruction_pair(ws, "canonical\n")
+
+    assert _instruction_path_state(agents) == agents_before
+    assert _owned_temp_residue(ws) == []
+
+
+def test_instruction_pair_fault_retains_preservation_copies(tmp_dir, monkeypatch):
+    """A caught CLAUDE-link fault after the barrier keeps every completed
+    preservation copy (the user's differing regular bytes) identifiable."""
+    import runtime.orchestrator.workspace_adapters as wa
+
+    ws = tmp_dir / "w"
+    ws.mkdir()
+    (ws / "AGENTS.md").write_text("old agents\n")
+    (ws / "CLAUDE.md").write_text("old claude\n")
+
+    def boom(*_a, **_k):
+        raise OSError("injected link staging failure")
+
+    monkeypatch.setattr(wa, "_stage_canonical_claude_link", boom)
+    with pytest.raises(InstructionPairConflict):
+        write_canonical_instruction_pair(ws, "canonical\n")
+
+    backups = {
+        p.read_bytes() for p in ws.iterdir() if p.name.endswith(".bak")
+    }
+    assert b"old agents\n" in backups
+    assert b"old claude\n" in backups
+    assert (ws / "CLAUDE.md").read_bytes() == b"old claude\n"
+    assert not (ws / "CLAUDE.md").is_symlink()

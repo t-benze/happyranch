@@ -371,6 +371,29 @@ instructions.
 """
 
 
+def _write_assistant_instruction_pair(workspace: Path, prompt: str) -> None:
+    """Converge the assistant instruction pair through the shared writer.
+
+    THR-262 Slice B: both assistant registration and bootstrap must use the
+    already-approved canonical instruction-pair classifier/writer so divergent
+    regular ``AGENTS.md``/``CLAUDE.md`` bytes are never overwritten or unlinked
+    without a verified preservation copy, links are never written through, and
+    the pair-wide preservation barrier precedes either mutation. The shared
+    writer's ``InstructionPairConflict`` is surfaced as ``ValueError`` so the
+    assistant routes keep their documented ``assistant_workspace_invalid``
+    error contract.
+    """
+    from runtime.orchestrator.workspace_adapters import (
+        InstructionPairConflict,
+        write_canonical_instruction_pair,
+    )
+
+    try:
+        write_canonical_instruction_pair(workspace, prompt)
+    except InstructionPairConflict as exc:
+        raise ValueError(str(exc)) from exc
+
+
 def prepare_assistant_registration_workspace(runtime_root: Path) -> None:
     paths = system_assistant_paths(runtime_root)
     _reject_symlink(
@@ -403,12 +426,7 @@ def prepare_assistant_registration_workspace(runtime_root: Path) -> None:
         "assistant workspace is not a directory",
     )
     prompt = _registration_prompt()
-    claude_path = paths.workspace / "CLAUDE.md"
-    agents_path = paths.workspace / "AGENTS.md"
-    agents_path.write_text(prompt)
-    if claude_path.is_symlink() or claude_path.exists():
-        claude_path.unlink()
-    os.symlink("AGENTS.md", claude_path)
+    _write_assistant_instruction_pair(paths.workspace, prompt)
 
 
 def clear_assistant_config(runtime_root: Path) -> None:
@@ -685,9 +703,4 @@ def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
     if not (paths.learnings_dir / "_index.md").exists():
         (paths.learnings_dir / "_index.md").write_text("# Learnings: system_assistant\n\n")
     prompt = _assistant_prompt()
-    claude_path = paths.workspace / "CLAUDE.md"
-    agents_path = paths.workspace / "AGENTS.md"
-    agents_path.write_text(prompt)
-    if claude_path.is_symlink() or claude_path.exists():
-        claude_path.unlink()
-    os.symlink("AGENTS.md", claude_path)
+    _write_assistant_instruction_pair(paths.workspace, prompt)

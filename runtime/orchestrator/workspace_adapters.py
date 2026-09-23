@@ -2036,20 +2036,58 @@ def write_canonical_instruction_pair(workspace: Path, content: str) -> None:
         elif agents_state.kind == "regular":
             if agents_state.data != data:
                 _atomic_write_regular(agents, data, agents_state.mode or 0o644)
-        else:  # symlink — never write through it
-            agents.unlink()
+        else:  # symlink — atomic replace, never write through it
             _atomic_write_regular(agents, data)
     except OSError as exc:
         raise InstructionPairConflict(agents, f"canonical write failed: {exc}")
 
     # ── CLAUDE.md: raw relative link to AGENTS.md ──
+    if not _claude_link_is_canonical(workspace, claude_state):
+        try:
+            _replace_with_canonical_claude_link(claude)
+        except OSError as exc:
+            raise InstructionPairConflict(claude, f"link creation failed: {exc}")
+
+
+def _stage_canonical_claude_link(workspace: Path) -> Path:
+    """Create an owned sibling raw relative ``CLAUDE.md -> AGENTS.md`` link.
+
+    Returns the staging path. The staging name is reserved collision-safely via
+    ``os.symlink`` (``FileExistsError`` retries); the caller owns and must
+    clean up the returned sibling if it is not moved into place.
+    """
+    for _ in range(64):
+        candidate = workspace / (
+            f"{CANONICAL_CLAUDE_NAME}.happyranch-{_timestamp_suffix()}.lnk"
+        )
+        try:
+            os.symlink(CANONICAL_CLAUDE_LINK_TARGET, candidate)
+        except FileExistsError:
+            continue
+        return candidate
+    raise OSError("could not reserve an owned instruction-link staging name")
+
+
+def _replace_with_canonical_claude_link(claude: Path) -> None:
+    """Atomically replace *claude* with the canonical raw relative link.
+
+    The new link is fully created under an owned sibling first and only then
+    ``os.replace``d into place (``rename(2)``), so no unlink-before-success
+    window exists: a failed creation or replacement leaves the pre-existing
+    path — regular file, foreign link or absent — exactly as it was. On any
+    ``OSError`` the owned staging sibling is removed and the error propagates.
+    """
+    staged: Path | None = None
     try:
-        if not _claude_link_is_canonical(workspace, claude_state):
-            if claude_state.kind != "absent":
-                claude.unlink()
-            os.symlink(CANONICAL_CLAUDE_LINK_TARGET, claude)
-    except OSError as exc:
-        raise InstructionPairConflict(claude, f"link creation failed: {exc}")
+        staged = _stage_canonical_claude_link(claude.parent)
+        os.replace(staged, claude)
+    except OSError:
+        if staged is not None:
+            try:
+                staged.unlink()
+            except OSError:
+                pass
+        raise
 
 
 class ClaudeWorkspaceAdapter:

@@ -4206,10 +4206,24 @@ def test_set_executor_drift_tripwire_all_provider_shapes(
 
         violations: list[str] = []
 
+        declared_names = {_Path(rel).name for rel in declared_files}
+
         def _check(p, op):
             s = str(p)
-            if (s == ws_root or s.startswith(ws_root + _os.sep)) and s not in allowed:
-                violations.append(f"{op} {s}")
+            if not (s == ws_root or s.startswith(ws_root + _os.sep)):
+                return
+            if s in allowed:
+                return
+            # Owned collision-reserved staging siblings for a declared
+            # bootstrap-owned file (e.g. ``CLAUDE.md.happyranch-<stamp>.lnk``)
+            # are atomically renamed into place; an unrenamed one is still a
+            # violation. This keeps the tripwire exact for stray paths.
+            parent = _os.path.dirname(s)
+            base = _os.path.basename(s)
+            if parent == ws_root and base.endswith(".lnk") and ".happyranch-" in base:
+                if base.split(".happyranch-", 1)[0] in declared_names:
+                    return
+            violations.append(f"{op} {s}")
 
         real_write_text = _Path.write_text
         real_write_bytes = _Path.write_bytes
@@ -7295,23 +7309,105 @@ def _audit_agent_managed(org_state) -> list:
     ]
 
 
+def _reopen_daemon(daemon_state, runtime):
+    """Tear down the live app/runtime/DB handles and construct a genuinely fresh
+    daemon/runtime/app from the same persisted org root and SQLite DB."""
+    from runtime.config import Settings
+    from runtime.daemon.app import create_app
+    from runtime.daemon.state import DaemonState
+    from runtime.runtime import RuntimeDir
+
+    for org in list(daemon_state.orgs.values()):
+        org.close()
+    daemon_state.orgs.clear()
+    store = getattr(daemon_state, "direct_connect_authority_store", None)
+    if store is not None:
+        store.close()
+        daemon_state.direct_connect_authority_store = None
+    fresh_state = DaemonState.from_runtime(RuntimeDir(runtime.root), Settings())
+    fresh_app = create_app(fresh_state)
+    return fresh_state, fresh_app
+
+
+def _startup_pair_gate(orch, agent_name, monkeypatch):
+    """Invoke the REAL ``Orchestrator._run_agent`` startup seam with a launch
+    spy. Returns ``(refusal_message_or_None, spy)``. The readiness marker is
+    satisfied so the assertion isolates the canonical instruction-pair gate."""
+    from unittest.mock import MagicMock
+
+    from runtime.orchestrator.executors import ExecutorResult
+    from runtime.orchestrator.orchestrator import WorkspaceNotInitialized
+
+    monkeypatch.setattr(orch, "_readiness_marker", lambda ws, p: ws / "AGENTS.md")
+    monkeypatch.setattr(orch, "_build_session_id", lambda: "sess-8753")
+    # Use the legacy uncontained launch body so the launch spy is invoked
+    # synchronously; the containment supervisor is unrelated to the pair gate.
+    monkeypatch.setattr(orch, "_host_supervisor", None)
+    task_id = orch.create_task("ping")
+    spy = MagicMock()
+    spy.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="sess-8753",
+    )
+    with patch.object(orch, "_build_executor", return_value=spy):
+        try:
+            orch._run_agent(task_id, agent_name, "any prompt")
+        except WorkspaceNotInitialized as exc:
+            return str(exc), spy
+    return None, spy
+
+
+def _instruction_path_state(path):
+    import stat as _stat
+
+    if not os.path.lexists(path):
+        return ("absent", None, None, None)
+    st = os.lstat(path)
+    if _stat.S_ISLNK(st.st_mode):
+        return ("symlink", os.readlink(path), st.st_mode & 0o7777, st.st_uid)
+    if _stat.S_ISREG(st.st_mode):
+        return ("regular", path.read_bytes(), st.st_mode & 0o7777, st.st_uid)
+    return ("other", None, st.st_mode & 0o7777, st.st_uid)
+
+
+def _owned_temp_residue(workspace):
+    names = []
+    for root in (workspace, workspace / ".claude", workspace / ".agents"):
+        if not root.is_dir():
+            continue
+        for p in root.iterdir():
+            if ".happyranch-" in p.name and not p.name.endswith(".bak"):
+                names.append(str(p.relative_to(workspace)))
+    return sorted(names)
+
+
 @pytest.mark.parametrize("boundary", ["B0", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8"])
 def test_executor_switch_abrupt_death_b0_b8_retains_state_then_retry(
-    tmp_home, app, org_state, auth_headers, boundary,
+    tmp_home, app, org_state, auth_headers, daemon_state, runtime, boundary,
+    monkeypatch,
 ):
     """THR-262 Slice B / founder seq59 C9: a REAL owned disposable process is
-    SIGKILLed at each named Step 0-5 boundary. Reopen performs no automatic
-    restore and writes no persistent recovery record; the durable pair,
-    preservation copies and authoritative audit/executor are observed
-    honestly; an incomplete pair (B0-B3) refuses at startup while a complete
-    pair (B4-B8) is valid; the explicit operator ``init-agent`` retry then
-    completes the pair and a second retry is idempotent."""
+    SIGKILLed at each named Step 0-5 boundary; the original app/runtime/DB
+    handles are then torn down and a genuinely fresh daemon/runtime/app is
+    constructed from the same persisted org root and SQLite DB. Reopen performs
+    no automatic restore and writes no persistent recovery record. The REAL
+    ``Orchestrator._run_agent`` startup seam (launch spy) refuses incomplete or
+    non-canonical pairs with an actionable ``init-agent`` message and zero
+    executor launch, while valid pairs proceed. The operator ``init-agent``
+    retry then reaches a terminal done/all_done result and a second retry is
+    idempotent."""
     from runtime.orchestrator.workspace_adapters import instruction_pair_refusal
 
     workspace = _seed_incomplete_pair_workspace(org_state)
+    external = tmp_home / "external_sentinel.md"
+    external.write_text("external sentinel\n")
+    external_hash = hashlib.sha256(external.read_bytes()).hexdigest()
     agents_path = workspace / "AGENTS.md"
     original_bytes = agents_path.read_bytes()
     audit_before = _audit_agent_managed(org_state)
+    authoritative_before = prompt_loader.load_agent(
+        OrgPaths(root=org_state.root), "dev_agent",
+    ).executor
+    assert authoritative_before == "claude"
 
     pid = os.fork()
     if pid == 0:  # pragma: no cover - child process
@@ -7331,14 +7427,31 @@ def test_executor_switch_abrupt_death_b0_b8_retains_state_then_retry(
         f"artifacts={_disk_artifacts(workspace)}"
     )
 
-    # ── Reopen: no automatic restore, no persistent recovery record ──
+    # ── Genuine reopen: close live handles, rebuild from persisted state ──
+    fresh_state, fresh_app = _reopen_daemon(daemon_state, runtime)
+    fresh_org = fresh_state.orgs["alpha"]
+    assert fresh_org.db is not org_state.db
+
+    # ── No persistent recovery record / journal / receipt ──
     for name in _disk_artifacts(workspace):
         lowered = name.lower()
         assert "journal" not in lowered, f"{boundary}: persistent journal {name}"
         assert "receipt" not in lowered, f"{boundary}: durable receipt {name}"
         assert "recovery" not in lowered, f"{boundary}: recovery record {name}"
+    for root in (fresh_org.root, runtime.root):
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            lowered = path.name.lower()
+            assert "recovery" not in lowered, f"{boundary}: recovery record {path}"
+            assert "journal" not in lowered, f"{boundary}: journal {path}"
 
-    # ── Startup pair verdict (the read-only gate classifier) ──
+    # ── Exact on-disk instruction state (bytes/type/raw link/mode/uid) ──
+    agents_state = _instruction_path_state(agents_path)
+    claude_state = _instruction_path_state(workspace / "CLAUDE.md")
+    assert agents_state[0] in ("absent", "regular"), agents_state
+    assert claude_state[0] in ("absent", "symlink", "regular"), claude_state
+
     verdict = instruction_pair_refusal(workspace)
     if boundary in _KILL_INCOMPLETE:
         assert verdict is not None, (
@@ -7346,8 +7459,15 @@ def test_executor_switch_abrupt_death_b0_b8_retains_state_then_retry(
         )
     else:
         assert verdict is None, f"{boundary}: expected a valid pair, got {verdict!r}"
+        assert agents_state == ("regular", None, agents_state[2], agents_state[3]) or (
+            agents_state[0] == "regular"
+        )
+        assert claude_state[0] == "symlink"
+        assert claude_state[1] == "AGENTS.md"
+        assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
 
-    # ── Preservation copies (barrier reached only from B3 onward) ──
+    # ── Complete owned temp/backup inventory ──
+    assert _owned_temp_residue(workspace) == []
     backups = sorted(workspace.glob("AGENTS.md.happyranch-*.bak"))
     if boundary in ("B0", "B1", "B2"):
         assert not backups, f"{boundary}: unexpected preservation copy {backups}"
@@ -7357,25 +7477,64 @@ def test_executor_switch_abrupt_death_b0_b8_retains_state_then_retry(
             f"{boundary}: preservation copy must hold the original bytes"
         )
 
-    # ── Authoritative audit unchanged (Step 5 never ran) ──
-    assert _audit_agent_managed(org_state) == audit_before, (
+    # ── Both skill roots stay symmetric (union-before-reconcile) ──
+    claude_skills = workspace / ".claude" / "skills"
+    agents_skills = workspace / ".agents" / "skills"
+    assert claude_skills.exists() == agents_skills.exists(), (
+        f"{boundary}: asymmetric skill roots "
+        f"{claude_skills.exists()}/{agents_skills.exists()}"
+    )
+    assert not claude_skills.is_symlink() or not agents_skills.is_symlink()
+
+    # ── External sentinel unchanged ──
+    assert hashlib.sha256(external.read_bytes()).hexdigest() == external_hash
+
+    # ── Authoritative executor frontmatter + no fabricated audit row ──
+    authoritative = prompt_loader.load_agent(
+        OrgPaths(root=fresh_org.root), "dev_agent",
+    ).executor
+    expects_new = boundary in ("B7", "B8")
+    assert authoritative == ("codex" if expects_new else "claude"), (
+        f"{boundary}: authoritative executor {authoritative!r}"
+    )
+    assert _audit_agent_managed(fresh_org) == audit_before, (
         f"{boundary}: an agent_managed audit row was written"
     )
 
-    # ── Explicit operator retry: completes the canonical pair ──
-    _run_init_retry(app, auth_headers, "dev_agent")
+    # ── REAL startup seam: refusal for incomplete pairs, launch for valid ──
+    refusal, spy = _startup_pair_gate(fresh_org.orchestrator, "dev_agent", monkeypatch)
+    if boundary in _KILL_INCOMPLETE:
+        assert refusal is not None, f"{boundary}: startup did not refuse"
+        assert "init-agent" in refusal and "dev_agent" in refusal, refusal
+        spy.run.assert_not_called()
+    else:
+        assert refusal is None, f"{boundary}: unexpected refusal {refusal!r}"
+        assert spy.run.call_count == 1, (
+            f"{boundary}: valid pair did not reach executor launch"
+        )
+
+    # ── Operator init-agent retry to a terminal done/all_done result ──
+    events = _run_init_retry(fresh_app, auth_headers, "dev_agent")
+    phases = [e.get("phase") for e in events]
+    assert "done" in phases, f"{boundary}: retry did not report done: {events}"
+    assert "all_done" in phases, f"{boundary}: retry did not report all_done: {events}"
     assert instruction_pair_refusal(workspace) is None, (
         f"{boundary}: init-agent retry did not complete the pair"
     )
     assert agents_path.is_file() and not agents_path.is_symlink()
     assert (workspace / "CLAUDE.md").is_symlink()
     assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
+    # Retry never rewrites the authoritative executor setting.
+    after_retry = prompt_loader.load_agent(
+        OrgPaths(root=fresh_org.root), "dev_agent",
+    ).executor
+    assert after_retry == authoritative
 
     # ── Second retry is idempotent (pair and preservation copies stable) ──
     after_first = agents_path.read_bytes()
     link_first = os.readlink(workspace / "CLAUDE.md")
     backups_first = sorted(p.name for p in workspace.glob("*.bak"))
-    _run_init_retry(app, auth_headers, "dev_agent")
+    _run_init_retry(fresh_app, auth_headers, "dev_agent")
     assert agents_path.read_bytes() == after_first, (
         f"{boundary}: second retry rewrote AGENTS.md"
     )
@@ -7384,6 +7543,8 @@ def test_executor_switch_abrupt_death_b0_b8_retains_state_then_retry(
         f"{boundary}: second retry created an extra preservation copy"
     )
     assert instruction_pair_refusal(workspace) is None
+    assert hashlib.sha256(external.read_bytes()).hexdigest() == external_hash
+
 
 
 def test_init_agent_retry_stops_on_preserved_conflict_zero_mutation(
@@ -7417,3 +7578,150 @@ def test_init_agent_retry_stops_on_preserved_conflict_zero_mutation(
     assert sentinel.read_text() == "unrelated\n"
     assert not list(workspace.glob("*.bak"))
     assert not list(workspace.glob("*.tmp"))
+
+
+# ── TASK-8744 F3: distinct parametrized caught-exception B1-B8 matrix ───────
+#
+# Each boundary injects a plain in-process exception at the SAME seam the
+# SIGKILL matrix uses. Unlike the process-death proof, the route's own
+# bounded rollback runs; B1-B5 must restore the exact prior instruction pair
+# and executor, and B6-B8 must surface an honest non-success without residue.
+# This is deliberately separate from (and never substitutes for) the real
+# SIGKILL/reopen proof above.
+
+_CAUGHT_ROLLBACK = ("B1", "B2", "B3", "B4", "B5")
+
+
+def _install_boundary_exception(boundary, agent_name, monkeypatch):
+    import pathlib
+
+    import runtime.daemon.routes.agents as agents_mod
+    import runtime.orchestrator.workspace_adapters as wa
+
+    if boundary == "B1":
+        monkeypatch.setattr(
+            agents_mod,
+            "_executor_switch_materialize",
+            lambda *a, **k: ["injected union materialization failure"],
+        )
+    elif boundary == "B2":
+        def boom(self, *a, **k):
+            raise RuntimeError("injected pre-write bootstrap failure")
+
+        monkeypatch.setattr(
+            agents_mod.ContextBuilder, "ensure_workspace_ready", boom,
+        )
+    elif boundary == "B3":
+        real_atomic = wa._atomic_write_regular
+
+        def atomic_boom(path, data, mode=0o644):
+            if path.name == "AGENTS.md":
+                raise OSError("injected AGENTS write failure")
+            return real_atomic(path, data, mode)
+
+        monkeypatch.setattr(wa, "_atomic_write_regular", atomic_boom)
+    elif boundary == "B4":
+        def pair_boom(*a, **k):
+            raise RuntimeError("injected instruction-pair write failure")
+
+        monkeypatch.setattr(wa, "write_canonical_instruction_pair", pair_boom)
+    elif boundary == "B5":
+        real_ready = agents_mod.ContextBuilder.ensure_workspace_ready
+
+        def ready_then_raise(self, *a, **k):
+            real_ready(self, *a, **k)
+            raise RuntimeError("injected post-pair bootstrap failure")
+
+        monkeypatch.setattr(
+            agents_mod.ContextBuilder, "ensure_workspace_ready",
+            ready_then_raise,
+        )
+    elif boundary == "B6":
+        real_replace = os.replace
+
+        def replace_boom(src, dst, *a, **k):
+            if str(dst).endswith(f"{agent_name}.md"):
+                raise OSError("injected frontmatter replace failure")
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr(os, "replace", replace_boom)
+    elif boundary == "B7":
+        real_unlink = pathlib.Path.unlink
+
+        def unlink_boom(self, *a, **k):
+            if self.name == "settings.json":
+                raise OSError("injected clean unlink failure")
+            return real_unlink(self, *a, **k)
+
+        monkeypatch.setattr(pathlib.Path, "unlink", unlink_boom)
+    elif boundary == "B8":
+        def audit_boom(self, *a, **k):
+            raise RuntimeError("injected audit failure")
+
+        monkeypatch.setattr(agents_mod.AuditLogger, "log_agent_managed", audit_boom)
+    else:  # pragma: no cover
+        raise AssertionError(f"unknown boundary {boundary}")
+
+
+@pytest.mark.parametrize("boundary", ["B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8"])
+def test_executor_switch_caught_exception_b1_b8_rolls_back_in_process(
+    tmp_home, app, org_state, auth_headers, boundary, monkeypatch,
+):
+    workspace = _seed_incomplete_pair_workspace(org_state)
+    external = tmp_home / "caught_external_sentinel.md"
+    external.write_text("external sentinel\n")
+    external_hash = hashlib.sha256(external.read_bytes()).hexdigest()
+    agents_path = workspace / "AGENTS.md"
+    claude_path = workspace / "CLAUDE.md"
+    agents_before = _instruction_path_state(agents_path)
+    claude_before = _instruction_path_state(claude_path)
+    audit_before = _audit_agent_managed(org_state)
+
+    _install_boundary_exception(boundary, "dev_agent", monkeypatch)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    r = client.put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex", "clean": True},
+        headers=auth_headers,
+    )
+
+    assert r.status_code != 200, (
+        f"{boundary}: caught failure unexpectedly succeeded: {r.text}"
+    )
+    if boundary in _CAUGHT_ROLLBACK:
+        assert r.status_code == 400, (boundary, r.status_code, r.text)
+        code = r.json()["detail"]["code"]
+        assert code in (
+            "executor_materialization_failed", "executor_bootstrap_failed",
+        ), (boundary, code)
+    else:
+        assert r.status_code >= 500, (boundary, r.status_code, r.text)
+
+    # ── Authoritative executor frontmatter ──
+    authoritative = prompt_loader.load_agent(
+        OrgPaths(root=org_state.root), "dev_agent",
+    ).executor
+    if boundary in _CAUGHT_ROLLBACK or boundary == "B6":
+        assert authoritative == "claude", (boundary, authoritative)
+    else:
+        assert authoritative == "codex", (boundary, authoritative)
+
+    # ── Instruction pair exact in-process rollback (B1-B5) ──
+    if boundary in _CAUGHT_ROLLBACK:
+        assert _instruction_path_state(agents_path) == agents_before, (
+            f"{boundary}: AGENTS.md not restored exactly"
+        )
+        assert _instruction_path_state(claude_path) == claude_before, (
+            f"{boundary}: CLAUDE.md not restored exactly"
+        )
+
+    # ── No fabricated audit row; no owned temp residue; external unchanged ──
+    assert _audit_agent_managed(org_state) == audit_before, (
+        f"{boundary}: an agent_managed audit row was written"
+    )
+    assert _owned_temp_residue(workspace) == [], (
+        f"{boundary}: owned temp/staging residue left: "
+        f"{_owned_temp_residue(workspace)}"
+    )
+    assert hashlib.sha256(external.read_bytes()).hexdigest() == external_hash
