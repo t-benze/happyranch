@@ -30,6 +30,7 @@
  *   is a shared-transport/API decision outside this radius.
  */
 import type { DaemonCapacitySnapshot } from '@/lib/api/types';
+import { translate, type Locale, type MessageKey } from '@/lib/i18n';
 
 export interface CapacityPair {
   queue_workers: number;
@@ -100,15 +101,20 @@ export function parseCapacityText(text: string): NumericTextResult {
   return { ok: true, value };
 }
 
+/**
+ * Localized field-level rejection copy. `fieldLabel` is the already-localized
+ * field label; `locale` is explicit because this module never calls hooks.
+ */
 export function numericTextMessage(
   reason: NumericTextRejection,
   fieldLabel: string,
+  locale: Locale,
 ): string {
-  if (reason === 'blank') return `${fieldLabel} is required.`;
+  if (reason === 'blank') return translate(locale, 'settings.capacity.numeric.blank', { field: fieldLabel });
   if (reason === 'grammar') {
-    return `${fieldLabel} must be a whole number greater than zero, written in plain digits.`;
+    return translate(locale, 'settings.capacity.numeric.grammar', { field: fieldLabel });
   }
-  return `${fieldLabel} is outside the range this editor can represent exactly. The entered text is unchanged. This is a limit of this editor, not a limit of the daemon.`;
+  return translate(locale, 'settings.capacity.numeric.representation', { field: fieldLabel });
 }
 
 export const REASON_MAX_LENGTH = 1000;
@@ -199,10 +205,17 @@ export function resolvedNextStart(
   };
 }
 
-export const CAPACITY_FIELD_LABELS: Record<string, string> = {
-  queue_workers: 'Task session slots',
-  host_global_session_cap: 'Host session admission limit',
+/** Catalog keys for the two capacity field labels (config keys stay verbatim). */
+export const CAPACITY_FIELD_LABEL_KEYS: Record<string, MessageKey> = {
+  queue_workers: 'settings.capacity.field.queue_workers',
+  host_global_session_cap: 'settings.capacity.field.host_global_session_cap',
 };
+
+/** Localized field label; an unknown key renders verbatim. */
+export function capacityFieldLabel(key: string, locale: Locale): string {
+  const messageKey = CAPACITY_FIELD_LABEL_KEYS[key];
+  return messageKey === undefined ? key : translate(locale, messageKey);
+}
 
 // ---------------------------------------------------------------------------
 // Draft consequence arithmetic
@@ -257,14 +270,22 @@ export function draftConsequence(
   return { status: 'ok', resolved, workerPoolTotal, nonTaskContribution, direction };
 }
 
-export function consequenceMessage(direction: 'below' | 'aligned' | 'above', cap: number, total: number): string {
+export function consequenceMessage(
+  direction: 'below' | 'aligned' | 'above',
+  cap: number,
+  total: number,
+  locale: Locale,
+): string {
+  // Numbers are passed as `String(n)` so they render byte-identically in every
+  // locale (no locale grouping).
+  const params = { cap: String(cap), total: String(total) };
   if (direction === 'below') {
-    return `Host cap ${cap} is below the worker-pool total ${total}. Additional sessions will wait if more request admission than the limit allows. Saving remains permitted.`;
+    return translate(locale, 'settings.capacity.consequence.below', params);
   }
   if (direction === 'above') {
-    return `Host cap ${cap} is above the worker-pool total ${total}. Extra admission room does not create additional producers.`;
+    return translate(locale, 'settings.capacity.consequence.above', params);
   }
-  return 'These configured limits align. Provider and runtime conditions may still limit work.';
+  return translate(locale, 'settings.capacity.consequence.aligned');
 }
 
 // ---------------------------------------------------------------------------
@@ -282,14 +303,17 @@ export function sameBaseValues(a: CapacityBase, b: CapacityBase): boolean {
 export function formatPresenceValue(
   value: number,
   present: boolean,
+  locale: Locale,
 ): string {
-  return present ? String(value) : 'Not set in file';
+  return present ? String(value) : translate(locale, 'settings.capacity.notSetInFile');
 }
 
 /** "Last received HH:MM:SS (this browser's clock)" — never a server age. */
-export function formatReceipt(receiptAt: number | null): string | null {
+export function formatReceipt(receiptAt: number | null, locale: Locale = 'en'): string | null {
   if (receiptAt === null) return null;
   const at = new Date(receiptAt);
   const pad = (n: number) => String(n).padStart(2, '0');
-  return `Last received ${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())} (this browser's clock)`;
+  return translate(locale, 'settings.capacity.receipt', {
+    time: `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`,
+  });
 }

@@ -301,6 +301,351 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'onboarding.connect.how.body':
     '提示携带一个短期、限定范围、有效期约 {duration} 的令牌。复制不会运行任何内容——在你自行粘贴并运行之前，机器上不会执行任何操作。连接只是让该 CLI 可供选择；指派智能体在其上运行是另一个后续步骤。',
   'onboarding.connect.how.duration': '30 分钟',
+  // --- W2c: settings/page (anchor; keys go below) ---
+  'settings.page.title': '设置',
+  'settings.page.meta': '守护进程与组织配置。',
+  'settings.page.loading': '正在加载设置…',
+  'settings.page.loadError': '无法加载设置。',
+  'settings.nav.heading': '配置',
+  'settings.nav.daemonCapacity': '守护进程 / 容量',
+  'settings.nav.assistant': '助手',
+  'settings.nav.organization': '组织',
+  'settings.nav.executors': '执行器',
+  'settings.nav.preferences': '偏好设置',
+  'settings.panel.assistant.title': '系统助手',
+  'settings.panel.organization.title': '组织',
+  'settings.panel.organization.description':
+    '组织级设置。更改即时生效——守护进程会自动热加载。',
+  'settings.panel.executors.title': '执行器',
+  'settings.panel.executors.description':
+    '本机已注册的智能体 CLI。守护进程在这些 CLI 上启动智能体——可连接新的 CLI，或管理已注册的 CLI。',
+  'settings.panel.preferences.title': '偏好设置',
+  'settings.panel.preferences.description':
+    '仅适用于此浏览器的个人设置，不会保存到组织。',
+  // @w2c-end:page
+
+  // --- W2c: settings/preferences (anchor; keys go below) ---
+  'settings.preferences.languageHelp': '选择界面语言。更改会立即生效。',
+  'settings.preferences.status.pending': '正在保存语言选择…',
+  'settings.preferences.status.durable': '已保存在此浏览器中。',
+  'settings.preferences.status.failed': '无法保存在此浏览器中。该语言仅在本次会话中生效。',
+  // @w2c-end:preferences
+
+  // --- W2c: settings/assistant (anchor; keys go below) ---
+  'settings.assistant.state.uninitialized': '未初始化',
+  'settings.assistant.state.configured': '已配置',
+  'settings.assistant.state.staleOrBroken': '已过期或损坏',
+  'settings.assistant.loading': '正在加载…',
+  'settings.assistant.loadError': '无法加载助手状态。',
+  'settings.assistant.status.aria': '助手状态',
+  'settings.assistant.status.state': '状态',
+  'settings.assistant.executor': '执行器',
+  'settings.assistant.status.workspace': '工作区',
+  'settings.assistant.setup.aria': '设置操作',
+  'settings.assistant.setup.title': '设置',
+  'settings.assistant.setup.uninitializedBody':
+    '准备注册工作区，然后在下方注册一个执行器，或在该工作区中启动你的 CLI 并让它自行注册。',
+  'settings.assistant.setup.initializing': '正在初始化…',
+  'settings.assistant.setup.initialize': '初始化工作区',
+  'settings.assistant.setup.selfRegistration.title': '自行注册',
+  'settings.assistant.setup.selfRegistration.step1':
+    '在上方显示的工作区中打开你的智能体 CLI（claude、codex、opencode、pi 等）。',
+  'settings.assistant.setup.selfRegistration.step2': '让它注册自己；它会运行 {command}。',
+  'settings.assistant.setup.staleBody':
+    '工作区与已保存的配置不一致。修复会根据记录的执行器重建工作区，且不会清除你的注册。',
+  'settings.assistant.setup.repairing': '正在修复…',
+  'settings.assistant.setup.repair': '修复',
+  'settings.assistant.setup.configuredBody':
+    '重新配置会关闭所有打开的会话并清除已保存的配置，以便你从头注册另一个执行器。',
+  'settings.assistant.setup.reconfigure': '重新配置…',
+  'settings.assistant.reconfigure.title': '要重新配置助手吗？',
+  'settings.assistant.reconfigure.body':
+    '这会关闭所有打开的助手会话并清除已保存的配置。你需要重新注册执行器。',
+  'settings.assistant.reconfigure.confirming': '正在重新配置…',
+  'settings.assistant.reconfigure.confirm': '重新配置',
+  'settings.assistant.register.title': '注册执行器',
+  'settings.assistant.register.switchTitle': '切换执行器',
+  'settings.assistant.register.preserveNote':
+    '重新注册会保留工作区——服务器根据运行时根目录推导工作区，而不是根据此处的任何输入——并且同一时间只有一个执行器处于活动状态，因此注册会替换当前执行器。',
+  'settings.assistant.register.noRestart': '注册立即生效，无需重启守护进程。',
+  'settings.assistant.register.other': '其他…',
+  'settings.assistant.register.executorName': '执行器名称',
+  'settings.assistant.register.command': '命令',
+  'settings.assistant.register.argv': 'Argv（可选——默认为该命令）',
+  'settings.assistant.register.argvHint': '以空格分隔。留空则不带额外参数启动该命令。',
+  'settings.assistant.register.errorNoExecutor': '请选择或命名一个执行器。',
+  'settings.assistant.register.errorNoCommand': '请输入要启动的命令。',
+  'settings.assistant.register.errorHttp': '注册失败（HTTP {status}）。',
+  'settings.assistant.register.registering': '正在注册…',
+  'settings.assistant.register.submit': '注册',
+  // @w2c-end:assistant
+
+  // --- W2c: settings/organization (anchor; keys go below) ---
+  'settings.organization.saveFailed': '保存失败：{detail}',
+  'settings.organization.saved': '已保存。更改将在约 1 分钟内生效。',
+  'settings.organization.workHoursSaved': '已保存 ✓ — 将在下一次调度器轮询时生效（≈ 约 60 秒内）。',
+  'settings.organization.badge.live': '实时生效',
+  'settings.organization.session.heading': '执行会话',
+  'settings.organization.session.timeout': '执行会话超时（秒）',
+  'settings.organization.session.timeoutPlaceholder': '使用系统默认值',
+  'settings.organization.dreaming.heading': '梦境',
+  'settings.organization.enabled': '已启用',
+  'settings.organization.dreaming.scheduleTime': '计划时间',
+  'settings.organization.dreaming.scheduleTimezone': '计划时区',
+  'settings.organization.dreaming.catchUp': '启动时补跑',
+  'settings.organization.dreaming.agentMode': '智能体模式',
+  'settings.organization.dreaming.included': '包含的智能体',
+  'settings.organization.dreaming.excluded': '排除的智能体',
+  'settings.organization.dreaming.addAgentsPlaceholder': '添加智能体…',
+  'settings.organization.threads.heading': '会话',
+  'settings.organization.threads.invocationTimeout': '调用超时（秒）',
+  'settings.organization.threads.timeoutPlaceholder': '无',
+  'settings.organization.operating.heading': '运行控制',
+  'settings.organization.operating.description':
+    '组织范围的工时启用与智能体资格设置。调度器与层级节奏在 {link} 中配置。',
+  'settings.organization.operating.workHoursLink': '工时',
+  'settings.organization.operating.workHours': '工时',
+  'settings.organization.operating.on': '开',
+  'settings.organization.operating.off': '关',
+  'settings.organization.operating.eligibility': '智能体资格',
+  'settings.organization.operating.whitelist': '白名单（包含 {count} 个）',
+  'settings.organization.operating.allAgents': '所有智能体',
+  'settings.organization.operating.excluded': '，排除 {count} 个',
+  'settings.organization.operating.editEligibility': '编辑资格',
+  'settings.organization.saveBar.saving': '正在保存…',
+  'settings.organization.saveBar.save': '保存更改',
+  'settings.organization.saveBar.discard': '放弃',
+  'settings.organization.saveBar.shortcut': '⌘S 保存',
+  'settings.organization.disableDialog.title': '停用工时？',
+  'settings.organization.disableDialog.description':
+    '关闭此功能将停止所有智能体的全部计划唤醒。资格与层级配置会被保留；在你重新开启之前不会运行任何内容。',
+  'settings.organization.disableDialog.cancel': '取消',
+  'settings.organization.disableDialog.confirm': '停用',
+  // @w2c-end:organization
+
+  // --- W2c: settings/executors (anchor; keys go below) ---
+  'settings.executors.connected.custom': '你的自定义 CLI 已注册，所有组织均可使用。',
+  'settings.executors.connected.builtin': '此 CLI 已注册——守护进程现在可以用它启动智能体。',
+  'settings.executors.back': '返回执行器',
+  'settings.executors.connectCli': '连接 CLI',
+  'settings.executors.done': '完成',
+  'settings.executors.assignment.title': '按智能体分配执行器',
+  'settings.executors.assignment.body':
+    '请在{link}中为各个智能体分配执行器。每个智能体的执行器（claude、codex、opencode、pi）在入职时设定，无法在设置中更改。',
+  'settings.executors.assignment.agentsPage': '智能体页面',
+  'settings.executors.profiles.title': '自定义 CLI',
+  'settings.executors.profiles.description':
+    '你已连接的自定义执行器配置。移除后会将其从本机全局运行时存储中删除。',
+  'settings.executors.profiles.loading': '正在加载自定义 CLI…',
+  'settings.executors.profiles.loadError': '无法加载自定义执行器配置。',
+  'settings.executors.profiles.loadErrorDetail': '无法加载自定义执行器配置。{detail}',
+  'settings.executors.profiles.empty': '尚未注册自定义 CLI——请使用下方的{action}连接一个。',
+  'settings.executors.profiles.onMachine': '在本机上',
+  'settings.executors.profiles.notOnMachine': '不在本机上',
+  'settings.executors.profiles.executable': '可执行文件：{value}',
+  'settings.executors.profiles.noExecutable': '此配置未记录可执行文件。',
+  'settings.executors.profiles.path': '路径：{value}',
+  'settings.executors.profiles.removing': '正在移除…',
+  'settings.executors.profiles.confirmRemove': '确认移除',
+  'settings.executors.profiles.remove': '移除',
+  'settings.executors.profiles.removeFailed': '无法移除此配置。',
+  'settings.executors.binaries.intro':
+    '每个内置执行器 CLI 二进制文件在本机上的位置。路径保存在本机运行时配置中，并在下一次启动智能体时生效。使用下方的{connect}注册，或在某一行展开{advanced}自行输入绝对路径——系统不会自动扫描。',
+  'settings.executors.binaries.loading': '正在加载注册表…',
+  'settings.executors.binaries.loadError': '无法加载执行器二进制注册表。',
+  'settings.executors.binaries.loadErrorDetail': '无法加载执行器二进制注册表。{detail}',
+  'settings.executors.binaries.fresh.title': '本机尚未注册任何执行器 CLI',
+  'settings.executors.binaries.fresh.body':
+    '至少注册一个执行器 CLI 二进制文件后，守护进程才能启动智能体。请使用下方的{connect}，或在某一行展开{advanced}输入绝对路径（例如 {command} 的输出）。',
+  'settings.executors.binaries.validity.valid': '有效',
+  'settings.executors.binaries.validity.invalid': '路径无效',
+  'settings.executors.binaries.validity.unregistered': '未注册',
+  'settings.executors.binaries.registeredPath': '已注册路径：{path}',
+  'settings.executors.binaries.noPath': '尚未注册路径——连接之前，守护进程无法启动 {kind} 智能体。',
+  'settings.executors.binaries.advanced': '高级：手动输入路径',
+  'settings.executors.binaries.updatePath': '更新二进制路径',
+  'settings.executors.binaries.registerPath': '注册二进制路径',
+  'settings.executors.binaries.validating': '正在验证…',
+  'settings.executors.binaries.validate': '验证',
+  'settings.executors.binaries.registering': '正在注册…',
+  'settings.executors.binaries.register': '注册',
+  'settings.executors.binaries.checkValid': '看起来没问题——此路径为绝对路径、存在且可执行。',
+  'settings.executors.binaries.checkInvalid': '此路径无效。',
+  'settings.executors.binaries.validationFailed': '验证失败。',
+  'settings.executors.binaries.registerFailed': '无法注册此路径。',
+  // @w2c-end:executors
+
+  // --- W2c: settings/capacity (anchor; keys go below) ---
+  'settings.capacity.field.queue_workers': '任务会话槽位',
+  'settings.capacity.field.host_global_session_cap': '主机会话准入上限',
+  'settings.capacity.fieldJoiner': '和',
+  'settings.capacity.consequence.below':
+    '主机上限 {cap} 低于工作池总数 {total}。若请求准入的会话数超过上限，额外的会话将等待。仍允许保存。',
+  'settings.capacity.consequence.above':
+    '主机上限 {cap} 高于工作池总数 {total}。额外的准入余量不会创建更多生产者。',
+  'settings.capacity.consequence.aligned':
+    '这些已配置的上限相互一致。提供方和运行时条件仍可能限制工作。',
+  'settings.capacity.notSetInFile': '文件中未设置',
+  'settings.capacity.receipt': '最近接收于 {time}（本浏览器时钟）',
+  'settings.capacity.numeric.blank': '{field}为必填项。',
+  'settings.capacity.numeric.grammar': '{field}必须是大于零的整数，并以普通数字书写。',
+  'settings.capacity.numeric.representation':
+    '{field}超出了此编辑器可精确表示的范围。输入的文本保持不变。这是此编辑器的限制，而非守护进程的限制。',
+  'settings.capacity.readUnusable': '无法读取容量配置。编辑不可用。',
+  'settings.capacity.inconsistentResponse': '此响应中的容量详情不一致。',
+  'settings.capacity.refreshFailed': '无法刷新。当前状态未经验证。',
+  'settings.capacity.readBlockedSave':
+    '无法读取当前已保存的状态，因此未发送任何内容。请刷新并检查已保存的值后再保存。',
+  'settings.capacity.unknownOutcome':
+    '保存结果未知。你的草稿已保留。请重新连接并检查已保存的值后再重试。',
+  'settings.capacity.artifact.present': '仍残留一个临时产物；清理前请先检查。',
+  'settings.capacity.artifact.unknown': '临时产物状态未知；清理前请先检查。',
+  'settings.capacity.error.unauthorized': '未授权。需要有效的守护进程 bearer；未更改任何值。',
+  'settings.capacity.error.confirmOverride': '保存前请确认环境覆盖。',
+  'settings.capacity.error.rejectedValues':
+    '守护进程拒绝了这些值。{workersLabel}和{capLabel}都必须是大于零的整数，且原因不能为空。',
+  'settings.capacity.error.ifMatch':
+    '请先刷新已保存的设置再保存。此请求未发布新值。',
+  'settings.capacity.error.auditFailed':
+    '无法记录此更改。此请求未更改配置。',
+  'settings.capacity.error.configWriteFailed': '配置存储失败。此请求未发布新值。',
+  'settings.capacity.error.publicationUncertain':
+    '新配置已发布，但持久化、验证或清理未完成。这并不确认你的值会在下次启动时生效。重试前请检查已保存的值。',
+  'settings.capacity.ackReset': '环境覆盖已更改；保存前请重新确认。',
+  'settings.capacity.writeLocked':
+    '请先协调已保存的值再保存。选择变基到最新保存的值，或放弃草稿并接受它们。',
+  'settings.capacity.reasonRequired': '更改原因为必填项。',
+  'settings.capacity.reasonTooLong': '更改原因不得超过 {max} 个字符。',
+  'settings.capacity.checkFields': '保存前请检查高亮的字段。未发送任何内容。',
+  'settings.capacity.conflict.representation':
+    '最新保存的值超出了此编辑器可精确表示的范围。',
+  'settings.capacity.conflict.unreadable': '无法读取最新保存的值。',
+  'settings.capacity.conflict.changed': '已保存的设置在别处被更改。你的草稿已保留。',
+  'settings.capacity.title': '容量',
+  'settings.capacity.description':
+    '设置此守护进程可准入的会话数量。更改将保存到下次守护进程启动时生效。',
+  'settings.capacity.pill.allOrgs': '所有组织',
+  'settings.capacity.pill.restartRequired': '更改需要重启',
+  'settings.capacity.bearer':
+    '需要守护进程 bearer。基于 bearer 的授权无法归属到经过验证的个人。此资源影响每个组织。',
+  'settings.capacity.loading': '正在加载守护进程容量…',
+  'settings.capacity.loadError': '无法加载守护进程容量。未显示任何值。{detail}',
+  'settings.capacity.initialRepresentation':
+    '容量值超出了此编辑器可精确表示的范围。未显示任何值，编辑不可用。',
+  'settings.capacity.latestRepresentation':
+    '最新容量值超出了此编辑器可精确表示的范围。基于此次读取无法编辑。',
+  'settings.capacity.lastKnownPointer': '先前接收的值显示在下方“最近已知”中。',
+  'settings.capacity.editingUnavailableRead': '基于此次读取无法编辑。',
+  'settings.capacity.refreshFailedKept':
+    '你的草稿、原因和确认均已保留。在成功读取并确认已保存的修订版本之前，保存被阻止。',
+  'settings.capacity.running.noteLastKnown':
+    '——本浏览器最近接收的值；未经当前读取再次确认',
+  'settings.capacity.running.noteObserved': '——从守护进程观测；不会因保存而改变',
+  'settings.capacity.running.lastKnown': '最近已知',
+  'settings.capacity.running.now': '当前运行',
+  'settings.capacity.card.workersLabel': '运行中的任务会话槽位',
+  'settings.capacity.card.workersDescription': '随守护进程启动的工作者。在所有组织间共享。',
+  'settings.capacity.card.capLabel': '运行中的主机会话准入上限',
+  'settings.capacity.card.unavailable': '不可用',
+  'settings.capacity.card.capUnavailableDescription':
+    '不可用——{reason}。无法从此页面验证已保存值的运行时效果。',
+  'settings.capacity.card.capDescription':
+    '已准入会话的上限。这是上限，而不是活动或空闲会话的数量。',
+  'settings.capacity.effectiveDiffers':
+    '启动时配置的主机上限为 {startup}；当前生效值为 {effective}——{reason} 启动值并不是可用槽位的数量。',
+  'settings.capacity.table.title': '启动时、已保存与下次启动',
+  'settings.capacity.table.setting': '设置',
+  'settings.capacity.table.running': '启动时运行值',
+  'settings.capacity.table.saved': '文件中保存值',
+  'settings.capacity.table.next': '预计下次启动值',
+  'settings.capacity.table.note':
+    '预计下次启动值为尽力估算，基于此守护进程观测到的配置，并假设环境和工作者拓扑不变。这不是保证。',
+  'settings.capacity.restartPending': '待重启',
+  'settings.capacity.noRestartPending': '无待处理的重启',
+  'settings.capacity.restartPendingNote':
+    '某个已持久化的下次启动值与运行中的启动快照不同。保存永远不会实时生效，且此页面无法重启守护进程。',
+  'settings.capacity.runningMatches':
+    '运行配置与预期值一致。这仅表示观测到的数值相等；并不表示发生过重启，也不表示此页面上的任何操作导致了重启。',
+  'settings.capacity.change.title': '更改已保存的设置',
+  'settings.capacity.workersHelp':
+    '所有组织共享的最大任务工作者槽位数。其他限制可能使运行中的会话更少。',
+  'settings.capacity.capHelp':
+    '由任务、会话线程、梦境、唤醒和计划会话共享。不会限制机器上的所有进程，并且不包括无头 System Assistant 和作业进程。',
+  'settings.capacity.guidanceOnly': '仅供参考，并非强制范围。',
+  'settings.capacity.draft.changes': '草稿会更改已保存的配置',
+  'settings.capacity.draft.matches': '草稿与已保存的配置一致',
+  'settings.capacity.draft.capLabel': '主机准入上限',
+  'settings.capacity.draft.poolTotal': '工作池总数',
+  'settings.capacity.draft.poolBreakdown': '{task} 个任务 + {other} 个其他生产者',
+  'settings.capacity.draft.poolRepresentation':
+    '工作池总数超出了此编辑器可精确表示的范围。',
+  'settings.capacity.rationaleOnly': '这些值与已保存的文件相同；只有原因不同。',
+  'settings.capacity.reason.label': '更改原因',
+  'settings.capacity.reason.limitReached': '——已达上限',
+  'settings.capacity.reason.help': '简要说明预期的调整。原因会包含在保存请求中。',
+  'settings.capacity.reason.placeholder': '例如：新增第二个团队后队列延迟增加；提高任务槽位。',
+  'settings.capacity.override.heading': '环境覆盖生效中',
+  'settings.capacity.override.shadowed': {
+    other: '{fields}由环境设置。',
+  },
+  'settings.capacity.override.preview':
+    '使用此草稿的预计下次启动值：{workersLabel} {workers}，{capLabel} {cap}。假设环境和工作者拓扑不变。',
+  'settings.capacity.override.noPreview':
+    '无法基于当前读取预览预计的下次启动值。你的确认将按输入保留。',
+  'settings.capacity.override.ack':
+    '我了解仅靠重启并不能让已保存的文件优先于环境设置。',
+  'settings.capacity.save': '保存到下次重启',
+  'settings.capacity.saving': '正在保存…',
+  'settings.capacity.discard': '放弃草稿',
+  'settings.capacity.refresh': '刷新运行状态',
+  'settings.capacity.unsaved': '有未保存的更改。离开或重新加载将丢弃此草稿。',
+  'settings.capacity.outcome.saving': '正在保存到下次重启…',
+  'settings.capacity.outcome.savedPending': '已保存到下次重启。运行中的上限未改变。',
+  'settings.capacity.outcome.savedNoPending': '已保存。这些值没有待处理的重启。',
+  'settings.capacity.outcome.overridden': {
+    other: '已保存的值被覆盖：{fields}由环境设置。预计下次启动值：{workersLabel} {workers}，{capLabel} {cap}。',
+  },
+  'settings.capacity.submitted': '你基于修订版本 {revision} 提交了 {workersLabel} {workers}，{capLabel} {cap}。',
+  'settings.capacity.draftHeld':
+    '你当前的草稿为 {workersLabel} {workers}，{capLabel} {cap}，仍未保存。它与已提交的值分开保存。',
+  'settings.capacity.checkSaved': '检查已保存的值',
+  'settings.capacity.conflictUnusableSuffix':
+    '不显示最新值，也不提供变基。请先成功读取已保存的值再保存。',
+  'settings.capacity.changedElsewhere': '配置已在别处更改。',
+  'settings.capacity.compare.acceptedBase': '已接受的基准',
+  'settings.capacity.compare.yourDraft': '你的草稿',
+  'settings.capacity.compare.currentlySaved': '当前已保存',
+  'settings.capacity.compare.pair': '{workersLabel} {workers}，{capLabel} {cap}',
+  'settings.capacity.compare.couldNotBeRead': '无法读取',
+  'settings.capacity.rebase': '保留我的草稿，变基到最新值',
+  'settings.capacity.acceptLatest': '放弃草稿，接受最新值',
+  'settings.capacity.details.summary': '容量详情',
+  'settings.capacity.details.producerEnvelope': '生产者总量',
+  'settings.capacity.details.producerComponents': '生产者组成',
+  'settings.capacity.details.componentsValue':
+    '{task} 个任务，{thread} 个会话线程，{dream} 个梦境，{wake} 个唤醒，{schedule} 个计划',
+  'settings.capacity.details.runningProvenance': '运行值来源',
+  'settings.capacity.details.revision': '修订版本',
+  'settings.capacity.details.audit': '审计',
+  'settings.capacity.details.auditBody':
+    '原因会包含在保存请求中。审计在组织本地记录，并归属于守护进程 bearer；此页面不保证审计条目最终完成。',
+  'settings.capacity.dialog.aria': '放弃容量草稿确认',
+  'settings.capacity.dialog.title': '放弃未保存的容量更改？',
+  'settings.capacity.dialog.description':
+    '你的草稿尚未保存。留在此页继续编辑，或放弃草稿并继续导航。',
+  'settings.capacity.dialog.stay': '留在此页',
+  'settings.capacity.dialog.discardContinue': '放弃并继续',
+  'settings.capacity.headline.notSet':
+    '已保存的值为“文件中未设置”。这与下方任何值都不相等。',
+  'settings.capacity.headline.matchesSubmitted':
+    '已保存的值现在与你提交的值一致（{workers} / {cap}）。这并不能确认是你的请求导致的。',
+  'settings.capacity.headline.matchesDraft':
+    '已保存的值现在与你当前的草稿一致（{draftWorkers} / {draftCap}），但与你提交的值（{workers} / {cap}）不同。与草稿一致并不是保存结果，也不能确认是你的请求导致的。',
+  'settings.capacity.headline.unchanged':
+    '已保存的值与你已接受的基准相同。你的请求结果仍然未知。',
+  'settings.capacity.headline.differs': '已保存的值仍与你提交的值不同。',
+  // @w2c-end:capacity
+
 };
 
 export default zhCN;

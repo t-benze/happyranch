@@ -150,10 +150,19 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
     }
   });
 
-  it('keeps the Settings copy-bearing subroutes english-only', () => {
-    for (const token of ['settings/*', 'assistant', 'daemon-capacity', 'organization', 'executors']) {
-      expect(classifyRouteToken(token)?.status, token).toBe('english-only');
+  it('classifies the W2c Settings copy-bearing subroutes (incl. gated preferences) translated', () => {
+    for (const token of [
+      'settings/*',
+      'assistant',
+      'daemon-capacity',
+      'organization',
+      'executors',
+      'preferences',
+    ]) {
+      expect(classifyRouteToken(token)?.status, token).toBe('translated');
     }
+    expect(scannedIdentities()).toContain('SettingsPage.tsx:preferences');
+    expect(surfacesFor('settings')).toContain('PreferencesSection');
   });
 
   it('catches a newly mounted unclassified route', () => {
@@ -166,9 +175,9 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
     ]);
   });
 
-  it('marks only the W2a/W2b-migrated namespaces translated and keeps later slices incomplete', () => {
+  it('marks only the W2a/W2b/W2c-migrated namespaces translated and keeps later slices incomplete', () => {
     const summary = coverageSummary();
-    expect(summary.translated).toBe(5);
+    expect(summary.translated).toBe(6);
     const translated = COVERAGE_MANIFEST.filter((entry) => entry.status === 'translated')
       .map((entry) => entry.namespace)
       .sort();
@@ -178,10 +187,9 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
       'not-found',
       'onboarding',
       'root-shell',
+      'settings',
     ]);
-    // Later W2/W3/W4 slices and every route family remain honest English-only.
-    // `settings` stays English-only even though the shared ConnectFlow it mounts
-    // is W2b-translated: the surrounding Settings chrome/sections are not.
+    // Later W3/W4 slices and every route family remain honest English-only.
     for (const namespace of [
       'dashboard',
       'threads',
@@ -197,7 +205,6 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
       'dreams',
       'work-hours',
       'artifacts',
-      'settings',
       'system-assistant',
     ]) {
       expect(namespaceStatus(namespace), namespace).toBe('english-only');

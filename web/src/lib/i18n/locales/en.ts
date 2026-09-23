@@ -351,6 +351,365 @@ export const en = {
   'onboarding.connect.how.body':
     'The prompt carries a short-lived, scoped token valid for about {duration}. Copying doesn’t run anything — nothing executes on your machine until you paste and run it yourself. Connecting only makes the CLI available to choose; assigning an agent to run on it is a separate, later step.',
   'onboarding.connect.how.duration': '30 minutes',
+
+  // --- W2c: settings/page (anchor; keys go below) ---
+  'settings.page.title': 'Settings',
+  'settings.page.meta': 'Daemon and org configuration.',
+  'settings.page.loading': 'Loading settings…',
+  'settings.page.loadError': 'Could not load settings.',
+  'settings.nav.heading': 'Configuration',
+  'settings.nav.daemonCapacity': 'Daemon / Capacity',
+  'settings.nav.assistant': 'Assistant',
+  'settings.nav.organization': 'Organization',
+  'settings.nav.executors': 'Executors',
+  'settings.nav.preferences': 'Preferences',
+  'settings.panel.assistant.title': 'System Assistant',
+  'settings.panel.organization.title': 'Organization',
+  'settings.panel.organization.description':
+    'Org-level settings. Changes apply live — the daemon hot-reloads them automatically.',
+  'settings.panel.executors.title': 'Executors',
+  'settings.panel.executors.description':
+    'The agentic CLIs registered on this machine. The daemon launches agents on these — connect a new CLI or manage the ones already registered.',
+  'settings.panel.preferences.title': 'Preferences',
+  'settings.panel.preferences.description':
+    'Personal settings for this browser. They are not saved to the organization.',
+  // @w2c-end:page
+
+  // --- W2c: settings/preferences (anchor; keys go below) ---
+  'settings.preferences.languageHelp':
+    'Choose the interface language. The change applies immediately.',
+  'settings.preferences.status.pending': 'Saving your language choice…',
+  'settings.preferences.status.durable': 'Saved in this browser.',
+  'settings.preferences.status.failed':
+    'Could not save in this browser. The language applies to this session only.',
+  // @w2c-end:preferences
+
+  // --- W2c: settings/assistant (anchor; keys go below) ---
+  'settings.assistant.state.uninitialized': 'Uninitialized',
+  'settings.assistant.state.configured': 'Configured',
+  'settings.assistant.state.staleOrBroken': 'Stale or broken',
+  'settings.assistant.loading': 'Loading…',
+  'settings.assistant.loadError': 'Could not load assistant status.',
+  'settings.assistant.status.aria': 'Assistant status',
+  'settings.assistant.status.state': 'State',
+  'settings.assistant.executor': 'Executor',
+  'settings.assistant.status.workspace': 'Workspace',
+  'settings.assistant.setup.aria': 'Setup actions',
+  'settings.assistant.setup.title': 'Setup',
+  'settings.assistant.setup.uninitializedBody':
+    'Prepare the registration workspace, then either register an executor below or launch your CLI in the workspace and let it self-register.',
+  'settings.assistant.setup.initializing': 'Initializing…',
+  'settings.assistant.setup.initialize': 'Initialize workspace',
+  'settings.assistant.setup.selfRegistration.title': 'Self-registration',
+  'settings.assistant.setup.selfRegistration.step1':
+    'Open your agentic CLI (claude, codex, opencode, pi, …) in the workspace shown above.',
+  'settings.assistant.setup.selfRegistration.step2': 'Ask it to register itself; it runs {command}.',
+  'settings.assistant.setup.staleBody':
+    'The workspace drifted from the saved config. Repair rebuilds it from the recorded executor without clearing your registration.',
+  'settings.assistant.setup.repairing': 'Repairing…',
+  'settings.assistant.setup.repair': 'Repair',
+  'settings.assistant.setup.configuredBody':
+    'Reconfiguring closes any open sessions and clears the saved config so you can register a different executor from scratch.',
+  'settings.assistant.setup.reconfigure': 'Reconfigure…',
+  'settings.assistant.reconfigure.title': 'Reconfigure the assistant?',
+  'settings.assistant.reconfigure.body':
+    'This closes all open assistant sessions and clears the saved configuration. You will need to register an executor again.',
+  'settings.assistant.reconfigure.confirming': 'Reconfiguring…',
+  'settings.assistant.reconfigure.confirm': 'Reconfigure',
+  'settings.assistant.register.title': 'Register executor',
+  'settings.assistant.register.switchTitle': 'Switch executor',
+  'settings.assistant.register.preserveNote':
+    'Re-registering preserves the workspace — the server derives it from the runtime root, not from any input here — and only one executor is active at a time, so registering replaces the current one.',
+  'settings.assistant.register.noRestart':
+    'Registration applies immediately; no daemon restart is required.',
+  'settings.assistant.register.other': 'Other…',
+  'settings.assistant.register.executorName': 'Executor name',
+  'settings.assistant.register.command': 'Command',
+  'settings.assistant.register.argv': 'Argv (optional — defaults to the command)',
+  'settings.assistant.register.argvHint':
+    'Space-separated. Leave blank to launch the command with no extra args.',
+  'settings.assistant.register.errorNoExecutor': 'Choose or name an executor.',
+  'settings.assistant.register.errorNoCommand': 'Enter the command to launch.',
+  'settings.assistant.register.errorHttp': 'Registration failed (HTTP {status}).',
+  'settings.assistant.register.registering': 'Registering…',
+  'settings.assistant.register.submit': 'Register',
+  // @w2c-end:assistant
+
+  // --- W2c: settings/organization (anchor; keys go below) ---
+  'settings.organization.saveFailed': 'Save failed: {detail}',
+  'settings.organization.saved': 'Saved. Changes will take effect within ~1 minute.',
+  'settings.organization.workHoursSaved':
+    'Saved ✓ — takes effect at the next scheduler pass (≈ within ~60s).',
+  'settings.organization.badge.live': 'Applies live',
+  'settings.organization.session.heading': 'Session',
+  'settings.organization.session.timeout': 'Session timeout (s)',
+  'settings.organization.session.timeoutPlaceholder': 'use system default',
+  'settings.organization.dreaming.heading': 'Dreaming',
+  'settings.organization.enabled': 'Enabled',
+  'settings.organization.dreaming.scheduleTime': 'Schedule time',
+  'settings.organization.dreaming.scheduleTimezone': 'Schedule timezone',
+  'settings.organization.dreaming.catchUp': 'Catch up on startup',
+  'settings.organization.dreaming.agentMode': 'Agent mode',
+  'settings.organization.dreaming.included': 'Included agents',
+  'settings.organization.dreaming.excluded': 'Excluded agents',
+  'settings.organization.dreaming.addAgentsPlaceholder': 'add agents…',
+  'settings.organization.threads.heading': 'Threads',
+  'settings.organization.threads.invocationTimeout': 'Invocation timeout (s)',
+  'settings.organization.threads.timeoutPlaceholder': 'none',
+  'settings.organization.operating.heading': 'Operating controls',
+  'settings.organization.operating.description':
+    'Organization-wide work hours enablement and agent eligibility. The scheduler and tier-level cadence is configured under {link}.',
+  'settings.organization.operating.workHoursLink': 'Work Hours',
+  'settings.organization.operating.workHours': 'Work Hours',
+  'settings.organization.operating.on': 'ON',
+  'settings.organization.operating.off': 'OFF',
+  'settings.organization.operating.eligibility': 'Agent eligibility',
+  'settings.organization.operating.whitelist': 'Whitelist ({count} included)',
+  'settings.organization.operating.allAgents': 'All agents',
+  'settings.organization.operating.excluded': ', {count} excluded',
+  'settings.organization.operating.editEligibility': 'Edit eligibility',
+  'settings.organization.saveBar.saving': 'Saving…',
+  'settings.organization.saveBar.save': 'Save changes',
+  'settings.organization.saveBar.discard': 'Discard',
+  'settings.organization.saveBar.shortcut': '⌘S to save',
+  'settings.organization.disableDialog.title': 'Disable work hours?',
+  'settings.organization.disableDialog.description':
+    'Turning the feature off halts all scheduled wakes for every agent. Eligibility and tier config are preserved; nothing runs until you turn it back on.',
+  'settings.organization.disableDialog.cancel': 'Cancel',
+  'settings.organization.disableDialog.confirm': 'Disable',
+  // @w2c-end:organization
+
+  // --- W2c: settings/executors (anchor; keys go below) ---
+  'settings.executors.connected.custom':
+    'Your custom CLI is registered and available to every org.',
+  'settings.executors.connected.builtin':
+    'This CLI is registered — the daemon can now launch agents on it.',
+  'settings.executors.back': 'Back to executors',
+  'settings.executors.connectCli': 'Connect a CLI',
+  'settings.executors.done': 'Done',
+  'settings.executors.assignment.title': 'Per-agent executor assignment',
+  'settings.executors.assignment.body':
+    "Assign executors to individual agents from the {link}. Each agent's executor (claude, codex, opencode, pi) is set during enrollment and cannot be changed from Settings.",
+  'settings.executors.assignment.agentsPage': 'Agents page',
+  'settings.executors.profiles.title': 'Custom CLIs',
+  'settings.executors.profiles.description':
+    'Custom executor profiles you connected. Removing one deletes it from the machine-global runtime store.',
+  'settings.executors.profiles.loading': 'Loading custom CLIs…',
+  'settings.executors.profiles.loadError': 'Could not load custom executor profiles.',
+  'settings.executors.profiles.loadErrorDetail':
+    'Could not load custom executor profiles. {detail}',
+  'settings.executors.profiles.empty':
+    'No custom CLIs registered — connect one with {action} below.',
+  'settings.executors.profiles.onMachine': 'on this machine',
+  'settings.executors.profiles.notOnMachine': 'not on this machine',
+  'settings.executors.profiles.executable': 'Executable: {value}',
+  'settings.executors.profiles.noExecutable': 'No executable recorded for this profile.',
+  'settings.executors.profiles.path': 'Path: {value}',
+  'settings.executors.profiles.removing': 'Removing…',
+  'settings.executors.profiles.confirmRemove': 'Confirm remove',
+  'settings.executors.profiles.remove': 'Remove',
+  'settings.executors.profiles.removeFailed': 'Could not remove this profile.',
+  'settings.executors.binaries.intro':
+    'Where each built-in executor CLI binary lives on this machine. Paths are stored in machine-local runtime config and take effect on the next agent spawn. Register one with {connect} below, or expand {advanced} on a row to type the absolute path yourself — there is no automatic scan.',
+  'settings.executors.binaries.loading': 'Loading registry…',
+  'settings.executors.binaries.loadError': 'Could not load the executor binary registry.',
+  'settings.executors.binaries.loadErrorDetail':
+    'Could not load the executor binary registry. {detail}',
+  'settings.executors.binaries.fresh.title': 'No executor CLI is registered on this machine',
+  'settings.executors.binaries.fresh.body':
+    "The daemon can't spawn agents until at least one executor CLI binary is registered. Use {connect} below, or expand {advanced} on a row to enter an absolute path (for example, the output of {command}).",
+  'settings.executors.binaries.validity.valid': 'valid',
+  'settings.executors.binaries.validity.invalid': 'invalid path',
+  'settings.executors.binaries.validity.unregistered': 'not registered',
+  'settings.executors.binaries.registeredPath': 'Registered path: {path}',
+  'settings.executors.binaries.noPath':
+    'No path registered — the daemon cannot spawn {kind} agents until you connect it.',
+  'settings.executors.binaries.advanced': 'Advanced: enter path manually',
+  'settings.executors.binaries.updatePath': 'Update binary path',
+  'settings.executors.binaries.registerPath': 'Register binary path',
+  'settings.executors.binaries.validating': 'Validating…',
+  'settings.executors.binaries.validate': 'Validate',
+  'settings.executors.binaries.registering': 'Registering…',
+  'settings.executors.binaries.register': 'Register',
+  'settings.executors.binaries.checkValid':
+    'Looks good — this path is absolute, exists, and is executable.',
+  'settings.executors.binaries.checkInvalid': 'This path is not valid.',
+  'settings.executors.binaries.validationFailed': 'Validation failed.',
+  'settings.executors.binaries.registerFailed': 'Could not register this path.',
+  // @w2c-end:executors
+
+  // --- W2c: settings/capacity (anchor; keys go below) ---
+  'settings.capacity.field.queue_workers': 'Task session slots',
+  'settings.capacity.field.host_global_session_cap': 'Host session admission limit',
+  'settings.capacity.fieldJoiner': ' and ',
+  'settings.capacity.consequence.below':
+    'Host cap {cap} is below the worker-pool total {total}. Additional sessions will wait if more request admission than the limit allows. Saving remains permitted.',
+  'settings.capacity.consequence.above':
+    'Host cap {cap} is above the worker-pool total {total}. Extra admission room does not create additional producers.',
+  'settings.capacity.consequence.aligned':
+    'These configured limits align. Provider and runtime conditions may still limit work.',
+  'settings.capacity.notSetInFile': 'Not set in file',
+  'settings.capacity.receipt': "Last received {time} (this browser's clock)",
+  'settings.capacity.numeric.blank': '{field} is required.',
+  'settings.capacity.numeric.grammar': '{field} must be a whole number greater than zero, written in plain digits.',
+  'settings.capacity.numeric.representation':
+    '{field} is outside the range this editor can represent exactly. The entered text is unchanged. This is a limit of this editor, not a limit of the daemon.',
+  'settings.capacity.readUnusable': 'Cannot read capacity configuration. Editing is unavailable.',
+  'settings.capacity.inconsistentResponse': 'Capacity details are inconsistent in this response.',
+  'settings.capacity.refreshFailed': 'Could not refresh. Current state unverified.',
+  'settings.capacity.readBlockedSave':
+    'The current saved state could not be read, so nothing was sent. Refresh and check the saved values before saving again.',
+  'settings.capacity.unknownOutcome':
+    'Save result unknown. Your draft is retained. Reconnect and check saved values before trying again.',
+  'settings.capacity.artifact.present': ' A temporary artifact remains; inspect it before cleanup.',
+  'settings.capacity.artifact.unknown': ' Temporary artifact state is unknown; inspect it before cleanup.',
+  'settings.capacity.error.unauthorized': 'Unauthorized. A valid daemon bearer is required; no values were changed.',
+  'settings.capacity.error.confirmOverride': 'Confirm the environment override before saving.',
+  'settings.capacity.error.rejectedValues':
+    'The daemon rejected these values. {workersLabel} and {capLabel} must each be a whole number greater than zero, and the reason must not be blank.',
+  'settings.capacity.error.ifMatch':
+    'Refresh the saved settings before saving again. This request did not publish new values.',
+  'settings.capacity.error.auditFailed':
+    'Could not record the change. This request did not change the configuration.',
+  'settings.capacity.error.configWriteFailed': 'Configuration storage failed. This request did not publish new values.',
+  'settings.capacity.error.publicationUncertain':
+    'The new configuration was published, but durability, verification, or cleanup did not complete. This is not a confirmation that your values are in effect for the next start. Check the saved values before retrying.',
+  'settings.capacity.ackReset': 'The environment override changed; confirm it again before saving.',
+  'settings.capacity.writeLocked':
+    'Reconcile the saved values before saving again. Choose to rebase onto the latest saved values or to discard your draft and accept them.',
+  'settings.capacity.reasonRequired': 'Reason for change is required.',
+  'settings.capacity.reasonTooLong': 'Reason for change must be {max} characters or fewer.',
+  'settings.capacity.checkFields': 'Check the highlighted fields before saving. Nothing was sent.',
+  'settings.capacity.conflict.representation':
+    'Latest saved values are outside the range this editor can represent exactly.',
+  'settings.capacity.conflict.unreadable': 'Latest saved values could not be read.',
+  'settings.capacity.conflict.changed': 'Saved settings changed elsewhere. Your draft is preserved.',
+  'settings.capacity.title': 'Capacity',
+  'settings.capacity.description':
+    'Set how many sessions this daemon can admit. Changes are saved for the next daemon start.',
+  'settings.capacity.pill.allOrgs': 'All organizations',
+  'settings.capacity.pill.restartRequired': 'Changes require restart',
+  'settings.capacity.bearer':
+    'Daemon bearer required. This bearer-based authorization cannot be attributed to a verified person. This resource affects every org.',
+  'settings.capacity.loading': 'Loading daemon capacity…',
+  'settings.capacity.loadError': 'Could not load daemon capacity. No values are displayed. {detail}',
+  'settings.capacity.initialRepresentation':
+    'Capacity values are outside the range this editor can represent exactly. No values are displayed and editing is unavailable.',
+  'settings.capacity.latestRepresentation':
+    'Latest capacity values are outside the range this editor can represent exactly. Editing is unavailable against this read.',
+  'settings.capacity.lastKnownPointer': 'Previously received values are shown below under “Last known”.',
+  'settings.capacity.editingUnavailableRead': 'Editing is unavailable against this read.',
+  'settings.capacity.refreshFailedKept':
+    'Your draft, reason and acknowledgment are kept. Saving is blocked until a successful read confirms the saved revision.',
+  'settings.capacity.running.noteLastKnown':
+    '— the last values this browser received; not re-confirmed by the current read',
+  'settings.capacity.running.noteObserved': '— observed from the daemon; not changed by saving',
+  'settings.capacity.running.lastKnown': 'Last known',
+  'settings.capacity.running.now': 'Running now',
+  'settings.capacity.card.workersLabel': 'Task session slots running',
+  'settings.capacity.card.workersDescription': 'Workers started with the daemon. Shared across all organizations.',
+  'settings.capacity.card.capLabel': 'Host session admission limit running',
+  'settings.capacity.card.unavailable': 'Unavailable',
+  'settings.capacity.card.capUnavailableDescription':
+    'Unavailable — {reason}. The runtime effect of a saved value cannot be verified from this page.',
+  'settings.capacity.card.capDescription':
+    'Ceiling on admitted sessions. A ceiling, not a count of active or free sessions.',
+  'settings.capacity.effectiveDiffers':
+    'Startup configured host limit {startup}; running effective {effective} — {reason} The startup value is not a count of available slots.',
+  'settings.capacity.table.title': 'Startup, saved and next start',
+  'settings.capacity.table.setting': 'Setting',
+  'settings.capacity.table.running': 'Running at startup',
+  'settings.capacity.table.saved': 'Saved in file',
+  'settings.capacity.table.next': 'Expected next start',
+  'settings.capacity.table.note':
+    'Expected next start is best effort, based on the configuration observed by this daemon and assuming an unchanged environment and worker topology. It is not a guarantee.',
+  'settings.capacity.restartPending': 'Restart pending',
+  'settings.capacity.noRestartPending': 'No restart pending',
+  'settings.capacity.restartPendingNote':
+    'A persisted next-start value differs from the running startup snapshot. Saving never applies live and this page cannot restart the daemon.',
+  'settings.capacity.runningMatches':
+    'Running configuration matches the expected values. This states that the observed numbers are equal; it does not mean a restart happened or that anything on this page caused it.',
+  'settings.capacity.change.title': 'Change saved settings',
+  'settings.capacity.workersHelp':
+    'Maximum task-worker slots across all organizations. Other limits can keep fewer sessions running.',
+  'settings.capacity.capHelp':
+    'Shared by task, thread, dream, wake and schedule sessions. Does not cap every process on the machine, and excludes headless System Assistant and job processes.',
+  'settings.capacity.guidanceOnly': 'Guidance only, not an enforced range.',
+  'settings.capacity.draft.changes': 'Draft changes the saved configuration',
+  'settings.capacity.draft.matches': 'Draft matches the saved configuration',
+  'settings.capacity.draft.capLabel': 'Host admission limit',
+  'settings.capacity.draft.poolTotal': 'Worker-pool total',
+  'settings.capacity.draft.poolBreakdown': '{task} task + {other} other producers',
+  'settings.capacity.draft.poolRepresentation':
+    'Worker-pool total is outside the range this editor can represent exactly.',
+  'settings.capacity.rationaleOnly': 'The values are unchanged from the saved file; only the reason differs.',
+  'settings.capacity.reason.label': 'Reason for change',
+  'settings.capacity.reason.limitReached': ' — limit reached',
+  'settings.capacity.reason.help': 'Briefly explain the intended adjustment. Reason included in the save request.',
+  'settings.capacity.reason.placeholder': 'e.g. Queue delay grew after adding the second team; raising task slots.',
+  'settings.capacity.override.heading': 'Environment override in effect',
+  'settings.capacity.override.shadowed': {
+    one: '{fields} is set by the environment.',
+    other: '{fields} are set by the environment.',
+  },
+  'settings.capacity.override.preview':
+    'Expected next start with this draft: {workersLabel} {workers}, {capLabel} {cap}. Assumes unchanged environment and worker topology.',
+  'settings.capacity.override.noPreview':
+    'The expected next start cannot be previewed against the current read. Your acknowledgment is kept as entered.',
+  'settings.capacity.override.ack':
+    'I understand a restart alone will not make the saved file win over the environment.',
+  'settings.capacity.save': 'Save for next restart',
+  'settings.capacity.saving': 'Saving…',
+  'settings.capacity.discard': 'Discard draft',
+  'settings.capacity.refresh': 'Refresh running state',
+  'settings.capacity.unsaved': 'Unsaved changes. Leaving or reloading will discard this draft.',
+  'settings.capacity.outcome.saving': 'Saving for next restart…',
+  'settings.capacity.outcome.savedPending': 'Saved for next restart. Running limits are unchanged.',
+  'settings.capacity.outcome.savedNoPending': 'Saved. No restart is pending for these values.',
+  'settings.capacity.outcome.overridden': {
+    one: 'Saved value overridden: {fields} is set by the environment. Expected next start: {workersLabel} {workers}, {capLabel} {cap}.',
+    other: 'Saved value overridden: {fields} are set by the environment. Expected next start: {workersLabel} {workers}, {capLabel} {cap}.',
+  },
+  'settings.capacity.submitted': 'You submitted {workersLabel} {workers}, {capLabel} {cap} against revision {revision}.',
+  'settings.capacity.draftHeld':
+    'Your current draft is {workersLabel} {workers}, {capLabel} {cap} and is still unsaved. It is held separately from the submitted values.',
+  'settings.capacity.checkSaved': 'Check saved values',
+  'settings.capacity.conflictUnusableSuffix':
+    'No latest values are shown and no rebase is offered. Read the saved values successfully before saving again.',
+  'settings.capacity.changedElsewhere': 'Configuration changed elsewhere.',
+  'settings.capacity.compare.acceptedBase': 'Accepted base',
+  'settings.capacity.compare.yourDraft': 'Your draft',
+  'settings.capacity.compare.currentlySaved': 'Currently saved',
+  'settings.capacity.compare.pair': '{workersLabel} {workers}, {capLabel} {cap}',
+  'settings.capacity.compare.couldNotBeRead': 'Could not be read',
+  'settings.capacity.rebase': 'Keep my draft, rebase onto latest',
+  'settings.capacity.acceptLatest': 'Discard draft, accept latest',
+  'settings.capacity.details.summary': 'Capacity details',
+  'settings.capacity.details.producerEnvelope': 'Producer envelope',
+  'settings.capacity.details.producerComponents': 'Producer components',
+  'settings.capacity.details.componentsValue':
+    '{task} task, {thread} thread, {dream} dream, {wake} wake, {schedule} schedule',
+  'settings.capacity.details.runningProvenance': 'Running provenance',
+  'settings.capacity.details.revision': 'Revision',
+  'settings.capacity.details.audit': 'Audit',
+  'settings.capacity.details.auditBody':
+    'The reason is included in the save request. Auditing is addressed org-locally and attributed to the daemon bearer; terminal completion of the audit entry is not guaranteed by this page.',
+  'settings.capacity.dialog.aria': 'discard capacity draft confirmation',
+  'settings.capacity.dialog.title': 'Discard unsaved capacity changes?',
+  'settings.capacity.dialog.description':
+    'Your draft has not been saved. Stay to keep editing, or discard it and continue navigating.',
+  'settings.capacity.dialog.stay': 'Stay on page',
+  'settings.capacity.dialog.discardContinue': 'Discard and continue',
+  'settings.capacity.headline.notSet':
+    'The saved values are Not set in file. That is not equality with any of the values below.',
+  'settings.capacity.headline.matchesSubmitted':
+    'Saved values now match what you submitted ({workers} / {cap}). This does not confirm your request caused it.',
+  'settings.capacity.headline.matchesDraft':
+    'Saved values now match your current draft ({draftWorkers} / {draftCap}), and they differ from what you submitted ({workers} / {cap}). Matching your draft is not a saved result and does not confirm your request caused it.',
+  'settings.capacity.headline.unchanged':
+    'The saved values are unchanged from your accepted base. The outcome of your request is still unknown.',
+  'settings.capacity.headline.differs': 'The saved values still differ from what you submitted.',
+  // @w2c-end:capacity
 } as const satisfies Catalog;
 
 export default en;

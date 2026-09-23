@@ -1,6 +1,6 @@
-# Web i18n — foundation + W2a shell + W2b onboarding contract
+# Web i18n — foundation + W2a shell + W2b onboarding + W2c Settings contract
 
-> Status: current (W1 foundation + W2a mounted-shell + W2b onboarding migration)
+> Status: current (W1 foundation + W2a mounted-shell + W2b onboarding + W2c Settings/Preferences migration)
 > Current Source: `web/src/lib/i18n/`, `web/src/hooks/i18n.tsx`, the mounted
 > shell/onboarding consumers, this spec.
 > Supersedes: the `Internationalization layer` non-goal in
@@ -9,9 +9,11 @@
 > Notes: W1 shipped the foundation; **W2a** translated the mounted shell
 > (AppBar/Sidebar/root/not-found/ErrorBoundary/AddOrgDialog/help/palette);
 > **W2b** translated the onboarding route (`/onboarding` plus the shared
-> ConnectFlow it mounts). Later slices (W2c Settings/Preferences, W3 route
-> families, W4 remaining surfaces) and native preference persistence (N1) are
-> still open. The W1 sections below are retained as the historical W1 contract
+> ConnectFlow it mounts); **W2c** translated Settings and built the
+> production-gated Preferences language selector (preview-gated until W3).
+> Later slices (W3 route families + public opt-in preview, W4 remaining
+> surfaces, W5 full coverage/default resolution) and native preference
+> persistence (N0/N1) are still open. The W1 sections below are retained as the historical W1 contract
 > and updated per phase.
 
 ## 1. Scope
@@ -65,10 +67,53 @@ Delivery status at W1 (keep separate from later phases):
 | Mounted shell translation (W2a: AppBar/Sidebar/root/not-found/ErrorBoundary/AddOrgDialog/help/palette) | **shipped — W2a** |
 | CJK-capable system font fallbacks (no download) | **shipped — W2a** |
 | Onboarding translation (W2b: OnboardingPage/ConnectRuntimeStep/shared ConnectFlow) | **shipped — W2b** |
-| Route/page translation | **W2c/W3/W4** — not shipped (Settings, route families, assistant dock body) |
-| Public language selector / opt-in preview | **W3** — not shipped |
+| Settings translation (W2c: page chrome + Assistant/Organization/Executors/Capacity sections) | **shipped — W2c** (Work Hours-owned `EligibilityEditorDialog` stays English until W4) |
+| Settings ▸ Preferences language selector (W2c) | **built, preview-gated** — mounted only in builds with `VITE_ENABLE_I18N_PREFERENCES=true` (tests/evidence); absent from ordinary production builds |
+| Route/page translation | **W3/W4** — not shipped (route families, assistant dock body) |
+| Public language selector / opt-in preview | **W3** — not shipped (W3 opens the W2c gate after acceptance) |
 | Full-mode automatic environment detection | implemented + unit-tested, **not enabled** in production (W5) |
 | Native preference persistence (Swift/message handler) | **N0/N1** — not shipped |
+
+**W2c** (this phase) translates the Settings surface and prepares the W3
+selector:
+
+- `SettingsPage` header/meta, sub-nav heading and labels, API loading/error
+  copy and panel headings/descriptions; the Assistant, Organization,
+  Executors (registered list, custom profiles, binary paths) and Daemon /
+  Capacity section bodies, including loading/empty/error, dialog, badge and
+  accessibility copy. Raw daemon errors (`ApiError.message`, detail),
+  identifiers, executor/agent/profile names, paths, commands, config keys,
+  revisions and every capacity number stay byte-for-byte verbatim; messages held
+  in component state are stored as keys/params (or locale functions) so an
+  already-visible message re-translates on a switch without resubmission. The
+  Organization Work Hours success banner is held as a boolean status; the
+  Executors remove/validate/register failures are held as
+  `{ raw: string } | { key: MessageKey }` (the Assistant `RegisterError` shape),
+  so a product fallback re-translates while a raw diagnostic — even one whose
+  bytes equal a catalog string, or an empty one — is shown verbatim and never
+  replaced by fallback copy.
+- `sections/PreferencesSection.tsx`: a fieldset of two native radios whose
+  labels are the endonyms `English` / `简体中文` (each with its own `lang`, not
+  translated), described by localized help, with a localized `role="status"`
+  persistence line (pending / saved in this browser / failed — applies to this
+  session only). Selecting calls the W1 `setLocale` only: immediate apply,
+  `<html lang>` update, no remount, no org-settings write and no API request.
+- Shell split: `SettingsPage` still calls `useSettings()` (unchanged fetch), but
+  the `preferences` route is declared beside a `*` route that holds the
+  existing loading/error/data gate and nested routes verbatim, so Preferences
+  renders while the query is loading, errored or empty; every other panel keeps
+  its prior gate, index/system/agents/unknown redirects and replace semantics.
+- **Closed production gate.** `languagePreferenceGate.ts`
+  (`isLanguagePreferenceEnabled()`) reads the build-time
+  `VITE_ENABLE_I18N_PREFERENCES === 'true'` flag (same pattern as
+  `VITE_ENABLE_PROTOTYPES`/`VITE_ENABLE_KB_COMPOSE`). Without it the
+  Preferences sub-nav entry and route are not mounted, a direct
+  `/orgs/:slug/settings/preferences` URL is replace-redirected to Assistant by
+  the existing catch-all, and the ordinary production bundle contains no
+  Preferences component (only catalog strings). Vitest activates it with
+  `vi.stubEnv`; the W2c harness builds a separate preview dist. W3 removes the
+  gate after its acceptance and adds the secondary-pages disclosure; W2c adds
+  neither the disclosure nor any browser/system-language defaulting.
 
 ## 2. Exports
 
@@ -180,12 +225,13 @@ anchors them to the real consumer sources (e.g. `ThreadsPage.tsx` mounts
 `TaskDetailPage.tsx` mounts `CancelTaskDialog`/`RevisitTaskDialog`/
 `ResolveEscalationDialog`; `JobDetailPage.tsx` mounts
 `RunJobDialog`/`RejectJobDialog`), so an invented or unreachable name fails the
-test. After W2b exactly five namespaces are `translated` (`root-shell`,
-`not-found`, `onboarding`, `app-shell`, `help-and-palette`); every later slice
-and route family is still visibly `english-only`, so English fallback is never
-mistaken for coverage. `settings` stays `english-only` even though the shared
-ConnectFlow it mounts is translated — the surrounding Settings chrome and
-sections are not. The `system-assistant` namespace records only
+test. After W2c exactly six namespaces are `translated` (`root-shell`,
+`not-found`, `onboarding`, `app-shell`, `help-and-palette`, `settings`); every
+later slice and route family is still visibly `english-only`, so English
+fallback is never mistaken for coverage. The `settings` namespace includes the
+gated `preferences` token and `PreferencesSection`; the shared
+`EligibilityEditorDialog` it lists is owned by Work Hours and remains English
+until W4. The `system-assistant` namespace records only
 `AssistantDockHost` (the W4 dock body); the help/palette hosts moved to the
 `help-and-palette` namespace.
 
@@ -370,14 +416,16 @@ Frontend readiness map (actual evidence):
 | Production startup first-paint | captured: real `main.tsx`/`createBrowserRouter` startup with synthetic API stub; first COMMITTED bilingual consumer text and `<html lang>` asserted together | W2a reads the ACTUAL first committed Sidebar/AppBar DOM (frozen on first connection, never overwritten by a later correction) with `<html lang>` and the real navigator read-back; a causal `I18N_W2A_EVIDENCE=negative` control proves the same predicate rejects an initially-wrong shell |
 | Mounted-shell switching state | N/A (foundation) | captured: help non-default tab (S16), AddOrg typed slug + mapped error (S12 wide-light; S17 zh-narrow-light/en-narrow-dark/zh-wide-dark) and palette query + non-default selected row (S13 wide-light; S18 zh-narrow-light/en-narrow-dark/zh-wide-dark) preserved across storage-path locale switches with the actual `document.activeElement`, retained DOM node identity, open state and selection/value observed before AND after each direction; each help/AddOrg switch window asserts no `PUT /settings/org` and no `POST /api/v1/orgs`, and each palette switch window asserts zero `/api/` requests (cache-only), per direction |
 | Onboarding switching state (W2b) | N/A | captured: S4 mapped error, S5 raw `API 500`, S6 success, S8 built-in waiting, S9 custom form and S10 prereq/create state each run en→zh-CN→en with actual focus, stable test-only node identity where applicable, open phase/mode and state-specific raw bytes retained; a separate per-direction window proves zero settings/org/connect/mint mutation and zero `/api/` requests; PNGs and `receipt.json` are bound to the head SHA |
+| Settings + Preferences (W2c) | N/A | Vitest: gate-off sub-nav absence + direct-URL replace redirect (unit and real `AppRoutes`), gate-on index/redirect/back/forward, Preferences under settings API loading/error/empty/ok, both switch directions with radio/sub-nav node identity + focus + route, zero requests in the switch window, keyboard Space selection, honest durable/failed persistence, storage-event sync without write-back, per-section zh-CN copy with raw detail verbatim, an already-visible Work Hours banner and executor product fallbacks re-translating in both directions with no resave/remount/request while raw diagnostics (incl. catalog-equal and empty) stay verbatim; browser: `web/scripts/w2c-preferences-browser-evidence.mjs` against the preview and ordinary dists plus a `--defect-dist` causal negative (Organization banner and Executors raw-diagnostic cases included; receipt/PNG hashes bound to the pushed head) |
 | Native Mac persistence receipt | N/A — N0/N1 (Linux host; not claimed) | NOT RUN — N0/N1 still open |
 
 ## 10. Exclusions
 
 No new dependency, daemon/API/schema/auth/permission/transport change, theme or
 draft migration, native chrome, CLI/manual translation, route-family
-translation campaign (W2c Settings/Preferences and W3-W4 remain open), preview
-enablement or public selector, deployment, or caller migration of display
+translation campaign (W3-W4 remain open), preview
+enablement or public selector (W2c's Preferences selector is built but
+production-gated), deployment, or caller migration of display
 formatters beyond the translated shell and onboarding. Existing query/data/auth
 bootstrap
 semantics are preserved; locale switching issues no `PUT /settings/org` and no

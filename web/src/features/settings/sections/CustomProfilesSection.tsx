@@ -32,18 +32,26 @@ import {
   type RuntimeProfileEntry,
 } from '@/hooks/runtime-executors';
 import { useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from '@/hooks/i18n';
+import type { MessageKey } from '@/lib/i18n';
 
-/** Extract a human-readable message from an ApiError or any thrown value. */
-function errMessage(err: unknown, fallback: string): string {
+/** A failure message held in state: a raw daemon/API diagnostic shown
+ *  byte-for-byte, or a product-owned fallback held as a catalog key and
+ *  translated at render so a visible message follows a locale switch. */
+type HeldError = { raw: string } | { key: MessageKey };
+
+/** Extract the raw diagnostic from an ApiError or any thrown Error; a thrown
+ *  value that carries none falls back to the product-owned `fallback` key. */
+function errMessage(err: unknown, fallback: MessageKey): HeldError {
   if (err instanceof ApiError) {
-    if (typeof err.detail === 'string') return err.detail;
+    if (typeof err.detail === 'string') return { raw: err.detail };
     if (err.detail && typeof err.detail === 'object' && 'msg' in err.detail) {
-      return String((err.detail as { msg: unknown }).msg);
+      return { raw: String((err.detail as { msg: unknown }).msg) };
     }
-    return err.message;
+    return { raw: err.message };
   }
-  if (err instanceof Error) return err.message;
-  return fallback;
+  if (err instanceof Error) return { raw: err.message };
+  return { key: fallback };
 }
 
 /** Extract the stable adapter id from a profile that backs a custom CLI. */
@@ -71,6 +79,7 @@ function findAdapter(
  *  (executors.json) keyed by the profile name — the same gating as
  *  built-ins (THR-107 seq155). No PATH-based fallback is used. */
 function HealthPill({ present }: { present: boolean }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <span
       className={`text-mono-sm inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 font-semibold tabular-nums ${
@@ -82,7 +91,9 @@ function HealthPill({ present }: { present: boolean }): JSX.Element {
       data-present={present}
     >
       <span className="inline-block h-1.5 w-1.5 rounded-full bg-current opacity-70" aria-hidden />
-      {present ? 'on this machine' : 'not on this machine'}
+      {present
+        ? t('settings.executors.profiles.onMachine')
+        : t('settings.executors.profiles.notOnMachine')}
     </span>
   );
 }
@@ -94,8 +105,9 @@ function ProfileRow({
   profile: RuntimeProfileEntry;
   adapters: AdapterEntry[];
 }): JSX.Element {
+  const { t, render } = useTranslation();
   const [confirming, setConfirming] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<HeldError | null>(null);
   const remove = useRemoveRuntimeProfile();
   const qc = useQueryClient();
   const adapter = findAdapter(profile, adapters);
@@ -113,7 +125,7 @@ function ProfileRow({
       if (err instanceof ApiError && err.status === 404) {
         void qc.invalidateQueries({ queryKey: RUNTIME_PROFILES_KEY });
       } else {
-        setError(errMessage(err, 'Could not remove this profile.'));
+        setError(errMessage(err, 'settings.executors.profiles.removeFailed'));
         return;
       }
     }
@@ -137,23 +149,31 @@ function ProfileRow({
       <div className="mt-2">
         {executable ? (
           <p className="text-text-secondary text-sm">
-            Executable:{' '}
-            <code className="text-text-primary bg-surface-sunken rounded px-1 font-mono text-xs break-all">
-              {executable}
-            </code>
+            {render('settings.executors.profiles.executable', {
+              value: (
+                <code className="text-text-primary bg-surface-sunken rounded px-1 font-mono text-xs break-all">
+                  {executable}
+                </code>
+              ),
+            })}
             {/* seq334: adapter-backed rows show only the approved executable; do not
                 surface implementation-term “adapter” or binding ids. Generic rows
                 keep their existing presentation. */}
           </p>
         ) : (
-          <p className="text-text-muted text-sm">No executable recorded for this profile.</p>
+          <p className="text-text-muted text-sm">
+            {t('settings.executors.profiles.noExecutable')}
+          </p>
         )}
         {profile.present && profile.path ? (
           <p className="text-text-secondary mt-1 text-sm">
-            Path:{' '}
-            <code className="text-text-primary bg-surface-sunken rounded px-1 font-mono text-xs break-all">
-              {profile.path}
-            </code>
+            {render('settings.executors.profiles.path', {
+              value: (
+                <code className="text-text-primary bg-surface-sunken rounded px-1 font-mono text-xs break-all">
+                  {profile.path}
+                </code>
+              ),
+            })}
           </p>
         ) : null}
       </div>
@@ -170,7 +190,9 @@ function ProfileRow({
               disabled={remove.isPending}
               data-testid={`profile-confirm-remove-${profile.name}`}
             >
-              {remove.isPending ? 'Removing…' : 'Confirm remove'}
+              {remove.isPending
+                ? t('settings.executors.profiles.removing')
+                : t('settings.executors.profiles.confirmRemove')}
             </Button>
             <Button
               type="button"
@@ -181,7 +203,7 @@ function ProfileRow({
               }}
               disabled={remove.isPending}
             >
-              Cancel
+              {t('common.cancel')}
             </Button>
           </>
         ) : (
@@ -192,19 +214,19 @@ function ProfileRow({
             data-testid={`profile-remove-${profile.name}`}
           >
             <Trash2 aria-hidden="true" size={14} />
-            Remove
+            {t('settings.executors.profiles.remove')}
           </Button>
         )}
       </div>
 
-      {error && (
+      {error !== null && (
         <p
           className="text-feedback-danger mt-2 flex items-center gap-1.5 text-sm"
           role="alert"
           data-testid={`profile-remove-error-${profile.name}`}
         >
           <XCircle size={14} aria-hidden />
-          {error}
+          {'raw' in error ? error.raw : t(error.key)}
         </p>
       )}
     </div>
@@ -212,6 +234,7 @@ function ProfileRow({
 }
 
 export function CustomProfilesSection(): JSX.Element {
+  const { t, render } = useTranslation();
   const query = useRuntimeProfiles();
   const profiles = query.data?.profiles ?? [];
   const adaptersQuery = useAdapters();
@@ -220,21 +243,27 @@ export function CustomProfilesSection(): JSX.Element {
   return (
     <section className="space-y-3" data-testid="custom-profiles-section">
       <div>
-        <h3 className="text-text-primary text-sm font-semibold">Custom CLIs</h3>
+        <h3 className="text-text-primary text-sm font-semibold">
+          {t('settings.executors.profiles.title')}
+        </h3>
         <p className="text-text-secondary mt-1 text-sm">
-          Custom executor profiles you connected. Removing one deletes it from
-          the machine-global runtime store.
+          {t('settings.executors.profiles.description')}
         </p>
       </div>
 
       {query.isLoading && (
-        <p className="text-text-secondary text-sm">Loading custom CLIs…</p>
+        <p className="text-text-secondary text-sm">
+          {t('settings.executors.profiles.loading')}
+        </p>
       )}
 
       {query.isError && (
         <p className="text-feedback-danger text-sm" role="alert">
-          Could not load custom executor profiles.
-          {query.error?.message ? ` ${query.error.message}` : ''}
+          {query.error?.message
+            ? t('settings.executors.profiles.loadErrorDetail', {
+                detail: query.error.message,
+              })
+            : t('settings.executors.profiles.loadError')}
         </p>
       )}
 
@@ -245,8 +274,11 @@ export function CustomProfilesSection(): JSX.Element {
             data-testid="custom-profiles-empty"
           >
             <CheckCircle2 size={14} aria-hidden className="shrink-0" />
-            No custom CLIs registered — connect one with{' '}
-            <span className="font-medium">Connect a CLI</span> below.
+            {render('settings.executors.profiles.empty', {
+              action: (
+                <span className="font-medium">{t('settings.executors.connectCli')}</span>
+              ),
+            })}
           </p>
         ) : (
           <div className="space-y-3" data-testid="custom-profile-rows">

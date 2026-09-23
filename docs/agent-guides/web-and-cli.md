@@ -38,7 +38,7 @@ The SPA supports mutations, including task cancellation/revisit and Settings.
 Use `web/src/routes.tsx`, API functions, and the OpenAPI snapshot for the current
 surface. The daemon defaults to loopback; remote access uses the connector.
 
-### Internationalization (W1 foundation + W2a shell + W2b onboarding)
+### Internationalization (W1 foundation + W2a shell + W2b onboarding + W2c Settings)
 
 The web console has a first-party, typed English/Simplified-Chinese contract in
 `web/src/lib/i18n/` (`locale`, `catalog`, `format`, `coverage`) with the
@@ -87,14 +87,44 @@ and sections are not translated) and Settings is not claimed as translated.
 User-entered slugs, registered tool names/paths, the slug regex, broken-org raw
 errors and the generated copy-paste CLI prompt (raw step ids, tokens, routes)
 stay byte-for-byte verbatim; mapped categories re-translate on a locale switch
-with no resubmission. The rest of the console is still English: **Settings and
-the new Preferences section are W2c, route families are W3/W4, and the
-assistant dock body is W4. No public language selector exists and preview is not
-enabled.** Native preference persistence is N0/N1; full-mode automatic
+with no resubmission.
+
+**W2c** translated the Settings surface (`/orgs/:slug/settings/*`): the page
+header, sub-nav, API loading/error copy and panel headings, plus the Assistant,
+Organization, Executors (registered list, custom profiles, binary paths) and
+Daemon / Capacity section bodies. Raw daemon errors, identifiers, executor and
+agent names, config keys, paths, commands and every capacity number stay
+verbatim; only product-owned surrounding copy is localized. The shared
+`EligibilityEditorDialog` (mounted by Organization but owned by Work Hours)
+stays English until W4. W2c also builds the client-only **Settings ▸
+Preferences** language selector (`sections/PreferencesSection.tsx`: English /
+简体中文 endonym radios with their own `lang`, immediate apply through the W1
+`setLocale`, `<html lang>` update, honest pending/saved/failed status) and
+splits the Settings shell so the `preferences` route renders OUTSIDE the
+`useSettings` loading/error/data gate; every other panel keeps that gate
+unchanged. Choosing a language never writes org settings or issues any API
+request. **The selector is closed in production until W3:**
+`src/features/settings/languagePreferenceGate.ts` mounts the sub-nav entry and
+route only when the build sets `VITE_ENABLE_I18N_PREFERENCES=true` (the
+existing `VITE_ENABLE_PROTOTYPES`/`VITE_ENABLE_KB_COMPOSE` build-flag pattern).
+Ordinary builds tree-shake the component out, and a direct
+`/settings/preferences` URL falls through to the existing settings catch-all
+redirect (Assistant). Vitest opens the gate per test with `vi.stubEnv`; the W2c
+browser harness (`web/scripts/w2c-preferences-browser-evidence.mjs`) builds a
+separate preview dist with the flag and checks that the ordinary dist excludes
+the component. It also proves that state-held Settings messages follow a locale
+switch (the Organization Work Hours banner re-translates in place) while raw
+daemon diagnostics stay verbatim, with causal negatives for a pre-translated
+banner (`--defect-dist`) and a translated diagnostic. There is no W3 secondary-pages disclosure yet, no browser/system
+language defaulting (unset/invalid stays English), and no preview is live.
+
+The rest of the console is still English: **route families are W3/W4 and the
+assistant dock body is W4. No public language selector is exposed and preview
+is not enabled.** Native preference persistence is N0/N1; full-mode automatic
 environment detection is implemented and unit-tested but not enabled until W5.
-`web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b-migrated namespaces
-(`root-shell`, `not-found`, `app-shell`, `help-and-palette`, `onboarding`)
-`translated` and every other mounted route namespace `english-only` (copy-free
+`web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b/W2c-migrated namespaces
+(`root-shell`, `not-found`, `app-shell`, `help-and-palette`, `onboarding`,
+`settings`) `translated` and every other mounted route namespace `english-only` (copy-free
 redirects `not-applicable`), listing the actual mounted dialogs, so English
 fallback is never mistaken for coverage. Foundation browser evidence (isolated
 Storybook probe + the real `main.tsx` startup in headless Chrome) runs via
