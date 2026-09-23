@@ -35,6 +35,8 @@ export interface ThreadHeaderLabels {
   titleInput?: string;
   save?: string;
   cancel?: string;
+  /** Accessible name of the dream-origin badge; omitted keeps English. */
+  dreamBadge?: string;
 }
 
 interface ThreadHeaderProps {
@@ -130,7 +132,7 @@ export function ThreadHeader({
     </div>
   ) : (
     <span className="inline-flex items-center gap-2">
-      {dreamOriginated && <CrescentMoonBadge />}
+      {dreamOriginated && <CrescentMoonBadge label={labels?.dreamBadge} />}
       <span className="font-display truncate font-medium tracking-tight">{subject}</span>
       <span
         className={`inline-flex items-center rounded-full px-2 py-px text-xs leading-relaxed font-semibold ${statusPillCls}`}

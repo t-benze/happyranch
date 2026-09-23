@@ -859,6 +859,7 @@ export const en = {
   'threads.page.row.statusArchived': 'archived',
   'threads.page.row.fromDream': 'from dream',
   'threads.page.row.last': 'last',
+  'threads.page.dreamBadge': 'Dream-originated',
   'threads.page.pinFailed': 'Pin change failed — restored to previous state.',
   'threads.page.renameFailed': 'Rename failed. Please retry.',
   'threads.page.detail.back': '‹ All threads',

@@ -831,6 +831,7 @@ export function ThreadsPage(): JSX.Element {
         ? tr('threads.page.row.statusOpen')
         : tr('threads.page.row.statusArchived'),
     fromDream: tr('threads.page.row.fromDream'),
+    dreamBadge: tr('threads.page.dreamBadge'),
     last: tr('threads.page.row.last'),
   });
   const inbox = (
@@ -1314,6 +1315,7 @@ function DetailColumn({
           titleInput: t('threads.page.header.titleInput'),
           save: t('threads.page.header.save'),
           cancel: t('threads.page.header.cancel'),
+          dreamBadge: t('threads.page.dreamBadge'),
         }}
         actions={
           <div className="flex flex-wrap items-center gap-1">
@@ -1569,7 +1571,7 @@ function DetailColumn({
             <div>
               <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.origin')}</h3>
               <span className="bg-accent-soft text-accent-text inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold">
-                <CrescentMoonBadge className="h-3 w-3" />
+                <CrescentMoonBadge className="h-3 w-3" label={t('threads.page.dreamBadge')} />
                 {t('threads.page.rail.dream')}
               </span>
             </div>

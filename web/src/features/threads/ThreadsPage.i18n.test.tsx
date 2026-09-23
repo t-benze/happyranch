@@ -502,3 +502,89 @@ describe('ThreadsPage composer across a locale switch', () => {
     expect(FormData.prototype.set).toBe(originalSet);
   });
 });
+
+describe('ThreadsPage dream-origin badge accessible names across a locale switch', () => {
+  const NAME = { en: 'Dream-originated', 'zh-CN': '源自梦境' } as const;
+  const other = (l: 'en' | 'zh-CN') => (l === 'en' ? 'zh-CN' : 'en');
+
+  test.each([
+    ['en', 'zh-CN'],
+    ['zh-CN', 'en'],
+  ] as const)('list row badge: %s -> %s -> back keeps the node and localizes its name', async (from, to) => {
+    const threads = [
+      mkThread('THR-10', AUTHORED_SUBJECT, { pinned: true, composed_from_dream_id: 'DRM-1' }),
+      mkThread('THR-11', 'Unpinned dream', { composed_from_dream_id: 'DRM-2' }),
+      mkThread('THR-2', 'Ordinary subject'),
+    ];
+    stubList(threads);
+    mount(`/orgs/${SLUG}/threads`, from);
+
+    const pinnedRow = await screen.findByRole('link', { name: new RegExp('THR-10') });
+    const unpinnedRow = screen.getByRole('link', { name: new RegExp('THR-11') });
+    const plainRow = screen.getByRole('link', { name: new RegExp('THR-2') });
+    const pinnedBadge = within(pinnedRow).getByRole('img', { name: NAME[from] });
+    const unpinnedBadge = within(unpinnedRow).getByRole('img', { name: NAME[from] });
+    expect(within(plainRow).queryByRole('img')).not.toBeInTheDocument();
+    const href = pinnedRow.getAttribute('href');
+    const storageBefore = JSON.stringify({ ...localStorage });
+
+    const requests = await countRequests(async () => {
+      for (const step of [to, from] as const) {
+        await switchLocale(step);
+        expect(screen.getByRole('link', { name: new RegExp('THR-10') })).toBe(pinnedRow);
+        expect(within(pinnedRow).getByRole('img', { name: NAME[step] })).toBe(pinnedBadge);
+        expect(within(unpinnedRow).getByRole('img', { name: NAME[step] })).toBe(unpinnedBadge);
+        expect(screen.queryAllByRole('img', { name: NAME[other(step)] })).toHaveLength(0);
+        // Authored subject + machine id/href unchanged.
+        expect(within(pinnedRow).getByText(AUTHORED_SUBJECT)).toBeInTheDocument();
+        expect(pinnedRow).toHaveAttribute('href', href!);
+      }
+    });
+    expect(requests).toEqual([]);
+    expect(JSON.stringify({ ...localStorage })).toBe(storageBefore);
+    // Row still navigates (behaviour unchanged).
+    expect(href).toBe(`/orgs/${SLUG}/threads/THR-10`);
+  });
+
+  test.each([
+    ['en', 'zh-CN'],
+    ['zh-CN', 'en'],
+  ] as const)('detail header + rail badges: %s -> %s -> back keeps nodes and localizes names', async (from, to) => {
+    const thread = mkThread('THR-5', AUTHORED_SUBJECT, { composed_from_dream_id: 'DRM-9' });
+    stubList([]);
+    stubDetail(thread, [mkMessage(1, 'founder', AUTHORED_BODY)]);
+    const writes: string[] = [];
+    server.use(
+      http.patch(`/api/v1/orgs/${SLUG}/threads/THR-5`, () => {
+        writes.push('patch');
+        return HttpResponse.json({});
+      }),
+    );
+    mount(`/orgs/${SLUG}/threads/THR-5`, from);
+
+    await screen.findByText('bold');
+    const rail = screen.getByRole('complementary', { name: from === 'en' ? 'Thread properties' : '会话属性' });
+    const railBadge = within(rail).getByRole('img', { name: NAME[from] });
+    const allBadges = screen.getAllByRole('img', { name: NAME[from] });
+    expect(allBadges).toHaveLength(2);
+    const headerBadge = allBadges.find((b) => b !== railBadge)!;
+    expect(rail.contains(headerBadge)).toBe(false);
+    const storageBefore = JSON.stringify({ ...localStorage });
+
+    const requests = await countRequests(async () => {
+      for (const step of [to, from] as const) {
+        await switchLocale(step);
+        const now = screen.getAllByRole('img', { name: NAME[step] });
+        expect(now).toHaveLength(2);
+        expect(now).toContain(headerBadge);
+        expect(now).toContain(railBadge);
+        expect(screen.queryAllByRole('img', { name: NAME[other(step)] })).toHaveLength(0);
+        expect(screen.getAllByText(AUTHORED_SUBJECT).length).toBeGreaterThan(0);
+        expect(within(rail).getByText('THR-5')).toBeInTheDocument();
+      }
+    });
+    expect(requests).toEqual([]);
+    expect(writes).toEqual([]);
+    expect(JSON.stringify({ ...localStorage })).toBe(storageBefore);
+  });
+});

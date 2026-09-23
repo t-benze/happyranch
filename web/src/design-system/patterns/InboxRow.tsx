@@ -45,6 +45,8 @@ import { toneClass } from './semanticTone';
 export interface InboxRowLabels {
   statusLabel?: string;
   fromDream?: string;
+  /** Accessible name of the dream-origin badge; omitted keeps English. */
+  dreamBadge?: string;
   last?: string;
   needsYou?: string;
 }
@@ -147,7 +149,7 @@ export function InboxRow({
             </span>
             {fromDream && (
               <span className={FROM_DREAM_PILL}>
-                <CrescentMoonBadge className="h-3 w-3" />
+                <CrescentMoonBadge className="h-3 w-3" label={labels?.dreamBadge} />
                 {fromDreamLabel}
               </span>
             )}
@@ -203,7 +205,7 @@ export function InboxRow({
         <span className="flex shrink-0 items-center gap-1">
           {fromDream && (
             <span className={FROM_DREAM_PILL}>
-              <CrescentMoonBadge className="h-3 w-3" />
+              <CrescentMoonBadge className="h-3 w-3" label={labels?.dreamBadge} />
               {fromDreamLabel}
             </span>
           )}

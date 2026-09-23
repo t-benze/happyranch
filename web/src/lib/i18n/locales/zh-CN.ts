@@ -783,6 +783,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'threads.page.row.statusArchived': '已归档',
   'threads.page.row.fromDream': '来自梦境',
   'threads.page.row.last': '最后发言',
+  'threads.page.dreamBadge': '源自梦境',
   'threads.page.pinFailed': '置顶更改失败 — 已恢复到之前的状态。',
   'threads.page.renameFailed': '重命名失败，请重试。',
   'threads.page.detail.back': '‹ 全部会话',
