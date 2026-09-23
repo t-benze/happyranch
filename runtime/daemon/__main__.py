@@ -35,6 +35,12 @@ from runtime.daemon.state import DaemonState
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
 from runtime.models import BlockKind, TaskStatus
+from runtime.orchestrator.active_authority_policy import (
+    ELIGIBLE_POLICY_MANAGER_AGENT,
+    ELIGIBLE_POLICY_MANAGER_TEAM,
+    is_eligible_policy_manager,
+)
+from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 from runtime.orchestrator.orchestrator import (
     Orchestrator,
     completion_report_from_result_row,
@@ -42,6 +48,25 @@ from runtime.orchestrator.orchestrator import (
 from runtime.runtime import RuntimeDir
 
 logger = logging.getLogger("happyranch.daemon")
+
+
+def _sweep_enqueue(
+    queue: TaskQueue, slug: str, task_id: str,
+    orchestrator: Orchestrator | None,
+) -> None:
+    """Startup-sweep enqueue through the common DB-aware boundary (C3d4a).
+
+    When the orchestrator/DB is available the target root's durable v2
+    generation is resolved at production time, so a ``pending(G)`` dispatch is
+    published rather than emitted as an untagged fallback.  No orchestrator means
+    there is no durable classifier to consult and the unchanged ordinary enqueue
+    is preserved.
+    """
+    if orchestrator is None:
+        queue.enqueue(slug, task_id)
+        return
+    from runtime.orchestrator.authority import enqueue_task_generation_aware
+    enqueue_task_generation_aware(orchestrator, queue, slug, task_id)
 
 
 def _sweep_on_startup(
@@ -108,6 +133,17 @@ def _sweep_on_startup(
     _PARKED = {TaskStatus.IN_PROGRESS}
     _TERMINAL_JOB_STATES = {"completed", "failed", "rejected"}
 
+    # THR-229: pre-final v2 attempt ownership precedes EVERY task-specific
+    # startup branch.  Interrupted old-boot/failed-stage attempts receive only
+    # exact refusal housekeeping; a live same-boot owner and any failed
+    # refusal transaction retain their prior residue and are fenced from
+    # accepted-recovery, pid failure and Pending enqueue effects in this pass.
+    from runtime.orchestrator.authority import (
+        refuse_authority_policy_v2_pre_final_on_startup,
+    )
+    v2_pre_final_roots = refuse_authority_policy_v2_pre_final_on_startup(db)
+    v2_discovery_unavailable = v2_pre_final_roots is None
+
     # Accepted recovery callbacks whose effects committed just before a crash
     # may now be terminal.  Include only the ledger's exact current-owner
     # bindings: a cancelled or newer generation must remain outside this
@@ -129,6 +165,8 @@ def _sweep_on_startup(
     for task_id in task_ids:
         t = db.get_task(task_id)
         if t is None:
+            continue
+        if v2_discovery_unavailable or task_id in v2_pre_final_roots:
             continue
 
         # A completed leaf receipt can commit immediately before its ordinary
@@ -327,7 +365,7 @@ def _sweep_on_startup(
                     queued_slug == slug and queued_task_id == task_id
                     for queued_slug, queued_task_id, _ in queue._queue._queue
                 ):
-                    queue.enqueue(slug, task_id)
+                    _sweep_enqueue(queue, slug, task_id, orchestrator)
 
         # Branch 3 — parked on jobs (blocked_on_job). Re-enqueue only when all
         # blocking jobs are terminal (jobs finished while the daemon was down);
@@ -349,11 +387,11 @@ def _sweep_on_startup(
                     queued_slug == slug and queued_task_id == task_id
                     for queued_slug, queued_task_id, _ in queue._queue._queue
                 ):
-                    queue.enqueue(slug, task_id)
+                    _sweep_enqueue(queue, slug, task_id, orchestrator)
 
         # Branch 4 — pending: re-enqueue (lost the original POST enqueue).
         elif t.status == TaskStatus.PENDING:
-            queue.enqueue(slug, task_id)
+            _sweep_enqueue(queue, slug, task_id, orchestrator)
 
         # Branch 5 — escalated: leave alone (founder owns the transition).
         # Reached only because get_nonterminal_task_ids now yields escalated.
@@ -426,6 +464,33 @@ def _sweep_on_startup(
     return recovered_tokens
 
 
+def _publish_v2_generations_on_startup(org, queue: TaskQueue) -> None:
+    """THR-229 checkpoint C3d4b startup publication discovery (every root).
+
+    After the startup sweep and the real owner bindings, independently discover
+    and publish every pending v2 continuation generation for this org through
+    the EXISTING authenticated publisher (real claim -> raw tagged queue put ->
+    exact acknowledgement).  ``limit=None`` guarantees coverage for every
+    eligible root rather than the first 32 targets.
+
+    This admits and launches NOTHING: only the tagged generation claim at
+    dequeue can admit, and a same-boot unexpired lease is never stolen, so a
+    generation already published by the sweep's accepted-recovery path is not
+    duplicated.  Publishing is liveness bookkeeping; a failure to publish leaves
+    the durable pending pointer intact and is retried on the next startup.
+    """
+    orchestrator = getattr(org, "orchestrator", None)
+    if orchestrator is None or queue is None:
+        return
+    from runtime.orchestrator.authority import publish_authority_policy_v2_notifications
+    try:
+        publish_authority_policy_v2_notifications(orchestrator, queue, limit=None)
+    except Exception:
+        logger.exception(
+            "startup v2 generation publication failed for org %s", org.slug,
+        )
+
+
 def _build_state(settings: Settings) -> DaemonState:
     reg = runtimes.load()
     if reg.active is None:
@@ -453,9 +518,37 @@ def _build_state(settings: Settings) -> DaemonState:
     runtime = RuntimeDir.load(reg.active)
     state = DaemonState.from_runtime(runtime, settings)
     for org in state.orgs.values():
+        # THR-229 checkpoint C3d4b: bind the REAL owning-process boot marker
+        # (the existing ``authority_v2_origin_boot_id``) and the existing
+        # server-owned permission-surface reader before any startup recovery or
+        # publication.  These bindings are the production owner setup; they were
+        # previously exercised only by tests/store forwarders.
+        org.bind_authority_v2_owner()
+        # THR-229 checkpoint B2b2: initialize the eligible Engineering selector
+        # through the existing serialized transaction owner BEFORE any startup
+        # recovery/enqueue and before the API becomes available. Initialization
+        # is observation of authentic v1 history or genuine empty state, never
+        # activation: the owning transaction refuses missing/corrupt histories
+        # and an initializer-audit failure rather than manufacturing empty state
+        # or silently selecting legacy. A refusal propagates out of
+        # ``_build_state`` so the daemon never binds the API or admits launch.
+        if is_eligible_policy_manager(
+            root=org.root,
+            agent_name=ELIGIBLE_POLICY_MANAGER_AGENT,
+            team=ELIGIBLE_POLICY_MANAGER_TEAM,
+        ):
+            AuthorityPolicyStore(org.db).ensure_authority_selector(
+                ELIGIBLE_POLICY_MANAGER_TEAM
+            )
         recovered_tokens = _sweep_on_startup(
             org.db, state.queue, org.slug, org.orchestrator,
         )
+        # THR-229 checkpoint C3d4b: publish every pending v2 generation for this
+        # org after the sweep (covers ordinary continuations with no recovery Q,
+        # a lost in-memory queue after a committed ``published``, an old-boot
+        # ``publishing`` lease and exact already-consumed receipts) and before
+        # the API/worker pool admits work.
+        _publish_v2_generations_on_startup(org, state.queue)
         # GitHub #688 Slice B: startup reply-delivery recovery returns the
         # queued/replacement tokens to re-enqueue once the event loop is live
         # (the lifespan enqueues them before thread workers start).

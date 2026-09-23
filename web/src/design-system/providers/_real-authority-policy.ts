@@ -55,6 +55,37 @@ export const realAuthorityPolicyApi: AuthorityPolicyApi = {
       },
     });
   },
+  useCreateTeamEscalationPolicyV2Release: () => {
+    const { slug = '' } = useParams<{ slug: string }>();
+    const qc = useQueryClient();
+    return useMutation({
+      mutationFn: ({ agentName, body }) =>
+        authorityPolicyApi.createAndActivateTeamEscalationPolicyV2(slug, agentName, body),
+      onSuccess: async (_data, { agentName }) => {
+        // The paired control selects a v2 family, so the current projection and
+        // the family-specific v2 history change; the legacy stream is untouched
+        // and keeps its own independent pagination.
+        await Promise.all([
+          qc.invalidateQueries({ queryKey: ['team-escalation-policy', slug, agentName] }),
+          qc.invalidateQueries({ queryKey: ['team-escalation-policy-v2-history', slug, agentName] }),
+        ]);
+      },
+    });
+  },
+  useActivateTeamEscalationPolicyV2Release: () => {
+    const { slug = '' } = useParams<{ slug: string }>();
+    const qc = useQueryClient();
+    return useMutation({
+      mutationFn: ({ agentName, body }) =>
+        authorityPolicyApi.activateTeamEscalationPolicyV2(slug, agentName, body),
+      onSuccess: async (_data, { agentName }) => {
+        await Promise.all([
+          qc.invalidateQueries({ queryKey: ['team-escalation-policy', slug, agentName] }),
+          qc.invalidateQueries({ queryKey: ['team-escalation-policy-v2-history', slug, agentName] }),
+        ]);
+      },
+    });
+  },
   useTeamEscalationPolicyHistory: (agent) => {
     const { slug = '' } = useParams<{ slug: string }>();
     const enabled = !!slug && authorityPolicyApi.isEligiblePolicyManager(agent);
@@ -67,6 +98,19 @@ export const realAuthorityPolicyApi: AuthorityPolicyApi = {
       isError: q.isError, error: (q.error as Error | null) ?? null,
       fetchNextPage: () => q.fetchNextPage(), hasNextPage: !!q.hasNextPage,
       isFetchingNextPage: q.isFetchingNextPage };
+  },
+  useTeamEscalationPolicyV2History: (agent) => {
+    const { slug = '' } = useParams<{ slug: string }>();
+    const enabled = !!slug && authorityPolicyApi.isEligiblePolicyManager(agent);
+    const q = useInfiniteQuery({
+      queryKey: ['team-escalation-policy-v2-history', slug, agent?.name], initialPageParam: undefined as string | undefined,
+      queryFn: ({ pageParam }) => authorityPolicyApi.getTeamEscalationPolicyV2History(slug, agent!.name, pageParam),
+      getNextPageParam: (last) => last.next_cursor ?? undefined, enabled, retry: false,
+    });
+    return { data: q.data ? { pages: q.data.pages } : undefined, isLoading: q.isLoading,
+      isError: q.isError, error: (q.error as Error | null) ?? null,
+      fetchNextPage: () => q.fetchNextPage(), hasNextPage: !!q.hasNextPage,
+      isFetchingNextPage: q.isFetchingNextPage, refetch: () => q.refetch() };
   },
   useTeamEscalationPolicyOutcomes: (agent) => {
     const { slug = '' } = useParams<{ slug: string }>();

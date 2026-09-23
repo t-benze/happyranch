@@ -276,12 +276,26 @@ describe('AgentDetailPane — editable fields', () => {
       http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [manager] })),
       http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`, () => HttpResponse.json({
         team: 'engineering', target_manager: 'engineering_manager', can_mutate: true,
+        family: 'legacy_v1', contract_version: 'v1',
+        selector_id: 'APS-0000000000000000000000000000000000000000000000000000000000000000',
+        selector_epoch: 1,
         bootstrap_template: { title: 'Canonical policy', normative_text: 'Policy', clauses: [], continuation_phrase: 'routine same-root follow-through of the already-completed slice' },
-        active: { epoch: 4, release: { version: 2, digest: 'abcdef1234567890' } },
+        active: {
+          family: 'legacy_v1', activation_id: 'act-legacy-1', epoch: 4, action: 'activate',
+          created_at: '2026-09-01T00:00:00Z',
+          actor_attribution: 'shared local operator credential',
+          release: {
+            id: 'rel-legacy-2', policy_id: 'engineering-escalation', version: 2,
+            title: 'Canonical policy', normative_text: 'Policy', clauses: [],
+            continuation_phrase: 'routine same-root follow-through of the already-completed slice',
+            digest: 'abcdef1234567890', created_at: '2026-09-01T00:00:00Z',
+            actor_attribution: 'shared local operator credential',
+          },
+        },
       })),
     );
     mountAt(`/orgs/${SLUG}/agents/engineering_manager`);
-    expect(await screen.findByText(/Active v2 · epoch 4 · abcdef123456/)).toBeInTheDocument();
+    expect(await screen.findByText(/Active legacy v2 · epoch 4 · abcdef123456/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open team escalation policy' })).toHaveAttribute('href', `/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`);
     expect(screen.queryByLabelText('Title')).not.toBeInTheDocument();
     expect(screen.queryByText('Immutable release history')).not.toBeInTheDocument();
@@ -1457,6 +1471,9 @@ describe('Team escalation policy dedicated route', () => {
   };
   const policyResponse = {
     team: 'engineering', target_manager: 'engineering_manager', can_mutate: true,
+    family: 'empty',
+    selector_id: 'APS-0000000000000000000000000000000000000000000000000000000000000000',
+    selector_epoch: 0,
     bootstrap_required: true,
     bootstrap_template: { title: 'Canonical policy', normative_text: 'Policy', clauses: [], continuation_phrase: 'routine same-root follow-through of the already-completed slice' },
   };
@@ -1465,6 +1482,7 @@ describe('Team escalation policy dedicated route', () => {
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`, () => HttpResponse.json(policyResponse)),
       http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/history`, () => HttpResponse.json({ items: [], next_cursor: null })),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/v2/history`, () => HttpResponse.json({ items: [], next_cursor: null })),
       http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/outcomes`, () => HttpResponse.json({ items: [], next_cursor: null })),
     );
   }
@@ -1482,7 +1500,8 @@ describe('Team escalation policy dedicated route', () => {
     expect(screen.getAllByRole('main')).toHaveLength(1);
     expect(screen.getByText('Engineering · Engineering Manager')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Back to Engineering Manager/ })).toHaveAttribute('href', `/orgs/${SLUG}/agents/engineering_manager`);
-    expect(await screen.findByLabelText('Title')).toBeInTheDocument();
+    expect(await screen.findByLabelText('What to escalate')).toBeInTheDocument();
+    expect(screen.getByLabelText('What not to escalate')).toBeInTheDocument();
   });
 
   test('eligible manager exercises the shipping navigate(0) browser-refresh path without a replacement router', async () => {
@@ -1499,11 +1518,12 @@ describe('Team escalation policy dedicated route', () => {
         return HttpResponse.json(policyResponse);
       }),
       http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/history`, () => HttpResponse.json({ items: [], next_cursor: null })),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/v2/history`, () => HttpResponse.json({ items: [], next_cursor: null })),
       http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/outcomes`, () => HttpResponse.json({ items: [], next_cursor: null })),
     );
     const user = userEvent.setup();
     mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`]);
-    expect(await screen.findByLabelText('Title')).toHaveValue('Canonical policy');
+    expect((await screen.findByLabelText('What to escalate') as HTMLTextAreaElement).value).toContain('Escalate when');
     expect(rosterRequests).toBe(1);
     expect(policyRequests).toBe(1);
 
@@ -1515,7 +1535,7 @@ describe('Team escalation policy dedicated route', () => {
     expect(rosterRequests).toBe(1);
     expect(policyRequests).toBe(1);
     expect(screen.getByRole('heading', { level: 1, name: 'Team escalation policy' })).toBeInTheDocument();
-    expect(screen.getByLabelText('Title')).toHaveValue('Canonical policy');
+    expect((screen.getByLabelText('What to escalate') as HTMLTextAreaElement).value).toContain('Escalate when');
   });
 
   test('shipping back Link cancel preserves the exact dirty draft; confirm discards and navigates', async () => {
@@ -1524,13 +1544,13 @@ describe('Team escalation policy dedicated route', () => {
     stubPolicy();
     const user = userEvent.setup();
     mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`]);
-    const title = await screen.findByRole('textbox', { name: 'Title' });
-    await user.clear(title);
-    await user.type(title, 'Exact retained draft');
+    const whatTo = await screen.findByRole('textbox', { name: 'What to escalate' });
+    await user.clear(whatTo);
+    await user.type(whatTo, 'Exact retained draft');
     await user.click(screen.getByRole('link', { name: /Back to Engineering Manager/ }));
     const dialog = await screen.findByRole('dialog', { name: 'Discard unsaved policy changes?' });
     await user.click(within(dialog).getByRole('button', { name: 'Stay on page' }));
-    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('Exact retained draft');
+    expect(screen.getByRole('textbox', { name: 'What to escalate' })).toHaveValue('Exact retained draft');
     expect(screen.getByRole('heading', { level: 1, name: 'Team escalation policy' })).toBeInTheDocument();
 
     await user.click(screen.getByRole('link', { name: /Back to Engineering Manager/ }));
@@ -1549,17 +1569,17 @@ describe('Team escalation policy dedicated route', () => {
       `/orgs/${SLUG}/agents/engineering_manager`,
       `/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`,
     ]);
-    const title = await screen.findByRole('textbox', { name: 'Title' });
-    await user.clear(title);
-    await user.type(title, 'History-retained draft');
+    const whatTo = await screen.findByRole('textbox', { name: 'What to escalate' });
+    await user.clear(whatTo);
+    await user.type(whatTo, 'History-retained draft');
     await user.click(screen.getByRole('button', { name: 'Test browser back' }));
     await user.click(await screen.findByRole('button', { name: 'Stay on page' }));
-    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('History-retained draft');
+    expect(screen.getByRole('textbox', { name: 'What to escalate' })).toHaveValue('History-retained draft');
     await user.click(screen.getByRole('button', { name: 'Test browser back' }));
     await user.click(await screen.findByRole('button', { name: 'Discard and continue' }));
     await waitFor(() => expect(screen.queryByRole('heading', { level: 1, name: 'Team escalation policy' })).not.toBeInTheDocument());
     await user.click(screen.getByRole('button', { name: 'Test browser forward' }));
-    expect(await screen.findByRole('textbox', { name: 'Title' })).toHaveValue('Canonical policy');
+    expect((await screen.findByRole('textbox', { name: 'What to escalate' }) as HTMLTextAreaElement).value).toContain('Escalate when');
   });
 
   test('refresh/hard unload is guarded separately while dirty', async () => {
@@ -1568,8 +1588,8 @@ describe('Team escalation policy dedicated route', () => {
     stubPolicy();
     const user = userEvent.setup();
     mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`]);
-    const title = await screen.findByRole('textbox', { name: 'Title' });
-    await user.type(title, ' dirty');
+    const whatTo = await screen.findByRole('textbox', { name: 'What to escalate' });
+    await user.type(whatTo, ' dirty');
     const unload = new Event('beforeunload', { cancelable: true });
     window.dispatchEvent(unload);
     expect(unload.defaultPrevented).toBe(true);
