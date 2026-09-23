@@ -6,7 +6,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
-import { renderWithProviders } from '@/test/render';
+import { I18nTestBoundary, renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 
 const SLUG = 'alpha';
@@ -46,7 +46,7 @@ function mountRouteHistory(route: string) {
   };
   const client = makeQueryClient();
   const router = createMemoryRouter(
-    [{ path: '*', element: <AppProvider client={client}><AppRoutes /></AppProvider> }],
+    [{ path: '*', element: <AppProvider client={client}><I18nTestBoundary><AppRoutes /></I18nTestBoundary></AppProvider> }],
     { initialEntries: [route] },
   );
   return { router, client, ...render(<RouterProvider router={router} />) };

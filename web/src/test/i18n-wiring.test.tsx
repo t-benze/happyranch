@@ -153,4 +153,31 @@ describe('browser-evidence instrumentation is test-only and gated (W1 acceptance
     expect(harness).toContain('--negative');
     expect(harness).toContain('NEGATIVE CONTROL');
   });
+
+  it('gates the W2a evidence transform and its causal negative control (W2a R3)', () => {
+    const config = read('vite.config.ts');
+    expect(config).toContain('process.env.I18N_W2A_EVIDENCE');
+    expect(config).toContain("process.env.I18N_W2A_EVIDENCE === 'negative'");
+    expect(config).toContain('ShellEvidenceConsumer');
+    expect(config).toContain('ShellEvidenceCorrection');
+    // The W2a negative installs the mismatched provider resolution in main.tsx
+    // even when the W1 flag is unset.
+    expect(config).toContain('EVIDENCE_NEGATIVE || W2A_NEGATIVE');
+  });
+
+  it('shipping sources never statically import the W2a evidence consumer (W2a R3)', () => {
+    expect(read('src/App.tsx')).not.toContain('w2a-shell-evidence-consumer');
+    expect(read('src/routes.tsx')).not.toContain('w2a-shell-evidence-consumer');
+  });
+
+  it('the W2a harness asserts the frozen committed-shell record and its negative control (W2a R3)', () => {
+    const harness = read('scripts/w2a-shell-browser-evidence.mjs');
+    expect(harness).toContain('window.__hrFirstShell');
+    expect(harness).toContain('committed-dom');
+    expect(harness).toContain("process.argv.includes('--negative')");
+    expect(harness).toContain('NEGATIVE CONTROL');
+    // Real focus/identity observations required by R4.
+    expect(harness).toContain('document.activeElement');
+    expect(harness).toContain('hrIdentity');
+  });
 });

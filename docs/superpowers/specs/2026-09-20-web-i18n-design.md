@@ -1,21 +1,36 @@
-# Web i18n — W1 foundation contract
+# Web i18n — foundation + W2a shell contract
 
-> Status: current (W1 implementation)
-> Current Source: `web/src/lib/i18n/`, `web/src/hooks/i18n.tsx`, this spec.
+> Status: current (W1 foundation + W2a mounted-shell migration)
+> Current Source: `web/src/lib/i18n/`, `web/src/hooks/i18n.tsx`, the mounted
+> shell consumers, this spec.
 > Supersedes: the `Internationalization layer` non-goal in
 > `2026-05-14-web-ui-design.md` (historical text preserved with a supersession
 > annotation).
-> Notes: W1 ships the foundation only. Route/page translation is W2-W4; native
-> preference persistence is N1. This spec describes the W1 contract and is
-> updated per phase.
+> Notes: W1 shipped the foundation; **W2a** translated the mounted shell
+> (AppBar/Sidebar/root/not-found/ErrorBoundary/AddOrgDialog/help/palette).
+> Later slices (W2b onboarding, W2c Settings, W3 route families, W4 remaining
+> surfaces) and native preference persistence (N1) are still open. The W1
+> sections below are retained as the historical W1 contract and updated per
+> phase.
 
 ## 1. Scope
 
 THR-118 implements a first-party, typed English (`en`) / Simplified Chinese
-(`zh-CN`) contract for the web console. This document covers **W1 — foundation,
-contract and test harness**. It intentionally does **not** translate any route
-or page, ship a public language selector, enable the preview selector, or touch
+(`zh-CN`) contract for the web console. **W1** covered the foundation,
+contract and test harness; it intentionally did not translate any route or
+page, ship a public language selector, enable the preview selector, or touch
 the native app.
+
+**W2a** (this phase) translates the already-mounted shell presentation into
+both locales while retaining the existing layout and interactions: the AppBar
+page titles and controls, Sidebar navigation/aria/org-switcher/account copy,
+the root loading and not-found fallback, the ErrorBoundary fallback copy, the
+AddOrgDialog, and the shared help/palette presentation strings. It adds
+CJK-capable SYSTEM font fallbacks to the design tokens (no webfont download or
+dependency) and marks the migrated namespaces `translated` in the coverage
+manifest. It does **not** translate onboarding (W2b), Settings/Preferences
+(W2c), the assistant dock body (W4) or any route family (W3/W4); it adds no
+public language selector and keeps an unset preference on English until W3.
 
 Delivery status at W1 (keep separate from later phases):
 
@@ -28,7 +43,9 @@ Delivery status at W1 (keep separate from later phases):
 | Mounted-route/namespace coverage manifest | shipped |
 | Foundation browser/Storybook evidence (isolated, non-product) | shipped — `web/scripts/i18n-browser-evidence.mjs` + `I18nFoundation.stories.tsx` + an `I18N_BROWSER_EVIDENCE`-gated test-only first-commit consumer |
 | Explicit-locale display formatters | shipped (interfaces only; no caller migration) |
-| Route/page translation | **W2-W4** — not shipped |
+| Mounted shell translation (W2a: AppBar/Sidebar/root/not-found/ErrorBoundary/AddOrgDialog/help/palette) | **shipped — W2a** |
+| CJK-capable system font fallbacks (no download) | **shipped — W2a** |
+| Route/page translation | **W2b/W2c/W3/W4** — not shipped |
 | Public language selector / opt-in preview | **W3** — not shipped |
 | Full-mode automatic environment detection | implemented + unit-tested, **not enabled** in production (W5) |
 | Native preference persistence (Swift/message handler) | **N0/N1** — not shipped |
@@ -130,11 +147,11 @@ Rules:
 token) and fails when a newly mounted route token is unclassified.
 
 Copy-bearing and copy-free routes are separated: the root-shell `index`
-(`RootRedirect` "Loading…") and the app catch-all `*` (`NotFound`) are
-`english-only`, never `not-applicable`; the copy-free `NavigateToHome`/
-`SpendRedirect`/`ScheduleRedirect` and the settings-internal redirects are
-`not-applicable`. Tokens that collide across modules are disambiguated with
-`<scope>:<token>` qualified identities (`routes.tsx:*` vs `SettingsPage.tsx:*`,
+(`RootRedirect` loading copy) and the app catch-all `*` (`NotFound`) are
+`translated` in W2a; the copy-free `NavigateToHome`/`SpendRedirect`/
+`ScheduleRedirect` and the settings-internal redirects are `not-applicable`.
+Tokens that collide across modules are disambiguated with `<scope>:<token>`
+qualified identities (`routes.tsx:*` vs `SettingsPage.tsx:*`,
 `SettingsPage.tsx:index`, `SettingsPage.tsx:agents`).
 
 Dialog/overlay surfaces are the ACTUAL mounted component names, and the test
@@ -143,8 +160,12 @@ anchors them to the real consumer sources (e.g. `ThreadsPage.tsx` mounts
 `TaskDetailPage.tsx` mounts `CancelTaskDialog`/`RevisitTaskDialog`/
 `ResolveEscalationDialog`; `JobDetailPage.tsx` mounts
 `RunJobDialog`/`RejectJobDialog`), so an invented or unreachable name fails the
-test. In W1 no product surface is `translated`: every namespace is visibly
-marked `english-only`, so English fallback is never mistaken for coverage.
+test. In W2a exactly four namespaces are `translated` (`root-shell`,
+`not-found`, `app-shell`, `help-and-palette`); every later slice and route
+family is still visibly `english-only`, so English fallback is never mistaken
+for coverage. The `system-assistant` namespace now records only
+`AssistantDockHost` (the W4 dock body); the help/palette hosts moved to the
+`help-and-palette` namespace.
 
 ## 7. Formatting contract
 
@@ -229,23 +250,85 @@ It also asserts saved explicit English under a Chinese environment, saved
 fail-safe storage read/write failure, real same-origin tab
 change/delete/clear with no echo write, and that Chinese copy is rendered by a
 CJK platform font (captured PNGs + `receipt.json` bound to the head SHA under
-the task evidence directory). This is foundation evidence only: it does not
-claim translated product routes (none exist in W1).
+the task evidence directory). This is W1 foundation evidence only: it does not
+claim translated product routes.
 
-Frontend readiness map for foundation-only scope (actual evidence):
+**W2a shell browser evidence.** `web/scripts/w2a-shell-browser-evidence.mjs`
+drives the real built SPA bundle under
+`I18N_W2A_EVIDENCE=1` (an independent evidence-only Vite transform that injects
+the test-only `src/test/w2a-shell-evidence-consumer.tsx` next to `<AppRoutes />`
+and a test-only error trigger inside the real `AppShellErrorBoundary`; it is a
+no-op for every ordinary build). The consumer reads the **actual first committed
+Sidebar/AppBar output from the real DOM** in a layout effect, freezes that
+record on first connection, and never overwrites it when a later effect corrects
+the locale; it records `html.lang` and the real
+`navigator.language`/`navigator.languages` read-back at the same instant.
+Against a synthetic `/api/v1` stub it asserts the frozen first shell (saved
+`zh-CN` → Chinese/`zh-CN`; saved `en` under a Chinese navigator → English/`en`;
+unset preview under a Chinese navigator → English/`en`), then exercises the
+mounted shell in both locales: root loading copy, populated org navigation,
+no-org, NotFound, the help drawer with a non-default tab, the AddOrgDialog with a
+typed slug and a mapped error, the ErrorBoundary fallback with the raw stack
+preserved and the localized Retry actually recovering, and the palette with a
+query matching multiple rows and a non-default selected row. The shell and the
+help/AddOrg/error/palette states run across 1440×900 and 390×844, light and dark
+(including the Chinese wide-dark shell and a representative 390×844 dark
+ErrorBoundary). Locale switching in the focus/identity cases is driven through a
+real `storage` event, not the test control, so the control never steals focus;
+for the help non-default tab (S16), the AddOrg typed slug + mapped error
+(wide-light S12; the zh-narrow-light/en-narrow-dark/zh-wide-dark matrix S17) and
+the palette query + non-default selected row (wide-light S13; the
+zh-narrow-light/en-narrow-dark/zh-wide-dark matrix S18) the harness records
+`document.activeElement`, retained `data-hrIdentity` node identity, open state
+and the selected/value state BEFORE and AFTER EACH switch direction (an
+en→zh-CN→en or zh-CN→en→zh-CN sequence). It also exercises the palette's actual
+localized X close control (S19) in both locales with populated and empty result
+sets: after the settled initial combobox focus it focuses the X by its exact
+accessible name (`Close`/`关闭`), reads the focus back and dispatches native
+Enter/Space/Escape, asserting the palette closes once with zero selection and an
+unchanged pathname after EACH key, while a search-input Enter and an ArrowDown +
+Enter on a non-default row still select exactly once. Switch-window requests are
+scoped precisely to the measured endpoints: each help/AddOrg switch window
+asserts no `PUT /settings/org` and no `POST /api/v1/orgs`, and each palette
+switch window additionally asserts zero `/api/` requests (cache-only), per
+direction. `I18N_W2A_EVIDENCE=negative` additionally hands
+the provider a deliberately mismatched locale and installs the passive
+correction component, so the real shell commits the wrong language first and
+repairs itself; the harness's SAME positive predicate must reject that first
+shell (recorded expected failing exit 1; exit 2 means the fixture itself never
+mismatched). `CSS.getPlatformFontsForNode` proves the Chinese nav glyphs use a
+CJK-capable platform font, and geometry assertions prove no document horizontal
+overflow, no nav link outside the viewport, and dialogs contained within
+1440x900 and 390x844. The state matrix covers the shell and the help (S11/S16),
+AddOrg (S12/S17), palette (S13/S18) and error/dormant-palette states in both
+locales across the observed 1440x900/390x844 light/dark combinations; it does
+not claim every state at every viewport/theme. PNGs and `receipt.json` are bound
+to the head SHA (the current positive receipt is 375/375 assertions and 30 PNGs;
+exact counts are bound to the pushed `receipt.json`). The harness
+cannot open the dormant command palette through the shipping hotkey (which stays
+retired and is asserted not to open it); the palette is exercised through the
+pattern-level probe, and its host/section localization is covered by focused
+Vitest.
 
-| Readiness item | W1 |
-| --- | --- |
-| Route-wide Chinese rendering | N/A — no route translated in W1 (manifest marks every namespace `english-only`) |
-| Public language selector | N/A — W3 |
-| Browser two-tab live evidence | covered by unit/integration storage-event tests AND captured same-origin two-tab change/delete/clear/no-echo browser evidence at the head SHA |
-| Bilingual foundation browser capture | captured: real-browser story screenshots for saved-en-in-Chinese-env, saved `zh-CN` (CJK font glyphs) and preview-unset English |
-| Production startup first-paint | captured: real `main.tsx`/`createBrowserRouter` startup with synthetic API stub; the first COMMITTED bilingual consumer text and `<html lang>` are asserted together for saved `zh-CN`, saved `en` and preview-unset under an asserted Chinese navigator environment; a negative control proves the first-commit check is causal |
-| Native Mac persistence receipt | N/A — N0/N1 (Linux host; not claimed) |
+Frontend readiness map (actual evidence):
+
+| Readiness item | W1 | W2a |
+| --- | --- | --- |
+| Route-wide Chinese rendering | N/A — no route translated in W1 (manifest marks every namespace `english-only`) | mounted-shell only; W2b/W2c/W3/W4 routes still `english-only` |
+| Public language selector | N/A — W3 | N/A — W3 (still absent) |
+| Browser two-tab live evidence | covered by unit/integration storage-event tests AND captured same-origin two-tab change/delete/clear/no-echo browser evidence at the head SHA | W1 behavior retained (no native adapter added) |
+| Bilingual foundation browser capture | captured: real-browser story screenshots for saved-en-in-Chinese-env, saved `zh-CN` (CJK font glyphs) and preview-unset English | W2a adds real-app shell/dialog captures across en/zh, 1440x900/390x844 and light/dark (exact count bound to the pushed `receipt.json`) |
+| Production startup first-paint | captured: real `main.tsx`/`createBrowserRouter` startup with synthetic API stub; first COMMITTED bilingual consumer text and `<html lang>` asserted together | W2a reads the ACTUAL first committed Sidebar/AppBar DOM (frozen on first connection, never overwritten by a later correction) with `<html lang>` and the real navigator read-back; a causal `I18N_W2A_EVIDENCE=negative` control proves the same predicate rejects an initially-wrong shell |
+| Mounted-shell switching state | N/A (foundation) | captured: help non-default tab (S16), AddOrg typed slug + mapped error (S12 wide-light; S17 zh-narrow-light/en-narrow-dark/zh-wide-dark) and palette query + non-default selected row (S13 wide-light; S18 zh-narrow-light/en-narrow-dark/zh-wide-dark) preserved across storage-path locale switches with the actual `document.activeElement`, retained DOM node identity, open state and selection/value observed before AND after each direction; each help/AddOrg switch window asserts no `PUT /settings/org` and no `POST /api/v1/orgs`, and each palette switch window asserts zero `/api/` requests (cache-only), per direction |
+| Native Mac persistence receipt | N/A — N0/N1 (Linux host; not claimed) | NOT RUN — N0/N1 still open |
 
 ## 10. Exclusions
 
 No new dependency, daemon/API/schema/auth/permission/transport change, theme or
-draft migration, native chrome, CLI/manual translation, route translation
-campaign, preview enablement, deployment, or caller migration of display
-formatters. Existing query/data/auth bootstrap semantics are preserved.
+draft migration, native chrome, CLI/manual translation, route-family
+translation campaign (W2b onboarding/W2c Settings/W3-W4 remain open), preview
+enablement or public selector, deployment, or caller migration of display
+formatters beyond the translated shell. Existing query/data/auth bootstrap
+semantics are preserved; locale switching issues no `PUT /settings/org` and no
+`POST /api/v1/orgs`, and the command palette's cache-only switch issues no
+`/api/` request in the measured window.

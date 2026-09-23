@@ -12,7 +12,7 @@ import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
 import type { NarrativeCounts } from '@/lib/api/types';
-import { renderWithProviders } from '@/test/render';
+import { renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
 
 const SLUG = 'test-org';
@@ -147,6 +147,45 @@ describe('IA-1: Sidebar (left rail replaces the legacy tab bar)', () => {
       expect(settings).toHaveAttribute('href', `/orgs/${SLUG}/settings`);
       expect(primaryItems).not.toContainElement(settings);
       expect(settings.compareDocumentPosition(aside.getByLabelText('Account: You, Founder')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+  });
+
+  test('renders zh-CN shell copy while IDs, slugs and route URLs stay unchanged (W2a)', async () => {
+    seedSidebarShell({ org_age_days: 3 });
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/dashboard`,
+      i18n: { adapter: savedLocaleAdapter('zh-CN') },
+    });
+
+    await waitFor(() => {
+      const aside = within(screen.getByRole('navigation', { name: '主导航' }));
+      const primaryItems = within(aside.getByRole('navigation', { name: '主导航项' }));
+      const orderedNames = [
+        '首页', '会话', '任务', '作业', '待办', '智能体', '工时',
+        '技能', '知识库', '产物', '审计', '梦境', '用量', '运行状况',
+      ];
+      orderedNames.forEach((name) => {
+        expect(primaryItems.getByRole('link', { name })).toBeInTheDocument();
+      });
+      // Route URLs and the org slug are identity, never localized.
+      expect(primaryItems.getByRole('link', { name: '任务' })).toHaveAttribute(
+        'href',
+        `/orgs/${SLUG}/tasks`,
+      );
+      expect(aside.getByRole('link', { name: '设置' })).toHaveAttribute(
+        'href',
+        `/orgs/${SLUG}/settings`,
+      );
+      expect(aside.getByText(SLUG)).toBeInTheDocument();
+      // Localized chrome.
+      expect(screen.getByLabelText('当前组织')).toBeInTheDocument();
+      expect(screen.getByRole('region', { name: '组织切换器' })).toBeInTheDocument();
+      expect(aside.getByText(/第\s*3\s*天/)).toBeInTheDocument();
+      expect(screen.getByLabelText('账户：你，创始人')).toBeInTheDocument();
+      expect(screen.getByLabelText(/主题/)).toBeInTheDocument();
+      // AppBar page title is localized too (nav + title both read 首页).
+      expect(screen.getAllByText('首页').length).toBeGreaterThanOrEqual(2);
+      expect(document.documentElement.getAttribute('lang')).toBe('zh-CN');
     });
   });
 

@@ -19,6 +19,7 @@ import { RouterProvider, createMemoryRouter } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { AppProvider } from '@/design-system/providers/AppProvider';
 import { resetCapacityOrdering } from '@/design-system/providers/_capacity-ordering';
+import { I18nTestBoundary } from '@/test/render';
 
 const NativeRequest = globalThis.Request;
 
@@ -72,7 +73,14 @@ export function renderGuarded(ui: ReactNode, options: RenderGuardedOptions = {})
     });
   const entries = options.entries ?? ['/'];
   const router = createMemoryRouter(
-    [{ path: '*', element: <AppProvider client={client}>{ui}</AppProvider> }],
+    [{
+      path: '*',
+      element: (
+        <I18nTestBoundary>
+          <AppProvider client={client}>{ui}</AppProvider>
+        </I18nTestBoundary>
+      ),
+    }],
     { initialEntries: entries, initialIndex: options.index ?? entries.length - 1 },
   );
   const view = render(<RouterProvider router={router} />);

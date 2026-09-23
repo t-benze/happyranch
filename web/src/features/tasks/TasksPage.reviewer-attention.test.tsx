@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { test, expect } from 'vitest';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
 import { AppRoutes } from '@/routes';
+import { I18nTestBoundary } from '@/test/render';
 import { server } from '@/test/server';
 
 test.each(['pagination', 'refresh'])('retains loaded attention rows after %s failure', async (mode) => {
@@ -29,7 +30,7 @@ test.each(['pagination', 'refresh'])('retains loaded attention rows after %s fai
   );
   const qc = makeQueryClient();
   qc.setDefaultOptions({ queries: { retry: false } });
-  render(<MemoryRouter initialEntries={['/orgs/review-org/tasks']}><AppProvider client={qc}><AppRoutes /></AppProvider></MemoryRouter>);
+  render(<MemoryRouter initialEntries={['/orgs/review-org/tasks']}><AppProvider client={qc}><I18nTestBoundary><AppRoutes /></I18nTestBoundary></AppProvider></MemoryRouter>);
   await screen.findByRole('heading', { name: 'Waiting on you' });
   expect(screen.getAllByText('Retained founder decision')).toHaveLength(1);
   if (mode === 'pagination') {
@@ -72,7 +73,7 @@ test('retries a failed attention continuation with its own cursor and reaches th
   );
   const qc = makeQueryClient();
   qc.setDefaultOptions({ queries: { retry: false } });
-  render(<MemoryRouter initialEntries={['/orgs/review-org/tasks']}><AppProvider client={qc}><AppRoutes /></AppProvider></MemoryRouter>);
+  render(<MemoryRouter initialEntries={['/orgs/review-org/tasks']}><AppProvider client={qc}><I18nTestBoundary><AppRoutes /></I18nTestBoundary></AppProvider></MemoryRouter>);
   await screen.findByText('50+ waiting on you');
   await userEvent.click(screen.getByRole('button', { name: 'Load more waiting-on-you tasks' }));
   const alert = await screen.findByRole('alert');
