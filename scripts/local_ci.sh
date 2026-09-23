@@ -76,7 +76,6 @@ create_pytest_basetemp() {
 cleanup_pytest_basetemp() {
   # Idempotent removal of exactly the basetemp created by this invocation.
   local path="${PYTEST_BASETEMP:-}" root
-  PYTEST_BASETEMP=""
   [ -n "$path" ] || return 0
   root="$(pytest_basetemp_tmp_root)"
   if [ "$path" = "$root" ] \
@@ -91,6 +90,10 @@ cleanup_pytest_basetemp() {
       return 1
     fi
   fi
+  # Keep the exact identity live until removal has succeeded. If a catchable
+  # signal interrupts rm, the EXIT trap can therefore retry this same literal
+  # child instead of forgetting it.
+  PYTEST_BASETEMP=""
   return 0
 }
 

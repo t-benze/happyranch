@@ -51,6 +51,10 @@ UV_RUN_SLEEP_VAR = "LOCAL_CI_FAKE_UV_RUN_SLEEP"
 UV_RUN_READY_VAR = "LOCAL_CI_FAKE_UV_RUN_READY"
 RM_EXIT_VAR = "LOCAL_CI_FAKE_RM_EXIT"
 MKTEMP_CAPTURE_VAR = "LOCAL_CI_FAKE_MKTEMP_CAPTURE"
+RM_BLOCK_READY_VAR = "LOCAL_CI_FAKE_RM_BLOCK_READY"
+RM_BLOCK_RELEASE_VAR = "LOCAL_CI_FAKE_RM_BLOCK_RELEASE"
+RM_BLOCK_SIGNAL_VAR = "LOCAL_CI_FAKE_RM_BLOCK_SIGNAL"
+RM_BLOCK_COUNT_VAR = "LOCAL_CI_FAKE_RM_BLOCK_COUNT"
 
 SIGNAL_EXIT = {
     signal.SIGHUP: 128 + signal.SIGHUP,
@@ -279,6 +283,43 @@ def _fake_rm(bin_dir: Path) -> None:
         "#!/usr/bin/env bash\n"
         'echo "rm $*" >> "${LOCAL_CI_FAKE_INVOCATION_LOG}"\n'
         'exit "${LOCAL_CI_FAKE_RM_EXIT:-0}"\n',
+    )
+
+
+def _fake_blocking_rm(bin_dir: Path, real_rm: str) -> None:
+    """Block the first cleanup removal until a signal and explicit release.
+
+    The first invocation catches the process-group signal, records that it
+    arrived while ``rm`` itself was blocked, and returns a controlled failure
+    after the test writes the explicit release file. A safe EXIT-trap retry is
+    the second invocation, which delegates the same literal arguments to real
+    ``rm`` and removes the exact basetemp.
+    """
+    _write_executable(
+        bin_dir / "rm",
+        "#!/usr/bin/env bash\n"
+        "set -u\n"
+        f"real_rm={real_rm!r}\n"
+        'count_file="${LOCAL_CI_FAKE_RM_BLOCK_COUNT}"\n'
+        "count=0\n"
+        'if [ -f "$count_file" ]; then count="$(cat "$count_file")"; fi\n'
+        "count=$((count + 1))\n"
+        'printf \'%s\\n\' "$count" > "$count_file"\n'
+        'echo "rm $*" >> "${LOCAL_CI_FAKE_INVOCATION_LOG}"\n'
+        'if [ "$count" -eq 1 ]; then\n'
+        '  signal_file="${LOCAL_CI_FAKE_RM_BLOCK_SIGNAL}"\n'
+        '  trap \'printf "signal\\n" > "$signal_file"\' HUP INT TERM\n'
+        '  printf \'ready\\n\' > "${LOCAL_CI_FAKE_RM_BLOCK_READY}"\n'
+        "  attempts=0\n"
+        '  while [ ! -f "${LOCAL_CI_FAKE_RM_BLOCK_RELEASE}" ]; do\n'
+        "    attempts=$((attempts + 1))\n"
+        "    [ \"$attempts\" -lt 2000 ] || exit 73\n"
+        "    sleep 0.01\n"
+        "  done\n"
+        '  [ -f "$signal_file" ] || exit 74\n'
+        "  exit 75\n"
+        "fi\n"
+        'exec "$real_rm" "$@"\n',
     )
 
 
@@ -800,6 +841,66 @@ def test_catchable_signal_removes_basetemp_and_preserves_signal_status(
     assert basetemp.parent == tmp_root
     assert not basetemp.exists(), stderr
     _assert_sentinels_survive(tmp_root)
+
+
+@pytest.mark.parametrize(
+    "signum",
+    [signal.SIGHUP, signal.SIGINT, signal.SIGTERM],
+    ids=["HUP", "INT", "TERM"],
+)
+def test_cleanup_phase_signal_retries_exact_basetemp_on_exit(
+    tmp_path: Path, signum: int
+) -> None:
+    """A signal during blocked removal keeps identity for the EXIT retry."""
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.0.0")
+    real_rm = shutil.which("rm")
+    assert real_rm is not None
+    _fake_blocking_rm(bin_dir, real_rm)
+    tmp_root = _build_tmp_root(tmp_path)
+    capture = tmp_path / "basetemp-capture"
+    ready = tmp_path / "rm-ready"
+    release = tmp_path / "rm-release"
+    signal_seen = tmp_path / "rm-signal-seen"
+    count = tmp_path / "rm-count"
+    proc = _spawn_local_ci(
+        "python",
+        bin_dir,
+        version_file,
+        log_file,
+        {
+            "TMPDIR": str(tmp_root),
+            BASETEMP_CAPTURE_VAR: str(capture),
+            RM_BLOCK_READY_VAR: str(ready),
+            RM_BLOCK_RELEASE_VAR: str(release),
+            RM_BLOCK_SIGNAL_VAR: str(signal_seen),
+            RM_BLOCK_COUNT_VAR: str(count),
+        },
+    )
+    try:
+        assert _wait_for_file(ready), "cleanup rm never signalled readiness"
+        os.killpg(os.getpgid(proc.pid), signum)
+        assert _wait_for_file(signal_seen), "blocked cleanup rm missed the signal"
+        # Explicitly release the first rm only after proving that the signal
+        # arrived during its blocked cleanup phase.
+        release.write_text("release\n")
+        _stdout, stderr = proc.communicate(timeout=20)
+    finally:
+        if proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait(timeout=10)
+
+    assert proc.returncode == SIGNAL_EXIT[signum], stderr
+    basetemp = Path(capture.read_text())
+    assert basetemp.parent == tmp_root
+    assert not basetemp.exists(), stderr
+    assert tmp_root.is_dir()
+    _assert_sentinels_survive(tmp_root)
+    # First invocation was interrupted; the second proves safe EXIT re-entry
+    # retried the same exact path rather than forgetting or broadening it.
+    assert count.read_text().strip() == "2"
 
 
 @pytest.mark.parametrize(
