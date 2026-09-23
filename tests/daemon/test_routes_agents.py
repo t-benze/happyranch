@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 from unittest.mock import patch
 
 import pytest
@@ -2531,7 +2532,18 @@ def test_init_slice_c_error_when_marker_missing(
          patch("runtime.daemon.routes.agents.materialize_workspace_skills") as mock_mat:
         mock_ctx = MockCB.return_value
         mock_ctx.clone_repo.return_value = True
-        mock_ctx.ensure_workspace_ready.return_value = None
+
+        def _write_pair(*args, **_kwargs):
+            # THR-262 Slice B: produce a valid canonical pair but no skill
+            # marker, so the exact-profile readiness check still fails.
+            ws_arg = args[0]
+            (ws_arg / "AGENTS.md").write_text("canonical bootstrap\n")
+            claude = ws_arg / "CLAUDE.md"
+            if claude.is_symlink() or claude.exists():
+                claude.unlink()
+            os.symlink("AGENTS.md", claude)
+
+        mock_ctx.ensure_workspace_ready.side_effect = _write_pair
         mock_ctx.create_agent_dirs.return_value = None
         mock_mat.return_value = []  # no skill materialization => no claude marker
         events = _stream_init_bulk_events(app, auth_headers)
@@ -2561,9 +2573,16 @@ def test_init_slice_c_error_when_wrong_profile_marker_exists(
         mock_ctx.clone_repo.return_value = True
         mock_ctx.create_agent_dirs.return_value = None
 
-        def _write_wrong_marker(*_args, **_kwargs):
-            # Simulate a bootstrap that produced only the codex marker.
-            (ws / "AGENTS.md").write_text("stale codex bootstrap\n")
+        def _write_wrong_marker(*args, **_kwargs):
+            # Simulate a bootstrap that produced only the codex marker (and a
+            # valid canonical pair, so the pair gate passes) — the claude
+            # skill marker is still missing.
+            ws_arg = args[0]
+            (ws_arg / "AGENTS.md").write_text("stale codex bootstrap\n")
+            claude = ws_arg / "CLAUDE.md"
+            if claude.is_symlink() or claude.exists():
+                claude.unlink()
+            os.symlink("AGENTS.md", claude)
 
         mock_ctx.ensure_workspace_ready.side_effect = _write_wrong_marker
         mock_mat.return_value = []
@@ -3413,10 +3432,11 @@ def test_set_executor_away_from_claude_warns_stale_by_default(
         )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert set(body["stale_files"]) == {"CLAUDE.md", ".claude"}
+    assert set(body["stale_files"]) == {".claude/settings.json"}
     assert body["cleaned"] is False
     assert body["removed"] == []
-    # Nothing deleted without --clean.
+    # Nothing deleted without --clean; the shared canonical compatibility file
+    # and skills root are preserved (THR-262 Slice B).
     assert (workspace / "CLAUDE.md").exists()
     assert (workspace / ".claude").exists()
 
@@ -3441,9 +3461,15 @@ def test_set_executor_clean_deletes_stale_claude_files(
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["cleaned"] is True
-    assert set(body["removed"]) == {"CLAUDE.md", ".claude"}
-    assert not (workspace / "CLAUDE.md").exists()
-    assert not (workspace / ".claude").exists()
+    assert set(body["removed"]) == {".claude/settings.json"}
+    # THR-262 Slice B: the shared canonical instruction pair and
+    # ``.claude/skills`` are preserved; only the executor-only settings file
+    # is cleaned (and the emptied ``.claude`` directory).
+    assert (workspace / "CLAUDE.md").exists()
+    # ``.claude/skills`` (materialized by the switch) survives; only the
+    # executor-only settings file is cleaned.
+    assert not (workspace / ".claude" / "settings.json").exists()
+    assert (workspace / ".claude").exists()
 
 
 def test_set_executor_to_claude_reports_no_stale(
@@ -7100,3 +7126,48 @@ def test_run_step_fails_terminated_agent_without_executor(
     failed = org_state.db.get_task("TASK-TERM")
     assert failed.status == TaskStatus.FAILED
     assert "terminated" in failed.note.lower()
+
+
+# ── THR-262 Slice B: bounded journal link capture/restore + preflight ───
+
+
+def test_bootstrap_journal_captures_and_restores_canonical_link(tmp_path):
+    from runtime.daemon.routes.agents import _BootstrapRollbackJournal
+
+    (tmp_path / "AGENTS.md").write_text("canonical\n")
+    os.symlink("AGENTS.md", tmp_path / "CLAUDE.md")
+    journal = _BootstrapRollbackJournal.capture(tmp_path)
+    # Simulate a bootstrap that replaced the link with a regular file.
+    (tmp_path / "CLAUDE.md").unlink()
+    (tmp_path / "CLAUDE.md").write_text("clobbered\n")
+    errors = journal.restore(tmp_path)
+    assert errors == []
+    assert os.readlink(tmp_path / "CLAUDE.md") == "AGENTS.md"
+    assert (tmp_path / "AGENTS.md").read_text() == "canonical\n"
+
+
+def test_bootstrap_unsupported_owned_paths_accepts_canonical_link(tmp_path):
+    from runtime.daemon.routes.agents import _bootstrap_unsupported_owned_paths
+
+    (tmp_path / "AGENTS.md").write_text("canonical\n")
+    os.symlink("AGENTS.md", tmp_path / "CLAUDE.md")
+    assert _bootstrap_unsupported_owned_paths(tmp_path) == []
+
+
+def test_bootstrap_unsupported_owned_paths_rejects_foreign_claude_link(tmp_path):
+    from runtime.daemon.routes.agents import _bootstrap_unsupported_owned_paths
+
+    (tmp_path / "AGENTS.md").write_text("canonical\n")
+    (tmp_path / "OTHER.md").write_text("other\n")
+    os.symlink("OTHER.md", tmp_path / "CLAUDE.md")
+    assert "CLAUDE.md" in _bootstrap_unsupported_owned_paths(tmp_path)
+
+
+def test_bootstrap_unsupported_owned_paths_rejects_agents_symlink(tmp_path):
+    from runtime.daemon.routes.agents import _bootstrap_unsupported_owned_paths
+
+    (tmp_path / "AGENTS-real.md").write_text("canonical\n")
+    os.symlink("AGENTS-real.md", tmp_path / "AGENTS.md")
+    os.symlink("AGENTS.md", tmp_path / "CLAUDE.md")
+    unsupported = _bootstrap_unsupported_owned_paths(tmp_path)
+    assert "AGENTS.md" in unsupported

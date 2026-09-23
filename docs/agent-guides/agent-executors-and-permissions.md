@@ -47,10 +47,25 @@ profiles are bound in the machine-global runtime store (THR-107 — see below).
 
 | Executor | Bootstrap doc | Skills dir | Permission surface |
 | --- | --- | --- | --- |
-| `claude` | `CLAUDE.md` | `.claude/skills/` | `permissions.allow` in `.claude/settings.json` and `--allowedTools` |
-| `codex` | `AGENTS.md` | `.agents/skills/` | sandbox flags on CLI |
-| `opencode` | `AGENTS.md` | `.agents/skills/` | `opencode.json` `permission.bash` map |
-| `pi` | `AGENTS.md` | `.agents/skills/` | no HappyRanch-managed sandbox |
+| `claude` | `AGENTS.md` + `CLAUDE.md` → `AGENTS.md` | `.claude/skills/` | `permissions.allow` in `.claude/settings.json` and `--allowedTools` |
+| `codex` | `AGENTS.md` + `CLAUDE.md` → `AGENTS.md` | `.agents/skills/` | sandbox flags on CLI |
+| `opencode` | `AGENTS.md` + `CLAUDE.md` → `AGENTS.md` | `.agents/skills/` | `opencode.json` `permission.bash` map |
+| `pi` | `AGENTS.md` + `CLAUDE.md` → `AGENTS.md` | `.agents/skills/` | no HappyRanch-managed sandbox |
+
+**Canonical instruction pair (THR-262 Slice B).** Every built-in generated
+workspace holds one regular `AGENTS.md` plus the raw relative symlink
+`CLAUDE.md -> AGENTS.md` (same directory). Conversion is non-destructive:
+both paths are classified without following links, every required
+collision-safe preservation copy is written and verified before either path
+is mutated, and an external target is never written through. Session launch
+is read-only and refuses every incomplete/non-canonical pair for every
+provider through `WorkspaceNotInitialized` with an actionable
+`happyranch init-agent <agent>` and no executor launch; the operator
+`init-agent` retry completes the pair or stops on a named preserved conflict
+and is idempotent. There is no persistent journal, scheduler, durable receipt
+or automatic reopen recovery; a caught in-process conversion failure restores
+the exact prior state, while abrupt process death leaves the actual on-disk
+state and preservation copies for the explicit retry.
 
 **Per-agent model selection (THR-067):** Each built-in profile carries a verified `model_arg` — the CLI flag the executor uses when the agent has a model set:
 
@@ -546,13 +561,19 @@ not restored. This is process-local/no-`await` protection where documented,
 not global workspace-generation fencing or external same-UID/multiprocess
 serialization.
 
-Switching **away from Claude** leaves the Claude-only files (`CLAUDE.md`, `.claude/`) behind, because the new adapter writes `AGENTS.md`/`.agents/` and never deletes them. By default the command **warns** that these files are stale and names them; it never auto-deletes. Pass `--clean` to delete them:
+Switching **away from Claude** leaves no stale instruction surface: the shared canonical pair
+(`AGENTS.md` + `CLAUDE.md -> AGENTS.md`) and `.claude/skills` are **preserved**
+for every executor. The only executor-only artifact is `.claude/settings.json`.
+By default the command **warns** that `.claude/settings.json` is stale and
+names it; it never auto-deletes. Pass `--clean` to delete exactly that file
+(and the emptied `.claude/` directory):
 
 ```bash
 happyranch set-executor --org <org> <agent> --executor pi --clean
 ```
 
-(The symmetric case — switching *to* Claude leaves `AGENTS.md`/`.agents/`/`opencode.json` stale — is not yet handled.)
+(The symmetric case — switching *to* Claude — keeps the same shared pair and
+settings file, so there is no separate stale surface.)
 
 **THR-095:** ``happyranch init-agent`` no longer emits ``executor_drift``
 warnings — the .md frontmatter is the single source of truth so there is

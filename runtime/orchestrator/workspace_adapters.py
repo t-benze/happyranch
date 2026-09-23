@@ -1783,6 +1783,275 @@ def format_repo_refresh_note(results: dict[str, bool]) -> str:
     return "Repository freshness at session start: all cloned repositories fast-forwarded cleanly."
 
 
+# ── Canonical instruction pair (THR-262 Slice B / founder seq59) ──────
+# Every generated agent and system-assistant workspace converges
+# non-destructively on one regular ``AGENTS.md`` plus a raw relative
+# ``CLAUDE.md -> AGENTS.md`` symlink. This module owns the shared
+# classifier/writer used by the built-in workspace adapters and the
+# read-only startup readiness gate. It never writes through a symlink and
+# never mutates an external target.
+
+CANONICAL_AGENTS_NAME = "AGENTS.md"
+CANONICAL_CLAUDE_NAME = "CLAUDE.md"
+CANONICAL_CLAUDE_LINK_TARGET = "AGENTS.md"
+
+
+class InstructionPairConflict(RuntimeError):
+    """Raised when the canonical instruction pair cannot be converged safely.
+
+    The pair-wide preservation barrier guarantees that when this is raised
+    after preflight, both instruction paths are byte/type/raw-link identical
+    to their pre-state (any completed preservation copy is retained and only
+    an owned incomplete copy is removed).
+    """
+
+    def __init__(self, path: Path, reason: str) -> None:
+        self.path = Path(path)
+        self.reason = reason
+        super().__init__(f"instruction pair conflict at {self.path}: {reason}")
+
+
+@dataclass(frozen=True)
+class _InstructionPathState:
+    kind: str  # absent | regular | symlink | unsupported
+    data: bytes | None = None
+    mode: int | None = None
+    raw_link: str | None = None
+    detail: str | None = None
+
+
+def _classify_instruction_path(path: Path) -> _InstructionPathState:
+    """Classify one instruction path with ``lstat`` and never follow links."""
+    import stat as _stat
+
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return _InstructionPathState(kind="absent")
+    except OSError as exc:
+        return _InstructionPathState(kind="unsupported", detail=f"lstat failed: {exc}")
+    if _stat.S_ISLNK(st.st_mode):
+        try:
+            raw = os.readlink(path)
+        except OSError as exc:
+            return _InstructionPathState(
+                kind="unsupported", detail=f"readlink failed: {exc}"
+            )
+        return _InstructionPathState(kind="symlink", raw_link=raw)
+    if _stat.S_ISREG(st.st_mode):
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            return _InstructionPathState(kind="unsupported", detail=f"read failed: {exc}")
+        return _InstructionPathState(
+            kind="regular", data=data, mode=st.st_mode & 0o7777
+        )
+    return _InstructionPathState(kind="unsupported", detail="not a regular file")
+
+
+def _timestamp_suffix() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+
+
+def _reserve_sibling(directory: Path, stem: str) -> Path:
+    """Reserve a collision-safe owned name in *directory* via ``O_EXCL``."""
+    candidate = directory / stem
+    counter = 0
+    while True:
+        try:
+            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            counter += 1
+            candidate = directory / f"{stem}-{counter}"
+            continue
+        os.close(fd)
+        return candidate
+
+
+def _write_preservation_copy(path: Path, state: _InstructionPathState) -> Path:
+    """Write and verify one collision-safe preservation copy.
+
+    Returns the retained backup path. On failure the incomplete owned copy is
+    removed and ``OSError`` is raised; a pre-existing collided/foreign path is
+    never removed because reservation used ``O_EXCL``.
+    """
+    backup = _reserve_sibling(
+        path.parent, f"{path.name}.happyranch-{_timestamp_suffix()}.bak"
+    )
+    assert state.data is not None
+    try:
+        with open(backup, "wb") as fh:
+            fh.write(state.data)
+        os.chmod(backup, state.mode or 0o644)
+        if backup.read_bytes() != state.data:
+            raise OSError("preservation copy byte verification failed")
+        if (backup.stat().st_mode & 0o7777) != ((state.mode or 0o644) & 0o7777):
+            raise OSError("preservation copy mode verification failed")
+    except OSError:
+        try:
+            backup.unlink()
+        except OSError:
+            pass
+        raise
+    return backup
+
+
+def _atomic_write_regular(path: Path, data: bytes, mode: int = 0o644) -> None:
+    """Write *data* to a same-directory temp then atomically ``os.replace``."""
+    temp = _reserve_sibling(
+        path.parent, f"{path.name}.happyranch-{_timestamp_suffix()}.tmp"
+    )
+    try:
+        with open(temp, "wb") as fh:
+            fh.write(data)
+        os.chmod(temp, mode)
+        os.replace(temp, path)
+    except OSError:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _claude_link_is_canonical(workspace: Path, state: _InstructionPathState) -> bool:
+    """True when *state* is exactly raw relative ``CLAUDE.md -> AGENTS.md``.
+
+    The raw link text must be exactly ``AGENTS.md`` and its resolution must
+    equal a regular same-directory ``AGENTS.md``.
+    """
+    import stat as _stat
+
+    if state.kind != "symlink" or state.raw_link != CANONICAL_CLAUDE_LINK_TARGET:
+        return False
+    agents = workspace / CANONICAL_AGENTS_NAME
+    try:
+        if not _stat.S_ISREG(os.lstat(agents).st_mode):
+            return False
+        return os.path.realpath(workspace / CANONICAL_CLAUDE_NAME) == os.path.realpath(
+            agents
+        )
+    except OSError:
+        return False
+
+
+def instruction_pair_refusal(workspace: Path) -> str | None:
+    """Return the refusal reason for a non-canonical pair, else ``None``.
+
+    Read-only: classifies both paths with ``lstat`` and never follows,
+    creates, repairs or mutates anything. Startup uses this before launch.
+    """
+    import stat as _stat
+
+    agents = workspace / CANONICAL_AGENTS_NAME
+    claude = workspace / CANONICAL_CLAUDE_NAME
+    try:
+        agents_st = os.lstat(agents)
+    except FileNotFoundError:
+        return f"{CANONICAL_AGENTS_NAME} is missing"
+    except OSError as exc:
+        return f"{CANONICAL_AGENTS_NAME} cannot be inspected: {exc}"
+    if not _stat.S_ISREG(agents_st.st_mode):
+        return f"{CANONICAL_AGENTS_NAME} is not a regular file"
+    try:
+        claude_st = os.lstat(claude)
+    except FileNotFoundError:
+        return f"{CANONICAL_CLAUDE_NAME} is missing"
+    except OSError as exc:
+        return f"{CANONICAL_CLAUDE_NAME} cannot be inspected: {exc}"
+    if not _stat.S_ISLNK(claude_st.st_mode):
+        return f"{CANONICAL_CLAUDE_NAME} is not a symlink to {CANONICAL_AGENTS_NAME}"
+    try:
+        raw = os.readlink(claude)
+    except OSError as exc:
+        return f"{CANONICAL_CLAUDE_NAME} link text cannot be read: {exc}"
+    if raw != CANONICAL_CLAUDE_LINK_TARGET:
+        return (
+            f"{CANONICAL_CLAUDE_NAME} link text is {raw!r}, expected "
+            f"{CANONICAL_CLAUDE_LINK_TARGET!r}"
+        )
+    try:
+        if os.path.realpath(claude) != os.path.realpath(agents):
+            return f"{CANONICAL_CLAUDE_NAME} does not resolve to {CANONICAL_AGENTS_NAME}"
+    except OSError as exc:
+        return f"{CANONICAL_CLAUDE_NAME} cannot be resolved: {exc}"
+    return None
+
+
+def canonical_instruction_pair_ok(workspace: Path) -> bool:
+    """True when the workspace holds the accepted canonical instruction pair."""
+    return instruction_pair_refusal(workspace) is None
+
+
+def write_canonical_instruction_pair(workspace: Path, content: str) -> None:
+    """Converge *workspace* on the canonical instruction pair (non-destructive).
+
+    Preflight classifies both paths without following links. Every required
+    preservation copy for both paths is written and verified before either
+    path is mutated. ``AGENTS.md`` becomes the regular canonical file holding
+    *content*; ``CLAUDE.md`` becomes the raw relative link ``AGENTS.md``.
+    Raises :class:`InstructionPairConflict` on unreadable/unsupported input or
+    a preservation-copy failure, leaving both paths unchanged.
+    """
+    workspace.mkdir(parents=True, exist_ok=True)
+    data = content.encode("utf-8")
+    agents = workspace / CANONICAL_AGENTS_NAME
+    claude = workspace / CANONICAL_CLAUDE_NAME
+    agents_state = _classify_instruction_path(agents)
+    claude_state = _classify_instruction_path(claude)
+
+    if agents_state.kind == "unsupported":
+        raise InstructionPairConflict(
+            agents, agents_state.detail or "unsupported input"
+        )
+    if claude_state.kind == "unsupported":
+        raise InstructionPairConflict(
+            claude, claude_state.detail or "unsupported input"
+        )
+
+    # ── Preservation barrier: ALL required copies for BOTH paths first ──
+    if agents_state.kind == "regular" and agents_state.data != data:
+        try:
+            _write_preservation_copy(agents, agents_state)
+        except OSError as exc:
+            raise InstructionPairConflict(
+                agents, f"preservation copy failed: {exc}"
+            )
+    if claude_state.kind == "regular" and claude_state.data != data:
+        try:
+            _write_preservation_copy(claude, claude_state)
+        except OSError as exc:
+            # A completed AGENTS.md copy (if any) is retained and identified;
+            # only an owned incomplete CLAUDE.md copy is removed.
+            raise InstructionPairConflict(
+                claude, f"preservation copy failed: {exc}"
+            )
+
+    # ── AGENTS.md: regular canonical file ──
+    try:
+        if agents_state.kind == "absent":
+            _atomic_write_regular(agents, data)
+        elif agents_state.kind == "regular":
+            if agents_state.data != data:
+                _atomic_write_regular(agents, data, agents_state.mode or 0o644)
+        else:  # symlink — never write through it
+            agents.unlink()
+            _atomic_write_regular(agents, data)
+    except OSError as exc:
+        raise InstructionPairConflict(agents, f"canonical write failed: {exc}")
+
+    # ── CLAUDE.md: raw relative link to AGENTS.md ──
+    try:
+        if not _claude_link_is_canonical(workspace, claude_state):
+            if claude_state.kind != "absent":
+                claude.unlink()
+            os.symlink(CANONICAL_CLAUDE_LINK_TARGET, claude)
+    except OSError as exc:
+        raise InstructionPairConflict(claude, f"link creation failed: {exc}")
+
+
 class ClaudeWorkspaceAdapter:
     """Bootstrap and maintain Claude Code workspaces."""
 
@@ -1817,12 +2086,14 @@ class ClaudeWorkspaceAdapter:
         system_prompt: str,
         repo_names: list[str] | None = None,
     ) -> None:
-        """Write CLAUDE.md to workspace with system prompt and context pointers.
+        """Write the canonical instruction pair with system prompt and pointers.
 
-        ``repo_names`` is accepted for API compatibility but is not listed
-        inline — CLAUDE.md points at the agent's authoritative
-        ``org/agents/<name>.md`` frontmatter (``AgentDef.repos``) so the repo
-        list doesn't drift between the two files.
+        The active-executor content is written to the regular canonical
+        ``AGENTS.md``; ``CLAUDE.md`` becomes the raw relative link
+        ``AGENTS.md``. ``repo_names`` is accepted for API compatibility but is
+        not listed inline — the canonical file points at the agent's
+        authoritative ``org/agents/<name>.md`` frontmatter (``AgentDef.repos``)
+        so the repo list doesn't drift between the two files.
         """
         _assert_no_reserved_headers_in_body(agent_name, system_prompt)
         workspace.mkdir(parents=True, exist_ok=True)
@@ -1847,7 +2118,7 @@ class ClaudeWorkspaceAdapter:
             ],
             skills_dir=".claude/skills",
         )
-        (workspace / "CLAUDE.md").write_text("\n".join(sections))
+        write_canonical_instruction_pair(workspace, "\n".join(sections))
 
     def _build_sections(
         self,
@@ -1997,7 +2268,7 @@ class CodexWorkspaceAdapter:
             ],
             skills_dir=".agents/skills",
         )
-        (workspace / "AGENTS.md").write_text("\n".join(sections))
+        write_canonical_instruction_pair(workspace, "\n".join(sections))
 
     def _copy_skills(self, workspace: Path) -> None:
         """No-op: canonical store + symlinks supersede wholesale copy."""

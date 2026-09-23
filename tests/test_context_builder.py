@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -271,8 +272,9 @@ def test_ensure_workspace_ready_can_bootstrap_codex_workspace(test_settings, tmp
         "system prompt",
         provider="codex",
     )
-    assert (workspace / "AGENTS.md").exists()
-    assert not (workspace / "CLAUDE.md").exists()
+    assert (workspace / "AGENTS.md").is_file()
+    assert (workspace / "CLAUDE.md").is_symlink()
+    assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
     assert not (workspace / ".claude").exists()
     body = (workspace / "AGENTS.md").read_text()
     assert ".claude/settings.json" not in body
@@ -293,10 +295,11 @@ def test_ensure_workspace_ready_can_bootstrap_pi_workspace(test_settings, tmp_pa
         provider="pi",
     )
 
-    assert (workspace / "AGENTS.md").exists()
+    assert (workspace / "AGENTS.md").is_file()
     # Cutover: wholesale dump disabled — no skills land during bootstrap.
     assert not (workspace / ".agents" / "skills" / "start-task" / "SKILL.md").exists()
-    assert not (workspace / "CLAUDE.md").exists()
+    assert (workspace / "CLAUDE.md").is_symlink()
+    assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
     assert not (workspace / ".claude").exists()
 
 

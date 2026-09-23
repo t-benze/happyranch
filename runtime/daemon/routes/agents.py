@@ -189,6 +189,16 @@ def _bootstrap_readiness_marker(
         db=org.db,
     )
 
+    from runtime.orchestrator.workspace_adapters import instruction_pair_refusal
+
+    pair_refusal = instruction_pair_refusal(workspace)
+    if pair_refusal is not None:
+        raise RuntimeError(
+            f"instruction pair for {agent_name!r} is not canonical: "
+            f"{pair_refusal}. Run `happyranch init-agent {agent_name}` to "
+            "complete it."
+        )
+
     profile = get_registry().get_profile(provider)
     if profile is None:
         raise RuntimeError(
@@ -1331,9 +1341,10 @@ def _get_valid_executors() -> tuple[str, ...]:
 _VALID_EXECUTORS: tuple[str, ...] = ()  # populated lazily
 
 # Claude-only workspace files that go stale when an agent switches AWAY from
-# the Claude executor: the new adapter writes AGENTS.md/.agents/ and never
-# removes these, so they linger unused. (.claude holds settings.json + skills.)
-_CLAUDE_ONLY_WORKSPACE_FILES: tuple[str, ...] = ("CLAUDE.md", ".claude")
+# the Claude executor. The shared canonical instruction pair
+# (``AGENTS.md`` + raw relative ``CLAUDE.md`` link) and ``.claude/skills`` are
+# PRESERVED; only the Claude-only ``.claude/settings.json`` is stale.
+_CLAUDE_ONLY_WORKSPACE_FILES: tuple[str, ...] = (".claude/settings.json",)
 
 
 # ---------------------------------------------------------------------------
@@ -1403,6 +1414,27 @@ def _bootstrap_legacy_migration_unsupported(workspace: Path) -> bool:
     return (workspace / "learnings").exists() and not (workspace / "memory").exists()
 
 
+def _is_canonical_claude_instruction_link(workspace: Path) -> bool:
+    """True when ``CLAUDE.md`` is the accepted raw relative ``AGENTS.md`` link.
+
+    THR-262 Slice B: the canonical instruction pair admits exactly one symlink
+    at an owned path — a same-directory relative ``CLAUDE.md -> AGENTS.md``
+    whose target is a regular file. Every other symlink remains unsupported.
+    """
+    import stat as _stat
+
+    link = workspace / "CLAUDE.md"
+    target = workspace / "AGENTS.md"
+    try:
+        if os.readlink(link) != "AGENTS.md":
+            return False
+        if not _stat.S_ISREG(os.lstat(target).st_mode):
+            return False
+        return os.path.realpath(link) == os.path.realpath(target)
+    except OSError:
+        return False
+
+
 def _bootstrap_unsupported_owned_paths(workspace: Path) -> list[str]:
     """Return owned paths bootstrap cannot safely mutate (symlink / non-regular).
 
@@ -1415,6 +1447,12 @@ def _bootstrap_unsupported_owned_paths(workspace: Path) -> list[str]:
     any mutation — including union materialization, which reconciles the
     bootstrap-owned ``.claude`` directory.
 
+    THR-262 Slice B admission: the single canonical instruction link
+    ``CLAUDE.md -> AGENTS.md`` (regular same-directory target) is accepted;
+    the journal now captures/restores its exact raw link text, so it is
+    losslessly compensable. Every other symlink/non-regular entry is still
+    rejected.
+
     Detection uses ``is_symlink`` first (an ``lstat`` that never follows the
     link), so a symlink is classified without reading or touching its
     target. ``exists``/``is_file``/``is_dir`` are only consulted after the
@@ -1424,6 +1462,8 @@ def _bootstrap_unsupported_owned_paths(workspace: Path) -> list[str]:
     for rel in _BOOTSTRAP_OWNED_FILES:
         fp = workspace / rel
         if fp.is_symlink():
+            if rel == "CLAUDE.md" and _is_canonical_claude_instruction_link(workspace):
+                continue
             unsupported.append(rel)
         elif fp.exists() and not fp.is_file():
             unsupported.append(rel)
@@ -1450,7 +1490,14 @@ def _bootstrap_uncapturable_owned_files(workspace: Path) -> list[str]:
     uncapturable: list[str] = []
     for rel in _BOOTSTRAP_OWNED_FILES:
         fp = workspace / rel
-        if fp.is_file() and not fp.is_symlink():
+        if fp.is_symlink():
+            # THR-262 Slice B: the admitted canonical instruction link must
+            # have readable raw link text, or capture cannot restore it.
+            try:
+                os.readlink(fp)
+            except OSError:
+                uncapturable.append(rel)
+        elif fp.is_file():
             try:
                 fp.read_bytes()
             except OSError:
@@ -1491,12 +1538,16 @@ class _BootstrapRollbackJournal:
     mutation should capture ever observe one.
     """
 
-    __slots__ = ("_files", "_uncapturable", "_dirs")
+    __slots__ = ("_files", "_uncapturable", "_dirs", "_links")
 
     def __init__(self) -> None:
         self._files: dict[str, bytes | None] = {}
         self._uncapturable: set[str] = set()
         self._dirs: set[str] = set()
+        # THR-262 Slice B: exact raw link text for admitted symlink owned
+        # paths (the canonical CLAUDE.md -> AGENTS.md link), so restore can
+        # recreate the link rather than collapsing it to absent.
+        self._links: dict[str, str] = {}
 
     def uncapturable(self) -> list[str]:
         """Sorted declared files observed present-but-unreadable at capture.
@@ -1513,8 +1564,15 @@ class _BootstrapRollbackJournal:
         journal = cls()
         for rel in _BOOTSTRAP_OWNED_FILES:
             fp = workspace / rel
+            if fp.is_symlink():
+                # Admitted canonical instruction link: record exact raw text.
+                try:
+                    journal._links[rel] = os.readlink(fp)
+                except OSError:
+                    journal._uncapturable.add(rel)
+                continue
             original: bytes | None = None
-            if fp.is_file() and not fp.is_symlink():
+            if fp.is_file():
                 try:
                     original = fp.read_bytes()
                 except OSError:
@@ -1539,6 +1597,16 @@ class _BootstrapRollbackJournal:
             errors.append(
                 f"Uncapturable owned file {rel} cannot be compensated"
             )
+        for rel, raw_link in sorted(self._links.items()):
+            # THR-262 Slice B: recreate the exact captured raw relative link
+            # (never collapse an admitted canonical link to absent).
+            fp = workspace / rel
+            try:
+                if fp.is_symlink() or fp.exists():
+                    fp.unlink()
+                os.symlink(raw_link, fp)
+            except OSError as exc:
+                errors.append(f"Failed to restore link {rel}: {exc}")
         for rel, original in self._files.items():
             fp = workspace / rel
             if original is None:
@@ -1923,6 +1991,16 @@ async def set_agent_executor(
                         target.unlink()
                     removed.append(name)
                 cleaned = True
+                # THR-262 Slice B: the shared canonical instruction pair and
+                # ``.claude/skills`` are preserved. Remove ``.claude`` only
+                # when cleaning genuinely emptied it.
+                claude_dir = workspace / ".claude"
+                if claude_dir.is_dir() and not claude_dir.is_symlink():
+                    try:
+                        if not any(claude_dir.iterdir()):
+                            claude_dir.rmdir()
+                    except OSError:
+                        pass
 
     AuditLogger(org.db).log_agent_managed(
         scope_id="founder",

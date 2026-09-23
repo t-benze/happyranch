@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -7,7 +8,11 @@ from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.workspace_adapters import (
     ClaudeWorkspaceAdapter,
     CodexWorkspaceAdapter,
+    InstructionPairConflict,
     OpencodeWorkspaceAdapter,
+    canonical_instruction_pair_ok,
+    instruction_pair_refusal,
+    write_canonical_instruction_pair,
 )
 from runtime.runtime import RuntimeDir
 
@@ -73,8 +78,11 @@ def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings
         system_prompt="You are the Dev Agent.",
     )
 
-    assert (workspace / "AGENTS.md").exists()
-    assert not (workspace / "CLAUDE.md").exists()
+    assert (workspace / "AGENTS.md").is_file()
+    assert not (workspace / "AGENTS.md").is_symlink()
+    assert (workspace / "CLAUDE.md").is_symlink()
+    assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
+    assert (workspace / "CLAUDE.md").resolve() == (workspace / "AGENTS.md").resolve()
     # Cutover: wholesale dump disabled — no skills land during bootstrap.
     assert not (workspace / ".claude" / "skills" / "start-task").exists()
     assert not (workspace / ".agents" / "skills" / "start-task" / "SKILL.md").exists()
@@ -171,8 +179,11 @@ def test_opencode_adapter_bootstrap_creates_agents_md_skills_and_opencode_json(
         system_prompt="You are the Dev Agent.",
     )
 
-    assert (workspace / "AGENTS.md").exists()
-    assert not (workspace / "CLAUDE.md").exists()
+    assert (workspace / "AGENTS.md").is_file()
+    assert not (workspace / "AGENTS.md").is_symlink()
+    assert (workspace / "CLAUDE.md").is_symlink()
+    assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
+    assert (workspace / "CLAUDE.md").resolve() == (workspace / "AGENTS.md").resolve()
     # Cutover: wholesale dump disabled — no skills land during bootstrap.
     assert not (workspace / ".agents" / "skills" / "start-task" / "SKILL.md").exists()
     assert not (workspace / ".claude" / "skills" / "start-task").exists()
@@ -1050,3 +1061,139 @@ class TestProductionDocumentRendering:
         assert "distinct" not in skills_section.lower(), (
             "AGENTS.md Skills Directory section must not claim distinct identity"
         )
+
+
+# ── THR-262 Slice B: canonical instruction pair (founder seq59) ──────────
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex", "opencode", "pi"])
+def test_instruction_pair_canonical_for_every_provider(
+    test_settings, tmp_dir, runtime, provider,
+):
+    """Every built-in adapter converges on regular AGENTS.md + relative link."""
+    from runtime.orchestrator.context_builder import ContextBuilder
+
+    ws = tmp_dir / "workspaces" / f"agent_{provider}"
+    ContextBuilder(test_settings, runtime, slug="test").ensure_workspace_ready(
+        ws, f"agent_{provider}", "You are a test agent.", provider=provider,
+    )
+    assert (ws / "AGENTS.md").is_file()
+    assert not (ws / "AGENTS.md").is_symlink()
+    assert (ws / "CLAUDE.md").is_symlink()
+    assert os.readlink(ws / "CLAUDE.md") == "AGENTS.md"
+    assert (ws / "CLAUDE.md").resolve() == (ws / "AGENTS.md").resolve()
+    assert canonical_instruction_pair_ok(ws)
+
+
+def _seed_agents(ws: Path) -> None:
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "AGENTS.md").write_text("canonical\n")
+
+
+def test_instruction_pair_refusal_missing(tmp_dir):
+    ws = tmp_dir / "w"
+    ws.mkdir()
+    assert instruction_pair_refusal(ws) == "AGENTS.md is missing"
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        "dangling",
+        "cyclic",
+        "absolute",
+        "foreign",
+        "wrong_target",
+        "non_link",
+        "directory",
+        "agents_symlink",
+    ],
+)
+def test_instruction_pair_refuses_non_canonical_forms(tmp_dir, form):
+    ws = tmp_dir / f"w_{form}"
+    _seed_agents(ws)
+    claude = ws / "CLAUDE.md"
+    if form == "dangling":
+        os.symlink("MISSING.md", claude)
+    elif form == "cyclic":
+        os.symlink("CLAUDE.md", claude)
+    elif form == "absolute":
+        os.symlink(str(ws / "AGENTS.md"), claude)
+    elif form == "foreign":
+        os.symlink("/etc/hostname", claude)
+    elif form == "wrong_target":
+        (ws / "OTHER.md").write_text("other\n")
+        os.symlink("OTHER.md", claude)
+    elif form == "non_link":
+        claude.write_text("canonical\n")
+    elif form == "directory":
+        claude.mkdir()
+    elif form == "agents_symlink":
+        (ws / "AGENTS-real.md").write_text("canonical\n")
+        (ws / "AGENTS.md").unlink()
+        os.symlink("AGENTS-real.md", ws / "AGENTS.md")
+        os.symlink("AGENTS.md", claude)
+    assert instruction_pair_refusal(ws) is not None
+
+
+def test_instruction_pair_writer_never_mutates_external_target(tmp_dir):
+    ws = tmp_dir / "w"
+    ws.mkdir()
+    external = tmp_dir / "external.md"
+    external.write_text("external bytes\n")
+    os.symlink(external, ws / "AGENTS.md")
+    write_canonical_instruction_pair(ws, "canonical\n")
+    assert external.read_text() == "external bytes\n"
+    assert (ws / "AGENTS.md").is_file()
+    assert not (ws / "AGENTS.md").is_symlink()
+    assert os.readlink(ws / "CLAUDE.md") == "AGENTS.md"
+
+
+def test_instruction_pair_preserves_both_differing_regular_files(tmp_dir):
+    ws = tmp_dir / "w"
+    ws.mkdir()
+    (ws / "AGENTS.md").write_text("old agents\n")
+    (ws / "CLAUDE.md").write_text("old claude\n")
+    write_canonical_instruction_pair(ws, "canonical\n")
+    assert (ws / "AGENTS.md").read_text() == "canonical\n"
+    assert os.readlink(ws / "CLAUDE.md") == "AGENTS.md"
+    backups = sorted(
+        p.read_text() for p in ws.iterdir() if p.name.endswith(".bak")
+    )
+    assert backups == ["old agents\n", "old claude\n"]
+
+
+def test_instruction_pair_cl_copy_failure_leaves_both_unchanged(
+    tmp_dir, monkeypatch,
+):
+    """T2b: a CLAUDE.md preservation-copy failure after the completed AGENTS.md
+    copy leaves both originals byte/type-identical and the AG copy retained."""
+    import runtime.orchestrator.workspace_adapters as wa
+
+    ws = tmp_dir / "w"
+    ws.mkdir()
+    (ws / "AGENTS.md").write_text("old agents\n")
+    (ws / "CLAUDE.md").write_text("old claude\n")
+
+    real = wa._write_preservation_copy
+    calls: list[str] = []
+
+    def failing(path, state):
+        calls.append(path.name)
+        if path.name == "CLAUDE.md":
+            raise OSError("injected copy failure")
+        return real(path, state)
+
+    monkeypatch.setattr(wa, "_write_preservation_copy", failing)
+    with pytest.raises(InstructionPairConflict):
+        wa.write_canonical_instruction_pair(ws, "canonical\n")
+
+    assert (ws / "AGENTS.md").read_text() == "old agents\n"
+    assert (ws / "CLAUDE.md").read_text() == "old claude\n"
+    assert not (ws / "CLAUDE.md").is_symlink()
+    # The completed AGENTS.md preservation copy is retained and identified.
+    ag_backups = [p for p in ws.iterdir() if p.name.startswith("AGENTS.md.happyranch")]
+    assert ag_backups, "completed AGENTS.md preservation copy must be retained"
+    assert calls == ["AGENTS.md", "CLAUDE.md"]
+    # No canonical pair was written.
+    assert not canonical_instruction_pair_ok(ws)

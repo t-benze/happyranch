@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,7 +18,11 @@ from runtime.models import (
     ThreadRecord,
 )
 from runtime.orchestrator.executors import ExecutorResult
-from runtime.orchestrator.orchestrator import Orchestrator, AgentUnavailableError
+from runtime.orchestrator.orchestrator import (
+    Orchestrator,
+    AgentUnavailableError,
+    WorkspaceNotInitialized,
+)
 from runtime.orchestrator.teams import TeamsRegistry
 
 
@@ -67,11 +72,25 @@ def _setup_protocol_skills(settings, contract_ids: list[str] | None = None) -> N
         (src / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {sid}.\n")
 
 
+def _seed_instruction_pair(ws: Path, content: str) -> None:
+    """Seed the canonical AGENTS.md + raw relative CLAUDE.md link.
+
+    THR-262 Slice B: session launch requires the canonical instruction pair
+    for every provider, so test workspaces seed it explicitly.
+    """
+    (ws / "AGENTS.md").write_text(content)
+    claude = ws / "CLAUDE.md"
+    if claude.is_symlink() or claude.exists():
+        claude.unlink()
+    os.symlink("AGENTS.md", claude)
+
+
 def _setup_workspaces(runtime, agents: list[str] | None = None):
     for agent in (agents or _DEFAULT_AGENTS):
         ws = runtime.workspaces_dir / agent
         ws.mkdir(parents=True, exist_ok=True)
         (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
+        _seed_instruction_pair(ws, f"# Agent: {agent}\n")
         # Under the canonical store model, workspace skill symlinks are
         # created by the SymlinkMaterializer during pre-spawn materialization,
         # NOT by pre-creating ordinary directories. Creating an ordinary
@@ -84,7 +103,7 @@ def _setup_codex_workspace(runtime, agent: str) -> None:
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
     write_default_agent_config(ws)
     set_executor(ws, "codex")
-    (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+    _seed_instruction_pair(ws, f"# Agent: {agent}\n")
     # THR-095: executor is now read from org/agents/<name>.md (single source),
     # not agent.yaml. Write the .md with the matching executor.
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
@@ -104,7 +123,7 @@ def _setup_opencode_workspace(runtime, agent: str) -> None:
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
     write_default_agent_config(ws)
     set_executor(ws, "opencode")
-    (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+    _seed_instruction_pair(ws, f"# Agent: {agent}\n")
     # THR-095: executor is now read from org/agents/<name>.md (single source)
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     ad = AgentDef(
@@ -123,7 +142,7 @@ def _setup_pi_workspace(runtime, agent: str) -> None:
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
     write_default_agent_config(ws)
     set_executor(ws, "pi")
-    (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+    _seed_instruction_pair(ws, f"# Agent: {agent}\n")
     # THR-095: executor is now read from org/agents/<name>.md (single source)
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     ad = AgentDef(
@@ -1990,6 +2009,58 @@ def test_run_agent_accepts_codex_readiness_marker(orchestrator, test_runtime, mo
 
     assert result.success is True
     assert report is None
+    assert mock_executor.run.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "form", ["missing_claude", "dangling_claude", "regular_claude"],
+)
+def test_run_agent_refuses_non_canonical_pair_before_launch(
+    orchestrator, test_runtime, monkeypatch, form,
+):
+    """THR-262 Slice B: an incomplete/non-canonical instruction pair refuses
+    with WorkspaceNotInitialized naming ``init-agent`` and launches nothing."""
+    _setup_codex_workspace(test_runtime, "engineering_head")
+    ws = test_runtime.workspaces_dir / "engineering_head"
+    claude = ws / "CLAUDE.md"
+    if form == "missing_claude":
+        claude.unlink()
+    elif form == "dangling_claude":
+        claude.unlink()
+        os.symlink("MISSING.md", claude)
+    else:  # regular_claude
+        claude.unlink()
+        claude.write_text("regular\n")
+    task_id = orchestrator.create_task("ping")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
+
+    mock_executor = MagicMock()
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
+        with pytest.raises(WorkspaceNotInitialized) as excinfo:
+            orchestrator._run_agent(task_id, "engineering_head", "any prompt")
+
+    assert "init-agent" in str(excinfo.value)
+    mock_executor.run.assert_not_called()
+
+
+def test_run_agent_valid_canonical_pair_reaches_launch(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """Positive control: a valid canonical pair proceeds to launch."""
+    _setup_codex_workspace(test_runtime, "engineering_head")
+    task_id = orchestrator.create_task("ping")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
+
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="sess-eh",
+    )
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
+        result, _report = orchestrator._run_agent(
+            task_id, "engineering_head", "any prompt",
+        )
+
+    assert result.success is True
     assert mock_executor.run.call_count == 1
 
 

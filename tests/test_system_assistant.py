@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -739,7 +740,12 @@ def test_classify_stale_when_required_bootstrap_file_is_symlink(
     status = classify_assistant_state(tmp_path)
 
     assert status.state == AssistantState.STALE_OR_BROKEN
-    assert status.detail == f"assistant bootstrap file {filename} must not be a symlink"
+    if filename == "agent.yaml":
+        assert status.detail == "assistant bootstrap file agent.yaml must not be a symlink"
+    else:
+        # THR-262 Slice B: the instruction pair is validated instead; a
+        # non-canonical symlink is refused through the pair classifier.
+        assert status.detail.startswith("assistant instruction pair is not canonical:")
 
 
 @pytest.mark.parametrize("filename", ["agent.yaml", "AGENTS.md", "CLAUDE.md"])
@@ -761,7 +767,10 @@ def test_classify_stale_when_required_bootstrap_file_is_directory(
     status = classify_assistant_state(tmp_path)
 
     assert status.state == AssistantState.STALE_OR_BROKEN
-    assert status.detail == f"assistant bootstrap file {filename} is not a regular file"
+    if filename == "agent.yaml":
+        assert status.detail == "assistant bootstrap file agent.yaml is not a regular file"
+    else:
+        assert status.detail.startswith("assistant instruction pair is not canonical:")
 
 
 def test_classify_stale_when_learnings_index_is_symlink(
@@ -883,7 +892,7 @@ def test_classify_stale_when_claude_prompt_file_is_missing(
     status = classify_assistant_state(tmp_path)
 
     assert status.state == AssistantState.STALE_OR_BROKEN
-    assert status.detail == "assistant bootstrap file CLAUDE.md is missing"
+    assert status.detail == "assistant instruction pair is not canonical: CLAUDE.md is missing"
 
 
 @pytest.mark.parametrize("executor", ["codex", "opencode", "pi"])
@@ -903,7 +912,7 @@ def test_classify_stale_when_agents_prompt_file_is_missing(
     status = classify_assistant_state(tmp_path)
 
     assert status.state == AssistantState.STALE_OR_BROKEN
-    assert status.detail == "assistant bootstrap file AGENTS.md is missing"
+    assert status.detail == "assistant instruction pair is not canonical: AGENTS.md is missing"
 
 
 def test_classify_stale_when_selected_command_not_found(tmp_path: Path) -> None:
@@ -975,8 +984,10 @@ def test_bootstrap_claude_workspace_writes_claude_surface(tmp_path: Path) -> Non
     bootstrap_assistant_workspace(tmp_path, executor="claude")
 
     workspace = tmp_path / "system" / "assistant" / "workspace"
-    assert (workspace / "CLAUDE.md").exists()
-    assert not (workspace / "AGENTS.md").exists()
+    assert (workspace / "AGENTS.md").is_file()
+    assert not (workspace / "AGENTS.md").is_symlink()
+    assert (workspace / "CLAUDE.md").is_symlink()
+    assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
 
 
 def test_bootstrap_switches_prompt_surface_from_claude_to_codex(
@@ -985,13 +996,17 @@ def test_bootstrap_switches_prompt_surface_from_claude_to_codex(
     bootstrap_assistant_workspace(tmp_path, executor="claude")
     workspace = tmp_path / "system" / "assistant" / "workspace"
 
-    assert (workspace / "CLAUDE.md").exists()
-    assert not (workspace / "AGENTS.md").exists()
+    assert (workspace / "AGENTS.md").is_file()
+    assert not (workspace / "AGENTS.md").is_symlink()
+    assert (workspace / "CLAUDE.md").is_symlink()
+    assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
 
     bootstrap_assistant_workspace(tmp_path, executor="codex")
 
-    assert not (workspace / "CLAUDE.md").exists()
-    assert (workspace / "AGENTS.md").exists()
+    assert (workspace / "AGENTS.md").is_file()
+    assert not (workspace / "AGENTS.md").is_symlink()
+    assert (workspace / "CLAUDE.md").is_symlink()
+    assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
 
 
 def test_bootstrap_accepts_arbitrary_executor_string(tmp_path: Path) -> None:
@@ -1000,9 +1015,11 @@ def test_bootstrap_accepts_arbitrary_executor_string(tmp_path: Path) -> None:
     workspace = system_assistant_paths(tmp_path).workspace
     agent_yaml = yaml.safe_load((workspace / "agent.yaml").read_text())
     assert agent_yaml["executor"] == "my-custom-cli"
-    # Non-claude executors get the AGENTS.md prompt surface.
+    # THR-262 Slice B: every executor gets the canonical pair.
     assert (workspace / "AGENTS.md").is_file()
-    assert not (workspace / "CLAUDE.md").exists()
+    assert not (workspace / "AGENTS.md").is_symlink()
+    assert (workspace / "CLAUDE.md").is_symlink()
+    assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
 
 
 def test_bootstrap_rejects_empty_executor(tmp_path: Path) -> None:

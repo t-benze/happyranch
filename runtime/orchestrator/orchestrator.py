@@ -906,6 +906,22 @@ class Orchestrator:
         # before skills existed (or the user wiped it), the agent never calls
         # `happyranch report-completion` and the task silently rejects. Fail fast
         # with an actionable message instead.
+        # THR-262 Slice B (founder seq59): every provider must present the
+        # canonical instruction pair — regular ``AGENTS.md`` plus a raw
+        # relative ``CLAUDE.md -> AGENTS.md`` resolving to that exact file —
+        # before an executor is launched. Read-only refusal; no mutation and
+        # no recovery. The single profile marker remains an additional check
+        # below, never a substitute for the pair.
+        from runtime.orchestrator.workspace_adapters import instruction_pair_refusal
+
+        pair_refusal = instruction_pair_refusal(workspace)
+        if pair_refusal is not None:
+            raise WorkspaceNotInitialized(
+                f"workspace for {agent_name!r} does not have the canonical "
+                f"AGENTS.md/CLAUDE.md instruction pair ({pair_refusal}). Run "
+                f"`happyranch init-agent {agent_name}` to complete it."
+            )
+
         skill_marker = self._readiness_marker(workspace, provider)
         if not skill_marker.exists():
             raise WorkspaceNotInitialized(
