@@ -55,6 +55,7 @@ def _setup_runtime(tmp_path: Path) -> RuntimeDir:
         "name: system_assistant\nexecutor: _null\nrepos: {}\n"
     )
     (sa_paths.workspace / "AGENTS.md").write_text("# test assistant\n")
+    (sa_paths.workspace / "CLAUDE.md").symlink_to("AGENTS.md")
     (sa_paths.learnings_dir / "_index.md").write_text("# learnings\n")
     (sa_paths.knowledge_dir / "README.md").write_text("# kb\n")
     config = AssistantConfig(

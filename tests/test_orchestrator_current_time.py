@@ -208,6 +208,10 @@ class TestRunAgentMemoryDigest:
         ws = test_runtime.workspaces_dir / agent
         ws.mkdir(parents=True, exist_ok=True)
         (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
+        # THR-262 Slice B: the canonical instruction pair (regular AGENTS.md +
+        # raw relative CLAUDE.md -> AGENTS.md) is required before launch.
+        (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+        (ws / "CLAUDE.md").symlink_to("AGENTS.md")
         # Also create agent.yaml and repos so materialization can proceed.
         (ws / "agent.yaml").write_text("executor: claude\n")
         (ws / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)

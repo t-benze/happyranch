@@ -547,6 +547,9 @@ def test_run_agent_launches_child_with_own_workspace_not_parent(
         ws = paths.workspaces_dir / agent_name
         ws.mkdir(parents=True, exist_ok=True)
         (ws / "agent.yaml").write_text("executor: claude\n")
+        # THR-262 Slice B: canonical instruction pair required before launch.
+        (ws / "AGENTS.md").write_text(f"# Agent: {agent_name}\n")
+        (ws / "CLAUDE.md").symlink_to("AGENTS.md")
         (ws / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
 
     # ---- spawn fan-out children ----
