@@ -29,7 +29,7 @@ features/jobs/JobDetailPage.tsx	272	72	bg-current	legacy default Tailwind specia
 features/jobs/JobDetailPane.tsx	22	44	bg-transparent	legacy default Tailwind special colour utility
 features/jobs/JobDetailPane.tsx	24	43	bg-transparent	legacy default Tailwind special colour utility
 features/kb/KbPage.tsx	149	12	border-transparent	legacy default Tailwind special colour utility
-features/onboarding/OnboardingPage.tsx	278	67	border-current	legacy default Tailwind special colour utility
+features/onboarding/OnboardingPage.tsx	305	67	border-current	legacy default Tailwind special colour utility
 features/settings/sections/CustomProfilesSection.tsx	79	64	bg-transparent	legacy default Tailwind special colour utility
 features/settings/sections/CustomProfilesSection.tsx	84	62	bg-current	legacy default Tailwind special colour utility
 features/settings/sections/ExecutorBinariesSection.tsx	52	68	bg-transparent	legacy default Tailwind special colour utility
