@@ -38,7 +38,7 @@ the `ConnectRuntimeStep` wrapper chrome, and the shared
 `shared/connect/ConnectFlow.tsx` bodies (built-in/custom mode selection,
 form/waiting/committing/connected/retryable/terminal-failure/cleared states,
 copy feedback, status text and aria labels). It extracts the single
-`features/orgs/addOrgError.ts` classifier/renderer shared by AddOrgDialog and
+`web/src/lib/addOrgError.ts` classifier/renderer shared by AddOrgDialog and
 the onboarding create step. Because ConnectFlow is shared with Settings ▸
 Executors, translating it localizes that connect body too, but `settings`
 remains `english-only` (the surrounding Settings chrome/sections are not
@@ -346,9 +346,14 @@ en→zh-CN→en switch while the surrounding step labels re-translate; the creat
 form's client validation, a mapped daemon error that re-translates across a
 switch with no resubmission, an unknown error diagnostic preserved verbatim, and
 the success state with the raw slug; the broken-org list with the raw slug/error
-verbatim; and the prereq panel with the raw tool name/path verbatim. Per switch
-window it asserts zero mutations (no `POST`, no `PUT /settings/org`); raw
-prompt/step-id/identifier bytes are asserted unchanged before and after. It
+verbatim; and the prereq panel with the raw tool name/path/hint verbatim. S4-S6
+and S8-S10 each exercise en→zh-CN→en. Immediately before each direction they
+open a separate request window, then assert the actual `document.activeElement`,
+retained test-only DOM identities where stable, open phase/mode, and the
+case-specific value/error/slug/prompt/token/step-id/prereq bytes. Every window
+asserts zero `PUT /settings/org`, duplicate `POST /api/v1/orgs`, connect/mint
+mutation, and total `/api/` requests; the create cases retain exactly one
+original create and built-in waiting retains exactly one original mint. It
 captures PNGs across 1440×900 and 390×844 light/dark with CJK-font and
 viewport-containment checks; PNGs and `receipt.json` are bound to the head SHA
 (exact counts bound to the pushed `receipt.json`). The unit suite retains the
@@ -364,7 +369,7 @@ Frontend readiness map (actual evidence):
 | Bilingual foundation browser capture | captured: real-browser story screenshots for saved-en-in-Chinese-env, saved `zh-CN` (CJK font glyphs) and preview-unset English | W2a/W2b add real-app shell/dialog and onboarding captures across en/zh, 1440x900/390x844 and light/dark (exact count bound to the pushed `receipt.json`) |
 | Production startup first-paint | captured: real `main.tsx`/`createBrowserRouter` startup with synthetic API stub; first COMMITTED bilingual consumer text and `<html lang>` asserted together | W2a reads the ACTUAL first committed Sidebar/AppBar DOM (frozen on first connection, never overwritten by a later correction) with `<html lang>` and the real navigator read-back; a causal `I18N_W2A_EVIDENCE=negative` control proves the same predicate rejects an initially-wrong shell |
 | Mounted-shell switching state | N/A (foundation) | captured: help non-default tab (S16), AddOrg typed slug + mapped error (S12 wide-light; S17 zh-narrow-light/en-narrow-dark/zh-wide-dark) and palette query + non-default selected row (S13 wide-light; S18 zh-narrow-light/en-narrow-dark/zh-wide-dark) preserved across storage-path locale switches with the actual `document.activeElement`, retained DOM node identity, open state and selection/value observed before AND after each direction; each help/AddOrg switch window asserts no `PUT /settings/org` and no `POST /api/v1/orgs`, and each palette switch window asserts zero `/api/` requests (cache-only), per direction |
-| Onboarding switching state (W2b) | N/A | captured: current phase, typed slug, selected connect mode and generated copy-paste prompt bytes preserved across an en→zh-CN→en storage-path switch with zero extra `/api/` requests, plus mapped-vs-raw error re-translation; PNGs and `receipt.json` bound to the head SHA |
+| Onboarding switching state (W2b) | N/A | captured: S4 mapped error, S5 raw `API 500`, S6 success, S8 built-in waiting, S9 custom form and S10 prereq/create state each run en→zh-CN→en with actual focus, stable test-only node identity where applicable, open phase/mode and state-specific raw bytes retained; a separate per-direction window proves zero settings/org/connect/mint mutation and zero `/api/` requests; PNGs and `receipt.json` are bound to the head SHA |
 | Native Mac persistence receipt | N/A — N0/N1 (Linux host; not claimed) | NOT RUN — N0/N1 still open |
 
 ## 10. Exclusions

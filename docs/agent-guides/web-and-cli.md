@@ -79,7 +79,7 @@ wrapper chrome, and the shared `src/shared/connect/ConnectFlow.tsx` bodies
 (built-in/custom modes, waiting/committing/connected, retryable + terminal
 failure, clear/recovery, copy feedback and aria text). The add-org error
 classifier/renderer is now the single shared
-`src/features/orgs/addOrgError.ts` consumed by both AddOrgDialog and the
+`src/lib/addOrgError.ts` consumed by both AddOrgDialog and the
 onboarding create step. Because `ConnectFlow` is shared with Settings ▸
 Executors, translating it also localizes that connect body, but the `settings`
 namespace stays `english-only` in the manifest (the surrounding Settings chrome
@@ -127,8 +127,14 @@ event (there is no public selector), so the harness proves the shipping bundle
 already satisfies the acceptance predicate. It covers first-run/returning
 routing, built-in/custom connect modes, the waiting/committed prompt bytes
 preserved across en→zh-CN→en, mapped-vs-raw error handling, success, the
-broken-org list and the prereq panel, asserting zero mutations per switch
-window. The exact receipt and PNG count are bound to the pushed `receipt.json`.
+broken-org list and the prereq panel. For S4-S6 and S8-S10, each en→zh-CN and
+zh-CN→en transition records the actual `document.activeElement`, retained
+test-only DOM identity where stable, open phase/mode and state-specific raw
+values before and after. Every immediately scoped transition window asserts no
+`PUT /settings/org`, duplicate `POST /api/v1/orgs`, connect/mint mutation, or
+other `/api/` request; S4-S6 retain exactly one original create and S8 retains
+exactly one original mint. The exact assertion and PNG counts are bound to the
+pushed `receipt.json`.
 Current contract:
 `docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
 

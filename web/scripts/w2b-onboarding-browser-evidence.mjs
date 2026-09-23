@@ -24,7 +24,9 @@
  *     success state;
  *   - the read-only broken-org list (raw slug/error verbatim) and the executor
  *     prereq panel (raw tool/path verbatim);
- *   - zero mutations across every locale switch;
+ *   - retained DOM identity, actual focus, phase/mode/value/raw bytes, and
+ *     zero API requests or mutations across both directions of every S4-S6
+ *     and S8-S10 locale switch;
  *   - PNG screenshots at 1440x900 and 390x844, light and dark.
  *
  * Usage:
@@ -603,17 +605,115 @@ async function main() {
       );
     }
 
+    /** Test-only DOM identity observation, matching the established W2a seam. */
+    async function tagIdentity(sessionId, selector, prefix) {
+      return evaluate(
+        sessionId,
+        `(() => {
+          const el = document.querySelector(${JSON.stringify(selector)});
+          if (!el) return null;
+          if (!el.dataset.hrIdentity) el.dataset.hrIdentity = ${JSON.stringify(prefix)} + '-' + Math.random().toString(36).slice(2);
+          return el.dataset.hrIdentity;
+        })()`,
+      );
+    }
+
+    async function identityOf(sessionId, selector) {
+      return evaluate(
+        sessionId,
+        `(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? (el.dataset.hrIdentity || null) : null; })()`,
+      );
+    }
+
+    async function focusAndTag(sessionId, selector, prefix) {
+      return evaluate(
+        sessionId,
+        `(() => {
+          const el = document.querySelector(${JSON.stringify(selector)});
+          if (!el) return null;
+          el.focus();
+          if (!el.dataset.hrIdentity) el.dataset.hrIdentity = ${JSON.stringify(prefix)} + '-' + Math.random().toString(36).slice(2);
+          return el.dataset.hrIdentity;
+        })()`,
+      );
+    }
+
+    async function focusAndTagByText(sessionId, selector, text, prefix) {
+      return evaluate(
+        sessionId,
+        `(() => {
+          const el = [...document.querySelectorAll(${JSON.stringify(selector)})]
+            .find((candidate) => (candidate.textContent || '').trim() === ${JSON.stringify(text)});
+          if (!el) return null;
+          el.focus();
+          if (!el.dataset.hrIdentity) el.dataset.hrIdentity = ${JSON.stringify(prefix)} + '-' + Math.random().toString(36).slice(2);
+          return el.dataset.hrIdentity;
+        })()`,
+      );
+    }
+
+    async function activeElementInfo(sessionId) {
+      return evaluate(
+        sessionId,
+        `(() => {
+          const el = document.activeElement;
+          if (!el) return null;
+          return {
+            tag: el.tagName,
+            id: el.id,
+            identity: el.dataset ? (el.dataset.hrIdentity || null) : null,
+            value: typeof el.value === 'string' ? el.value : null,
+            text: (el.textContent || '').trim(),
+          };
+        })()`,
+      );
+    }
+
+    async function blurActiveElement(sessionId) {
+      return evaluate(sessionId, `(() => { document.activeElement?.blur(); return true; })()`);
+    }
+
+    async function focusIdentity(sessionId, identity) {
+      return evaluate(
+        sessionId,
+        `(() => {
+          const el = [...document.querySelectorAll('[data-hr-identity]')]
+            .find((candidate) => candidate.dataset.hrIdentity === ${JSON.stringify(identity)});
+          if (!el) return null;
+          el.focus();
+          return el.dataset.hrIdentity;
+        })()`,
+      );
+    }
+
     function requestWindow(from) {
       const requests = networkRequests.slice(from);
       const mutations = requests.filter((r) => r.method !== 'GET');
+      const apiRequests = requests.filter((r) => r.url.includes('/api/'));
       return {
         from,
         count: requests.length,
         mutations,
         settingsPut: requests.filter((r) => r.method === 'PUT' && r.url.includes('/settings/org')).length,
         orgCreate: requests.filter((r) => r.method === 'POST' && r.url.includes('/api/v1/orgs')).length,
+        connectOrMint: requests.filter(
+          (r) =>
+            r.method !== 'GET' &&
+            (r.url.includes('/api/v1/auth/registration-token/runtime') ||
+              r.url.includes('/api/v1/runtime/') ||
+              r.url.includes('/api/v1/executors/runtime/')),
+        ).length,
+        anyApi: apiRequests.length,
         mutationsAfter: mutations.length,
       };
+    }
+
+    function assertLocaleOnlyWindow(label, window) {
+      check(`${label} issued zero mutations`, window.mutationsAfter, 0);
+      check(`${label} issued no PUT /settings/org`, window.settingsPut, 0);
+      check(`${label} issued no duplicate POST /api/v1/orgs`, window.orgCreate, 0);
+      check(`${label} issued no connect/mint mutation`, window.connectOrMint, 0);
+      check(`${label} issued zero /api/ requests`, window.anyApi, 0);
     }
 
     async function setViewport(page, width, height) {
@@ -701,20 +801,42 @@ async function main() {
       await clickByText(page.sessionId, 'Create org');
       await waitForValue(page.sessionId, `document.body.textContent.includes('already exists') && 'ok'`, { label: 'mapped error' });
       const before = await snapshot(page.sessionId);
-      checkIncludes('S4 en mapped error', before.bodyText, 'An org with slug "taken-org" already exists.');
-      check('S4 single create call before switch', SYNTH.createCalls, 1);
+      const slugIdentity = await tagIdentity(page.sessionId, '#onboarding-slug', 's4-slug');
+      const createSurfaceIdentity = await tagIdentity(page.sessionId, 'section', 's4-create');
       await capture(page, 'en-onboarding-create-mapped-error-1440-light');
-      // Switch en→zh: mapped copy re-translates, no resubmission.
-      const win = requestWindow(networkRequests.length);
+      const slugFocus = await focusAndTag(page.sessionId, '#onboarding-slug', 's4-slug');
+      checkIncludes('S4 en mapped error', before.bodyText, 'An org with slug "taken-org" already exists.');
+      check('S4 en create surface open', before.slugValue, 'taken-org');
+      check('S4 en slug input has stable identity', slugIdentity, slugFocus);
+      check('S4 en actual activeElement is retained slug input', (await activeElementInfo(page.sessionId))?.identity, slugIdentity);
+      check('S4 single create call before switch', SYNTH.createCalls, 1);
+
+      // Switch en→zh: mapped copy re-translates without remount/resubmission.
+      const beforeZh = networkRequests.length;
       await switchLocaleViaStorage(page.sessionId, 'zh-CN');
       await waitForValue(page.sessionId, `document.body.textContent.includes('已存在') && 'ok'`, { label: 'zh mapped error' });
       const after = await snapshot(page.sessionId);
+      const zhWindow = requestWindow(beforeZh);
       checkIncludes('S4 zh mapped error after switch', after.bodyText, '标识符为 "taken-org" 的组织已存在。');
-      check('S4 no create resubmission across switch', SYNTH.createCalls, 1);
-      const w = requestWindow(win.from);
-      check('S4 switch issued zero mutations', w.mutationsAfter, 0);
-      check('S4 switch issued no POST /orgs', w.orgCreate, 0);
-      checkIncludes('S4 zh slug preserved across switch', after.slugValue, 'taken-org');
+      check('S4 zh create surface remains open', after.slugValue, 'taken-org');
+      check('S4 zh create surface node identity retained', await identityOf(page.sessionId, 'section'), createSurfaceIdentity);
+      check('S4 zh slug input node identity retained', await identityOf(page.sessionId, '#onboarding-slug'), slugIdentity);
+      check('S4 zh actual activeElement retained', (await activeElementInfo(page.sessionId))?.identity, slugIdentity);
+      check('S4 exactly one original create after en→zh-CN', SYNTH.createCalls, 1);
+      assertLocaleOnlyWindow('S4 en→zh-CN switch', zhWindow);
+
+      const beforeEn = networkRequests.length;
+      await switchLocaleViaStorage(page.sessionId, 'en');
+      await waitForValue(page.sessionId, `document.body.textContent.includes('already exists') && 'ok'`, { label: 'en mapped error again' });
+      const enAgain = await snapshot(page.sessionId);
+      const enWindow = requestWindow(beforeEn);
+      checkIncludes('S4 en mapped error after reverse switch', enAgain.bodyText, 'An org with slug "taken-org" already exists.');
+      check('S4 en create surface remains open after reverse switch', enAgain.slugValue, 'taken-org');
+      check('S4 en create surface node identity retained after reverse switch', await identityOf(page.sessionId, 'section'), createSurfaceIdentity);
+      check('S4 en slug input node identity retained after reverse switch', await identityOf(page.sessionId, '#onboarding-slug'), slugIdentity);
+      check('S4 en actual activeElement retained after reverse switch', (await activeElementInfo(page.sessionId))?.identity, slugIdentity);
+      check('S4 exactly one original create after round trip', SYNTH.createCalls, 1);
+      assertLocaleOnlyWindow('S4 zh-CN→en switch', enWindow);
       await closePage(page);
     }
 
@@ -725,6 +847,7 @@ async function main() {
     // byte-for-byte while the surrounding chrome re-translates.
     {
       SYNTH.orgs = [{ slug: 'demo-org', root: '/runtime/demo-org' }];
+      SYNTH.createCalls = 0;
       SYNTH.createOrg = { status: 500, body: { message: RAW_ERROR } };
       const page = await openOnboarding({ env: DEV_ENVIRONMENTS.en, initScript: `${seedLocale('en')}\n${seedTheme('light')}` });
       await waitForValue(page.sessionId, `document.querySelector('h1') && document.querySelector('h1').textContent.includes('Create another org') && 'ok'`, { label: 'en welcome raw' });
@@ -734,19 +857,49 @@ async function main() {
       await clickByText(page.sessionId, 'Create org');
       await waitForValue(page.sessionId, `document.body.textContent.includes('API 500') && 'ok'`, { label: 'unknown error en' });
       const enSnap = await snapshot(page.sessionId);
-      checkIncludes('S5 en unknown diagnostic verbatim', enSnap.bodyText, 'API 500');
+      const slugIdentity = await tagIdentity(page.sessionId, '#onboarding-slug', 's5-slug');
+      const createSurfaceIdentity = await tagIdentity(page.sessionId, 'section', 's5-create');
+      const slugFocus = await focusAndTag(page.sessionId, '#onboarding-slug', 's5-slug');
+      check('S5 en unknown diagnostic byte-exact', await evaluate(page.sessionId, `document.querySelector('[role="alert"]')?.textContent?.trim() || null`), 'API 500');
       check('S5 en does not show the localized generic copy', enSnap.bodyText.includes('Could not create org.'), false);
+      check('S5 en create surface open with raw-org', enSnap.slugValue, 'raw-org');
+      check('S5 en slug input has stable identity', slugIdentity, slugFocus);
+      check('S5 en actual activeElement is retained slug input', (await activeElementInfo(page.sessionId))?.identity, slugIdentity);
+      check('S5 single create call before switch', SYNTH.createCalls, 1);
+
+      const beforeZh = networkRequests.length;
       await switchLocaleViaStorage(page.sessionId, 'zh-CN');
       await waitForValue(page.sessionId, `document.body.textContent.includes('为组织命名') && 'ok'`, { label: 'zh create heading' });
       const zhSnap = await snapshot(page.sessionId);
-      checkIncludes('S5 zh unknown diagnostic still verbatim', zhSnap.bodyText, 'API 500');
+      const zhWindow = requestWindow(beforeZh);
+      check('S5 zh unknown diagnostic remains byte-exact', await evaluate(page.sessionId, `document.querySelector('[role="alert"]')?.textContent?.trim() || null`), 'API 500');
       check('S5 zh does not translate the raw diagnostic', zhSnap.bodyText.includes('无法创建组织。'), false);
+      check('S5 zh create surface remains open with raw-org', zhSnap.slugValue, 'raw-org');
+      check('S5 zh create surface node identity retained', await identityOf(page.sessionId, 'section'), createSurfaceIdentity);
+      check('S5 zh slug input node identity retained', await identityOf(page.sessionId, '#onboarding-slug'), slugIdentity);
+      check('S5 zh actual activeElement retained', (await activeElementInfo(page.sessionId))?.identity, slugIdentity);
+      check('S5 exactly one original create after en→zh-CN', SYNTH.createCalls, 1);
+      assertLocaleOnlyWindow('S5 en→zh-CN switch', zhWindow);
+
+      const beforeEn = networkRequests.length;
+      await switchLocaleViaStorage(page.sessionId, 'en');
+      await waitForValue(page.sessionId, `document.body.textContent.includes('Name your org') && 'ok'`, { label: 'en raw create heading again' });
+      const enAgain = await snapshot(page.sessionId);
+      const enWindow = requestWindow(beforeEn);
+      check('S5 en unknown diagnostic remains byte-exact after reverse switch', await evaluate(page.sessionId, `document.querySelector('[role="alert"]')?.textContent?.trim() || null`), 'API 500');
+      check('S5 en create surface remains open after reverse switch', enAgain.slugValue, 'raw-org');
+      check('S5 en create surface node identity retained after reverse switch', await identityOf(page.sessionId, 'section'), createSurfaceIdentity);
+      check('S5 en slug input node identity retained after reverse switch', await identityOf(page.sessionId, '#onboarding-slug'), slugIdentity);
+      check('S5 en actual activeElement retained after reverse switch', (await activeElementInfo(page.sessionId))?.identity, slugIdentity);
+      check('S5 exactly one original create after round trip', SYNTH.createCalls, 1);
+      assertLocaleOnlyWindow('S5 zh-CN→en switch', enWindow);
       await closePage(page);
     }
 
     // ================= S6: success state (slug preserved across switch) =====
     {
       SYNTH.orgs = [{ slug: 'demo-org', root: '/runtime/demo-org' }];
+      SYNTH.createCalls = 0;
       SYNTH.createOrg = { status: 200, body: { slug: 'created-org' } };
       const page = await openOnboarding({ env: DEV_ENVIRONMENTS.en, initScript: `${seedLocale('en')}\n${seedTheme('light')}` });
       await waitForValue(page.sessionId, `document.querySelector('h1') && document.querySelector('h1').textContent.includes('Create another org') && 'ok'`, { label: 'en welcome success' });
@@ -756,13 +909,44 @@ async function main() {
       await clickByText(page.sessionId, 'Create org');
       await waitForValue(page.sessionId, `document.body.textContent.includes('is ready') && 'ok'`, { label: 'success state' });
       const enSnap = await snapshot(page.sessionId);
+      const successIdentity = await tagIdentity(page.sessionId, 'section', 's6-success');
+      const successControlIdentity = await focusAndTag(page.sessionId, 'section button', 's6-success-control');
       checkIncludes('S6 en success heading', enSnap.headings.join(' | '), 'Org created-org is ready.');
+      checkIncludes('S6 en raw created-org preserved', enSnap.bodyText, 'created-org');
+      check('S6 en success phase has no create input', enSnap.slugValue, null);
+      check('S6 en actual activeElement is success control', (await activeElementInfo(page.sessionId))?.identity, successControlIdentity);
+      check('S6 single create call before switch', SYNTH.createCalls, 1);
+
+      const beforeZh = networkRequests.length;
       await switchLocaleViaStorage(page.sessionId, 'zh-CN');
       await waitForValue(page.sessionId, `document.body.textContent.includes('已就绪') && 'ok'`, { label: 'zh success' });
       const zhSnap = await snapshot(page.sessionId);
+      const zhWindow = requestWindow(beforeZh);
       checkIncludes('S6 zh success heading', zhSnap.headings.join(' | '), '组织 created-org 已就绪。');
       checkIncludes('S6 zh success raw slug preserved', zhSnap.bodyText, 'created-org');
+      check('S6 zh remains in success phase', zhSnap.slugValue, null);
+      check('S6 zh success container identity retained', await identityOf(page.sessionId, 'section'), successIdentity);
+      check('S6 zh success control identity retained', await identityOf(page.sessionId, 'section button'), successControlIdentity);
+      check('S6 zh actual activeElement retained', (await activeElementInfo(page.sessionId))?.identity, successControlIdentity);
+      check('S6 exactly one original create after en→zh-CN', SYNTH.createCalls, 1);
+      assertLocaleOnlyWindow('S6 en→zh-CN switch', zhWindow);
+      await blurActiveElement(page.sessionId);
       await capture(page, 'zh-onboarding-success-1440-light');
+      check('S6 zh success control refocused before reverse seam', await focusIdentity(page.sessionId, successControlIdentity), successControlIdentity);
+
+      const beforeEn = networkRequests.length;
+      await switchLocaleViaStorage(page.sessionId, 'en');
+      await waitForValue(page.sessionId, `document.body.textContent.includes('Org created-org is ready.') && 'ok'`, { label: 'en success again' });
+      const enAgain = await snapshot(page.sessionId);
+      const enWindow = requestWindow(beforeEn);
+      checkIncludes('S6 en success heading after reverse switch', enAgain.headings.join(' | '), 'Org created-org is ready.');
+      checkIncludes('S6 en raw created-org preserved after reverse switch', enAgain.bodyText, 'created-org');
+      check('S6 en remains in success phase after reverse switch', enAgain.slugValue, null);
+      check('S6 en success container identity retained after reverse switch', await identityOf(page.sessionId, 'section'), successIdentity);
+      check('S6 en success control identity retained after reverse switch', await identityOf(page.sessionId, 'section button'), successControlIdentity);
+      check('S6 en actual activeElement retained after reverse switch', (await activeElementInfo(page.sessionId))?.identity, successControlIdentity);
+      check('S6 exactly one original create after round trip', SYNTH.createCalls, 1);
+      assertLocaleOnlyWindow('S6 zh-CN→en switch', enWindow);
       await closePage(page);
     }
 
@@ -798,27 +982,62 @@ async function main() {
       await waitForValue(page.sessionId, `document.querySelector('pre') ? 'ok' : null`, { label: 'prompt pre' });
       const enSnap = await snapshot(page.sessionId);
       const promptEn = enSnap.preText;
+      const stepIds = ['workspace_access', 'loopback_reachable', 'cli_callback', 'emit_envelope'];
       checkTruthy('S8 en prompt present', promptEn && promptEn.includes('hr_tok_W2B_EVIDENCE'));
+      checkIncludes('S8 en selected built-in claude retained in prompt', promptEn, "built-in 'claude' CLI");
+      check('S8 en raw step ids present', stepIds.filter((id) => enSnap.bodyText.includes(id)), stepIds);
+      check('S8 en custom mode is not open', enSnap.adapterNameValue, null);
       check('S8 exactly one mint before switch', SYNTH.minted, 1);
       await capture(page, 'en-onboarding-connect-waiting-1440-light');
 
-      const win = requestWindow(networkRequests.length);
+      const promptIdentity = await tagIdentity(page.sessionId, 'pre', 's8-prompt');
+      const waitingIdentity = await tagIdentity(page.sessionId, '[aria-label="Waiting for your CLI"]', 's8-waiting');
+      const waitingControlIdentity = await focusAndTagByText(page.sessionId, 'button', 'Copy prompt', 's8-waiting-control');
+      check('S8 en waiting phase node observed', Boolean(waitingIdentity), true);
+      check('S8 en actual activeElement is waiting control', (await activeElementInfo(page.sessionId))?.identity, waitingControlIdentity);
+
+      const beforeZh = networkRequests.length;
       await switchLocaleViaStorage(page.sessionId, 'zh-CN');
       await waitForValue(page.sessionId, `document.body.textContent.includes('正在等待') && 'ok'`, { label: 'zh waiting' });
       const zhSnap = await snapshot(page.sessionId);
+      const zhWindow = requestWindow(beforeZh);
       check('S8 zh prompt bytes identical to en', zhSnap.preText, promptEn);
+      checkIncludes('S8 zh raw token bytes preserved', zhSnap.preText, 'hr_tok_W2B_EVIDENCE');
       checkIncludes('S8 zh localized step label', zhSnap.bodyText, '读取其工作区与技能');
-      checkIncludes('S8 zh raw step id preserved', zhSnap.bodyText, 'workspace_access');
-      check('S8 no re-mint across switch', SYNTH.minted, 1);
-      const w = requestWindow(win.from);
-      check('S8 switch issued zero mutations', w.mutationsAfter, 0);
+      check('S8 zh raw step ids preserved', stepIds.filter((id) => zhSnap.bodyText.includes(id)), stepIds);
+      check('S8 zh selected built-in mode retained', zhSnap.adapterNameValue, null);
+      check('S8 zh prompt node identity retained', await identityOf(page.sessionId, 'pre'), promptIdentity);
+      check('S8 zh waiting phase node identity retained', await identityOf(page.sessionId, '[aria-label="正在等待你的 CLI"]'), waitingIdentity);
+      check('S8 zh actual activeElement retained', (await activeElementInfo(page.sessionId))?.identity, waitingControlIdentity);
+      check('S8 exactly one original mint after en→zh-CN', SYNTH.minted, 1);
+      assertLocaleOnlyWindow('S8 en→zh-CN switch', zhWindow);
+      await blurActiveElement(page.sessionId);
+      // Preserve the established screenshot framing after the focus assertion;
+      // the same retained control is explicitly refocused for the reverse seam.
+      await evaluate(page.sessionId, `(() => {
+        document.scrollingElement.scrollTop = 0;
+        for (const element of document.querySelectorAll('*')) {
+          if (element.scrollHeight > element.clientHeight) element.scrollTop = 0;
+        }
+        return true;
+      })()`);
       await capture(page, 'zh-onboarding-connect-waiting-1440-light');
+      check('S8 zh waiting control refocused before reverse seam', await focusIdentity(page.sessionId, waitingControlIdentity), waitingControlIdentity);
 
+      const beforeEn = networkRequests.length;
       await switchLocaleViaStorage(page.sessionId, 'en');
       await waitForValue(page.sessionId, `document.body.textContent.includes('Waiting for') && 'ok'`, { label: 'en waiting again' });
       const enAgain = await snapshot(page.sessionId);
+      const enWindow = requestWindow(beforeEn);
       check('S8 en→zh→en prompt bytes preserved', enAgain.preText, promptEn);
+      checkIncludes('S8 en raw token bytes preserved after reverse switch', enAgain.preText, 'hr_tok_W2B_EVIDENCE');
+      check('S8 en raw step ids preserved after reverse switch', stepIds.filter((id) => enAgain.bodyText.includes(id)), stepIds);
+      check('S8 en selected built-in mode retained after reverse switch', enAgain.adapterNameValue, null);
+      check('S8 en prompt node identity retained after reverse switch', await identityOf(page.sessionId, 'pre'), promptIdentity);
+      check('S8 en waiting phase node identity retained after reverse switch', await identityOf(page.sessionId, '[aria-label="Waiting for your CLI"]'), waitingIdentity);
+      check('S8 en actual activeElement retained after reverse switch', (await activeElementInfo(page.sessionId))?.identity, waitingControlIdentity);
       check('S8 still exactly one mint after round trip', SYNTH.minted, 1);
+      assertLocaleOnlyWindow('S8 zh-CN→en switch', enWindow);
       await closePage(page);
     }
 
@@ -827,17 +1046,50 @@ async function main() {
       SYNTH.orgs = [];
       SYNTH.broken = [];
       SYNTH.prereqs = [];
+      SYNTH.minted = 0;
       const page = await openOnboarding({ env: DEV_ENVIRONMENTS.en, initScript: `${seedLocale('en')}\n${seedTheme('light')}` });
       await waitForValue(page.sessionId, `document.querySelector('h1') && document.querySelector('h1').textContent.includes('Connect your agentic CLI') && 'ok'`, { label: 'en connect custom' });
       await clickByText(page.sessionId, 'Connect a custom CLI instead');
       await waitForValue(page.sessionId, `document.querySelector('#adapter-name') ? 'ok' : null`, { label: 'adapter name input' });
       await setInputValue(page.sessionId, '#adapter-name', 'my-cli');
+      const inputIdentity = await tagIdentity(page.sessionId, '#adapter-name', 's9-adapter-name');
+      const formIdentity = await tagIdentity(page.sessionId, 'form', 's9-custom-form');
+      const inputFocus = await focusAndTag(page.sessionId, '#adapter-name', 's9-adapter-name');
+      const enSnap = await snapshot(page.sessionId);
+      checkIncludes('S9 en custom mode banner present', enSnap.bodyText, 'Create a custom adapter wrapper');
+      check('S9 en custom mode open with my-cli', enSnap.adapterNameValue, 'my-cli');
+      check('S9 en adapter input has stable identity', inputIdentity, inputFocus);
+      check('S9 en actual activeElement is adapter-name', (await activeElementInfo(page.sessionId))?.identity, inputIdentity);
+      check('S9 no mint before locale switch', SYNTH.minted, 0);
+
+      const beforeZh = networkRequests.length;
       await switchLocaleViaStorage(page.sessionId, 'zh-CN');
       await waitForValue(page.sessionId, `document.body.textContent.includes('创建自定义适配器包装器') && 'ok'`, { label: 'zh adapter banner' });
       const snap = await snapshot(page.sessionId);
+      const zhWindow = requestWindow(beforeZh);
       checkIncludes('S9 zh custom banner translated', snap.bodyText, '创建自定义适配器包装器');
-      check('S9 typed custom name preserved across switch', snap.adapterNameValue, 'my-cli');
+      checkIncludes('S9 zh authored adapter suffix stays raw', snap.bodyText, '<name>-adapter');
+      check('S9 zh custom mode remains open with my-cli', snap.adapterNameValue, 'my-cli');
+      check('S9 zh custom form node identity retained', await identityOf(page.sessionId, 'form'), formIdentity);
+      check('S9 zh adapter input node identity retained', await identityOf(page.sessionId, '#adapter-name'), inputIdentity);
+      check('S9 zh actual activeElement retained', (await activeElementInfo(page.sessionId))?.identity, inputIdentity);
+      check('S9 still no mint after en→zh-CN', SYNTH.minted, 0);
+      assertLocaleOnlyWindow('S9 en→zh-CN switch', zhWindow);
       await capture(page, 'zh-onboarding-connect-custom-1440-light');
+
+      const beforeEn = networkRequests.length;
+      await switchLocaleViaStorage(page.sessionId, 'en');
+      await waitForValue(page.sessionId, `document.body.textContent.includes('Create a custom adapter wrapper') && 'ok'`, { label: 'en adapter banner again' });
+      const enAgain = await snapshot(page.sessionId);
+      const enWindow = requestWindow(beforeEn);
+      checkIncludes('S9 en custom banner translated after reverse switch', enAgain.bodyText, 'Create a custom adapter wrapper');
+      checkIncludes('S9 en authored adapter suffix stays raw after reverse switch', enAgain.bodyText, '<name>-adapter');
+      check('S9 en custom mode remains open after reverse switch', enAgain.adapterNameValue, 'my-cli');
+      check('S9 en custom form node identity retained after reverse switch', await identityOf(page.sessionId, 'form'), formIdentity);
+      check('S9 en adapter input node identity retained after reverse switch', await identityOf(page.sessionId, '#adapter-name'), inputIdentity);
+      check('S9 en actual activeElement retained after reverse switch', (await activeElementInfo(page.sessionId))?.identity, inputIdentity);
+      check('S9 no mint after round trip', SYNTH.minted, 0);
+      assertLocaleOnlyWindow('S9 zh-CN→en switch', enWindow);
       await closePage(page);
     }
 
@@ -848,18 +1100,60 @@ async function main() {
         { tool: 'claude', present: true, path: '/usr/bin/claude', hint: '' },
         { tool: 'codex', present: false, path: null, hint: 'Register Codex' },
       ];
+      SYNTH.createCalls = 0;
+      SYNTH.minted = 0;
       const page = await openOnboarding({ env: DEV_ENVIRONMENTS.en, initScript: `${seedLocale('en')}\n${seedTheme('light')}` });
       await waitForValue(page.sessionId, `document.querySelector('h1') && document.querySelector('h1').textContent.includes('Create another org') && 'ok'`, { label: 'en welcome prereq' });
       await clickByText(page.sessionId, 'Create another org');
       await waitForValue(page.sessionId, `document.body.textContent.includes('1 of 2 tools registered') && 'ok'`, { label: 'en prereq summary' });
+      const createIdentity = await tagIdentity(page.sessionId, 'section', 's10-create');
+      const prereqIdentity = await tagIdentity(page.sessionId, 'section[aria-label="Executor readiness"]', 's10-prereq');
+      const slugIdentity = await focusAndTag(page.sessionId, '#onboarding-slug', 's10-slug');
+      const enSnap = await snapshot(page.sessionId);
+      checkIncludes('S10 en prereq summary', enSnap.bodyText, '1 of 2 tools registered');
+      checkIncludes('S10 en raw tool path', enSnap.bodyText, '/usr/bin/claude');
+      checkIncludes('S10 en raw claude tool name', enSnap.bodyText, 'claude');
+      checkIncludes('S10 en raw codex tool name', enSnap.bodyText, 'codex');
+      checkIncludes('S10 en raw prereq hint', enSnap.bodyText, 'Register Codex');
+      check('S10 en open create surface has empty slug', enSnap.slugValue, '');
+      check('S10 en actual activeElement is create input', (await activeElementInfo(page.sessionId))?.identity, slugIdentity);
+      check('S10 en prereq phase node observed', Boolean(prereqIdentity), true);
+
+      const beforeZh = networkRequests.length;
       await switchLocaleViaStorage(page.sessionId, 'zh-CN');
       await waitForValue(page.sessionId, `document.body.textContent.includes('已注册 1/2 个工具') && 'ok'`, { label: 'zh prereq summary' });
       const snap = await snapshot(page.sessionId);
+      const zhWindow = requestWindow(beforeZh);
       checkIncludes('S10 zh prereq summary', snap.bodyText, '已注册 1/2 个工具');
       checkIncludes('S10 raw tool path preserved', snap.bodyText, '/usr/bin/claude');
-      checkIncludes('S10 raw tool name preserved', snap.bodyText, 'claude');
+      checkIncludes('S10 raw claude tool name preserved', snap.bodyText, 'claude');
+      checkIncludes('S10 raw codex tool name preserved', snap.bodyText, 'codex');
+      checkIncludes('S10 raw prereq hint preserved', snap.bodyText, 'Register Codex');
       checkIncludes('S10 zh not-registered pill', snap.bodyText, '未注册');
+      check('S10 zh create surface remains open', snap.slugValue, '');
+      check('S10 zh create surface node identity retained', await identityOf(page.sessionId, 'section'), createIdentity);
+      check('S10 zh create input node identity retained', await identityOf(page.sessionId, '#onboarding-slug'), slugIdentity);
+      check('S10 zh prereq phase node identity retained', await identityOf(page.sessionId, 'section[aria-label="执行器就绪情况"]'), prereqIdentity);
+      check('S10 zh actual activeElement retained', (await activeElementInfo(page.sessionId))?.identity, slugIdentity);
+      assertLocaleOnlyWindow('S10 en→zh-CN switch', zhWindow);
       await capture(page, 'zh-onboarding-create-prereqs-1440-light');
+
+      const beforeEn = networkRequests.length;
+      await switchLocaleViaStorage(page.sessionId, 'en');
+      await waitForValue(page.sessionId, `document.body.textContent.includes('1 of 2 tools registered') && 'ok'`, { label: 'en prereq summary again' });
+      const enAgain = await snapshot(page.sessionId);
+      const enWindow = requestWindow(beforeEn);
+      checkIncludes('S10 en prereq summary after reverse switch', enAgain.bodyText, '1 of 2 tools registered');
+      checkIncludes('S10 en raw tool path preserved after reverse switch', enAgain.bodyText, '/usr/bin/claude');
+      checkIncludes('S10 en raw claude tool name preserved after reverse switch', enAgain.bodyText, 'claude');
+      checkIncludes('S10 en raw codex tool name preserved after reverse switch', enAgain.bodyText, 'codex');
+      checkIncludes('S10 en raw prereq hint preserved after reverse switch', enAgain.bodyText, 'Register Codex');
+      check('S10 en create surface remains open after reverse switch', enAgain.slugValue, '');
+      check('S10 en create surface node identity retained after reverse switch', await identityOf(page.sessionId, 'section'), createIdentity);
+      check('S10 en create input node identity retained after reverse switch', await identityOf(page.sessionId, '#onboarding-slug'), slugIdentity);
+      check('S10 en prereq phase node identity retained after reverse switch', await identityOf(page.sessionId, 'section[aria-label="Executor readiness"]'), prereqIdentity);
+      check('S10 en actual activeElement retained after reverse switch', (await activeElementInfo(page.sessionId))?.identity, slugIdentity);
+      assertLocaleOnlyWindow('S10 zh-CN→en switch', enWindow);
       await closePage(page);
     }
 

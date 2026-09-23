@@ -81,7 +81,7 @@ ErrorBoundary fallback copy, AddOrgDialog, and the shared help/palette
 presentation) and added CJK-capable SYSTEM font fallbacks to the tokens.
 **W2b** translated the onboarding route (`features/onboarding/OnboardingPage.tsx`,
 `ConnectRuntimeStep.tsx`) and the shared `shared/connect/ConnectFlow.tsx`,
-extracting the single `features/orgs/addOrgError.ts` classifier consumed by both
+extracting the single `lib/addOrgError.ts` classifier consumed by both
 AddOrgDialog and onboarding. Because ConnectFlow is shared, its Settings ▸
 Executors mount is localized too, but `settings` (W2c), route families (W3/W4)
 and the assistant dock body (W4) remain untranslated and the `settings`
@@ -114,9 +114,12 @@ and never overwritten by a later locale correction), together with `<html lang>`
 and the real navigator read-back; `I18N_W2A_EVIDENCE=negative` additionally
 hands the provider a deliberately mismatched locale and corrects it afterwards,
 so the same positive predicate must reject the first shell (causal negative
-control). The W2b harness needs no consumer: it reads the onboarding DOM and the
-generated prompt directly while counting switch-window requests to prove zero
-extra mutations. A backward-compatible optional `DialogContent.closeLabel` supplies the
+control). The W2b harness needs no consumer: it reads the onboarding DOM and
+generated prompt directly. S4-S6 and S8-S10 retain actual focus, stable
+test-only node identity, open phase/mode and raw values across both switch
+directions; every immediately scoped switch window proves zero
+settings/org/connect/mint mutations and zero `/api/` requests. A
+backward-compatible optional `DialogContent.closeLabel` supplies the
 localized accessible name for the built-in close control (defaulting to the
 legacy English `Close`); AddOrgDialog, HelpSheet and CommandPalette pass it from
 their callers and the patterns/primitives stay prop-driven with no locale hook
