@@ -29,6 +29,7 @@ import {
   type BinaryRegistryEntry,
   type ExecutorBinaryKind,
 } from '@/hooks/executor-binaries';
+import { useTranslation } from '@/hooks/i18n';
 
 /** Extract a human-readable message from an ApiError (422 detail is a string)
  *  or any thrown value. */
@@ -52,13 +53,14 @@ const VALIDITY_STYLE: Record<Validity, string> = {
   unregistered: 'text-status-archived border border-border-default bg-transparent',
 };
 
-const VALIDITY_LABEL: Record<Validity, string> = {
-  valid: 'valid',
-  invalid: 'invalid path',
-  unregistered: 'not registered',
-};
+const VALIDITY_LABEL_KEY = {
+  valid: 'settings.executors.binaries.validity.valid',
+  invalid: 'settings.executors.binaries.validity.invalid',
+  unregistered: 'settings.executors.binaries.validity.unregistered',
+} as const satisfies Record<Validity, string>;
 
 function ValidityPill({ validity }: { validity: Validity }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <span
       className={`text-mono-sm inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 font-semibold tabular-nums ${VALIDITY_STYLE[validity]}`}
@@ -68,7 +70,7 @@ function ValidityPill({ validity }: { validity: Validity }): JSX.Element {
       {validity === 'valid' && (
         <span className="inline-block h-1.5 w-1.5 rounded-full bg-current opacity-70" aria-hidden />
       )}
-      {VALIDITY_LABEL[validity]}
+      {t(VALIDITY_LABEL_KEY[validity])}
     </span>
   );
 }
@@ -81,6 +83,7 @@ interface KindRowProps {
 /** One kind's row: current path + validity, plus the manual-entry remediation
  *  (input → Validate → Register). */
 function KindRow({ kind, entry }: KindRowProps): JSX.Element {
+  const { t, render } = useTranslation();
   const registered = entry?.path != null;
   const validity: Validity = !registered
     ? 'unregistered'
@@ -106,7 +109,7 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
       const res = await validate.mutateAsync({ path: trimmed });
       setCheck({ valid: res.valid, error: res.error });
     } catch (err) {
-      setCheck({ valid: false, error: errMessage(err, 'Validation failed.') });
+      setCheck({ valid: false, error: errMessage(err, t('settings.executors.binaries.validationFailed')) });
     }
   };
 
@@ -119,7 +122,7 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
     } catch (err) {
       // The register route validates server-side and returns 422 with a
       // human-readable reason (not absolute / missing / not executable).
-      setRegisterError(errMessage(err, 'Could not register this path.'));
+      setRegisterError(errMessage(err, t('settings.executors.binaries.registerFailed')));
     }
   };
 
@@ -140,15 +143,19 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
       <div className="mt-2">
         {registered ? (
           <p className="text-text-secondary text-sm">
-            Registered path:{' '}
-            <code className="text-text-primary bg-surface-sunken rounded px-1 font-mono text-xs break-all">
-              {entry?.path}
-            </code>
+            {render('settings.executors.binaries.registeredPath', {
+              path: (
+                <code className="text-text-primary bg-surface-sunken rounded px-1 font-mono text-xs break-all">
+                  {entry?.path}
+                </code>
+              ),
+            })}
           </p>
         ) : (
           <p className="text-text-muted text-sm">
-            No path registered — the daemon cannot spawn{' '}
-            <span className="font-mono">{kind}</span> agents until you connect it.
+            {render('settings.executors.binaries.noPath', {
+              kind: <span className="font-mono">{kind}</span>,
+            })}
           </p>
         )}
       </div>
@@ -165,14 +172,16 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
             size={14}
             className="transition-transform group-open:rotate-90"
           />
-          Advanced: enter path manually
+          {t('settings.executors.binaries.advanced')}
         </summary>
         <div className="mt-3 space-y-2">
         <label
           htmlFor={inputId}
           className="text-label text-text-muted font-medium tracking-wide"
         >
-          {registered ? 'Update binary path' : 'Register binary path'}
+          {registered
+            ? t('settings.executors.binaries.updatePath')
+            : t('settings.executors.binaries.registerPath')}
         </label>
         <div className="flex items-start gap-2">
           <Input
@@ -194,14 +203,18 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
             onClick={onValidate}
             disabled={!trimmed || busy}
           >
-            {validate.isPending ? 'Validating…' : 'Validate'}
+            {validate.isPending
+              ? t('settings.executors.binaries.validating')
+              : t('settings.executors.binaries.validate')}
           </Button>
           <Button
             type="button"
             onClick={onRegister}
             disabled={!trimmed || busy}
           >
-            {register.isPending ? 'Registering…' : 'Register'}
+            {register.isPending
+              ? t('settings.executors.binaries.registering')
+              : t('settings.executors.binaries.register')}
           </Button>
         </div>
 
@@ -218,8 +231,8 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
               <XCircle size={14} aria-hidden />
             )}
             {check.valid
-              ? 'Looks good — this path is absolute, exists, and is executable.'
-              : (check.error ?? 'This path is not valid.')}
+              ? t('settings.executors.binaries.checkValid')
+              : (check.error ?? t('settings.executors.binaries.checkInvalid'))}
           </p>
         )}
 
@@ -241,6 +254,7 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
 }
 
 export function ExecutorBinariesSection(): JSX.Element {
+  const { t, render } = useTranslation();
   const query = useExecutorBinaries();
 
   const byKind = useMemo(() => {
@@ -255,22 +269,27 @@ export function ExecutorBinariesSection(): JSX.Element {
   return (
     <section className="space-y-4" data-testid="executor-binaries-section">
       <p className="text-text-secondary text-sm">
-        Where each built-in executor CLI binary lives on this machine. Paths are
-        stored in machine-local runtime config and take effect on the next agent
-        spawn. Register one with <span className="font-medium">Connect a CLI</span>{' '}
-        below, or expand <span className="font-medium">Advanced: enter path
-        manually</span> on a row to type the absolute path yourself — there is no
-        automatic scan.
+        {render('settings.executors.binaries.intro', {
+          connect: <span className="font-medium">{t('settings.executors.connectCli')}</span>,
+          advanced: (
+            <span className="font-medium">{t('settings.executors.binaries.advanced')}</span>
+          ),
+        })}
       </p>
 
       {query.isLoading && (
-        <p className="text-text-secondary text-sm">Loading registry…</p>
+        <p className="text-text-secondary text-sm">
+          {t('settings.executors.binaries.loading')}
+        </p>
       )}
 
       {query.isError && (
         <p className="text-feedback-danger text-sm" role="alert">
-          Could not load the executor binary registry.
-          {query.error?.message ? ` ${query.error.message}` : ''}
+          {query.error?.message
+            ? t('settings.executors.binaries.loadErrorDetail', {
+                detail: query.error.message,
+              })
+            : t('settings.executors.binaries.loadError')}
         </p>
       )}
 
@@ -288,19 +307,24 @@ export function ExecutorBinariesSection(): JSX.Element {
               <AlertTriangle size={18} aria-hidden className="text-status-abandoned mt-0.5 shrink-0" />
               <div className="space-y-1">
                 <h3 className="text-text-primary text-sm font-semibold">
-                  No executor CLI is registered on this machine
+                  {t('settings.executors.binaries.fresh.title')}
                 </h3>
                 <p className="text-text-secondary text-sm">
-                  The daemon can't spawn agents until at least one executor CLI
-                  binary is registered. Use{' '}
-                  <span className="font-medium">Connect a CLI</span> below, or
-                  expand <span className="font-medium">Advanced: enter path
-                  manually</span> on a row to enter an absolute path (for example,
-                  the output of{' '}
-                  <code className="text-text-primary bg-surface-sunken rounded px-1 font-mono text-xs">
-                    which claude
-                  </code>
-                  ).
+                  {render('settings.executors.binaries.fresh.body', {
+                    connect: (
+                      <span className="font-medium">{t('settings.executors.connectCli')}</span>
+                    ),
+                    advanced: (
+                      <span className="font-medium">
+                        {t('settings.executors.binaries.advanced')}
+                      </span>
+                    ),
+                    command: (
+                      <code className="text-text-primary bg-surface-sunken rounded px-1 font-mono text-xs">
+                        which claude
+                      </code>
+                    ),
+                  })}
                 </p>
               </div>
             </div>

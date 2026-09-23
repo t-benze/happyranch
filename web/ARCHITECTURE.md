@@ -83,10 +83,23 @@ presentation) and added CJK-capable SYSTEM font fallbacks to the tokens.
 `ConnectRuntimeStep.tsx`) and the shared `shared/connect/ConnectFlow.tsx`,
 extracting the single `lib/addOrgError.ts` classifier consumed by both
 AddOrgDialog and onboarding. Because ConnectFlow is shared, its Settings ▸
-Executors mount is localized too, but `settings` (W2c), route families (W3/W4)
-and the assistant dock body (W4) remain untranslated and the `settings`
-namespace stays `english-only`. No public language selector exists
-and an unset preference still renders English until W3. The mount-time coverage
+Executors mount is localized too. **W2c** translated the Settings surface
+(`features/settings/SettingsPage.tsx` header/sub-nav/loading/error/panel copy and
+the Assistant, Organization, Executors/custom-profiles/binaries and Daemon /
+Capacity section bodies; raw daemon detail, identifiers, config keys and every
+capacity number stay verbatim; the Work Hours-owned `EligibilityEditorDialog`
+stays English until W4) and built the client-only Settings ▸ Preferences
+language selector (`sections/PreferencesSection.tsx`). `SettingsPage` mounts the
+`preferences` route OUTSIDE the `useSettings` loading/error/data gate, so it
+works while the settings API is loading, failing or empty; the other panels
+keep that gate. The selector is closed in production until W3:
+`languagePreferenceGate.ts` mounts it only when the build sets
+`VITE_ENABLE_I18N_PREFERENCES=true` (tests use `vi.stubEnv`; the W2c browser
+harness builds a separate preview dist), ordinary builds tree-shake it out, and
+a direct `/settings/preferences` URL falls to the existing Assistant redirect.
+Route families (W3/W4) and the assistant dock body (W4) remain untranslated.
+No public language selector is exposed and an unset preference still renders
+English until W3. The mount-time coverage
 inventory lives in `src/lib/i18n/coverage.ts`: it separates copy-bearing routes
 (root shell `index`, the `*` NotFound catch-all and onboarding — now
 `translated`) from
@@ -101,7 +114,13 @@ through `scripts/w2a-shell-browser-evidence.mjs` under an independent
 `/onboarding` route through `scripts/w2b-onboarding-browser-evidence.mjs`
 against the ORDINARY build with NO evidence-only instrumentation — locale
 switches use the supported `localStorage` preference + same-origin `storage`
-event because there is no public selector. Every page installs and asserts the real
+event because there is no public selector. W2c Preferences evidence runs
+`scripts/w2c-preferences-browser-evidence.mjs` against a preview dist built with
+the explicit `VITE_ENABLE_I18N_PREFERENCES=true` activation and the ordinary
+dist (which must redirect `/settings/preferences` and contain no Preferences
+component); it drives the real radios with CDP input and records focus, node
+identity, `<html lang>`, persistence status and a zero-request switch window,
+plus causal negatives for a wrong locale, a remount and an API write. Every page installs and asserts the real
 `navigator.language`/`navigator.languages` before app modules; the W1
 production path is built with `I18N_BROWSER_EVIDENCE` so `vite.config.ts`
 injects the test-only `src/test/i18n-evidence-consumer.tsx` next to

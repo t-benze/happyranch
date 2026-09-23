@@ -43,6 +43,7 @@ import {
 } from '@/design-system/primitives/Select';
 import { RecipientsInput } from '@/design-system/patterns/RecipientsInput';
 import { useParams } from 'react-router-dom';
+import { useTranslation } from '@/hooks/i18n';
 
 interface FieldState {
   timeout: string;
@@ -103,6 +104,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
   const [fields, setFields] = useState<FieldState>(() => buildFieldState(org));
   const [lastSaved, setLastSaved] = useState<FieldState>(() => buildFieldState(org));
   const [saveState, setSaveState] = useState<SaveState>({ phase: 'idle' });
+  const { t, render } = useTranslation();
   const mutation = useUpdateOrgSettings();
   const agentsQuery = useAgentsList();
   const agentsList = useMemo(
@@ -132,7 +134,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
     setWhError(null);
     try {
       await mutation.mutateAsync({ working_hours: { enabled: next } });
-      setWhSavedMsg('Saved \u2713 \u2014 takes effect at the next scheduler pass (\u2248 within ~60s).');
+      setWhSavedMsg(t('settings.organization.workHoursSaved'));
     } catch (err: unknown) {
       setWhError(extractServerErrors(err).join('; '));
     }
@@ -258,37 +260,37 @@ export function OrganizationSection({ org }: Props): JSX.Element {
     <section>
       {saveState.phase === 'error' && (
         <div className="border-tier-red bg-feedback-danger/10 text-tier-red mb-4 rounded border p-3 text-sm">
-          Save failed: {saveState.message}
+          {t('settings.organization.saveFailed', { detail: saveState.message })}
         </div>
       )}
       {saveState.phase === 'saved' && (
         <div className="border-tier-green bg-feedback-success/10 text-tier-green mb-4 rounded border p-3 text-sm">
-          Saved. Changes will take effect within ~1 minute.
+          {t('settings.organization.saved')}
         </div>
       )}
 
       {/* session timeout */}
-      <h4 className="mb-2 text-sm font-medium">Session</h4>
+      <h4 className="mb-2 text-sm font-medium">{t('settings.organization.session.heading')}</h4>
       <div className="border-border divide-border mb-4 divide-y rounded-md border">
-        <EditableRow label="Session timeout (s)" badge="Applies live">
+        <EditableRow label={t('settings.organization.session.timeout')} badge={t('settings.organization.badge.live')}>
           <input
             type="number"
             min={1}
             value={fields.timeout}
             onChange={(e) => update('timeout', e.target.value)}
-            placeholder="use system default"
+            placeholder={t('settings.organization.session.timeoutPlaceholder')}
             className="bg-bg-raised border-border text-fg w-32 rounded border px-2 py-0.5 text-sm"
           />
         </EditableRow>
       </div>
 
       {/* dreaming */}
-      <h4 className="mb-2 text-sm font-medium">Dreaming</h4>
+      <h4 className="mb-2 text-sm font-medium">{t('settings.organization.dreaming.heading')}</h4>
       <div className="border-border divide-border mb-4 divide-y rounded-md border">
-        <EditableRow label="Enabled" badge="Applies live">
+        <EditableRow label={t('settings.organization.enabled')} badge={t('settings.organization.badge.live')}>
           <BooleanToggle value={fields.dreamEnabled} onChange={(v) => update('dreamEnabled', v)} />
         </EditableRow>
-        <EditableRow label="Schedule time" badge="Applies live">
+        <EditableRow label={t('settings.organization.dreaming.scheduleTime')} badge={t('settings.organization.badge.live')}>
           <input
             type="text"
             value={fields.dreamTime}
@@ -297,7 +299,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             className="bg-bg-raised border-border text-fg w-24 rounded border px-2 py-0.5 text-sm"
           />
         </EditableRow>
-        <EditableRow label="Schedule timezone" badge="Applies live">
+        <EditableRow label={t('settings.organization.dreaming.scheduleTimezone')} badge={t('settings.organization.badge.live')}>
           <input
             type="text"
             value={fields.dreamTz}
@@ -306,13 +308,13 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             className="bg-bg-raised border-border text-fg w-48 rounded border px-2 py-0.5 text-sm"
           />
         </EditableRow>
-        <EditableRow label="Catch up on startup" badge="Applies live">
+        <EditableRow label={t('settings.organization.dreaming.catchUp')} badge={t('settings.organization.badge.live')}>
           <BooleanToggle
             value={fields.dreamCatchUp}
             onChange={(v) => update('dreamCatchUp', v)}
           />
         </EditableRow>
-        <EditableRow label="Agent mode" badge="Applies live">
+        <EditableRow label={t('settings.organization.dreaming.agentMode')} badge={t('settings.organization.badge.live')}>
           <Select value={fields.dreamMode} onValueChange={(v) => update('dreamMode', v)}>
             <SelectTrigger className="w-28">
               <SelectValue />
@@ -323,61 +325,62 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             </SelectContent>
           </Select>
         </EditableRow>
-        <EditableRow label="Included agents" badge="Applies live">
+        <EditableRow label={t('settings.organization.dreaming.included')} badge={t('settings.organization.badge.live')}>
           <RecipientsInput
             value={fields.dreamInclude}
             onChange={(next) => update('dreamInclude', next)}
             agents={agentsList}
             restrictToOptions
-            placeholder="add agents…"
+            placeholder={t('settings.organization.dreaming.addAgentsPlaceholder')}
             className="bg-bg-raised border-border text-fg w-56 rounded border px-2 py-0.5 text-sm"
           />
         </EditableRow>
-        <EditableRow label="Excluded agents" badge="Applies live">
+        <EditableRow label={t('settings.organization.dreaming.excluded')} badge={t('settings.organization.badge.live')}>
           <RecipientsInput
             value={fields.dreamExclude}
             onChange={(next) => update('dreamExclude', next)}
             agents={agentsList}
             restrictToOptions
-            placeholder="add agents…"
+            placeholder={t('settings.organization.dreaming.addAgentsPlaceholder')}
             className="bg-bg-raised border-border text-fg w-56 rounded border px-2 py-0.5 text-sm"
           />
         </EditableRow>
       </div>
 
       {/* threads */}
-      <h4 className="mb-2 text-sm font-medium">Threads</h4>
+      <h4 className="mb-2 text-sm font-medium">{t('settings.organization.threads.heading')}</h4>
       <div className="border-border divide-border mb-4 divide-y rounded-md border">
-        <EditableRow label="Enabled" badge="Applies live">
+        <EditableRow label={t('settings.organization.enabled')} badge={t('settings.organization.badge.live')}>
           <BooleanToggle
             value={fields.threadsEnabled}
             onChange={(v) => update('threadsEnabled', v)}
           />
         </EditableRow>
-        <EditableRow label="Invocation timeout (s)" badge="Applies live">
+        <EditableRow label={t('settings.organization.threads.invocationTimeout')} badge={t('settings.organization.badge.live')}>
           <input
             type="number"
             min={1}
             value={fields.threadsTimeout}
             onChange={(e) => update('threadsTimeout', e.target.value)}
-            placeholder="none"
+            placeholder={t('settings.organization.threads.timeoutPlaceholder')}
             className="bg-surface-sunken border-border-default text-text-primary w-28 rounded-lg border px-2 py-0.5 text-sm"
           />
         </EditableRow>
       </div>
 
       {/* ── Operating controls ── */}
-      <h4 className="mb-2 text-sm font-medium">Operating controls</h4>
+      <h4 className="mb-2 text-sm font-medium">{t('settings.organization.operating.heading')}</h4>
       <p className="text-text-secondary mb-3 text-xs">
-        Organization-wide work hours enablement and agent eligibility. The
-        scheduler and tier-level cadence is configured under{' '}
-        <a
-          href={`/orgs/${orgSlug}/work-hours`}
-          className="text-accent-text hover:underline"
-        >
-          Work Hours
-        </a>
-        .
+        {render('settings.organization.operating.description', {
+          link: (
+            <a
+              href={`/orgs/${orgSlug}/work-hours`}
+              className="text-accent-text hover:underline"
+            >
+              {t('settings.organization.operating.workHoursLink')}
+            </a>
+          ),
+        })}
       </p>
 
       {whSavedMsg && (
@@ -393,7 +396,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       )}
 
       <div className="border-border divide-border mb-4 divide-y rounded-md border" data-testid="operating-controls">
-        <EditableRow label="Work Hours" labelId="work-hours-switch-label" badge="Applies live">
+        <EditableRow label={t('settings.organization.operating.workHours')} labelId="work-hours-switch-label" badge={t('settings.organization.badge.live')}>
           <div className="flex items-center gap-2">
             <BooleanToggle
               ref={workHoursToggleRef}
@@ -408,18 +411,18 @@ export function OrganizationSection({ org }: Props): JSX.Element {
               }}
             />
             <span className="text-text-muted text-xs" aria-hidden="true">
-              {wh?.enabled ? 'ON' : 'OFF'}
+              {wh?.enabled ? t('settings.organization.operating.on') : t('settings.organization.operating.off')}
             </span>
           </div>
         </EditableRow>
-        <EditableRow label="Agent eligibility">
+        <EditableRow label={t('settings.organization.operating.eligibility')}>
           <div className="flex items-center gap-2">
             <span className="text-text-muted text-xs">
               {wh?.agents?.mode === 'whitelist'
-                ? `Whitelist (${wh.agents.include.length} included)`
-                : 'All agents'}
+                ? t('settings.organization.operating.whitelist', { count: wh.agents.include.length })
+                : t('settings.organization.operating.allAgents')}
               {wh?.agents?.exclude.length
-                ? `, ${wh.agents.exclude.length} excluded`
+                ? t('settings.organization.operating.excluded', { count: wh.agents.exclude.length })
                 : ''}
             </span>
             <Button
@@ -427,7 +430,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
               size="sm"
               onClick={() => setEditEligibility(true)}
             >
-              Edit eligibility
+              {t('settings.organization.operating.editEligibility')}
             </Button>
           </div>
         </EditableRow>
@@ -442,7 +445,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             disabled={saveState.phase === 'saving'}
             className="bg-accent text-accent-fg hover:bg-accent-hover rounded px-4 py-1.5 text-sm font-medium transition-colors disabled:opacity-50"
           >
-            {saveState.phase === 'saving' ? 'Saving…' : 'Save changes'}
+            {saveState.phase === 'saving' ? t('settings.organization.saveBar.saving') : t('settings.organization.saveBar.save')}
           </button>
           <button
             type="button"
@@ -450,10 +453,10 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             disabled={saveState.phase === 'saving'}
             className="text-fg-muted hover:text-fg rounded px-4 py-1.5 text-sm transition-colors disabled:opacity-50"
           >
-            Discard
+            {t('settings.organization.saveBar.discard')}
           </button>
           <span className="text-fg-subtle ml-auto text-xs">
-            ⌘S to save
+            {t('settings.organization.saveBar.shortcut')}
           </span>
         </div>
       )}
@@ -472,16 +475,14 @@ export function OrganizationSection({ org }: Props): JSX.Element {
           }}
         >
           <DialogHeader>
-            <DialogTitle>Disable work hours?</DialogTitle>
+            <DialogTitle>{t('settings.organization.disableDialog.title')}</DialogTitle>
             <DialogDescription>
-              Turning the feature off halts all scheduled wakes for every agent.
-              Eligibility and tier config are preserved; nothing runs until you
-              turn it back on.
+              {t('settings.organization.disableDialog.description')}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="ghost" onClick={closeConfirmDisable}>
-              Cancel
+              {t('settings.organization.disableDialog.cancel')}
             </Button>
             <Button
               variant="destructive"
@@ -490,7 +491,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
                 void setEnabled(false);
               }}
             >
-              Disable
+              {t('settings.organization.disableDialog.confirm')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -504,9 +505,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
           wh={wh}
           allAgents={allAgentNames}
           onSaved={() => {
-            setWhSavedMsg(
-              'Saved \u2713 \u2014 takes effect at the next scheduler pass (\u2248 within ~60s).',
-            );
+            setWhSavedMsg(t('settings.organization.workHoursSaved'));
           }}
         />
       )}

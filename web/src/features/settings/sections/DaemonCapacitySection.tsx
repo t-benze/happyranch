@@ -30,15 +30,18 @@ import {
 import { Input } from '@/design-system/primitives/Input';
 import { Textarea } from '@/design-system/primitives/Textarea';
 import { useDaemonCapacity, useUpdateDaemonCapacity } from '@/hooks/settings';
+import { useTranslation } from '@/hooks/i18n';
 import { ApiError } from '@/lib/api';
 import type { DaemonCapacitySnapshot, DaemonCapacityWrite } from '@/lib/api/types';
+import { translate, type Locale, type MessageKey, type MessageParams } from '@/lib/i18n';
 import {
   ackContextOf,
   baseFromSnapshot,
-  CAPACITY_FIELD_LABELS,
+  capacityFieldLabel,
   classifySnapshot,
   consequenceMessage,
   draftConsequence,
+  formatPresenceValue,
   formatReceipt,
   numericTextMessage,
   parseCapacityText,
@@ -51,8 +54,24 @@ import {
   type CapacitySubmission,
 } from './capacityModel';
 
-const WORKERS_LABEL = CAPACITY_FIELD_LABELS.queue_workers;
-const CAP_LABEL = CAPACITY_FIELD_LABELS.host_global_session_cap;
+/**
+ * A localizable message held in state. It is translated at RENDER time with the
+ * current locale, so a locale switch re-translates a banner or field error that
+ * is already on screen instead of freezing the language it was raised in.
+ */
+type Copy = (locale: Locale) => string;
+
+function copy(key: MessageKey, params?: MessageParams): Copy {
+  return (locale) => translate(locale, key, params);
+}
+
+/** The localized field labels for both capacity keys. */
+function fieldLabels(locale: Locale): { workersLabel: string; capLabel: string } {
+  return {
+    workersLabel: capacityFieldLabel('queue_workers', locale),
+    capLabel: capacityFieldLabel('host_global_session_cap', locale),
+  };
+}
 
 /**
  * Capacity-local focus-ring override (accepted 16.10 / 16.11).
@@ -129,16 +148,7 @@ const DIALOG_FOCUS_RING = '[&>button:focus-visible]:ring-accent-default [&>butto
  */
 const PRIMARY_TONE = 'bg-accent-hover hover:bg-accent-text active:bg-accent-text';
 
-const REPRESENTATION_UNAVAILABLE =
-  'Outside the range this editor can represent exactly.';
-const READ_UNUSABLE =
-  'Cannot read capacity configuration. Editing is unavailable.';
-const INCONSISTENT_RESPONSE =
-  'Capacity details are inconsistent in this response.';
-const REFRESH_FAILED =
-  'Could not refresh. Current state unverified.';
-const READ_BLOCKED_SAVE =
-  'The current saved state could not be read, so nothing was sent. Refresh and check the saved values before saving again.';
+const READ_BLOCKED_SAVE = copy('settings.capacity.readBlockedSave');
 
 /** Outcome of a settled save attempt. */
 type SaveOutcome =
@@ -147,14 +157,13 @@ type SaveOutcome =
   /** A usable 200 was accepted into base. */
   | { kind: 'saved'; snapshot: DaemonCapacitySnapshot }
   /** A typed rejection: the request did not publish. */
-  | { kind: 'rejected'; message: string; focus?: 'queue_workers' | 'host_global_session_cap' | 'rationale' | 'ack' }
+  | { kind: 'rejected'; message: Copy; focus?: 'queue_workers' | 'host_global_session_cap' | 'rationale' | 'ack' }
   /** Typed publication-uncertain: known replacement wording. */
-  | { kind: 'uncertain'; message: string }
+  | { kind: 'uncertain'; message: Copy }
   /** Lost response, unclassified 5xx, network error, or an unusable success. */
-  | { kind: 'unknown'; message: string };
+  | { kind: 'unknown'; message: Copy };
 
-const UNKNOWN_OUTCOME_COPY =
-  'Save result unknown. Your draft is retained. Reconnect and check saved values before trying again.';
+const UNKNOWN_OUTCOME_COPY = copy('settings.capacity.unknownOutcome');
 
 /**
  * An unresolved publication outcome (R2).
@@ -167,7 +176,7 @@ const UNKNOWN_OUTCOME_COPY =
  */
 interface UnresolvedPublication {
   kind: 'uncertain' | 'unknown';
-  message: string;
+  message: Copy;
 }
 
 /**
@@ -216,29 +225,31 @@ function classifySaveError(error: unknown): SaveOutcome {
     return { kind: 'unknown', message: UNKNOWN_OUTCOME_COPY };
   }
   const detail = (error.detail ?? {}) as { artifact_state?: 'absent' | 'present' | 'unknown' };
-  const artifact = detail.artifact_state === 'present'
-    ? ' A temporary artifact remains; inspect it before cleanup.'
+  const artifactKey: MessageKey | null = detail.artifact_state === 'present'
+    ? 'settings.capacity.artifact.present'
     : detail.artifact_state === 'unknown'
-      ? ' Temporary artifact state is unknown; inspect it before cleanup.'
-      : '';
+      ? 'settings.capacity.artifact.unknown'
+      : null;
+  const withArtifact = (key: MessageKey): Copy => (locale) =>
+    translate(locale, key) + (artifactKey === null ? '' : translate(locale, artifactKey));
 
   if (error.status === 401 || error.status === 403) {
     return {
       kind: 'rejected',
-      message: 'Unauthorized. A valid daemon bearer is required; no values were changed.',
+      message: copy('settings.capacity.error.unauthorized'),
     };
   }
   if (error.code === 'environment_confirmation_required') {
     return {
       kind: 'rejected',
-      message: 'Confirm the environment override before saving.',
+      message: copy('settings.capacity.error.confirmOverride'),
       focus: 'ack',
     };
   }
   if (error.status === 422) {
     return {
       kind: 'rejected',
-      message: `The daemon rejected these values. ${WORKERS_LABEL} and ${CAP_LABEL} must each be a whole number greater than zero, and the reason must not be blank.`,
+      message: (locale) => translate(locale, 'settings.capacity.error.rejectedValues', fieldLabels(locale)),
       focus: 'queue_workers',
     };
   }
@@ -249,13 +260,13 @@ function classifySaveError(error: unknown): SaveOutcome {
     || error.status === 428 || (error.status === 400 && error.code !== null)) {
     return {
       kind: 'rejected',
-      message: 'Refresh the saved settings before saving again. This request did not publish new values.',
+      message: copy('settings.capacity.error.ifMatch'),
     };
   }
   if (error.code === 'audit_failed') {
     return {
       kind: 'rejected',
-      message: 'Could not record the change. This request did not change the configuration.',
+      message: copy('settings.capacity.error.auditFailed'),
     };
   }
   if (error.code === 'config_write_failed') {
@@ -263,13 +274,13 @@ function classifySaveError(error: unknown): SaveOutcome {
     // a claim about the file's current contents would exclude external writers.
     return {
       kind: 'rejected',
-      message: `Configuration storage failed. This request did not publish new values.${artifact}`,
+      message: withArtifact('settings.capacity.error.configWriteFailed'),
     };
   }
   if (error.code === 'config_publication_uncertain') {
     return {
       kind: 'uncertain',
-      message: `The new configuration was published, but durability, verification, or cleanup did not complete. This is not a confirmation that your values are in effect for the next start. Check the saved values before retrying.${artifact}`,
+      message: withArtifact('settings.capacity.error.publicationUncertain'),
     };
   }
   return { kind: 'unknown', message: UNKNOWN_OUTCOME_COPY };
@@ -306,6 +317,8 @@ function Pill({ tone, children }: { tone: 'accent' | 'neutral'; children: React.
 }
 
 export function DaemonCapacitySection(): JSX.Element {
+  const { t, render, locale } = useTranslation();
+  const { workersLabel, capLabel } = fieldLabels(locale);
   const query = useDaemonCapacity();
   const save = useUpdateDaemonCapacity();
 
@@ -317,7 +330,7 @@ export function DaemonCapacitySection(): JSX.Element {
   // Read only inside the updater below — the previous context is what the
   // identity comparison needs, never a render input.
   const [, setAckContext] = useState<AckContext | null>(null);
-  const [ackResetNotice, setAckResetNotice] = useState<string | null>(null);
+  const [ackResetNotice, setAckResetNotice] = useState<MessageKey | null>(null);
   const [submission, setSubmission] = useState<CapacitySubmission | null>(null);
   const [outcome, setOutcome] = useState<SaveOutcome>({ kind: 'idle' });
   /** R2: survives refused Save clicks, banner changes and ordinary Discard. */
@@ -329,7 +342,7 @@ export function DaemonCapacitySection(): JSX.Element {
   const [conflictSeen, setConflictSeen] = useState(false);
   /** A usable read whose revision moved while the form was dirty or unresolved. */
   const [externalSeen, setExternalSeen] = useState(false);
-  const [conflictUnusable, setConflictUnusable] = useState<string | null>(null);
+  const [conflictUnusable, setConflictUnusable] = useState<MessageKey | null>(null);
   /**
    * The last snapshot that classified USABLE, retained TOGETHER with the
    * receipt of the response that actually produced it. When the current read is
@@ -352,7 +365,7 @@ export function DaemonCapacitySection(): JSX.Element {
    * Invalid, unsafe or blank text is still unsaved work.
    */
   const [baseText, setBaseText] = useState({ workers: '', cap: '' });
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [fieldErrors, setFieldErrors] = useState<Record<string, Copy>>({});
   const [detailsOpen, setDetailsOpen] = useState(false);
   /** Monotonic local order for `latest` acceptance. Never rendered (S5-R6). */
   const latestSeqRef = useRef(0);
@@ -384,7 +397,7 @@ export function DaemonCapacitySection(): JSX.Element {
       if (sameAckContext(current, next)) return current;
       if (current !== null && next.shadowedKeys.length > 0) {
         setAck(false);
-        setAckResetNotice('The environment override changed; confirm it again before saving.');
+        setAckResetNotice('settings.capacity.ackReset');
       }
       if (next.shadowedKeys.length === 0) {
         setAck(false);
@@ -755,25 +768,33 @@ export function DaemonCapacitySection(): JSX.Element {
     if (writeLocked) {
       setOutcome({
         kind: 'rejected',
-        message: 'Reconcile the saved values before saving again. Choose to rebase onto the latest saved values or to discard your draft and accept them.',
+        message: copy('settings.capacity.writeLocked'),
       });
       return;
     }
 
     // Validate input TEXT before any Number conversion (G3).
-    const errors: Record<string, string> = {};
+    const errors: Record<string, Copy> = {};
     const workers = parseCapacityText(workersText);
     const cap = parseCapacityText(capText);
-    if (!workers.ok) errors.queue_workers = numericTextMessage(workers.reason, WORKERS_LABEL);
-    if (!cap.ok) errors.host_global_session_cap = numericTextMessage(cap.reason, CAP_LABEL);
+    if (!workers.ok) {
+      const rejection = workers.reason;
+      errors.queue_workers = (at) =>
+        numericTextMessage(rejection, capacityFieldLabel('queue_workers', at), at);
+    }
+    if (!cap.ok) {
+      const rejection = cap.reason;
+      errors.host_global_session_cap = (at) =>
+        numericTextMessage(rejection, capacityFieldLabel('host_global_session_cap', at), at);
+    }
     const trimmedReason = reason.trim();
     if (trimmedReason.length === 0) {
-      errors.rationale = 'Reason for change is required.';
+      errors.rationale = copy('settings.capacity.reasonRequired');
     } else if (trimmedReason.length > REASON_MAX_LENGTH) {
-      errors.rationale = `Reason for change must be ${REASON_MAX_LENGTH} characters or fewer.`;
+      errors.rationale = copy('settings.capacity.reasonTooLong', { max: String(REASON_MAX_LENGTH) });
     }
     if (shadowed && !ack) {
-      errors.ack = 'Confirm the environment override before saving.';
+      errors.ack = copy('settings.capacity.error.confirmOverride');
     }
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) {
@@ -784,7 +805,7 @@ export function DaemonCapacitySection(): JSX.Element {
       // announcement redundant with the control's own description.
       setOutcome({
         kind: 'rejected',
-        message: 'Check the highlighted fields before saving. Nothing was sent.',
+        message: copy('settings.capacity.checkFields'),
       });
       focusField(first);
       return;
@@ -856,8 +877,8 @@ export function DaemonCapacitySection(): JSX.Element {
         if (classifiedLatest.status !== 'usable') {
           setConflictUnusable(
             classifiedLatest.status === 'unusable' && classifiedLatest.reason === 'representation'
-              ? `Latest saved values are ${REPRESENTATION_UNAVAILABLE.toLowerCase()}`
-              : 'Latest saved values could not be read.',
+              ? 'settings.capacity.conflict.representation'
+              : 'settings.capacity.conflict.unreadable',
           );
         } else {
           recordLatest(baseFromSnapshot(classifiedLatest.snapshot), 'conflict');
@@ -866,7 +887,7 @@ export function DaemonCapacitySection(): JSX.Element {
         setConflictSeen(true);
         setOutcome({
           kind: 'rejected',
-          message: 'Saved settings changed elsewhere. Your draft is preserved.',
+          message: copy('settings.capacity.conflict.changed'),
         });
         return;
       }
@@ -901,20 +922,19 @@ export function DaemonCapacitySection(): JSX.Element {
   // page they are on and what the failure was.
   const header = (
     <header>
-      <h2 id="capacity-panel-heading" className="font-display text-text-primary text-2xl font-medium">Capacity</h2>
+      <h2 id="capacity-panel-heading" className="font-display text-text-primary text-2xl font-medium">{t('settings.capacity.title')}</h2>
       <p className="text-text-secondary mt-1 max-w-prose text-sm">
-        Set how many sessions this daemon can admit. Changes are saved for the next daemon start.
+        {t('settings.capacity.description')}
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Pill tone="neutral">All organizations</Pill>
-        <Pill tone="neutral">Changes require restart</Pill>
+        <Pill tone="neutral">{t('settings.capacity.pill.allOrgs')}</Pill>
+        <Pill tone="neutral">{t('settings.capacity.pill.restartRequired')}</Pill>
       </div>
       {/* 16.10: informational prose uses the secondary text token, which
           measures >= 4.5:1 in both themes. The muted token is retained only
           for decorative overlines and key names. */}
       <p className="text-text-secondary mt-3 text-sm">
-        Daemon bearer required. This bearer-based authorization cannot be attributed to a verified
-        person. This resource affects every org.
+        {t('settings.capacity.bearer')}
       </p>
     </header>
   );
@@ -923,7 +943,7 @@ export function DaemonCapacitySection(): JSX.Element {
     return (
       <div className="space-y-2">
         {header}
-        <p role="status" className="text-text-secondary mt-4 text-sm">Loading daemon capacity…</p>
+        <p role="status" className="text-text-secondary mt-4 text-sm">{t('settings.capacity.loading')}</p>
       </div>
     );
   }
@@ -938,7 +958,7 @@ export function DaemonCapacitySection(): JSX.Element {
             danger surface and border keep signalling severity. 16.9 still
             holds: the meaning is carried by words, never by colour alone. */}
         <p role="alert" className="border-border-default bg-danger-soft text-text-primary mt-4 rounded-md border p-3 text-sm">
-          Could not load daemon capacity. No values are displayed. {query.error?.message}
+          {t('settings.capacity.loadError', { detail: query.error?.message ?? '' })}
         </p>
       </div>
     );
@@ -952,8 +972,8 @@ export function DaemonCapacitySection(): JSX.Element {
         {header}
         <p role="alert" className="border-border-default bg-attention-soft text-attention-text mt-4 rounded-md border p-3 text-sm">
           {readUnusableReason === 'representation'
-            ? `Capacity values are ${REPRESENTATION_UNAVAILABLE.toLowerCase()} No values are displayed and editing is unavailable.`
-            : READ_UNUSABLE}
+            ? t('settings.capacity.initialRepresentation')
+            : t('settings.capacity.readUnusable')}
         </p>
       </div>
     );
@@ -966,8 +986,8 @@ export function DaemonCapacitySection(): JSX.Element {
   // later response's receipt must not be attributed to them. The two facts stay
   // distinguishable: the unusable-response banner names the current read's
   // failure, and the retained values carry their own "Last received" time.
-  const currentReceipt = formatReceipt(query.observation?.receiptAt ?? null);
-  const retainedReceipt = formatReceipt(lastUsable?.receiptAt ?? null);
+  const currentReceipt = formatReceipt(query.observation?.receiptAt ?? null, locale);
+  const retainedReceipt = formatReceipt(lastUsable?.receiptAt ?? null, locale);
   const pending = save.isPending;
   const reconciliationNeeded = conflictSeen || conflictUnusable !== null || externalSeen;
   // R3: reconciliation may only be offered against an observation that was
@@ -997,23 +1017,22 @@ export function DaemonCapacitySection(): JSX.Element {
       {readUnusableReason !== null && (
         <p role="alert" className="border-border-default bg-attention-soft text-attention-text mt-4 rounded-md border p-3 text-sm">
           {readUnusableReason === 'representation'
-            ? `Latest capacity values are ${REPRESENTATION_UNAVAILABLE.toLowerCase()} Editing is unavailable against this read.`
-            : READ_UNUSABLE}
-          {' '}Previously received values are shown below under “Last known”.
+            ? t('settings.capacity.latestRepresentation')
+            : t('settings.capacity.readUnusable')}
+          {' '}{t('settings.capacity.lastKnownPointer')}
           {valueReceipt ? ` ${valueReceipt}` : ''}
         </p>
       )}
       {inconsistentRead && (
         <p role="alert" className="border-border-default bg-attention-soft text-attention-text mt-4 rounded-md border p-3 text-sm">
-          {INCONSISTENT_RESPONSE} Editing is unavailable against this read.
+          {t('settings.capacity.inconsistentResponse')} {t('settings.capacity.editingUnavailableRead')}
         </p>
       )}
       {refreshFailed && (
         <p role="alert" className="border-border-default bg-attention-soft text-attention-text mt-4 rounded-md border p-3 text-sm">
-          {REFRESH_FAILED} Previously received values are shown below under “Last known”.
+          {t('settings.capacity.refreshFailed')} {t('settings.capacity.lastKnownPointer')}
           {valueReceipt ? ` ${valueReceipt}` : ''}
-          {' '}Your draft, reason and acknowledgment are kept. Saving is blocked until a
-          successful read confirms the saved revision.
+          {' '}{t('settings.capacity.refreshFailedKept')}
         </p>
       )}
 
@@ -1021,28 +1040,30 @@ export function DaemonCapacitySection(): JSX.Element {
         <>
           <SectionLabel
             note={showingLastKnown
-              ? '— the last values this browser received; not re-confirmed by the current read'
-              : '— observed from the daemon; not changed by saving'}
+              ? t('settings.capacity.running.noteLastKnown')
+              : t('settings.capacity.running.noteObserved')}
           >
-            {showingLastKnown ? 'Last known' : 'Running now'}
+            {showingLastKnown ? t('settings.capacity.running.lastKnown') : t('settings.capacity.running.now')}
           </SectionLabel>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <RunningCard
-              label="Task session slots running"
+              label={t('settings.capacity.card.workersLabel')}
               value={String(displaySnapshot.running_at_daemon_start.queue_workers)}
-              description="Workers started with the daemon. Shared across all organizations."
+              description={t('settings.capacity.card.workersDescription')}
             />
             <RunningCard
-              label="Host session admission limit running"
+              label={t('settings.capacity.card.capLabel')}
               value={
                 displaySnapshot.effective_admission_cap === null
-                  ? 'Unavailable'
+                  ? t('settings.capacity.card.unavailable')
                   : String(displaySnapshot.effective_admission_cap)
               }
               description={
                 displaySnapshot.effective_admission_cap === null
-                  ? `Unavailable — ${displaySnapshot.effective_admission_reason}. The runtime effect of a saved value cannot be verified from this page.`
-                  : 'Ceiling on admitted sessions. A ceiling, not a count of active or free sessions.'
+                  ? t('settings.capacity.card.capUnavailableDescription', {
+                    reason: displaySnapshot.effective_admission_reason,
+                  })
+                  : t('settings.capacity.card.capDescription')
               }
             />
           </div>
@@ -1052,26 +1073,28 @@ export function DaemonCapacitySection(): JSX.Element {
           {displaySnapshot.effective_admission_cap !== null
             && displaySnapshot.effective_admission_cap !== displaySnapshot.running_at_daemon_start.host_global_session_cap && (
             <p className="text-text-secondary mt-2 text-sm">
-              Startup configured host limit {displaySnapshot.running_at_daemon_start.host_global_session_cap};
-              running effective {displaySnapshot.effective_admission_cap} — {displaySnapshot.effective_admission_reason}
-              {' '}The startup value is not a count of available slots.
+              {t('settings.capacity.effectiveDiffers', {
+                startup: String(displaySnapshot.running_at_daemon_start.host_global_session_cap),
+                effective: String(displaySnapshot.effective_admission_cap),
+                reason: displaySnapshot.effective_admission_reason,
+              })}
             </p>
           )}
 
-          <SectionLabel>Startup, saved and next start</SectionLabel>
+          <SectionLabel>{t('settings.capacity.table.title')}</SectionLabel>
           <table className="border-border-default w-full border-collapse overflow-hidden rounded-md border text-sm">
             <thead>
               <tr className="text-text-secondary bg-surface-sunken text-left text-xs tracking-wide uppercase">
-                <th scope="col" className="border-border-default border-b p-3 font-semibold">Setting</th>
-                <th scope="col" className="border-border-default border-b p-3 font-semibold">Running at startup</th>
-                <th scope="col" className="border-border-default border-b p-3 font-semibold">Saved in file</th>
-                <th scope="col" className="border-border-default border-b p-3 font-semibold">Expected next start</th>
+                <th scope="col" className="border-border-default border-b p-3 font-semibold">{t('settings.capacity.table.setting')}</th>
+                <th scope="col" className="border-border-default border-b p-3 font-semibold">{t('settings.capacity.table.running')}</th>
+                <th scope="col" className="border-border-default border-b p-3 font-semibold">{t('settings.capacity.table.saved')}</th>
+                <th scope="col" className="border-border-default border-b p-3 font-semibold">{t('settings.capacity.table.next')}</th>
               </tr>
             </thead>
             <tbody>
               {([
-                ['queue_workers', WORKERS_LABEL] as const,
-                ['host_global_session_cap', CAP_LABEL] as const,
+                ['queue_workers', workersLabel] as const,
+                ['host_global_session_cap', capLabel] as const,
               ]).map(([key, label]) => (
                 <tr key={key}>
                   <th scope="row" className="border-border-default border-b p-3 text-left font-medium">
@@ -1082,7 +1105,7 @@ export function DaemonCapacitySection(): JSX.Element {
                     {displaySnapshot.running_at_daemon_start[key]}
                   </td>
                   <td className="border-border-default border-b p-3 font-mono">
-                    {displaySnapshot.persisted_yaml[key] === null ? 'Not set in file' : displaySnapshot.persisted_yaml[key]}
+                    {displaySnapshot.persisted_yaml[key] === null ? t('settings.capacity.notSetInFile') : displaySnapshot.persisted_yaml[key]}
                   </td>
                   <td className="border-border-default border-b p-3 font-mono">
                     {displaySnapshot.next_start[key]}
@@ -1092,28 +1115,24 @@ export function DaemonCapacitySection(): JSX.Element {
             </tbody>
           </table>
           <p className="text-text-secondary mt-2 text-sm">
-            Expected next start is best effort, based on the configuration observed by this daemon and
-            assuming an unchanged environment and worker topology. It is not a guarantee.
+            {t('settings.capacity.table.note')}
           </p>
           <div className="mt-3">
             <Pill tone="accent">
               <span aria-hidden="true">●</span>
-              {displaySnapshot.restart_pending ? 'Restart pending' : 'No restart pending'}
+              {displaySnapshot.restart_pending ? t('settings.capacity.restartPending') : t('settings.capacity.noRestartPending')}
             </Pill>
           </div>
           {displaySnapshot.restart_pending && (
             <p role="status" className="text-text-secondary mt-2 text-sm">
-              A persisted next-start value differs from the running startup snapshot. Saving never applies
-              live and this page cannot restart the daemon.
+              {t('settings.capacity.restartPendingNote')}
             </p>
           )}
           {/* 18.5: an equality STATEMENT about the observed values. It never
               says a restart occurred, succeeded, or was caused by this page. */}
           {!displaySnapshot.restart_pending && runningMatchesSaved(displaySnapshot) && (
             <p role="status" className="text-text-secondary mt-2 text-sm">
-              Running configuration matches the expected values. This states that the observed
-              numbers are equal; it does not mean a restart happened or that anything on this page
-              caused it.
+              {t('settings.capacity.runningMatches')}
             </p>
           )}
           {displaySnapshot.warnings.map((warning) => (
@@ -1133,16 +1152,15 @@ export function DaemonCapacitySection(): JSX.Element {
       )}
 
       <form onSubmit={submit} noValidate>
-        <SectionLabel>Change saved settings</SectionLabel>
+        <SectionLabel>{t('settings.capacity.change.title')}</SectionLabel>
 
         <div className="border-border-default border-b pb-5">
           <label htmlFor="capacity-workers" className="text-text-primary text-sm font-semibold">
-            {WORKERS_LABEL}
+            {workersLabel}
             <code className="text-text-secondary ml-2 font-mono text-xs font-normal">queue_workers</code>
           </label>
           <p id="capacity-workers-help" className="text-text-secondary mt-1 max-w-prose text-sm">
-            Maximum task-worker slots across all organizations. Other limits can keep fewer sessions
-            running.
+            {t('settings.capacity.workersHelp')}
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-3">
             <Input
@@ -1163,11 +1181,11 @@ export function DaemonCapacitySection(): JSX.Element {
               onChange={(event) => setWorkersText(event.target.value)}
             />
             <p id="capacity-workers-guidance" className="text-text-secondary text-sm">
-              {snapshot ? `${snapshot.guidance.queue_workers} ` : ''}Guidance only, not an enforced range.
+              {snapshot ? `${snapshot.guidance.queue_workers} ` : ''}{t('settings.capacity.guidanceOnly')}
             </p>
             {fieldErrors.queue_workers && (
               <p id="capacity-workers-error" role="alert" className="text-feedback-danger text-sm">
-                {fieldErrors.queue_workers}
+                {fieldErrors.queue_workers(locale)}
               </p>
             )}
           </div>
@@ -1175,12 +1193,11 @@ export function DaemonCapacitySection(): JSX.Element {
 
         <div className="border-border-default border-b py-5">
           <label htmlFor="capacity-cap" className="text-text-primary text-sm font-semibold">
-            {CAP_LABEL}
+            {capLabel}
             <code className="text-text-secondary ml-2 font-mono text-xs font-normal">host_global_session_cap</code>
           </label>
           <p id="capacity-cap-help" className="text-text-secondary mt-1 max-w-prose text-sm">
-            Shared by task, thread, dream, wake and schedule sessions. Does not cap every process on the
-            machine, and excludes headless System Assistant and job processes.
+            {t('settings.capacity.capHelp')}
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-3">
             <Input
@@ -1201,11 +1218,11 @@ export function DaemonCapacitySection(): JSX.Element {
               onChange={(event) => setCapText(event.target.value)}
             />
             <p id="capacity-cap-guidance" className="text-text-secondary text-sm">
-              {snapshot ? `${snapshot.guidance.host_global_session_cap} ` : ''}Guidance only, not an enforced range.
+              {snapshot ? `${snapshot.guidance.host_global_session_cap} ` : ''}{t('settings.capacity.guidanceOnly')}
             </p>
             {fieldErrors.host_global_session_cap && (
               <p id="capacity-cap-error" role="alert" className="text-feedback-danger text-sm">
-                {fieldErrors.host_global_session_cap}
+                {fieldErrors.host_global_session_cap(locale)}
               </p>
             )}
           </div>
@@ -1216,21 +1233,21 @@ export function DaemonCapacitySection(): JSX.Element {
         {consequence !== null && !rationaleOnlyDirty && (
           <div className="border-border-default bg-surface-raised mt-5 rounded-md border">
             <p className="border-border-default text-text-primary border-b p-3 text-sm font-medium">
-              {valuesChanged ? 'Draft changes the saved configuration' : 'Draft matches the saved configuration'}
+              {valuesChanged ? t('settings.capacity.draft.changes') : t('settings.capacity.draft.matches')}
             </p>
             {consequence.status === 'ok' && draftPair !== null ? (
               <>
                 <div className="flex flex-wrap gap-8 p-4">
                   <div>
-                    <p className="text-text-secondary text-sm">{WORKERS_LABEL}</p>
+                    <p className="text-text-secondary text-sm">{workersLabel}</p>
                     <p className="font-display text-text-primary mt-1 text-xl">{draftPair.queue_workers}</p>
                   </div>
                   <div>
-                    <p className="text-text-secondary text-sm">Host admission limit</p>
+                    <p className="text-text-secondary text-sm">{t('settings.capacity.draft.capLabel')}</p>
                     <p className="font-display text-text-primary mt-1 text-xl">{draftPair.host_global_session_cap}</p>
                   </div>
                   <div>
-                    <p className="text-text-secondary text-sm">Worker-pool total</p>
+                    <p className="text-text-secondary text-sm">{t('settings.capacity.draft.poolTotal')}</p>
                     <p className="font-display text-text-primary mt-1 text-xl">
                       {consequence.workerPoolTotal}
                       {/* R6: the arithmetic and its explanation use the RESOLVED
@@ -1238,7 +1255,10 @@ export function DaemonCapacitySection(): JSX.Element {
                           is built from the environment-resolved W, not the draft
                           the environment will shadow. */}
                       <span className="text-text-secondary ml-2 font-sans text-sm">
-                        {consequence.resolved.queue_workers} task + {consequence.nonTaskContribution} other producers
+                        {t('settings.capacity.draft.poolBreakdown', {
+                          task: String(consequence.resolved.queue_workers),
+                          other: String(consequence.nonTaskContribution),
+                        })}
                       </span>
                     </p>
                   </div>
@@ -1248,14 +1268,15 @@ export function DaemonCapacitySection(): JSX.Element {
                     consequence.direction,
                     consequence.resolved.host_global_session_cap,
                     consequence.workerPoolTotal,
+                    locale,
                   )}
                 </p>
               </>
             ) : (
               <p role="alert" className="text-attention-text p-4 text-sm">
                 {consequence.status === 'inconsistent'
-                  ? INCONSISTENT_RESPONSE
-                  : `Worker-pool total is ${REPRESENTATION_UNAVAILABLE.toLowerCase()}`}
+                  ? t('settings.capacity.inconsistentResponse')
+                  : t('settings.capacity.draft.poolRepresentation')}
               </p>
             )}
           </div>
@@ -1263,7 +1284,7 @@ export function DaemonCapacitySection(): JSX.Element {
 
         {rationaleOnlyDirty && (
           <p role="status" className="text-text-secondary mt-3 text-sm">
-            The values are unchanged from the saved file; only the reason differs.
+            {t('settings.capacity.rationaleOnly')}
           </p>
         )}
 
@@ -1271,7 +1292,7 @@ export function DaemonCapacitySection(): JSX.Element {
         <div className="mt-5">
           <div className="flex items-baseline justify-between">
             <label htmlFor="capacity-reason" className="text-text-primary text-sm font-semibold">
-              Reason for change
+              {t('settings.capacity.reason.label')}
             </label>
             <span
               className="text-text-secondary font-mono text-xs"
@@ -1279,11 +1300,11 @@ export function DaemonCapacitySection(): JSX.Element {
               aria-live="polite"
             >
               {reason.length} / {REASON_MAX_LENGTH}
-              {reason.length >= REASON_MAX_LENGTH ? ' — limit reached' : ''}
+              {reason.length >= REASON_MAX_LENGTH ? t('settings.capacity.reason.limitReached') : ''}
             </span>
           </div>
           <p id="capacity-reason-help" className="text-text-secondary mt-1 max-w-prose text-sm">
-            Briefly explain the intended adjustment. Reason included in the save request.
+            {t('settings.capacity.reason.help')}
           </p>
           <Textarea
             id="capacity-reason"
@@ -1291,7 +1312,7 @@ export function DaemonCapacitySection(): JSX.Element {
             className={`mt-2 ${FOCUS_RING}`}
             value={reason}
             disabled={pending}
-            placeholder="e.g. Queue delay grew after adding the second team; raising task slots."
+            placeholder={t('settings.capacity.reason.placeholder')}
             aria-describedby={
               fieldErrors.rationale ? 'capacity-reason-help capacity-reason-error' : 'capacity-reason-help'
             }
@@ -1300,7 +1321,7 @@ export function DaemonCapacitySection(): JSX.Element {
           />
           {fieldErrors.rationale && (
             <p id="capacity-reason-error" role="alert" className="text-feedback-danger mt-1 text-sm">
-              {fieldErrors.rationale}
+              {fieldErrors.rationale(locale)}
             </p>
           )}
         </div>
@@ -1313,27 +1334,31 @@ export function DaemonCapacitySection(): JSX.Element {
         {shadowed && displayedSnapshot !== null && (
           <div id="capacity-override" role="group" aria-labelledby="capacity-override-heading" className="border-border-default bg-attention-soft mt-5 rounded-md border p-4">
             <p id="capacity-override-heading" className="text-attention-text text-sm font-semibold">
-              Environment override in effect
+              {t('settings.capacity.override.heading')}
             </p>
             <p className="text-text-secondary mt-1 text-sm">{displayedSnapshot.environment_warning}</p>
             {preview !== null && snapshot !== null ? (
               <p className="text-text-secondary mt-2 text-sm">
-                {preview.shadowedKeys
-                  .map((key) => CAPACITY_FIELD_LABELS[key] ?? key)
-                  .join(' and ')}
-                {preview.shadowedKeys.length === 1 ? ' is' : ' are'} set by the environment.
-                Expected next start with this draft: {WORKERS_LABEL} {preview.pair.queue_workers},{' '}
-                {CAP_LABEL} {preview.pair.host_global_session_cap}. Assumes unchanged environment and
-                worker topology.
+                {t('settings.capacity.override.shadowed', {
+                  count: preview.shadowedKeys.length,
+                  fields: preview.shadowedKeys
+                    .map((key) => capacityFieldLabel(key, locale))
+                    .join(t('settings.capacity.fieldJoiner')),
+                })}
+                {' '}{t('settings.capacity.override.preview', {
+                  workersLabel,
+                  workers: String(preview.pair.queue_workers),
+                  capLabel,
+                  cap: String(preview.pair.host_global_session_cap),
+                })}
               </p>
             ) : (
               <p className="text-text-secondary mt-2 text-sm">
-                The expected next start cannot be previewed against the current read. Your
-                acknowledgment is kept as entered.
+                {t('settings.capacity.override.noPreview')}
               </p>
             )}
             {ackResetNotice && (
-              <p role="alert" className="text-attention-text mt-2 text-sm font-medium">{ackResetNotice}</p>
+              <p role="alert" className="text-attention-text mt-2 text-sm font-medium">{t(ackResetNotice)}</p>
             )}
             <label className="text-text-primary mt-3 flex items-start gap-2 text-sm">
               <input
@@ -1349,11 +1374,11 @@ export function DaemonCapacitySection(): JSX.Element {
                   if (event.target.checked) setAckResetNotice(null);
                 }}
               />
-              <span>I understand a restart alone will not make the saved file win over the environment.</span>
+              <span>{t('settings.capacity.override.ack')}</span>
             </label>
             {fieldErrors.ack && (
               <p id="capacity-ack-error" role="alert" className="text-feedback-danger mt-1 text-sm">
-                {fieldErrors.ack}
+                {fieldErrors.ack(locale)}
               </p>
             )}
           </div>
@@ -1366,19 +1391,19 @@ export function DaemonCapacitySection(): JSX.Element {
             disabled={saveDisabled}
             loading={pending}
           >
-            {pending ? 'Saving…' : 'Save for next restart'}
+            {pending ? t('settings.capacity.saving') : t('settings.capacity.save')}
           </Button>
           <Button type="button" variant="outline" className={FOCUS_RING} disabled={pending} onClick={discardDraft}>
-            Discard draft
+            {t('settings.capacity.discard')}
           </Button>
           <Button type="button" variant="ghost" className={FOCUS_RING} disabled={pending} onClick={() => void refreshObservations()}>
             <RotateCcw aria-hidden="true" />
-            Refresh running state
+            {t('settings.capacity.refresh')}
           </Button>
         </div>
         {dirty && (
           <p role="status" className="text-text-secondary mt-3 text-sm">
-            Unsaved changes. Leaving or reloading will discard this draft.
+            {t('settings.capacity.unsaved')}
           </p>
         )}
 
@@ -1386,24 +1411,28 @@ export function DaemonCapacitySection(): JSX.Element {
         <div id="capacity-outcome" ref={reconciledRef} tabIndex={-1} className="mt-4 space-y-3 outline-none">
           {outcome.kind === 'saving' && (
             <p role="status" aria-live="polite" className="text-text-secondary text-sm">
-              Saving for next restart…
+              {t('settings.capacity.outcome.saving')}
             </p>
           )}
           {outcome.kind === 'saved' && (
             <div role="status" aria-live="polite" className="border-border-default bg-accent-muted text-accent-text rounded-md border p-3 text-sm">
               <p className="font-medium">
                 {outcome.snapshot.restart_pending
-                  ? 'Saved for next restart. Running limits are unchanged.'
-                  : 'Saved. No restart is pending for these values.'}
+                  ? t('settings.capacity.outcome.savedPending')
+                  : t('settings.capacity.outcome.savedNoPending')}
               </p>
               {snapshot !== null && snapshot.environment_shadowed.length > 0 && preview !== null && (
                 <p className="mt-1">
-                  Saved value overridden: {preview.shadowedKeys
-                    .map((key) => CAPACITY_FIELD_LABELS[key] ?? key).join(' and ')}
-                  {preview.shadowedKeys.length === 1 ? ' is' : ' are'} set by the environment.
-                  Expected next start: {WORKERS_LABEL}{' '}
-                  {outcome.snapshot.next_start.queue_workers}, {CAP_LABEL}{' '}
-                  {outcome.snapshot.next_start.host_global_session_cap}.
+                  {t('settings.capacity.outcome.overridden', {
+                    count: preview.shadowedKeys.length,
+                    fields: preview.shadowedKeys
+                      .map((key) => capacityFieldLabel(key, locale))
+                      .join(t('settings.capacity.fieldJoiner')),
+                    workersLabel,
+                    workers: String(outcome.snapshot.next_start.queue_workers),
+                    capLabel,
+                    cap: String(outcome.snapshot.next_start.host_global_session_cap),
+                  })}
                 </p>
               )}
               {outcome.snapshot.message && <p className="mt-1">{outcome.snapshot.message}</p>}
@@ -1411,7 +1440,7 @@ export function DaemonCapacitySection(): JSX.Element {
           )}
           {outcome.kind === 'rejected' && (
             <p role="alert" className="border-border-default bg-danger-soft text-text-primary rounded-md border p-3 text-sm">
-              {outcome.message}
+              {outcome.message(locale)}
             </p>
           )}
           {/* R2: rendered from its own state, so it stays on screen through a
@@ -1419,21 +1448,24 @@ export function DaemonCapacitySection(): JSX.Element {
               appears BESIDE it, never instead of it. */}
           {unresolvedPublication !== null && (
             <p role="alert" className="border-border-default bg-attention-soft text-attention-text rounded-md border p-3 text-sm">
-              {unresolvedPublication.message}
+              {unresolvedPublication.message(locale)}
             </p>
           )}
 
           {submission !== null && outcome.kind !== 'saving' && (
             <div className="border-border-default rounded-md border p-3 text-sm">
               <p className="text-text-primary font-medium">
-                You submitted {WORKERS_LABEL} {submission.pair.queue_workers}, {CAP_LABEL}{' '}
-                {submission.pair.host_global_session_cap} against revision{' '}
-                <code className="font-mono text-xs break-all">{submission.baseRevision}</code>.
+                {render('settings.capacity.submitted', {
+                  workersLabel,
+                  workers: String(submission.pair.queue_workers),
+                  capLabel,
+                  cap: String(submission.pair.host_global_session_cap),
+                  revision: <code className="font-mono text-xs break-all">{submission.baseRevision}</code>,
+                })}
               </p>
               {valuesChanged && (
                 <p className="text-text-secondary mt-1">
-                  Your current draft is {WORKERS_LABEL} {workersText}, {CAP_LABEL} {capText} and is
-                  still unsaved. It is held separately from the submitted values.
+                  {t('settings.capacity.draftHeld', { workersLabel, workers: workersText, capLabel, cap: capText })}
                 </p>
               )}
               <Button
@@ -1443,15 +1475,14 @@ export function DaemonCapacitySection(): JSX.Element {
                 className={`mt-2 ${FOCUS_RING}`}
                 onClick={() => void refreshObservations()}
               >
-                Check saved values
+                {t('settings.capacity.checkSaved')}
               </Button>
             </div>
           )}
 
           {conflictUnusable !== null && (
             <p role="alert" className="border-border-default rounded-md border p-3 text-sm">
-              {conflictUnusable} No latest values are shown and no rebase is offered. Read the saved
-              values successfully before saving again.
+              {t(conflictUnusable)} {t('settings.capacity.conflictUnusableSuffix')}
             </p>
           )}
 
@@ -1459,32 +1490,53 @@ export function DaemonCapacitySection(): JSX.Element {
             <div className="border-border-default rounded-md border p-3 text-sm">
               <p className="text-text-primary font-medium">
                 {latest !== null && latest.origin === 'checked' && submission !== null
-                  ? comparisonHeadline(submission, base, latest.base, draftPair)
-                  : 'Configuration changed elsewhere.'}
+                  ? comparisonHeadline(submission, base, latest.base, draftPair, locale)
+                  : t('settings.capacity.changedElsewhere')}
               </p>
               <dl className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-3">
                 <div>
-                  <dt className="text-text-secondary text-xs tracking-wide uppercase">Accepted base</dt>
+                  <dt className="text-text-secondary text-xs tracking-wide uppercase">{t('settings.capacity.compare.acceptedBase')}</dt>
                   <dd className="font-mono">
-                    {WORKERS_LABEL} {base.keyPresence.queue_workers ? base.pair.queue_workers : 'Not set in file'},{' '}
-                    {CAP_LABEL} {base.keyPresence.host_global_session_cap ? base.pair.host_global_session_cap : 'Not set in file'}
+                    {t('settings.capacity.compare.pair', {
+                      workersLabel,
+                      workers: formatPresenceValue(base.pair.queue_workers, base.keyPresence.queue_workers, locale),
+                      capLabel,
+                      cap: formatPresenceValue(
+                        base.pair.host_global_session_cap,
+                        base.keyPresence.host_global_session_cap,
+                        locale,
+                      ),
+                    })}
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-text-secondary text-xs tracking-wide uppercase">Your draft</dt>
+                  <dt className="text-text-secondary text-xs tracking-wide uppercase">{t('settings.capacity.compare.yourDraft')}</dt>
                   <dd className="font-mono">
-                    {WORKERS_LABEL} {workersText}, {CAP_LABEL} {capText}
+                    {t('settings.capacity.compare.pair', { workersLabel, workers: workersText, capLabel, cap: capText })}
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-text-secondary text-xs tracking-wide uppercase">Currently saved</dt>
+                  <dt className="text-text-secondary text-xs tracking-wide uppercase">{t('settings.capacity.compare.currentlySaved')}</dt>
                   <dd className="font-mono">
                     {(() => {
                       // R4: the NEWEST accepted observation, whatever produced
                       // it — never a stale conflict body preferred by slot.
-                      if (latest === null) return 'Could not be read';
+                      if (latest === null) return t('settings.capacity.compare.couldNotBeRead');
                       const observed = latest.base;
-                      return `${WORKERS_LABEL} ${observed.keyPresence.queue_workers ? observed.pair.queue_workers : 'Not set in file'}, ${CAP_LABEL} ${observed.keyPresence.host_global_session_cap ? observed.pair.host_global_session_cap : 'Not set in file'}`;
+                      return t('settings.capacity.compare.pair', {
+                        workersLabel,
+                        workers: formatPresenceValue(
+                          observed.pair.queue_workers,
+                          observed.keyPresence.queue_workers,
+                          locale,
+                        ),
+                        capLabel,
+                        cap: formatPresenceValue(
+                          observed.pair.host_global_session_cap,
+                          observed.keyPresence.host_global_session_cap,
+                          locale,
+                        ),
+                      });
                     })()}
                   </dd>
                 </div>
@@ -1492,10 +1544,10 @@ export function DaemonCapacitySection(): JSX.Element {
               {canReconcile && (
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Button type="button" size="sm" variant="outline" className={FOCUS_RING} onClick={rebaseOntoLatest}>
-                    Keep my draft, rebase onto latest
+                    {t('settings.capacity.rebase')}
                   </Button>
                   <Button type="button" size="sm" variant="outline" className={FOCUS_RING} onClick={acceptLatest}>
-                    Discard draft, accept latest
+                    {t('settings.capacity.acceptLatest')}
                   </Button>
                 </div>
               )}
@@ -1510,26 +1562,28 @@ export function DaemonCapacitySection(): JSX.Element {
         onToggle={(event) => setDetailsOpen((event.target as HTMLDetailsElement).open)}
         className="border-border-default bg-surface-raised mt-6 rounded-md border"
       >
-        <summary className={`text-text-primary cursor-pointer p-4 text-sm font-medium ${FOCUS_RING_RAW}`}>Capacity details</summary>
+        <summary className={`text-text-primary cursor-pointer p-4 text-sm font-medium ${FOCUS_RING_RAW}`}>{t('settings.capacity.details.summary')}</summary>
         {snapshot !== null && (
           <dl className="text-text-secondary grid grid-cols-1 gap-2 p-4 pt-0 text-sm sm:grid-cols-2">
-            <dt>Producer envelope</dt>
+            <dt>{t('settings.capacity.details.producerEnvelope')}</dt>
             <dd className="font-mono">{snapshot.producer_envelope}</dd>
-            <dt>Producer components</dt>
+            <dt>{t('settings.capacity.details.producerComponents')}</dt>
             <dd className="font-mono">
-              {snapshot.producer_components.task_workers} task, {snapshot.producer_components.thread_workers} thread,{' '}
-              {snapshot.producer_components.dream_workers} dream, {snapshot.producer_components.wake_workers} wake,{' '}
-              {snapshot.producer_components.schedule_workers} schedule
+              {t('settings.capacity.details.componentsValue', {
+                task: String(snapshot.producer_components.task_workers),
+                thread: String(snapshot.producer_components.thread_workers),
+                dream: String(snapshot.producer_components.dream_workers),
+                wake: String(snapshot.producer_components.wake_workers),
+                schedule: String(snapshot.producer_components.schedule_workers),
+              })}
             </dd>
-            <dt>Running provenance</dt>
+            <dt>{t('settings.capacity.details.runningProvenance')}</dt>
             <dd>{snapshot.running_provenance}</dd>
-            <dt>Revision</dt>
+            <dt>{t('settings.capacity.details.revision')}</dt>
             <dd className="font-mono text-xs break-all">{snapshot.revision}</dd>
-            <dt>Audit</dt>
+            <dt>{t('settings.capacity.details.audit')}</dt>
             <dd>
-              The reason is included in the save request. Auditing is addressed org-locally and
-              attributed to the daemon bearer; terminal completion of the audit entry is not
-              guaranteed by this page.
+              {t('settings.capacity.details.auditBody')}
             </dd>
           </dl>
         )}
@@ -1541,12 +1595,11 @@ export function DaemonCapacitySection(): JSX.Element {
           if (!open && blocker.state === 'blocked') blocker.reset();
         }}
       >
-        <DialogContent aria-label="discard capacity draft confirmation" className={DIALOG_FOCUS_RING}>
+        <DialogContent aria-label={t('settings.capacity.dialog.aria')} className={DIALOG_FOCUS_RING}>
           <DialogHeader>
-            <DialogTitle>Discard unsaved capacity changes?</DialogTitle>
+            <DialogTitle>{t('settings.capacity.dialog.title')}</DialogTitle>
             <DialogDescription>
-              Your draft has not been saved. Stay to keep editing, or discard it and continue
-              navigating.
+              {t('settings.capacity.dialog.description')}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -1561,7 +1614,7 @@ export function DaemonCapacitySection(): JSX.Element {
                 queueMicrotask(() => restore?.focus());
               }}
             >
-              Stay on page
+              {t('settings.capacity.dialog.stay')}
             </Button>
             <Button
               size="sm"
@@ -1571,7 +1624,7 @@ export function DaemonCapacitySection(): JSX.Element {
                 if (blocker.state === 'blocked') blocker.proceed();
               }}
             >
-              Discard and continue
+              {t('settings.capacity.dialog.discardContinue')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1589,27 +1642,36 @@ function comparisonHeadline(
   base: CapacityBase,
   read: CapacityBase,
   draft: { queue_workers: number; host_global_session_cap: number } | null,
+  locale: Locale,
 ): string {
   const matches = (pair: { queue_workers: number; host_global_session_cap: number }) =>
     read.pair.queue_workers === pair.queue_workers
     && read.pair.host_global_session_cap === pair.host_global_session_cap
     && read.keyPresence.queue_workers && read.keyPresence.host_global_session_cap;
   if (!read.keyPresence.queue_workers || !read.keyPresence.host_global_session_cap) {
-    return 'The saved values are Not set in file. That is not equality with any of the values below.';
+    return translate(locale, 'settings.capacity.headline.notSet');
   }
   if (matches(submission.pair)) {
-    return `Saved values now match what you submitted (${submission.pair.queue_workers} / ${submission.pair.host_global_session_cap}). This does not confirm your request caused it.`;
+    return translate(locale, 'settings.capacity.headline.matchesSubmitted', {
+      workers: String(submission.pair.queue_workers),
+      cap: String(submission.pair.host_global_session_cap),
+    });
   }
   // 11.4: a reread matching the CURRENT DRAFT is a different fact from a
   // reread matching the submission. Both relations are stated, and neither is
   // collapsed into "saved".
   if (draft !== null && matches(draft)) {
-    return `Saved values now match your current draft (${draft.queue_workers} / ${draft.host_global_session_cap}), and they differ from what you submitted (${submission.pair.queue_workers} / ${submission.pair.host_global_session_cap}). Matching your draft is not a saved result and does not confirm your request caused it.`;
+    return translate(locale, 'settings.capacity.headline.matchesDraft', {
+      draftWorkers: String(draft.queue_workers),
+      draftCap: String(draft.host_global_session_cap),
+      workers: String(submission.pair.queue_workers),
+      cap: String(submission.pair.host_global_session_cap),
+    });
   }
   if (matches(base.pair)) {
-    return 'The saved values are unchanged from your accepted base. The outcome of your request is still unknown.';
+    return translate(locale, 'settings.capacity.headline.unchanged');
   }
-  return 'The saved values still differ from what you submitted.';
+  return translate(locale, 'settings.capacity.headline.differs');
 }
 
 /**
