@@ -1091,6 +1091,38 @@ post-effect failed-ack interruption refusal, the preserved task/child effect, th
 no-repeat consumer/child/enqueue count and the exact read-only replay over both
 fresh and full historical-migrated venues.
 
+The next serial checkpoint wires startup pre-final refusal discovery and the
+zombie reaper's exact v2 completion effects without changing the existing v1 or
+no-policy paths. `_sweep_on_startup` performs authenticated unfinalized-attempt
+discovery before any per-task recovery branch. It re-reads every exact
+housekeeping target and asks the existing refusal transaction to close an
+old-boot or durably failed pre-final obligation using the closed code for the
+greatest committed stage. The task root remains fenced from later startup
+effects even when a same-boot live owner correctly refuses to yield or when the
+refusal transaction fails. A malformed discovery fails task recovery closed;
+final `continued` attempts are not pre-final work and stay with the existing
+settlement/publication reconciliation. This seam never evaluates policy,
+remints evidence, falls back to ordinary/v1 enqueue, or creates a successor.
+
+For a persisted result, the zombie reaper first invokes the real guarded
+`_consume_completion_report`. A v2 session then clears `zombie_flagged_at` only
+through `Database.consume_v2_fingerprint_and_clear_zombie`: one
+`BEGIN IMMEDIATE` transaction re-authenticates the exact task, assigned agent,
+current session generation, immutable result identity, original non-null marker
+and the unique allowed v2 consumption receipt. Any result, owner, session,
+marker, cancellation, replacement or receipt mismatch is a zero-write denial;
+an audit/commit failure rolls back the clear. For a result-absent TTL expiry,
+`Database.cancel_zombie_without_fingerprint` uses one transaction to predicate
+the exact owner/session/marker, `in_progress`, null block/cancellation state and
+continued absence of an exact task/agent/session result, then atomically writes
+the cancellation and audit. Parent wake happens only after that CAS commits.
+Both reaper paths select v2 from the immutable session-policy binding rather
+than the mutable active selector, and mixed/malformed binding evidence cannot
+fall back to legacy mutation. Focused coverage lives in
+`tests/test_authority_v2_startup_reaper.py`; the dual-text editor/browser,
+complete parity sweep, main convergence and final review/QA/CI remain later
+units.
+
 Checkpoint C3d4a (same unmerged draft PR) adds the common DB-aware TASK enqueue
 boundary and converges the direct producers onto it.
 `Database.classify_authority_policy_v2_root_dispatch_for_enqueue` is a narrow

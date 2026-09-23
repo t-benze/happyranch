@@ -9902,7 +9902,8 @@ class Database:
 
         Reads are nonmutating and authenticate the actual persisted attempt row;
         a failed claim that created no candidate (K) remains discoverable.  A
-        corrupt/unreadable attempt row is skipped rather than repaired.
+        corrupt/unreadable present attempt fails the whole discovery closed so
+        startup cannot route its root through generic recovery by omission.
         """
         rows = self._conn.execute(
             """SELECT * FROM authority_policy_v2_attempts
@@ -9916,8 +9917,14 @@ class Database:
                 targets.append(self._v2_housekeeping_target_from_row(
                     row, obligation_code=obligation_code,
                 ))
-            except ValueError:
-                continue
+            except ValueError as exc:
+                # Startup cannot safely continue around a present malformed J:
+                # silently omitting it would let generic recovery/failure/
+                # enqueue logic mutate the same root.  The caller treats this
+                # as a global fail-closed discovery result for that sweep.
+                raise ValueError(
+                    "authority v2 unfinalized attempt discovery is malformed"
+                ) from exc
         return targets
 
     @_synchronized
@@ -15456,6 +15463,260 @@ class Database:
         return AuthorityPolicyV2EnqueueDispatchClassification(
             kind="retired", generation_id=dispatch.generation_id,
         )
+
+    @staticmethod
+    def _zombie_marker_value(value) -> str | None:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return value if isinstance(value, str) and value else None
+
+    def _authenticate_exact_v2_zombie_binding_uncommitted(
+        self, *, task_id: str, agent: str, session_id: str,
+    ) -> AuthorityPolicyV2SessionBinding | None:
+        """Authenticate the causal v2 launch binding, with no mixed fallback."""
+        try:
+            binding = self.get_authority_policy_v2_session_binding(
+                root_task_id=task_id, manager_agent=agent,
+                manager_session_id=session_id,
+            )
+            if binding is None:
+                return None
+            if self._legacy_session_binding_rows_uncommitted(
+                task_id, agent, session_id,
+            ):
+                return None
+            self._authenticate_v2_session_binding_uncommitted(binding)
+        except Exception:
+            return None
+        if (
+            binding.root_task_id != task_id
+            or binding.manager_agent != agent
+            or binding.manager_session_id != session_id
+        ):
+            return None
+        return binding
+
+    def _authenticate_v2_zombie_consumption_receipt_uncommitted(
+        self, *, task_id: str, agent: str, session_id: str, result_id: int,
+        task_row,
+    ) -> bool:
+        """Authenticate the unique terminal-refusal or continued receipt for R."""
+        rows = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_attempts
+               WHERE root_task_id=? AND manager_agent=?
+                 AND manager_session_id=? AND result_id=?""",
+            (task_id, agent, session_id, result_id),
+        ).fetchall()
+        if len(rows) != 1:
+            return False
+        row = rows[0]
+        try:
+            attempt = self._authority_policy_v2_attempt_from_row(row)
+        except ValueError:
+            return False
+        if attempt.finalization_state == "continued":
+            code, _ = self._authenticate_v2_post_final_evidence_uncommitted(
+                root_task_id=task_id, manager_agent=agent,
+                manager_session_id=session_id, result_id=result_id,
+            )
+            return (
+                code is None
+                and task_row["status"] == TaskStatus.PENDING.value
+                and task_row["block_kind"] is None
+            )
+        if attempt.finalization_state != AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED:
+            return False
+        candidate_row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_candidates WHERE result_id=?",
+            (result_id,),
+        ).fetchone()
+        candidate = None
+        if candidate_row is not None:
+            try:
+                candidate = self._authority_policy_v2_candidate_from_row(candidate_row)
+            except ValueError:
+                return False
+            if candidate.attempt_id != attempt.attempt_id:
+                return False
+        candidate_id = None if candidate is None else candidate.candidate_id
+        attempt_row = dict(row)
+        if not self._authenticate_v2_refusal_result_stage_uncommitted(
+            attempt_row, candidate_id=candidate_id,
+            refusal_code=attempt.refusal_code,
+            finalization_state=attempt.finalization_state,
+        ):
+            return False
+        completion_ok, recovery_claimed = (
+            self._authenticate_v2_refusal_completion_uncommitted(
+                attempt_row, refusal_code=attempt.refusal_code,
+            )
+        )
+        if not completion_ok:
+            return False
+        if recovery_claimed:
+            receipts = self._conn.execute(
+                """SELECT * FROM task_completion_recoveries
+                   WHERE task_id=? AND agent=? AND recovery_session_id=?""",
+                (task_id, agent, session_id),
+            ).fetchall()
+            if len(receipts) != 1 or not (
+                receipts[0]["state"] == "callback_consumed"
+                and receipts[0]["accepted_result_id"] == result_id
+                and receipts[0]["accepted_result_session_id"] == session_id
+            ):
+                return False
+        if not self._authenticate_v2_refusal_escalation_uncommitted(
+            attempt_row, refusal_code=attempt.refusal_code,
+        ):
+            return False
+        if candidate is not None and not self._authenticate_v2_candidate_audit_uncommitted(
+            candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_REFUSED,
+        ):
+            return False
+        return (
+            task_row["status"] == TaskStatus.ESCALATED.value
+            and task_row["block_kind"] is None
+        )
+
+    @_synchronized
+    def consume_v2_fingerprint_and_clear_zombie(
+        self, *, task_id: str, expected_agent: str,
+        expected_session_id: str, result_id: int,
+        expected_zombie_flagged_at,
+    ) -> bool:
+        """Clear a v2 zombie marker only after exact R consumption committed.
+
+        The real completion consumer runs before this transaction.  This CAS
+        then authenticates the immutable result/session binding and the unique
+        v2 continued/refused receipt while holding ``BEGIN IMMEDIATE``.  Any
+        owner, result, marker, cancellation or lifecycle race is a zero-write
+        denial and retains the winning marker/result history.
+        """
+        marker = self._zombie_marker_value(expected_zombie_flagged_at)
+        if (
+            marker is None or isinstance(result_id, bool)
+            or not isinstance(result_id, int) or result_id < 1
+            or self._conn.in_transaction
+        ):
+            return False
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            task = self._conn.execute(
+                "SELECT * FROM tasks WHERE id=?", (task_id,),
+            ).fetchone()
+            result = self._conn.execute(
+                "SELECT * FROM task_results WHERE id=?", (result_id,),
+            ).fetchone()
+            if (
+                task is None or result is None
+                or task["assigned_agent"] != expected_agent
+                or task["current_session_id"] != expected_session_id
+                or task["cancelled_at"] is not None
+                or task["zombie_flagged_at"] != marker
+                or result["task_id"] != task_id
+                or result["agent"] != expected_agent
+                or result["session_id"] != expected_session_id
+                or self._authenticate_exact_v2_zombie_binding_uncommitted(
+                    task_id=task_id, agent=expected_agent,
+                    session_id=expected_session_id,
+                ) is None
+                or not self._authenticate_v2_zombie_consumption_receipt_uncommitted(
+                    task_id=task_id, agent=expected_agent,
+                    session_id=expected_session_id, result_id=result_id,
+                    task_row=task,
+                )
+            ):
+                self._conn.rollback()
+                return False
+            cursor = self._conn.execute(
+                """UPDATE tasks SET zombie_flagged_at=NULL, updated_at=?
+                   WHERE id=? AND assigned_agent=? AND current_session_id=?
+                     AND cancelled_at IS NULL AND zombie_flagged_at=?""",
+                (_now().isoformat(), task_id, expected_agent,
+                 expected_session_id, marker),
+            )
+            if cursor.rowcount != 1:
+                self._conn.rollback()
+                return False
+            self.insert_audit_log_uncommitted(
+                task_id, expected_agent, "zombie_cleared",
+                {"reason": "zombie recovered — flag cleared"},
+            )
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def cancel_zombie_without_fingerprint(
+        self, *, task_id: str, expected_agent: str,
+        expected_session_id: str, expected_zombie_flagged_at,
+        cancelled_at: str,
+    ) -> bool:
+        """Atomically cancel one exact v2 zombie only while R remains absent."""
+        marker = self._zombie_marker_value(expected_zombie_flagged_at)
+        if marker is None or not isinstance(cancelled_at, str) or self._conn.in_transaction:
+            return False
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            task = self._conn.execute(
+                "SELECT * FROM tasks WHERE id=?", (task_id,),
+            ).fetchone()
+            if (
+                task is None
+                or task["assigned_agent"] != expected_agent
+                or task["current_session_id"] != expected_session_id
+                or task["status"] != TaskStatus.IN_PROGRESS.value
+                or task["block_kind"] is not None
+                or task["cancelled_at"] is not None
+                or task["zombie_flagged_at"] != marker
+                or self._authenticate_exact_v2_zombie_binding_uncommitted(
+                    task_id=task_id, agent=expected_agent,
+                    session_id=expected_session_id,
+                ) is None
+            ):
+                self._conn.rollback()
+                return False
+            result = self._conn.execute(
+                """SELECT 1 FROM task_results
+                   WHERE task_id=? AND agent=? AND session_id=? LIMIT 1""",
+                (task_id, expected_agent, expected_session_id),
+            ).fetchone()
+            if result is not None:
+                self._conn.rollback()
+                return False
+            cursor = self._conn.execute(
+                """UPDATE tasks
+                      SET status=?, cancelled_at=?, completed_at=?, block_kind=NULL,
+                          note=?, updated_at=?
+                    WHERE id=? AND assigned_agent=? AND current_session_id=?
+                      AND status=? AND block_kind IS NULL AND cancelled_at IS NULL
+                      AND zombie_flagged_at=?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM task_results
+                           WHERE task_id=? AND agent=? AND session_id=?
+                      )""",
+                (
+                    TaskStatus.CANCELLED.value, cancelled_at, cancelled_at,
+                    "zombie reaped: session died without completing",
+                    cancelled_at, task_id, expected_agent, expected_session_id,
+                    TaskStatus.IN_PROGRESS.value, marker,
+                    task_id, expected_agent, expected_session_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                self._conn.rollback()
+                return False
+            self.insert_audit_log_uncommitted(
+                task_id, expected_agent, "zombie_cancelled",
+                {"reason": "zombie cancelled after TTL expiry"},
+            )
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
 
     @_synchronized
     def get_task_results(self, task_id: str) -> list[dict]:

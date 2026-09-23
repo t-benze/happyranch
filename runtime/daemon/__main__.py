@@ -133,6 +133,17 @@ def _sweep_on_startup(
     _PARKED = {TaskStatus.IN_PROGRESS}
     _TERMINAL_JOB_STATES = {"completed", "failed", "rejected"}
 
+    # THR-229: pre-final v2 attempt ownership precedes EVERY task-specific
+    # startup branch.  Interrupted old-boot/failed-stage attempts receive only
+    # exact refusal housekeeping; a live same-boot owner and any failed
+    # refusal transaction retain their prior residue and are fenced from
+    # accepted-recovery, pid failure and Pending enqueue effects in this pass.
+    from runtime.orchestrator.authority import (
+        refuse_authority_policy_v2_pre_final_on_startup,
+    )
+    v2_pre_final_roots = refuse_authority_policy_v2_pre_final_on_startup(db)
+    v2_discovery_unavailable = v2_pre_final_roots is None
+
     # Accepted recovery callbacks whose effects committed just before a crash
     # may now be terminal.  Include only the ledger's exact current-owner
     # bindings: a cancelled or newer generation must remain outside this
@@ -154,6 +165,8 @@ def _sweep_on_startup(
     for task_id in task_ids:
         t = db.get_task(task_id)
         if t is None:
+            continue
+        if v2_discovery_unavailable or task_id in v2_pre_final_roots:
             continue
 
         # A completed leaf receipt can commit immediately before its ordinary

@@ -2044,6 +2044,69 @@ _V2_PRE_FINAL_STAGE_SEQUENCE = (
     ("consumed_audit", "consumed_audited", "audit_v2_candidate_consumption"),
 )
 
+_V2_INTERRUPTED_STAGE_REFUSAL = {
+    "admitted": "interrupted_pre_final",
+    "claimed": "claim_audit_missing",
+    "claim_audited": "evaluation_failed",
+    "evaluated": "evaluation_audit_missing",
+    "evaluation_audited": "consume_failed",
+    "consumed": "consume_audit_missing",
+    "consumed_audited": "final_commit_failed",
+}
+
+
+def refuse_authority_policy_v2_pre_final_on_startup(db) -> set[str] | None:
+    """Discover and refuse interrupted pre-final v2 attempts before recovery.
+
+    The returned roots own a pre-final obligation for this sweep and must not
+    enter any later accepted-recovery, pid-failure or Pending enqueue branch.
+    ``None`` means discovery itself was unreadable/malformed, so callers must
+    fail closed for every task-recovery branch in that startup pass.  A
+    same-current-boot live owner is deliberately included in the fence but the
+    Database writer returns ``housekeeping_pending`` without stealing it.
+    """
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+
+    store = AuthorityPolicyStore(db)
+    try:
+        targets = store.list_v2_unfinalized_attempts()
+    except Exception:
+        logger.exception("authority v2 startup refusal discovery failed")
+        return None
+    fenced_roots: set[str] = set()
+    for discovered in targets:
+        fenced_roots.add(discovered.root_task_id)
+        try:
+            target = store.get_v2_housekeeping_target(
+                root_task_id=discovered.root_task_id,
+                manager_agent=discovered.manager_agent,
+                manager_session_id=discovered.manager_session_id,
+                result_id=discovered.result_id,
+            )
+            if target is None or target.attempt_id != discovered.attempt_id:
+                continue
+            refusal_code = (
+                target.obligation_code
+                or _V2_INTERRUPTED_STAGE_REFUSAL.get(
+                    target.stage, "interrupted_pre_final",
+                )
+            )
+            store.finalize_v2_attempt_refusal(
+                root_task_id=target.root_task_id,
+                manager_agent=target.manager_agent,
+                manager_session_id=target.manager_session_id,
+                result_id=target.result_id,
+                refusal_code=refusal_code,
+            )
+        except Exception:
+            # The prior J/R/stage residue remains the retry obligation.  The
+            # root stays fenced from every later startup effect in this pass.
+            logger.exception(
+                "authority v2 startup refusal housekeeping failed for %s",
+                discovered.attempt_id,
+            )
+    return fenced_roots
+
 
 def _v2_request_refusal(
     orch: "Orchestrator", task: "TaskRecord", agent: str, *,
