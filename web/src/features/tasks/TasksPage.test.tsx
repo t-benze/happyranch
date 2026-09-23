@@ -2792,7 +2792,7 @@ describe('THR-266 current-status subtask rollup presentation', () => {
     qc.setQueryData(['orgs'], { orgs: [{ slug: SLUG, root: '/x' }] });
     const utils = render(
       <MemoryRouter initialEntries={[route]}>
-        <AppProvider client={qc}><AppRoutes /></AppProvider>
+        <AppProvider client={qc}><I18nTestBoundary><AppRoutes /></I18nTestBoundary></AppProvider>
       </MemoryRouter>,
     );
     return { qc, ...utils };
