@@ -52,7 +52,7 @@ func validConfig(t *testing.T) Config {
 	if err := os.WriteFile(cred, []byte("secret-value\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return Config{StateDir: state, CredentialFile: cred, ControlURL: "https://headscale.private.example", RoleIdentity: "home-sidecar-123", ExpectedPeer: "mac-client-123", ListenAddr: ":443", ConnectorAddr: "127.0.0.1:9443", DERPPolicy: "private-only"}
+	return Config{StateDir: state, CredentialFile: cred, ControlURL: "https://headscale.private.example", RoleIdentity: "home-sidecar-123", ExpectedPeers: []string{"mac-client-123"}, ListenAddr: ":443", ConnectorAddr: "127.0.0.1:9443", DERPPolicy: "private-only"}
 }
 
 func TestValidateRejectsUnsafeTopology(t *testing.T) {

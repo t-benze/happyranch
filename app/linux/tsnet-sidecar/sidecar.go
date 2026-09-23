@@ -30,7 +30,8 @@ const consumedMarker = "credential.consumed"
 
 type Config struct {
 	StateDir, CredentialFile, ControlURL, RoleIdentity  string
-	ExpectedPeer, ListenAddr, ConnectorAddr, DERPPolicy string
+	ListenAddr, ConnectorAddr, DERPPolicy string
+	ExpectedPeers []string
 }
 
 func (c Config) Validate() error {
@@ -38,8 +39,14 @@ func (c Config) Validate() error {
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || strings.EqualFold(u.Hostname(), "controlplane.tailscale.com") {
 		return ErrConfiguration
 	}
-	if !strings.HasPrefix(c.RoleIdentity, "home-sidecar-") || len(c.RoleIdentity) <= len("home-sidecar-") || strings.TrimSpace(c.ExpectedPeer) == "" {
+	if !strings.HasPrefix(c.RoleIdentity, "home-sidecar-") || len(c.RoleIdentity) <= len("home-sidecar-") || len(c.ExpectedPeers) == 0 {
 		return ErrConfiguration
+	}
+	seen := map[string]bool{}
+	for _, peer := range c.ExpectedPeers {
+		peer = strings.TrimSpace(peer)
+		if peer == "" || seen[peer] { return ErrConfiguration }
+		seen[peer] = true
 	}
 	if c.DERPPolicy != "private-only" {
 		return ErrConfiguration
@@ -57,7 +64,7 @@ func (c Config) Validate() error {
 	return nil
 }
 
-type EngineConfig struct{ StateDir, ControlURL, RoleIdentity, ExpectedPeer string }
+type EngineConfig struct{ StateDir, ControlURL, RoleIdentity string; ExpectedPeers []string }
 type RedemptionReceipt struct{ Redeemed, Durable, ExpectedPeerVisible bool }
 type Engine interface {
 	Start(context.Context, EngineConfig, []byte) (RedemptionReceipt, error)
@@ -113,7 +120,7 @@ func (s *Sidecar) Start(ctx context.Context) error {
 	if err != nil {
 		return ErrCredential
 	}
-	receipt, err := s.engine.Start(ctx, EngineConfig{s.cfg.StateDir, s.cfg.ControlURL, s.cfg.RoleIdentity, s.cfg.ExpectedPeer}, credential)
+	receipt, err := s.engine.Start(ctx, EngineConfig{s.cfg.StateDir, s.cfg.ControlURL, s.cfg.RoleIdentity, s.cfg.ExpectedPeers}, credential)
 	for i := range credential {
 		credential[i] = 0
 	}
