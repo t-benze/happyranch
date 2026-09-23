@@ -32,6 +32,7 @@ import {
 import { AddOrgDialog } from '@/features/orgs/AddOrgDialog';
 import { useAgentsRoutes } from '@/hooks/agents';
 import { useDashboardSummary } from '@/hooks/dashboard';
+import { useTranslation } from '@/hooks/i18n';
 
 import { useKbRoutes } from '@/hooks/kb';
 import { useOrgsList } from '@/hooks/orgs';
@@ -66,6 +67,7 @@ export function Sidebar(): JSX.Element {
   const activeSlug = urlSlug ?? contextSlug ?? null;
   const navigate = useNavigate();
   const location = useLocation();
+  const { t } = useTranslation();
   const isPrototype = location.pathname.startsWith('/__prototypes');
   const orgsQuery = useOrgsList();
   const [addOrgOpen, setAddOrgOpen] = useState(false);
@@ -134,18 +136,18 @@ export function Sidebar(): JSX.Element {
   return (
     <aside
       role="navigation"
-      aria-label="Primary navigation"
+      aria-label={t('shell.nav.primary')}
       className="border-border bg-bg-subtle w-rail-narrow md:w-rail flex h-full shrink-0 flex-col border-r"
     >
       {/* Context header — wordmark + org context line + caret, doubling as the
           org switcher (BUG-01/08). Keeps the existing org-switch route logic. */}
-      <section aria-label="Organization switcher" className="shrink-0">
+      <section aria-label={t('shell.orgSwitcher')} className="shrink-0">
         <SelectPrimitive.Root
           value={activeSlug ?? undefined}
           onValueChange={onOrgChange}
           disabled={!switchEnabled}
         >
-          <SelectPrimitive.Trigger asChild aria-label="Active org">
+          <SelectPrimitive.Trigger asChild aria-label={t('shell.activeOrg')}>
             <button
               type="button"
               className="border-border border-l-accent hover:bg-bg-raised focus-visible:ring-accent flex w-full items-center gap-2 border-b border-l-2 px-2 py-3 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none disabled:cursor-not-allowed md:px-4"
@@ -167,14 +169,16 @@ export function Sidebar(): JSX.Element {
                   {activeSlug ? (
                     orgAgeDays && orgAgeDays > 0 ? (
                       <>
-                        <span className="text-fg-muted">Day {orgAgeDays}</span> ·{' '}
-                        <span>{activeSlug}</span>
+                        <span className="text-fg-muted">
+                          {t('shell.dayCount', { count: orgAgeDays })}
+                        </span>{' '}
+                        · <span>{activeSlug}</span>
                       </>
                     ) : (
                       <span>{activeSlug}</span>
                     )
                   ) : (
-                    'No org'
+                    t('shell.noOrg')
                   )}
                 </span>
               </span>
@@ -190,7 +194,7 @@ export function Sidebar(): JSX.Element {
             {!isPrototype && (
               <>
                 <SelectSeparator />
-                <SelectItem value={ADD_ORG_VALUE}>+ Add org…</SelectItem>
+                <SelectItem value={ADD_ORG_VALUE}>{t('shell.addOrgOption')}</SelectItem>
               </>
             )}
           </SelectContent>
@@ -198,68 +202,71 @@ export function Sidebar(): JSX.Element {
       </section>
 
       <nav
-        aria-label="Primary navigation items"
+        aria-label={t('shell.nav.primaryItems')}
         className="relative flex min-h-0 flex-1 scroll-py-1 flex-col gap-0.5 overflow-y-auto px-3 pt-3 pb-1"
       >
         <SidebarNavItem {...sidebarLink('dashboard', true)} icon={HomeIcon}>
-          Home
+          {t('shell.nav.home')}
         </SidebarNavItem>
         <SidebarNavItem
           to={routes.inboxForOrg(activeSlug ?? '')}
           enabled={!!activeSlug}
           icon={MessageSquare}
         >
-          Threads
+          {t('shell.nav.threads')}
         </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('tasks', true)} icon={ListChecks}>
-          Tasks
+          {t('shell.nav.tasks')}
         </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('jobs', true)} icon={Terminal}>
-          Jobs
+          {t('shell.nav.jobs')}
         </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('todos', true)} icon={ListChecks}>
-          Todos
+          {t('shell.nav.todos')}
         </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('agents', true)} icon={Users}>
-          Agents
+          {t('shell.nav.agents')}
         </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('work-hours', true)} icon={Clock}>
-          Work Hours
+          {t('shell.nav.workHours')}
         </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('skills', true)} icon={Puzzle}>
-          Skills
+          {t('shell.nav.skills')}
         </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('kb', true)} icon={BookOpen}>
-          Knowledge
+          {t('shell.nav.knowledge')}
         </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('artifacts', true)} icon={Package}>
-          Artifacts
+          {t('shell.nav.artifacts')}
         </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('audit', true)} icon={ScrollText}>
-          Audit
+          {t('shell.nav.audit')}
         </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('dreams', true)} icon={Sparkles}>
-          Dreams
+          {t('shell.nav.dreams')}
         </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('usage', true)} icon={Wallet}>
-          Usage
+          {t('shell.nav.usage')}
         </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('health', true)} icon={Activity}>
-          Health
+          {t('shell.nav.health')}
         </SidebarNavItem>
       </nav>
 
       {/* Footer — static account row (BUG-07). */}
       <div className="border-border mt-auto flex shrink-0 flex-col gap-1 border-t px-3 py-3">
         <SidebarNavItem {...sidebarLink('settings', true)} icon={Settings}>
-          Settings
+          {t('shell.nav.settings')}
         </SidebarNavItem>
         {/* Account row — avatar + identity. Identity is static chrome (no user
             profile is loaded client-side). It remains keyboard reachable as
             account context after the footer-pinned Settings item. */}
         <div
           tabIndex={0}
-          aria-label="Account: You, Founder"
+          aria-label={t('shell.account.label', {
+            name: t('shell.account.you'),
+            role: t('shell.account.founder'),
+          })}
           className="focus-visible:ring-accent flex items-center gap-2.5 rounded-sm px-2 py-1.5 focus-visible:ring-2 focus-visible:outline-none"
         >
           <span
@@ -269,8 +276,8 @@ export function Sidebar(): JSX.Element {
             YT
           </span>
           <span className="min-w-0 flex-col leading-tight max-md:hidden md:flex">
-            <span className="text-fg truncate text-sm">You</span>
-            <span className="text-fg-subtle truncate text-xs">Founder</span>
+            <span className="text-fg truncate text-sm">{t('shell.account.you')}</span>
+            <span className="text-fg-subtle truncate text-xs">{t('shell.account.founder')}</span>
           </span>
         </div>
       </div>

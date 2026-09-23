@@ -6,7 +6,7 @@ import { createMemoryRouter, Link, MemoryRouter, RouterProvider, useNavigate } f
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { AppProvider } from '@/design-system/providers/AppProvider';
 import { AppRoutes } from '@/routes';
-import { renderWithProviders } from '@/test/render';
+import { I18nTestBoundary, renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 import type { JobRecord } from '@/lib/api/types';
 
@@ -114,7 +114,7 @@ function mountPolicyRoute(entries: string[], initialIndex = entries.length - 1) 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createMemoryRouter([{
     path: '*',
-    element: <AppProvider client={client}><PolicyNavigationControls /><AppRoutes /></AppProvider>,
+    element: <AppProvider client={client}><PolicyNavigationControls /><I18nTestBoundary><AppRoutes /></I18nTestBoundary></AppProvider>,
   }], { initialEntries: entries, initialIndex });
   const view = render(<RouterProvider router={router} />);
   return { ...view, client };
@@ -1236,7 +1236,9 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     render(
       <MemoryRouter initialEntries={[`/orgs/${SLUG}/agents/claude_agent`]}>
         <AppProvider client={qc}>
-          <AppRoutes />
+          <I18nTestBoundary>
+            <AppRoutes />
+          </I18nTestBoundary>
         </AppProvider>
       </MemoryRouter>,
     );

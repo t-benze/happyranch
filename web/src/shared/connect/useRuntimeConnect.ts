@@ -19,6 +19,7 @@ import {
   settings as settingsApi,
 } from '@/lib/api';
 import type { DirectConnectStatus, ForgetWrapperStatus } from '@/lib/api/directConnect';
+import type { MessageKey } from '@/lib/i18n';
 
 /** The built-in executor kinds, derived from the api client's canonical list. */
 export const KINDS = executorBinaries.EXECUTOR_BINARY_KINDS;
@@ -31,12 +32,14 @@ export const NAME_RE = /^[a-z][a-z0-9-]{1,39}$/;
 
 /** The four conformance checks BOTH flows drive — verbatim step ids from
  *  registration_token.DEFAULT_CONFORMANCE_STEPS. Shown as the sequence the CLI
- *  performs, NOT as live per-step status (prereqs can't report it). */
-export const CONFORMANCE_STEPS: { id: string; label: string }[] = [
-  { id: 'workspace_access', label: 'Reads its workspace & skills' },
-  { id: 'loopback_reachable', label: 'Reaches HappyRanch at 127.0.0.1' },
-  { id: 'cli_callback', label: 'Reports in & registers' },
-  { id: 'emit_envelope', label: 'Produces a valid result-envelope' },
+ *  performs, NOT as live per-step status (prereqs can't report it). The `id`
+ *  is a raw machine identifier and stays byte-for-byte untranslated; only the
+ *  human-facing `labelKey` is resolved through the W1 catalog (THR-118 W2b). */
+export const CONFORMANCE_STEPS: { id: string; labelKey: MessageKey }[] = [
+  { id: 'workspace_access', labelKey: 'onboarding.connect.step.workspace_access' },
+  { id: 'loopback_reachable', labelKey: 'onboarding.connect.step.loopback_reachable' },
+  { id: 'cli_callback', labelKey: 'onboarding.connect.step.cli_callback' },
+  { id: 'emit_envelope', labelKey: 'onboarding.connect.step.emit_envelope' },
 ];
 
 /** Which flow produced the connection — drives the connected-card copy. */

@@ -117,7 +117,7 @@ visibility through titles, docs, controls, and representative renders.
 | `AgentChip` | [source:patterns/AgentChip.tsx#AgentChip] [story:patterns/AgentChip.coverage.stories.tsx#Coverage] Patterns / Agent Chip Roles | founder, manager, worker | `components.agent_chip` |
 | `AuditRow` | [source:patterns/AuditRow.tsx#AuditRow] [story:patterns/AuditRow.coverage.stories.tsx#Coverage] Patterns / Audit Row Density | complete audit/job fixtures; comfortable, compact, expandable | `components.audit_row` |
 | `CommandPalette` | [source:patterns/CommandPalette.tsx#CommandPalette] [story:patterns/CommandPalette.coverage.stories.tsx#Coverage] Patterns / Command Palette Populated | open, populated, searchable | `components.dialog` |
-| `Composer` | [source:patterns/Composer.tsx#Composer] [story:patterns/Composer.coverage.stories.tsx#Coverage] Patterns / Composer States | ready, abort, error/draft; 18px local-extension shell | input/button, `--radius-lg` |
+| `Composer` | [source:patterns/Composer.tsx#Composer] [story:patterns/Composer.coverage.stories.tsx#Coverage] Patterns / Composer States | ready, abort, error/draft as rendered by the linked story; upload-pending and the lifecycle capabilities (synchronous submit latch, attach/send/remove disabled while pending, one stable identity per file selection so duplicates stay distinct, draft/chip clearing only while the originating destination is still active) are tested in the attachment suites, not story states; 18px local-extension shell | input/button, `--radius-lg` |
 | `CrescentMoonBadge` | [source:patterns/CrescentMoonBadge.tsx#CrescentMoonBadge] [story:patterns/CrescentMoonBadge.coverage.stories.tsx#Coverage] Patterns / Crescent Moon Badge State | present | `components.badge` |
 | `EmptyState` | [source:patterns/EmptyState.tsx#EmptyState] [story:patterns/EmptyState.coverage.stories.tsx#Coverage] Patterns / Empty State With Action | empty with CTA | `components.empty_state` |
 | `FilterSidebar` | [source:patterns/FilterSidebar.tsx#FilterSidebar] [story:patterns/FilterSidebar.coverage.stories.tsx#Coverage] Patterns / Filter Sidebar Interaction | all/selected, counts | `components.filter_sidebar` |
@@ -154,7 +154,7 @@ visibility through titles, docs, controls, and representative renders.
 | Interaction | Applicable: portal/menu/select/tabs/filter/composer/mention stories are safe locally. |
 | Loading | Applicable only to Mermaid's local render transition; backend loading is N/A to pure units. |
 | Empty | Applicable to EmptyState and blank input examples. |
-| Error | Applicable to FormField validation and Composer draft-preserving error. |
+| Error | Applicable to FormField validation and Composer draft-preserving errors (send, upload and mapped artifact error codes). |
 | Populated | Applicable across all three layers. |
 | Auth | N/A: reusable units do not own authentication; context consumers are excluded and app-tested. |
 | Permission | N/A: feature/shell owners authorize before passing props; context consumers are excluded. |

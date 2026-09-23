@@ -4185,6 +4185,127 @@ class Database:
                 worst_rank = rank
         return worst
 
+    def _get_subtree_tasks(self, root_task_id: str) -> list[TaskRecord]:
+        """Cycle-safe, iterative parent_task_id descendant snapshot.
+
+        Exact bounds: each reachable descendant id enters ``seen`` once, so the
+        walk makes <= D get_task() calls and <= D + 1 get_children() calls and
+        holds <= D TaskRecords, where D = reachable descendant count. A
+        malformed parent_task_id cycle supplied directly to this private helper
+        terminates on ``seen``; it cannot be reached from a NULL-parent
+        list_roots root. The iterative walk also avoids recursion limits for
+        ordinary deep trees.
+
+        Private helper: left undecorated and called only under an existing
+        synchronized public entry (``list_roots``). If ever exposed as a public
+        ``Database`` method it must gain ``@_synchronized``.
+        """
+        seen = {root_task_id}
+        out: list[TaskRecord] = []
+        stack = list(self.get_children(root_task_id))
+        while stack:
+            tid = stack.pop()
+            if tid in seen:
+                continue
+            seen.add(tid)
+            task = self.get_task(tid)
+            if task is None:
+                continue
+            out.append(task)
+            stack.extend(self.get_children(tid))
+        return out
+
+    def _current_failed_contributions(
+        self,
+        desc: list[TaskRecord],
+        by_id: dict[str, TaskRecord],
+        succ: dict[str, list[str]],
+    ) -> set[str]:
+        """IDs of FAILED descendants that still contribute ``failed``.
+
+        Mirrors ``run_step._current_unresolved_failed_leaves`` /
+        ``_collect_leaf`` on the finite descendant snapshot without importing
+        orchestration policy. ``_collect_leaf`` returns a node only at its
+        no-successor base case, so across all FAILED seeds the contributing set
+        is exactly the reachable terminal FAILED nodes: a FAILED descendant
+        with a forward same-parent successor has no unresolved failed leaf of
+        its own. A cycle (malformed lineage) is ambiguous, so it fails
+        conservative and is KEPT, never silently retired.
+
+        Exact bounds: one iterative colored DFS over the descendant nodes/edges
+        is O(D + E) time and O(D) space; every node is colored once and every
+        edge examined once. No recursion, so no RecursionError.
+        """
+        WHITE, GREY, BLACK = 0, 1, 2
+        color = dict.fromkeys(by_id, WHITE)
+        reaches_cycle: set[str] = set()
+        for start in by_id:
+            if color[start] != WHITE:
+                continue
+            color[start] = GREY
+            stack = [(start, iter(succ.get(start, ())))]
+            while stack:
+                node, it = stack[-1]
+                advanced = False
+                for nxt in it:
+                    if color[nxt] == GREY:              # back edge -> cycle
+                        reaches_cycle.add(nxt)
+                    elif color[nxt] == WHITE:
+                        color[nxt] = GREY
+                        stack.append((nxt, iter(succ.get(nxt, ()))))
+                        advanced = True
+                        break
+                if advanced:
+                    continue
+                color[node] = BLACK
+                if node in reaches_cycle or any(
+                    n in reaches_cycle for n in succ.get(node, ())
+                ):
+                    reaches_cycle.add(node)             # ancestor of a cycle
+                stack.pop()
+
+        return {
+            nid
+            for nid, task in by_id.items()
+            if task.status == TaskStatus.FAILED
+            and (not succ.get(nid) or nid in reaches_cycle)
+        }
+
+    def _current_severity_rollup(self, root: TaskRecord) -> str:
+        """Worst CURRENT status over the root's own status and its
+        parent_task_id descendants. Only stale FAILED-descendant contributions
+        are removed; every other status (escalated, active, cancelled,
+        completed, superseded, legacy) contributes exactly as before.
+
+        Forward links are only ``revisit_of_task_id`` where both endpoints are
+        descendants inside this root and the successor shares the
+        predecessor's parent. No timestamp or agent is ever consulted (no
+        latest-wins). Cancellation removes a predecessor's stale ``failed``
+        only because the lineage then has no unresolved failed leaf — never
+        because cancellation is successful retirement.
+
+        Private helper: called only under ``list_roots`` (see
+        ``_get_subtree_tasks``).
+        """
+        desc = self._get_subtree_tasks(root.id)
+        by_id = {d.id: d for d in desc}
+        succ: dict[str, list[str]] = {}
+        for d in desc:
+            pred = d.revisit_of_task_id
+            if (
+                pred is not None
+                and pred in by_id                              # predecessor is a descendant
+                and by_id[pred].parent_task_id == d.parent_task_id   # same parent
+            ):
+                succ.setdefault(pred, []).append(d.id)
+        failed_now = self._current_failed_contributions(desc, by_id, succ)
+        current = [
+            d.status.value
+            for d in desc
+            if d.status != TaskStatus.FAILED or d.id in failed_now
+        ]
+        return self._worst_subtree_status(root.status.value, current)
+
     @_synchronized
     def list_roots(
         self,
@@ -4197,10 +4318,16 @@ class Database:
         """Return root tasks (parent_task_id IS NULL) with cursor pagination,
         same filter parameters as list_tasks(), plus a per-root _severity_rollup.
 
-        The _severity_rollup attribute (str) is the worst status among the
-        root's own status and its entire parent_task_id subtree. A root
+        The _severity_rollup attribute (str) is the worst CURRENT status among
+        the root's own status and its parent_task_id subtree. Only a historical
+        FAILED descendant contribution is curated: a FAILED descendant whose
+        forward same-parent revisit lineage leaves no unresolved FAILED leaf
+        (a COMPLETED/SUPERSEDED/active/cancelled successor, or a malformed
+        cycle handled conservatively) no longer dominates. Every other status,
+        the root's own severity, and all escalations are preserved; a root
         without children shows its own status. Set as a dynamic attribute on
-        the TaskRecord (not a model field — DERIVE, no schema).
+        the TaskRecord (not a model field — DERIVE, no schema). See
+        ``_current_severity_rollup``.
         """
         cursor_created_at: str | None = None
         if before_task_id is not None:
@@ -4260,10 +4387,9 @@ class Database:
                 current_session_id=row["current_session_id"],
                 zombie_flagged_at=row["zombie_flagged_at"],
             )
-            child_statuses = self.get_subtree_statuses(task.id)
             object.__setattr__(
                 task, '_severity_rollup',
-                self._worst_subtree_status(task.status.value, child_statuses),
+                self._current_severity_rollup(task),
             )
             results.append(task)
         return results
