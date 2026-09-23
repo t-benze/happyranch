@@ -58,8 +58,9 @@ describe('production App composition and startup handoff (W1 acceptance cases 4/
   }
 
   function expectOnboarding(): Promise<HTMLElement> {
+    // Onboarding is W2b-translated: the shell may render it in either locale.
     return waitFor(() =>
-      screen.getByRole('heading', { name: /Connect your agentic CLI/i }),
+      screen.getByRole('heading', { name: /Connect your agentic CLI|连接你的智能体 CLI/ }),
     );
   }
 

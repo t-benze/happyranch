@@ -150,6 +150,157 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'palette.section.tasks': '任务',
   'palette.section.agents': '智能体',
   'palette.section.kb': '知识库',
+
+  // --- W2b：引导页（/onboarding） ------------------------------------------
+  'onboarding.welcome.eyebrow.firstRun': '全新开始',
+  'onboarding.welcome.eyebrow.returning': '新工作区',
+  'onboarding.welcome.title.firstRun': '欢迎使用 HappyRanch。',
+  'onboarding.welcome.title.firstRunLine2': '让我们创建你的第一个组织。',
+  'onboarding.welcome.title.returning': '创建另一个组织',
+  'onboarding.welcome.body.prefix': '{orgTerm} 是智能体、会话和任务所在的工作区。{tail}',
+  'onboarding.welcome.body.orgTerm': '组织',
+  'onboarding.welcome.body.firstRun': '你还没有组织——创建一个即可开始。在此之前其他内容都保持安静。',
+  'onboarding.welcome.body.returning': '添加另一个即可单独运行，或从侧边栏返回已有组织。',
+  'onboarding.welcome.cta.firstRun': '创建你的第一个组织',
+  'onboarding.welcome.cta.returning': '创建另一个组织',
+  'onboarding.welcome.timing': '只需几秒钟。',
+  'onboarding.welcome.note':
+    '创建组织只搭建工作区。它{emphasis}安装智能体 CLI（{clis}……）——组织创建好后，你可以在设置中单独配置它们。',
+  'onboarding.welcome.note.emphasis': '不会',
+  'onboarding.loading': '加载中',
+
+  'onboarding.create.eyebrow': '新建组织',
+  'onboarding.create.heading': '为组织命名',
+  'onboarding.create.slugLabel': '组织标识符',
+  'onboarding.create.slugHint': '这是组织的永久标识符，之后无法更改。',
+  'onboarding.create.slugPlaceholder': '例如 hk-macau-tourism',
+  'onboarding.create.slugRule': '小写字母、数字和连字符',
+  'onboarding.create.submit': '创建组织',
+  'onboarding.creating.aria': '正在创建组织',
+  'onboarding.creating.heading': '正在创建 {slug}…',
+  'onboarding.creating.body': '正在搭建工作区。',
+
+  'onboarding.success.heading': '组织 {slug} 已就绪。',
+  'onboarding.success.body': '你的工作区已上线。下一步：在设置中接入智能体 CLI，然后派发你的第一个任务。',
+  'onboarding.success.enter': '进入 {slug}',
+  'onboarding.success.createAnother': '再创建一个',
+
+  'onboarding.broken.heading': {
+    other: '{count} 个组织加载失败',
+  },
+  'onboarding.broken.body': '这些工作区在磁盘上，但守护进程无法打开它们。原始错误按报告原样显示——请在主机上修复。',
+  'onboarding.broken.footer': '损坏的组织不会阻止你——在这些组织保持搁置时，你仍然可以{link}。',
+  'onboarding.broken.createNewOrg': '创建新组织',
+  'onboarding.broken.copied': '已复制',
+  'onboarding.broken.copyError': '复制错误',
+
+  'onboarding.prereqs.aria': '执行器就绪情况',
+  'onboarding.prereqs.checking': '正在检查主机工具…',
+  'onboarding.prereqs.summary': '已注册 {present}/{total} 个工具',
+  'onboarding.prereqs.connected': '已连接',
+  'onboarding.prereqs.notRegistered': '未注册。{hint}',
+  'onboarding.prereqs.registered': '已注册',
+  'onboarding.prereqs.notRegisteredPill': '未注册',
+
+  'onboarding.connect.eyebrow': '第 1 步，共 2 步 · 连接你的智能体 CLI',
+  'onboarding.connect.heading': '连接你的智能体 CLI。',
+  'onboarding.connect.skip': '跳过——我稍后再连接 CLI',
+  'onboarding.connect.skipWaiting': '暂时跳过',
+  'onboarding.connect.continue': '继续',
+  'onboarding.connect.connected.builtin':
+    '它的二进制路径已在这台机器上注册——HappyRanch 现在可以启动它。你可以随时在设置中管理你的 CLI。',
+  'onboarding.connect.connected.custom':
+    '你的自定义 CLI 已注册，并可供所有组织使用。你可以随时在设置中管理你的 CLI。',
+
+  'onboarding.connect.builtin.intro':
+    '选择你使用的智能体 CLI——Claude Code、Codex、opencode 或 Pi。将生成的提示粘贴进去：它会验证可用性，并告诉 HappyRanch 其二进制文件在这台机器上的位置，以便启动它。',
+  'onboarding.connect.builtin.label': '选择你的智能体 CLI',
+  'onboarding.connect.builtin.placeholder': '选择一个智能体 CLI…',
+  'onboarding.connect.generate': '生成连接提示',
+  'onboarding.connect.generating': '正在生成…',
+  'onboarding.connect.useCustom': '改为连接自定义 CLI',
+  'onboarding.connect.mintError.status': '无法生成提示（{status}）。',
+  'onboarding.connect.mintError.unreachable': '无法生成提示。守护进程是否可达？',
+
+  'onboarding.connect.adapter.bannerTitle': '创建自定义适配器包装器',
+  'onboarding.connect.adapter.bannerBody':
+    '你的 CLI 会创建一个小型 v1 适配器包装器，遵循 HappyRanch 标准的 AdapterInput/AdapterOutput 契约。它从 stdin 读取提示、调用你的 CLI，并返回规范化结果。一次 POST 即可连接——无需等待审批。',
+  'onboarding.connect.adapter.nameLabel': '为此 CLI 命名',
+  'onboarding.connect.adapter.nameHint': '一个简短的标识符——将成为其执行器名称。适配器 id 将是 {code}。',
+  'onboarding.connect.adapter.namePlaceholder': '例如 my-cli',
+  'onboarding.connect.adapter.builtinName':
+    '请选择一个非内置名称（claude、codex、opencode、pi）——这些请改从下拉列表连接。',
+  'onboarding.connect.adapter.nameRule': '小写字母、数字和连字符 · 以字母开头',
+  'onboarding.connect.useBuiltin': '改为连接内置 CLI',
+
+  'onboarding.connect.committing.title': '正在完成连接…',
+  'onboarding.connect.committing.body': '{name} 已上报。HappyRanch 正在验证——请稍候。',
+
+  'onboarding.connect.waiting.header': '连接提示 · 粘贴到你的智能体 CLI',
+  'onboarding.connect.copy': '复制',
+  'onboarding.connect.copied': '已复制',
+  'onboarding.connect.copyPrompt': '复制提示',
+  'onboarding.connect.waiting.hint': '然后在终端中运行它——此界面会实时更新。',
+  'onboarding.connect.expired.title': '此链接已过期',
+  'onboarding.connect.expired.body': '提示有效期约为 30 分钟，此提示在 CLI 连接前已失效。没有丢失任何内容——请重新生成一个新提示。',
+  'onboarding.connect.regenerate': '重新生成提示',
+  'onboarding.connect.regenerating': '正在重新生成…',
+  'onboarding.connect.waiting.aria': '正在等待你的 CLI',
+  'onboarding.connect.waiting.title': '正在等待 {name} 连接…',
+  'onboarding.connect.waiting.stepsLead': '当你的 CLI 运行提示时，它会完成以下检查，然后注册：',
+  'onboarding.connect.back': '返回提示',
+  'onboarding.connect.step.workspace_access': '读取其工作区与技能',
+  'onboarding.connect.step.loopback_reachable': '通过 127.0.0.1 访问 HappyRanch',
+  'onboarding.connect.step.cli_callback': '上报并注册',
+  'onboarding.connect.step.emit_envelope': '生成有效的结果信封',
+
+  'onboarding.connect.adapter.waiting.header': '适配器连接提示 · 粘贴到你的 CLI',
+  'onboarding.connect.adapter.waiting.hint': '创建包装器并运行提示——此界面会实时更新。',
+  'onboarding.connect.adapter.expired.body': '提示有效期约为 30 分钟。请重新生成一个新提示。',
+  'onboarding.connect.adapter.waiting.aria': '正在等待适配器提交',
+  'onboarding.connect.adapter.waiting.title': '正在等待适配器提交…',
+  'onboarding.connect.adapter.waiting.body':
+    '你的 CLI 应创建 v1 适配器包装器、完成一致性检查并提交。适配器出现后此界面会更新。',
+
+  'onboarding.connect.retryable.title': '连接尝试失败——请修改产物后重试',
+  'onboarding.connect.retryable.body':
+    '{name} 已上报，但一致性探测失败。请修改包装器或子产物，然后在过期前重新运行下方的现有提示。未更改或重新排序的产物会被拒绝；此令牌下仅允许一个真正更改的候选。',
+  'onboarding.connect.retryable.header': '现有连接提示 · 修改产物后重新运行',
+  'onboarding.connect.retryable.rerun': '我已重新运行提示——等待新的尝试',
+  'onboarding.connect.error.label': '错误：{detail}',
+
+  'onboarding.connect.failed.title': '连接失败',
+  'onboarding.connect.failed.body': '{name} 已上报，但 HappyRanch 无法完成连接。{categoryMessage}',
+  'onboarding.connect.failed.category.expired': '此连接链接在 CLI 完成前已过期。请使用新提示重新开始。',
+  'onboarding.connect.failed.category.exhausted': '此生命周期已用完允许的重试次数。请使用新的注册重新开始。',
+  'onboarding.connect.failed.category.nonretryable': '此失败无法使用相同产物重试。',
+  'onboarding.connect.failed.operation': '操作：{operationId}',
+  'onboarding.connect.validate': '验证不可变快照',
+  'onboarding.connect.backShort': '返回',
+  'onboarding.connect.clearing': '正在清除…',
+  'onboarding.connect.clear.confirm': '确认清除失败的连接',
+  'onboarding.connect.clear.action': '清除失败的连接',
+  'onboarding.connect.clear.note':
+    '验证不可变快照会重新检查持久化的包装器/子快照，而不更改产物。若要用更改后的产物重试，请清除此记录并重新开始。',
+
+  'onboarding.connect.cleared.title': '失败的连接已清除',
+  'onboarding.connect.cleared.body': '{name} 的失败连接记录已清除。',
+  'onboarding.connect.cleared.alreadyAbsent': '失败的包装器本已不存在。',
+  'onboarding.connect.cleared.preservedChanged': '包装器被保留，因为它在连接失败后发生了更改。',
+  'onboarding.connect.cleared.preservedUnsafe': '包装器被保留，因为 HappyRanch 无法安全地证明它匹配。',
+  'onboarding.connect.cleared.reconnect': '重新连接此 CLI',
+
+  'onboarding.connect.connected.title': '{name} 已连接。',
+  'onboarding.connect.connected.adapterSubtitle': '你的自定义 CLI 已直接连接，可供所有组织使用。',
+  'onboarding.connect.connected.name': '名称',
+  'onboarding.connect.connected.registeredAt': '注册位置',
+  'onboarding.connect.connected.registrationRequired': '需要注册',
+  'onboarding.connect.connectAnother': '连接另一个',
+
+  'onboarding.connect.how.title': '工作原理',
+  'onboarding.connect.how.body':
+    '提示携带一个短期、限定范围、有效期约 {duration} 的令牌。复制不会运行任何内容——在你自行粘贴并运行之前，机器上不会执行任何操作。连接只是让该 CLI 可供选择；指派智能体在其上运行是另一个后续步骤。',
+  'onboarding.connect.how.duration': '30 分钟',
 };
 
 export default zhCN;
