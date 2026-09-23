@@ -64,6 +64,68 @@ macOS tsnet node ===== direct or DERP WG ===== 127.0.0.1 daemon
 - The home connector is the **final remote authorization point**; the daemon retains its existing local bearer boundary.
 - The connector's local store is authoritative for whether a request may reach this home when Services is unavailable; reconciliation compares Services registry, Headscale state, and connector state and **fail-closes on conflict**.
 
+**Intended managed architecture (illustrative overview).** The Mermaid diagram below renders the intended managed remote-access architecture described by this contract, including the Linux supervised connector packaging represented by PR800. It is a descriptive overview of the target topology, not evidence of completed deployment or provisioning, and specifically not N3/N6 acceptance; the existing normative requirements in this contract and the fixed invariants in §2 govern, and this overview does not weaken them. Labels are source-checked against this contract, the N0–N2 contracts, and the PR800 packaging context; naming a credential, supervision, or trust relationship is descriptive only and is not authorization to change any credential or control behavior. The Services→connector arrow summarizes required trust and revocation coordination, not proof of completed production provisioning.
+
+Legend: solid arrows are data traffic (bidirectional arrows are WireGuard paths); dotted arrows are control/supervision, coordination/trust and credential delivery; the plain undirected line is persistence.
+
+```mermaid
+flowchart LR
+    subgraph CLIENT["Remote device · macOS"]
+        UI["HappyRanch client"]
+        CN["Embedded tsnet node"]
+        UI --> CN
+    end
+
+    subgraph CONTROL["Managed control plane"]
+        API["HappyRanch Services<br/>Account, home and device registry"]
+        PROV["Provisioning worker"]
+        HS["Headscale cell<br/>One per customer<br/>Membership and network policy"]
+        API -.->|"Scoped provisioning"| PROV
+        PROV -.-> HS
+    end
+
+    RELAY["Private DERP relay<br/>WireGuard ciphertext only"]
+
+    subgraph HOME["Home Linux host"]
+        TARGET["systemd managed target"]
+
+        subgraph SIDEUNIT["Sidecar service"]
+            SN["Go sidecar · embedded tsnet<br/>Encrypted tailnet listener"]
+        end
+
+        subgraph CONNUNIT["Connector service"]
+            SUP["Go supervisor · MainPID<br/>Composite readiness and watchdog"]
+            CONN["Python connector<br/>Loopback managed ingress<br/>Pairing, revocation and route authorization"]
+            SUP -.->|"Starts and supervises"| CONN
+            CONN -.->|"Private health pipe"| SUP
+        end
+
+        DAEMON["HappyRanch daemon<br/>127.0.0.1:8765"]
+        TOKEN["Protected local daemon bearer"]
+        ENROLL["One-use enrollment credential"]
+        STATE["Private durable transport state"]
+
+        TARGET -.->|"Starts concurrently"| SN
+        TARGET -.->|"Starts concurrently"| SUP
+        SUP -.->|"Checks service health<br/>Removes admission before child cleanup"| SN
+
+        SN -->|"Raw TCP · fixed loopback target"| CONN
+        CONN -->|"Authorized request + local bearer"| DAEMON
+        TOKEN -.->|"Connector only"| CONN
+        ENROLL -.->|"systemd credential staging"| SN
+        SN --- STATE
+    end
+
+    UI -.->|"Account authentication"| API
+    API -.->|"Trust and revocation updates"| CONN
+    CN -.->|"Enrollment and network coordination"| HS
+    SN -.->|"Enrollment and network coordination"| HS
+
+    CN <-->|"Direct WireGuard · preferred"| SN
+    CN <-->|"Encrypted relay path"| RELAY
+    RELAY <-->|"Encrypted relay path"| SN
+```
+
 ## 4. Tenant model: one Headscale cell per customer
 
 - Immutable `tenant_id` maps to exactly one active `cell_id`; neither is derived from user-supplied names.
