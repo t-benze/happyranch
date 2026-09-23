@@ -219,6 +219,71 @@ def test_assistant_repair_refreshes_workspace(client: TestClient, runtime) -> No
     assert (paths.learnings_dir / "_index.md").is_file()
 
 
+@pytest.mark.parametrize("executor", ["claude", "codex"])
+def test_assistant_sequence_keeps_canonical_pair(
+    client: TestClient, runtime, executor: str,
+) -> None:
+    """THR-262 Slice B: assistant init → register → status → repair → repeat
+    keeps the canonical regular ``AGENTS.md`` + raw relative
+    ``CLAUDE.md -> AGENTS.md`` pair intact and reports CONFIGURED for Claude
+    and a non-Claude executor; an executor change preserves the same pair."""
+    import os as _os
+
+    paths = system_assistant_paths(runtime.root)
+
+    def _assert_pair() -> None:
+        agents = paths.workspace / "AGENTS.md"
+        claude = paths.workspace / "CLAUDE.md"
+        assert agents.is_file() and not agents.is_symlink()
+        assert claude.is_symlink(), "assistant CLAUDE.md must remain a link"
+        assert _os.readlink(claude) == "AGENTS.md"
+
+    init = client.post("/api/v1/assistant/init", json={"reconfigure": True})
+    assert init.status_code == 200, init.text
+
+    registered = client.post(
+        "/api/v1/assistant/register",
+        json={
+            "executor": executor,
+            "command": sys.executable,
+            "argv": [sys.executable],
+        },
+    )
+    assert registered.status_code == 200, registered.text
+    assert registered.json()["state"] == AssistantState.CONFIGURED
+    _assert_pair()
+
+    status = client.get("/api/v1/assistant/status")
+    assert status.status_code == 200, status.text
+    assert status.json()["state"] == AssistantState.CONFIGURED
+    assert status.json()["selected_executor"] == executor
+
+    # Repair, then repeat repair: both idempotent, pair preserved.
+    for _ in range(2):
+        repaired = client.post("/api/v1/assistant/repair")
+        assert repaired.status_code == 200, repaired.text
+        assert repaired.json()["state"] == AssistantState.CONFIGURED
+        _assert_pair()
+
+    # Executor change direction: the pair is preserved, never unlinked.
+    other = "codex" if executor == "claude" else "claude"
+    assert client.post(
+        "/api/v1/assistant/init", json={"reconfigure": True},
+    ).status_code == 200
+    changed = client.post(
+        "/api/v1/assistant/register",
+        json={
+            "executor": other,
+            "command": sys.executable,
+            "argv": [sys.executable],
+        },
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["state"] == AssistantState.CONFIGURED
+    assert changed.json()["selected_executor"] == other
+    _assert_pair()
+
+
 def test_assistant_repair_loads_config_under_lifecycle_lock(
     client: TestClient,
     runtime,

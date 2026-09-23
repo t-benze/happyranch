@@ -7171,3 +7171,249 @@ def test_bootstrap_unsupported_owned_paths_rejects_agents_symlink(tmp_path):
     os.symlink("AGENTS.md", tmp_path / "CLAUDE.md")
     unsupported = _bootstrap_unsupported_owned_paths(tmp_path)
     assert "AGENTS.md" in unsupported
+
+
+# ── THR-262 Slice B: real owned-process SIGKILL/reopen B0-B8 matrix ──────
+#
+# A real disposable child process runs the executor switch and SIGKILLs itself
+# at exactly one named Step 0-5 boundary. The parent observes the durable
+# on-disk pair/backups/temps, the read-only startup pair verdict, and the
+# explicit operator retry. Caught-exception injection is a separate case and is
+# never substituted for this process-death proof.
+
+_KILL_INCOMPLETE = ("B0", "B1", "B2", "B3")
+
+
+def _sigkill_self() -> None:
+    os.kill(os.getpid(), 9)
+
+
+def _install_boundary_kill(boundary: str, agent_name: str) -> None:
+    import pathlib
+
+    import runtime.daemon.routes.agents as agents_mod
+    import runtime.orchestrator.workspace_adapters as wa_mod
+
+    if boundary == "B0":  # before Step 1 (Step-0 preflight/capture ran)
+        agents_mod._executor_switch_materialize = lambda *a, **k: _sigkill_self()
+    elif boundary == "B1":  # during Step 1 union materialization
+        wa_mod.materialize_workspace_skills_union = lambda *a, **k: _sigkill_self()
+    elif boundary == "B2":  # inside Step 2, before the first instruction write
+        agents_mod.ContextBuilder.ensure_workspace_ready = (
+            lambda *a, **k: _sigkill_self()
+        )
+    elif boundary == "B3":  # between the two instruction-path writes
+        real_atomic = wa_mod._atomic_write_regular
+
+        def atomic_then_kill(path, data, mode=0o644):
+            real_atomic(path, data, mode)
+            if path.name == "AGENTS.md":
+                _sigkill_self()
+
+        wa_mod._atomic_write_regular = atomic_then_kill
+    elif boundary == "B4":  # immediately after both instruction writes
+        real_pair = wa_mod.write_canonical_instruction_pair
+
+        def pair_then_kill(workspace, content):
+            real_pair(workspace, content)
+            _sigkill_self()
+
+        wa_mod.write_canonical_instruction_pair = pair_then_kill
+    elif boundary == "B5":  # after Step 2 returns, before Step 3 begins
+        real_ready = agents_mod.ContextBuilder.ensure_workspace_ready
+
+        def ready_then_kill(self, *a, **k):
+            real_ready(self, *a, **k)
+            _sigkill_self()
+
+        agents_mod.ContextBuilder.ensure_workspace_ready = ready_then_kill
+    elif boundary == "B6":  # during Step 3 os.replace
+        real_replace = os.replace
+
+        def replace_then_kill(*args, **kwargs):
+            dst = args[1] if len(args) > 1 else kwargs.get("dst")
+            if dst is not None and str(dst).endswith(f"{agent_name}.md"):
+                _sigkill_self()
+            return real_replace(*args, **kwargs)
+
+        os.replace = replace_then_kill
+    elif boundary == "B7":  # during Step 4 --clean of executor-only files
+        real_unlink = pathlib.Path.unlink
+
+        def unlink_then_kill(self, *a, **k):
+            if self.name == "settings.json":
+                _sigkill_self()
+            return real_unlink(self, *a, **k)
+
+        pathlib.Path.unlink = unlink_then_kill
+    elif boundary == "B8":  # after Step 4, before the audit row
+        def audit_then_kill(self, *a, **k):
+            _sigkill_self()
+
+        agents_mod.AuditLogger.log_agent_managed = audit_then_kill
+    else:  # pragma: no cover
+        raise AssertionError(f"unknown boundary {boundary}")
+
+
+def _seed_incomplete_pair_workspace(org_state):
+    """Active claude agent whose pair is incomplete (CLAUDE.md absent)."""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / "AGENTS.md").write_bytes(b"# pre-existing claude content\n")
+    (workspace / ".claude").mkdir(parents=True, exist_ok=True)
+    (workspace / ".claude" / "settings.json").write_text('{"old": true}')
+    return workspace
+
+
+def _run_init_retry(app, auth_headers, agent_name: str) -> list[dict]:
+    import json as _json
+
+    events: list[dict] = []
+    client = TestClient(app)
+    with client.stream(
+        "POST", "/api/v1/orgs/alpha/agents/init",
+        json={"agent": agent_name}, headers=auth_headers,
+    ) as r:
+        assert r.status_code == 200, r.text
+        for line in r.iter_lines():
+            if line.startswith("data:"):
+                events.append(_json.loads(line[len("data:"):].strip()))
+    return events
+
+
+def _disk_artifacts(workspace):
+    return sorted(p.name for p in workspace.iterdir())
+
+
+def _audit_agent_managed(org_state) -> list:
+    return [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+
+
+@pytest.mark.parametrize("boundary", ["B0", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8"])
+def test_executor_switch_abrupt_death_b0_b8_retains_state_then_retry(
+    tmp_home, app, org_state, auth_headers, boundary,
+):
+    """THR-262 Slice B / founder seq59 C9: a REAL owned disposable process is
+    SIGKILLed at each named Step 0-5 boundary. Reopen performs no automatic
+    restore and writes no persistent recovery record; the durable pair,
+    preservation copies and authoritative audit/executor are observed
+    honestly; an incomplete pair (B0-B3) refuses at startup while a complete
+    pair (B4-B8) is valid; the explicit operator ``init-agent`` retry then
+    completes the pair and a second retry is idempotent."""
+    from runtime.orchestrator.workspace_adapters import instruction_pair_refusal
+
+    workspace = _seed_incomplete_pair_workspace(org_state)
+    agents_path = workspace / "AGENTS.md"
+    original_bytes = agents_path.read_bytes()
+    audit_before = _audit_agent_managed(org_state)
+
+    pid = os.fork()
+    if pid == 0:  # pragma: no cover - child process
+        try:
+            _install_boundary_kill(boundary, "dev_agent")
+            TestClient(app).put(
+                "/api/v1/orgs/alpha/agents/dev_agent/executor",
+                json={"executor": "codex", "clean": True},
+                headers=auth_headers,
+            )
+        except BaseException:
+            os._exit(3)
+        os._exit(0)
+    _, status = os.waitpid(pid, 0)
+    assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == 9, (
+        f"{boundary}: child not SIGKILLed, status={status}, "
+        f"artifacts={_disk_artifacts(workspace)}"
+    )
+
+    # ── Reopen: no automatic restore, no persistent recovery record ──
+    for name in _disk_artifacts(workspace):
+        lowered = name.lower()
+        assert "journal" not in lowered, f"{boundary}: persistent journal {name}"
+        assert "receipt" not in lowered, f"{boundary}: durable receipt {name}"
+        assert "recovery" not in lowered, f"{boundary}: recovery record {name}"
+
+    # ── Startup pair verdict (the read-only gate classifier) ──
+    verdict = instruction_pair_refusal(workspace)
+    if boundary in _KILL_INCOMPLETE:
+        assert verdict is not None, (
+            f"{boundary}: expected an incomplete pair refusal, got {verdict!r}"
+        )
+    else:
+        assert verdict is None, f"{boundary}: expected a valid pair, got {verdict!r}"
+
+    # ── Preservation copies (barrier reached only from B3 onward) ──
+    backups = sorted(workspace.glob("AGENTS.md.happyranch-*.bak"))
+    if boundary in ("B0", "B1", "B2"):
+        assert not backups, f"{boundary}: unexpected preservation copy {backups}"
+    else:
+        assert backups, f"{boundary}: original content must be preserved"
+        assert any(b.read_bytes() == original_bytes for b in backups), (
+            f"{boundary}: preservation copy must hold the original bytes"
+        )
+
+    # ── Authoritative audit unchanged (Step 5 never ran) ──
+    assert _audit_agent_managed(org_state) == audit_before, (
+        f"{boundary}: an agent_managed audit row was written"
+    )
+
+    # ── Explicit operator retry: completes the canonical pair ──
+    _run_init_retry(app, auth_headers, "dev_agent")
+    assert instruction_pair_refusal(workspace) is None, (
+        f"{boundary}: init-agent retry did not complete the pair"
+    )
+    assert agents_path.is_file() and not agents_path.is_symlink()
+    assert (workspace / "CLAUDE.md").is_symlink()
+    assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
+
+    # ── Second retry is idempotent (pair and preservation copies stable) ──
+    after_first = agents_path.read_bytes()
+    link_first = os.readlink(workspace / "CLAUDE.md")
+    backups_first = sorted(p.name for p in workspace.glob("*.bak"))
+    _run_init_retry(app, auth_headers, "dev_agent")
+    assert agents_path.read_bytes() == after_first, (
+        f"{boundary}: second retry rewrote AGENTS.md"
+    )
+    assert os.readlink(workspace / "CLAUDE.md") == link_first
+    assert sorted(p.name for p in workspace.glob("*.bak")) == backups_first, (
+        f"{boundary}: second retry created an extra preservation copy"
+    )
+    assert instruction_pair_refusal(workspace) is None
+
+
+def test_init_agent_retry_stops_on_preserved_conflict_zero_mutation(
+    tmp_home, app, org_state, auth_headers,
+):
+    """THR-262 Slice B / founder seq59 C9: when the pair cannot be converged
+    safely (a directory at an instruction path), the explicit ``init-agent``
+    retry stops on a named preserved conflict, emits a per-agent error (never
+    ``done``/``all_done``), and leaves the pair and every unrelated byte
+    unchanged with no backup/temp residue."""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "AGENTS.md").write_text("# original agents\n")
+    (workspace / "CLAUDE.md").mkdir()
+    sentinel = workspace / "unrelated.txt"
+    sentinel.write_text("unrelated\n")
+
+    events = _run_init_retry(app, auth_headers, "dev_agent")
+
+    phases = [e.get("phase") for e in events]
+    assert "done" not in phases, phases
+    assert "all_done" not in phases, phases
+    error = next(e for e in events if e.get("phase") == "error")
+    assert "instruction pair conflict" in error["detail"], error
+    assert "CLAUDE.md" in error["detail"], error
+
+    assert (workspace / "AGENTS.md").read_text() == "# original agents\n"
+    assert (workspace / "CLAUDE.md").is_dir()
+    assert sentinel.read_text() == "unrelated\n"
+    assert not list(workspace.glob("*.bak"))
+    assert not list(workspace.glob("*.tmp"))

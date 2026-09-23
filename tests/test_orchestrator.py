@@ -2012,25 +2012,99 @@ def test_run_agent_accepts_codex_readiness_marker(orchestrator, test_runtime, mo
     assert mock_executor.run.call_count == 1
 
 
+def _setup_provider_workspace(runtime, agent: str, provider: str) -> None:
+    """Seed an active workspace + agent frontmatter for ``provider``."""
+    _setup_codex_workspace(runtime, agent)
+    ws = runtime.workspaces_dir / agent
+    set_executor(ws, provider)
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    ad = AgentDef(
+        name=agent, team="engineering", role="manager",
+        executor=provider, allow_rules=(), repos={},
+        enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+        system_prompt=f"You are {agent}.", description="", model=None,
+    )
+    (runtime.agents_dir / f"{agent}.md").write_text(render_agent_text(ad))
+
+
+def _disfigure_instruction_pair(ws: Path, form: str) -> None:
+    """Turn a valid canonical pair into exactly one refused pair shape."""
+    agents = ws / "AGENTS.md"
+    claude = ws / "CLAUDE.md"
+
+    def _unlink(path: Path) -> None:
+        if path.is_symlink() or path.exists():
+            path.unlink()
+
+    if form == "missing_agents":
+        _unlink(agents)
+    elif form == "missing_claude":
+        _unlink(claude)
+    elif form == "dangling":
+        _unlink(claude)
+        os.symlink("MISSING.md", claude)
+    elif form == "cyclic":
+        _unlink(claude)
+        os.symlink("CLAUDE.md", claude)
+    elif form == "reversed":
+        # ``AGENTS.md -> CLAUDE.md``: the reverse of the accepted topology.
+        _unlink(claude)
+        claude.write_text("reversed\n")
+        _unlink(agents)
+        os.symlink("CLAUDE.md", agents)
+    elif form == "absolute":
+        _unlink(claude)
+        os.symlink(str(agents), claude)
+    elif form == "foreign":
+        _unlink(claude)
+        os.symlink("/etc/hostname", claude)
+    elif form == "wrong_target":
+        _unlink(claude)
+        (ws / "OTHER.md").write_text("other\n")
+        os.symlink("OTHER.md", claude)
+    elif form == "non_link":
+        _unlink(claude)
+        claude.write_text("regular\n")
+    elif form == "claude_directory":
+        _unlink(claude)
+        claude.mkdir()
+    elif form == "agents_symlink":
+        (ws / "AGENTS-real.md").write_text("# Agent: engineering_head\n")
+        _unlink(agents)
+        os.symlink("AGENTS-real.md", agents)
+        _unlink(claude)
+        os.symlink("AGENTS.md", claude)
+    else:  # pragma: no cover - guard against a typo in the parametrization
+        raise AssertionError(f"unknown form {form}")
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
 @pytest.mark.parametrize(
-    "form", ["missing_claude", "dangling_claude", "regular_claude"],
+    "form",
+    [
+        "missing_agents",
+        "missing_claude",
+        "dangling",
+        "cyclic",
+        "reversed",
+        "absolute",
+        "foreign",
+        "wrong_target",
+        "non_link",
+        "claude_directory",
+        "agents_symlink",
+    ],
 )
 def test_run_agent_refuses_non_canonical_pair_before_launch(
-    orchestrator, test_runtime, monkeypatch, form,
+    orchestrator, test_runtime, monkeypatch, provider, form,
 ):
-    """THR-262 Slice B: an incomplete/non-canonical instruction pair refuses
-    with WorkspaceNotInitialized naming ``init-agent`` and launches nothing."""
-    _setup_codex_workspace(test_runtime, "engineering_head")
+    """THR-262 Slice B / founder seq59: every non-canonical or incomplete
+    instruction pair refuses for every provider through the existing
+    ``WorkspaceNotInitialized`` class naming ``init-agent``, and launches
+    no executor."""
+    _setup_provider_workspace(test_runtime, "engineering_head", provider)
     ws = test_runtime.workspaces_dir / "engineering_head"
-    claude = ws / "CLAUDE.md"
-    if form == "missing_claude":
-        claude.unlink()
-    elif form == "dangling_claude":
-        claude.unlink()
-        os.symlink("MISSING.md", claude)
-    else:  # regular_claude
-        claude.unlink()
-        claude.write_text("regular\n")
+    _disfigure_instruction_pair(ws, form)
     task_id = orchestrator.create_task("ping")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
@@ -2040,6 +2114,7 @@ def test_run_agent_refuses_non_canonical_pair_before_launch(
             orchestrator._run_agent(task_id, "engineering_head", "any prompt")
 
     assert "init-agent" in str(excinfo.value)
+    assert "engineering_head" in str(excinfo.value)
     mock_executor.run.assert_not_called()
 
 

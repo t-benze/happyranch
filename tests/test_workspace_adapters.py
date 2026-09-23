@@ -1197,3 +1197,89 @@ def test_instruction_pair_cl_copy_failure_leaves_both_unchanged(
     assert calls == ["AGENTS.md", "CLAUDE.md"]
     # No canonical pair was written.
     assert not canonical_instruction_pair_ok(ws)
+
+
+@pytest.mark.parametrize(
+    "form", ["stale", "reverse", "broken", "cyclic", "external"],
+)
+def test_instruction_pair_recreates_recordable_non_canonical_links(
+    tmp_dir, form,
+):
+    """C8/§7.4.2: a recordable stale/reverse/broken/cyclic/external raw link is
+    classified as 'recreate' (not T1-ambiguous); the writer unlinks it, writes
+    the canonical pair, and never mutates the original external target."""
+    ws = tmp_dir / f"w_{form}"
+    ws.mkdir()
+    external = tmp_dir / "external_target.md"
+    external.write_text("external bytes\n")
+    agents = ws / "AGENTS.md"
+    claude = ws / "CLAUDE.md"
+
+    if form == "stale":
+        agents.write_text("canonical\n")
+        (ws / "OTHER.md").write_text("other\n")
+        os.symlink("OTHER.md", claude)
+    elif form == "reverse":
+        # ``AGENTS.md -> CLAUDE.md``: the reverse of the accepted topology.
+        claude.write_text("claude regular\n")
+        os.symlink("CLAUDE.md", agents)
+    elif form == "broken":
+        agents.write_text("canonical\n")
+        os.symlink("MISSING.md", claude)
+    elif form == "cyclic":
+        agents.write_text("canonical\n")
+        os.symlink("CLAUDE.md", claude)
+    elif form == "external":
+        agents.write_text("canonical\n")
+        os.symlink(str(external), claude)
+    else:  # pragma: no cover
+        raise AssertionError(form)
+
+    write_canonical_instruction_pair(ws, "canonical\n")
+
+    assert agents.is_file() and not agents.is_symlink()
+    assert claude.is_symlink()
+    assert os.readlink(claude) == "AGENTS.md"
+    assert canonical_instruction_pair_ok(ws)
+    # The original external target is never written through.
+    assert external.read_text() == "external bytes\n"
+
+
+def test_instruction_pair_directory_input_fails_closed(tmp_dir):
+    """T9: a directory/other-non-regular instruction path fails closed and
+    leaves both paths byte/type identical."""
+    ws = tmp_dir / "w"
+    ws.mkdir()
+    (ws / "AGENTS.md").write_text("original agents\n")
+    (ws / "CLAUDE.md").mkdir()
+
+    with pytest.raises(InstructionPairConflict):
+        write_canonical_instruction_pair(ws, "canonical\n")
+
+    assert (ws / "AGENTS.md").read_text() == "original agents\n"
+    assert (ws / "CLAUDE.md").is_dir()
+    assert not canonical_instruction_pair_ok(ws)
+    assert not list(ws.glob("*.bak"))
+
+
+def test_instruction_pair_unreadable_regular_fails_closed(tmp_dir):
+    """T1: an unreadable regular instruction path leaves both paths unchanged
+    and creates no backup/temp. Skipped for a root runner, which can read 0000."""
+    ws = tmp_dir / "w"
+    ws.mkdir()
+    agents = ws / "AGENTS.md"
+    agents.write_text("original agents\n")
+    (ws / "CLAUDE.md").write_text("original claude\n")
+    if os.geteuid() == 0:
+        pytest.skip("root can read mode-0000 files")
+    os.chmod(agents, 0o000)
+    try:
+        with pytest.raises(InstructionPairConflict):
+            write_canonical_instruction_pair(ws, "canonical\n")
+    finally:
+        os.chmod(agents, 0o644)
+
+    assert agents.read_text() == "original agents\n"
+    assert (ws / "CLAUDE.md").read_text() == "original claude\n"
+    assert not (ws / "CLAUDE.md").is_symlink()
+    assert not list(ws.glob("*.bak"))
