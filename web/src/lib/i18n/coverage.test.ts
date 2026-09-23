@@ -166,16 +166,23 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
     ]);
   });
 
-  it('marks only the W2a-migrated namespaces translated and keeps later slices incomplete', () => {
+  it('marks only the W2a/W2b-migrated namespaces translated and keeps later slices incomplete', () => {
     const summary = coverageSummary();
-    expect(summary.translated).toBe(4);
+    expect(summary.translated).toBe(5);
     const translated = COVERAGE_MANIFEST.filter((entry) => entry.status === 'translated')
       .map((entry) => entry.namespace)
       .sort();
-    expect(translated).toEqual(['app-shell', 'help-and-palette', 'not-found', 'root-shell']);
-    // Later W2/W3/W4 slices and every route family remain honest English-only.
-    for (const namespace of [
+    expect(translated).toEqual([
+      'app-shell',
+      'help-and-palette',
+      'not-found',
       'onboarding',
+      'root-shell',
+    ]);
+    // Later W2/W3/W4 slices and every route family remain honest English-only.
+    // `settings` stays English-only even though the shared ConnectFlow it mounts
+    // is W2b-translated: the surrounding Settings chrome/sections are not.
+    for (const namespace of [
       'dashboard',
       'threads',
       'tasks',

@@ -3,12 +3,16 @@
  * (THR-118 W1).
  *
  * W1 shipped the translation *foundation*, not a translation campaign. W2a
- * (THR-118) now migrates the mounted shell: the root loading/not-found copy,
+ * (THR-118) migrated the mounted shell: the root loading/not-found copy,
  * the AppShell chrome (AppBar/Sidebar/ErrorBoundary/AddOrgDialog) and the
- * shared help/palette presentation. Every other mounted product surface and
- * the not-yet-started later slices (onboarding = W2b, Settings = W2c,
- * assistant dock body = W4, route families = W3/W4) remain `english-only` —
- * fallback English is never treated as coverage. Redirect-only/catch-all
+ * shared help/palette presentation. W2b (THR-118) migrates the onboarding
+ * route (`/onboarding`: OnboardingPage, ConnectRuntimeStep and the shared
+ * ConnectFlow); the shared ConnectFlow is also mounted by Settings ▸
+ * Executors, but that does not make the `settings` namespace translated.
+ * The other mounted product surfaces and the not-yet-started later slices
+ * (Settings = W2c, assistant dock body = W4, route families = W3/W4) remain
+ * `english-only` — fallback English is never treated as coverage.
+ * Redirect-only/catch-all
  * tokens are `not-applicable`. The marker is explicit machine-readable data
  * and the accompanying test fails when a newly mounted route token is not
  * classified here.
@@ -78,8 +82,11 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'onboarding',
     routeTokens: ['onboarding'],
-    status: 'english-only',
-    surfaces: ['OnboardingPage', 'ConnectRuntimeStep'],
+    status: 'translated',
+    // Shared <ConnectFlow> is translated by W2b and is mounted here; its
+    // Settings ▸ Executors mount does NOT make the `settings` namespace
+    // translated (the surrounding Settings chrome/sections remain English-only).
+    surfaces: ['OnboardingPage', 'ConnectRuntimeStep', 'ConnectFlow (shared)'],
   },
   {
     namespace: 'dashboard',

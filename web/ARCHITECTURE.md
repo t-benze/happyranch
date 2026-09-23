@@ -78,12 +78,18 @@ message with English grammar (`resolveMessage` reports the supplying catalog
 locale), never a raw key. **W2a** translated the mounted shell (AppBar titles,
 Sidebar nav/aria/org-switcher/account, root loading and NotFound, the
 ErrorBoundary fallback copy, AddOrgDialog, and the shared help/palette
-presentation) and added CJK-capable SYSTEM font fallbacks to the tokens;
-onboarding (W2b), Settings/Preferences (W2c), route families (W3/W4) and the
-assistant dock body (W4) remain untranslated. No public language selector exists
+presentation) and added CJK-capable SYSTEM font fallbacks to the tokens.
+**W2b** translated the onboarding route (`features/onboarding/OnboardingPage.tsx`,
+`ConnectRuntimeStep.tsx`) and the shared `shared/connect/ConnectFlow.tsx`,
+extracting the single `lib/addOrgError.ts` classifier consumed by both
+AddOrgDialog and onboarding. Because ConnectFlow is shared, its Settings ▸
+Executors mount is localized too, but `settings` (W2c), route families (W3/W4)
+and the assistant dock body (W4) remain untranslated and the `settings`
+namespace stays `english-only`. No public language selector exists
 and an unset preference still renders English until W3. The mount-time coverage
 inventory lives in `src/lib/i18n/coverage.ts`: it separates copy-bearing routes
-(root shell `index` and the `*` NotFound catch-all — now `translated`) from
+(root shell `index`, the `*` NotFound catch-all and onboarding — now
+`translated`) from
 copy-free redirects, disambiguates colliding tokens with `<scope>:<token>`
 qualified identities, and lists the ACTUAL mounted dialog components so
 fallback is never mistaken for coverage. Foundation browser evidence runs the
@@ -91,19 +97,29 @@ isolated `src/design-system/i18n/I18nFoundation.stories.tsx` story and the real
 `main.tsx` startup through `scripts/i18n-browser-evidence.mjs` (headless Chrome
 over CDP, no new dependency). W2a shell evidence runs the same real startup
 through `scripts/w2a-shell-browser-evidence.mjs` under an independent
-`I18N_W2A_EVIDENCE` build gate. Every page installs and asserts the real
+`I18N_W2A_EVIDENCE` build gate, and W2b onboarding evidence drives the real
+`/onboarding` route through `scripts/w2b-onboarding-browser-evidence.mjs`
+against the ORDINARY build with NO evidence-only instrumentation — locale
+switches use the supported `localStorage` preference + same-origin `storage`
+event because there is no public selector. Every page installs and asserts the real
 `navigator.language`/`navigator.languages` before app modules; the W1
 production path is built with `I18N_BROWSER_EVIDENCE` so `vite.config.ts`
 injects the test-only `src/test/i18n-evidence-consumer.tsx` next to
 `<AppRoutes />`, and the W2a path injects
 `src/test/w2a-shell-evidence-consumer.tsx` plus a test-only error trigger inside
-the real boundary. The W2a first-commit record is read from the ACTUAL committed
+the real boundary. The W2a first-commit record is
+read from the ACTUAL committed
 Sidebar/AppBar DOM (a layout-effect capture that is frozen on first connection
 and never overwritten by a later locale correction), together with `<html lang>`
 and the real navigator read-back; `I18N_W2A_EVIDENCE=negative` additionally
 hands the provider a deliberately mismatched locale and corrects it afterwards,
 so the same positive predicate must reject the first shell (causal negative
-control). A backward-compatible optional `DialogContent.closeLabel` supplies the
+control). The W2b harness needs no consumer: it reads the onboarding DOM and
+generated prompt directly. S4-S6 and S8-S10 retain actual focus, stable
+test-only node identity, open phase/mode and raw values across both switch
+directions; every immediately scoped switch window proves zero
+settings/org/connect/mint mutations and zero `/api/` requests. A
+backward-compatible optional `DialogContent.closeLabel` supplies the
 localized accessible name for the built-in close control (defaulting to the
 legacy English `Close`); AddOrgDialog, HelpSheet and CommandPalette pass it from
 their callers and the patterns/primitives stay prop-driven with no locale hook

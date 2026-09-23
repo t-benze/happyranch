@@ -19,63 +19,9 @@ import {
 import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
 import { useTranslation } from '@/hooks/i18n';
-import type { MessageKey, MessageParams } from '@/lib/i18n';
+import { classifyAddOrgError, renderAddOrgError, type AddOrgError } from '@/lib/addOrgError';
 
 const SLUG_RE = /^[a-z0-9-]{1,40}$/;
-
-/**
- * Product-owned error identity plus the parameters captured at submit time.
- *
- * W2a review R1: the handler must NOT store a locale-rendered string. The
- * descriptor keeps the *identity* (and the exact submitted slug) so the copy is
- * re-translated on every render and follows a locale switch without
- * resubmission. A genuinely external daemon diagnostic (an unrecognized
- * non-empty message) is retained verbatim as `raw`.
- */
-type AddOrgError =
-  | { kind: 'noActiveRuntime' }
-  | { kind: 'dirHasData'; slug: string }
-  | { kind: 'exists'; slug: string }
-  | { kind: 'invalidSlug' }
-  | { kind: 'generic' }
-  | { kind: 'raw'; message: string };
-
-function classifyAddOrgError(
-  err: unknown,
-  submittedSlug: string,
-): AddOrgError {
-  const e = err as { code?: string; status?: number; message?: string };
-  if (e.code === 'no_active_runtime') return { kind: 'noActiveRuntime' };
-  if (e.code === 'org_dir_has_data') return { kind: 'dirHasData', slug: submittedSlug };
-  if (e.code === 'org_exists' || e.code === 'org_dir_exists' || e.status === 409) {
-    return { kind: 'exists', slug: submittedSlug };
-  }
-  if (e.code === 'invalid_slug') return { kind: 'invalidSlug' };
-  // Preserve any exact daemon-supplied detail verbatim; only a missing message
-  // falls back to the app-owned generic copy.
-  const message = typeof e.message === 'string' ? e.message : '';
-  if (message.trim().length > 0) return { kind: 'raw', message };
-  return { kind: 'generic' };
-}
-
-type Translator = (key: MessageKey, params?: MessageParams) => string;
-
-function renderAddOrgError(error: AddOrgError, t: Translator): string {
-  switch (error.kind) {
-    case 'noActiveRuntime':
-      return t('org.add.error.noActiveRuntime');
-    case 'dirHasData':
-      return t('org.add.error.dirHasData', { slug: error.slug });
-    case 'exists':
-      return t('org.add.error.exists', { slug: error.slug });
-    case 'invalidSlug':
-      return t('org.add.error.invalidSlug');
-    case 'generic':
-      return t('org.add.error.generic');
-    case 'raw':
-      return error.message;
-  }
-}
 
 interface Props {
   open: boolean;

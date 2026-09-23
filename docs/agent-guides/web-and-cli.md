@@ -38,7 +38,7 @@ The SPA supports mutations, including task cancellation/revisit and Settings.
 Use `web/src/routes.tsx`, API functions, and the OpenAPI snapshot for the current
 surface. The daemon defaults to loopback; remote access uses the connector.
 
-### Internationalization (W1 foundation + W2a shell)
+### Internationalization (W1 foundation + W2a shell + W2b onboarding)
 
 The web console has a first-party, typed English/Simplified-Chinese contract in
 `web/src/lib/i18n/` (`locale`, `catalog`, `format`, `coverage`) with the
@@ -70,17 +70,34 @@ and the pattern/primitive layers remain prop-driven with no locale hook import.
 AddOrgDialog stores the product-owned error identity plus the submitted slug and
 re-translates at render time, so an already-visible mapped error follows a
 locale switch without resubmission while unknown external daemon detail stays
-verbatim. The rest of the console is still English: **onboarding is W2b,
-Settings and the new Preferences section are W2c, route families are W3/W4, and
-the assistant dock body is W4. No public language selector exists and preview is
-not enabled.** Native preference persistence is N0/N1; full-mode automatic
+verbatim.
+
+**W2b** translated the onboarding route (`/onboarding`): `OnboardingPage`
+(first-run vs returning welcome, create/creating/success, the read-only
+broken-org list and the executor-prereq panel), the `ConnectRuntimeStep`
+wrapper chrome, and the shared `src/shared/connect/ConnectFlow.tsx` bodies
+(built-in/custom modes, waiting/committing/connected, retryable + terminal
+failure, clear/recovery, copy feedback and aria text). The add-org error
+classifier/renderer is now the single shared
+`src/lib/addOrgError.ts` consumed by both AddOrgDialog and the
+onboarding create step. Because `ConnectFlow` is shared with Settings ▸
+Executors, translating it also localizes that connect body, but the `settings`
+namespace stays `english-only` in the manifest (the surrounding Settings chrome
+and sections are not translated) and Settings is not claimed as translated.
+User-entered slugs, registered tool names/paths, the slug regex, broken-org raw
+errors and the generated copy-paste CLI prompt (raw step ids, tokens, routes)
+stay byte-for-byte verbatim; mapped categories re-translate on a locale switch
+with no resubmission. The rest of the console is still English: **Settings and
+the new Preferences section are W2c, route families are W3/W4, and the
+assistant dock body is W4. No public language selector exists and preview is not
+enabled.** Native preference persistence is N0/N1; full-mode automatic
 environment detection is implemented and unit-tested but not enabled until W5.
-`web/src/lib/i18n/coverage.ts` marks exactly the W2a-migrated namespaces
-(`root-shell`, `not-found`, `app-shell`, `help-and-palette`) `translated` and
-every other mounted route namespace `english-only` (copy-free redirects
-`not-applicable`), listing the actual mounted dialogs, so English fallback is
-never mistaken for coverage. Foundation browser evidence (isolated Storybook
-probe + the real `main.tsx` startup in headless Chrome) runs via
+`web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b-migrated namespaces
+(`root-shell`, `not-found`, `app-shell`, `help-and-palette`, `onboarding`)
+`translated` and every other mounted route namespace `english-only` (copy-free
+redirects `not-applicable`), listing the actual mounted dialogs, so English
+fallback is never mistaken for coverage. Foundation browser evidence (isolated
+Storybook probe + the real `main.tsx` startup in headless Chrome) runs via
 `web/scripts/i18n-browser-evidence.mjs`; W2a shell evidence runs via
 `web/scripts/w2a-shell-browser-evidence.mjs` under an independent
 `I18N_W2A_EVIDENCE`-gated, test-only build injection. It reads the actual first
@@ -101,7 +118,24 @@ palette's localized X close control (S19) with native Enter/Space/Escape in both
 locales with populated and empty results (closes once, zero selection, unchanged
 pathname) while the search-input and non-default-row Enter still select once, and
 adds CJK-font and viewport-containment checks. Positive receipt: 375/375
-assertions, 30 PNGs. Current contract:
+assertions, 30 PNGs. W2b onboarding evidence runs via
+`web/scripts/w2b-onboarding-browser-evidence.mjs` against the ORDINARY
+`web/dist` bundle and a synthetic `/api/v1` stub, driving the real `/onboarding`
+route with NO evidence-only bundle instrumentation: locale switches go through
+the supported browser `localStorage` preference plus a same-origin `storage`
+event (there is no public selector), so the harness proves the shipping bundle
+already satisfies the acceptance predicate. It covers first-run/returning
+routing, built-in/custom connect modes, the waiting/committed prompt bytes
+preserved across en→zh-CN→en, mapped-vs-raw error handling, success, the
+broken-org list and the prereq panel. For S4-S6 and S8-S10, each en→zh-CN and
+zh-CN→en transition records the actual `document.activeElement`, retained
+test-only DOM identity where stable, open phase/mode and state-specific raw
+values before and after. Every immediately scoped transition window asserts no
+`PUT /settings/org`, duplicate `POST /api/v1/orgs`, connect/mint mutation, or
+other `/api/` request; S4-S6 retain exactly one original create and S8 retains
+exactly one original mint. The exact assertion and PNG counts are bound to the
+pushed `receipt.json`.
+Current contract:
 `docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
 
 ### Web contract and navigation
