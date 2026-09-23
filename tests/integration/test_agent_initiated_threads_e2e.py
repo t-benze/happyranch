@@ -13,6 +13,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+from tests.thr211_containment import build_threads_plan, build_thread_reply_plan
+
 from runtime.daemon import paths as paths_mod
 from tests.integration.conftest import seed_workspace
 
@@ -58,49 +60,13 @@ def test_agent_compose_from_task_spawns_thread_and_recipient_replies(
     # (with the binding flags wired from fake_claude.sh's positional args), then
     # reports completion.
     #
-    # The heredoc (<<EOF, unquoted) expands ${TASK_ID} and ${SESSION_ID} at
-    # bash runtime — that's intentional. Python's single-quoted strings don't
-    # expand ${...} so we get the literal text in the file, which bash then runs.
-    fake_claude_plan_env.write_text(
-        '#!/usr/bin/env bash\n'
-        'set -e\n'
-        'TASK_ID="$1"; SESSION_ID="$2"; AGENT="$3"; ORG_SLUG="$4"\n'
-        '\n'
-        '# Write the compose payload (no shell vars needed — static content).\n'
-        'cat > /tmp/thread-compose-int.json << \'ENDJSON\'\n'
-        '{"composer": "engineering_head",\n'
-        ' "subject": "int test loop in",\n'
-        ' "recipients": ["payment_agent"],\n'
-        ' "body_markdown": "looping payment_agent in"}\n'
-        'ENDJSON\n'
-        '\n'
-        'happyranch threads compose --org "$ORG_SLUG" --task-id "$TASK_ID" '
-        '--session-id "$SESSION_ID" --from-file /tmp/thread-compose-int.json >&2\n'
-        '\n'
-        '# Write the completion payload using printf to avoid heredoc expansion issues.\n'
-        'printf \'{"task_id": "%s", "session_id": "%s", "agent": "engineering_head", '
-        '"status": "completed", "confidence": 90, "summary": "composed thread"}\' '
-        '"$TASK_ID" "$SESSION_ID" > "/tmp/completion-${TASK_ID}.json"\n'
-        '\n'
-        'happyranch report-completion --org "$ORG_SLUG" '
-        '--from-file "/tmp/completion-${TASK_ID}.json" >&2\n'
-    )
+    # Shared builders serialize runtime values and own transient callback files.
+    fake_claude_plan_env.write_text(build_threads_plan(fake_claude_plan_env.parent))
     fake_claude_plan_env.chmod(0o755)
 
     # Thread plan: payment_agent replies "got it" when invoked.
-    # Use printf to avoid heredoc variable expansion pitfalls (same pattern as
-    # test_threads_e2e.py's existing tests).
-    fake_claude_thread_plan_env.write_text(
-        '#!/usr/bin/env bash\n'
-        'set -e\n'
-        'THREAD_ID="$1"; TOKEN="$2"; AGENT="$3"; ORG_SLUG="$4"; PURPOSE="$5"\n'
-        'payload=$(mktemp)\n'
-        'printf \'{"thread_id": "%s", "invocation_token": "%s", "speaker": "%s", '
-        '"body_markdown": "got it", "in_response_to_seq": 1}\' '
-        '"$THREAD_ID" "$TOKEN" "$AGENT" > "$payload"\n'
-        'happyranch threads reply --org "$ORG_SLUG" --thread-id "$THREAD_ID" '
-        '--from-file "$payload" >&2\n'
-    )
+    # It uses the independently provisioned thread-plan root.
+    fake_claude_thread_plan_env.write_text(build_thread_reply_plan(fake_claude_thread_plan_env.parent))
     fake_claude_thread_plan_env.chmod(0o755)
 
     # Kick off the composer's task.
