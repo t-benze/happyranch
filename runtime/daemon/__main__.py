@@ -324,6 +324,7 @@ def _sweep_on_startup(
                 _consume_completion_report(
                     orchestrator, task_id, orphaned_report,
                     result_row_id=orphaned_result_row.get("id"),
+                    reclaim_terminal_worktree=False,
                 )
                 continue
 
@@ -348,6 +349,10 @@ def _sweep_on_startup(
                     orchestrator, task_id,
                     root_auto_revisit_spawned=False,
                 )
+                from runtime.orchestrator.run_step import (
+                    _reclaim_terminal_task_worktree,
+                )
+                _reclaim_terminal_task_worktree(orchestrator, task_id)
 
         # Branch 2 — parked on children (delegated). Re-enqueue only when all
         # children are terminal (orphaned wake-up); else leave it parked.
