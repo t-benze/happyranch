@@ -18,7 +18,11 @@ from tests.workflows.u0_evidence_helpers import (
     ProfileOrg,
     PublicationInterrupted,
     accept_current_join,
+    admit_review_dispatch,
     admit_authority_request,
+    begin_review_host_launch,
+    cancel_review_dispatch,
+    claim_review_dispatch,
     compensate_authority_publication,
     compensate_profile_operation,
     coordinate_profile_operation,
@@ -27,6 +31,9 @@ from tests.workflows.u0_evidence_helpers import (
     publish_authority_generation,
     reconcile_profile_operation,
     recover_authority_publication,
+    recover_review_dispatch,
+    record_review_callback,
+    record_review_running,
     register_profile_dependency,
     republish_profile_dependents,
     revalidate_authority_dispatch,
@@ -2298,3 +2305,341 @@ sys.stdin.readline()
     assert coordinator.execute("SELECT COUNT(*) FROM workflow_profile_leases").fetchone() == (0,)
     for org in orgs.values():
         org.connection.close()
+
+
+def test_proposed_f5_stale_authority_rejects_before_request_task_or_outbox_residue(
+    tmp_path: Path,
+) -> None:
+    """F5 admission revalidates authority inside its owned transaction."""
+    path = tmp_path / "f5-stale-authority.db"
+    conn = _adapter(path)
+    _seed(conn)
+    conn.execute(
+        "INSERT INTO workflow_authority_pointers VALUES ('eng',2,'journal-2','authority-v2','ready',0)"
+    )
+    conn.commit()
+    before = _complete_join_state(path)
+
+    with pytest.raises(ValueError, match="authority_generation_stale"):
+        admit_review_dispatch(
+            conn,
+            org_slug="org",
+            principal="operator",
+            operation_key="open-implementation-review",
+            body=b"review implementation",
+            instance_id="instance-9",
+            round_id="round-9",
+            request_id="request-f5",
+            request_principal="implementation-next",
+            assignment_generation=8,
+            task_id="TASK-F5",
+            expected_authority_generation=1,
+            expected_authority_digest="authority-v1",
+            expected_revision=4,
+        )
+
+    assert _complete_join_state(path) == before
+
+    conn.execute(
+        "UPDATE workflow_authority_pointers SET current_generation=1, snapshot_digest='authority-v1'"
+    )
+    conn.execute("DELETE FROM workflow_active_authorizations WHERE namespace='eng'")
+    conn.commit()
+    dispatch_before = _f5_rows(path)
+    with pytest.raises(ValueError, match="active_authorization_not_current"):
+        _admit_f5(conn, suffix="missing-active-envelope")
+    assert _f5_rows(path) == dispatch_before
+
+
+def _seed_f5(path: Path) -> sqlite3.Connection:
+    conn = _adapter(path)
+    _seed(conn)
+    conn.execute(
+        "INSERT INTO workflow_authority_pointers VALUES ('eng',1,'journal-1','authority-v1','ready',0)"
+    )
+    conn.commit()
+    return conn
+
+
+def _admit_f5(
+    conn: sqlite3.Connection,
+    *,
+    suffix: str = "one",
+    operation_key: str | None = None,
+    body: bytes | None = None,
+    expected_revision: int = 4,
+    before_outbox: Callable[[], None] | None = None,
+    after_commit: Callable[[str], None] | None = None,
+) -> str:
+    return admit_review_dispatch(
+        conn,
+        org_slug="org",
+        principal="operator",
+        operation_key=operation_key or f"open-review-{suffix}",
+        body=body or f"review-{suffix}".encode(),
+        instance_id="instance-9",
+        round_id="round-9",
+        request_id=f"request-f5-{suffix}",
+        request_principal=f"reviewer-{suffix}",
+        assignment_generation=8,
+        task_id=f"TASK-F5-{suffix}",
+        expected_authority_generation=1,
+        expected_authority_digest="authority-v1",
+        expected_revision=expected_revision,
+        before_outbox=before_outbox,
+        after_commit=after_commit,
+    )
+
+
+def _f5_rows(path: Path) -> dict[str, list[tuple[object, ...]]]:
+    rows = _complete_join_state(path)
+    return {name: value for name, value in rows.items() if name.startswith("workflow_dispatch_") or name == "workflow_request_task_bridges"}
+
+
+def test_proposed_f5_stale_prd_revision_rejects_with_zero_residue(tmp_path: Path) -> None:
+    path = tmp_path / "f5-stale-revision.db"
+    conn = _seed_f5(path)
+    before = _complete_join_state(path)
+    with pytest.raises(ValueError, match="artifact_revision_stale"):
+        _admit_f5(conn, expected_revision=3)
+    assert _complete_join_state(path) == before
+
+
+def test_proposed_f5_request_task_event_and_outbox_commit_atomically_before_notification(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "f5-atomic.db"
+    conn = _seed_f5(path)
+    before = _complete_join_state(path)
+
+    def fail_before_outbox() -> None:
+        raise RuntimeError("injected-before-outbox")
+
+    with pytest.raises(RuntimeError, match="injected-before-outbox"):
+        _admit_f5(conn, before_outbox=fail_before_outbox)
+    assert _complete_join_state(path) == before
+
+    observations: list[tuple[str, dict[str, list[tuple[object, ...]]]]] = []
+
+    def observe_after_commit(outbox_id: str) -> None:
+        observations.append((outbox_id, _f5_rows(path)))
+
+    outbox_id = _admit_f5(conn, after_commit=observe_after_commit)
+    assert observations and observations[0][0] == outbox_id
+    observed = observations[0][1]
+    assert observed["workflow_dispatch_operations"] == [
+        observed["workflow_dispatch_operations"][0]
+    ]
+    assert observed["workflow_request_task_bridges"][0][3:9] == (
+        "TASK-F5-one", "reviewer-one", 8, None, None, "queued"
+    )
+    assert observed["workflow_dispatch_outbox"][0][8:16] == (
+        "queued", None, None, 0,
+        "workflow-review-launch:request-f5-one:8", None,
+        "outbox_publisher", None,
+    )
+    assert observed["workflow_dispatch_events"][0][2:6] == (
+        1, "request_committed", None, "queued"
+    )
+    # A crash before notification leaves the same committed queued operation;
+    # the outbox publisher, not the request route, owns recovery.
+    assert recover_review_dispatch(sqlite3.connect(path), outbox_id=outbox_id) == "queued:outbox_publisher"
+
+
+def test_proposed_f5_identical_replay_reuses_operation_and_conflict_adds_no_residue(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "f5-replay.db"
+    conn = _seed_f5(path)
+    first = _admit_f5(conn)
+    after_first = _complete_join_state(path)
+    assert _admit_f5(conn) == first
+    assert _complete_join_state(path) == after_first
+    with pytest.raises(ValueError, match="operation_key_body_conflict"):
+        _admit_f5(conn, body=b"conflicting-body")
+    assert _complete_join_state(path) == after_first
+    assert conn.execute("SELECT COUNT(*) FROM workflow_review_requests WHERE id='request-f5-one'").fetchone() == (1,)
+    assert conn.execute("SELECT COUNT(*) FROM workflow_dispatch_outbox").fetchone() == (1,)
+
+
+def test_proposed_f5_claim_is_exclusive_and_revalidates_revocation_revision_and_ownership(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "f5-claim.db"
+    conn = _seed_f5(path)
+    outbox = _admit_f5(conn, suffix="winner")
+    assert claim_review_dispatch(conn, outbox_id=outbox, claim_token="claim-a", claim_owner="worker-a") == "claimed"
+    claimed = _complete_join_state(path)
+    with pytest.raises(ValueError, match="dispatch_not_claimable:claimed"):
+        claim_review_dispatch(conn, outbox_id=outbox, claim_token="claim-b", claim_owner="worker-b")
+    assert _complete_join_state(path) == claimed
+
+    stale = _admit_f5(conn, suffix="stale")
+    conn.execute("UPDATE workflow_authority_pointers SET current_generation=2, snapshot_digest='authority-v2'")
+    conn.commit()
+    assert claim_review_dispatch(conn, outbox_id=stale, claim_token="claim-stale", claim_owner="worker") == "cancelled:authority_generation_or_digest_stale"
+    assert conn.execute("SELECT state, last_error FROM workflow_dispatch_outbox WHERE id=?", (stale,)).fetchone() == (
+        "cancelled", "authority_generation_or_digest_stale"
+    )
+    assert conn.execute("SELECT COUNT(*) FROM workflow_dispatch_effects WHERE outbox_id=?", (stale,)).fetchone() == (0,)
+
+    conn.execute(
+        "UPDATE workflow_authority_pointers SET current_generation=1, snapshot_digest='authority-v1'"
+    )
+    conn.commit()
+    stale_revision = _admit_f5(conn, suffix="stale-revision")
+    conn.execute("UPDATE workflow_rounds SET current_revision=5 WHERE id='round-9'")
+    conn.commit()
+    assert claim_review_dispatch(
+        conn, outbox_id=stale_revision, claim_token="claim-revision", claim_owner="worker"
+    ) == "cancelled:artifact_revision_not_current"
+    conn.execute("UPDATE workflow_rounds SET current_revision=4 WHERE id='round-9'")
+    conn.commit()
+
+    foreign = _admit_f5(conn, suffix="foreign")
+    conn.execute(
+        "UPDATE workflow_review_requests SET principal='different-owner' WHERE id='request-f5-foreign'"
+    )
+    conn.commit()
+    assert claim_review_dispatch(
+        conn, outbox_id=foreign, claim_token="claim-foreign", claim_owner="worker"
+    ) == "cancelled:request_ownership_stale"
+
+    cancelled = _admit_f5(conn, suffix="already-cancelled")
+    cancel_review_dispatch(conn, outbox_id=cancelled, reason="operator_cancelled")
+    with pytest.raises(ValueError, match="dispatch_not_claimable:cancelled"):
+        claim_review_dispatch(
+            conn, outbox_id=cancelled, claim_token="claim-cancelled", claim_owner="worker"
+        )
+
+
+def test_proposed_f5_cancellation_before_claim_and_after_claim_before_launch_preserves_history(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "f5-cancel.db"
+    conn = _seed_f5(path)
+    queued = _admit_f5(conn, suffix="queued-cancel")
+    assert cancel_review_dispatch(conn, outbox_id=queued, reason="operator_cancelled") == "cancelled"
+    claimed = _admit_f5(conn, suffix="claimed-cancel")
+    assert claim_review_dispatch(conn, outbox_id=claimed, claim_token="claim-c", claim_owner="worker-c") == "claimed"
+    assert cancel_review_dispatch(conn, outbox_id=claimed, reason="revision_closed") == "cancelled"
+    assert conn.execute("SELECT state, host_launch_started FROM workflow_dispatch_outbox ORDER BY id").fetchall() == [
+        ("cancelled", 0), ("cancelled", 0)
+    ]
+    assert conn.execute("SELECT COUNT(*) FROM workflow_dispatch_effects").fetchone() == (0,)
+    events = conn.execute("SELECT operation_id,event_seq,event_kind,state_before,state_after FROM workflow_dispatch_events ORDER BY operation_id,event_seq").fetchall()
+    assert [row[1:] for row in events].count((2, "dispatch_cancelled_before_launch", "queued", "cancelled")) == 1
+    assert any(row[2:] == ("dispatch_cancelled_before_launch", "claimed", "cancelled") for row in events)
+
+
+def test_proposed_f5_reopen_owners_cover_queued_claimed_running_and_uncertain_boundaries(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "f5-recovery.db"
+    conn = _seed_f5(path)
+    queued = _admit_f5(conn, suffix="queued")
+    assert recover_review_dispatch(sqlite3.connect(path), outbox_id=queued) == "queued:outbox_publisher"
+
+    claimed = _admit_f5(conn, suffix="claimed")
+    assert claim_review_dispatch(conn, outbox_id=claimed, claim_token="claim-1", claim_owner="worker-1") == "claimed"
+    assert recover_review_dispatch(sqlite3.connect(path), outbox_id=claimed) == "claimed:claim_owner"
+    assert recover_review_dispatch(sqlite3.connect(path), outbox_id=claimed, claim_owner_proven_dead=True) == "queued:outbox_publisher"
+
+    running = _admit_f5(conn, suffix="running")
+    assert claim_review_dispatch(conn, outbox_id=running, claim_token="claim-2", claim_owner="worker-2") == "claimed"
+    assert begin_review_host_launch(conn, outbox_id=running, claim_token="claim-2") == "host_launch_started"
+    assert record_review_running(conn, outbox_id=running, claim_token="claim-2", session_id="sess-running", host_execution_id="host-running") == "running"
+    assert recover_review_dispatch(sqlite3.connect(path), outbox_id=running) == "running:callback_reconciler"
+
+    uncertain = _admit_f5(conn, suffix="uncertain")
+    assert claim_review_dispatch(conn, outbox_id=uncertain, claim_token="claim-3", claim_owner="worker-3") == "claimed"
+    assert begin_review_host_launch(conn, outbox_id=uncertain, claim_token="claim-3") == "host_launch_started"
+    assert recover_review_dispatch(sqlite3.connect(path), outbox_id=uncertain, claim_owner_proven_dead=True) == "uncertain:operator"
+    assert recover_review_dispatch(sqlite3.connect(path), outbox_id=uncertain, claim_owner_proven_dead=True) == "uncertain:operator"
+    with pytest.raises(ValueError, match="dispatch_not_claimable:uncertain"):
+        claim_review_dispatch(conn, outbox_id=uncertain, claim_token="blind-replay", claim_owner="worker-4")
+    assert conn.execute("SELECT state,recovery_owner,last_error FROM workflow_dispatch_outbox WHERE id=?", (uncertain,)).fetchone() == (
+        "uncertain", "operator", "host_launch_outcome_uncertain"
+    )
+    assert conn.execute("SELECT COUNT(*) FROM workflow_dispatch_effects WHERE outbox_id=?", (uncertain,)).fetchone() == (0,)
+
+
+def test_proposed_f5_proven_stable_host_identity_reconciles_without_second_launch(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "f5-host-proof.db"
+    conn = _seed_f5(path)
+    outbox = _admit_f5(conn)
+    assert claim_review_dispatch(conn, outbox_id=outbox, claim_token="claim-proof", claim_owner="dead-worker") == "claimed"
+    assert begin_review_host_launch(conn, outbox_id=outbox, claim_token="claim-proof") == "host_launch_started"
+    assert recover_review_dispatch(
+        sqlite3.connect(path), outbox_id=outbox, claim_owner_proven_dead=True,
+        observed_host_execution_id="host-stable-1", session_id="sess-stable-1",
+    ) == "running"
+    assert conn.execute("SELECT COUNT(*),MIN(host_execution_id),MAX(host_execution_id) FROM workflow_dispatch_effects").fetchone() == (
+        1, "host-stable-1", "host-stable-1"
+    )
+    assert recover_review_dispatch(sqlite3.connect(path), outbox_id=outbox) == "running:callback_reconciler"
+
+
+def test_proposed_f5_late_duplicate_and_stale_callbacks_are_retained_without_resurrection(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "f5-callback.db"
+    conn = _seed_f5(path)
+    cancelled = _admit_f5(conn, suffix="cancelled")
+    cancel_review_dispatch(conn, outbox_id=cancelled, reason="cancel-before-claim")
+    assert record_review_callback(
+        conn, outbox_id=cancelled, task_id="TASK-F5-cancelled",
+        session_id="late-session", result_id="late-result", result_bytes=b"late", observed_revision=4,
+    ) == "ignored_cancelled"
+    after_late = _complete_join_state(path)
+    assert record_review_callback(
+        conn, outbox_id=cancelled, task_id="TASK-F5-cancelled",
+        session_id="late-session", result_id="late-result", result_bytes=b"late", observed_revision=4,
+    ) == "ignored_cancelled"
+    assert _complete_join_state(path) == after_late
+    assert conn.execute("SELECT state FROM workflow_dispatch_outbox WHERE id=?", (cancelled,)).fetchone() == ("cancelled",)
+
+    running = _admit_f5(conn, suffix="callback")
+    claim_review_dispatch(conn, outbox_id=running, claim_token="claim-cb", claim_owner="worker")
+    begin_review_host_launch(conn, outbox_id=running, claim_token="claim-cb")
+    record_review_running(conn, outbox_id=running, claim_token="claim-cb", session_id="sess-cb", host_execution_id="host-cb")
+    conn.execute("UPDATE workflow_rounds SET current_revision=5 WHERE id='round-9'")
+    conn.commit()
+    assert record_review_callback(
+        conn, outbox_id=running, task_id="TASK-F5-callback", session_id="sess-cb",
+        result_id="stale-result", result_bytes=b"stale", observed_revision=4,
+    ) == "ignored_stale_revision_or_lifecycle"
+    assert conn.execute("SELECT state FROM workflow_dispatch_outbox WHERE id=?", (running,)).fetchone() == ("running",)
+    assert conn.execute("SELECT COUNT(*) FROM workflow_dispatch_effects WHERE outbox_id=?", (running,)).fetchone() == (1,)
+    assert conn.execute("SELECT result_id,accepted,disposition FROM workflow_dispatch_callbacks ORDER BY result_id").fetchall() == [
+        ("late-result", 0, "ignored_cancelled"),
+        ("stale-result", 0, "ignored_stale_revision_or_lifecycle"),
+    ]
+
+
+def test_proposed_f5_current_callback_completes_once_without_duplicate_effect(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "f5-callback-current.db"
+    conn = _seed_f5(path)
+    outbox = _admit_f5(conn)
+    claim_review_dispatch(conn, outbox_id=outbox, claim_token="claim-ok", claim_owner="worker")
+    begin_review_host_launch(conn, outbox_id=outbox, claim_token="claim-ok")
+    record_review_running(conn, outbox_id=outbox, claim_token="claim-ok", session_id="sess-ok", host_execution_id="host-ok")
+    assert record_review_callback(
+        conn, outbox_id=outbox, task_id="TASK-F5-one", session_id="sess-ok",
+        result_id="result-ok", result_bytes=b"result", observed_revision=4,
+    ) == "accepted"
+    completed = _complete_join_state(path)
+    assert record_review_callback(
+        conn, outbox_id=outbox, task_id="TASK-F5-one", session_id="sess-ok",
+        result_id="result-ok", result_bytes=b"result", observed_revision=4,
+    ) == "accepted"
+    assert _complete_join_state(path) == completed
+    assert conn.execute("SELECT state,recovery_owner FROM workflow_dispatch_outbox WHERE id=?", (outbox,)).fetchone() == ("completed", "none")
+    assert conn.execute("SELECT state,session_id,result_id FROM workflow_request_task_bridges").fetchone() == (
+        "completed", "sess-ok", "result-ok"
+    )
+    assert conn.execute("SELECT COUNT(*) FROM workflow_dispatch_effects").fetchone() == (1,)

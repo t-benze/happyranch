@@ -1001,4 +1001,158 @@ actually is — it recovers the interrupted old operation and registers `org-b`
 in its stale-recovery interleaving; it does **not** publish generation 2, so the
 generation-2 supersession claim is evidenced by
 `test_proposed_delayed_republish_cannot_adopt_a_newer_generation`, not by that
-probe. Production wiring (F4-D) remains unimplemented; F5 and F6 stay pending.
+probe. Production wiring (F4-D) remains unimplemented; the TASK-8856 section
+below supersedes the F5-pending statement. F6 stays pending.
+
+## 2026-09-24 F5 decision contract and isolated proof (TASK-8856)
+
+This is the active F5 contract. It is proposal and executable isolated evidence
+only: no runtime module imports the helper or fixture, no migration is installed,
+and no protected production delta is approved. F4-D production wiring and F6
+cutover/old-reader/template-CAS work remain pending. An outbox is durable intent,
+not exactly-once host launch.
+
+### Proposed ownership and transaction boundary
+
+The exact proposed production homes are
+`runtime/infrastructure/workflow_schema.py`,
+`runtime/workflows/authority.py`, `runtime/workflows/store.py`, and
+`runtime/workflows/dispatch.py`. Their proposed entry points are
+`WorkflowStore.admit_request`, `WorkflowDispatcher.claim_outbox`,
+`WorkflowDispatcher.begin_host_launch`,
+`WorkflowDispatcher.record_running`, `WorkflowDispatcher.recover_outbox`,
+`WorkflowStore.record_callback`, and `WorkflowStore.cancel_dispatch`.
+
+`WorkflowStore.admit_request` is the sole admission transaction owner. Its order
+is: authenticate at the existing route boundary; acquire `org.db_lock`, then the
+database connection's existing reentrant lock; `BEGIN IMMEDIATE`; re-read the
+ready authority pointer/generation/digest, active authorization revision,
+reviewing instance/round, immutable current submission revision and submitted-
+byte digest; atomically insert the review request, task row, request/task bridge,
+operation event and launch outbox intent; commit or roll back every row; release
+both locks; only then notify the in-memory queue. No filesystem, network,
+notification or host call occurs while the transaction or locks are held.
+
+The current `Database.insert_task` commits, while
+`insert_task_with_attachments`, `try_delegate`, and `try_delegate_many` own
+their transactions. None may be nested here. The precise proposed insertion
+seam is `Database._insert_task_uncommitted(task)`: it accepts only an already-
+held database lock and caller-owned `BEGIN IMMEDIATE`, performs task-ID
+allocation and the task insert without commit/rollback, and is byte/column,
+default, validation, conflict and error equivalent to the ordinary
+`Database.insert_task` insert path. Its ordinary wrapper becomes
+`BEGIN IMMEDIATE -> _insert_task_uncommitted -> commit`, preserving callers.
+This seam is itself a separately protected production choice.
+
+The consumer uses a second short `BEGIN IMMEDIATE` under the same lock order to
+claim exactly one queued outbox row and re-read authority generation/digest,
+active authorization, current immutable revision, request ownership and
+cancellation. It commits the claim before releasing all locks. Immediately
+before a possible host call it repeats those checks in another short transaction
+and commits `host_launch_started=1`; only then does it call the existing
+SessionTracker/host-supervisor launch seam with no workflow or DB lock held. The
+acknowledgement transaction records exact task, session and stable host execution
+identity plus one effect row. Existing callback order remains
+`org.db_lock -> binding_lease -> callback transaction`; the workflow bridge
+joins inside that transaction and never inverts or spans the lease. Cancellation
+first fences the workflow row in a short transaction and invokes existing
+external task/session control only after commit.
+
+### Durable identities, replay and recovery
+
+The logical operation key is `(org_slug, authenticated_principal,
+operation_key)`; its digest covers action, instance/round/request/principal,
+assignment generation, exact task ID and request-body digest. An identical
+retry/reopen returns the existing outbox. Reuse with any different digest or
+target is a conflict and writes nothing. The outbox/effect key is
+`workflow-review-launch:<request_id>:<assignment_generation>`; task/session/
+result IDs are independent bridge identities. Events use `(operation_id,
+event_seq)` plus canonical bytes/digest. Result IDs are globally idempotent:
+same ID/digest returns its retained disposition; a different digest conflicts
+with zero mutation.
+
+| Durable state | Meaning | Sole automatic recovery owner | Permitted recovery |
+| --- | --- | --- | --- |
+| `queued` | admission committed; notification may be absent | outbox publisher | re-notify/claim; never create a second operation |
+| `claimed`, launch flag 0 | exclusive live claim; no host boundary crossed | claim owner; reconciler only with affirmative dead-owner proof | preserve or return the same row to `queued` |
+| `claimed`, launch flag 1 | host call may have happened | dispatch reconciler | prove stable host execution/session and record `running`, else `uncertain` |
+| `running` | stable host execution/session durably known | callback reconciler | reconcile exact callback/result; never launch again |
+| `cancelled` | cancellation fenced before possible launch | none/operator history | retain rows and callbacks; never launch or resurrect |
+| `uncertain` | possible host effect lacks acknowledgement | operator | block blind replay; supported lookup may reconcile, else explicit supported disposition |
+| `completed` | exact current callback bridged | none | idempotent reads/duplicate callback retention only |
+
+A committed admission observed before post-commit notification is a normal
+`queued` recovery, not rollback. At the host boundary, absent acknowledgement
+does not prove that launch did not occur. Current SessionTracker/host-supervisor
+code exposes no durable stable execution lookup, so default recovery is operator-
+visible `uncertain`, with automatic replay disabled. A future supported adapter
+may prove the stable host execution ID and session; reconciliation then inserts
+the one effect and transitions to `running` idempotently. Operator projection
+renders `queued`/`claimed`/`running` as pending with owner and last event,
+`cancelled`/`completed` as terminal history, and `uncertain` as error/
+`reconciliation_required` with no retry action.
+
+Every callback is appended with task/session/result/digest, observed revision,
+accepted bit and disposition. A cancelled, uncertain, wrong-task/session or
+stale-revision callback is retained but cannot change the operation/bridge,
+advance a superseded revision, recreate a task or insert another launch effect.
+Only the exact current running callback completes the bridge and operation.
+
+### Current seams and executable controls
+
+Current production source has no competing workflow implementation.
+`runtime/infrastructure/database.py` owns task/result rows and the self-
+committing helpers above; `runtime/daemon/queue.py:TaskQueue` is an in-memory
+notification/dispatch consumer; `runtime/orchestrator/run_step.py` owns launch,
+SessionTracker registration, result handling and `org.db_lock -> binding_lease`
+callback completion; `runtime/daemon/routes/tasks.py` owns cancellation and task
+callbacks; `runtime/daemon/routes/threads.py` and
+`runtime/daemon/routes/agents.py` are request/task writers; startup recovery is
+in `runtime/daemon/__main__.py`. Current authority-policy v2 checks must be
+joined, not replaced or weakened.
+
+The executable seam is the six F5 tables in
+`tests/fixtures/workflow_u0/proposed_workflow_schema.sql`, the F5 helpers in
+`tests/workflows/u0_evidence_helpers.py`, and ten controls selected by
+`pytest .../test_u0_migration_recovery.py -k proposed_f5`. Together they prove:
+(1) stale authority and noncurrent PRD revisions leave no request/task/outbox
+residue; (2) request+bridge+event+outbox commit atomically and an independent
+observer sees them before notification; (3) identical replay reuses all rows
+while conflicting replay adds none; (4) claims are exclusive and claim/start
+revalidation fences stale/revoked/cancelled/foreign work; (5) cancellation
+before claim or after claim but before launch preserves history and creates no
+effect; (6) queued, claimed, committed-pre-notify, running-confirmed and host-
+uncertain reopen boundaries name an owner; (7) possible launch without proof
+becomes `uncertain` and cannot be claimed again; (8) stable host proof reconciles
+without a second launch; and (9) late, duplicate, stale and current callbacks
+retain attribution without resurrection, revision advance or duplicate effect.
+Assertions compare complete independent snapshots or exact cross-table rows and
+zero-residue negatives.
+
+### Protected production deltas and delivery units
+
+Each item needs its own exact founder/manager disposition; F5 approves none:
+
+1. Additive production workflow tables/indexes and migration/version contract
+   in `workflow_schema.py`, including compatibility/cutover policy.
+2. `Database._insert_task_uncommitted` plus ordinary-wrapper equivalence and the
+   lock/transaction contract in `database.py`.
+3. `WorkflowStore` admission/cancel/callback bridge and integration with current
+   authority-policy v2 result-stage checks.
+4. Durable outbox claim/recovery plus `TaskQueue` notification/startup wiring,
+   including dead-owner evidence and the default uncertain projection.
+5. SessionTracker/host-supervisor launch integration and any stable host-
+   execution lookup; absent that protected capability, uncertain is mandatory.
+6. Task-route cancellation, callback and operator pending/error projection,
+   preserving current lock order and external-control compensation.
+
+Implementation units are schema/store, task insertion seam, dispatcher/recovery,
+callback/cancellation, and projection. Independent review must separately audit
+schema compatibility, lock order/transaction ownership, crash/replay semantics,
+host idempotency claims, authority-policy joining and callback non-resurrection.
+QA must cover fresh install/reopen, concurrent claim/cancel, each crash boundary,
+stable-host and no-stable-host recovery, stale/duplicate callbacks and operator
+projection before rollout. No implementation starts until these protected
+choices are accepted. Comparative study remains NOT RUN and off the Phase1
+critical path; fork/join, pipeline carriers and Phase2 migration remain excluded.
+Evidence remains **UNACCEPTED / D5 NOT READY**.

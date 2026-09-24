@@ -1453,3 +1453,642 @@ def compensate_profile_operation(coordinator: sqlite3.Connection, *, operation_i
         return "aborted_profile_operation"
     finally:
         _release_profile_lease(coordinator, profile_name, owner)
+
+
+# F5 isolated request/task/outbox proof.  These helpers deliberately model a
+# future workflow-owned service; runtime production imports neither this module
+# nor the fixture schema.
+
+
+def _dispatch_identity(prefix: str, *parts: object) -> str:
+    return f"{prefix}-" + sha256_bytes(canonical(list(parts)))[:16]
+
+
+def _append_dispatch_event(
+    conn: sqlite3.Connection,
+    *,
+    operation_id: str,
+    event_kind: str,
+    state_before: str | None,
+    state_after: str,
+    payload: dict[str, object],
+) -> None:
+    seq = conn.execute(
+        "SELECT COALESCE(MAX(event_seq),0)+1 FROM workflow_dispatch_events WHERE operation_id=?",
+        (operation_id,),
+    ).fetchone()[0]
+    event_bytes = canonical(payload)
+    event_digest = sha256_bytes(
+        canonical(
+            {
+                "operation_id": operation_id,
+                "seq": seq,
+                "kind": event_kind,
+                "before": state_before,
+                "after": state_after,
+                "payload": payload,
+            }
+        )
+    )
+    conn.execute(
+        "INSERT INTO workflow_dispatch_events VALUES (?,?,?,?,?,?,?,?,?)",
+        (
+            _dispatch_identity("dispatch-event", operation_id, seq, event_digest),
+            operation_id,
+            seq,
+            event_kind,
+            state_before,
+            state_after,
+            event_bytes,
+            event_digest,
+            "now",
+        ),
+    )
+
+
+def _current_dispatch_contract(
+    conn: sqlite3.Connection,
+    *,
+    instance_id: str,
+    round_id: str,
+) -> tuple[object, ...]:
+    row = conn.execute(
+        """SELECT i.status, rd.state, rd.current_revision, s.revision,
+                  s.submission_digest, s.submission_bytes, tv.namespace,
+                  b.authorization_revision_id, aa.authorization_revision_id,
+                  p.current_generation, p.snapshot_digest, p.state
+           FROM workflow_instances i
+           JOIN workflow_rounds rd ON rd.instance_id=i.id AND rd.id=?
+           JOIN workflow_submissions s ON s.id=rd.submission_id AND s.instance_id=i.id
+           JOIN workflow_binding_snapshots b ON b.id=i.binding_snapshot_id
+           JOIN workflow_template_versions tv ON tv.id=b.template_version_id
+           LEFT JOIN workflow_active_authorizations aa ON aa.namespace=tv.namespace
+           LEFT JOIN workflow_authority_pointers p ON p.namespace=tv.namespace
+           WHERE i.id=?""",
+        (round_id, instance_id),
+    ).fetchone()
+    if row is None:
+        raise ValueError("dispatch_target_missing")
+    if row[0] != "reviewing" or row[1] != "reviewing":
+        raise ValueError("dispatch_cancelled_or_not_reviewing")
+    if row[2] != row[3]:
+        raise ValueError("artifact_revision_not_current")
+    if row[7] is None or row[8] is None or row[7] != row[8]:
+        raise ValueError("active_authorization_not_current")
+    if sha256_bytes(row[5]) != row[4]:
+        raise ValueError("submitted_bytes_digest_required")
+    if row[9] is None or row[11] != "ready":
+        raise ValueError("authority_pointer_not_ready")
+    return row
+
+
+def admit_review_dispatch(
+    conn: sqlite3.Connection,
+    *,
+    org_slug: str,
+    principal: str,
+    operation_key: str,
+    body: bytes,
+    instance_id: str,
+    round_id: str,
+    request_id: str,
+    request_principal: str,
+    assignment_generation: int,
+    task_id: str,
+    expected_authority_generation: int,
+    expected_authority_digest: str,
+    expected_revision: int,
+    before_outbox: Callable[[], None] | None = None,
+    after_commit: Callable[[str], None] | None = None,
+) -> str:
+    """Atomically admit one review request/task bridge/outbox operation.
+
+    Authentication is assumed to have happened before this isolated service
+    seam.  Current authority and immutable PRD revision are re-read only after
+    this helper owns ``BEGIN IMMEDIATE``.  Notification is a post-commit hint.
+    """
+    _require_idle(conn)
+    request_digest = sha256_bytes(
+        canonical(
+            {
+                "action": "open_review",
+                "target": [instance_id, round_id, request_id, request_principal],
+                "assignment_generation": assignment_generation,
+                "task_id": task_id,
+                "body_sha256": sha256_bytes(body),
+            }
+        )
+    )
+    operation_id = _dispatch_identity("dispatch-operation", org_slug, principal, operation_key)
+    outbox_id = _dispatch_identity("dispatch-outbox", request_id, assignment_generation)
+    effect_key = f"workflow-review-launch:{request_id}:{assignment_generation}"
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        current = _current_dispatch_contract(conn, instance_id=instance_id, round_id=round_id)
+        if current[9] != expected_authority_generation:
+            raise ValueError("authority_generation_stale")
+        if current[10] != expected_authority_digest:
+            raise ValueError("authority_digest_stale")
+        if current[2] != expected_revision:
+            raise ValueError("artifact_revision_stale")
+        prior = conn.execute(
+            """SELECT id, request_digest, instance_id, round_id, request_id
+               FROM workflow_dispatch_operations
+               WHERE org_slug=? AND principal=? AND operation_key=?""",
+            (org_slug, principal, operation_key),
+        ).fetchone()
+        if prior is not None:
+            if prior[1:] != (request_digest, instance_id, round_id, request_id):
+                raise ValueError("operation_key_body_conflict")
+            existing = conn.execute(
+                "SELECT id FROM workflow_dispatch_outbox WHERE operation_id=?",
+                (prior[0],),
+            ).fetchone()
+            if existing is None:
+                raise ValueError("operation_replay_incoherent")
+            conn.commit()
+            return existing[0]
+        conn.execute(
+            "INSERT INTO workflow_review_requests VALUES (?,?,?,?,?,?, 'pending',NULL)",
+            (
+                request_id,
+                round_id,
+                request_principal,
+                assignment_generation,
+                body,
+                request_digest,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO workflow_dispatch_operations VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                operation_id,
+                org_slug,
+                principal,
+                operation_key,
+                request_digest,
+                instance_id,
+                round_id,
+                request_id,
+                "admitted",
+                "now",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO workflow_request_task_bridges VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                request_id,
+                operation_id,
+                instance_id,
+                task_id,
+                request_principal,
+                assignment_generation,
+                None,
+                None,
+                "queued",
+                "now",
+            ),
+        )
+        _append_dispatch_event(
+            conn,
+            operation_id=operation_id,
+            event_kind="request_committed",
+            state_before=None,
+            state_after="queued",
+            payload={"request_id": request_id, "task_id": task_id, "request_digest": request_digest},
+        )
+        if before_outbox is not None:
+            before_outbox()
+        conn.execute(
+            "INSERT INTO workflow_dispatch_outbox VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                outbox_id,
+                operation_id,
+                request_id,
+                effect_key,
+                current[6],
+                current[9],
+                current[10],
+                current[2],
+                "queued",
+                None,
+                None,
+                0,
+                effect_key,
+                None,
+                "outbox_publisher",
+                None,
+                "now",
+                "now",
+            ),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    if after_commit is not None:
+        after_commit(outbox_id)
+    return outbox_id
+
+
+def _dispatch_row(conn: sqlite3.Connection, outbox_id: str) -> tuple[object, ...]:
+    row = conn.execute(
+        """SELECT o.id, o.operation_id, o.request_id, o.state, o.claim_token,
+                  o.host_launch_started, o.authority_namespace,
+                  o.authority_generation, o.authority_digest, o.artifact_revision,
+                  b.task_id, b.assigned_principal, b.assignment_generation,
+                  b.session_id, b.result_id, b.state,
+                  op.instance_id, op.round_id
+           FROM workflow_dispatch_outbox o
+           JOIN workflow_request_task_bridges b ON b.request_id=o.request_id
+           JOIN workflow_dispatch_operations op ON op.id=o.operation_id
+           WHERE o.id=?""",
+        (outbox_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError("dispatch_outbox_missing")
+    return row
+
+
+def _claim_revalidation_reason(conn: sqlite3.Connection, row: tuple[object, ...]) -> str | None:
+    try:
+        current = _current_dispatch_contract(conn, instance_id=str(row[16]), round_id=str(row[17]))
+    except ValueError as exc:
+        return str(exc)
+    if current[6] != row[6] or current[9] != row[7] or current[10] != row[8]:
+        return "authority_generation_or_digest_stale"
+    if current[2] != row[9]:
+        return "artifact_revision_stale"
+    request = conn.execute(
+        "SELECT principal, assignment_generation, status FROM workflow_review_requests WHERE id=?",
+        (row[2],),
+    ).fetchone()
+    if request != (row[11], row[12], "pending"):
+        return "request_ownership_stale"
+    return None
+
+
+def _cancel_dispatch_in_transaction(
+    conn: sqlite3.Connection,
+    row: tuple[object, ...],
+    *,
+    reason: str,
+) -> None:
+    conn.execute(
+        """UPDATE workflow_dispatch_outbox
+           SET state='cancelled', recovery_owner='operator', last_error=?, updated_at='now'
+           WHERE id=?""",
+        (reason, row[0]),
+    )
+    conn.execute(
+        "UPDATE workflow_request_task_bridges SET state='cancelled' WHERE request_id=?",
+        (row[2],),
+    )
+    conn.execute(
+        "UPDATE workflow_dispatch_operations SET state='cancelled' WHERE id=?",
+        (row[1],),
+    )
+    _append_dispatch_event(
+        conn,
+        operation_id=str(row[1]),
+        event_kind="dispatch_cancelled_before_launch",
+        state_before=str(row[3]),
+        state_after="cancelled",
+        payload={"reason": reason, "task_id": row[10]},
+    )
+
+
+def claim_review_dispatch(
+    conn: sqlite3.Connection,
+    *,
+    outbox_id: str,
+    claim_token: str,
+    claim_owner: str,
+) -> str:
+    _require_idle(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = _dispatch_row(conn, outbox_id)
+        if row[3] == "claimed" and row[4] == claim_token:
+            conn.commit()
+            return "claimed"
+        if row[3] != "queued":
+            raise ValueError(f"dispatch_not_claimable:{row[3]}")
+        reason = _claim_revalidation_reason(conn, row)
+        if reason is not None:
+            _cancel_dispatch_in_transaction(conn, row, reason=reason)
+            conn.commit()
+            return f"cancelled:{reason}"
+        changed = conn.execute(
+            """UPDATE workflow_dispatch_outbox
+               SET state='claimed', claim_token=?, claim_owner=?, recovery_owner='dispatch_reconciler', updated_at='now'
+               WHERE id=? AND state='queued'""",
+            (claim_token, claim_owner, outbox_id),
+        ).rowcount
+        if changed != 1:
+            raise ValueError("dispatch_claim_lost")
+        conn.execute(
+            "UPDATE workflow_request_task_bridges SET state='claimed' WHERE request_id=?",
+            (row[2],),
+        )
+        _append_dispatch_event(
+            conn,
+            operation_id=str(row[1]),
+            event_kind="dispatch_claimed",
+            state_before="queued",
+            state_after="claimed",
+            payload={"claim_token": claim_token, "claim_owner": claim_owner},
+        )
+        conn.commit()
+        return "claimed"
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def cancel_review_dispatch(conn: sqlite3.Connection, *, outbox_id: str, reason: str) -> str:
+    _require_idle(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = _dispatch_row(conn, outbox_id)
+        if row[3] == "cancelled":
+            conn.commit()
+            return "cancelled"
+        if row[3] not in {"queued", "claimed"} or row[5] != 0:
+            raise ValueError("dispatch_requires_supervised_cancellation")
+        _cancel_dispatch_in_transaction(conn, row, reason=reason)
+        conn.commit()
+        return "cancelled"
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def begin_review_host_launch(
+    conn: sqlite3.Connection,
+    *,
+    outbox_id: str,
+    claim_token: str,
+) -> str:
+    """Persist the possible-host-effect boundary before calling the host."""
+    _require_idle(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = _dispatch_row(conn, outbox_id)
+        if row[3] != "claimed" or row[4] != claim_token or row[5] != 0:
+            raise ValueError("dispatch_claim_not_owned")
+        reason = _claim_revalidation_reason(conn, row)
+        if reason is not None:
+            _cancel_dispatch_in_transaction(conn, row, reason=reason)
+            conn.commit()
+            return f"cancelled:{reason}"
+        conn.execute(
+            "UPDATE workflow_dispatch_outbox SET host_launch_started=1, updated_at='now' WHERE id=?",
+            (outbox_id,),
+        )
+        _append_dispatch_event(
+            conn,
+            operation_id=str(row[1]),
+            event_kind="host_launch_started",
+            state_before="claimed",
+            state_after="claimed",
+            payload={"host_execution_key": conn.execute("SELECT host_execution_key FROM workflow_dispatch_outbox WHERE id=?", (outbox_id,)).fetchone()[0]},
+        )
+        conn.commit()
+        return "host_launch_started"
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def record_review_running(
+    conn: sqlite3.Connection,
+    *,
+    outbox_id: str,
+    claim_token: str,
+    session_id: str,
+    host_execution_id: str,
+) -> str:
+    _require_idle(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = _dispatch_row(conn, outbox_id)
+        if row[3] == "running":
+            existing = conn.execute(
+                "SELECT session_id, host_execution_id FROM workflow_request_task_bridges b JOIN workflow_dispatch_outbox o ON o.request_id=b.request_id WHERE o.id=?",
+                (outbox_id,),
+            ).fetchone()
+            if existing == (session_id, host_execution_id):
+                conn.commit()
+                return "running"
+        if row[3] != "claimed" or row[4] != claim_token or row[5] != 1:
+            raise ValueError("host_launch_not_acknowledgeable")
+        reason = _claim_revalidation_reason(conn, row)
+        if reason is not None:
+            raise ValueError(f"host_launch_ack_stale:{reason}")
+        conn.execute(
+            """UPDATE workflow_dispatch_outbox
+               SET state='running', host_execution_id=?, recovery_owner='callback_reconciler', updated_at='now'
+               WHERE id=?""",
+            (host_execution_id, outbox_id),
+        )
+        conn.execute(
+            "UPDATE workflow_request_task_bridges SET state='running', session_id=? WHERE request_id=?",
+            (session_id, row[2]),
+        )
+        effect_key = conn.execute(
+            "SELECT effect_key FROM workflow_dispatch_outbox WHERE id=?", (outbox_id,)
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO workflow_dispatch_effects VALUES (?,?,?,?,?,?,?,?)",
+            (
+                _dispatch_identity("dispatch-effect", effect_key),
+                outbox_id,
+                effect_key,
+                "host_launch_observed",
+                row[10],
+                session_id,
+                host_execution_id,
+                "now",
+            ),
+        )
+        _append_dispatch_event(
+            conn,
+            operation_id=str(row[1]),
+            event_kind="host_running_confirmed",
+            state_before="claimed",
+            state_after="running",
+            payload={"session_id": session_id, "host_execution_id": host_execution_id},
+        )
+        conn.commit()
+        return "running"
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def recover_review_dispatch(
+    conn: sqlite3.Connection,
+    *,
+    outbox_id: str,
+    claim_owner_proven_dead: bool = False,
+    observed_host_execution_id: str | None = None,
+    session_id: str | None = None,
+) -> str:
+    """Cold recovery.  Possible host effect without proof becomes uncertain."""
+    _require_idle(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = _dispatch_row(conn, outbox_id)
+        if row[3] == "queued":
+            conn.commit()
+            return "queued:outbox_publisher"
+        if row[3] == "running":
+            conn.commit()
+            return "running:callback_reconciler"
+        if row[3] == "uncertain":
+            conn.commit()
+            return "uncertain:operator"
+        if row[3] in {"cancelled", "completed"}:
+            conn.commit()
+            return f"{row[3]}:terminal"
+        if row[3] != "claimed" or not claim_owner_proven_dead:
+            conn.commit()
+            return "claimed:claim_owner"
+        if row[5] == 0:
+            conn.execute(
+                """UPDATE workflow_dispatch_outbox
+                   SET state='queued', claim_token=NULL, claim_owner=NULL,
+                       recovery_owner='outbox_publisher', updated_at='now'
+                   WHERE id=?""",
+                (outbox_id,),
+            )
+            conn.execute(
+                "UPDATE workflow_request_task_bridges SET state='queued' WHERE request_id=?",
+                (row[2],),
+            )
+            _append_dispatch_event(
+                conn,
+                operation_id=str(row[1]),
+                event_kind="dead_claim_requeued",
+                state_before="claimed",
+                state_after="queued",
+                payload={"task_id": row[10]},
+            )
+            conn.commit()
+            return "queued:outbox_publisher"
+        if observed_host_execution_id is not None and session_id is not None:
+            # A supported host adapter may prove the stable execution identity.
+            conn.commit()
+            return record_review_running(
+                conn,
+                outbox_id=outbox_id,
+                claim_token=str(row[4]),
+                session_id=session_id,
+                host_execution_id=observed_host_execution_id,
+            )
+        conn.execute(
+            """UPDATE workflow_dispatch_outbox
+               SET state='uncertain', recovery_owner='operator',
+                   last_error='host_launch_outcome_uncertain', updated_at='now'
+               WHERE id=?""",
+            (outbox_id,),
+        )
+        conn.execute(
+            "UPDATE workflow_request_task_bridges SET state='uncertain' WHERE request_id=?",
+            (row[2],),
+        )
+        _append_dispatch_event(
+            conn,
+            operation_id=str(row[1]),
+            event_kind="host_launch_uncertain",
+            state_before="claimed",
+            state_after="uncertain",
+            payload={"task_id": row[10], "blind_replay": False},
+        )
+        conn.commit()
+        return "uncertain:operator"
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def record_review_callback(
+    conn: sqlite3.Connection,
+    *,
+    outbox_id: str,
+    task_id: str,
+    session_id: str,
+    result_id: str,
+    result_bytes: bytes,
+    observed_revision: int,
+) -> str:
+    """Retain every callback identity; only the exact current running bridge advances."""
+    _require_idle(conn)
+    result_digest = sha256_bytes(result_bytes)
+    callback_id = _dispatch_identity("dispatch-callback", outbox_id, task_id, session_id, result_id)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        prior = conn.execute(
+            "SELECT result_digest, disposition FROM workflow_dispatch_callbacks WHERE result_id=?",
+            (result_id,),
+        ).fetchone()
+        if prior is not None:
+            if prior[0] != result_digest:
+                raise ValueError("callback_result_conflict")
+            conn.commit()
+            return str(prior[1])
+        row = _dispatch_row(conn, outbox_id)
+        current = conn.execute(
+            "SELECT i.status, rd.state, rd.current_revision FROM workflow_dispatch_operations op JOIN workflow_instances i ON i.id=op.instance_id JOIN workflow_rounds rd ON rd.id=op.round_id WHERE op.id=?",
+            (row[1],),
+        ).fetchone()
+        disposition = "accepted"
+        accepted = 1
+        if row[3] != "running":
+            disposition, accepted = f"ignored_{row[3]}", 0
+        elif (task_id, session_id) != (row[10], row[13]):
+            disposition, accepted = "ignored_wrong_task_or_session", 0
+        elif current != ("reviewing", "reviewing", observed_revision) or observed_revision != row[9]:
+            disposition, accepted = "ignored_stale_revision_or_lifecycle", 0
+        conn.execute(
+            "INSERT INTO workflow_dispatch_callbacks VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                callback_id,
+                outbox_id,
+                task_id,
+                session_id,
+                result_id,
+                result_digest,
+                observed_revision,
+                accepted,
+                disposition,
+                "now",
+            ),
+        )
+        if accepted:
+            conn.execute(
+                "UPDATE workflow_dispatch_outbox SET state='completed', recovery_owner='none', updated_at='now' WHERE id=?",
+                (outbox_id,),
+            )
+            conn.execute(
+                "UPDATE workflow_request_task_bridges SET state='completed', result_id=? WHERE request_id=?",
+                (result_id, row[2]),
+            )
+            conn.execute(
+                "UPDATE workflow_dispatch_operations SET state='completed' WHERE id=?",
+                (row[1],),
+            )
+            _append_dispatch_event(
+                conn,
+                operation_id=str(row[1]),
+                event_kind="callback_attributed",
+                state_before="running",
+                state_after="completed",
+                payload={"task_id": task_id, "session_id": session_id, "result_id": result_id},
+            )
+        conn.commit()
+        return disposition
+    except Exception:
+        conn.rollback()
+        raise
