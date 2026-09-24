@@ -32,13 +32,13 @@ def _rows(db: Database, table: str) -> int:
     return int(db._conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"])
 
 
-def _snapshot(fixture: _ShippingFixture) -> dict:
+def _snapshot(fixture: _ShippingFixture, team: str = "engineering") -> dict:
     db = fixture.org.db
-    selector = db.get_authority_selector("engineering")
+    selector = db.get_authority_selector(team)
     history, cursor = AuthorityPolicyStore(db).list_v2_history(
-        "engineering", cursor=None, limit=100,
+        team, cursor=None, limit=100,
     )
-    audits = db.list_authority_policy_v2_control_audit("engineering")
+    audits = db.list_authority_policy_v2_control_audit(team)
     receipts = [
         json.loads(row["payload_json"])["receipt"]
         for row in audits
@@ -121,6 +121,8 @@ def main() -> int:
             try:
                 if command == "snapshot":
                     result = _snapshot(fixture)
+                elif command == "snapshot_content":
+                    result = _snapshot(fixture, "content")
                 elif command == "fault_on":
                     if not fault_armed:
                         def failing_audit_insert(self, **kwargs):

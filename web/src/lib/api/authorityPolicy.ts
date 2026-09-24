@@ -611,8 +611,12 @@ export function decodeAuthorityPolicyV2HistoryResponse(
 
 export function decodeV2AuthorityPolicyControlResponse(
   value: unknown,
+  expectedTeam: string,
 ): V2AuthorityPolicyControlResponse {
   if (
+    !isNonEmptyString(expectedTeam) ||
+    expectedTeam.length > 128 ||
+    expectedTeam !== expectedTeam.trim() ||
     !isRecord(value) ||
     (value.control !== 'v2_create_activate' && value.control !== 'v2_activate') ||
     value.family !== 'v2' ||
@@ -628,7 +632,7 @@ export function decodeV2AuthorityPolicyControlResponse(
   }
   const receipt = value.receipt;
   if (
-    receipt.team !== 'engineering' ||
+    receipt.team !== expectedTeam ||
     (receipt.kind !== 'v2_create_activate' && receipt.kind !== 'v2_activate') ||
     !(receipt.create_request_id === null || isNonEmptyString(receipt.create_request_id)) ||
     !(receipt.create_request_digest === null ||
@@ -694,7 +698,7 @@ export const createAndActivateTeamEscalationPolicyV2 = (
 ): Promise<V2AuthorityPolicyControlResponse> =>
   request<unknown>(`/orgs/${slug}/agents/${agentName}/team-escalation-policy/v2/releases`, {
     method: 'POST', body,
-  }).then(decodeV2AuthorityPolicyControlResponse);
+  }).then((value) => decodeV2AuthorityPolicyControlResponse(value, body.team));
 
 export const activateTeamEscalationPolicyV2 = (
   slug: string,
@@ -703,7 +707,7 @@ export const activateTeamEscalationPolicyV2 = (
 ): Promise<V2AuthorityPolicyControlResponse> =>
   request<unknown>(`/orgs/${slug}/agents/${agentName}/team-escalation-policy/v2/activations`, {
     method: 'POST', body,
-  }).then(decodeV2AuthorityPolicyControlResponse);
+  }).then((value) => decodeV2AuthorityPolicyControlResponse(value, body.team));
 
 export const getTeamEscalationPolicyHistory = (slug: string, agentName: string, cursor?: string) =>
   request<unknown>(`/orgs/${slug}/agents/${agentName}/team-escalation-policy/history?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)

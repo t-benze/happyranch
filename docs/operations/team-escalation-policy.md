@@ -18,16 +18,17 @@ server cursor and `1 <= limit <= 50`. The first request omits `cursor`; its
 response cursor binds every later page to that initial snapshot and to a
 deterministic newest-first keyset. Rows inserted after page one therefore do
 not shift, duplicate, or hide rows in the in-progress traversal.
-The UI keeps independent cursors for the two lists and exposes keyboard-native
-Load more controls, explicit loading/error/empty/end states, and lossless
-append of each server page. A later-page failure preserves every loaded row and
-leaves an independent keyboard-native retry for that stream's failed cursor;
-retry appends the page once without resetting or duplicating earlier rows.
-History omits policy prose and prompts. Outcomes show only durable identity
-pins and causal task/result/session/thread/hook/envelope receipts. Missing or
-corrupt joins are `receipt_incomplete`, never inferred success. Raw evaluator
-responses, rationale, proposed reason, prompts, policy content, credentials,
-and secrets are never projected.
+Those cursor, snapshot, pagination, and retry semantics remain available to
+API compatibility consumers, and the durable rows remain intact. The current
+UI neither renders the two legacy read-only sections nor eagerly requests the
+`/history` or `/outcomes` endpoints, so it has no legacy cursor, Load more,
+loading/error/empty/end, or per-stream retry controls. The separate immutable
+dual-text `/v2/history` UI remains unchanged. Legacy history omits policy prose
+and prompts. Outcomes expose only durable identity pins and causal
+task/result/session/thread/hook/envelope receipts. Missing or corrupt joins are
+`receipt_incomplete`, never inferred success. Raw evaluator responses,
+rationale, proposed reason, prompts, policy content, credentials, and secrets
+are never projected.
 
 Save creates an immutable inactive release. Save & activate remains an explicit
 founder-authorized action. Every selection is fenced by the authenticated team

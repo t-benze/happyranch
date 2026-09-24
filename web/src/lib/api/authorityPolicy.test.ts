@@ -25,9 +25,12 @@ const SELECTOR_ID = `APS-${'c'.repeat(64)}`;
 const RELEASE_DIGEST = 'd'.repeat(64);
 const ACTIVATION_DIGEST = 'e'.repeat(64);
 
-function v2ControlReceipt(kind: 'v2_create_activate' | 'v2_activate') {
+function v2ControlReceipt(
+  kind: 'v2_create_activate' | 'v2_activate',
+  team = 'engineering',
+) {
   return {
-    team: 'engineering', kind,
+    team, kind,
     create_request_id: kind === 'v2_create_activate' ? 'req-create-1' : null,
     create_request_digest: kind === 'v2_create_activate' ? 'a'.repeat(64) : null,
     activation_request_id: 'req-activate-1', activation_request_digest: 'b'.repeat(64),
@@ -239,6 +242,135 @@ describe('team escalation policy response contract', () => {
 
     vi.mocked(request).mockResolvedValue({ control: 'v2_activate', family: 'legacy_v1' });
     await expect(activateTeamEscalationPolicyV2('alpha', 'engineering_manager', body))
+      .rejects.toThrow('Invalid authority policy v2 control response');
+  });
+
+  it('accepts a Content paired control receipt and decodes its active GET readback', async () => {
+    const contentStarter = {
+      ...v2Starter,
+      policy_id: 'team-ed7002b439e9ac84-dual-text',
+      title: 'Content escalation policy',
+    };
+    const body = {
+      team: 'content', policy_id: contentStarter.policy_id, title: contentStarter.title,
+      create_request_id: 'req-create-content', activation_request_id: 'req-activate-content',
+      based_on_selector_id: SELECTOR_ID, expected_selector_id: SELECTOR_ID,
+      action: 'activate' as const, what_to_escalate: 'Escalate Content work.',
+      what_not_to_escalate: 'Continue Content work.',
+      acknowledge_shared_credential_attribution: true as const,
+    };
+    const receipt = {
+      ...v2ControlReceipt('v2_create_activate', 'content'),
+      create_request_id: body.create_request_id,
+      activation_request_id: body.activation_request_id,
+    };
+    const contentReadback = {
+      ...v2,
+      team: 'content',
+      target_manager: 'content_manager',
+      bootstrap_template: null,
+      v2_starter: contentStarter,
+      active: {
+        ...v2.active,
+        release: {
+          ...v2.active.release,
+          policy_id: contentStarter.policy_id,
+          title: contentStarter.title,
+          what_to_escalate: body.what_to_escalate,
+          what_not_to_escalate: body.what_not_to_escalate,
+        },
+      },
+    };
+    vi.mocked(request)
+      .mockResolvedValueOnce({
+        control: 'v2_create_activate', family: 'v2', contract_version: 'v2',
+        selector_id: SELECTOR_ID, selector_epoch: 3, previous_selector_id: SELECTOR_ID,
+        receipt,
+      })
+      .mockResolvedValueOnce(contentReadback);
+
+    await expect(createAndActivateTeamEscalationPolicyV2('alpha', 'content_manager', body))
+      .resolves.toMatchObject({ receipt: { team: 'content', release_id: receipt.release_id } });
+    await expect(getTeamEscalationPolicy('alpha', 'content_manager')).resolves.toMatchObject({
+      team: 'content',
+      target_manager: 'content_manager',
+      family: 'v2',
+      active: {
+        release: {
+          policy_id: contentStarter.policy_id,
+          title: contentStarter.title,
+          what_to_escalate: body.what_to_escalate,
+          what_not_to_escalate: body.what_not_to_escalate,
+        },
+      },
+    });
+  });
+
+  it('accepts a Content activation receipt bound to its submitted team', async () => {
+    const body = {
+      team: 'content', release_id: `APV2-${RELEASE_DIGEST}`, request_id: 'req-content-rollback',
+      expected_selector_id: SELECTOR_ID, action: 'reactivate_rollback' as const,
+      acknowledge_shared_credential_attribution: true as const,
+    };
+    vi.mocked(request).mockResolvedValue({
+      control: 'v2_activate', family: 'v2', contract_version: 'v2',
+      selector_id: SELECTOR_ID, selector_epoch: 3, previous_selector_id: SELECTOR_ID,
+      receipt: {
+        ...v2ControlReceipt('v2_activate', 'content'),
+        activation_request_id: body.request_id,
+        action: body.action,
+      },
+    });
+
+    await expect(activateTeamEscalationPolicyV2('alpha', 'content_manager', body))
+      .resolves.toMatchObject({ receipt: { team: 'content', action: 'reactivate_rollback' } });
+  });
+
+  it('rejects a cross-team control receipt instead of accepting cached control data', async () => {
+    const body = {
+      team: 'content', release_id: `APV2-${RELEASE_DIGEST}`, request_id: 'req-content',
+      expected_selector_id: SELECTOR_ID, action: 'activate' as const,
+      acknowledge_shared_credential_attribution: true as const,
+    };
+    vi.mocked(request).mockResolvedValue({
+      control: 'v2_activate', family: 'v2', contract_version: 'v2',
+      selector_id: SELECTOR_ID, selector_epoch: 3, previous_selector_id: SELECTOR_ID,
+      receipt: { ...v2ControlReceipt('v2_activate', 'engineering'), activation_request_id: body.request_id },
+    });
+
+    await expect(activateTeamEscalationPolicyV2('alpha', 'content_manager', body))
+      .rejects.toThrow('Invalid authority policy v2 control response');
+  });
+
+  it.each(['', ' content ', 7])('rejects a malformed control receipt team %j', async (team) => {
+    const body = {
+      team: 'content', release_id: `APV2-${RELEASE_DIGEST}`, request_id: 'req-content',
+      expected_selector_id: SELECTOR_ID, action: 'activate' as const,
+      acknowledge_shared_credential_attribution: true as const,
+    };
+    vi.mocked(request).mockResolvedValue({
+      control: 'v2_activate', family: 'v2', contract_version: 'v2',
+      selector_id: SELECTOR_ID, selector_epoch: 3, previous_selector_id: SELECTOR_ID,
+      receipt: { ...v2ControlReceipt('v2_activate'), team, activation_request_id: body.request_id },
+    });
+
+    await expect(activateTeamEscalationPolicyV2('alpha', 'content_manager', body))
+      .rejects.toThrow('Invalid authority policy v2 control response');
+  });
+
+  it('rejects an empty submitted team even when the receipt team is otherwise valid', async () => {
+    const body = {
+      team: '', release_id: `APV2-${RELEASE_DIGEST}`, request_id: 'req-empty-team',
+      expected_selector_id: SELECTOR_ID, action: 'activate' as const,
+      acknowledge_shared_credential_attribution: true as const,
+    };
+    vi.mocked(request).mockResolvedValue({
+      control: 'v2_activate', family: 'v2', contract_version: 'v2',
+      selector_id: SELECTOR_ID, selector_epoch: 3, previous_selector_id: SELECTOR_ID,
+      receipt: { ...v2ControlReceipt('v2_activate'), activation_request_id: body.request_id },
+    });
+
+    await expect(activateTeamEscalationPolicyV2('alpha', 'content_manager', body))
       .rejects.toThrow('Invalid authority policy v2 control response');
   });
 

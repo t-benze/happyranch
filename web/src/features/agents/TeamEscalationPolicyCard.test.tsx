@@ -114,7 +114,7 @@ function controlResponse(request: V2PairedControlRequest) {
     selector_epoch: 1,
     previous_selector_id: request.expected_selector_id ?? EMPTY_SELECTOR_ID,
     receipt: {
-      team: 'engineering' as const,
+      team: request.team,
       kind: 'v2_create_activate' as const,
       create_request_id: request.create_request_id,
       create_request_digest: '2'.repeat(64),
@@ -169,7 +169,7 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
     expect(screen.getByRole('button', { name: 'Save & activate' })).toBeEnabled();
   });
 
-  it('uses a Content projection as the sole editor seed and sends the resolved team', async () => {
+  it('completes a Content mutation through authoritative Content readback', async () => {
     const contentStarter = { ...v2Starter,
       policy_id: 'team-ed7002b439e9ac84-dual-text',
       title: 'Content escalation policy',
@@ -178,7 +178,33 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
     };
     query.data = { ...empty, team: 'content', target_manager: 'content_manager',
       bootstrap_template: null, v2_starter: contentStarter };
-    v2Create.mutateAsync.mockRejectedValue(new Error('stop after request capture'));
+    v2Create.mutateAsync.mockImplementation(async ({ body }) => controlResponse(body));
+    const engineeringReadback = activeV2({
+      selectorEpoch: 1,
+      title: contentStarter.title,
+      whatTo: 'Content changed escalate.',
+      whatNot: 'Content changed continue.',
+      version: 1,
+    });
+    const contentReadback = {
+      ...engineeringReadback,
+      team: 'content',
+      target_manager: 'content_manager',
+      bootstrap_template: null,
+      v2_starter: contentStarter,
+      active: {
+        ...engineeringReadback.active,
+        release: {
+          ...engineeringReadback.active.release,
+          policy_id: contentStarter.policy_id,
+          title: contentStarter.title,
+        },
+      },
+    };
+    query.refetch.mockImplementation(async () => {
+      query.data = contentReadback;
+      return { data: contentReadback };
+    });
     render(<TeamEscalationPolicyCard agent={{ name: 'content_manager', team: 'content', role: 'manager' }} />);
     expect(await screen.findByLabelText('What to escalate')).toHaveValue(contentStarter.what_to_escalate);
     expect(screen.getByLabelText('What not to escalate')).toHaveValue(contentStarter.what_not_to_escalate);
@@ -191,6 +217,10 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
     expect(v2Create.mutateAsync.mock.calls[0][0].body).toMatchObject({
       team: 'content', policy_id: contentStarter.policy_id, title: contentStarter.title,
     });
+    expect(query.refetch).toHaveBeenCalledOnce();
+    expect(await screen.findByRole('status')).toHaveTextContent('Saved and activated immutable v2 release');
+    expect(screen.getByRole('status')).toHaveTextContent(RELEASE_ID);
+    expect(screen.getByRole('status')).toHaveTextContent(NEXT_SELECTOR_ID);
   });
 
   it('initializes active v2 bytes and truthfully shows release, activation, selector and digest identity', async () => {

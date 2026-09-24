@@ -227,13 +227,14 @@ try {
   evidence.daemon = { port: fixture.ready.port, daemon_port_file: portFile, home: fixture.ready.home };
 
   const vitePort = await freePort();
-  vite = child('npx', ['vite', '--host', '127.0.0.1', '--port', String(vitePort), '--strictPort'], {
+  const viteBinary = join(WEB_ROOT, 'node_modules', '.bin', 'vite');
+  vite = child(viteBinary, ['--host', '127.0.0.1', '--port', String(vitePort), '--strictPort'], {
     cwd: WEB_ROOT,
     env: { ...process.env, HAPPYRANCH_DAEMON_HOME: fixture.ready.home },
   });
   const base = `http://127.0.0.1:${vitePort}`;
   await waitHttp(base);
-  evidence.vite = { port: vitePort, command: `npx vite --host 127.0.0.1 --port ${vitePort} --strictPort` };
+  evidence.vite = { port: vitePort, command: `${viteBinary} --host 127.0.0.1 --port ${vitePort} --strictPort` };
 
   await pw(['open']);
   browserOpen = true;
@@ -341,6 +342,24 @@ try {
   assert(contentState.text.includes('Content · Content Manager'), 'Content page header is not team/manager-derived');
   assert(contentState.text.includes('← Back to Content Manager'), 'Content back link is not manager-derived');
   assert(contentState.url === contentPolicyUrl, 'Content navigation resolved to the wrong policy route');
+  await fillPair(contentProjection.v2_starter.what_to_escalate, contentProjection.v2_starter.what_not_to_escalate);
+  await savePair();
+  await waitForPage(`document.body.innerText.includes('Saved and activated immutable v2 release')`, 'Content paired save readback');
+  const contentDb = await fixture.rpc('snapshot_content');
+  assert(contentDb.receipts.length === 1, 'Content paired receipt is missing');
+  const contentReceipt = contentDb.receipts[0];
+  assert(contentReceipt.team === 'content', 'Content paired receipt has the wrong team');
+  assert(contentDb.selector.selector_id === contentReceipt.selector_id, 'Content selector does not match its receipt');
+  assert(contentDb.history[0].release_id === contentReceipt.release_id, 'Content history does not contain its release');
+  assert(contentDb.history[0].what_to_escalate === contentProjection.v2_starter.what_to_escalate,
+    'Content history changed What to escalate bytes');
+  assert(contentDb.history[0].what_not_to_escalate === contentProjection.v2_starter.what_not_to_escalate,
+    'Content history changed What not to escalate bytes');
+  await pw(['reload']);
+  await waitForPage(`document.body.innerText.includes(${JSON.stringify(contentReceipt.release_id)}) && document.body.innerText.includes('Immutable dual-text history')`, 'Content full reload active/history readback');
+  const contentReload = await pageState();
+  assert(contentReload.text.includes(contentReceipt.activation_id), 'Content activation identity is missing after reload');
+  assert(!contentReload.text.includes('Owned by the Engineering team, not by this agent.'), 'Content readback leaked Engineering ownership copy');
   evidence.screenshots.content_copy_navigation = await screenshot('05-content-copy-navigation');
 
   evidence.assertions = {
@@ -369,6 +388,13 @@ try {
       url: contentPolicyUrl,
       engineering_owner_absent: true,
     },
+    content_create_activate_readback: {
+      receipt: contentReceipt,
+      selector_id: contentDb.selector.selector_id,
+      selector_epoch: contentDb.selector.selector_epoch,
+      release_id: contentDb.history[0].release_id,
+      active_identity_visible_after_reload: true,
+    },
   };
   await writeFile(join(OUT, 'browser-receipt.json'), `${JSON.stringify(evidence, null, 2)}\n`);
   console.log(JSON.stringify({ ok: true, receipt: join(OUT, 'browser-receipt.json'), screenshots: evidence.screenshots }, null, 2));
@@ -382,6 +408,7 @@ try {
   if (fixture) {
     await fixture.rpc('fault_off').catch(() => {});
     await fixture.rpc('stop').catch(() => {});
+    fixture.processHandle.stdin.end();
     if (fixture.processHandle.exitCode === null) {
       await Promise.race([
         new Promise((resolvePromise) => fixture.processHandle.once('exit', resolvePromise)),
