@@ -193,7 +193,7 @@ describe('W2c Preferences — activated seam (explicit test activation)', () => 
     );
     const subnav = within(await screen.findByTestId('settings-content')).getByRole('complementary');
     expect(within(subnav).getAllByRole('link').map((l) => l.textContent)).toEqual([
-      'Daemon / Capacity',
+      'Capacity',
       'Assistant',
       'Organization',
       'Executors',

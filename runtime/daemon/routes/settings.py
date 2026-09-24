@@ -62,15 +62,15 @@ def _capacity_context(request: Request) -> dict[str, Any]:
             "producer_envelope": sum(components.values()),
             "producer_components": components,
             "effective_admission_cap": None,
-            "effective_admission_reason": "No active host supervisor capability snapshot is available.",
+            "effective_admission_reason": "HappyRanch cannot currently verify the overall supervised-session limit.",
         }
     live = supervisor.health_snapshot()
     cap = live["admission"]["cap"]
     configured = running.host_global_session_cap
     reason = (
-        "Capability fallback binds below the configured cap because the active backend does not guarantee the complete memory/PID/CPU enforcement family."
+        "The active execution backend cannot enforce every host-safety check, so HappyRanch is using a lower session limit."
         if cap < configured else
-        "The startup-configured host global session cap is binding; the active backend capability does not lower it."
+        "HappyRanch is using the session limit configured at startup; the active execution backend does not require a lower limit."
     )
     return {
         "producer_envelope": supervisor._policy.producer_envelope,

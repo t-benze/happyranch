@@ -24,7 +24,7 @@ const REV_A = `sha256:${'a'.repeat(64)}`;
 function snap(overrides: Record<string, unknown> = {}): DaemonCapacitySnapshot {
   return {
     running_at_daemon_start: { queue_workers: 3, host_global_session_cap: 10 },
-    running_provenance: 'startup-resolved settings snapshot',
+    running_provenance: 'Resolved when the HappyRanch service started',
     persisted_yaml: { queue_workers: 3, host_global_session_cap: 10 },
     next_start: { queue_workers: 3, host_global_session_cap: 10 },
     environment_shadowed: [],
@@ -367,7 +367,7 @@ describe('draftConsequence — guard the contribution AND the derived sum', () =
 describe('formatReceipt — browser clock only', () => {
   test('renders a clock-labelled receipt, never a server age', () => {
     const text = formatReceipt(Date.parse('2026-09-21T09:08:07')) ?? '';
-    expect(text).toMatch(/^Last received \d{2}:\d{2}:\d{2} \(this browser's clock\)$/);
+    expect(text).toMatch(/^Values received at \d{2}:\d{2}:\d{2} \(your device time\)$/);
     expect(text).not.toMatch(/as of|ago|server/i);
   });
 

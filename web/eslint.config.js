@@ -24,6 +24,88 @@ import tseslint from "typescript-eslint";
 import react from "eslint-plugin-react";
 import reactHooks from "eslint-plugin-react-hooks";
 import tailwind from "eslint-plugin-tailwindcss";
+import path from "node:path";
+
+const FEATURE_MARKER = `${path.sep}src${path.sep}features${path.sep}`;
+
+function featureDomainForPath(filePath) {
+  const normalized = path.resolve(filePath);
+  const markerIndex = normalized.lastIndexOf(FEATURE_MARKER);
+  if (markerIndex === -1) return null;
+  return normalized
+    .slice(markerIndex + FEATURE_MARKER.length)
+    .split(path.sep)[0] || null;
+}
+
+function importedFeatureDomain(importerPath, specifier, cwd) {
+  if (specifier.startsWith("@/features/")) {
+    return featureDomainForPath(
+      path.resolve(cwd, "src", specifier.slice("@/".length)),
+    );
+  }
+  if (specifier.startsWith(".")) {
+    return featureDomainForPath(path.resolve(path.dirname(importerPath), specifier));
+  }
+  return null;
+}
+
+const featureBoundariesPlugin = {
+  rules: {
+    "no-cross-feature-imports": {
+      meta: {
+        type: "problem",
+        docs: {
+          description: "prevent static imports and re-exports across feature domains",
+        },
+        schema: [],
+        messages: {
+          crossFeature:
+            "Cross-feature static dependency forbidden: {{importer}} -> {{target}}. Share through @/lib, @/shared, @/design-system, or @/hooks.",
+        },
+      },
+      create(context) {
+        const importerPath = context.filename;
+        const importerDomain = featureDomainForPath(importerPath);
+        if (importerDomain == null) return {};
+
+        function checkSource(sourceNode) {
+          const specifier = sourceNode?.value;
+          if (typeof specifier !== "string") return;
+          const targetDomain = importedFeatureDomain(
+            importerPath,
+            specifier,
+            context.cwd,
+          );
+          if (targetDomain == null || targetDomain === importerDomain) return;
+          const importer = path
+            .relative(context.cwd, importerPath)
+            .split(path.sep)
+            .join("/");
+          context.report({
+            node: sourceNode,
+            messageId: "crossFeature",
+            data: { importer, target: specifier },
+          });
+        }
+
+        return {
+          ImportDeclaration(node) {
+            checkSource(node.source);
+          },
+          ExportNamedDeclaration(node) {
+            checkSource(node.source);
+          },
+          ExportAllDeclaration(node) {
+            checkSource(node.source);
+          },
+          TSImportEqualsDeclaration(node) {
+            checkSource(node.moduleReference?.expression);
+          },
+        };
+      },
+    },
+  },
+};
 
 export default tseslint.config(
   {
@@ -101,7 +183,11 @@ export default tseslint.config(
   // source of truth).
   {
     files: ["src/features/**/*.{ts,tsx}"],
+    plugins: {
+      "feature-boundaries": featureBoundariesPlugin,
+    },
     rules: {
+      "feature-boundaries/no-cross-feature-imports": "error",
       "no-restricted-imports": ["error", {
         patterns: [
           {

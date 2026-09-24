@@ -44,7 +44,7 @@ features/tasks/TaskListRow.tsx	99	62	bg-current	legacy default Tailwind special 
 features/tasks/TasksPage.tsx	107	64	bg-current	legacy default Tailwind special colour utility
 features/threads/ThreadsPage.tsx	1490	91	bg-current	legacy default Tailwind special colour utility
 features/todos/components/StatusPill.tsx	27	60	bg-current	legacy default Tailwind special colour utility
-features/usage/UsagePage.tsx	735	57	border-transparent	legacy default Tailwind special colour utility
-features/usage/UsagePage.tsx	736	65	border-transparent	legacy default Tailwind special colour utility
-features/usage/UsagePage.tsx	767	57	border-transparent	legacy default Tailwind special colour utility
-features/usage/UsagePage.tsx	768	65	border-transparent	legacy default Tailwind special colour utility
+features/usage/UsagePage.tsx	730	57	border-transparent	legacy default Tailwind special colour utility
+features/usage/UsagePage.tsx	731	65	border-transparent	legacy default Tailwind special colour utility
+features/usage/UsagePage.tsx	762	57	border-transparent	legacy default Tailwind special colour utility
+features/usage/UsagePage.tsx	763	65	border-transparent	legacy default Tailwind special colour utility

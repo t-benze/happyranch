@@ -94,6 +94,30 @@ def test_daemon_capacity_requires_bearer_without_leaking_values(tmp_home, app, o
     assert "host_global_session_cap" not in response.text
 
 
+def test_daemon_capacity_copy_is_plain_language(tmp_home, app, org_state, auth_headers) -> None:
+    body = TestClient(app).get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    assert body["running_provenance"] == "Resolved when the HappyRanch service started"
+    assert body["guidance"]["queue_workers"].startswith("Suggested starting range: 4–6.")
+    assert body["guidance"]["host_global_session_cap"].startswith("Suggested starting range: 11–13.")
+    cap = body["effective_admission_cap"]
+    if cap is None:
+        assert body["effective_admission_reason"] == (
+            "HappyRanch cannot currently verify the overall supervised-session limit."
+        )
+    elif cap < body["running_at_daemon_start"]["host_global_session_cap"]:
+        assert body["effective_admission_reason"] == (
+            "The active execution backend cannot enforce every host-safety check, "
+            "so HappyRanch is using a lower session limit."
+        )
+    else:
+        assert body["effective_admission_reason"] == (
+            "HappyRanch is using the session limit configured at startup; "
+            "the active execution backend does not require a lower limit."
+        )
+
+
 @pytest.mark.parametrize("value", [True, "6", 6.0, None])
 def test_daemon_capacity_rejects_non_exact_integer(tmp_home, app, org_state, auth_headers, value) -> None:
     client = TestClient(app)
