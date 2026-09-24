@@ -84,6 +84,9 @@ async def test_full_delegation_roundtrip(tmp_path: Path, monkeypatch):
     # dev_agent returns done.
     call_log: list[tuple[str, str]] = []
     def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        db.update_task(task_id, assigned_agent=agent, current_session_id="s")
+        if on_session_started is not None:
+            on_session_started(task_id, agent, "s")
         call_log.append((task_id, agent))
         from runtime.orchestrator.executors import ExecutorResult
         from runtime.models import CompletionReport

@@ -22,6 +22,9 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Callable, NamedTuple
 
+from runtime.infrastructure.database import (
+    Committed, InvalidLineage, LostClaim, PendingRetry, RetryClaim, SpawnOutcome,
+)
 from runtime.models import BlockKind, TaskStatus
 from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.executors import _meaningful_stderr
@@ -1229,6 +1232,10 @@ def _consume_completion_report_body(
     if task is None:
         return
     agent = task.assigned_agent or "unknown"
+    # The retry claim binds the result supplied for this report. The authority
+    # hook's legacy latest-row lookup below may find earlier synthetic feedback
+    # when a scripted executor returns a report without persisting a result.
+    expected_claim = RetryClaim.from_task(task, result_row_id=result_row_id)
     # THR-181 Track A (founder lifecycle envelope): the single-use continuation
     # envelope, when ACTIVE, marks this consumption as the continued turn's
     # decision — PROVIDED the consumed report is NOT a replay of the original
@@ -1660,6 +1667,7 @@ def _consume_completion_report_body(
                     agent,
                     next_count,
                     f"fanout child {i + 1}: {retry_link_err}",
+                    expected_claim=expected_claim,
                 )
                 return
 
@@ -1679,14 +1687,18 @@ def _consume_completion_report_body(
                     for l in c.then
                 ]
             children_payload.append(cd)
-        _spawn_fanout_children(
+        outcome = _spawn_fanout_children(
             orch, task, task_id, next_count,
             children=children_payload,
             width=width,
             manager_agent=agent,
             join_summary=decision.join_summary,
             step_audit_id=_step_audit_id,
+            expected_claim=expected_claim,
         )
+        if isinstance(outcome, InvalidLineage):
+            _reject_retry_link_decision(orch, task_id, agent, next_count, outcome.reason,
+                                        expected_claim=expected_claim)
         return
 
     if decision.action == "delegate":
@@ -1760,6 +1772,7 @@ def _consume_completion_report_body(
         if retry_link_err is not None:
             _reject_retry_link_decision(
                 orch, task_id, agent, next_count, retry_link_err,
+                expected_claim=expected_claim,
             )
             return
 
@@ -1772,6 +1785,8 @@ def _consume_completion_report_body(
         # genuine revise cycles. Re-delegating to QA/reviewer is *not* a
         # revision and must not bump the count (spec
         # historical team design: "manager escalates after 2 rounds").
+        revision_delta = 0
+        cap = load_org_config(orch._paths).max_revise_rounds
         existing_children = db.get_children(task_id)
         completed_children = []
         for cid in existing_children:
@@ -1786,7 +1801,6 @@ def _consume_completion_report_body(
             # NOT a revise cycle — only bump when re-delegating to a DIFFERENT
             # worker-of-record. `agent` is this task's owner.
             if worker_of_record == decision.agent and decision.agent != agent:
-                cap = load_org_config(orch._paths).max_revise_rounds
                 if cap > 0 and task.revision_count >= cap:
                     # THR-026 seq33: revise-round budget exhausted.
                     # DELIBERATE stop-with-best — do NOT increment, do NOT
@@ -1820,7 +1834,7 @@ def _consume_completion_report_body(
                     )
                     _maybe_post_thread_escalation(orch, task_id, reason=reason)
                     return
-                db.increment_revision_count(task_id)
+                revision_delta = 1
         child_id = db.next_task_id()
         child = TaskRecord(
             id=child_id,
@@ -1881,18 +1895,27 @@ def _consume_completion_report_body(
                 step_audit_id=_step_audit_id,
             )
             chain_json = chain.serialize()
-        if not db.try_delegate(
+        outcome = db.try_delegate(
             task_id, child,
             parent_note=f"Delegated to {decision.agent} (child={child_id})",
             attachments=delegate_attachment_params,
             active_chain_json=chain_json,
             uploaded_by=agent,
-        ):
+            expected_claim=expected_claim,
+            revision_delta=revision_delta, revision_cap=cap,
+        )
+        if isinstance(outcome, InvalidLineage):
+            _reject_retry_link_decision(orch, task_id, agent, next_count, outcome.reason,
+                                        expected_claim=expected_claim)
+            return
+        if isinstance(outcome, LostClaim):
             logger.debug(
                 "run_step %s: cancelled between re-check and delegate, dropping",
                 task_id,
             )
             return
+        if not isinstance(outcome, Committed):
+            raise TypeError(f"Unexpected spawn outcome: {type(outcome).__name__}")
         logger.debug("run_step %s: try_delegate SUCCEEDED, child=%s", task_id, child_id)
         _enqueue_task_generation_aware(orch, child_id)
         return
@@ -2094,36 +2117,14 @@ def _check_retry_link_required(
     THR-078 seq15: when this parent has FAILED children and the delegate
     re-targets the agent of any FAILED child, ``revisit_of_task_id`` is
     MANDATORY — even the first retry is disallowed without the field. A
-    supplied link must resolve to a FAILED child of this parent assigned to
-    the re-targeted agent. Returns None only for a valid retry or a fresh
+    supplied link must identify a same-agent FAILED child under this parent
+    or a predecessor root connected by verified recorded supersessions. Returns None only for a valid retry or a fresh
     dispatch without a link."""
     if target_agent is None:
-        return None  # shouldn't happen after _validate_delegate, but safe.
-    db = orch._db
-    children = db.get_children(task_id)
-    failed_sibling_ids: set[str] = set()
-    for cid in children:
-        child = db.get_task(cid)
-        if child is None:
-            continue
-        if child.status == TaskStatus.FAILED and child.assigned_agent == target_agent:
-            failed_sibling_ids.add(child.id)
-
-    if revisit_of_task_id is None:
-        if failed_sibling_ids:
-            failed_ids = ", ".join(sorted(failed_sibling_ids))
-            return (
-                f"cannot re-delegate to {target_agent!r} without "
-                f"revisit_of_task_id — this agent has FAILED child(ren) "
-                f"({failed_ids}) under the same parent"
-            )
         return None
-
-    if revisit_of_task_id not in failed_sibling_ids:
-        return (
-            f"revisit_of_task_id {revisit_of_task_id!r} must reference a "
-            f"FAILED child of this parent assigned to {target_agent!r}"
-        )
+    outcome = orch._db.verify_retry_link(task_id, target_agent, revisit_of_task_id)
+    if isinstance(outcome, InvalidLineage):
+        return f"FAILED child retry for {target_agent!r}: {outcome.reason} (revisit_of_task_id required and must identify a valid failed predecessor)"
     return None
 
 
@@ -2199,6 +2200,7 @@ def _reject_retry_link_decision(
     agent: str,
     next_count: int,
     retry_link_err: str,
+    *, expected_claim: RetryClaim,
 ) -> None:
     """Fail closed with feedback when a delegate or fan-out retry is invalid."""
     feedback = (
@@ -2206,7 +2208,10 @@ def _reject_retry_link_decision(
         f"When re-delegating to an agent with a FAILED child under this parent, "
         f"you MUST set revisit_of_task_id to that failed predecessor's task id."
     )
-    _feedback_and_reenqueue(orch, task_id, agent, next_count, feedback)
+    pending = orch._db.try_retry_feedback(expected_claim, feedback)
+    if isinstance(pending, PendingRetry):
+        enqueue = None if orch._queue is None else lambda: orch._queue.put_nowait(orch._slug, task_id)
+        orch._db.admit_retry_feedback(pending, enqueue)
 
 
 def _legs_out_of_scope(orch: "Orchestrator", owner: str, decision) -> list[tuple[str, str]]:
@@ -4382,12 +4387,13 @@ def _spawn_fanout_children(
     task_id: str,
     next_count: int,
     *,
+    expected_claim: RetryClaim,
     children: list[dict],
     width: int,
     manager_agent: str,
     join_summary: str | None = None,
     step_audit_id: int | None = None,
-) -> None:
+) -> SpawnOutcome:
     """Allocate child IDs, build TaskRecords, atomically insert all N children
     and park the parent in in_progress(delegated) with active_fanout set.
     Shared by the fresh dispatch path and the review-gate re-entry path.
@@ -4398,8 +4404,9 @@ def _spawn_fanout_children(
     delegated; it does NOT run an agent session.  Plain children (empty ``then``,
     no ``expect_verdict``) are dispatched as bare PENDING subtasks, unchanged.
 
-    On cancel-race (try_delegate_many returns False), logs and returns
-    silently — the parent was cancelled between validation and spawn.
+    Only Committed writes fanout_spawned and enqueues child/first-leg tasks.
+    InvalidLineage is returned to the consumer for owned retry feedback;
+    LostClaim drops stale input. Transaction exceptions propagate.
     """
     from runtime.models import TaskRecord
     from runtime.orchestrator.fanout import FanoutState
@@ -4521,7 +4528,7 @@ def _spawn_fanout_children(
                 orch, task_id,
                 status=TaskStatus.FAILED, auto_revisit_spawned=False,
             )
-            return
+            return LostClaim()
 
         # Build per-child params from the per-child prevalidated lists.
         for child_pv in per_child_prevalidated:
@@ -4611,18 +4618,20 @@ def _spawn_fanout_children(
     # are all written in the same transaction as child inserts + parent park +
     # attachment links/audit — no crash gap between spawn and metadata
     # persistence. Any failure rolls back everything.
-    if not db.try_delegate_many(
+    outcome = db.try_delegate_many(
         task_id, child_records, parent_note=parent_note,
         active_fanout_json=fanout_state.serialize(),
         children_attachments=children_att_params,
         carrier_chains=carrier_chains_data,
         uploaded_by=manager_agent,
-    ):
+        expected_claim=expected_claim,
+    )
+    if not isinstance(outcome, Committed):
         logger.debug(
             "run_step %s: cancelled between re-check and fanout spawn, dropping",
             task_id,
         )
-        return
+        return outcome
 
     orch._audit.log_fanout_spawned(
         task_id=task_id,
@@ -4643,6 +4652,8 @@ def _spawn_fanout_children(
         for cc in (carrier_chains_data or []):
             if cc["child_index"] == i:
                 _enqueue_task_generation_aware(orch, cc["first_leg_id"])
+
+    return outcome
 
 
 def _inject_fanout_join_context(

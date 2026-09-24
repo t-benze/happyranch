@@ -2434,6 +2434,122 @@ def test_sweep_parked_delegated_with_all_children_terminal_reenqueues(tmp_path):
     assert queue._queue.get_nowait() == ("test", "T-PAR", None)
 
 
+def _queued_task_count(queue: TaskQueue, task_id: str) -> int:
+    return sum(queued_id == task_id for _, queued_id, _ in queue._queue._queue)
+
+
+def _retry_startup_fanout_json(*children: str) -> str:
+    from runtime.orchestrator.fanout import FanoutState
+
+    return FanoutState(
+        children_ids=list(children),
+        children_details=[
+            {"agent": "dev_agent", "prompt": child} for child in children
+        ],
+        width=len(children),
+        manager_agent="engineering_head",
+        join_summary="combine",
+        status="spawned",
+    ).serialize()
+
+
+def test_retry_pending_and_delegated_s1_pending_replay_claims_once(tmp_path):
+    """C5/S1: startup delivery is replayable, while the DB claim is singular."""
+    db = _seed_org(tmp_path)
+    db.insert_task(TaskRecord(
+        id="T-RETRY-PENDING", brief="retry", team="engineering",
+        assigned_agent="engineering_head", status=TaskStatus.PENDING,
+    ))
+    queue = TaskQueue()
+
+    _sweep_on_startup(db, queue, "test")
+    _sweep_on_startup(db, queue, "test")
+
+    assert _queued_task_count(queue, "T-RETRY-PENDING") == 2
+    pending = db.get_task("T-RETRY-PENDING")
+    assert pending.status is TaskStatus.PENDING
+    assert db.get_task_results("T-RETRY-PENDING") == []
+    assert db.try_claim_for_step(
+        "T-RETRY-PENDING", TaskStatus.PENDING, None, 1,
+    )
+    assert not db.try_claim_for_step(
+        "T-RETRY-PENDING", TaskStatus.PENDING, None, 1,
+    )
+    assert db.get_task("T-RETRY-PENDING").orchestration_step_count == 1
+
+
+def test_retry_pending_and_delegated_s2_s4_terminal_parent_wake_is_process_local(
+    tmp_path,
+):
+    """C5/S2/S4: dedupe is per live queue; a fresh process reconstructs once."""
+    db = _seed_org(tmp_path)
+    db.insert_task(TaskRecord(id="T-RETRY-PAR", brief="p", team="engineering"))
+    fanout_json = _retry_startup_fanout_json("T-RETRY-C1", "T-RETRY-C2")
+    db.update_task(
+        "T-RETRY-PAR",
+        status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED,
+    )
+    db.update_task_active_fanout("T-RETRY-PAR", fanout_json)
+    for index, status in enumerate((TaskStatus.COMPLETED, TaskStatus.FAILED), 1):
+        db.insert_task(TaskRecord(
+            id=f"T-RETRY-C{index}", brief="carrier", team="engineering",
+            assigned_agent="dev_agent", parent_task_id="T-RETRY-PAR",
+            status=status, task_type="subtask",
+        ))
+
+    first_process_queue = TaskQueue()
+    _sweep_on_startup(db, first_process_queue, "test")
+    _sweep_on_startup(db, first_process_queue, "test")
+    assert _queued_task_count(first_process_queue, "T-RETRY-PAR") == 1
+    assert db.get_task("T-RETRY-PAR").active_fanout == fanout_json
+    assert not [
+        row for row in db.get_audit_logs("T-RETRY-PAR")
+        if row["action"] == "fanout_join"
+    ]
+
+    restarted_queue = TaskQueue()
+    _sweep_on_startup(db, restarted_queue, "test")
+    assert _queued_task_count(restarted_queue, "T-RETRY-PAR") == 1
+
+
+def test_retry_pending_and_delegated_s3_live_carrier_does_not_wake_parent(tmp_path):
+    """C5/S3: a live carrier keeps the outer fanout parked across sweeps."""
+    db = _seed_org(tmp_path)
+    db.insert_task(TaskRecord(id="T-LIVE-PAR", brief="p", team="engineering"))
+    fanout_json = _retry_startup_fanout_json("T-LIVE-CARRIER")
+    db.update_task(
+        "T-LIVE-PAR",
+        status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED,
+    )
+    db.update_task_active_fanout("T-LIVE-PAR", fanout_json)
+    db.insert_task(TaskRecord(
+        id="T-LIVE-CARRIER", brief="carrier", team="engineering",
+        assigned_agent="dev_agent", parent_task_id="T-LIVE-PAR",
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+        task_type="subtask",
+    ))
+    db.insert_task(TaskRecord(
+        id="T-LIVE-LEG", brief="leg", team="engineering",
+        assigned_agent="dev_agent", parent_task_id="T-LIVE-CARRIER",
+        status=TaskStatus.PENDING, task_type="subtask",
+    ))
+    queue = TaskQueue()
+
+    _sweep_on_startup(db, queue, "test")
+    _sweep_on_startup(db, queue, "test")
+
+    assert _queued_task_count(queue, "T-LIVE-PAR") == 0
+    parent = db.get_task("T-LIVE-PAR")
+    assert parent.block_kind is BlockKind.DELEGATED
+    assert parent.active_fanout == fanout_json
+    assert not [
+        row for row in db.get_audit_logs("T-LIVE-PAR")
+        if row["action"] == "fanout_join"
+    ]
+
+
 def _seed_job(db: Database, job_id: str, task_id: str, status: str) -> None:
     """Insert a job row in the given status (bypasses the runner)."""
     from datetime import datetime, timezone

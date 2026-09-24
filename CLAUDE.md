@@ -205,6 +205,16 @@ Every browser-callable daemon route maps to one TS function in `web/src/lib/api/
 
 Before editing code, inspect the relevant definitions and affected callers, imports, and configuration consumers using targeted searches. Briefly summarize the expected files and symbols, affected behavior, material risks, and supporting findings in a progress message. Scale the investigation to the change; documentation-only edits need only a scope statement. Summarize findings rather than raw search output; no separate report file is required. If the scope expands, update the summary before making those edits.
 
+**Verified retry transactions.** Final single/fanout spawn rereads the original
+report claim and recorded retry evidence only after `BEGIN IMMEDIATE` under the
+Database RLock. `Committed` alone enqueues children; `InvalidLineage` uses owned
+atomic feedback, and `LostClaim` drops without writes. Ordinary revision delta
+rolls back with spawn. Retry feedback admission holds a separate no-write writer
+reservation through synchronous queue insertion, released on every path. It is
+not a durable task claim or an exactly-once queue guarantee. Cross-root provenance
+is bounded to 20 root records / 19 recorded supersession edges; failed history
+and original parent links stay intact. See orchestrator-contracts.md.
+
 **Delegated retry failures.** An exhausted per-slice retry lineage is durable
 causal context for the owning manager, not a runtime `runtime_retry_ceiling`
 escalation or automatic successor. The manager may dispatch revised work with

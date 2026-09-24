@@ -672,3 +672,30 @@ def test_resolve_escalation_openapi_declares_retired_410(app):
     # supersede request carrying any legacy key is still rejected before the
     # retained resolver. The field matrix above executes that served cell.
     assert "any presence" in thread_description
+
+
+def test_verified_retry_thread_manual_uses_resolution_not_invented_token_join(client_with_runtime):
+    from runtime.infrastructure.database import VerifiedRetry
+
+    client, org = client_with_runtime
+    _seed(org)
+    org.db.update_task("T-1", assigned_agent="engineering_head", team="engineering")
+    org.db.insert_task(TaskRecord(id="T-FAILED", brief="failed", assigned_agent="dev_agent",
+                                  team="engineering", parent_task_id="T-1",
+                                  task_type="subtask", status=TaskStatus.FAILED))
+    seq = org.db.append_thread_message(thread_id="THR-1", speaker="founder",
+                                       kind=ThreadMessageKind.MESSAGE, body_markdown="continue")
+    token = _token(org)
+    response = client.post("/api/v1/orgs/alpha/threads/THR-1/resolve-escalation", json=_thread_payload(token))
+    assert response.status_code == 200, response.text
+    successor = next(row["payload"]["successor_root"] for row in org.db.get_audit_logs("T-1")
+                     if row["action"] == "escalation_superseded")
+    inv = org.db.get_invocation_any_status(token)
+    assert inv.status == ThreadInvocationStatus.CONSUMED
+    assert inv.dispatched_task_id is None
+    assert org.db.verify_retry_link(successor, "dev_agent", "T-FAILED") == VerifiedRetry((successor, "T-1"))
+    other = org.db.mint_thread_invocation(thread_id="THR-1", agent_name="engineering_head",
+                                         triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY)
+    org.db.consume_invocation(other.invocation_token)
+    assert org.db.verify_retry_link(successor, "dev_agent", "T-FAILED") == VerifiedRetry((successor, "T-1"))
+    assert org.db.get_children(successor) == []

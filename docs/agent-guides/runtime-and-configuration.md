@@ -531,10 +531,17 @@ Contract (founder-approved in THR-028, refined in THR-078):
    decision step. The failed subtask's reason (`note` + completion report /
    error context) is available so the task owner can author an updated brief.
 
-2. **Mechanical retry provenance (THR-078).** A manager may re-dispatch
-   unchanged work or direct revised work with a valid `revisit_of_task_id`
-   link to a FAILED same-parent predecessor. The link is historical
-   provenance, not semantic brief comparison or automatic root escalation.
+2. **Mechanical retry provenance (THR-078 / THR-091).** A manager may
+   re-dispatch unchanged work or direct revised work with a valid
+   `revisit_of_task_id` link to a same-agent FAILED child under the current
+   parent. A current successor root may also link the same-agent FAILED child
+   of a predecessor root when the bounded verifier authenticates every
+   intervening recorded supersession (at most 20 root records / 19 edges).
+   The final spawn transaction repeats claim and lineage validation after
+   `BEGIN IMMEDIATE`; an unresolved local failure cannot be bypassed by a
+   remote historical link. Original parent links and failed history remain
+   unchanged. The link is historical provenance, not semantic brief
+   comparison or automatic root escalation.
    A later COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors
    from causal selection (THR-183).
 

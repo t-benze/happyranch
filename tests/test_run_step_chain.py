@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.models import BlockKind, ChainLeg, NextStep, TaskRecord, TaskStatus
 from runtime.orchestrator.run_step import _validate_delegate
@@ -403,6 +405,113 @@ def test_chain_step_count_not_bumped_on_auto_advance(tmp_path):
 
     final = db.get_task("TASK-P")
     assert final.orchestration_step_count == initial_count  # zero growth — the load-bearing invariant
+
+
+@pytest.mark.parametrize(
+    ("leaf_status", "verdict", "expected_note"),
+    [
+        (
+            TaskStatus.COMPLETED,
+            "REQUEST_CHANGES",
+            "carrier verdict mismatch: expected 'APPROVE', got 'REQUEST_CHANGES'",
+        ),
+        (
+            TaskStatus.FAILED,
+            None,
+            "causal_status=failed",
+        ),
+    ],
+    ids=["completed-rejected-verdict", "failed-leg"],
+)
+def test_verified_retry_carrier_f4_f6_preserves_leaf_outcome(
+    tmp_path, leaf_status, verdict, expected_note,
+):
+    """C5/F4/F6: a rejected verdict and a failed leg are distinct facts."""
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator.chain import ChainState
+    from runtime.orchestrator.fanout import FanoutState
+    from runtime.orchestrator.run_step import (
+        _advance_chain_for_completed_child,
+        _carrier_fail_on_verdict_mismatch,
+        _enqueue_parent_if_waiting,
+    )
+
+    db = Database(tmp_path / "x.db")
+    db.insert_task(TaskRecord(
+        id="TASK-P", brief="outer", team="engineering",
+        assigned_agent="engineering_head", status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED, task_type="task",
+    ))
+    fanout = FanoutState(
+        children_ids=["TASK-C", "TASK-LIVE"],
+        children_details=[
+            {"agent": "dev_agent", "prompt": "build"},
+            {"agent": "qa_engineer", "prompt": "other"},
+        ],
+        width=2,
+        manager_agent="engineering_head",
+        join_summary="combine",
+        status="spawned",
+    )
+    db.update_task_active_fanout("TASK-P", fanout.serialize())
+    chain = ChainState(
+        step_index=0,
+        first_leg_expect_verdict="APPROVE",
+        legs=[ChainLeg(agent="qa_engineer", prompt="qa", expect_verdict="PASS")],
+        step_audit_id=91,
+    )
+    db.insert_task(TaskRecord(
+        id="TASK-C", brief="carrier", team="engineering",
+        assigned_agent="dev_agent", parent_task_id="TASK-P",
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+        task_type="subtask",
+    ))
+    db.update_task_active_chain("TASK-C", chain.serialize())
+    db.insert_task(TaskRecord(
+        id="TASK-LIVE", brief="live sibling", team="engineering",
+        assigned_agent="qa_engineer", parent_task_id="TASK-P",
+        status=TaskStatus.IN_PROGRESS, task_type="subtask",
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-LEG", brief="review", team="engineering",
+        assigned_agent="code_reviewer", parent_task_id="TASK-C",
+        status=leaf_status, task_type="subtask",
+        note=("self-blocked: review tool unavailable" if leaf_status is TaskStatus.FAILED else "reviewed"),
+    ))
+    db.insert_task_result(
+        task_id="TASK-LEG",
+        agent="code_reviewer",
+        session_id="legacy-fixture",
+        status=("blocked" if leaf_status is TaskStatus.FAILED else "completed"),
+        confidence_score=80,
+        output_summary=("review tool unavailable" if leaf_status is TaskStatus.FAILED else "needs changes"),
+        verdict=verdict,
+    )
+
+    orch = _orch_with_db(db)
+    if leaf_status is TaskStatus.COMPLETED:
+        chain_snapshot = db.get_task("TASK-C").active_chain
+        report = db.get_latest_completion_report("TASK-LEG")
+        assert _advance_chain_for_completed_child(
+            orch=orch,
+            parent_task_id="TASK-C",
+            child_task_id="TASK-LEG",
+            report=report,
+        ) == "wake"
+        assert _carrier_fail_on_verdict_mismatch(
+            orch, db.get_task("TASK-C"), "TASK-LEG", chain_snapshot,
+            report=report,
+        )
+    else:
+        _enqueue_parent_if_waiting(orch, "TASK-LEG")
+
+    leaf = db.get_task("TASK-LEG")
+    carrier = db.get_task("TASK-C")
+    assert leaf.status is leaf_status
+    assert carrier.status is TaskStatus.FAILED
+    assert carrier.active_chain is None
+    assert expected_note in carrier.note
+    assert db.get_task("TASK-P").active_fanout == fanout.serialize()
 
 
 def test_chain_summary_appended_to_prior_steps_when_chain_just_cleared(tmp_path):

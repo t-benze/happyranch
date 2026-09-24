@@ -213,12 +213,15 @@ Parameters:
      Team-manager gated. The parent parks in `in_progress(delegated)` with `active_fanout`
      metadata and wakes once when all children are terminal.
      When retrying a failed child, each retrying child MUST include
-     `children[].revisit_of_task_id`: the FAILED child of this parent assigned
-     to the same agent. A missing or invalid link rejects the WHOLE fanout
-     before any child is spawned. A retrying `delegate` likewise supplies the
-     failed child's id as `revisit_of_task_id`. A repeated failed slice wakes
-     its owning manager for a revised-work or escalation decision; no runtime
-     retry-ceiling successor is created.
+     `children[].revisit_of_task_id`: a same-agent FAILED child under this
+     parent, or a same-agent FAILED child under a predecessor root connected
+     to the current root by the runtime's bounded, recorded-supersession
+     verifier. A missing or invalid link rejects the WHOLE fanout before any
+     child is spawned. A retrying `delegate` follows the same rule. The link
+     never reparents or rewrites the failed child, and an unresolved local
+     failure cannot be bypassed with a remote historical link. A repeated
+     failed slice wakes its owning manager for a revised-work or escalation
+     decision; no runtime retry-ceiling successor is created.
    - `done` — the task is complete; requires `summary` of the outcome.
    - `escalate` — the task needs founder intervention; requires `reason`.
 

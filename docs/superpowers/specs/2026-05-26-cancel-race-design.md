@@ -328,3 +328,27 @@ Each guard is independently safe to land. Recommended single PR for review coher
 - **Phase 2 of `cancel_task` still clears the tracker outside `db_lock`.** Moving the clear inside Phase 1 would close another window, but the comment at `tasks.py:686-695` explicitly designs around the SIGTERM ordering. Out of scope for this spec; reasonable follow-up if a future race is found.
 - **Token usage IS persisted on cancellation drops** — explicitly NOT a limit. See §5.2. The provider charged for those tokens; `/tokens` rollups must reflect spend, not survival. (Earlier draft of this spec proposed dropping usage on cancel; that would have undercounted spend and broken the `tests/test_run_step_token_usage.py` contract — corrected after Codex review.)
 - **`_complete` and `_fail` keep their Python-level idempotence**, not the SQL-CAS upgrade applied to `delegate` / `escalate`. The residual race is observable only as "founder's `cancelled by founder` note may be momentarily overwritten before the idempotence guard's get_task catches it" — and even that window is bounded by the next-statement `if existing is None or ... in TERMINAL_STATES: return`. Neither branch spawns new work; the worst-case is a status flicker, not a corrupted tree. Promoting these to CAS would be straight-line cleanup if the audit log ever shows the flicker actually happening; until then, the cost-benefit doesn't justify it.
+
+
+## Current retry transaction clarification (THR-091)
+
+The bool-returning delegation sketches above are historical. Current
+`try_delegate` and `try_delegate_many` require the original IN_PROGRESS/NULL
+report claim and return `Committed`, `InvalidLineage`, or `LostClaim`. Both
+start `BEGIN IMMEDIATE` under the Database RLock before authoritative claim and
+lineage reads, covering independent SQLite connections as well as same-instance
+writers. Child, carrier/first-leg, attachments/audits, chain/fanout metadata,
+parent and ordinary revision delta commit or roll back together. Actual SQLite
+and serialization exceptions propagate; they are never invalid-lineage results.
+
+Retry feedback transaction A writes its existing feedback result/audit and
+PENDING state atomically under the original claim. Separate admission B does no
+durable writes: it reserves the writer, rereads A's pending fingerprint and
+feedback row, invokes the actual synchronous nonblocking queue insertion only
+on a match, then releases by rollback even on exceptions. Cancel-before-A writes
+no feedback; cancel-between-A-and-B preserves A but inserts nothing. B-before-
+cancel can insert an item which subsequently fails the task claim. Startup may
+re-enqueue pending work across either crash boundary. This does not extend the
+cancellation contract to general chain advancement or provide exactly-once
+DB/queue atomicity. Callback admission and usage accounting retain their
+existing ordering.
