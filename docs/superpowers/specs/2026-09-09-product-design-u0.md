@@ -1151,7 +1151,7 @@ joined, not replaced or weakened.
 
 The executable seam is the six F5 tables in
 `tests/fixtures/workflow_u0/proposed_workflow_schema.sql`, the F5 helpers in
-`tests/workflows/u0_evidence_helpers.py`, and fourteen controls selected by
+`tests/workflows/u0_evidence_helpers.py`, and seventeen controls selected by
 `pytest .../test_u0_migration_recovery.py -k proposed_f5`. Together they prove:
 (1) stale authority and noncurrent PRD revisions leave no request/task/outbox
 residue; (2) request+bridge+event+outbox commit atomically and an independent
