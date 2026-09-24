@@ -37,9 +37,11 @@ function featureDomainForPath(filePath) {
     .split(path.sep)[0] || null;
 }
 
-function importedFeatureDomain(importerPath, specifier) {
+function importedFeatureDomain(importerPath, specifier, cwd) {
   if (specifier.startsWith("@/features/")) {
-    return specifier.slice("@/features/".length).split("/")[0] || null;
+    return featureDomainForPath(
+      path.resolve(cwd, "src", specifier.slice("@/".length)),
+    );
   }
   if (specifier.startsWith(".")) {
     return featureDomainForPath(path.resolve(path.dirname(importerPath), specifier));
@@ -69,7 +71,11 @@ const featureBoundariesPlugin = {
         function checkSource(sourceNode) {
           const specifier = sourceNode?.value;
           if (typeof specifier !== "string") return;
-          const targetDomain = importedFeatureDomain(importerPath, specifier);
+          const targetDomain = importedFeatureDomain(
+            importerPath,
+            specifier,
+            context.cwd,
+          );
           if (targetDomain == null || targetDomain === importerDomain) return;
           const importer = path
             .relative(context.cwd, importerPath)

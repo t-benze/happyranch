@@ -5,7 +5,10 @@ import { ESLint } from 'eslint'
 import { describe, expect, it } from 'vitest'
 
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const eslint = new ESLint({ cwd: webRoot })
+// This dedicated authoritative gate ignores inline configuration while the
+// ordinary repository lint keeps its justified suppressions. That makes the
+// feature boundary independently enforceable without changing global policy.
+const eslint = new ESLint({ cwd: webRoot, allowInlineConfig: false })
 const RULE_ID = 'feature-boundaries/no-cross-feature-imports'
 
 async function boundaryMessages(source: string, relativePath: string) {
@@ -30,6 +33,25 @@ export { value }
         ruleId: RULE_ID,
         message: expect.stringContaining(
           'src/features/dashboard/probe.ts -> @/features/usage/value',
+        ),
+      }),
+    ])
+  })
+
+  it('rejects a normalized alias despite suppression of both boundary rules', async () => {
+    const messages = await boundaryMessages(
+      `// eslint-disable-next-line feature-boundaries/no-cross-feature-imports, no-restricted-imports
+import { value } from '@/features/dashboard/../usage/value'
+export { value }
+`,
+      'src/features/dashboard/probe.ts',
+    )
+
+    expect(messages).toEqual([
+      expect.objectContaining({
+        ruleId: RULE_ID,
+        message: expect.stringContaining(
+          'src/features/dashboard/probe.ts -> @/features/dashboard/../usage/value',
         ),
       }),
     ])
@@ -94,5 +116,8 @@ ${source}`,
     )
 
     expect(messages).toEqual([])
-  }, 15_000)
+  // Hosted Node 24 runs this complete scan under full-suite contention; keep
+  // the authoritative check finite while allowing ample headroom above the
+  // previously observed 17.98-second execution.
+  }, 45_000)
 })
