@@ -4836,14 +4836,15 @@ def test_set_executor_capture_second_read_fails_closed_before_materialize(
     Regression scenario: a present regular declared file (CLAUDE.md) whose
     bytes the Step-0 preflight gate (_bootstrap_uncapturable_owned_files)
     CAN read, but which the authoritative _BootstrapRollbackJournal.capture
-    cannot read (TOCTOU: read_bytes fails between the two reads). The old
+    cannot read (TOCTOU: the no-follow descriptor capture fails after the
+    preflight read). The old
     ordering ran capture AFTER materialization, recorded the file as
     uncapturable, and proceeded to ensure_workspace_ready — bootstrap could
     overwrite a present file whose original bytes were never captured
     (uncompensatable data-loss path).
 
-    The deterministic per-file call counter forces read #1 (preflight) to
-    succeed and read #2 (authoritative capture) to raise OSError, then
+    The deterministic capture seam lets the preflight read succeed and forces
+    the authoritative no-follow capture to raise OSError, then
     proves the switch fails closed during Step-0 preflight, BEFORE
     _executor_switch_materialize and before every
     filesystem/executor-state/frontmatter/audit mutation:
@@ -4875,17 +4876,20 @@ def test_set_executor_capture_second_read_fails_closed_before_materialize(
     target.write_bytes(original)
 
     target_abspath = _os.path.abspath(str(target))
-    read_counts: dict[str, int] = {}
+    capture_calls: list[str] = []
+    real_capture = agents_mod._BootstrapRollbackJournal._capture_regular_file
 
-    def _read_bytes(self, *a, **k):
-        if _os.path.abspath(str(self)) == target_abspath:
-            read_counts["CLAUDE.md"] = read_counts.get("CLAUDE.md", 0) + 1
-            if read_counts["CLAUDE.md"] == 2:
-                # Authoritative capture read fails; preflight read succeeded.
-                raise OSError("forced capture-read failure on present declared file")
-        return real_read_bytes(self, *a, **k)
+    def _capture_regular_file(cls, fp):
+        if _os.path.abspath(str(fp)) == target_abspath:
+            capture_calls.append("CLAUDE.md")
+            raise OSError("forced capture-read failure on present declared file")
+        return real_capture(fp)
 
-    monkeypatch.setattr(_Path, "read_bytes", _read_bytes)
+    monkeypatch.setattr(
+        agents_mod._BootstrapRollbackJournal,
+        "_capture_regular_file",
+        classmethod(_capture_regular_file),
+    )
 
     frontmatter_path = _paths(org_state).agents_dir / "dev_agent.md"
     frontmatter_before = frontmatter_path.read_text()
@@ -4924,11 +4928,8 @@ def test_set_executor_capture_second_read_fails_closed_before_materialize(
         headers=auth_headers,
     )
 
-    # ── The authoritative capture observed the file at Step 0 (read #2) ──
-    assert read_counts["CLAUDE.md"] >= 2, (
-        f"expected preflight (read 1) + authoritative capture (read 2) "
-        f"to both run, got {read_counts['CLAUDE.md']} reads"
-    )
+    # ── The authoritative no-follow capture observed the file at Step 0 ──
+    assert capture_calls == ["CLAUDE.md"]
 
     # ── FAIL-CLOSED: named preflight rejection BEFORE the first mutation ──
     assert r.status_code == 400, (
@@ -4942,8 +4943,8 @@ def test_set_executor_capture_second_read_fails_closed_before_materialize(
         f"Expected the uncapturable file named in the error, "
         f"got {body['detail']['error']}"
     )
-    assert "read_bytes" in body["detail"]["error"], (
-        f"Expected read_bytes failure named, got {body['detail']['error']}"
+    assert "no-follow content/metadata capture failed" in body["detail"]["error"], (
+        f"Expected no-follow capture failure named, got {body['detail']['error']}"
     )
 
     # ── No materialization, no bootstrap writer, no mutation ──
@@ -4981,7 +4982,7 @@ def test_bootstrap_journal_uncapturable_present_file_is_not_absent(
     tmp_home, monkeypatch,
 ) -> None:
     """THR-190 fix (TASK-5691/TASK-5704): _BootstrapRollbackJournal must
-    keep a present regular file whose read_bytes() raises OSError in a
+    keep a present regular file whose no-follow capture raises OSError in a
     DISTINCT state from an absent file. restore() must never unlink such a
     file (the old code collapsed both into None and deleted it); it reports
     a compensation error instead, and the file survives unchanged."""
@@ -4997,13 +4998,18 @@ def test_bootstrap_journal_uncapturable_present_file_is_not_absent(
     (workspace / "memory").mkdir(parents=True)
 
     real_read_bytes = _Path.read_bytes
+    real_capture = agents_mod._BootstrapRollbackJournal._capture_regular_file
 
-    def _read_bytes(self, *a, **k):
-        if str(self) == str(present):
+    def _capture_regular_file(cls, fp):
+        if str(fp) == str(present):
             raise OSError("forced OSError on present declared file")
-        return real_read_bytes(self, *a, **k)
+        return real_capture(fp)
 
-    monkeypatch.setattr(_Path, "read_bytes", _read_bytes)
+    monkeypatch.setattr(
+        agents_mod._BootstrapRollbackJournal,
+        "_capture_regular_file",
+        classmethod(_capture_regular_file),
+    )
 
     journal = agents_mod._BootstrapRollbackJournal.capture(workspace)
 
@@ -5022,6 +5028,36 @@ def test_bootstrap_journal_uncapturable_present_file_is_not_absent(
     assert real_read_bytes(present) == original, (
         "journal restore deleted/modified an uncapturable present file"
     )
+
+
+def test_bootstrap_journal_reports_regular_metadata_restore_failure(
+    tmp_path, monkeypatch,
+) -> None:
+    """Metadata reproduction errors remain explicit compensation failures."""
+    import runtime.daemon.routes.agents as agents_mod
+
+    target = tmp_path / "CLAUDE.md"
+    target.write_bytes(b"original\n")
+    target.chmod(0o600)
+    journal = agents_mod._BootstrapRollbackJournal.capture(tmp_path)
+    target.write_bytes(b"changed\n")
+    target.chmod(0o644)
+
+    real_fchmod = os.fchmod
+
+    def _fchmod(fd, mode):
+        if mode == 0o600:
+            raise OSError("forced metadata reproduction failure")
+        return real_fchmod(fd, mode)
+
+    monkeypatch.setattr(os, "fchmod", _fchmod)
+
+    errors = journal.restore(tmp_path)
+
+    assert len(errors) == 1, errors
+    assert "Failed to restore file CLAUDE.md" in errors[0]
+    assert "forced metadata reproduction failure" in errors[0]
+    assert not list(tmp_path.glob(".*.happyranch-restore-*"))
 
 
 def test_set_executor_preflight_rejects_symlinked_claude_before_materialization(
@@ -7864,3 +7900,92 @@ def test_executor_switch_caught_exception_b1_b8_rolls_back_in_process(
         f"{boundary}: an agent_managed audit row was written"
     )
     assert hashlib.sha256(external.read_bytes()).hexdigest() == external_hash
+
+
+def test_executor_switch_caught_b5_restores_divergent_regular_pair_metadata(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+):
+    """A real post-pair bootstrap failure restores both regular pre-states.
+
+    The general B1-B8 matrix starts with an absent CLAUDE.md.  This adverse B5
+    case exercises the other admitted pre-state: two divergent regular
+    instruction files whose bytes, modes, and owners must all survive the
+    route's caught-failure compensation exactly.
+    """
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / ".claude").mkdir(parents=True)
+    settings = workspace / ".claude" / "settings.json"
+    settings.write_bytes(b'{"old": true}\n')
+
+    # Keep an external hard-link sentinel for the AGENTS.md inode.  The pair
+    # writer and rollback must use atomic replacement, never write through
+    # this shared inode or otherwise alter the external target.
+    external = tmp_home / "caught_b5_external_sentinel.md"
+    external.write_bytes(b"# divergent original AGENTS instructions\n")
+    agents_path = workspace / "AGENTS.md"
+    os.link(external, agents_path)
+    agents_path.chmod(0o640)
+    claude_path = workspace / "CLAUDE.md"
+    claude_path.write_bytes(b"# divergent original CLAUDE instructions\n")
+    claude_path.chmod(0o600)
+
+    expected_uid = os.getuid()
+    agents_before = _instruction_path_state(agents_path)
+    claude_before = _instruction_path_state(claude_path)
+    external_before = _instruction_path_state(external)
+    settings_before = _instruction_path_state(settings)
+    assert agents_before == (
+        "regular", b"# divergent original AGENTS instructions\n",
+        0o640, expected_uid,
+    )
+    assert claude_before == (
+        "regular", b"# divergent original CLAUDE instructions\n",
+        0o600, expected_uid,
+    )
+    assert external_before == agents_before
+    assert _owned_temp_residue(workspace) == []
+    assert not list(workspace.glob("*.bak"))
+    assert not os.path.lexists(workspace / ".claude" / "skills")
+    assert not os.path.lexists(workspace / ".agents" / "skills")
+    audit_before = _audit_agent_managed(org_state)
+
+    _install_boundary_exception("B5", "dev_agent", monkeypatch)
+
+    r = TestClient(app, raise_server_exceptions=False).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex", "clean": True},
+        headers=auth_headers,
+    )
+
+    assert r.status_code == 400, (r.status_code, r.text)
+    assert r.json()["detail"]["code"] == "executor_bootstrap_failed"
+    assert _instruction_path_state(agents_path) == agents_before
+    assert _instruction_path_state(claude_path) == claude_before
+    assert _instruction_path_state(external) == external_before
+    assert _instruction_path_state(settings) == settings_before
+    assert prompt_loader.load_agent(
+        OrgPaths(root=org_state.root), "dev_agent",
+    ).executor == "claude"
+    assert _audit_agent_managed(org_state) == audit_before
+    assert _owned_temp_residue(workspace) == []
+
+    backups = sorted(workspace.glob("*.happyranch-*.bak"))
+    assert len(backups) == 2, [p.name for p in backups]
+    backup_states = {
+        p.name.split(".happyranch-", 1)[0]: _instruction_path_state(p)
+        for p in backups
+    }
+    assert backup_states == {
+        "AGENTS.md": agents_before,
+        "CLAUDE.md": claude_before,
+    }
+    _assert_exact_skill_root(
+        org_state, workspace, ".claude/skills", present=True,
+    )
+    _assert_exact_skill_root(
+        org_state, workspace, ".agents/skills", present=True,
+    )
