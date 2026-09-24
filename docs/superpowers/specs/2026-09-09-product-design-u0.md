@@ -672,6 +672,22 @@ was also reproduced at a disposable source-pinned venue (task artifact, not a
 rebase or main integration) and the affected scenarios pass there as well as on
 the local candidate.
 
+TASK-8851 reconciled that closed set with remote `main`
+`0614246bf83517a7fa75d7c8f79c176a1a08b885` (tree
+`be2101d343832c7947d04cb64b31981b957e0797`) without merging or rebasing it
+into the evidence branch. Its `run_step.py` / `orchestrator.py` digests are
+`0a5c6b19e7ca10503cba77489102564d971a4234872090f1b35fc43ac21757ff` /
+`972660d78706ef6d0d955e5c729642c4f80c7654f78fc69cabf223702834426c`.
+The intervening authority-policy v2 admission, completion-consumer and binding
+work changes both source files but retains the expanded
+`_build_prior_steps_from_db` contract and teardown `report_task_scratch` call,
+so this exact pair maps to `_U0HostedSourceContract(True, True)`. The live
+synthetic PR merge ref `f4bab2927aaef286a5848d55e09b505fbbc18d9a` still has
+the preceding accepted `53fab381...` / `4dd0550d...` pair; both venues are
+recorded separately. The real unknown-pair rejection control remains
+`test_u0_hosted_source_contract_rejects_unknown_source_pair`; there is no
+default or digest-prefix acceptance.
+
 Caller diagnostics are now aggregated: `_u0_assert_caller_result` reports
 unexpected results, original worker exceptions, boundary and
 release/join/cleanup/liveness failures in one result for the same-label,

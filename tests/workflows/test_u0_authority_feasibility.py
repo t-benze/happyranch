@@ -75,6 +75,17 @@ def _u0_hosted_source_contract() -> _U0HostedSourceContract:
         ("53fab381e3a09e41b86ba5b35df2cc710aaaa9408407be35ef0745d100f01670",
          "4dd0550d39b80375a2ddaea2c045272f41c40cb84a904542eb50950670295b11"):
             _U0HostedSourceContract(True, True),
+        # Current remote-main applicability venue at ``0614246b`` (tree
+        # ``be2101d343832c7947d04cb64b31981b957e0797``), inspected before a
+        # renewed PR845 hosted merge.  The intervening authority-policy v2
+        # admission/receipt work changes both module byte digests, but retains
+        # the expanded prior-step serializer and the teardown scratch reporter.
+        # The still-live synthetic merge ref ``f4bab292`` uses the preceding
+        # accepted pair above; this additional pair prevents a refreshed merge
+        # against current main from borrowing expectations by default.
+        ("0a5c6b19e7ca10503cba77489102564d971a4234872090f1b35fc43ac21757ff",
+         "972660d78706ef6d0d955e5c729642c4f80c7654f78fc69cabf223702834426c"):
+            _U0HostedSourceContract(True, True),
     }
     try:
         return contracts[source_pair]
