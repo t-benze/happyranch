@@ -5023,7 +5023,11 @@ def test_bootstrap_journal_uncapturable_present_file_is_not_absent(
     )
 
     errors = journal.restore(workspace)
-    assert any("Uncapturable" in e and "CLAUDE.md" in e for e in errors), errors
+    assert any(
+        "Uncapturable" in e.raw_diagnostic()
+        and "CLAUDE.md" in e.raw_diagnostic()
+        for e in errors
+    ), errors
     # The file survives: not deleted, not overwritten, not treated as absent.
     assert real_read_bytes(present) == original, (
         "journal restore deleted/modified an uncapturable present file"
@@ -5055,9 +5059,39 @@ def test_bootstrap_journal_reports_regular_metadata_restore_failure(
     errors = journal.restore(tmp_path)
 
     assert len(errors) == 1, errors
-    assert "Failed to restore file CLAUDE.md" in errors[0]
-    assert "forced metadata reproduction failure" in errors[0]
+    assert errors[0].caller_diagnostic() == "Failed to restore file CLAUDE.md"
+    assert "forced metadata reproduction failure" in errors[0].raw_diagnostic()
     assert not list(tmp_path.glob(".*.happyranch-restore-*"))
+
+
+def test_bootstrap_compensation_diagnostics_are_structured_and_capped():
+    """Caller diagnostics expose no raw causes and contain at most four items."""
+    from runtime.daemon.routes.agents import (
+        _BOOTSTRAP_OWNED_FILES,
+        _BootstrapCompensationFailure,
+        _BootstrapCompensationOperation,
+        _bounded_bootstrap_compensation_diagnostics,
+    )
+
+    raw_cause = "private bytes\n/private/absolute/path\x1b[31m"
+    failures = [
+        _BootstrapCompensationFailure(
+            _BootstrapCompensationOperation.RESTORE_FILE,
+            relative_path,
+            OSError(raw_cause),
+        )
+        for relative_path in _BOOTSTRAP_OWNED_FILES[:5]
+    ]
+
+    diagnostic = _bounded_bootstrap_compensation_diagnostics(failures)
+
+    assert len(diagnostic.split("; ")) == 4
+    assert diagnostic.endswith("... and 2 more compensation failure(s)")
+    assert "Failed to restore file CLAUDE.md" in diagnostic
+    assert "Failed to restore file AGENTS.md" in diagnostic
+    assert "Failed to restore file .claude/settings.json" in diagnostic
+    assert raw_cause not in diagnostic
+    assert "\n" not in diagnostic and "\x1b" not in diagnostic
 
 
 def test_set_executor_preflight_rejects_symlinked_claude_before_materialization(
@@ -7995,7 +8029,7 @@ def test_executor_switch_caught_b5_restores_divergent_regular_pair_metadata(
 
 
 def test_executor_switch_caught_b5_surfaces_incomplete_metadata_compensation(
-    tmp_home, app, org_state, auth_headers, monkeypatch,
+    tmp_home, app, org_state, auth_headers, monkeypatch, caplog,
 ):
     """The real route reports a bounded, truthful failed-compensation result.
 
@@ -8006,6 +8040,10 @@ def test_executor_switch_caught_b5_surfaces_incomplete_metadata_compensation(
     and the bounded compensation failure, without a false cleanup-success
     claim, while every unaffected invariant remains exact.
     """
+    import logging
+
+    import runtime.daemon.routes.agents as agents_mod
+
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
@@ -8048,6 +8086,7 @@ def test_executor_switch_caught_b5_surfaces_incomplete_metadata_compensation(
         return real_fchmod(fd, mode)
 
     monkeypatch.setattr(os, "fchmod", _fchmod)
+    caplog.set_level(logging.ERROR, logger=agents_mod.__name__)
 
     r = TestClient(app, raise_server_exceptions=False).put(
         "/api/v1/orgs/alpha/agents/dev_agent/executor",
@@ -8061,17 +8100,24 @@ def test_executor_switch_caught_b5_surfaces_incomplete_metadata_compensation(
     assert detail["code"] == "executor_bootstrap_failed"
     assert "injected post-pair bootstrap failure" in detail["error"]
     assert "Failed to restore file CLAUDE.md" in detail["error"]
-    assert "forced metadata reproduction failure" in detail["error"]
+    assert "forced metadata reproduction failure" not in detail["error"]
     assert "cleanup/restore was incomplete" in detail["message"].lower()
     assert "Failed to restore file CLAUDE.md" in detail["message"]
     assert "Resolve the bootstrap error before retrying." in detail["message"]
-    assert "Any partial bootstrap files have been cleaned up." not in detail["message"]
+    assert (
+        "Any partial bootstrap files have been cleaned up."
+        not in detail["message"]
+    )
     assert "\n" not in detail["error"] and "\x1b" not in detail["error"]
     assert "\n" not in detail["message"] and "\x1b" not in detail["message"]
     assert len(detail["error"]) <= 1200
     assert len(detail["message"]) <= 1600
     assert "X" * 1000 not in detail["error"]
     assert "X" * 1000 not in detail["message"]
+    raw_log = "\n".join(record.getMessage() for record in caplog.records)
+    assert "forced metadata reproduction failure" in raw_log
+    assert "\x1b[31m" in raw_log
+    assert "X" * 2000 in raw_log
 
     # Rollback is honestly partial: AGENTS.md and every unaffected owned file
     # are exact, while CLAUDE.md remains the canonical link created by the real
@@ -8082,6 +8128,156 @@ def test_executor_switch_caught_b5_surfaces_incomplete_metadata_compensation(
     )
     assert _instruction_path_state(external) == external_before
     assert _instruction_path_state(settings) == settings_before
+    assert prompt_loader.load_agent(
+        OrgPaths(root=org_state.root), "dev_agent",
+    ).executor == "claude"
+    assert _audit_agent_managed(org_state) == audit_before
+    assert _owned_temp_residue(workspace) == []
+
+    backups = sorted(workspace.glob("*.happyranch-*.bak"))
+    assert len(backups) == 2, [p.name for p in backups]
+    assert {
+        p.name.split(".happyranch-", 1)[0]: _instruction_path_state(p)
+        for p in backups
+    } == {
+        "AGENTS.md": agents_before,
+        "CLAUDE.md": claude_before,
+    }
+    _assert_exact_skill_root(
+        org_state, workspace, ".claude/skills", present=True,
+    )
+    _assert_exact_skill_root(
+        org_state, workspace, ".agents/skills", present=True,
+    )
+
+
+def test_executor_switch_caught_b5_verification_mismatch_is_caller_safe(
+    tmp_home, app, org_state, auth_headers, monkeypatch, caplog,
+):
+    """Final restore verification detail stays in operator logs only.
+
+    This exercises the real route after the pair writer and B5 bootstrap
+    failure.  The replacement succeeds, but the resulting regular file is
+    made to differ before the journal's final verification.  That raw
+    verification exception contains both captured states, including their
+    bytes; callers must receive only the stable rollback operation and the
+    declared owned relative name.
+    """
+    import logging
+    from pathlib import Path as _Path
+
+    import runtime.daemon.routes.agents as agents_mod
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / ".claude").mkdir(parents=True)
+    settings = workspace / ".claude" / "settings.json"
+    settings.write_bytes(b'{"old": true}\n')
+
+    workspace_path_sentinel = str(
+        workspace / "TASK8871_PRIVATE_WORKSPACE_PATH"
+    ).encode()
+    temp_path_sentinel = str(
+        tmp_home / "TASK8871_PRIVATE_TEMP_PATH"
+    ).encode()
+    sensitive_prior = b"TASK8871_SENSITIVE_PRIOR_INSTRUCTION_BYTES"
+    restored_bytes = b"TASK8871_MISMATCHED_RESTORED_BYTES"
+    prior_claude = b"|".join(
+        (sensitive_prior, workspace_path_sentinel, temp_path_sentinel),
+    ) + b"\n"
+    mismatched_claude = b"|".join(
+        (restored_bytes, workspace_path_sentinel, temp_path_sentinel),
+    ) + b"\n"
+
+    external = tmp_home / "caught_b5_verify_external_sentinel.md"
+    external.write_bytes(b"# original AGENTS instructions\n")
+    agents_path = workspace / "AGENTS.md"
+    os.link(external, agents_path)
+    agents_path.chmod(0o640)
+    claude_path = workspace / "CLAUDE.md"
+    claude_path.write_bytes(prior_claude)
+    claude_path.chmod(0o600)
+
+    agents_before = _instruction_path_state(agents_path)
+    claude_before = _instruction_path_state(claude_path)
+    external_before = _instruction_path_state(external)
+    settings_before = _instruction_path_state(settings)
+    frontmatter_path = org_state.root / "org" / "agents" / "dev_agent.md"
+    frontmatter_before = frontmatter_path.read_bytes()
+    agent_yaml_before = (workspace / "agent.yaml").read_bytes()
+    audit_before = _audit_agent_managed(org_state)
+    assert _owned_temp_residue(workspace) == []
+    assert not list(workspace.glob("*.bak"))
+
+    _install_boundary_exception("B5", "dev_agent", monkeypatch)
+    real_replace = os.replace
+
+    def _replace_then_diverge(src, dst, *args, **kwargs):
+        real_replace(src, dst, *args, **kwargs)
+        if args or kwargs:
+            return
+        src_path = _Path(src)
+        dst_path = _Path(dst)
+        if (
+            dst_path == claude_path
+            and src_path.name.startswith(".CLAUDE.md.happyranch-restore-")
+        ):
+            dst_path.write_bytes(mismatched_claude)
+            dst_path.chmod(0o600)
+
+    monkeypatch.setattr(os, "replace", _replace_then_diverge)
+    caplog.set_level(logging.ERROR, logger=agents_mod.__name__)
+
+    r = TestClient(app, raise_server_exceptions=False).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex", "clean": True},
+        headers=auth_headers,
+    )
+
+    assert r.status_code == 400, (r.status_code, r.text)
+    detail = r.json()["detail"]
+    assert set(detail) == {"code", "error", "message"}
+    assert detail["code"] == "executor_bootstrap_failed"
+    assert "injected post-pair bootstrap failure" in detail["error"]
+    assert "cleanup/restore was incomplete" in detail["message"].lower()
+    assert "Any partial bootstrap files have been cleaned up." not in detail["message"]
+    assert "Failed to restore file CLAUDE.md" in detail["error"]
+    assert "Failed to restore file CLAUDE.md" in detail["message"]
+
+    caller_diagnostics = detail["error"].split(
+        "rollback compensation incomplete: ", 1,
+    )[1]
+    assert len(caller_diagnostics.split("; ")) <= 4
+    for field in (detail["error"], detail["message"]):
+        assert "\n" not in field and "\r" not in field
+        assert sensitive_prior.decode() not in field
+        assert restored_bytes.decode() not in field
+        assert workspace_path_sentinel.decode() not in field
+        assert temp_path_sentinel.decode() not in field
+        assert "_RegularFileState" not in field
+        assert "data=" not in field
+        assert "regular-file metadata/content verification failed:" not in field
+
+    # Operators retain the complete raw exception in daemon logs.
+    assert "regular-file metadata/content verification failed:" in caplog.text
+    assert "_RegularFileState(data=" in caplog.text
+    assert sensitive_prior.decode() in caplog.text
+    assert restored_bytes.decode() in caplog.text
+    assert workspace_path_sentinel.decode() in caplog.text
+    assert temp_path_sentinel.decode() in caplog.text
+
+    # The reported incomplete rollback matches the final disk state exactly.
+    assert _instruction_path_state(agents_path) == agents_before
+    assert _instruction_path_state(claude_path) == (
+        "regular", mismatched_claude, 0o600, os.getuid(),
+    )
+    assert _instruction_path_state(external) == external_before
+    assert _instruction_path_state(settings) == settings_before
+    assert (workspace / "agent.yaml").read_bytes() == agent_yaml_before
+    assert frontmatter_path.read_bytes() == frontmatter_before
     assert prompt_loader.load_agent(
         OrgPaths(root=org_state.root), "dev_agent",
     ).executor == "claude"

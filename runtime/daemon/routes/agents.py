@@ -1506,15 +1506,45 @@ def _bootstrap_uncapturable_owned_files(workspace: Path) -> list[str]:
     return uncapturable
 
 
+class _BootstrapCompensationOperation(StrEnum):
+    """Closed caller-visible classifications for rollback operations."""
+
+    UNCAPTURABLE_FILE = "Uncapturable owned file cannot be compensated"
+    RESTORE_LINK = "Failed to restore link"
+    REMOVE_NEW_FILE = "Failed to remove new file"
+    RESTORE_FILE = "Failed to restore file"
+    REMOVE_NEW_DIRECTORY = "Failed to remove new directory"
+
+
+@dataclass(frozen=True)
+class _BootstrapCompensationFailure:
+    """Structured rollback failure with raw detail reserved for daemon logs."""
+
+    operation: _BootstrapCompensationOperation
+    owned_relative_path: str
+    cause: OSError | None = None
+
+    def caller_diagnostic(self) -> str:
+        """Return only stable classification and declared relative name."""
+        return f"{self.operation.value} {self.owned_relative_path}"
+
+    def raw_diagnostic(self) -> str:
+        """Return full operator detail, including the original exception."""
+        diagnostic = self.caller_diagnostic()
+        if self.cause is not None:
+            diagnostic = f"{diagnostic}: {self.cause}"
+        return diagnostic
+
+
 class _BootstrapRollbackJournal:
     """Bounded record of bootstrap-owned filesystem state, captured pre-bootstrap.
 
     Records only ``_BOOTSTRAP_OWNED_FILES``/``_BOOTSTRAP_OWNED_DIRS``
     (absence/presence/type/content). ``restore`` returns a list of
-    compensation error strings (empty when clean). Files that did not exist
-    before bootstrap are removed; files that existed are restored to their
-    original type, bytes, mode, and UID; newly-created owned directories are
-    removed when empty.
+    structured compensation failures (empty when clean). Files that did not
+    exist before bootstrap are removed; files that existed are restored to
+    their original type, bytes, mode, and UID; newly-created owned directories
+    are removed when empty.
     Canonical skill links and all other workspace content are never touched.
     No broad workspace/repos traversal occurs on either the capture or the
     restore path.
@@ -1696,14 +1726,17 @@ class _BootstrapRollbackJournal:
                 journal._dirs.add(dirname)
         return journal
 
-    def restore(self, workspace: Path) -> list[str]:
-        errors: list[str] = []
+    def restore(self, workspace: Path) -> list[_BootstrapCompensationFailure]:
+        errors: list[_BootstrapCompensationFailure] = []
         for rel in sorted(self._uncapturable):
             # Never delete or overwrite a file whose original bytes were
             # never captured; compensation cannot be lossless, so surface
             # the failure instead of guessing.
             errors.append(
-                f"Uncapturable owned file {rel} cannot be compensated"
+                _BootstrapCompensationFailure(
+                    _BootstrapCompensationOperation.UNCAPTURABLE_FILE,
+                    rel,
+                )
             )
         for rel, raw_link in sorted(self._links.items()):
             # THR-262 Slice B: recreate the exact captured raw relative link
@@ -1712,7 +1745,13 @@ class _BootstrapRollbackJournal:
             try:
                 self._restore_link(fp, raw_link)
             except OSError as exc:
-                errors.append(f"Failed to restore link {rel}: {exc}")
+                errors.append(
+                    _BootstrapCompensationFailure(
+                        _BootstrapCompensationOperation.RESTORE_LINK,
+                        rel,
+                        exc,
+                    )
+                )
         for rel, original in self._files.items():
             fp = workspace / rel
             if original is None:
@@ -1729,7 +1768,13 @@ class _BootstrapRollbackJournal:
                 except FileNotFoundError:
                     pass
                 except OSError as exc:
-                    errors.append(f"Failed to remove new file {rel}: {exc}")
+                    errors.append(
+                        _BootstrapCompensationFailure(
+                            _BootstrapCompensationOperation.REMOVE_NEW_FILE,
+                            rel,
+                            exc,
+                        )
+                    )
             else:
                 try:
                     try:
@@ -1739,7 +1784,13 @@ class _BootstrapRollbackJournal:
                     if current != original:
                         self._restore_regular_file(fp, original)
                 except OSError as exc:
-                    errors.append(f"Failed to restore file {rel}: {exc}")
+                    errors.append(
+                        _BootstrapCompensationFailure(
+                            _BootstrapCompensationOperation.RESTORE_FILE,
+                            rel,
+                            exc,
+                        )
+                    )
         # Remove newly-created owned directories (only when empty).
         for dirname in _BOOTSTRAP_OWNED_DIRS:
             d = workspace / dirname
@@ -1749,7 +1800,11 @@ class _BootstrapRollbackJournal:
                         d.rmdir()
                 except OSError as exc:
                     errors.append(
-                        f"Failed to remove new directory {dirname}: {exc}"
+                        _BootstrapCompensationFailure(
+                            _BootstrapCompensationOperation.REMOVE_NEW_DIRECTORY,
+                            dirname,
+                            exc,
+                        )
                     )
         return errors
 
@@ -1760,38 +1815,25 @@ class SetExecutorBody(BaseModel):
 
 
 _BOOTSTRAP_COMPENSATION_MAX_ERRORS = 4
-_BOOTSTRAP_COMPENSATION_MAX_ERROR_CHARS = 240
-_BOOTSTRAP_COMPENSATION_MAX_JOINED_CHARS = 1024
 
 
-def _bounded_bootstrap_compensation_diagnostics(errors: list[str]) -> str:
+def _bounded_bootstrap_compensation_diagnostics(
+    errors: list[_BootstrapCompensationFailure],
+) -> str:
     """Return caller-safe bounded prose for rollback compensation failures.
 
-    The journal's raw strings remain available to daemon logging.  The HTTP
-    surface receives printable single-line ASCII only, with bounded item and
-    aggregate lengths so an exception cannot inject control sequences or an
-    unbounded response.  The fixed journal prefixes still identify the owned
-    path and failed compensation operation.
+    Raw exceptions remain available to daemon logging only.  The HTTP surface
+    is derived structurally from a closed operation classification and a
+    declared bootstrap-owned relative path, never from exception text.
     """
-    diagnostics: list[str] = []
-    for raw in errors[:_BOOTSTRAP_COMPENSATION_MAX_ERRORS]:
-        printable = "".join(
-            char if " " <= char <= "~" else " " for char in str(raw)
-        )
-        normalized = " ".join(printable.split()) or "unspecified compensation failure"
-        if len(normalized) > _BOOTSTRAP_COMPENSATION_MAX_ERROR_CHARS:
-            normalized = (
-                normalized[:_BOOTSTRAP_COMPENSATION_MAX_ERROR_CHARS - 3]
-                + "..."
-            )
-        diagnostics.append(normalized)
-    omitted = len(errors) - len(diagnostics)
+    visible = errors[:_BOOTSTRAP_COMPENSATION_MAX_ERRORS]
+    if len(errors) > _BOOTSTRAP_COMPENSATION_MAX_ERRORS:
+        visible = errors[:_BOOTSTRAP_COMPENSATION_MAX_ERRORS - 1]
+    diagnostics = [failure.caller_diagnostic() for failure in visible]
+    omitted = len(errors) - len(visible)
     if omitted > 0:
         diagnostics.append(f"... and {omitted} more compensation failure(s)")
-    joined = "; ".join(diagnostics)
-    if len(joined) > _BOOTSTRAP_COMPENSATION_MAX_JOINED_CHARS:
-        joined = joined[:_BOOTSTRAP_COMPENSATION_MAX_JOINED_CHARS - 3] + "..."
-    return joined
+    return "; ".join(diagnostics)
 
 
 def _validate_executor(executor: str) -> None:
@@ -2058,7 +2100,7 @@ async def set_agent_executor(
             if errors:
                 _logger.error(
                     "Executor switch bootstrap cleanup errors: %s",
-                    "; ".join(errors),
+                    "; ".join(error.raw_diagnostic() for error in errors),
                 )
             response_error = str(e)
             message = (
