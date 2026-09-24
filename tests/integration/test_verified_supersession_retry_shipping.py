@@ -80,7 +80,7 @@ def _supersede(base: str, headers: dict[str, str], task_id: str, brief: str) -> 
          "actor": "founder"},
     )
     assert result == {"ok": True, "task_id": task_id, "new_status": "superseded"}
-    successor = _request(base, headers, "GET", f"/orgs/test/tasks/{task_id}")["task"][
+    successor = _request(base, headers, "GET", f"/orgs/test/tasks/{task_id}")[
         "superseded_by_task_id"
     ]
     assert isinstance(successor, str) and successor
@@ -102,26 +102,31 @@ def _init_agent(base: str, headers: dict[str, str], agent: str) -> None:
     raise AssertionError(f"agent init did not complete: {agent}")
 
 
-def _proc_identity(pid: int, daemon_home: Path) -> tuple[str, bytes, int, int] | None:
+def _proc_identity(
+    pid: int, daemon_home: Path | None = None,
+) -> tuple[str, bytes, int, int] | None:
     proc = Path("/proc") / str(pid)
     try:
         stat = (proc / "stat").read_text().rsplit(")", 1)[1].split()
         command = (proc / "cmdline").read_bytes()
-        environment = (proc / "environ").read_bytes().split(b"\0")
     except FileNotFoundError:
         return None
     if stat[0] == "Z":
         return None
-    assert b"HAPPYRANCH_DAEMON_HOME=" + os.fsencode(daemon_home) in environment
+    if daemon_home is not None:
+        environment = (proc / "environ").read_bytes().split(b"\0")
+        assert b"HAPPYRANCH_DAEMON_HOME=" + os.fsencode(daemon_home) in environment
     return stat[19], command, int(stat[1]), int(stat[2])
 
 
-def _owned_descendants(root_pid: int, daemon_home: Path) -> dict[int, tuple[str, bytes, int, int]]:
+def _owned_descendants(
+    root_pid: int,
+) -> dict[int, tuple[str, bytes, int, int]]:
     snapshots: dict[int, tuple[str, bytes, int, int]] = {}
     pending = [root_pid]
     while pending:
         parent = pending.pop()
-        current = _proc_identity(parent, daemon_home)
+        current = _proc_identity(parent)
         if current is not None:
             snapshots[parent] = current
         for entry in Path("/proc").iterdir():
@@ -140,17 +145,19 @@ def _stop_owned(
     process: subprocess.Popen, daemon_home: Path,
     saved: tuple[str, bytes, int, int],
 ) -> None:
-    owned = _owned_descendants(process.pid, daemon_home)
+    current_root = _proc_identity(process.pid, daemon_home)
+    assert current_root is not None and current_root[:2] == saved[:2]
+    owned = _owned_descendants(process.pid)
     owned.setdefault(process.pid, saved)
     for sig, deadline_seconds in ((signal.SIGTERM, 5), (signal.SIGKILL, 2)):
         for pid, identity in owned.items():
-            current = _proc_identity(pid, daemon_home)
+            current = _proc_identity(pid)
             if current is not None:
                 assert current[:2] == identity[:2], ("PID identity changed", pid)
                 os.kill(pid, sig)
         deadline = time.monotonic() + deadline_seconds
         while time.monotonic() < deadline:
-            if all(_proc_identity(pid, daemon_home) is None for pid in owned):
+            if all(_proc_identity(pid) is None for pid in owned):
                 process.wait(timeout=2)
                 return
             time.sleep(0.05)
