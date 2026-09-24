@@ -84,7 +84,7 @@ quarantine, or repair preserved work.
 
 Before acting, run the bundled read-only helper. A whole-worktree candidate is
 passed as its own target. A literal `node_modules`/`.venv` cache candidate MUST
-also name its containing **registered** worktree so that use anywhere in that
+also resolve to its containing **registered** worktree so that use anywhere in that
 worktree (for example a process whose `cwd` is a sibling `src/`) blocks even
 though the cache directory itself is untouched:
 
@@ -93,10 +93,11 @@ python3 scripts/check_path_use.py --target <literal-path> --containing-worktree 
 ```
 
 For a whole-worktree candidate the containing worktree is the candidate itself,
-so `--containing-worktree` may be omitted. For a cache candidate the containing
-worktree is the actual registered worktree root (never a nested directory such
-as `web/`), and it must be supplied explicitly: an omitted containing worktree
-for a cache candidate is `unknown`, never a `dirname` fallback.
+so `--containing-worktree` may be omitted. For a cache candidate the helper
+derives the unique actual registered worktree root (never a nested directory
+such as `web/`). When supplied explicitly, it must match that canonical root.
+Missing, ambiguous, unregistered, or changed registration is `unknown`, never a
+`dirname` fallback.
 
 It returns exactly one of `clear_observation`, `blocked`, or `unknown`
 (never `safe`), and exit `0` only for `clear_observation`.
@@ -158,6 +159,8 @@ platform-specific `stat`.
 ```bash
 # gate workspace-scope
 python3 -c 'import os,sys; c=os.path.realpath(sys.argv[1]); w=os.path.realpath(sys.argv[2]).rstrip("/")+"/repos/"; sys.exit(0 if c.startswith(w) else 1)' "$CANDIDATE" "$WORKSPACE"
+# gate canonical-shape
+python3 -c 'import os,sys; c=os.path.abspath(sys.argv[1]); w=os.path.abspath(sys.argv[2]); cr=os.path.realpath(c); wr=os.path.realpath(w); cache=os.path.basename(c) in ("node_modules",".venv"); inside=os.path.commonpath((cr,wr))==wr if cr and wr else False; sys.exit(0 if c==cr and w==wr and (c==w or (cache and inside and c!=w)) else 1)' "$CANDIDATE" "$CONTAINING"
 # gate non-primary
 python3 -c 'import os,sys; sys.exit(0 if os.path.realpath(sys.argv[1])!=os.path.realpath(sys.argv[2]) else 1)' "$CONTAINING" "$PRIMARY"
 # gate registration
@@ -173,7 +176,7 @@ python3 -c 'import subprocess,sys; p=subprocess.run(["git","-C",sys.argv[1],"sta
 # gate durable-head
 git -C "$CONTAINING" merge-base --is-ancestor HEAD origin/main
 # gate no-open-pr
-python3 -c 'import subprocess,sys; p=subprocess.run(["git","-C",sys.argv[1],"remote","get-url","origin"],capture_output=True,text=True); url=p.stdout.strip() if p.returncode==0 else ""; parts=url.split("github.com",1); slug=(parts[1].strip("/:").strip() if len(parts)==2 else ""); slug=(slug[:-4] if slug.endswith(".git") else slug); b=subprocess.run(["git","-C",sys.argv[1],"rev-parse","--abbrev-ref","HEAD"],capture_output=True,text=True); q=(subprocess.run(["gh","pr","list","--repo",slug,"--head",b.stdout.strip(),"--state","open","--json","number","--jq","length"],capture_output=True,text=True) if slug and b.returncode==0 else None); sys.exit(1 if q is None or q.returncode else (1 if int(q.stdout.strip() or "1")!=0 else 0))' "$PRIMARY"
+python3 -c 'import subprocess,sys; p=subprocess.run(["git","-C",sys.argv[1],"remote","get-url","origin"],capture_output=True,text=True); url=p.stdout.strip() if p.returncode==0 else ""; parts=url.split("github.com",1); slug=(parts[1].strip("/:").strip() if len(parts)==2 else ""); slug=(slug[:-4] if slug.endswith(".git") else slug); b=subprocess.run(["git","-C",sys.argv[2],"rev-parse","--abbrev-ref","HEAD"],capture_output=True,text=True); q=(subprocess.run(["gh","pr","list","--repo",slug,"--head",b.stdout.strip(),"--state","open","--json","number","--jq","length"],capture_output=True,text=True) if slug and b.returncode==0 and b.stdout.strip() not in ("","HEAD") else None); sys.exit(1 if q is None or q.returncode else (1 if int(q.stdout.strip() or "1")!=0 else 0))' "$PRIMARY" "$CONTAINING"
 # gate retention-age
 python3 -c 'import datetime,json,os,sys; d=json.load(open(os.environ["TASK_JSON"])); ca=d.get("completed_at"); term=("completed","failed","cancelled","superseded"); sys.exit(1) if d.get("status") not in term or not ca else None; t=datetime.datetime.fromisoformat(str(ca).replace("Z","+00:00")); t=(t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)); age=(datetime.datetime.now(datetime.timezone.utc)-t).total_seconds(); sys.exit(0 if age>=float(sys.argv[1]) else 1)' "$AGE_SECONDS"
 # gate cache-immediate-parent-manifest
@@ -236,33 +239,75 @@ _wc_run_gates() {
 }
 
 _wc_join() {
-  # R7 prior joined terminal scheduled occurrences + R6.5 nonterminal peers.
-  # Called once before the gates and again immediately before every action.
-  local audit="$WC_TMP/audit.json" occ_ids tid tjson tstatus
-  if ! happyranch audit --org "$ORG" --agent "$AGENT" \
-        --action workspace_cleanup_triggered --json > "$audit" 2>/dev/null; then
-    { _wc_refuse "occurrence_history_unavailable"; return 2; }
+  # R7 prior joined terminal scheduled occurrences + R6.5 manual/daemon/
+  # trigger-history peers. Both finite audit lists are capped at 1001 so the
+  # 1001st row is a saturation sentinel; every referenced task is joined by
+  # exact id. Called before the gates and again immediately before every action.
+  local all="$WC_TMP/all-audit.json" trigger="$WC_TMP/trigger-audit.json"
+  local ids="$WC_TMP/peer-ids.tsv" tid triggered tjson kind rc
+  if ! happyranch audit --org "$ORG" --agent "$AGENT" --limit 1001 \
+        --json > "$all" 2>/dev/null; then
+    { _wc_refuse "peer_history_unavailable"; return 2; }
   fi
-  occ_ids="$(python3 -c 'import json,sys
-d=json.load(open(sys.argv[1]))
+  if ! happyranch audit --org "$ORG" --agent "$AGENT" \
+        --action workspace_cleanup_triggered --limit 1001 --json \
+        > "$trigger" 2>/dev/null; then
+    { _wc_refuse "trigger_history_unavailable"; return 2; }
+  fi
+  if ! python3 -c 'import json,sys
+def load(path, strict):
+    data=json.load(open(path))
+    if not isinstance(data,list) or len(data)>=1001: raise ValueError("saturated")
+    out=[]
+    for row in data:
+        if not isinstance(row,dict): raise ValueError("malformed")
+        tid=row.get("task_id")
+        if tid is None and not strict: continue
+        if not isinstance(tid,str) or not tid.startswith("TASK-"):
+            if strict: raise ValueError("bad trigger id")
+            continue
+        out.append(tid)
+    return out
+all_ids=load(sys.argv[1],False); trigger_ids=load(sys.argv[2],True)
 seen=[]
-for row in (d if isinstance(d,list) else d.get("entries",[])):
-    t=row.get("task_id")
-    if t and t!=sys.argv[2] and t not in seen: seen.append(t)
-print("\n".join(seen))' "$audit" "${ACTING_TASK:-}")"
+for tid in all_ids+trigger_ids:
+    if tid!=sys.argv[3] and tid not in seen: seen.append(tid)
+triggers=set(trigger_ids)
+for tid in seen: print(tid+"\t"+("1" if tid in triggers else "0"))' \
+        "$all" "$trigger" "${ACTING_TASK:-}" > "$ids"; then
+    { _wc_refuse "peer_history_malformed_or_saturated"; return 2; }
+  fi
   local occ_terminal=0
-  while IFS= read -r tid; do
+  while IFS="$(printf '\t')" read -r tid triggered; do
     [ -n "$tid" ] || continue
     tjson="$WC_TMP/$tid.json"
     if ! happyranch recall --org "$ORG" "$tid" > "$tjson" 2>/dev/null; then
-      { _wc_refuse "occurrence_join_unavailable"; return 2; }
+      { _wc_refuse "peer_join_unavailable:$tid"; return 2; }
     fi
-    tstatus="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status") or "")' "$tjson")"
-    case "$tstatus" in
-      completed|failed|cancelled|superseded) occ_terminal=$((occ_terminal+1)) ;;
-      *) { _wc_refuse "nonterminal_peer:$tid"; return 2; } ;;
+    kind="$(python3 -c 'import json,sys
+d=json.load(open(sys.argv[1])); tid=sys.argv[2]; agent=sys.argv[3]; triggered=sys.argv[4]=="1"
+if not isinstance(d,dict) or d.get("task_id")!=tid or not isinstance(d.get("brief"),str) or not isinstance(d.get("status"),str) or not isinstance(d.get("assigned_agent"),str): sys.exit(4)
+if d["assigned_agent"]!=agent: print("foreign"); sys.exit(0)
+first=d["brief"].splitlines()[0] if d["brief"].splitlines() else ""
+manual="HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)"
+daemon="HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)"
+if (triggered and first!=daemon) or (first==daemon and not triggered): sys.exit(5)
+if first not in (manual,daemon): print("ordinary"); sys.exit(0)
+if d["status"] not in ("completed","failed","cancelled","superseded"): print("nonterminal"); sys.exit(0)
+print("scheduled" if triggered else "manual")' "$tjson" "$tid" "$AGENT" "$triggered")"
+    rc=$?
+    if [ "$rc" -eq 4 ]; then
+      { _wc_refuse "peer_record_incomplete:$tid"; return 2; }
+    elif [ "$rc" -ne 0 ]; then
+      { _wc_refuse "peer_history_conflict:$tid"; return 2; }
+    fi
+    case "$kind" in
+      scheduled) occ_terminal=$((occ_terminal+1)) ;;
+      manual|ordinary|foreign) ;;
+      nonterminal) { _wc_refuse "nonterminal_peer:$tid"; return 2; } ;;
+      *) { _wc_refuse "peer_record_incomplete:$tid"; return 2; } ;;
     esac
-  done <<< "$occ_ids"
+  done < "$ids"
   if [ "$occ_terminal" -lt 2 ]; then
     { _wc_refuse "report_only_ordinal:$occ_terminal" "report_only"; return 2; }
   fi
@@ -317,6 +362,11 @@ run_cleanup_candidate() {
     { _wc_refuse "eligibility_gate"; return 2; }
   fi
   if ! _wc_join; then return 2; fi
+  # The same-context fresh scan and every other gate immediately precede the
+  # literal action. Unknown/refusal never falls through to mutation.
+  if ! _wc_run_gates; then
+    { _wc_refuse "pre_action_eligibility_gate"; return 2; }
+  fi
 
   case "$(basename "$CANDIDATE")" in
     node_modules|.venv)

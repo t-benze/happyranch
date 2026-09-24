@@ -202,7 +202,7 @@ def test_procedure_uses_the_documented_gate_commands(body):
     assert "eligibility-commands:end" in procedure
     names = re.findall(r"^# gate (.+)$", _shipped_gate_text(body), re.M)
     assert len(names) >= 12, names
-    for required in ("workspace-scope", "non-primary", "registration",
+    for required in ("workspace-scope", "canonical-shape", "non-primary", "registration",
                      "ownership", "not-symlink", "same-filesystem", "clean",
                      "durable-head", "no-open-pr", "retention-age",
                      "current-use-scan"):
@@ -278,6 +278,9 @@ def test_r5_no_open_pr_gate_binds_to_primary_repository(body, tmp_path):
     _git("add", "-A", cwd=primary)
     _git("commit", "-m", "base", cwd=primary)
     _git("branch", "task/TASK-X", cwd=primary)
+    containing = primary / ".claude" / "worktrees" / "TASK-X"
+    containing.parent.mkdir(parents=True)
+    _git("worktree", "add", str(containing), "task/TASK-X", cwd=primary)
     _git("remote", "add", "origin",
          "https://github.com/demo/fixture.git", cwd=primary)
     bin_dir = tmp_path / "bin"
@@ -285,13 +288,14 @@ def test_r5_no_open_pr_gate_binds_to_primary_repository(body, tmp_path):
     gh = bin_dir / "gh"
     gh.write_text("#!/bin/sh\necho \"$*\" > \"$GH_LOG\"\necho 0\n")
     gh.chmod(0o755)
-    env = dict(os.environ, PRIMARY=str(primary), CONTAINING=str(primary),
+    env = dict(os.environ, PRIMARY=str(primary), CONTAINING=str(containing),
                PATH=str(bin_dir) + os.pathsep + os.environ.get("PATH", ""),
                GH_LOG=str(tmp_path / "gh.log"))
     result = _run_shipped_gate(body, "no-open-pr", env)
     assert result.returncode == 0, result.stderr
     logged = (tmp_path / "gh.log").read_text()
     assert "--repo demo/fixture" in logged, logged
+    assert "--head task/TASK-X" in logged, logged
 
 
 def _git(*args, cwd=None):
@@ -345,9 +349,18 @@ def _write_stubs(bin_dir: Path) -> None:
         "  recall)\n"
         "    exec python3 -c 'import json,os,sys\n"
         "m=json.load(open(os.environ[\"WC_TASK_MAP\"]))\n"
-        "print(json.dumps(m.get(sys.argv[1], {\"error\": \"missing\"})))' \"$last\" ;;\n"
+        "d=m.get(sys.argv[1], {\"error\": \"missing\"})\n"
+        "if isinstance(d,dict) and d.get(\"task_id\") is None: d=dict(d); d[\"task_id\"]=sys.argv[1]\n"
+        "print(json.dumps(d))' \"$last\" ;;\n"
         "  audit)\n"
-        "    exec cat \"$WC_AUDIT\" ;;\n"
+        "    [ \"${WC_AUDIT_FAIL:-0}\" = \"1\" ] && exit 1\n"
+        "    case \" $* \" in *\" --action workspace_cleanup_triggered \"*)\n"
+        "      count_file=\"$WC_TRIGGER_COUNT\"; first=\"$WC_AUDIT_TRIGGER\"; second=\"$WC_AUDIT_TRIGGER_SECOND\" ;;\n"
+        "      *) count_file=\"$WC_ALL_COUNT\"; first=\"$WC_AUDIT_ALL\"; second=\"$WC_AUDIT_ALL_SECOND\" ;;\n"
+        "    esac\n"
+        "    n=$(cat \"$count_file\"); n=$((n+1)); echo \"$n\" > \"$count_file\"\n"
+        "    if [ \"$n\" -gt 1 ] && [ -n \"$second\" ]; then exec cat \"$second\"; fi\n"
+        "    exec cat \"$first\" ;;\n"
         "  *) echo 'unsupported' >&2; exit 1 ;;\n"
         "esac\n")
     hr.chmod(0o755)
@@ -355,6 +368,7 @@ def _write_stubs(bin_dir: Path) -> None:
     gh.write_text(
         "#!/bin/sh\n"
         "echo \"gh $*\" >> \"$GH_LOG\"\n"
+        "[ \"${WC_GH_FAIL:-0}\" = \"1\" ] && exit 71\n"
         "repo=\"\"; prev=\"\"\n"
         "for a in \"$@\"; do [ \"$prev\" = \"--repo\" ] && repo=\"$a\"; prev=\"$a\"; done\n"
         "[ -n \"$repo\" ] || { echo 'missing --repo' >&2; exit 1; }\n"
@@ -364,6 +378,7 @@ def _write_stubs(bin_dir: Path) -> None:
     git.write_text(
         "#!/bin/sh\n"
         "echo \"git $*\" >> \"$GIT_LOG\"\n"
+        "case \"$*\" in *\"${WC_GIT_FAIL_MATCH:-__never__}\"*) exit 71;; esac\n"
         "exec /usr/bin/git \"$@\"\n")
     git.chmod(0o755)
 
@@ -371,14 +386,43 @@ def _write_stubs(bin_dir: Path) -> None:
 def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
                    marker: str | None, agent: str = "dev_agent",
                    task_map: dict | None = None, audit=None,
+                   audit_all=None, audit_trigger=None,
+                   audit_all_second=None, audit_trigger_second=None,
+                   audit_fail: bool = False, scan_state: str = "unknown",
                    candidate: Path, containing: Path,
-                   acting: str = "TASK-ACTING", open_pr: int = 0):
+                   acting: str = "TASK-ACTING", open_pr: int = 0,
+                   gh_fail: bool = False, git_fail_match: str = ""):
     task_map = task_map if task_map is not None else {}
     audit = audit if audit is not None else []
+    audit_all = audit if audit_all is None else audit_all
+    audit_trigger = audit if audit_trigger is None else audit_trigger
+    audit_all_second = audit_all if audit_all_second is None else audit_all_second
+    audit_trigger_second = (
+        audit_trigger if audit_trigger_second is None else audit_trigger_second
+    )
     (tmp_path / "task-map.json").write_text(json.dumps(task_map))
-    (tmp_path / "audit.json").write_text(json.dumps(audit))
+    for name, payload in (
+        ("audit-all.json", audit_all),
+        ("audit-trigger.json", audit_trigger),
+        ("audit-all-second.json", audit_all_second),
+        ("audit-trigger-second.json", audit_trigger_second),
+    ):
+        (tmp_path / name).write_text(json.dumps(payload))
+    (tmp_path / "all-count").write_text("0\n")
+    (tmp_path / "trigger-count").write_text("0\n")
     proc_src = tmp_path / "proc.sh"
     proc_src.write_text(_shipped_procedure(body))
+    fixture_skill = tmp_path / "shipped-skill"
+    (fixture_skill / "scripts").mkdir(parents=True, exist_ok=True)
+    (fixture_skill / "SKILL.md").write_text(body)
+    scan_helper = fixture_skill / "scripts" / "check_path_use.py"
+    scan_helper.write_text(
+        "import json,os,sys\n"
+        "with open(os.environ['WC_SCAN_LOG'],'a') as fh: fh.write('scan\\n')\n"
+        "state=os.environ['WC_SCAN_STATE']\n"
+        "print(json.dumps({'state':state,'reasons':[]}))\n"
+        "raise SystemExit(0 if state=='clear_observation' else (3 if state=='blocked' else 2))\n"
+    )
     wc_tmp = tmp_path / "wc-tmp"
     wc_tmp.mkdir(exist_ok=True)
     git_log = tmp_path / "git.log"
@@ -393,13 +437,26 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
         "PRIMARY": str(fx["primary"]),
         "AGENT": agent,
         "ORG": "test-org",
-        "SKILL": str(SKILL_DIR),
+        "SKILL": str(fixture_skill),
         "ACTING_TASK": acting,
         "GIT_LOG": str(git_log),
         "GH_LOG": str(gh_log),
         "WC_TASK_MAP": str(tmp_path / "task-map.json"),
-        "WC_AUDIT": str(tmp_path / "audit.json"),
+        "WC_AUDIT_ALL": str(tmp_path / "audit-all.json"),
+        "WC_AUDIT_TRIGGER": str(tmp_path / "audit-trigger.json"),
+        "WC_AUDIT_ALL_SECOND": str(tmp_path / "audit-all-second.json"),
+        "WC_AUDIT_TRIGGER_SECOND": str(tmp_path / "audit-trigger-second.json"),
+        "WC_ALL_COUNT": str(tmp_path / "all-count"),
+        "WC_TRIGGER_COUNT": str(tmp_path / "trigger-count"),
+        "WC_AUDIT_FAIL": "1" if audit_fail else "0",
+        "WC_SCAN_STATE": scan_state,
+        "WC_SCAN_LOG": str(tmp_path / "scan.log"),
+        "AGE_SECONDS": (
+            "86400" if candidate.name in ("node_modules", ".venv") else "604800"
+        ),
         "WC_OPEN_PR": str(open_pr),
+        "WC_GH_FAIL": "1" if gh_fail else "0",
+        "WC_GIT_FAIL_MATCH": git_fail_match,
         "TMPDIR": str(wc_tmp),
     })
     script = (
@@ -421,10 +478,12 @@ def _occurrences(*task_ids: str) -> list[dict]:
             for tid in task_ids]
 
 
-def _terminal_task(agent: str, *, age_days: int = 30) -> dict:
+def _terminal_task(agent: str, *, age_days: int = 30,
+                   marker: str = DAEMON_MARKER) -> dict:
     ts = time.strftime("%Y-%m-%dT%H:%M:%S+00:00",
                        time.gmtime(time.time() - age_days * 86400))
-    return {"assigned_agent": agent, "status": "completed", "completed_at": ts}
+    return {"assigned_agent": agent, "status": "completed", "completed_at": ts,
+            "brief": marker + "\nfixture", "task_id": None}
 
 
 def test_f5_procedure_refuses_without_marker_and_never_mutates(tmp_path, body):
@@ -470,8 +529,9 @@ def test_f5_procedure_refuses_before_action_for_each_branch(tmp_path, body):
 
     # R6.5: a nonterminal same-owner peer refuses.
     bad_peer = dict(good_map)
-    bad_peer["TASK-OCC-2"] = {"assigned_agent": agent, "status": "in_progress",
-                              "completed_at": None}
+    bad_peer["TASK-OCC-2"] = dict(
+        _terminal_task(agent), status="in_progress", completed_at=None,
+    )
     r = run(task_map=bad_peer, audit=_occurrences("TASK-OCC-1", "TASK-OCC-2"))
     assert r["rc"] == 2 and "nonterminal_peer" in r["stdout"], r
     assert "worktree remove" not in r["git_log"]
@@ -530,6 +590,7 @@ def test_f5_pr_query_is_bound_to_primary_repository(tmp_path, body):
     # The PR lookup must name the owning repository, never the workspace cwd.
     assert r["gh_log"], "gh was not invoked while evaluating no-open-pr"
     assert "--repo demo/fixture" in r["gh_log"], r["gh_log"]
+    assert "--head task/TASK-ELIGIBLE" in r["gh_log"], r["gh_log"]
     assert "worktree remove" not in r["git_log"]
 
 
@@ -565,3 +626,198 @@ def test_f5_procedure_refuses_on_scan_unknown_before_action(tmp_path, body):
     payload = json.loads(scan.stdout)
     assert payload["state"] == "unknown"
     assert "host_context_unestablished" in " ".join(payload["reasons"])
+
+
+@pytest.mark.parametrize("marker", [MANUAL_FIRST_LINE, DAEMON_MARKER])
+def test_r4_exact_marker_two_distinct_terminal_joins_runs_literal_action(
+        tmp_path, body, marker):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    agent = "dev_agent"
+    task_map = {
+        "TASK-ELIGIBLE": _terminal_task(agent),
+        "TASK-OCC-1": _terminal_task(agent),
+        "TASK-OCC-2": _terminal_task(agent),
+        "TASK-MANUAL": _terminal_task(agent, marker=MANUAL_FIRST_LINE),
+    }
+    before = _git("worktree", "list", "--porcelain", cwd=fx["primary"]).stdout
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=marker,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map,
+        audit_all=_occurrences("TASK-OCC-1", "TASK-OCC-2", "TASK-OCC-1",
+                               "TASK-MANUAL"),
+        audit_trigger=_occurrences("TASK-OCC-1", "TASK-OCC-2", "TASK-OCC-1"),
+        scan_state="clear_observation",
+    )
+    assert result["rc"] == 0, result
+    assert before != _git("worktree", "list", "--porcelain",
+                          cwd=fx["primary"]).stdout
+    assert not fx["eligible"].exists()
+    assert result["git_log"].count("worktree remove") == 1
+    assert (tmp_path / "scan.log").read_text().splitlines() == ["scan", "scan"]
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["open_pr", "young", "unreachable_head", "git_status_error",
+     "gh_error", "missing_manifest", "audit_error"],
+)
+def test_r5_complete_procedure_refuses_literal_gate_and_join_failures_without_action(
+        tmp_path, body, scenario):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    agent = "dev_agent"
+    candidate = fx["eligible"]
+    if scenario == "missing_manifest":
+        candidate = fx["eligible"] / "src" / "node_modules"
+        candidate.mkdir(parents=True)
+    if scenario == "unreachable_head":
+        (fx["eligible"] / "LOCAL.txt").write_text("local only\n")
+        _git("add", "-A", cwd=fx["eligible"])
+        _git("commit", "-m", "local only", cwd=fx["eligible"])
+    task_map = {
+        "TASK-ELIGIBLE": _terminal_task(
+            agent, age_days=1 if scenario == "young" else 30),
+        "TASK-OCC-1": _terminal_task(agent),
+        "TASK-OCC-2": _terminal_task(agent),
+    }
+    occurrences = _occurrences("TASK-OCC-1", "TASK-OCC-2")
+    before = _git("worktree", "list", "--porcelain", cwd=fx["primary"]).stdout
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=candidate, containing=fx["eligible"], task_map=task_map,
+        audit_all=occurrences, audit_trigger=occurrences,
+        scan_state="clear_observation",
+        open_pr=1 if scenario == "open_pr" else 0,
+        gh_fail=scenario == "gh_error",
+        git_fail_match="status --porcelain" if scenario == "git_status_error" else "",
+        audit_fail=scenario == "audit_error",
+    )
+    assert result["rc"] == 2, result
+    assert "worktree remove" not in result["git_log"]
+    assert candidate.exists()
+    assert _git("worktree", "list", "--porcelain",
+                cwd=fx["primary"]).stdout == before
+
+
+def test_r4_manual_peer_contributes_zero_to_first_two(tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    agent = "dev_agent"
+    task_map = {
+        "TASK-ELIGIBLE": _terminal_task(agent),
+        "TASK-OCC-1": _terminal_task(agent),
+        "TASK-MANUAL": _terminal_task(agent, marker=MANUAL_FIRST_LINE),
+    }
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map,
+        audit_all=_occurrences("TASK-OCC-1", "TASK-MANUAL"),
+        audit_trigger=_occurrences("TASK-OCC-1"),
+        scan_state="clear_observation",
+    )
+    assert result["rc"] == 2 and "report_only_ordinal:1" in result["stdout"], result
+    assert "worktree remove" not in result["git_log"]
+    assert fx["eligible"].exists()
+
+
+@pytest.mark.parametrize("scenario", ["missing", "conflicting", "saturated"])
+def test_r4_missing_conflicting_or_saturated_history_refuses(
+        tmp_path, body, scenario):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    agent = "dev_agent"
+    task_map = {
+        "TASK-ELIGIBLE": _terminal_task(agent),
+        "TASK-OCC-1": _terminal_task(agent),
+        "TASK-OCC-2": _terminal_task(agent),
+    }
+    audit_all = _occurrences("TASK-OCC-1", "TASK-OCC-2")
+    audit_trigger = list(audit_all)
+    if scenario == "missing":
+        audit_all.append({"task_id": "TASK-MISSING", "action": "session_start"})
+    elif scenario == "conflicting":
+        task_map["TASK-CONFLICT"] = _terminal_task(agent, marker=MANUAL_FIRST_LINE)
+        audit_all.append({"task_id": "TASK-CONFLICT", "action": "workspace_cleanup_triggered"})
+        audit_trigger.append({"task_id": "TASK-CONFLICT", "action": "workspace_cleanup_triggered"})
+    else:
+        audit_all = [{"task_id": f"TASK-SAT-{i}", "action": "session_start"}
+                     for i in range(1001)]
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map, audit_all=audit_all, audit_trigger=audit_trigger,
+        scan_state="clear_observation",
+    )
+    assert result["rc"] == 2, result
+    assert "worktree remove" not in result["git_log"]
+    assert fx["eligible"].exists()
+
+
+def test_r4_new_manual_peer_after_claim_refuses_before_fresh_scan_and_action(
+        tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    agent = "dev_agent"
+    task_map = {
+        "TASK-ELIGIBLE": _terminal_task(agent),
+        "TASK-OCC-1": _terminal_task(agent),
+        "TASK-OCC-2": _terminal_task(agent),
+        "TASK-NEW-PEER": {
+            "assigned_agent": agent,
+            "status": "in_progress",
+            "completed_at": None,
+            "brief": MANUAL_FIRST_LINE + "\nfixture",
+            "task_id": None,
+        },
+    }
+    first = _occurrences("TASK-OCC-1", "TASK-OCC-2")
+    second = first + [{"task_id": "TASK-NEW-PEER", "action": "session_start"}]
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map, audit_all=first, audit_trigger=first,
+        audit_all_second=second, audit_trigger_second=first,
+        scan_state="clear_observation",
+    )
+    assert result["rc"] == 2 and "nonterminal_peer:TASK-NEW-PEER" in result["stdout"], result
+    assert "worktree remove" not in result["git_log"]
+    assert (tmp_path / "scan.log").read_text().splitlines() == ["scan"]
+    assert fx["eligible"].exists()
+
+
+def test_r5_noncanonical_candidate_shape_refuses_before_removal(tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    bad = fx["eligible"] / "ordinary-subdirectory"
+    bad.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    agent = "dev_agent"
+    task_map = {
+        "TASK-ELIGIBLE": _terminal_task(agent),
+        "TASK-OCC-1": _terminal_task(agent),
+        "TASK-OCC-2": _terminal_task(agent),
+    }
+    occurrences = _occurrences("TASK-OCC-1", "TASK-OCC-2")
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=bad, containing=fx["eligible"], task_map=task_map,
+        audit_all=occurrences, audit_trigger=occurrences,
+        scan_state="clear_observation",
+    )
+    assert result["rc"] == 2, result
+    assert "worktree remove" not in result["git_log"]
+    assert bad.exists()

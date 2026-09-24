@@ -44,10 +44,12 @@ Never ``safe``.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import re
 import stat as stat_mod
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -64,6 +66,7 @@ DEFAULT_MAX_MAPS_BYTES = 4 * 1024 * 1024
 DEFAULT_MAX_MAPS_LINES = 20000
 DEFAULT_DEADLINE_SECONDS = 30.0
 DEFAULT_MAX_ENUM_PASSES = 6
+DEFAULT_MAX_WORKTREES = 4096
 
 
 # ── typed read outcomes ───────────────────────────────────────────────────
@@ -90,6 +93,11 @@ class RealProc:
         self.root = proc_root
         self._stat_cache: dict[str, Outcome] = {}
         self._skip_ino_prefixes = ("/proc/", "/sys/", "/dev/")
+        self._admit = lambda: True
+
+    def bind_admission(self, admit) -> None:
+        """Bind the scan's one shared read/iteration admission deadline."""
+        self._admit = admit
 
     def _path(self, pid: str, rel: str) -> str:
         return os.path.join(self.root, pid, rel) if rel else os.path.join(self.root, pid)
@@ -107,6 +115,8 @@ class RealProc:
         try:
             with it:
                 for entry in it:
+                    if not self._admit():
+                        return Outcome(TRUNCATED, pids, "deadline_exceeded")
                     if not entry.name.isdecimal():
                         continue
                     if len(pids) >= max_pids:
@@ -135,6 +145,8 @@ class RealProc:
         try:
             with it:
                 for entry in it:
+                    if not self._admit():
+                        return Outcome(TRUNCATED, names, "deadline_exceeded")
                     if len(names) >= max_entries:
                         truncated = True
                         break
@@ -150,6 +162,8 @@ class RealProc:
         return Outcome(OK, names)
 
     def read_text(self, pid: str, rel: str, max_bytes: int) -> Outcome:
+        if not self._admit():
+            return Outcome(TRUNCATED, None, "deadline_exceeded")
         p = self._path(pid, rel)
         try:
             with open(p, "rb") as fh:
@@ -165,6 +179,8 @@ class RealProc:
         return Outcome(OK, data.decode("utf-8", "replace"))
 
     def readlink(self, pid: str, rel: str) -> Outcome:
+        if not self._admit():
+            return Outcome(TRUNCATED, None, "deadline_exceeded")
         p = self._path(pid, rel)
         try:
             return Outcome(OK, os.readlink(p))
@@ -176,6 +192,8 @@ class RealProc:
             return Outcome(ERROR, None, f"{p}:{exc.__class__.__name__}")
 
     def stat_link(self, pid: str, rel: str) -> Outcome:
+        if not self._admit():
+            return Outcome(TRUNCATED, None, "deadline_exceeded")
         p = self._path(pid, rel)
         try:
             st = os.stat(p)
@@ -188,6 +206,8 @@ class RealProc:
         return Outcome(OK, st, p)
 
     def stat_path(self, path: str) -> Outcome:
+        if not self._admit():
+            return Outcome(TRUNCATED, None, "deadline_exceeded")
         if path.startswith(self._skip_ino_prefixes):
             return Outcome(VANISHED, None, path)
         if path in self._stat_cache:
@@ -210,6 +230,8 @@ class RealProc:
         lookup would mask a replacement that happened during collection. This
         method never consults or writes the cache.
         """
+        if not self._admit():
+            return Outcome(TRUNCATED, None, "deadline_exceeded")
         if path.startswith(self._skip_ino_prefixes):
             return Outcome(VANISHED, None, path)
         try:
@@ -223,6 +245,8 @@ class RealProc:
 
     def stat_through_root(self, pid: str, path: str) -> Outcome:
         """Resolve ``path`` inside ``pid``'s mount namespace (identity check)."""
+        if not self._admit():
+            return Outcome(TRUNCATED, None, "deadline_exceeded")
         if path.startswith(self._skip_ino_prefixes):
             return Outcome(VANISHED, None, path)
         key = f"{pid}\0{path}"
@@ -271,6 +295,32 @@ class RealProc:
                 "stacked": stacked, "mountinfo": mi.kind,
                 "pid1_ns_readable": pid1_pid.kind == OK, "ok": ok}
 
+    def registered_worktrees(self, path: str, max_entries: int) -> Outcome:
+        """Return canonical Git-registered roots containing ``path``."""
+        if not self._admit():
+            return Outcome(TRUNCATED, None, "deadline_exceeded")
+        try:
+            listed = subprocess.run(
+                ["git", "-C", path, "worktree", "list", "--porcelain"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return Outcome(ERROR, None, exc.__class__.__name__)
+        if listed.returncode:
+            return Outcome(ERROR, None, "git_worktree_list")
+        roots: list[str] = []
+        for line in listed.stdout.splitlines():
+            if not self._admit():
+                return Outcome(TRUNCATED, roots, "deadline_exceeded")
+            if not line.startswith("worktree "):
+                continue
+            if len(roots) >= max_entries:
+                return Outcome(TRUNCATED, roots, f"worktrees>{max_entries}")
+            root = os.path.realpath(line[9:])
+            if path == root or path.startswith(root.rstrip("/") + "/"):
+                roots.append(root)
+        return Outcome(OK, roots)
+
 
 class FakeProc:
     """Deterministic fault-injection seam over the same interface.
@@ -287,7 +337,8 @@ class FakeProc:
                  list_state: str | None = None, stat_map: dict | None = None,
                  default_stat: tuple[int, int] | None = None,
                  host_context: dict | None = None,
-                 root_unverified: set | None = None) -> None:
+                 root_unverified: set | None = None,
+                 registered_worktrees: list[str] | None = None) -> None:
         self.spec = spec
         self.deny = set(deny)
         self.vanish = set(vanish)
@@ -297,6 +348,7 @@ class FakeProc:
         self.stat_map = stat_map or {}
         self.default_stat = default_stat
         self.root_unverified = set(root_unverified or ())
+        self._registered_worktrees = list(registered_worktrees or ())
         self._host_context = host_context or {"ok": True, "synthetic": True,
                                               "pid1_comm": "systemd",
                                               "pid_ns_agree": True, "mnt_agree": True,
@@ -304,6 +356,14 @@ class FakeProc:
 
     def host_context(self, self_pid: str) -> dict:
         return dict(self._host_context)
+
+    def registered_worktrees(self, path: str, max_entries: int) -> Outcome:
+        roots = [os.path.realpath(root) for root in self._registered_worktrees
+                 if path == os.path.realpath(root)
+                 or path.startswith(os.path.realpath(root).rstrip("/") + "/")]
+        if len(roots) > max_entries:
+            return Outcome(TRUNCATED, roots[:max_entries])
+        return Outcome(OK, roots)
 
     def _outcome(self, pid: str, rel: str):
         if (pid, rel) in self.deny:
@@ -784,6 +844,41 @@ class _Rec:
     handled: bool = False
 
 
+class _DeadlineProc:
+    """Admit every /proc/filesystem observation through one shared deadline.
+
+    RealProc also binds the same admission callback inside its directory
+    iterators and compound host-context read. The wrapper keeps injected test
+    seams and any future accessor implementation subject to the same contract.
+    """
+
+    _OUTCOME_METHODS = {
+        "list_pids", "listdir", "read_text", "readlink", "stat_link",
+        "stat_path", "stat_path_fresh", "stat_through_root",
+        "registered_worktrees",
+    }
+
+    def __init__(self, inner, admit) -> None:
+        self._inner = inner
+        self._admit = admit
+
+    def __getattr__(self, name):
+        value = getattr(self._inner, name)
+        if name == "host_context":
+            def host_context(*args, **kwargs):
+                if not self._admit():
+                    return {"ok": False, "deadline_exceeded": True}
+                return value(*args, **kwargs)
+            return host_context
+        if name in self._OUTCOME_METHODS:
+            def read(*args, **kwargs):
+                if not self._admit():
+                    return Outcome(TRUNCATED, None, "deadline_exceeded")
+                return value(*args, **kwargs)
+            return read
+        return value
+
+
 def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
          agent_uid: int | None = None, bounds: Bounds | None = None,
          clock=time.monotonic,
@@ -798,11 +893,32 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
     An unresolvable containing worktree is unknown, never a literal-path
     fallback.
     """
-    proc = proc or RealProc()
+    raw_proc = proc or RealProc()
     bounds = bounds or Bounds()
     self_pid = str(self_pid if self_pid is not None else os.getpid())
     agent_uid = agent_uid if agent_uid is not None else os.getuid()
+    started = clock()
+    res = ScanResult(state="unknown", target=os.fspath(target))
+
+    def expired() -> bool:
+        return (clock() - started) > bounds.deadline_seconds
+
+    def admit() -> bool:
+        if not expired():
+            return True
+        if "deadline_exceeded" not in res.reasons:
+            res.reasons.append("deadline_exceeded")
+        if res.coverage:
+            res.coverage["truncated"] = res.coverage.get("truncated", 0) + 1
+        return False
+
+    if hasattr(raw_proc, "bind_admission"):
+        raw_proc.bind_admission(admit)
+    proc = _DeadlineProc(raw_proc, admit)
+    if not admit():
+        return res
     target_real = os.path.realpath(os.fspath(target))
+    res.target = target_real
     tstat = proc.stat_path(target_real)
     target_id = ((getattr(tstat.value, "st_dev", None), getattr(tstat.value, "st_ino", None))
                  if tstat.kind == OK else None)
@@ -819,27 +935,40 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
     containing_expected: str | None = None
     containing_missing = False
     target_is_cache = os.path.basename(target_real.rstrip("/")) in CACHE_BASENAMES
-    if containing_raw is not None:
-        containing_real = os.path.realpath(os.fspath(containing_raw))
-        containing_expected = containing_real
-        if containing_real == target_real:
-            # whole-worktree candidate: the containing worktree is the target
-            containing_real = None
-            containing_expected = target_real
-        elif not target_real.startswith(containing_real.rstrip("/") + "/"):
+    registration_expected: tuple[str, tuple[int, int]] | None = None
+    if target_is_cache:
+        registered = proc.registered_worktrees(target_real, DEFAULT_MAX_WORKTREES)
+        candidates = list(registered.value or ()) if registered.kind == OK else []
+        supplied_real = (os.path.realpath(os.fspath(containing_raw))
+                         if containing_raw is not None and admit() else None)
+        if (registered.kind != OK or len(candidates) != 1
+                or (supplied_real is not None and supplied_real != candidates[0])):
             containing_missing = True
         else:
+            containing_real = candidates[0]
+            containing_expected = supplied_real or containing_real
             cstat = proc.stat_path(containing_real)
             containing_ok = cstat.kind == OK
             cid = ((getattr(cstat.value, "st_dev", None),
                     getattr(cstat.value, "st_ino", None))
                    if containing_ok else None)
             roots[containing_real] = cid
-    elif target_is_cache:
-        containing_missing = True
+            if cid is not None:
+                registration_expected = (containing_real, cid)
+    elif containing_raw is not None:
+        if not admit():
+            containing_missing = True
+        else:
+            containing_real = os.path.realpath(os.fspath(containing_raw))
+            containing_expected = containing_real
+        if containing_real == target_real:
+            # Whole-worktree registration is enforced by the shipped action-time
+            # gate; the scanner needs no second observation root.
+            containing_real = None
+            containing_expected = target_real
+        else:
+            containing_missing = True
 
-    started = clock()
-    res = ScanResult(state="unknown", target=target_real)
     res.coverage = {
         "agent_uid": agent_uid, "self_pid": self_pid,
         "target_dev_ino": list(target_id) if target_id else None,
@@ -866,17 +995,14 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
         res.cycles.append({"phase": "target", "kind": tstat.kind})
         return res
     if containing_missing:
-        # R2: a cache candidate always requires explicit verified containing
-        # context; a supplied context must actually contain the candidate. This
-        # is unknown, never a literal-path (or dirname) fallback.
-        res.reasons.append("containing_worktree_required")
+        # R2: a cache candidate must resolve to exactly one Git-registered root;
+        # a supplied root must agree. Missing, ambiguous or contradictory
+        # context is unknown, never a dirname fallback.
+        res.reasons.append("containing_worktree_unresolved")
     if containing_real is not None and not containing_ok:
         # Missing/ambiguous containing registration is unknown, not a
         # literal-path fallback.
         res.reasons.append("containing_worktree_unavailable")
-
-    def expired() -> bool:
-        return (clock() - started) > bounds.deadline_seconds
 
     hc = proc.host_context(self_pid)
     res.coverage["host_context"] = hc
@@ -1150,15 +1276,29 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
             expected = roots.get(root)
             if expected is not None and ident != expected:
                 res.reasons.append(f"target_identity_changed:{root}")
-        try:
-            if os.path.realpath(os.fspath(target)) != target_real:
+        if registration_expected is not None:
+            again = proc.registered_worktrees(target_real, DEFAULT_MAX_WORKTREES)
+            roots_again = list(again.value or ()) if again.kind == OK else []
+            if roots_again != [registration_expected[0]]:
+                res.reasons.append("containing_registration_changed")
+            else:
+                rst = proc.stat_path_fresh(roots_again[0])
+                rid = ((getattr(rst.value, "st_dev", None),
+                        getattr(rst.value, "st_ino", None))
+                       if rst.kind == OK else None)
+                if rid != registration_expected[1]:
+                    res.reasons.append("containing_registration_identity_changed")
+        if admit():
+            try:
+                if os.path.realpath(os.fspath(target)) != target_real:
+                    res.reasons.append("target_resolution_changed")
+            except OSError:
                 res.reasons.append("target_resolution_changed")
-        except OSError:
-            res.reasons.append("target_resolution_changed")
         # R2: re-resolve the LITERAL supplied containing path too -- a containing
         # alias retargeted during the member reads must not leave a clear result
         # behind an unchanged cached root inode.
-        if containing_raw is not None and containing_expected is not None:
+        if (containing_raw is not None and containing_expected is not None
+                and admit()):
             try:
                 if os.path.realpath(os.fspath(containing_raw)) != containing_expected:
                     res.reasons.append("containing_resolution_changed")
@@ -1219,22 +1359,29 @@ def _gather_identity(proc, pid: str, rec: _Rec, agent_uid: int) -> IdentityEvide
     return ev
 
 
-def _still_present(proc, pid: str, tid: str | None) -> bool:
-    """True when the PID/TID is still observable.
+def _still_present(proc, pid: str, tid: str | None) -> bool | None:
+    """Return true/false only for observed presence/confirmed disappearance.
 
     F2: ``ENOENT`` for a cwd/maps/fd reference is NOT confirmed process/thread
     exit. Only an actually absent PID/TID stat (and status for a leader) proves
     the disappearance; a still-present PID/TID with a missing child reference is
-    an unknown observation, never a clean clear.
+    an unknown observation, never a clean clear. Denied/error/truncated identity
+    reads return ``None`` rather than masquerading as a confirmed exit.
     """
     if tid is None:
         st = proc.read_text(pid, "stat", 4096)
         if st.kind == OK:
             return True
+        if st.kind != VANISHED:
+            return None
         status = proc.read_text(pid, "status", 8192)
-        return status.kind == OK
+        if status.kind == OK:
+            return True
+        return False if status.kind == VANISHED else None
     st = proc.read_text(pid, f"task/{tid}/stat", 4096)
-    return st.kind == OK
+    if st.kind == OK:
+        return True
+    return False if st.kind == VANISHED else None
 
 
 def _thread_bracket(proc, pid: str, tid: str):
@@ -1273,7 +1420,8 @@ def _scan_member(proc, pid: str, rec: _Rec, roots: dict, bounds: Bounds,
         # F2: ENOENT for a namespace link is a missing child reference, not
         # confirmed exit. Only an actually absent PID proves the process is
         # gone; a still-present PID with a missing namespace is unknown.
-        if _still_present(proc, pid, None):
+        present = _still_present(proc, pid, None)
+        if present is not False:
             res.reasons.append(f"ns_vanished_but_present:{pid}")
             res.coverage["unreadable_same_user"] += 1
         else:
@@ -1309,7 +1457,8 @@ def _scan_member(proc, pid: str, rec: _Rec, roots: dict, bounds: Bounds,
     if threads.kind == VANISHED:
         # F2: same rule as the namespace links -- a missing thread listing is
         # not a confirmed exit while the PID is still observable.
-        if _still_present(proc, pid, None):
+        present = _still_present(proc, pid, None)
+        if present is not False:
             res.reasons.append(f"threads_vanished_but_present:{pid}")
             res.coverage["unreadable_same_user"] += 1
         else:
@@ -1342,7 +1491,8 @@ def _scan_member(proc, pid: str, rec: _Rec, roots: dict, bounds: Bounds,
 
     def vanished_ref(kind: str, tid: str | None) -> None:
         label = f"{pid}{':' + tid if tid else ''}"
-        if _still_present(proc, pid, tid):
+        present = _still_present(proc, pid, tid)
+        if present is not False:
             res.reasons.append(f"{kind}_vanished_but_present:{label}")
             res.coverage["unreadable_same_user"] += 1
         else:
@@ -1392,17 +1542,19 @@ def _scan_member(proc, pid: str, rec: _Rec, roots: dict, bounds: Bounds,
             else:
                 res.coverage["errors"] += 1
             return
-        lines = mt.value.splitlines()
-        if len(lines) > bounds.max_maps_lines:
-            res.reasons.append(f"maps_truncated:{pid}{':' + tid if tid else ''}")
-            res.coverage["maps_truncated"] += 1
-            res.coverage["truncated"] += 1
-            return
-        for line in lines:
+        # Stream the already byte-bounded observation and stop at the first
+        # over-cap line. Never materialize every mapping before enforcing the
+        # line cap.
+        for index, line in enumerate(io.StringIO(mt.value)):
             # R3: every newly admitted maps-line iteration checks the shared
             # deadline; an in-flight read is never hard-preempted.
             if expired():
                 res.reasons.append("deadline_exceeded")
+                res.coverage["truncated"] += 1
+                return
+            if index >= bounds.max_maps_lines:
+                res.reasons.append(f"maps_truncated:{pid}{':' + tid if tid else ''}")
+                res.coverage["maps_truncated"] += 1
                 res.coverage["truncated"] += 1
                 return
             parts = line.split(None, 5)
@@ -1523,7 +1675,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--target", required=True, help="candidate path to check")
     ap.add_argument("--containing-worktree", default=None,
                     help="registered worktree containing a cache candidate "
-                         "(node_modules/.venv); derived from the parent when omitted")
+                         "(node_modules/.venv); derived from Git registration "
+                         "when omitted")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--max-pids", type=int, default=DEFAULT_MAX_PIDS)
     ap.add_argument("--deadline-seconds", type=float, default=DEFAULT_DEADLINE_SECONDS)

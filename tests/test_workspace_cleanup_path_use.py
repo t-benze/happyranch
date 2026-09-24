@@ -233,7 +233,8 @@ def _cache_proc(cpu, cls=None, member_cwd=CACHE_WT + "/src", **member_kw):
     cls = cls or cpu.FakeProc
     self_p = _spec(SELF, comm="check_path_use")
     member = _spec("600", cwd=member_cwd, **member_kw)
-    return cls({SELF: self_p, "600": member}, stat_map=dict(CMAP))
+    return cls({SELF: self_p, "600": member}, stat_map=dict(CMAP),
+               registered_worktrees=[CACHE_WT])
 
 
 def test_f1_cache_candidate_observes_occupied_containing_worktree(cpu):
@@ -243,12 +244,29 @@ def test_f1_cache_candidate_observes_occupied_containing_worktree(cpu):
     assert res.coverage["containing_worktree"] == CACHE_WT
 
 
-def test_f1_cache_candidate_without_containing_context_is_unknown(cpu):
-    # R2: a cache candidate never silently infers its parent as the registered
-    # containing worktree; explicit verified context is required.
+def test_f1_cache_candidate_derives_unique_registered_containing_root(cpu):
+    # R2: omission is safe only when Git registration resolves exactly one
+    # canonical containing worktree, whose use is then observed.
     res = cpu.scan(CACHE, proc=_cache_proc(cpu), self_pid=SELF, agent_uid=UID)
+    assert res.state == "blocked"
+    assert res.coverage["containing_worktree"] == CACHE_WT
+
+
+@pytest.mark.parametrize("roots", [[], [CACHE_WT, "/work"]])
+def test_f1_cache_missing_or_ambiguous_registration_is_unknown(cpu, roots):
+    proc = _cache_proc(cpu)
+    proc._registered_worktrees = roots
+    res = cpu.scan(CACHE, proc=proc, self_pid=SELF, agent_uid=UID,
+                   containing_worktree=CACHE_WT)
     assert res.state == "unknown"
-    assert "containing_worktree_required" in res.reasons
+    assert "containing_worktree_unresolved" in res.reasons
+
+
+def test_f1_cache_supplied_root_must_match_registration(cpu):
+    res = cpu.scan(CACHE, proc=_cache_proc(cpu), self_pid=SELF, agent_uid=UID,
+                   containing_worktree="/work/wrong")
+    assert res.state == "unknown"
+    assert "containing_worktree_unresolved" in res.reasons
 
 
 def test_f1_explicit_containing_worktree_argument(cpu):
@@ -265,16 +283,34 @@ def test_f1_missing_containing_worktree_is_unknown_not_fallback(cpu):
     res = cpu.scan(CACHE, proc=proc, self_pid=SELF, agent_uid=UID,
                    containing_worktree=CACHE_WT)
     assert res.state == "unknown"
-    assert "containing_worktree_unavailable" in res.reasons
+    assert "containing_worktree_unresolved" in res.reasons
 
 
-def test_f1_cache_sibling_without_explicit_scan_would_have_cleared(cpu):
-    # The literal path alone is clear; only the containing worktree blocks.
+def test_f1_cache_cannot_self_declare_as_containing_worktree(cpu):
+    # The literal cache is not a registered worktree, so it cannot be used to
+    # suppress observation of a process elsewhere in the real containing root.
     proc = cpu.FakeProc({SELF: _spec(SELF), "600": _spec("600", cwd=CACHE_WT + "/src")},
-                        stat_map={CACHE: (2049, 77)})
+                        stat_map=dict(CMAP), registered_worktrees=[CACHE_WT])
     literal_only = cpu.scan(CACHE, proc=proc, self_pid=SELF, agent_uid=UID,
                             containing_worktree=CACHE)
-    assert literal_only.state == "clear_observation"
+    assert literal_only.state == "unknown"
+    assert "containing_worktree_unresolved" in literal_only.reasons
+
+
+class _RegistrationChanges(_HC.FakeProc):
+    def registered_worktrees(self, path, max_entries):
+        self.registry_reads = getattr(self, "registry_reads", 0) + 1
+        if self.registry_reads > 1:
+            return _HC.Outcome(_HC.OK, [])
+        return super().registered_worktrees(path, max_entries)
+
+
+def test_f1_cache_registration_is_revalidated_before_clear(cpu):
+    proc = _cache_proc(cpu, _RegistrationChanges, member_cwd="/home/benze")
+    res = cpu.scan(CACHE, proc=proc, self_pid=SELF, agent_uid=UID,
+                   containing_worktree=CACHE_WT)
+    assert res.state == "unknown"
+    assert "containing_registration_changed" in res.reasons
 
 
 # ── F2 identity / exit semantics ──────────────────────────────────────────
@@ -529,6 +565,39 @@ def test_f6_thread_cap_saturation_is_unknown(cpu):
     assert res.coverage["threads_truncated"] >= 1
 
 
+def test_f6_maps_line_cap_is_unknown(cpu):
+    proc = cpu.FakeProc(
+        {SELF: _spec(SELF), "600": _spec(
+            "600", maps=["0-1 r--p 0 0:0 0 /one", "1-2 r--p 0 0:0 0 /two"])},
+        stat_map=dict(STAT_MAP),
+    )
+    res = cpu.scan(TARGET, proc=proc, self_pid=SELF, agent_uid=UID,
+                   bounds=cpu.Bounds(max_maps_lines=1))
+    assert res.state == "unknown"
+    assert res.coverage["maps_truncated"] >= 1
+
+
+def test_f6_fd_cap_is_unknown_before_any_fd_read(cpu):
+    class _FdCountingProc(_HC.FakeProc):
+        fd_reads = 0
+
+        def readlink(self, pid, rel):
+            if rel.startswith("fd/"):
+                self.fd_reads += 1
+            return super().readlink(pid, rel)
+
+    proc = _FdCountingProc(
+        {SELF: _spec(SELF), "600": _spec(
+            "600", fds={"3": "/one", "4": "/two"})},
+        stat_map=dict(STAT_MAP),
+    )
+    res = cpu.scan(TARGET, proc=proc, self_pid=SELF, agent_uid=UID,
+                   bounds=cpu.Bounds(max_fds=1))
+    assert res.state == "unknown"
+    assert res.coverage["fd_truncated"] >= 1
+    assert proc.fd_reads == 0
+
+
 class _CountingProc(_HC.FakeProc):
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
@@ -665,7 +734,8 @@ def test_r2_containing_alias_retarget_is_unknown(cpu, tmp_path):
     target = str(first / "node_modules")
     proc = _AliasChange({SELF: _spec(SELF), "600": _spec("600")},
                         stat_map={target: (1, 46), str(first): (1, 44),
-                                  str(second): (1, 45)})
+                                  str(second): (1, 45)},
+                        registered_worktrees=[str(first)])
     res = cpu.scan(target, proc=proc, self_pid=SELF, agent_uid=UID,
                    containing_worktree=str(alias))
     assert res.state == "unknown"
@@ -703,3 +773,67 @@ def test_r3_fd_deadline_admits_no_reads_after_expiry(cpu):
     assert res.state == "unknown"
     assert "deadline_exceeded" in res.reasons
     assert proc.late_reads == []
+
+
+def test_r3_deadline_starts_before_candidate_identity_read(cpu):
+    class _Clock:
+        now = 0.0
+
+        def __call__(self):
+            return self.now
+
+    clock = _Clock()
+
+    class _ExpireOnTargetStat(_HC.FakeProc):
+        host_calls = 0
+
+        def stat_path(self, path):
+            out = super().stat_path(path)
+            if path == TARGET:
+                clock.now = 100.0
+            return out
+
+        def host_context(self, self_pid):
+            self.host_calls += 1
+            return super().host_context(self_pid)
+
+    proc = _ExpireOnTargetStat(
+        {SELF: _spec(SELF), "600": _spec("600")},
+        stat_map=dict(STAT_MAP),
+    )
+    res = cpu.scan(TARGET, proc=proc, self_pid=SELF, agent_uid=UID,
+                   clock=clock, bounds=cpu.Bounds(deadline_seconds=1.0))
+    assert res.state == "unknown"
+    assert "deadline_exceeded" in res.reasons
+    assert proc.host_calls == 0
+
+
+def test_r3_deadline_during_snapshot_stops_next_identity_read(cpu):
+    class _Clock:
+        now = 0.0
+
+        def __call__(self):
+            return self.now
+
+    clock = _Clock()
+
+    class _ExpireOnLeaderStat(_HC.FakeProc):
+        late_status_reads = 0
+
+        def read_text(self, pid, rel, limit):
+            if pid == "600" and rel == "status" and clock.now:
+                self.late_status_reads += 1
+            out = super().read_text(pid, rel, limit)
+            if pid == "600" and rel == "stat":
+                clock.now = 100.0
+            return out
+
+    proc = _ExpireOnLeaderStat(
+        {SELF: _spec(SELF), "600": _spec("600")},
+        stat_map=dict(STAT_MAP),
+    )
+    res = cpu.scan(TARGET, proc=proc, self_pid=SELF, agent_uid=UID,
+                   clock=clock, bounds=cpu.Bounds(deadline_seconds=1.0))
+    assert res.state == "unknown"
+    assert "deadline_exceeded" in res.reasons
+    assert proc.late_status_reads == 0
