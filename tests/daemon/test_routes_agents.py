@@ -7962,7 +7962,10 @@ def test_executor_switch_caught_b5_restores_divergent_regular_pair_metadata(
     )
 
     assert r.status_code == 400, (r.status_code, r.text)
-    assert r.json()["detail"]["code"] == "executor_bootstrap_failed"
+    detail = r.json()["detail"]
+    assert detail["code"] == "executor_bootstrap_failed"
+    assert "Any partial bootstrap files have been cleaned up." in detail["message"]
+    assert "cleanup/restore was incomplete" not in detail["message"].lower()
     assert _instruction_path_state(agents_path) == agents_before
     assert _instruction_path_state(claude_path) == claude_before
     assert _instruction_path_state(external) == external_before
@@ -7980,6 +7983,117 @@ def test_executor_switch_caught_b5_restores_divergent_regular_pair_metadata(
         for p in backups
     }
     assert backup_states == {
+        "AGENTS.md": agents_before,
+        "CLAUDE.md": claude_before,
+    }
+    _assert_exact_skill_root(
+        org_state, workspace, ".claude/skills", present=True,
+    )
+    _assert_exact_skill_root(
+        org_state, workspace, ".agents/skills", present=True,
+    )
+
+
+def test_executor_switch_caught_b5_surfaces_incomplete_metadata_compensation(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+):
+    """The real route reports a bounded, truthful failed-compensation result.
+
+    A post-pair B5 failure first mutates the divergent regular instruction
+    pair through the shipping writer.  The real rollback then restores
+    AGENTS.md but cannot reproduce CLAUDE.md's captured mode because fchmod is
+    forced to fail.  The caller must see both the original bootstrap failure
+    and the bounded compensation failure, without a false cleanup-success
+    claim, while every unaffected invariant remains exact.
+    """
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / ".claude").mkdir(parents=True)
+    settings = workspace / ".claude" / "settings.json"
+    settings.write_bytes(b'{"old": true}\n')
+
+    external = tmp_home / "caught_b5_compensation_external_sentinel.md"
+    external.write_bytes(b"# original AGENTS instructions\n")
+    agents_path = workspace / "AGENTS.md"
+    os.link(external, agents_path)
+    agents_path.chmod(0o640)
+    claude_path = workspace / "CLAUDE.md"
+    claude_path.write_bytes(b"# original CLAUDE instructions\n")
+    claude_path.chmod(0o600)
+
+    agents_before = _instruction_path_state(agents_path)
+    claude_before = _instruction_path_state(claude_path)
+    external_before = _instruction_path_state(external)
+    settings_before = _instruction_path_state(settings)
+    audit_before = _audit_agent_managed(org_state)
+    assert agents_before == (
+        "regular", b"# original AGENTS instructions\n", 0o640, os.getuid(),
+    )
+    assert claude_before == (
+        "regular", b"# original CLAUDE instructions\n", 0o600, os.getuid(),
+    )
+
+    _install_boundary_exception("B5", "dev_agent", monkeypatch)
+    real_fchmod = os.fchmod
+    long_unsafe_reason = (
+        "forced metadata reproduction failure\n\x1b[31m" + "X" * 2000
+    )
+
+    def _fchmod(fd, mode):
+        if mode == 0o600:
+            raise OSError(long_unsafe_reason)
+        return real_fchmod(fd, mode)
+
+    monkeypatch.setattr(os, "fchmod", _fchmod)
+
+    r = TestClient(app, raise_server_exceptions=False).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex", "clean": True},
+        headers=auth_headers,
+    )
+
+    assert r.status_code == 400, (r.status_code, r.text)
+    detail = r.json()["detail"]
+    assert set(detail) == {"code", "error", "message"}
+    assert detail["code"] == "executor_bootstrap_failed"
+    assert "injected post-pair bootstrap failure" in detail["error"]
+    assert "Failed to restore file CLAUDE.md" in detail["error"]
+    assert "forced metadata reproduction failure" in detail["error"]
+    assert "cleanup/restore was incomplete" in detail["message"].lower()
+    assert "Failed to restore file CLAUDE.md" in detail["message"]
+    assert "Resolve the bootstrap error before retrying." in detail["message"]
+    assert "Any partial bootstrap files have been cleaned up." not in detail["message"]
+    assert "\n" not in detail["error"] and "\x1b" not in detail["error"]
+    assert "\n" not in detail["message"] and "\x1b" not in detail["message"]
+    assert len(detail["error"]) <= 1200
+    assert len(detail["message"]) <= 1600
+    assert "X" * 1000 not in detail["error"]
+    assert "X" * 1000 not in detail["message"]
+
+    # Rollback is honestly partial: AGENTS.md and every unaffected owned file
+    # are exact, while CLAUDE.md remains the canonical link created by the real
+    # pair writer because its regular-file metadata could not be reproduced.
+    assert _instruction_path_state(agents_path) == agents_before
+    assert _instruction_path_state(claude_path) == (
+        "symlink", "AGENTS.md", 0o777, os.getuid(),
+    )
+    assert _instruction_path_state(external) == external_before
+    assert _instruction_path_state(settings) == settings_before
+    assert prompt_loader.load_agent(
+        OrgPaths(root=org_state.root), "dev_agent",
+    ).executor == "claude"
+    assert _audit_agent_managed(org_state) == audit_before
+    assert _owned_temp_residue(workspace) == []
+
+    backups = sorted(workspace.glob("*.happyranch-*.bak"))
+    assert len(backups) == 2, [p.name for p in backups]
+    assert {
+        p.name.split(".happyranch-", 1)[0]: _instruction_path_state(p)
+        for p in backups
+    } == {
         "AGENTS.md": agents_before,
         "CLAUDE.md": claude_before,
     }

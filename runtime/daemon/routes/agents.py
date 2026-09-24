@@ -1759,6 +1759,41 @@ class SetExecutorBody(BaseModel):
     clean: bool = False
 
 
+_BOOTSTRAP_COMPENSATION_MAX_ERRORS = 4
+_BOOTSTRAP_COMPENSATION_MAX_ERROR_CHARS = 240
+_BOOTSTRAP_COMPENSATION_MAX_JOINED_CHARS = 1024
+
+
+def _bounded_bootstrap_compensation_diagnostics(errors: list[str]) -> str:
+    """Return caller-safe bounded prose for rollback compensation failures.
+
+    The journal's raw strings remain available to daemon logging.  The HTTP
+    surface receives printable single-line ASCII only, with bounded item and
+    aggregate lengths so an exception cannot inject control sequences or an
+    unbounded response.  The fixed journal prefixes still identify the owned
+    path and failed compensation operation.
+    """
+    diagnostics: list[str] = []
+    for raw in errors[:_BOOTSTRAP_COMPENSATION_MAX_ERRORS]:
+        printable = "".join(
+            char if " " <= char <= "~" else " " for char in str(raw)
+        )
+        normalized = " ".join(printable.split()) or "unspecified compensation failure"
+        if len(normalized) > _BOOTSTRAP_COMPENSATION_MAX_ERROR_CHARS:
+            normalized = (
+                normalized[:_BOOTSTRAP_COMPENSATION_MAX_ERROR_CHARS - 3]
+                + "..."
+            )
+        diagnostics.append(normalized)
+    omitted = len(errors) - len(diagnostics)
+    if omitted > 0:
+        diagnostics.append(f"... and {omitted} more compensation failure(s)")
+    joined = "; ".join(diagnostics)
+    if len(joined) > _BOOTSTRAP_COMPENSATION_MAX_JOINED_CHARS:
+        joined = joined[:_BOOTSTRAP_COMPENSATION_MAX_JOINED_CHARS - 3] + "..."
+    return joined
+
+
 def _validate_executor(executor: str) -> None:
     """Reject an unregistered executor with an actionable error.
 
@@ -2025,18 +2060,31 @@ async def set_agent_executor(
                     "Executor switch bootstrap cleanup errors: %s",
                     "; ".join(errors),
                 )
+            response_error = str(e)
+            message = (
+                "Executor workspace bootstrap failed after successful skill "
+                "materialization. The previous executor has been preserved. "
+                "Any partial bootstrap files have been cleaned up. Resolve "
+                "the bootstrap error before retrying."
+            )
+            if errors:
+                diagnostics = _bounded_bootstrap_compensation_diagnostics(errors)
+                response_error = (
+                    f"{response_error}; rollback compensation incomplete: "
+                    f"{diagnostics}"
+                )
+                message = (
+                    "Executor workspace bootstrap failed after successful skill "
+                    "materialization. The previous executor has been preserved. "
+                    "Cleanup/restore was incomplete: "
+                    f"{diagnostics}. Resolve the bootstrap error before retrying."
+                )
             raise HTTPException(
                 status_code=400,
                 detail={
                     "code": "executor_bootstrap_failed",
-                    "error": str(e),
-                    "message": (
-                        "Executor workspace bootstrap failed after "
-                        "successful skill materialization. The previous "
-                        "executor has been preserved. Any partial "
-                        "bootstrap files have been cleaned up. "
-                        "Resolve the bootstrap error before retrying."
-                    ),
+                    "error": response_error,
+                    "message": message,
                 },
             )
 
