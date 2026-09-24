@@ -104,7 +104,7 @@ const NEXT_WAKES_FIXTURE: NextWakesResponse = {
 
 const DAEMON_CAPACITY_FIXTURE: DaemonCapacitySnapshot = {
   running_at_daemon_start: { queue_workers: 6, host_global_session_cap: 13 },
-  running_provenance: 'startup-resolved settings snapshot',
+  running_provenance: 'Resolved when the HappyRanch service started',
   persisted_yaml: { queue_workers: null, host_global_session_cap: null },
   next_start: { queue_workers: 6, host_global_session_cap: 13 },
   environment_shadowed: [], environment_warning: null,
@@ -114,7 +114,11 @@ const DAEMON_CAPACITY_FIXTURE: DaemonCapacitySnapshot = {
   effective_admission_reason: 'Prototype capability snapshot',
   warnings: [],
   revision: 'sha256:prototype', restart_required: false, restart_pending: false,
-  guidance: { queue_workers: 'Empirical guidance', host_global_session_cap: 'Empirical guidance', enforced: false },
+  guidance: {
+    queue_workers: 'Suggested starting range: 4–6. Adjust based on task wait times. This is guidance, not a required range.',
+    host_global_session_cap: 'Suggested starting range: 11–13. This applies to HappyRanch supervised sessions, not every process on the machine. The range is not enforced.',
+    enforced: false,
+  },
   authorization: 'Local operator; daemon bearer required. Bearer authorization cannot be attributed to a verified person.',
 };
 

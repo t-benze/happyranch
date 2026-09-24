@@ -75,7 +75,7 @@ function rawJson(text: string, init: ResponseInit = {}): Response {
 function rawSnapshot(overrides: Record<string, string> = {}): string {
   const members: Record<string, string> = {
     running_at_daemon_start: '{"queue_workers":3,"host_global_session_cap":10}',
-    running_provenance: '"startup-resolved settings snapshot"',
+    running_provenance: '"Resolved when the HappyRanch service started"',
     persisted_yaml: '{"queue_workers":3,"host_global_session_cap":10}',
     next_start: '{"queue_workers":3,"host_global_session_cap":10}',
     environment_shadowed: '[]',

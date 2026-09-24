@@ -405,12 +405,13 @@ Operational settings come from two places, highest precedence first:
 
 If a value isn't set in either, the code default applies. The file is optional — if it doesn't exist, defaults are used. Changes take effect on daemon restart. (This is distinct from each org's `<runtime>/orgs/<slug>/org/config.yaml`, which holds per-org settings.) Runtime paths are derived from the runtime container.
 
-The Settings → Daemon / Capacity page lets a local operator holding the shared
-daemon bearer atomically stage only `queue_workers` and
+The Settings → Capacity page lets a local operator holding the shared
+daemon access token atomically stage only `queue_workers` and
 `host_global_session_cap`. It is not a generic YAML editor and never applies or
-restarts the daemon. Bearer authorization cannot be attributed to a verified
+restarts the daemon. The access token cannot be attributed to a verified
 person. Environment values take precedence; when either key is shadowed the UI
-requires explicit acknowledgement that restart alone will not make YAML win.
+requires explicit acknowledgement that the environment setting will still
+override the saved value after a restart.
 
 | Variable | Default | Description |
 |----------|---------|-------------|

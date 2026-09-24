@@ -30,7 +30,7 @@ const REV_D = `sha256:${'d'.repeat(64)}`;
 function snapshot(overrides: Record<string, unknown> = {}) {
   return {
     running_at_daemon_start: { queue_workers: 3, host_global_session_cap: 10 },
-    running_provenance: 'startup-resolved settings snapshot',
+    running_provenance: 'Resolved when the HappyRanch service started',
     persisted_yaml: { queue_workers: 3, host_global_session_cap: 10 },
     next_start: { queue_workers: 3, host_global_session_cap: 10 },
     environment_shadowed: [] as string[],
@@ -161,8 +161,8 @@ function mount(path = `/orgs/${SLUG}/settings/daemon-capacity`) {
   return renderGuarded(<AppRoutes />, { entries: [path] });
 }
 
-const workers = () => screen.getByLabelText(/Task session slots/);
-const cap = () => screen.getByLabelText(/Host session admission limit/);
+const workers = () => screen.getByLabelText(/Task session limit/);
+const cap = () => screen.getByLabelText(/Overall supervised-session limit/);
 const reasonBox = () => screen.getByLabelText('Reason for change');
 /**
  * Container-scoped accessors. Two editors can be mounted at once with the SAME
@@ -175,7 +175,7 @@ const capIn = (root: HTMLElement) =>
   root.querySelector('#capacity-cap') as HTMLInputElement;
 const reasonIn = (root: HTMLElement) =>
   root.querySelector('#capacity-reason') as HTMLTextAreaElement;
-const saveButton = () => screen.getByRole('button', { name: /Save for next restart|Saving/ });
+const saveButton = () => screen.getByRole('button', { name: /Save for next start|Saving/ });
 function workersRow(): HTMLTableRowElement {
   return within(screen.getByRole('table')).getAllByRole('row')[1] as HTMLTableRowElement;
 }
@@ -184,7 +184,7 @@ const savedCell = () => workersRow().cells[2];
 const nextCell = () => workersRow().cells[3];
 /** The ACCEPTED BASE row of the reconciliation panel — not the daemon-observed table. */
 const acceptedBaseText = () =>
-  screen.getByText('Accepted base').parentElement?.textContent ?? '';
+  screen.getByText('Version you started from').parentElement?.textContent ?? '';
 
 async function ready() {
   await screen.findByRole('heading', { name: 'Capacity' }, { timeout: 5000 });
@@ -226,12 +226,12 @@ describe('1 / 5 / 6 — staged save at the real boundary', () => {
     await setPair('5', '12');
     await saveWith();
 
-    await screen.findByText('Saved for next restart. Running limits are unchanged.');
+    await screen.findByText('Saved for the next start. Limits in effect now have not changed.');
     // Running is UNCHANGED by a save.
     expect(runningCell()).toHaveTextContent('3');
     expect(savedCell()).toHaveTextContent('5');
     expect(nextCell()).toHaveTextContent('5');
-    expect(screen.getByText('Restart pending')).toBeVisible();
+    expect(screen.getByText('Restart required for saved changes')).toBeVisible();
     expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
     expect(reasonBox()).toHaveValue('');
     expect(undeclared, `undeclared paths: ${undeclared.join(', ')}`).toEqual([]);
@@ -245,10 +245,10 @@ describe('1 / 5 / 6 — staged save at the real boundary', () => {
     await setPair('5', '12');
     await saveWith();
 
-    await screen.findByText(/Save result unknown/);
-    expect(screen.queryByText(/Saved for next restart\./)).not.toBeInTheDocument();
+    await screen.findByText(/HappyRanch could not confirm whether the save finished/);
+    expect(screen.queryByText(/Saved for the next start\./)).not.toBeInTheDocument();
     expect(savedCell()).toHaveTextContent('3');
-    expect(await screen.findByText(/You submitted Task session slots 5/)).toBeInTheDocument();
+    expect(await screen.findByText(/Your last save attempt sent Task session limit 5/)).toBeInTheDocument();
   });
 
   test('1.4 no saved/applied claim appears while the request is in flight', async () => {
@@ -259,11 +259,11 @@ describe('1 / 5 / 6 — staged save at the real boundary', () => {
     await setPair('5', '12');
     await saveWith();
 
-    await screen.findByText('Saving for next restart…');
+    await screen.findByText('Saving for next start…');
     expect(savedCell()).toHaveTextContent('3');
-    expect(document.body).not.toHaveTextContent(/Saved for next restart\.|Applied/);
+    expect(document.body).not.toHaveTextContent(/Saved for the next start\.|Applied/);
     gate.resolve(HttpResponse.json(snapshot({ revision: REV_B })));
-    await screen.findByText(/Saved/);
+    await screen.findByText(/Saved for the next start|Saved\. These values already match/);
   });
 
   test('5.1 a below-envelope value SAVES with the waiting warning and NO extra acknowledgment', async () => {
@@ -281,7 +281,7 @@ describe('1 / 5 / 6 — staged save at the real boundary', () => {
     mount();
     await ready();
     await setPair('3', '5');
-    expect(document.body).toHaveTextContent(/Additional sessions will wait/);
+    expect(document.body).toHaveTextContent(/some sessions may wait/);
     // No environment shadow, so no acknowledgment control exists at all.
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
 
@@ -290,7 +290,7 @@ describe('1 / 5 / 6 — staged save at the real boundary', () => {
     const body = JSON.parse(puts()[0].rawBody);
     expect(body.host_global_session_cap).toBe(5);
     expect(body.confirm_environment_shadow).toBe(false);
-    await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
+    await screen.findByText(/^Saved for the next start\. Limits in effect now have not changed\./);
     await waitFor(() => expect(savedCell()).toHaveTextContent('3'));
     // The HOST row's next start moved 10 -> 5 (the workers row stays 3).
     const hostNextCell = () =>
@@ -317,7 +317,7 @@ describe('1 / 5 / 6 — staged save at the real boundary', () => {
     await userEvent.type(cap(), '30');
     // The excess cap is above the worker-pool total 10: the copy says extra room
     // adds no producers and never claims more capacity/throughput.
-    expect(document.body).toHaveTextContent(/Extra admission room does not create additional producers/);
+    expect(document.body).toHaveTextContent(/Raising this limit alone does not add worker slots/);
     expect(document.body).not.toHaveTextContent(/more capacity|higher throughput|additional capability|faster/i);
 
     await saveWith('raise the cap');
@@ -328,14 +328,14 @@ describe('1 / 5 / 6 — staged save at the real boundary', () => {
       rationale: 'raise the cap',
       confirm_environment_shadow: false,
     });
-    await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
+    await screen.findByText(/^Saved for the next start\. Limits in effect now have not changed\./);
     await waitFor(() => expect(savedCell()).toHaveTextContent('3'));
     const hostNextCell = () =>
       (within(screen.getByRole('table')).getAllByRole('row')[2] as HTMLTableRowElement).cells[3];
     await waitFor(() => expect(hostNextCell()).toHaveTextContent('30'));
     // The honest excess-cap copy survives into the settled result panel, and no
     // capability/throughput claim appears anywhere in the post-success state.
-    expect(document.body).toHaveTextContent(/Extra admission room does not create additional producers/);
+    expect(document.body).toHaveTextContent(/Raising this limit alone does not add worker slots/);
     expect(document.body).not.toHaveTextContent(/more capacity|higher throughput|additional capability|faster/i);
     expect(document.body).not.toHaveTextContent(/Applied|Apply now|Restart daemon/);
     expect(reasonBox()).toHaveValue('');
@@ -353,7 +353,7 @@ describe('1 / 5 / 6 — staged save at the real boundary', () => {
     });
     mount();
     await ready();
-    expect(within(screen.getByRole('table')).getAllByText('Not set in file')).toHaveLength(2);
+    expect(within(screen.getByRole('table')).getAllByText('Not explicitly saved')).toHaveLength(2);
 
     // No digit is changed — only a reason is typed.
     await saveWith('stage the observed defaults');
@@ -362,7 +362,7 @@ describe('1 / 5 / 6 — staged save at the real boundary', () => {
     expect(body.queue_workers).toBe(3);
     expect(body.host_global_session_cap).toBe(10);
     await waitFor(() => expect(savedCell()).toHaveTextContent('3'));
-    expect(within(screen.getByRole('table')).queryAllByText('Not set in file')).toHaveLength(0);
+    expect(within(screen.getByRole('table')).queryAllByText('Not explicitly saved')).toHaveLength(0);
   });
 });
 
@@ -381,9 +381,9 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     expect(cap()).toBeDisabled();
     expect(reasonBox()).toBeDisabled();
     expect(screen.getByRole('button', { name: /Discard draft/ })).toBeDisabled();
-    expect(screen.getByRole('button', { name: /Refresh running state/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Refresh capacity values/ })).toBeDisabled();
     gate.resolve(HttpResponse.json(snapshot({ revision: REV_B })));
-    await screen.findByText(/Saved/);
+    await screen.findByText(/Saved for the next start|Saved\. These values already match/);
   });
 
   test('2.2 duplicate clicks issue EXACTLY ONE PUT', async () => {
@@ -399,7 +399,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     await user.click(saveButton()).catch(() => undefined);
 
     gate.resolve(HttpResponse.json(snapshot({ revision: REV_B })));
-    await screen.findByText(/Saved/);
+    await screen.findByText(/Saved for the next start|Saved\. These values already match/);
     expect(puts()).toHaveLength(1);
   });
 
@@ -420,7 +420,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     await ready();
     await setPair('5', '12');
     await saveWith();
-    await screen.findByText('Saving for next restart…');
+    await screen.findByText('Saving for next start…');
 
     await view.client.refetchQueries({ queryKey: ['daemon-capacity', SLUG] });
     gate.resolve(HttpResponse.json(snapshot({
@@ -429,7 +429,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       revision: REV_B,
     })));
 
-    await screen.findByText(/Saved/);
+    await screen.findByText(/Saved for the next start|Saved\. These values already match/);
     await waitFor(() => expect(savedCell()).toHaveTextContent('5'));
     expect(savedCell()).not.toHaveTextContent('9');
   });
@@ -438,8 +438,8 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     stubVenue();
     const view = mount();
     await ready();
-    const first = screen.getByText(/Last received/).textContent;
-    expect(first).toMatch(/this browser's clock/);
+    const first = screen.getByText(/Values received at/).textContent;
+    expect(first).toMatch(/your device time/);
     const observedFirst = capacityObservation(SLUG);
     expect(observedFirst?.receiptAt).toEqual(expect.any(Number));
 
@@ -450,7 +450,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     const getsBefore = gets().length;
     await view.client.refetchQueries({ queryKey: capacityQueryKey(SLUG) });
     await waitFor(() => {
-      expect(screen.getByText(/Last received/).textContent).not.toBe(first);
+      expect(screen.getByText(/Values received at/).textContent).not.toBe(first);
     });
     // A genuine network response was issued, and the provider-owned receipt —
     // not component state — is what moved.
@@ -469,7 +469,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     const user = userEvent.setup();
     mount();
     await ready();
-    const receipt = screen.getByText(/Last received/).textContent;
+    const receipt = screen.getByText(/Values received at/).textContent;
     const observedBefore = capacityObservation(SLUG);
     const getsBefore = gets().length;
     expect(getsBefore).toBe(1);
@@ -482,14 +482,14 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     await waitFor(() => {
       expect(screen.queryByRole('heading', { name: 'Capacity' })).not.toBeInTheDocument();
     });
-    await user.click(screen.getByRole('link', { name: 'Daemon / Capacity' }));
+    await user.click(screen.getByRole('link', { name: 'Capacity' }));
     await screen.findByRole('heading', { name: 'Capacity' });
     await waitFor(() => expect(workers()).toHaveValue('3'));
 
     // Served from the cache: zero additional GETs at the HTTP boundary, the
     // rendered receipt is byte-identical, and NO new observation was recorded.
     expect(gets()).toHaveLength(getsBefore);
-    expect(screen.getByText(/Last received/).textContent).toBe(receipt);
+    expect(screen.getByText(/Values received at/).textContent).toBe(receipt);
     expect(capacityObservation(SLUG)).toEqual(observedBefore);
     expect(undeclared).toEqual([]);
   });
@@ -501,7 +501,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     await ready();
     await setPair('5', '12');
     await saveWith();
-    await screen.findByText('Saving for next restart…');
+    await screen.findByText('Saving for next start…');
 
     const before = gets().length;
     const observedBefore = capacityObservation(SLUG);
@@ -520,7 +520,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(gets()).toHaveLength(before);
     expect(capacityObservation(SLUG)).toEqual(observedBefore);
-    expect(screen.getByText('Saving for next restart…')).toBeVisible();
+    expect(screen.getByText('Saving for next start…')).toBeVisible();
 
     // (b) The REAL provider refetch attempt during the pending window. Because
     // no pending-specific suppression exists, it DOES reach the network. The
@@ -600,7 +600,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     await ready();
     await setPair('5', '12');
     await saveWith();
-    await screen.findByText('Saving for next restart…');
+    await screen.findByText('Saving for next start…');
 
     // A REAL second editor on the SAME QueryClient, mounted during the pending
     // write, with the ordering ledger NOT reset.
@@ -624,7 +624,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
 
     // INITIATOR: accepted, clean, with NO phantom "changed elsewhere" against
     // the revision it just saved.
-    await firstUi.findByText(/^Saved for next restart\. Running limits are unchanged\./);
+    await firstUi.findByText(/^Saved for the next start\. Limits in effect now have not changed\./);
     await waitFor(() => expect(workersIn(view.container)).toHaveValue('5'));
     expect(capIn(view.container)).toHaveValue('12');
     expect(reasonIn(view.container)).toHaveValue('');
@@ -646,7 +646,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     // Submit against the ADOPTED base. The stale-base defect sent If-Match REV_A
     // with the 3/10 pair here.
     await userEvent.type(reasonIn(second.container), 'second editor reason');
-    await userEvent.click(secondUi.getByRole('button', { name: /Save for next restart/ }));
+    await userEvent.click(secondUi.getByRole('button', { name: /Save for next start/ }));
     await waitFor(() => expect(puts()).toHaveLength(2));
     expect(puts()[1].ifMatch).toBe(`"${REV_B}"`);
     expect(JSON.parse(puts()[1].rawBody)).toEqual({
@@ -657,7 +657,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     });
 
     // The second editor drains its OWN coherent settlement.
-    await secondUi.findByText(/^Saved for next restart\. Running limits are unchanged\./);
+    await secondUi.findByText(/^Saved for the next start\. Limits in effect now have not changed\./);
     await waitFor(() => expect(reasonIn(second.container)).toHaveValue(''));
     expect(workersIn(second.container)).toHaveValue('5');
     expect(
@@ -731,7 +731,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     root: HTMLElement,
     client: ReturnType<typeof mount>['client'],
     expected: { w: number; h: number; revision: string; receiptAt: number },
-    saved: RegExp = /^Saved for next restart\. Running limits are unchanged\./,
+    saved: RegExp = /^Saved for the next start\. Limits in effect now have not changed\./,
   ) {
     const ui = within(root);
     await ui.findByText(saved);
@@ -754,13 +754,13 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     expect(capacityObservation(SLUG)?.outcome).toBe('usable');
     expect(capacityObservation(SLUG)?.sourceRevision).toBe(expected.revision);
     expect(capacityObservation(SLUG)?.receiptAt).toBe(expected.receiptAt);
-    expect(ui.getAllByText(/Last received/)[0].textContent)
+    expect(ui.getAllByText(/Values received at/)[0].textContent)
       .toContain(formatReceipt(expected.receiptAt)!);
     expect(ui.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
     expect(ui.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
     expect(ui.queryByText(/You submitted/)).not.toBeInTheDocument();
-    expect(ui.queryByText(/Reconcile the saved values/)).not.toBeInTheDocument();
-    expect(ui.getByRole('button', { name: /Save for next restart/ })).toBeEnabled();
+    expect(ui.queryByText(/Review the latest saved values/)).not.toBeInTheDocument();
+    expect(ui.getByRole('button', { name: /Save for next start/ })).toBeEnabled();
   }
 
   function expectGuardDisarmed() {
@@ -789,7 +789,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       // 2. A genuinely usable later READ returns 7/14 @ C; the clean editor adopts it.
       state.current = savedAt(7, 14);
       now += 60000;
-      await userEvent.click(firstUi.getByRole('button', { name: /Refresh running state/ }));
+      await userEvent.click(firstUi.getByRole('button', { name: /Refresh capacity values/ }));
       await waitFor(() => expect(workersIn(first.container)).toHaveValue('7'));
       expect(capIn(first.container)).toHaveValue('14');
       expect(capacityObservation(SLUG)?.origin).toBe('read');
@@ -803,7 +803,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       now += 60000;
       await setPairIn(second.container, '5', '12');
       await userEvent.type(reasonIn(second.container), 'restore B');
-      await userEvent.click(secondUi.getByRole('button', { name: /Save for next restart/ }));
+      await userEvent.click(secondUi.getByRole('button', { name: /Save for next start/ }));
       await expectCleanTerminal(second.container, first.client,
         { w: 5, h: 12, revision: REV_B, receiptAt: now });
       const restoreSeq = capacityObservation(SLUG)?.settledSeq;
@@ -821,7 +821,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       // 5. Its next deliberate save is built on the ADOPTED base: quoted B, 5/12.
       now += 60000;
       await userEvent.type(reasonIn(first.container), 'first after external return');
-      await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+      await userEvent.click(firstUi.getByRole('button', { name: /Save for next start/ }));
       await waitFor(() => expect(puts()).toHaveLength(3));
       expect(puts()[2].ifMatch).toBe(`"${REV_B}"`);
       expect(JSON.parse(puts()[2].rawBody)).toEqual({
@@ -864,7 +864,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       await waitFor(() => expect(first.client.isMutating()).toBe(0));
       state.current = savedAt(7, 14);
       now += 60000;
-      await userEvent.click(firstUi.getByRole('button', { name: /Refresh running state/ }));
+      await userEvent.click(firstUi.getByRole('button', { name: /Refresh capacity values/ }));
       await waitFor(() => expect(workersIn(first.container)).toHaveValue('7'));
 
       // The first editor now holds unsaved work against C.
@@ -877,7 +877,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       now += 60000;
       await setPairIn(second.container, '5', '12');
       await userEvent.type(reasonIn(second.container), 'restore B');
-      await userEvent.click(secondUi.getByRole('button', { name: /Save for next restart/ }));
+      await userEvent.click(secondUi.getByRole('button', { name: /Save for next start/ }));
       await expectCleanTerminal(second.container, first.client,
         { w: 5, h: 12, revision: REV_B, receiptAt: now });
 
@@ -886,17 +886,17 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       expect(workersIn(first.container)).toHaveValue('9');
       expect(capIn(first.container)).toHaveValue('15');
       expect(reasonIn(first.container)).toHaveValue('first draft');
-      expect(firstUi.getByText('Accepted base').parentElement?.textContent)
-        .toContain('Task session slots 7');
+      expect(firstUi.getByText('Version you started from').parentElement?.textContent)
+        .toContain('Task session limit 7');
       expect(firstUi.getByText('Currently saved').parentElement?.textContent)
-        .toContain('Task session slots 5');
+        .toContain('Task session limit 5');
 
       // Save is refused at the handler until an explicit choice: NO PUT.
-      await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+      await userEvent.click(firstUi.getByRole('button', { name: /Save for next start/ }));
       expect(puts()).toHaveLength(2);
 
       // Explicit choice — keep the draft, rebase onto B. Sends NO request.
-      await userEvent.click(firstUi.getByRole('button', { name: /Keep my draft, rebase onto latest/ }));
+      await userEvent.click(firstUi.getByRole('button', { name: /Keep my edits and use latest saved version/ }));
       await waitFor(() => expect(firstUi.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument());
       expect(workersIn(first.container)).toHaveValue('9');
       expect(capIn(first.container)).toHaveValue('15');
@@ -905,7 +905,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
 
       // A separate, deliberate manual save carries the chosen base B.
       now += 60000;
-      await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+      await userEvent.click(firstUi.getByRole('button', { name: /Save for next start/ }));
       await waitFor(() => expect(puts()).toHaveLength(3));
       expect(puts()[2].ifMatch).toBe(`"${REV_B}"`);
       expect(JSON.parse(puts()[2].rawBody)).toEqual({
@@ -981,18 +981,18 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       await ui.findByText('Configuration changed elsewhere.');
       expect(workersIn(second.container)).toHaveValue('8');
       expect(reasonIn(second.container)).toHaveValue('second dirty');
-      expect(ui.getByText('Accepted base').parentElement?.textContent).toContain('Task session slots 3');
-      expect(ui.getByText('Currently saved').parentElement?.textContent).toContain('Task session slots 5');
-      await userEvent.click(ui.getByRole('button', { name: /Save for next restart/ }));
+      expect(ui.getByText('Version you started from').parentElement?.textContent).toContain('Task session limit 3');
+      expect(ui.getByText('Currently saved').parentElement?.textContent).toContain('Task session limit 5');
+      await userEvent.click(ui.getByRole('button', { name: /Save for next start/ }));
       expect(puts()).toHaveLength(1);
 
       // Rebase keeps the draft TEXT verbatim (8/10) and moves only the base.
-      await userEvent.click(ui.getByRole('button', { name: /Keep my draft, rebase onto latest/ }));
+      await userEvent.click(ui.getByRole('button', { name: /Keep my edits and use latest saved version/ }));
       expect(workersIn(second.container)).toHaveValue('8');
       expect(capIn(second.container)).toHaveValue('10');
       expect(puts()).toHaveLength(1);
       now += 60000;
-      await userEvent.click(ui.getByRole('button', { name: /Save for next restart/ }));
+      await userEvent.click(ui.getByRole('button', { name: /Save for next start/ }));
       await waitFor(() => expect(puts()).toHaveLength(2));
       expect(puts()[1].ifMatch).toBe(`"${REV_B}"`);
       expect(JSON.parse(puts()[1].rawBody)).toEqual({
@@ -1077,7 +1077,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     clock.now += 60000;
     await setPairIn(second.container, String(external[0]), String(external[1]));
     await userEvent.type(reasonIn(second.container), 'second accepted');
-    await userEvent.click(secondUi.getByRole('button', { name: /Save for next restart/ }));
+    await userEvent.click(secondUi.getByRole('button', { name: /Save for next start/ }));
     const externalRevision = PAIR_REVISIONS[`${external[0]}/${external[1]}`];
     await expectCleanTerminal(second.container, first.client,
       { w: external[0], h: external[1], revision: externalRevision, receiptAt: clock.now });
@@ -1086,7 +1086,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
 
     // The first editor's own request is still pending; its draft and reason
     // are untouched.
-    expect(firstUi.getByText('Saving for next restart…')).toBeInTheDocument();
+    expect(firstUi.getByText('Saving for next start…')).toBeInTheDocument();
     expect(workersIn(first.container)).toHaveValue('5');
     expect(capIn(first.container)).toHaveValue('12');
     expect(reasonIn(first.container)).toHaveValue('first may fail');
@@ -1105,18 +1105,18 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     expect(reasonIn(root)).toHaveValue('first may fail');
     // Save is refused at the handler until an explicit choice: NO PUT. (The
     // defect sent a third PUT here at quoted A with the 5/12 body.)
-    await userEvent.click(ui.getByRole('button', { name: /Save for next restart/ }));
+    await userEvent.click(ui.getByRole('button', { name: /Save for next start/ }));
     await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
     expect(puts()).toHaveLength(puts0);
-    expect(ui.getByText(/Reconcile the saved values before saving again/)).toBeInTheDocument();
+    expect(ui.getByText(/Review the latest saved values before saving again/)).toBeInTheDocument();
     expect(ui.getByText('Configuration changed elsewhere.')).toBeInTheDocument();
-    expect(ui.getByText('Accepted base').parentElement?.textContent).toContain('Task session slots 3');
+    expect(ui.getByText('Version you started from').parentElement?.textContent).toContain('Task session limit 3');
     expect(ui.getByText('Currently saved').parentElement?.textContent)
-      .toContain(`Task session slots ${latestPair[0]}, Host session admission limit ${latestPair[1]}`);
+      .toContain(`Task session limit ${latestPair[0]}, Overall supervised-session limit ${latestPair[1]}`);
     // Submission provenance is retained exactly as for any non-accepted result.
-    expect(ui.getByText(/You submitted Task session slots 5/)).toBeInTheDocument();
-    expect(ui.queryByText(/^Saved for next restart/)).not.toBeInTheDocument();
-    expect(ui.getByRole('button', { name: /Keep my draft, rebase onto latest/ })).toBeVisible();
+    expect(ui.getByText(/Your last save attempt sent Task session limit 5/)).toBeInTheDocument();
+    expect(ui.queryByText(/^Saved for the next start/)).not.toBeInTheDocument();
+    expect(ui.getByRole('button', { name: /Keep my edits and use latest saved version/ })).toBeVisible();
     expect(ui.getByText(/Unsaved changes/)).toBeInTheDocument();
     const unload = new Event('beforeunload', { cancelable: true });
     window.dispatchEvent(unload);
@@ -1131,7 +1131,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
   ) {
     const { first, firstUi, second, secondUi } = ctx;
     const before = puts().length;
-    await userEvent.click(firstUi.getByRole('button', { name: /Keep my draft, rebase onto latest/ }));
+    await userEvent.click(firstUi.getByRole('button', { name: /Keep my edits and use latest saved version/ }));
     await waitFor(() => expect(firstUi.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument());
     expect(puts()).toHaveLength(before);
     expect(workersIn(first.container)).toHaveValue('5');
@@ -1141,7 +1141,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     expect(firstUi.getByText(/Unsaved changes/)).toBeInTheDocument();
 
     clock.now += 60000;
-    await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+    await userEvent.click(firstUi.getByRole('button', { name: /Save for next start/ }));
     await waitFor(() => expect(puts()).toHaveLength(before + 1));
     expect(puts()[before].ifMatch).toBe(`"${latestRevision}"`);
     expect(JSON.parse(puts()[before].rawBody)).toEqual({
@@ -1158,7 +1158,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     expect(reasonIn(second.container)).toHaveValue('');
     expect(secondUi.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
     expect(secondUi.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
-    expect(secondUi.getByRole('button', { name: /Save for next restart/ })).toBeEnabled();
+    expect(secondUi.getByRole('button', { name: /Save for next start/ })).toBeEnabled();
     expectGuardDisarmed();
     expect(puts()).toHaveLength(before + 1);
     expect(undeclared).toEqual([]);
@@ -1174,7 +1174,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
         { detail: { code: 'config_write_failed', artifact_state: 'absent' } },
         { status: 503 },
       ));
-      await ctx.firstUi.findByText(/Configuration storage failed\. This request did not publish new values\./);
+      await ctx.firstUi.findByText(/HappyRanch could not write the configuration\. This request did not save new values\./);
       await waitFor(() => expect(ctx.first.client.isMutating()).toBe(0));
       // Cache/provider still hold the external B; the rejection advanced nothing.
       expect(ctx.first.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision)
@@ -1203,11 +1203,11 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
         { detail: { code: 'config_write_failed', artifact_state: 'absent' } },
         { status: 503 },
       ));
-      await firstUi.findByText(/Configuration storage failed/);
+      await firstUi.findByText(/HappyRanch could not write the configuration/);
       await waitFor(() => expect(first.client.isMutating()).toBe(0));
       await expectExternalKeptAndWriteRefused(first.container, 2);
 
-      await userEvent.click(firstUi.getByRole('button', { name: /Discard draft, accept latest/ }));
+      await userEvent.click(firstUi.getByRole('button', { name: /Discard my edits and use latest saved version/ }));
       await waitFor(() => expect(workersIn(first.container)).toHaveValue('7'));
       expect(capIn(first.container)).toHaveValue('14');
       expect(reasonIn(first.container)).toHaveValue('');
@@ -1215,13 +1215,13 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       expect(firstUi.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
       expect(firstUi.queryByText(/You submitted/)).not.toBeInTheDocument();
       expect(firstUi.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
-      expect(firstUi.getByRole('button', { name: /Save for next restart/ })).toBeEnabled();
+      expect(firstUi.getByRole('button', { name: /Save for next start/ })).toBeEnabled();
       expectGuardDisarmed();
 
       clock.now += 60000;
       await setPairIn(first.container, '8', '15');
       await userEvent.type(reasonIn(first.container), 'after accepting latest');
-      await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+      await userEvent.click(firstUi.getByRole('button', { name: /Save for next start/ }));
       await waitFor(() => expect(puts()).toHaveLength(3));
       expect(puts()[2].ifMatch).toBe(`"${REV_C}"`);
       expect(JSON.parse(puts()[2].rawBody)).toEqual({
@@ -1249,17 +1249,17 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
         { detail: { code: 'config_publication_uncertain', artifact_state: 'absent' } },
         { status: 503 },
       ),
-      banner: /The new configuration was published, but durability, verification, or cleanup did not complete\./,
+      banner: /HappyRanch replaced the configuration file, but could not finish verifying or cleaning up the save\./,
     },
     {
       name: 'unclassified failure (unknown)',
       response: () => HttpResponse.json({ detail: { code: 'internal_error' } }, { status: 500 }),
-      banner: /^Save result unknown\. Your draft is retained\./,
+      banner: /^HappyRanch could not confirm whether the save finished\. Your edits are still here\. Reconnect, then check the saved values before trying again\./,
     },
     {
       name: 'unusable 200 (unknown)',
       response: () => HttpResponse.json({ ...savedAt(5, 12), revision: undefined }),
-      banner: /^Save result unknown\. Your draft is retained\./,
+      banner: /^HappyRanch could not confirm whether the save finished\. Your edits are still here\. Reconnect, then check the saved values before trying again\./,
     },
   ])('C3-N an $name own result keeps the overlapped external write distinct from the pinned submission and unresolved publication; no retry until an explicit choice', async ({ response, banner }) => {
     const clock = { now: 1800000000000 };
@@ -1279,10 +1279,10 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       // A FAILED reread promotes nothing and offers no target: still no PUT.
       ctx.state.failGets = 1;
       await userEvent.click(firstUi.getByRole('button', { name: 'Check saved values' }));
-      await firstUi.findByText(/Could not refresh\. Current state unverified\./);
-      expect(firstUi.queryByRole('button', { name: /Keep my draft, rebase onto latest/ })).not.toBeInTheDocument();
-      expect(firstUi.getByRole('button', { name: /Save for next restart/ })).toBeDisabled();
-      fireEvent.submit(firstUi.getByRole('button', { name: /Save for next restart/ }).closest('form')!);
+      await firstUi.findByText(/Could not refresh, so the current values are unverified/);
+      expect(firstUi.queryByRole('button', { name: /Keep my edits and use latest saved version/ })).not.toBeInTheDocument();
+      expect(firstUi.getByRole('button', { name: /Save for next start/ })).toBeDisabled();
+      fireEvent.submit(firstUi.getByRole('button', { name: /Save for next start/ }).closest('form')!);
       await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
       expect(puts()).toHaveLength(2);
       expect(workersIn(first.container)).toHaveValue('5');
@@ -1291,9 +1291,9 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       // A usable reread restores the explicit choice; the unresolved outcome stays.
       await userEvent.click(firstUi.getByRole('button', { name: 'Check saved values' }));
       await waitFor(() => expect(firstUi.queryByText(/Could not refresh/)).not.toBeInTheDocument());
-      await firstUi.findByRole('button', { name: /Keep my draft, rebase onto latest/ });
+      await firstUi.findByRole('button', { name: /Keep my edits and use latest saved version/ });
       expect(firstUi.getByText(banner)).toBeInTheDocument();
-      expect(firstUi.getByText(/You submitted Task session slots 5/)).toBeInTheDocument();
+      expect(firstUi.getByText(/Your last save attempt sent Task session limit 5/)).toBeInTheDocument();
       expect(puts()).toHaveLength(2);
 
       await rebaseThenManualSave(clock, ctx, REV_C);
@@ -1314,7 +1314,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       // editor's settlement), exactly like a read landing during a write.
       await firstUi.findByText('Configuration changed elsewhere.');
       expect(firstUi.getByText('Currently saved').parentElement?.textContent)
-        .toContain('Task session slots 7');
+        .toContain('Task session limit 7');
       clock.now += 60000;
       ctx.state.current = savedAt(5, 12);
       ctx.gate.resolve(HttpResponse.json(savedAt(5, 12)));
@@ -1330,7 +1330,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       clock.now += 60000;
       await setPairIn(first.container, '9', '15');
       await userEvent.type(reasonIn(first.container), 'after own accepted');
-      await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+      await userEvent.click(firstUi.getByRole('button', { name: /Save for next start/ }));
       await waitFor(() => expect(puts()).toHaveLength(3));
       expect(puts()[2].ifMatch).toBe(`"${REV_B}"`);
       await expectCleanTerminal(first.container, first.client,
@@ -1349,7 +1349,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
   // -------------------------------------------------------------------------
 
   /** A save landing back on the running values reports that no restart is pending. */
-  const SAVED_AT_RUNNING = /^Saved\. No restart is pending for these values\./;
+  const SAVED_AT_RUNNING = /^Saved\. These values already match the limits in effect\./;
 
   /**
    * The overlapped scenario, then the still-mounted second editor deliberately
@@ -1362,12 +1362,12 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     const { first, firstUi, second, secondUi } = ctx;
     await firstUi.findByText('Configuration changed elsewhere.');
     expect(firstUi.getByText('Currently saved').parentElement?.textContent)
-      .toContain('Task session slots 7, Host session admission limit 14');
+      .toContain('Task session limit 7, Overall supervised-session limit 14');
 
     clock.now += 60000;
     await setPairIn(second.container, '3', '10');
     await userEvent.type(reasonIn(second.container), 'second restores A');
-    await userEvent.click(secondUi.getByRole('button', { name: /Save for next restart/ }));
+    await userEvent.click(secondUi.getByRole('button', { name: /Save for next start/ }));
     await expectCleanTerminal(second.container, first.client,
       { w: 3, h: 10, revision: REV_A, receiptAt: clock.now }, SAVED_AT_RUNNING);
     expect(puts()).toHaveLength(3);
@@ -1377,10 +1377,10 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
 
     // The target now names the restoration, not the obsolete 7/14.
     await waitFor(() => expect(firstUi.getByText('Currently saved').parentElement?.textContent)
-      .toContain('Task session slots 3, Host session admission limit 10'));
+      .toContain('Task session limit 3, Overall supervised-session limit 10'));
     expect(firstUi.getByText('Configuration changed elsewhere.')).toBeInTheDocument();
-    expect(firstUi.getByText('Saving for next restart…')).toBeInTheDocument();
-    expect(firstUi.getByText('Accepted base').parentElement?.textContent).toContain('Task session slots 3');
+    expect(firstUi.getByText('Saving for next start…')).toBeInTheDocument();
+    expect(firstUi.getByText('Version you started from').parentElement?.textContent).toContain('Task session limit 3');
     expect(workersIn(first.container)).toHaveValue('5');
     expect(capIn(first.container)).toHaveValue('12');
     expect(reasonIn(first.container)).toHaveValue('first may fail');
@@ -1399,7 +1399,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
         { detail: { code: 'config_write_failed', artifact_state: 'absent' } },
         { status: 503 },
       ));
-      await firstUi.findByText(/Configuration storage failed\. This request did not publish new values\./);
+      await firstUi.findByText(/HappyRanch could not write the configuration\. This request did not save new values\./);
       await waitFor(() => expect(first.client.isMutating()).toBe(0));
       expect(first.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision)
         .toBe(REV_A);
@@ -1414,7 +1414,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
         // The rebase target is A; the separate manual save carries quoted A.
         await rebaseThenManualSave(clock, ctx, REV_A);
       } else {
-        await userEvent.click(firstUi.getByRole('button', { name: /Discard draft, accept latest/ }));
+        await userEvent.click(firstUi.getByRole('button', { name: /Discard my edits and use latest saved version/ }));
         await waitFor(() => expect(workersIn(first.container)).toHaveValue('3'));
         expect(capIn(first.container)).toHaveValue('10');
         expect(reasonIn(first.container)).toHaveValue('');
@@ -1423,13 +1423,13 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
         expect(firstUi.queryByText('Currently saved')).not.toBeInTheDocument();
         expect(firstUi.queryByText(/You submitted/)).not.toBeInTheDocument();
         expect(firstUi.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
-        expect(firstUi.getByRole('button', { name: /Save for next restart/ })).toBeEnabled();
+        expect(firstUi.getByRole('button', { name: /Save for next start/ })).toBeEnabled();
         expectGuardDisarmed();
 
         clock.now += 60000;
         await setPairIn(first.container, '8', '15');
         await userEvent.type(reasonIn(first.container), 'after accepting A');
-        await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+        await userEvent.click(firstUi.getByRole('button', { name: /Save for next start/ }));
         await waitFor(() => expect(puts()).toHaveLength(4));
         expect(puts()[3].ifMatch).toBe(`"${REV_A}"`);
         expect(JSON.parse(puts()[3].rawBody)).toEqual({
@@ -1445,7 +1445,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
         expect(reasonIn(second.container)).toHaveValue('');
         expect(secondUi.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
         expect(secondUi.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
-        expect(secondUi.getByRole('button', { name: /Save for next restart/ })).toBeEnabled();
+        expect(secondUi.getByRole('button', { name: /Save for next start/ })).toBeEnabled();
         expectGuardDisarmed();
         expect(puts()).toHaveLength(4);
         expect(undeclared).toEqual([]);
@@ -1497,7 +1497,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       // Another editor re-saves the SAME bytes: a new settlement at base A.
       clock.now += 60000;
       await userEvent.type(reasonIn(second.container), 'reaffirm A');
-      await userEvent.click(secondUi.getByRole('button', { name: /Save for next restart/ }));
+      await userEvent.click(secondUi.getByRole('button', { name: /Save for next start/ }));
       await expectCleanTerminal(second.container, first.client,
         { w: 3, h: 10, revision: REV_A, receiptAt: clock.now }, SAVED_AT_RUNNING);
       expect(puts()).toHaveLength(1);
@@ -1507,10 +1507,10 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       expect(firstUi.queryByText('Currently saved')).not.toBeInTheDocument();
       expect(workersIn(first.container)).toHaveValue('5');
       expect(reasonIn(first.container)).toHaveValue('draft only');
-      expect(firstUi.getByRole('button', { name: /Save for next restart/ })).toBeEnabled();
+      expect(firstUi.getByRole('button', { name: /Save for next start/ })).toBeEnabled();
 
       clock.now += 60000;
-      await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+      await userEvent.click(firstUi.getByRole('button', { name: /Save for next start/ }));
       await waitFor(() => expect(puts()).toHaveLength(2));
       expect(puts()[1].ifMatch).toBe(`"${REV_A}"`);
       await expectCleanTerminal(first.container, first.client,
@@ -1545,29 +1545,29 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       clock.now += 60000;
       await setPairIn(second.container, '7', '14');
       await userEvent.type(reasonIn(second.container), 'second C');
-      await userEvent.click(secondUi.getByRole('button', { name: /Save for next restart/ }));
+      await userEvent.click(secondUi.getByRole('button', { name: /Save for next start/ }));
       await expectCleanTerminal(second.container, first.client,
         { w: 7, h: 14, revision: REV_C, receiptAt: clock.now });
       await firstUi.findByText('Configuration changed elsewhere.');
       expect(firstUi.getByText('Currently saved').parentElement?.textContent)
-        .toContain('Task session slots 7, Host session admission limit 14');
+        .toContain('Task session limit 7, Overall supervised-session limit 14');
 
       clock.now += 60000;
       await setPairIn(second.container, '5', '12');
       await userEvent.type(reasonIn(second.container), 'second restores B');
-      await userEvent.click(secondUi.getByRole('button', { name: /Save for next restart/ }));
+      await userEvent.click(secondUi.getByRole('button', { name: /Save for next start/ }));
       await expectCleanTerminal(second.container, first.client,
         { w: 5, h: 12, revision: REV_B, receiptAt: clock.now });
       await waitFor(() => expect(firstUi.getByText('Currently saved').parentElement?.textContent)
-        .toContain('Task session slots 5, Host session admission limit 12'));
+        .toContain('Task session limit 5, Overall supervised-session limit 12'));
       expect(workersIn(first.container)).toHaveValue('9');
       expect(reasonIn(first.container)).toHaveValue('dirty after own');
       expect(puts()).toHaveLength(3);
 
-      await userEvent.click(firstUi.getByRole('button', { name: /Keep my draft, rebase onto latest/ }));
+      await userEvent.click(firstUi.getByRole('button', { name: /Keep my edits and use latest saved version/ }));
       expect(puts()).toHaveLength(3);
       clock.now += 60000;
-      await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+      await userEvent.click(firstUi.getByRole('button', { name: /Save for next start/ }));
       await waitFor(() => expect(puts()).toHaveLength(4));
       expect(puts()[3].ifMatch).toBe(`"${REV_B}"`);
       expect(JSON.parse(puts()[3].rawBody)).toEqual({
@@ -1599,18 +1599,18 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
           { detail: { code: 'config_write_failed', artifact_state: 'absent' } },
           { status: 503 },
         ));
-        await firstUi.findByText(/Configuration storage failed/);
+        await firstUi.findByText(/HappyRanch could not write the configuration/);
         await waitFor(() => expect(first.client.isMutating()).toBe(0));
         expect(firstUi.getByText('Configuration changed elsewhere.')).toBeInTheDocument();
-        await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
-        await firstUi.findByText(/Reconcile the saved values before saving again/);
+        await userEvent.click(firstUi.getByRole('button', { name: /Save for next start/ }));
+        await firstUi.findByText(/Review the latest saved values before saving again/);
         expect(puts()).toHaveLength(2);
-        await userEvent.click(firstUi.getByRole('button', { name: /Keep my draft, rebase onto latest/ }));
+        await userEvent.click(firstUi.getByRole('button', { name: /Keep my edits and use latest saved version/ }));
         expect(puts()).toHaveLength(2);
         // Same pair as the new base, but the reason is still unsaved work.
         expect(firstUi.getByText(/Unsaved changes/)).toBeInTheDocument();
         clock.now += 60000;
-        await userEvent.click(firstUi.getByRole('button', { name: /Save for next restart/ }));
+        await userEvent.click(firstUi.getByRole('button', { name: /Save for next start/ }));
         await waitFor(() => expect(puts()).toHaveLength(3));
         expect(puts()[2].ifMatch).toBe(`"${REV_B}"`);
         expect(JSON.parse(puts()[2].rawBody)).toEqual({
@@ -1662,7 +1662,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     await ready();
     await setPair('5', '12');
     await saveWith();
-    await screen.findByText('Saving for next restart…');
+    await screen.findByText('Saving for next start…');
 
     // Issued DURING the write — a higher ISSUE seq than the write's issue, so a
     // naive issue-keyed filter would let it through.
@@ -1674,9 +1674,9 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       next_start: { queue_workers: 5, host_global_session_cap: 12 },
       restart_pending: true, revision: REV_B,
     })));
-    await screen.findByText(/Saved for next restart/);
+    await screen.findByText(/Saved for the next start/);
     const receiptAfterSave = capacityObservation(SLUG)?.receiptAt ?? null;
-    const renderedReceipt = screen.getAllByText(/Last received/)[0].textContent;
+    const renderedReceipt = screen.getAllByText(/Values received at/)[0].textContent;
     expect(receiptAfterSave).not.toBeNull();
 
     getGate.resolve(lateRead());
@@ -1694,7 +1694,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     await waitFor(() => expect(savedCell()).toHaveTextContent('5'));
     expect(nextCell()).toHaveTextContent('5');
     expect(runningCell()).toHaveTextContent('3');
-    expect(screen.getByText('Restart pending')).toBeVisible();
+    expect(screen.getByText('Restart required for saved changes')).toBeVisible();
     // The load-error branch must NOT replace the saved surface.
     expect(screen.queryByText(/No values are displayed/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Could not load daemon capacity/)).not.toBeInTheDocument();
@@ -1705,7 +1705,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     expect(cap()).toHaveValue('12');
     expect(reasonBox()).toHaveValue('');
     expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Reconcile the saved values/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Review the latest saved values/)).not.toBeInTheDocument();
     expect(screen.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
     expect(screen.queryByText(/You submitted/)).not.toBeInTheDocument();
     expect(saveButton()).toBeEnabled();
@@ -1716,7 +1716,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     expect(
       view.client.getQueryData<{ revision: string }>(capacityQueryKey(SLUG))?.revision,
     ).toBe(REV_B);
-    expect(screen.getAllByText(/Last received/)[0].textContent).toBe(renderedReceipt);
+    expect(screen.getAllByText(/Values received at/)[0].textContent).toBe(renderedReceipt);
   }
 
   /**
@@ -1756,7 +1756,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
       }),
     );
 
-    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+    await userEvent.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
     await waitFor(() => expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_C));
     // Ordering safety was not bought by refusing later reads forever.
     expect(capacityObservation(SLUG)?.outcome).toBe('usable');
@@ -1781,7 +1781,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
 
     // Drive the FINAL manual save to its ACTUAL terminal settlement: returned
     // pair/revision, cache, receipt, draft/reason, lock/submission and guard.
-    await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
+    await screen.findByText(/^Saved for the next start\. Limits in effect now have not changed\./);
     await waitFor(() => expect(savedCell()).toHaveTextContent('7'));
     expect(nextCell()).toHaveTextContent('7');
     expect(workers()).toHaveValue('7');
@@ -1800,7 +1800,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     expect(capacityObservation(SLUG)?.receiptAt ?? null).not.toBe(receiptBeforeFinal);
     expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
     expect(screen.queryByText(/You submitted/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Reconcile the saved values/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Review the latest saved values/)).not.toBeInTheDocument();
     const unload = new Event('beforeunload', { cancelable: true });
     window.dispatchEvent(unload);
     expect(unload.defaultPrevented).toBe(false);
@@ -1829,7 +1829,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
     // Drain the final transition rather than leaving a response in flight, and
     // assert the returned pair/revision, cache, receipt, clean draft/reason,
     // released submission/lock and disarmed guard.
-    await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
+    await screen.findByText(/^Saved for the next start\. Limits in effect now have not changed\./);
     await waitFor(() => expect(savedCell()).toHaveTextContent('6'));
     expect(nextCell()).toHaveTextContent('6');
     expect(cap()).toHaveValue('12');
@@ -1871,7 +1871,7 @@ describe('2 — in-flight capture, ordering and receipt ownership', () => {
 describe('4 — acknowledgment identity at the real boundary', () => {
   const shadow = (resolvedW: number, cap = 12) => snapshot({
     environment_shadowed: ['queue_workers'],
-    environment_warning: 'Environment overrides win.',
+    environment_warning: 'An environment setting takes priority over the saved configuration. Restarting HappyRanch will not make the saved value take effect.',
     next_start: { queue_workers: resolvedW, host_global_session_cap: 12 },
     effective_admission_cap: cap,
   });
@@ -1879,7 +1879,7 @@ describe('4 — acknowledgment identity at the real boundary', () => {
   test('3.1 / 3.4 the W-only override resolves the consequence BEFORE and AFTER a successful save', async () => {
     const shadowW = {
       environment_shadowed: ['queue_workers'],
-      environment_warning: 'Environment overrides win.',
+      environment_warning: 'An environment setting takes priority over the saved configuration. Restarting HappyRanch will not make the saved value take effect.',
       next_start: { queue_workers: 3, host_global_session_cap: 12 },
     };
     stubVenue({
@@ -1899,12 +1899,12 @@ describe('4 — acknowledgment identity at the real boundary', () => {
     await setPair('5', '14');
 
     // PRE-SAVE: resolved W = 3, H = 14; pool 3 + 7 = 10 — never the drafted 5.
-    expect(document.body).toHaveTextContent(/Task session slots 3, Host session admission limit 14/);
-    expect(document.body).toHaveTextContent(/Task session slots is set by the environment/);
-    expect(screen.getByText('Worker-pool total').nextElementSibling?.firstChild?.textContent).toBe('10');
-    expect(screen.getByText('Worker-pool total').parentElement?.textContent)
-      .toContain('3 task + 7 other producers');
-    expect(document.body).not.toHaveTextContent(/worker-pool total 12/);
+    expect(document.body).toHaveTextContent(/Task session limit 3, Overall supervised-session limit 14/);
+    expect(document.body).toHaveTextContent(/Task session limit is set by the environment/);
+    expect(screen.getAllByText('Total worker slots')[0].nextElementSibling?.firstChild?.textContent).toBe('10');
+    expect(screen.getAllByText('Total worker slots')[0].parentElement?.textContent)
+      .toContain('3 task slots + 7 other worker slots');
+    expect(document.body).not.toHaveTextContent(/total worker slots 12/);
     // 3.4: no predicted FUTURE effective admission cap anywhere.
     expect(document.body).toHaveTextContent(/Assumes unchanged environment and\s+worker topology/);
     expect(document.body).not.toHaveTextContent(/future effective|effective admission (cap )?will/i);
@@ -1921,9 +1921,9 @@ describe('4 — acknowledgment identity at the real boundary', () => {
 
     // POST-SAVE: the result panel resolves the SAME W = 3 / H = 14 pair and
     // names only the shadowed key. No "Applied", no restart claim.
-    await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
-    expect(document.body).toHaveTextContent(/Saved value overridden: Task session slots is set by the environment/);
-    expect(document.body).toHaveTextContent(/Expected next start: Task session slots 3, Host session admission limit 14/);
+    await screen.findByText(/^Saved for the next start\. Limits in effect now have not changed\./);
+    expect(document.body).toHaveTextContent(/Environment setting takes priority: Task session limit will continue to use the environment value/);
+    expect(document.body).toHaveTextContent(/Expected after next start: Task session limit 3, Overall supervised-session limit 14/);
     expect(document.body).not.toHaveTextContent(/Applied|Apply now|Restart daemon/);
     expect(savedCell()).toHaveTextContent('5');
     expect(nextCell()).toHaveTextContent('3');
@@ -1938,7 +1938,7 @@ describe('4 — acknowledgment identity at the real boundary', () => {
     await userEvent.click(screen.getByRole('checkbox'));
     expect(screen.getByRole('checkbox')).toBeChecked();
 
-    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+    await userEvent.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
     await waitFor(() => expect(gets().length).toBeGreaterThan(1));
     expect(screen.getByRole('checkbox')).toBeChecked();
     expect(screen.queryByText(/environment override changed/)).not.toBeInTheDocument();
@@ -1956,7 +1956,7 @@ describe('4 — acknowledgment identity at the real boundary', () => {
       // and a pending restart.
       put: () => HttpResponse.json(snapshot({
         environment_shadowed: ['queue_workers'],
-        environment_warning: 'Environment overrides win.',
+        environment_warning: 'An environment setting takes priority over the saved configuration. Restarting HappyRanch will not make the saved value take effect.',
         revision: REV_C,
         persisted_yaml: { queue_workers: 5, host_global_session_cap: 12 },
         next_start: { queue_workers: 4, host_global_session_cap: 12 },
@@ -1972,7 +1972,7 @@ describe('4 — acknowledgment identity at the real boundary', () => {
     await user.click(screen.getByRole('checkbox'));
     expect(screen.getByRole('checkbox')).toBeChecked();
 
-    await user.click(screen.getByRole('button', { name: /Refresh running state/ }));
+    await user.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
     await screen.findByText('The environment override changed; confirm it again before saving.');
 
     // Base, draft and reason are PRESERVED; only the ack is cleared.
@@ -1981,7 +1981,7 @@ describe('4 — acknowledgment identity at the real boundary', () => {
     expect(reasonBox()).toHaveValue('raising slots');
     expect(screen.getByRole('checkbox')).not.toBeChecked();
     // The preview refreshes to the NEW resolved value.
-    expect(document.body).toHaveTextContent(/Task session slots 4, Host session admission limit 12/);
+    expect(document.body).toHaveTextContent(/Task session limit 4, Overall supervised-session limit 12/);
     // 4.1b: at the SAME revision, with the resolved override changed and the
     // renewed acknowledgment missing, Save is EXPLICITLY disabled.
     expect(saveButton()).toBeDisabled();
@@ -2003,7 +2003,7 @@ describe('4 — acknowledgment identity at the real boundary', () => {
       confirm_environment_shadow: true,
     });
     // ...and the accepted result settles coherently.
-    await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
+    await screen.findByText(/^Saved for the next start\. Limits in effect now have not changed\./);
     await waitFor(() => expect(savedCell()).toHaveTextContent('5'));
     expect(nextCell()).toHaveTextContent('4');
     expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_C);
@@ -2015,7 +2015,7 @@ describe('4 — acknowledgment identity at the real boundary', () => {
     mount();
     await ready();
     await userEvent.click(screen.getByRole('checkbox'));
-    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+    await userEvent.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
     await waitFor(() => expect(gets().length).toBeGreaterThan(1));
     expect(screen.getByRole('checkbox')).toBeChecked();
     expect(screen.queryByText(/environment override changed/)).not.toBeInTheDocument();
@@ -2030,7 +2030,7 @@ describe('7 / 8 — dirty refresh and conflict reconciliation', () => {
     await ready();
     await setPair('5', '12');
     await userEvent.type(reasonBox(), 'why');
-    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+    await userEvent.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
     await waitFor(() => expect(gets().length).toBeGreaterThan(1));
 
     expect(screen.queryByText(/Configuration changed elsewhere/)).not.toBeInTheDocument();
@@ -2061,21 +2061,21 @@ describe('7 / 8 — dirty refresh and conflict reconciliation', () => {
     await setPair('5', '12');
     await saveWith('measured receipts');
 
-    await screen.findByText('Saved settings changed elsewhere. Your draft is preserved.');
+    await screen.findByText('The saved settings changed elsewhere. Your edits are still here.');
     // Draft, reason and base are all intact.
     expect(workers()).toHaveValue('5');
     expect(cap()).toHaveValue('12');
     expect(reasonBox()).toHaveValue('measured receipts');
     expect(savedCell()).toHaveTextContent('3');
-    expect(document.body).toHaveTextContent(/Task session slots 2, Host session admission limit 9/);
+    expect(document.body).toHaveTextContent(/Task session limit 2, Overall supervised-session limit 9/);
 
     // 8.4 — a second save WITHOUT choosing a control issues no PUT.
     await userEvent.click(saveButton());
     expect(puts()).toHaveLength(1);
-    expect(await screen.findByText(/Reconcile the saved values before saving again/)).toBeInTheDocument();
+    expect(await screen.findByText(/Review the latest saved values before saving again/)).toBeInTheDocument();
 
     // 8.2 — rebase keeps the draft verbatim and sends NO request by itself.
-    await userEvent.click(screen.getByRole('button', { name: /Keep my draft, rebase onto latest/ }));
+    await userEvent.click(screen.getByRole('button', { name: /Keep my edits and use latest saved version/ }));
     expect(puts()).toHaveLength(1);
     expect(workers()).toHaveValue('5');
     expect(reasonBox()).toHaveValue('measured receipts');
@@ -2109,9 +2109,9 @@ describe('7 / 8 — dirty refresh and conflict reconciliation', () => {
     await ready();
     await setPair('5', '12');
     await saveWith('measured receipts');
-    await screen.findByText('Saved settings changed elsewhere. Your draft is preserved.');
+    await screen.findByText('The saved settings changed elsewhere. Your edits are still here.');
 
-    await userEvent.click(screen.getByRole('button', { name: /Discard draft, accept latest/ }));
+    await userEvent.click(screen.getByRole('button', { name: /Discard my edits and use latest saved version/ }));
     expect(puts()).toHaveLength(1);
     await waitFor(() => expect(workers()).toHaveValue('2'));
     expect(cap()).toHaveValue('9');
@@ -2147,20 +2147,20 @@ describe('10 / 11 — uncertain and unknown outcomes', () => {
     await setPair('5', '12');
     await saveWith('measured receipts');
 
-    await screen.findByText(/durability, verification, or cleanup did not complete/);
-    expect(document.body).toHaveTextContent(/not a confirmation that your values are in effect/i);
-    expect(await screen.findByText(/You submitted Task session slots 5/)).toBeInTheDocument();
+    await screen.findByText(/could not finish verifying or cleaning up the save/);
+    expect(document.body).toHaveTextContent(/Do not assume the new values will be used at the next start/);
+    expect(await screen.findByText(/Your last save attempt sent Task session limit 5/)).toBeInTheDocument();
     expect(savedCell()).toHaveTextContent('3');
 
     await userEvent.click(screen.getByRole('button', { name: 'Check saved values' }));
-    await screen.findByText(/Saved values now match what you submitted/);
+    await screen.findByText(/The currently saved values match your last save attempt/);
     // The wording is exactly this and NOTHING stronger.
-    expect(document.body).toHaveTextContent(/does not confirm your request caused it/i);
+    expect(document.body).toHaveTextContent(/does not prove that the attempt caused the change/i);
     expect(document.body).not.toHaveTextContent(/save succeeded|audit completed/i);
     // The read did NOT advance BASE automatically. `base` is the accepted-base
     // row of the reconciliation panel; the table column is the daemon's own
     // observation and is expected to move with the read.
-    expect(acceptedBaseText()).toMatch(/Task session slots 3/);
+    expect(acceptedBaseText()).toMatch(/Task session limit 3/);
   });
 
   test('10.4 a differing reread names the difference and never auto-resubmits', async () => {
@@ -2173,12 +2173,12 @@ describe('10 / 11 — uncertain and unknown outcomes', () => {
     await ready();
     await setPair('5', '12');
     await saveWith('measured receipts');
-    await screen.findByText(/durability, verification, or cleanup did not complete/);
+    await screen.findByText(/could not finish verifying or cleaning up the save/);
 
     const putsBefore = puts().length;
     await userEvent.click(screen.getByRole('button', { name: 'Check saved values' }));
-    await screen.findByText(/The saved values are unchanged from your accepted base/);
-    expect(document.body).toHaveTextContent(/outcome of your request is still unknown/i);
+    await screen.findByText(/The saved values still match the version you started from/);
+    expect(document.body).toHaveTextContent(/HappyRanch still cannot confirm the result of your save attempt/i);
     expect(puts()).toHaveLength(putsBefore);
   });
 
@@ -2188,16 +2188,16 @@ describe('10 / 11 — uncertain and unknown outcomes', () => {
     await ready();
     await setPair('5', '12');
     await saveWith('measured receipts');
-    await screen.findByText(/Save result unknown/);
+    await screen.findByText(/HappyRanch could not confirm whether the save finished/);
 
     // Fields re-enable after settlement (S4 disables only during flight).
     await waitFor(() => expect(workers()).toBeEnabled());
     await setPair('7', '14');
 
     // Both records are named distinctly; neither is reported as the other.
-    expect(screen.getByText(/You submitted Task session slots 5/)).toBeVisible();
-    expect(document.body).toHaveTextContent(/current draft is Task session slots 7/);
-    expect(document.body).toHaveTextContent(/held separately from the submitted values/);
+    expect(screen.getByText(/Your last save attempt sent Task session limit 5/)).toBeVisible();
+    expect(document.body).toHaveTextContent(/changed the fields to Task session limit 7/);
+    expect(document.body).toHaveTextContent(/Those edits were not part of the last save attempt/);
   });
 
   test('11.8 the write stays blocked and the guard stays armed until an explicit choice', async () => {
@@ -2206,12 +2206,12 @@ describe('10 / 11 — uncertain and unknown outcomes', () => {
     await ready();
     await setPair('5', '12');
     await saveWith('measured receipts');
-    await screen.findByText(/Save result unknown/);
+    await screen.findByText(/HappyRanch could not confirm whether the save finished/);
 
     const putsBefore = puts().length;
     await userEvent.click(saveButton());
     expect(puts()).toHaveLength(putsBefore);
-    expect(await screen.findByText(/Reconcile the saved values before saving again/)).toBeInTheDocument();
+    expect(await screen.findByText(/Review the latest saved values before saving again/)).toBeInTheDocument();
     // The unresolved outcome keeps unsaved-work protection armed.
     expect(screen.getByText(/Unsaved changes/)).toBeVisible();
     const event = new Event('beforeunload', { cancelable: true });
@@ -2225,7 +2225,7 @@ describe('10 / 11 — uncertain and unknown outcomes', () => {
     await ready();
     await setPair('5', '12');
     await saveWith();
-    await screen.findByText(/Save result unknown/);
+    await screen.findByText(/HappyRanch could not confirm whether the save finished/);
     expect(document.body).not.toHaveTextContent(/failed safely|rejected/i);
   });
 });
@@ -2237,20 +2237,20 @@ describe('13 / 14 — denied and unusable reads', () => {
     mount();
     await screen.findByText(/Could not load daemon capacity/, {}, { timeout: 5000 });
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
-    expect(document.body).not.toHaveTextContent(/startup-resolved settings snapshot/);
+    expect(document.body).not.toHaveTextContent(/Resolved when the HappyRanch service started/);
     expect(document.body).not.toHaveTextContent(/startup policy/);
-    expect(screen.queryByLabelText(/Task session slots/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Task session limit/)).not.toBeInTheDocument();
   });
 
   const SHADOW_W = {
     environment_shadowed: ['queue_workers'],
-    environment_warning: 'Environment overrides win; a restart alone will not make YAML win.',
+    environment_warning: 'An environment setting takes priority over the saved configuration. Restarting HappyRanch will not make the saved value take effect.',
     next_start: { queue_workers: 3, host_global_session_cap: 10 },
   };
 
   /** Every rendered receipt string on screen. There is more than one venue. */
   function receiptStrings(): string[] {
-    return screen.getAllByText(/Last received/).map((node) => node.textContent ?? '');
+    return screen.getAllByText(/Values received at/).map((node) => node.textContent ?? '');
   }
 
   test('14.1 an unusable refresh keeps base/draft/reason/ack, labels the retained values "Last known", and blocks save AND rebase', async () => {
@@ -2270,8 +2270,8 @@ describe('13 / 14 — denied and unusable reads', () => {
     expect(screen.getByRole('checkbox')).toBeChecked();
     const before = capacityObservation(SLUG)?.receiptAt ?? null;
 
-    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
-    await screen.findByText(/Cannot read capacity configuration/);
+    await userEvent.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
+    await screen.findByText(/HappyRanch could not read the saved capacity settings/);
 
     // Editor state survives in full.
     expect(workers()).toHaveValue('5');
@@ -2283,19 +2283,19 @@ describe('13 / 14 — denied and unusable reads', () => {
     // merely described by a sentence — the running cards and the four-column
     // table still render the last usable values under "Last known".
     expect(screen.getByText('Last known')).toBeVisible();
-    expect(screen.queryByText('Running now')).not.toBeInTheDocument();
+    expect(screen.queryByText('Limits in effect')).not.toBeInTheDocument();
     expect(runningCell()).toHaveTextContent('3');
     expect(savedCell()).toHaveTextContent('3');
     expect(receiptStrings().length).toBeGreaterThan(0);
 
     // The unusable read is neither a saveable base nor a rebase target.
     expect(saveButton()).toBeDisabled();
-    expect(screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Keep my edits and use latest saved version' })).not.toBeInTheDocument();
 
     // Handler-level refusal, proven at the HTTP boundary.
     const form = saveButton().closest('form') as HTMLFormElement;
     fireEvent.submit(form);
-    await screen.findByText(/could not be read, so nothing was sent/);
+    await screen.findByText(/could not confirm the current saved version, so nothing was sent/);
     expect(puts()).toHaveLength(0);
     // S5-R5: an unusable BODY still arrived on a genuine successful network
     // response, so the browser receipt advances — but the OBSERVATION is not
@@ -2317,9 +2317,9 @@ describe('13 / 14 — denied and unusable reads', () => {
     await ready();
     await setPair('5', '12');
     await userEvent.type(reasonBox(), 'why');
-    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+    await userEvent.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
 
-    await screen.findByText(/Cannot read capacity configuration/);
+    await screen.findByText(/HappyRanch could not read the saved capacity settings/);
     expect(screen.getByText('Last known')).toBeVisible();
     expect(savedCell()).toHaveTextContent('3');
     expect(workers()).toHaveValue('5');
@@ -2348,7 +2348,7 @@ describe('13 / 14 — denied and unusable reads', () => {
     const observedBefore = capacityObservation(SLUG)?.receiptAt ?? null;
     expect(observedBefore).not.toBeNull();
 
-    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+    await userEvent.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
     await waitFor(() => expect(
       view.client.getQueryState(capacityQueryKey(SLUG))?.status,
     ).toBe('error'));
@@ -2356,7 +2356,7 @@ describe('13 / 14 — denied and unusable reads', () => {
 
     // The warning is the accepted 14.3 wording, and the retained values are
     // explicitly labelled rather than presented as confirmed.
-    await screen.findByText(/Could not refresh\. Current state unverified\./);
+    await screen.findByText(/Could not refresh, so the current values are unverified/);
     expect(screen.getByText('Last known')).toBeVisible();
     expect(runningCell()).toHaveTextContent('3');
     expect(savedCell()).toHaveTextContent('3');
@@ -2375,13 +2375,13 @@ describe('13 / 14 — denied and unusable reads', () => {
     expect(saveButton()).toBeDisabled();
     await userEvent.click(saveButton());
     fireEvent.submit(saveButton().closest('form') as HTMLFormElement);
-    await screen.findByText(/could not be read, so nothing was sent/);
+    await screen.findByText(/could not confirm the current saved version, so nothing was sent/);
     await waitFor(() => expect(view.client.isMutating()).toBe(0));
     expect(puts()).toHaveLength(0);
 
     // 14.4: a usable recovery NEVER silently rebases — it requires an explicit
     // choice, and only then does a write become possible.
-    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+    await userEvent.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
     await waitFor(() => expect(gets()).toHaveLength(3));
     await screen.findByText('Configuration changed elsewhere.');
     expect(workers()).toHaveValue('5');
@@ -2389,7 +2389,7 @@ describe('13 / 14 — denied and unusable reads', () => {
     expect(screen.queryByText(/Could not refresh/)).not.toBeInTheDocument();
     expect(capacityObservation(SLUG)?.receiptAt ?? null).not.toBe(observedBefore);
 
-    await userEvent.click(screen.getByRole('button', { name: 'Keep my draft, rebase onto latest' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Keep my edits and use latest saved version' }));
     await userEvent.click(saveButton());
     await waitFor(() => expect(puts()).toHaveLength(1));
     expect(puts()[0].ifMatch).toBe(`"${REV_B}"`);
@@ -2415,10 +2415,10 @@ describe('13 / 14 — denied and unusable reads', () => {
     await ready();
     await setPair('5', '12');
     await userEvent.type(reasonBox(), 'why');
-    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
-    await screen.findByText(/Cannot read capacity configuration/);
+    await userEvent.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
+    await screen.findByText(/HappyRanch could not read the saved capacity settings/);
 
-    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+    await userEvent.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
     await waitFor(() => expect(gets().length).toBe(3));
     // Recovery does not silently adopt the new values into the editor.
     expect(workers()).toHaveValue('5');
@@ -2452,12 +2452,12 @@ describe('13 / 14 — denied and unusable reads', () => {
 
       const retainedReceipt = formatReceipt(capacityObservation(SLUG)?.receiptAt ?? null);
       expect(retainedReceipt).not.toBeNull();
-      expect(screen.getByText(/Last received/).textContent).toContain(retainedReceipt!);
+      expect(screen.getByText(/Values received at/).textContent).toContain(retainedReceipt!);
 
       await userEvent.type(reasonBox(), 'retain exact draft');
       clock.mockReturnValue(1800000060000);
-      await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
-      await screen.findByText(/Cannot read capacity configuration/);
+      await userEvent.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
+      await screen.findByText(/HappyRanch could not read the saved capacity settings/);
 
       // The successful response really arrived, so the PROVIDER receipt moved
       // and the observation is correctly recorded as unusable.
@@ -2495,7 +2495,7 @@ describe('13 / 14 — denied and unusable reads', () => {
       const before = view.client.getQueryData(capacityQueryKey(SLUG));
 
       clock.mockReturnValue(1800000060000);
-      await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+      await userEvent.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
       await waitFor(() => expect(capacityObservation(SLUG)?.receiptAt).toBe(1800000060000));
 
       // The premise of the defect: React Query structurally shares the
@@ -2506,7 +2506,7 @@ describe('13 / 14 — denied and unusable reads', () => {
       expect(receiptStrings()[0]).toContain(formatReceipt(1800000060000)!);
 
       clock.mockReturnValue(1800000120000);
-      await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+      await userEvent.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
       await screen.findByText(/Could not refresh/);
 
       // The failure carries the provider receipt forward unchanged, and the
@@ -2575,13 +2575,13 @@ describe('13 / 14 — denied and unusable reads', () => {
 
       const refresh = async (index: number) => {
         clock.mockReturnValue(1800000000000 + index * 60000);
-        await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+        await userEvent.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
         await waitFor(() => expect(gets()).toHaveLength(index + 1));
       };
 
       // (1) shape-malformed successful 200
       await refresh(1);
-      await screen.findByText(/Cannot read capacity configuration/);
+      await screen.findByText(/HappyRanch could not read the saved capacity settings/);
       expect(capacityObservation(SLUG)?.outcome).toBe('unusable');
       expect(receiptStrings().every((text) => text.includes(retainedReceipt!))).toBe(true);
 
@@ -2617,13 +2617,13 @@ describe('13 / 14 — denied and unusable reads', () => {
       expect(reasonBox()).toHaveValue('why');
       // The accepted BASE is still 3/10 — the new revision was recorded as an
       // observation, not adopted.
-      expect(acceptedBaseText()).toMatch(/Task session slots 3/);
+      expect(acceptedBaseText()).toMatch(/Task session limit 3/);
       expect(screen.queryByText('Last known')).not.toBeInTheDocument();
       expect(capacityObservation(SLUG)?.outcome).toBe('usable');
       expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_B);
       expect(receiptStrings()[0]).not.toContain(retainedReceipt!);
 
-      await userEvent.click(screen.getByRole('button', { name: 'Keep my draft, rebase onto latest' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Keep my edits and use latest saved version' }));
       // The rebase adopted the observed REV_B 2/9 as the accepted base. The
       // reconciliation panel is intentionally cleared, so the accepted base is
       // read from the displayed comparison table (saved 2, running 3).
@@ -2644,7 +2644,7 @@ describe('13 / 14 — denied and unusable reads', () => {
       // 5/12 pair (not the default 3/10 body) is displayed AND cached, the
       // provider receipt advanced to the accepted response and is rendered, the
       // draft/reason are clean and the navigation guard is disarmed.
-      await screen.findByText(/^Saved for next restart\. Running limits are unchanged\./);
+      await screen.findByText(/^Saved for the next start\. Limits in effect now have not changed\./);
       await waitFor(() => expect(savedCell()).toHaveTextContent('5'));
       // The environment-resolved next-start W stays 3 for the shadowed key,
       // while the persisted pair is the accepted 5/12.
@@ -2761,10 +2761,11 @@ describe('19 — cache scoping and route geometry', () => {
     const content = screen.getByTestId('settings-content');
     const subnav = within(content).getByRole('complementary');
     expect(within(subnav).getAllByRole('link').map((l) => l.textContent)).toEqual([
-      'Daemon / Capacity', 'Assistant', 'Organization', 'Executors',
+      'Capacity', 'Assistant', 'Organization', 'Executors',
     ]);
-    // The standalone mock's extra menu entries are deliberately NOT reproduced.
-    expect(within(subnav).queryByText('Capacity')).not.toBeInTheDocument();
+    // The standalone mock's extra menu entries are deliberately NOT reproduced,
+    // and the visible entry is the renamed `Capacity` label (never `Daemon / Capacity`).
+    expect(within(subnav).queryByText('Daemon / Capacity')).not.toBeInTheDocument();
     expect(within(subnav).queryByText('System')).not.toBeInTheDocument();
   });
 });
@@ -2893,7 +2894,7 @@ describe('15 / R7 — raw numeric envelopes, editor to wire and back', () => {
     await ready();
     await setPair(UNSAFE, '12');
     await saveWith('too big');
-    await screen.findByText(/outside the range this editor can represent exactly/);
+    await screen.findByText(/too large for this page to handle exactly/);
     expect(workers()).toHaveValue(UNSAFE);
     expect(document.body).not.toHaveTextContent(String(ROUNDED));
     expect(puts()).toHaveLength(0);
@@ -2922,7 +2923,7 @@ describe('15 / R7 — raw numeric envelopes, editor to wire and back', () => {
       await ready();
       await setPair('5', '12');
       await userEvent.type(reasonBox(), 'why');
-      await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+      await userEvent.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
 
       await screen.findByText(/outside the range this editor can represent exactly/);
       expect(document.body).not.toHaveTextContent(String(ROUNDED));
@@ -2940,7 +2941,7 @@ describe('15 / R7 — raw numeric envelopes, editor to wire and back', () => {
       expect(
         classifySnapshot(view.client.getQueryData(capacityQueryKey(SLUG))).status,
       ).not.toBe('usable');
-      expect(screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Keep my edits and use latest saved version' })).not.toBeInTheDocument();
       expect(saveButton()).toBeDisabled();
       fireEvent.submit(saveButton().closest('form') as HTMLFormElement);
       await waitFor(() => expect(view.client.isMutating()).toBe(0));
@@ -2961,7 +2962,7 @@ describe('15 / R7 — raw numeric envelopes, editor to wire and back', () => {
 
     await setPair('5', '12');
     await saveWith();
-    await screen.findByText(/Save result unknown/);
+    await screen.findByText(/HappyRanch could not confirm whether the save finished/);
 
     // The component says unknown AND the provider agrees: the response is not
     // an accepted observation, the receipt does not advance, and the capacity
@@ -2978,7 +2979,7 @@ describe('15 / R7 — raw numeric envelopes, editor to wire and back', () => {
     expect(document.body).not.toHaveTextContent(String(ROUNDED));
     // Unresolved: the next Save is refused, not silently retried.
     await userEvent.click(saveButton());
-    await screen.findByText(/Reconcile the saved values before saving again/);
+    await screen.findByText(/Review the latest saved values before saving again/);
     expect(puts()).toHaveLength(1);
   });
 
@@ -3007,7 +3008,7 @@ describe('15 / R7 — raw numeric envelopes, editor to wire and back', () => {
       await saveWith();
       await screen.findByText(/Latest saved values are outside the range this editor can represent exactly/);
       expect(document.body).not.toHaveTextContent(String(ROUNDED));
-      expect(screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Keep my edits and use latest saved version' })).not.toBeInTheDocument();
       expect(workers()).toHaveValue('5');
       expect(savedCell()).toHaveTextContent('3');
       expect(puts()).toHaveLength(1);
@@ -3029,14 +3030,14 @@ describe('15 / R7 — raw numeric envelopes, editor to wire and back', () => {
     await ready();
     await setPair('5', '12');
     await saveWith();
-    await screen.findByText(/durability, verification, or cleanup did not complete/);
+    await screen.findByText(/could not finish verifying or cleaning up the save/);
 
     await userEvent.click(screen.getByRole('button', { name: 'Check saved values' }));
     await waitFor(() => expect(gets().length).toBeGreaterThan(1));
     expect(capacityObservation(SLUG)?.outcome).toBe('unusable');
-    expect(screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Keep my edits and use latest saved version' })).not.toBeInTheDocument();
     expect(document.body).not.toHaveTextContent(String(ROUNDED));
-    expect(screen.getByText(/You submitted Task session slots 5/)).toBeVisible();
+    expect(screen.getByText(/Your last save attempt sent Task session limit 5/)).toBeVisible();
     expect(puts()).toHaveLength(1);
   });
 
@@ -3106,18 +3107,18 @@ describe('15 / R7 — raw numeric envelopes, editor to wire and back', () => {
         await setPair('5', '12');
         await userEvent.type(reasonBox(), 'bad-read draft');
       }
-      await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+      await userEvent.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
       if (expectUsable) {
         await waitFor(() => expect(capacityObservation(SLUG)?.outcome).toBe('usable'));
         expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_B);
-        expect(screen.queryByText(/Cannot read capacity configuration/)).not.toBeInTheDocument();
-        expect(screen.queryByText(/Capacity details are inconsistent in this response/)).not.toBeInTheDocument();
+        expect(screen.queryByText(/HappyRanch could not read the saved capacity settings/)).not.toBeInTheDocument();
+        expect(screen.queryByText(/HappyRanch returned conflicting capacity values/)).not.toBeInTheDocument();
       } else {
         await waitFor(() => expect(capacityObservation(SLUG)?.outcome).toBe('unusable'));
         expect(capacityObservation(SLUG)?.sourceRevision).toBeNull();
         expect(
           screen.getAllByRole('alert').some((node) =>
-            /Cannot read capacity configuration|Capacity details are inconsistent in this response/
+            /HappyRanch could not read the saved capacity settings|HappyRanch returned conflicting capacity values/
               .test(node.textContent ?? '')),
         ).toBe(true);
         const observedStatus = classifySnapshot(
@@ -3132,14 +3133,14 @@ describe('15 / R7 — raw numeric envelopes, editor to wire and back', () => {
         expect(cap()).toHaveValue('12');
         expect(reasonBox()).toHaveValue('bad-read draft');
         if (observedStatus === 'inconsistent') {
-          expect(document.body).toHaveTextContent(/Capacity details are inconsistent in this response/);
-          expect(screen.getByText('Accepted base').parentElement?.textContent)
-            .toMatch(/Task session slots 3/);
+          expect(document.body).toHaveTextContent(/HappyRanch returned conflicting capacity values/);
+          expect(screen.getByText('Version you started from').parentElement?.textContent)
+            .toMatch(/Task session limit 3/);
         } else {
           expect(screen.getByText('Last known')).toBeVisible();
         }
-        expect(screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' })).not.toBeInTheDocument();
-        expect(screen.queryByRole('button', { name: 'Discard draft, accept latest' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Keep my edits and use latest saved version' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Discard my edits and use latest saved version' })).not.toBeInTheDocument();
         expect(saveButton()).toBeDisabled();
         fireEvent.submit(saveButton().closest('form') as HTMLFormElement);
         await waitFor(() => expect(view.client.isMutating()).toBe(0));
@@ -3163,11 +3164,11 @@ describe('15 / R7 — raw numeric envelopes, editor to wire and back', () => {
     });
     mount();
     await ready();
-    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+    await userEvent.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
     await waitFor(() => expect(capacityObservation(SLUG)?.outcome).toBe('usable'));
     expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_B);
-    expect(screen.queryByText(/Cannot read capacity configuration/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Capacity details are inconsistent in this response/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/HappyRanch could not read the saved capacity settings/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/HappyRanch returned conflicting capacity values/)).not.toBeInTheDocument();
   });
 
   test('15.10 L4 task_workers > producer_envelope is INCONSISTENT, never a negative total', async () => {
@@ -3181,8 +3182,8 @@ describe('15 / R7 — raw numeric envelopes, editor to wire and back', () => {
     });
     mount();
     await ready();
-    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
-    await screen.findAllByText(/Capacity details are inconsistent in this response/);
+    await userEvent.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
+    await screen.findAllByText(/HappyRanch returned conflicting capacity values/);
     expect(document.body).not.toHaveTextContent(/\b-2\b/);
     expect(capacityObservation(SLUG)?.outcome).toBe('unusable');
     expect(capacityObservation(SLUG)?.sourceRevision).toBeNull();
@@ -3205,7 +3206,7 @@ describe('R8 — an accepted write finishes a coherent clean state', () => {
     await ready();
     await setPair('5', '12');
     await saveWith();
-    await screen.findByText('Saving for next restart…');
+    await screen.findByText('Saving for next start…');
 
     // A permitted read lands DURING the write and is recorded as `latest`.
     await view.client.refetchQueries({ queryKey: capacityQueryKey(SLUG) });
@@ -3217,14 +3218,14 @@ describe('R8 — an accepted write finishes a coherent clean state', () => {
       next_start: { queue_workers: 5, host_global_session_cap: 12 },
       restart_pending: true,
     })));
-    await screen.findByText('Saved for next restart. Running limits are unchanged.');
+    await screen.findByText('Saved for the next start. Limits in effect now have not changed.');
 
     // The whole transition completes: the obsolete observation and every lock
     // it implied are gone, and the surface is clean.
     expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
     expect(screen.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
     expect(screen.queryByText('Currently saved')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Keep my edits and use latest saved version' })).not.toBeInTheDocument();
     expect(screen.queryByText(/You submitted/)).not.toBeInTheDocument();
     expect(workers()).toHaveValue('5');
     expect(cap()).toHaveValue('12');
@@ -3259,7 +3260,7 @@ describe('R8 — an accepted write finishes a coherent clean state', () => {
     await ready();
     await setPair('5', '12');
     await saveWith('raising task slots');
-    await screen.findByText('Saved for next restart. Running limits are unchanged.');
+    await screen.findByText('Saved for the next start. Limits in effect now have not changed.');
 
     // The provider labels the observation as a WRITE, and the view must not
     // read it as an external change: the cache write inside the mutation's
@@ -3271,7 +3272,7 @@ describe('R8 — an accepted write finishes a coherent clean state', () => {
     expect(screen.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
     expect(screen.queryByText('Currently saved')).not.toBeInTheDocument();
     expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Keep my edits and use latest saved version' })).not.toBeInTheDocument();
     expect(savedCell()).toHaveTextContent('5');
     expect(gets()).toHaveLength(1);
     expect(puts()).toHaveLength(1);
@@ -3295,11 +3296,11 @@ describe('R8 — an accepted write finishes a coherent clean state', () => {
     await ready();
     await setPair('5', '12');
     await saveWith();
-    await screen.findByText(/Saved for next restart/);
+    await screen.findByText(/Saved for the next start/);
 
     // A read issued AFTER the write settles is NOT obsolete: it publishes, and
     // because the form is clean it is adopted rather than discarded.
-    await userEvent.click(screen.getByRole('button', { name: /Refresh running state/ }));
+    await userEvent.click(screen.getByRole('button', { name: /Refresh capacity values/ }));
     await waitFor(() => expect(savedCell()).toHaveTextContent('9'));
     expect(workers()).toHaveValue('9');
     expect(capacityObservation(SLUG)?.sourceRevision).toBe(REV_C);
