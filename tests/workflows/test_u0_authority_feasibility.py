@@ -86,6 +86,12 @@ def _u0_hosted_source_contract() -> _U0HostedSourceContract:
         ("0a5c6b19e7ca10503cba77489102564d971a4234872090f1b35fc43ac21757ff",
          "972660d78706ef6d0d955e5c729642c4f80c7654f78fc69cabf223702834426c"):
             _U0HostedSourceContract(True, True),
+        # Current ``fbad23f2`` main after PR897: its terminal-worktree
+        # reclamation delta leaves the expanded prior-step serializer and
+        # teardown scratch reporter definitions and direct call sites intact.
+        ("66980e58bcd0a60e0fe5bc12d55644d700ba04975ce97e18718533c8227e5735",
+         "9fcc840b1f227e0a7b5710b598ec2f037526b96511ddbacb2d058f8888b3e948"):
+            _U0HostedSourceContract(True, True),
     }
     try:
         return contracts[source_pair]
