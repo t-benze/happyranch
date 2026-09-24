@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -19,6 +20,39 @@ from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.teams import TeamsRegistry
 from runtime.runtime import RuntimeDir
+
+
+@contextmanager
+def _captured_cleanup_workers(*, release: threading.Event | None = None):
+    """Own every daemon cleanup thread created inside the test boundary."""
+    real_thread = threading.Thread
+    workers: list[threading.Thread] = []
+    errors: list[BaseException] = []
+
+    def tracked_thread(*, target, daemon):
+        def run() -> None:
+            try:
+                target()
+            except BaseException as exc:  # surfaced after every worker joins
+                errors.append(exc)
+
+        worker = real_thread(target=run, daemon=daemon)
+        workers.append(worker)
+        return worker
+
+    with mock.patch.object(threading, "Thread", side_effect=tracked_thread):
+        try:
+            yield workers, errors
+        finally:
+            if release is not None:
+                release.set()
+            leaked: list[threading.Thread] = []
+            for worker in workers:
+                worker.join(2)
+                if worker.is_alive():
+                    leaked.append(worker)
+            assert not leaked, "startup recovery cleanup worker leaked"
+            assert not errors, f"startup recovery cleanup worker errors: {errors!r}"
 
 
 def _seed_manager_recovery_result(tmp_path, *, self_evaluation="valid"):
@@ -451,7 +485,9 @@ def test_nonroot_manager_recovery_postcommit_cleanup_reenters_on_restart(tmp_pat
     reopened = Database(db_path)
     orch._db = reopened
     orch._audit = AuditLogger(reopened)
-    with mock.patch("runtime.orchestrator.authority.run_authority_hook") as authority:
+    with mock.patch(
+        "runtime.orchestrator.authority.run_authority_hook",
+    ) as authority, _captured_cleanup_workers() as (cleanup_workers, cleanup_errors):
         _sweep_on_startup(reopened, queue, "test", orch)
         # The recovery-owned durable backstop commits inside the startup sweep;
         # do not mistake the asynchronous terminator return for that boundary.
@@ -462,6 +498,8 @@ def test_nonroot_manager_recovery_postcommit_cleanup_reenters_on_restart(tmp_pat
             now_iso="2026-01-01T00:02:00+00:00",
         ) == ["JOB-OTHER"]
         _sweep_on_startup(reopened, queue, "test", orch)
+    assert cleanup_workers
+    assert not cleanup_errors
     assert authority.call_count == 0
     assert reopened.get_task(task_id).status is TaskStatus.FAILED
     assert reopened.get_job("JOB-OWNED").reason == "task_ended"
@@ -1043,9 +1081,16 @@ def test_manager_done_postcommit_cleanup_pending_restarts_once(
         with pytest.raises(AssertionError):
             assert reopened.get_job("JOB-OWNED").reason == "task_ended"
 
-        _sweep_on_startup(reopened, queue, "test", orch)
-        assert restarted_cleanup_finished.wait(2.0), "new-process durable backstop did not finish"
-        _sweep_on_startup(reopened, queue, "test", orch)
+        with _captured_cleanup_workers() as (
+            cleanup_workers, cleanup_errors,
+        ):
+            _sweep_on_startup(reopened, queue, "test", orch)
+            assert restarted_cleanup_finished.wait(2.0), (
+                "new-process durable backstop did not finish"
+            )
+            _sweep_on_startup(reopened, queue, "test", orch)
+        assert cleanup_workers
+        assert not cleanup_errors
         # This is before the later lifespan orphan reconciliation; startup
         # touched only the recovery owner's durable row.
         assert reopened.get_job("JOB-OWNED").reason == "task_ended"
@@ -1643,16 +1688,21 @@ def test_completed_leaf_postcommit_restart_cleans_only_owned_job_and_wakes_once(
     path = db.path; db.close(); reopened = Database(path); orch._db = reopened
     from runtime.infrastructure.audit_logger import AuditLogger
     orch._audit = AuditLogger(reopened)
-    _sweep_on_startup(reopened, queue, "test", orch)
-    # The startup sweep settles the exact ledger-owned job durably before it
-    # returns. The generic lifespan scan therefore sees only the unrelated
-    # row; no process wait or persisted PID signal is involved at restart.
-    assert reopened.get_job("JOB-OWNED").reason == "task_ended"
-    assert reopened.recover_orphaned_running_jobs(
-        now_iso="2026-01-01T00:02:00+00:00",
-    ) == ["JOB-OTHER"]
-    with mock.patch("runtime.daemon.jobs_runner.terminate_jobs_for_task"):
+    with _captured_cleanup_workers() as (
+        cleanup_workers, cleanup_errors,
+    ):
         _sweep_on_startup(reopened, queue, "test", orch)
+        # The startup sweep settles the exact ledger-owned job durably before it
+        # returns. The generic lifespan scan therefore sees only the unrelated
+        # row; no process wait or persisted PID signal is involved at restart.
+        assert reopened.get_job("JOB-OWNED").reason == "task_ended"
+        assert reopened.recover_orphaned_running_jobs(
+            now_iso="2026-01-01T00:02:00+00:00",
+        ) == ["JOB-OTHER"]
+        with mock.patch("runtime.daemon.jobs_runner.terminate_jobs_for_task"):
+            _sweep_on_startup(reopened, queue, "test", orch)
+    assert cleanup_workers
+    assert not cleanup_errors
     assert reopened.get_job("JOB-OWNED").reason == "task_ended"
     assert reopened.get_job("JOB-OTHER").reason == "daemon_crash"
     assert reopened.get_task("TASK-OTHER-PARENT").status is TaskStatus.IN_PROGRESS
@@ -2568,6 +2618,154 @@ def _seed_consumed_parent_handoff(db: Database) -> tuple[dict, dict]:
     db.update_task("TASK-CHILD-HANDOFF", status=TaskStatus.COMPLETED)
     assert db.mark_task_completion_recovery_callback_consumed(task_id="TASK-CHILD-HANDOFF", agent="dev_agent", session_id="recovery", result_row_id=accepted["id"], settled_at="2026-01-01T00:01:00Z")
     return accepted, dict(accepted)
+
+
+@pytest.mark.parametrize(
+    "second_sweep_timing", ["before-cleanup-tail", "after-cleanup-tail"],
+)
+def test_duplicate_ordinary_startup_wakes_admit_and_launch_once(
+    tmp_path, monkeypatch, second_sweep_timing,
+):
+    """Duplicate startup wakes converge at the real durable admission seam.
+
+    The first parent wake is taken from the queue before its durable claim,
+    exactly as a live worker does. A second sweep or the first sweep's cleanup
+    tail can then reconstruct another wake. Both are consumed through the real
+    ``TaskQueue.drain_sync -> Orchestrator.run_step`` path; only the persisted
+    CAS winner may reach ``_run_agent``.
+    """
+    from runtime.daemon import jobs_runner
+    from runtime.orchestrator import run_step
+
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    _seed_consumed_parent_handoff(db)
+    _seed_job(db, "JOB-OWNED", "TASK-CHILD-HANDOFF", "running")
+    db.insert_task(TaskRecord(
+        id="TASK-UNRELATED", brief="unrelated runnable", team="engineering",
+        assigned_agent="dev_agent", status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.BLOCKED_ON_JOB,
+        blocked_on_job_ids='["JOB-NOT-TERMINAL"]',
+    ))
+    unrelated_metadata = {"source": "preexisting", "ordinal": 7}
+    queue.enqueue("test", "TASK-UNRELATED", metadata=unrelated_metadata)
+
+    cleanup_entered = threading.Event()
+    release_cleanup = threading.Event()
+    prior_inflight = dict(jobs_runner._INFLIGHT)
+    prior_kill_reasons = dict(jobs_runner._KILL_REASON_OVERRIDE)
+
+    async def paused_termination(*_args, **_kwargs):
+        cleanup_entered.set()
+        assert release_cleanup.wait(2), "cleanup tail was never released"
+        return []
+
+    monkeypatch.setattr(
+        jobs_runner, "terminate_jobs_for_task", paused_termination,
+    )
+    try:
+        with _captured_cleanup_workers(
+            release=release_cleanup,
+        ) as (cleanup_workers, cleanup_errors):
+            _sweep_on_startup(db, queue, "test", orch)
+            assert cleanup_entered.wait(2), "startup cleanup tail did not start"
+
+            # Model the exact worker boundary that invalidates queue emptiness
+            # as an invariant: both existing items have been dequeued, but the
+            # parent has not yet attempted its durable claim. Preserve their
+            # bytes and task accounting, then let startup reconstruct the wake.
+            unrelated_item = queue._queue.get_nowait()
+            queue._queue.task_done()
+            original_parent_wake = queue._queue.get_nowait()
+            queue._queue.task_done()
+            assert unrelated_item == (
+                "test", "TASK-UNRELATED", unrelated_metadata,
+            )
+            assert original_parent_wake == (
+                "test", "TASK-PARENT-HANDOFF", None,
+            )
+            queue.enqueue(
+                unrelated_item[0], unrelated_item[1],
+                metadata=unrelated_item[2],
+            )
+
+            if second_sweep_timing == "after-cleanup-tail":
+                release_cleanup.set()
+                for worker in tuple(cleanup_workers):
+                    worker.join(2)
+                    assert not worker.is_alive()
+
+            _sweep_on_startup(db, queue, "test", orch)
+            if second_sweep_timing == "before-cleanup-tail":
+                release_cleanup.set()
+
+            # Re-present the already-dequeued first wake. The queue now holds
+            # the unrelated control followed by two ordinary startup wakes.
+            queue.enqueue(
+                original_parent_wake[0], original_parent_wake[1],
+                metadata=original_parent_wake[2],
+            )
+        assert cleanup_workers
+        assert not cleanup_errors
+    finally:
+        # The capture context releases and joins all workers before shared
+        # jobs_runner state is restored, on success and on every failure path.
+        release_cleanup.set()
+        jobs_runner._INFLIGHT.clear()
+        jobs_runner._INFLIGHT.update(prior_inflight)
+        jobs_runner._KILL_REASON_OVERRIDE.clear()
+        jobs_runner._KILL_REASON_OVERRIDE.update(prior_kill_reasons)
+
+    db.update_task(
+        "TASK-UNRELATED", status=TaskStatus.PENDING, block_kind=None,
+    )
+    monkeypatch.setattr(run_step, "_build_agent_prompt", lambda *a, **k: "prompt")
+    monkeypatch.setattr(
+        run_step, "_prepare_workspace_cleanup_reclamation_context",
+        lambda *a, **k: "",
+    )
+    launches: list[str] = []
+    durable_parent_claims: list[bool] = []
+    real_claim = db.try_claim_for_step
+
+    def observed_claim(task_id, *args, **kwargs):
+        claimed = real_claim(task_id, *args, **kwargs)
+        if task_id == "TASK-PARENT-HANDOFF":
+            durable_parent_claims.append(claimed)
+        return claimed
+
+    def stop_after_launch(task_id, *_args, **_kwargs):
+        launches.append(task_id)
+        raise RuntimeError("test stops after observing the launch seam")
+
+    monkeypatch.setattr(db, "try_claim_for_step", observed_claim)
+    monkeypatch.setattr(orch, "_run_agent", stop_after_launch)
+    dequeues: list[tuple[str, str, dict | None]] = []
+
+    class RecordingRouter:
+        def run_step(self, slug, task_id, metadata=None):
+            dequeues.append((slug, task_id, metadata))
+            orch.run_step(task_id, metadata=metadata)
+
+    # The deterministic red-before run proved a queue-empty oracle is false at
+    # this boundary. Two pending entries are the setup, not the invariant; the
+    # durable admission and launch observations below are the assertion.
+    assert sum(
+        item[1] == "TASK-PARENT-HANDOFF" for item in queue._queue._queue
+    ) == 2
+
+    asyncio.run(queue.drain_sync(RecordingRouter()))
+
+    assert dequeues == [
+        ("test", "TASK-UNRELATED", unrelated_metadata),
+        ("test", "TASK-PARENT-HANDOFF", None),
+        ("test", "TASK-PARENT-HANDOFF", None),
+    ]
+    assert launches == ["TASK-UNRELATED", "TASK-PARENT-HANDOFF"]
+    assert durable_parent_claims == [True]
+    parent = db.get_task("TASK-PARENT-HANDOFF")
+    assert parent is not None
+    assert parent.orchestration_step_count == 1
+    assert db.get_job("JOB-OWNED").reason == "task_ended"
 
 
 @pytest.mark.parametrize("captured_jobs,replace_before_handoff", [(0, False), (1, False), (0, True), (1, True)], ids=["zero-job", "one-job", "zero-job-winner", "one-job-winner"])
