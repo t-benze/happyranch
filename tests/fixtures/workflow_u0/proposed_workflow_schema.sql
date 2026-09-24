@@ -3,8 +3,8 @@ PRAGMA foreign_keys=ON;
 -- This is the adapter's sole durable version discriminator.  It is created
 -- and committed in the same isolated transaction as every proposed table.
 CREATE TABLE workflow_adapter_versions (version INTEGER PRIMARY KEY CHECK(version=1));
-CREATE TABLE workflow_template_drafts (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, definition_bytes BLOB NOT NULL, definition_digest TEXT NOT NULL UNIQUE, compiler_pin TEXT NOT NULL, validator_pin TEXT NOT NULL, source_pin TEXT NOT NULL, author_principal TEXT NOT NULL, created_at TEXT NOT NULL);
-CREATE TABLE workflow_template_versions (id TEXT PRIMARY KEY, draft_id TEXT NOT NULL REFERENCES workflow_template_drafts(id), namespace TEXT NOT NULL, version INTEGER NOT NULL CHECK(version>0), definition_bytes BLOB NOT NULL, definition_digest TEXT NOT NULL UNIQUE, compiler_pin TEXT NOT NULL, validator_pin TEXT NOT NULL, source_pin TEXT NOT NULL, published_by TEXT NOT NULL, UNIQUE(namespace,version));
+CREATE TABLE workflow_template_drafts (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, template_name TEXT NOT NULL, definition_bytes BLOB NOT NULL, definition_digest TEXT NOT NULL, compiler_pin TEXT NOT NULL, validator_pin TEXT NOT NULL, source_pin TEXT NOT NULL, author_principal TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE workflow_template_versions (id TEXT PRIMARY KEY, draft_id TEXT NOT NULL REFERENCES workflow_template_drafts(id), namespace TEXT NOT NULL, template_name TEXT NOT NULL, version INTEGER NOT NULL CHECK(version>0), definition_bytes BLOB NOT NULL, definition_digest TEXT NOT NULL, compiler_pin TEXT NOT NULL, validator_pin TEXT NOT NULL, source_pin TEXT NOT NULL, published_by TEXT NOT NULL, published_at TEXT NOT NULL, UNIQUE(namespace,template_name,version));
 CREATE TABLE workflow_authorization_revisions (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision>0), authority_bytes BLOB NOT NULL, authority_digest TEXT NOT NULL UNIQUE, source_pin TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(namespace,revision));
 CREATE TABLE workflow_active_authorizations (namespace TEXT PRIMARY KEY, authorization_revision_id TEXT NOT NULL REFERENCES workflow_authorization_revisions(id));
 CREATE TABLE workflow_binding_snapshots (id TEXT PRIMARY KEY, template_version_id TEXT NOT NULL REFERENCES workflow_template_versions(id), authorization_revision_id TEXT NOT NULL REFERENCES workflow_authorization_revisions(id), binding_bytes BLOB NOT NULL, binding_digest TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL);
@@ -88,3 +88,31 @@ CREATE TABLE workflow_dispatch_callbacks (id TEXT PRIMARY KEY, outbox_id TEXT NO
 CREATE TABLE workflow_dispatch_effects (id TEXT PRIMARY KEY, outbox_id TEXT NOT NULL REFERENCES workflow_dispatch_outbox(id), effect_key TEXT NOT NULL UNIQUE, effect_kind TEXT NOT NULL CHECK(effect_kind='host_launch_observed'), task_id TEXT NOT NULL, session_id TEXT NOT NULL, host_execution_id TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE INDEX workflow_dispatch_outbox_state_idx ON workflow_dispatch_outbox(state,recovery_owner);
 CREATE INDEX workflow_dispatch_callbacks_outbox_idx ON workflow_dispatch_callbacks(outbox_id,created_at);
+-- F6 proposed compatibility/cutover and immutable template identity model.
+-- The singleton cutover row is the only workflow schema/cutover marker.  It
+-- does not reinterpret a legacy table or grant an old binary recovery
+-- ownership.  The state machine is owned by ``workflow_cutover_reconciler``.
+CREATE TABLE workflow_cutover_state (singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=1), state TEXT NOT NULL CHECK(state IN ('installed_legacy_only','enable_requested','compatibility_verified','enabled','disable_requested','draining','drained')), recovery_owner TEXT NOT NULL CHECK(recovery_owner='workflow_cutover_reconciler'), generation INTEGER NOT NULL CHECK(generation>=1), operation_key TEXT, disable_reason TEXT, updated_at TEXT NOT NULL);
+CREATE TABLE workflow_cutover_events (id TEXT PRIMARY KEY, event_seq INTEGER NOT NULL UNIQUE CHECK(event_seq>0), state_before TEXT, state_after TEXT NOT NULL, operation_key TEXT, event_digest TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL);
+
+-- Organization-scoped stable identity is ``(namespace, template_name)`` where
+-- namespace is exactly ``org/<org>/team/<team>``. Version bodies are immutable
+-- and monotonically appended. The existing workflow_template_versions row is
+-- the immutable body; this mapping supplies the F6 stable identity without
+-- rewriting the earlier F1-F5 fixture rows.
+CREATE TABLE workflow_template_identities (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, template_name TEXT NOT NULL, current_version INTEGER NOT NULL CHECK(current_version>=0), status TEXT NOT NULL CHECK(status IN ('active','retired')), created_at TEXT NOT NULL, UNIQUE(namespace,template_name));
+CREATE TABLE workflow_template_identity_versions (template_identity_id TEXT NOT NULL REFERENCES workflow_template_identities(id), version INTEGER NOT NULL CHECK(version>0), template_version_id TEXT NOT NULL UNIQUE REFERENCES workflow_template_versions(id), content_digest TEXT NOT NULL, PRIMARY KEY(template_identity_id,version), UNIQUE(template_identity_id,content_digest));
+CREATE TABLE workflow_template_publish_operations (org_slug TEXT NOT NULL, principal TEXT NOT NULL, operation_key TEXT NOT NULL, request_digest TEXT NOT NULL, template_identity_id TEXT NOT NULL REFERENCES workflow_template_identities(id), expected_current_version INTEGER NOT NULL CHECK(expected_current_version>=0), result_version INTEGER NOT NULL CHECK(result_version>0), template_version_id TEXT NOT NULL REFERENCES workflow_template_versions(id), PRIMARY KEY(org_slug,principal,operation_key));
+
+-- Activation is a separate append-only CAS. Publishing a later template body
+-- never updates this pointer. A deliberate reactivation appends a new immutable
+-- activation revision and advances the per-instance pointer.
+CREATE TABLE workflow_activations (id TEXT PRIMARY KEY, instance_id TEXT NOT NULL REFERENCES workflow_instances(id), activation_revision INTEGER NOT NULL CHECK(activation_revision>0), template_identity_id TEXT NOT NULL REFERENCES workflow_template_identities(id), template_version_id TEXT NOT NULL REFERENCES workflow_template_versions(id), authority_namespace TEXT NOT NULL, authority_generation INTEGER NOT NULL CHECK(authority_generation>0), authority_digest TEXT NOT NULL, request_digest TEXT NOT NULL, activated_by TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('active','superseded')), created_at TEXT NOT NULL, UNIQUE(instance_id,activation_revision));
+CREATE TABLE workflow_active_activations (instance_id TEXT PRIMARY KEY REFERENCES workflow_instances(id), activation_id TEXT NOT NULL UNIQUE REFERENCES workflow_activations(id), activation_revision INTEGER NOT NULL CHECK(activation_revision>0));
+CREATE TABLE workflow_activation_operations (org_slug TEXT NOT NULL, principal TEXT NOT NULL, operation_key TEXT NOT NULL, request_digest TEXT NOT NULL, activation_id TEXT NOT NULL REFERENCES workflow_activations(id), PRIMARY KEY(org_slug,principal,operation_key));
+
+-- The bridge is the durable record-class discriminator. Recovery claims are
+-- append-only effect ownership: an ordinary task absent from the bridge can be
+-- claimed only by ``legacy_recovery``; an exact bridged task only by
+-- ``workflow_recovery``. One primary key/effect key prevents dual launch.
+CREATE TABLE workflow_recovery_claims (record_id TEXT PRIMARY KEY, record_class TEXT NOT NULL CHECK(record_class IN ('legacy_task','workflow_task')), recovery_owner TEXT NOT NULL CHECK(recovery_owner IN ('legacy_recovery','workflow_recovery')), claim_token TEXT NOT NULL UNIQUE, effect_key TEXT NOT NULL UNIQUE, state TEXT NOT NULL CHECK(state IN ('claimed','effect_recorded')), created_at TEXT NOT NULL);

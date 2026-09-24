@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import uuid
 from collections.abc import Iterable
@@ -18,6 +19,87 @@ def sha256_bytes(value: bytes) -> str:
 
 def canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+def install_workflow_adapter(
+    conn: sqlite3.Connection,
+    *,
+    schema: str,
+    before_commit: Callable[[], None] | None = None,
+) -> str:
+    """Install or reopen the one isolated additive workflow adapter.
+
+    The caller supplies the exact fixture DDL.  This helper owns the install
+    transaction and treats the version row plus singleton cutover row as one
+    marker.  It never repairs a partial/unknown/newer layout in place.
+    """
+    if conn.in_transaction:
+        raise ValueError("caller_transaction_not_allowed")
+    expected = set(re.findall(r"CREATE TABLE (workflow_[a-z_]+)", schema))
+    existing = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'workflow_%'"
+        )
+    }
+    if existing:
+        before = tuple(sorted(existing))
+        if existing != expected:
+            raise ValueError("partial_or_ambiguous_isolated_adapter")
+        marker = conn.execute(
+            "SELECT version FROM workflow_adapter_versions"
+        ).fetchall()
+        cutover = conn.execute(
+            "SELECT schema_version,state,recovery_owner,generation "
+            "FROM workflow_cutover_state"
+        ).fetchall()
+        if marker != [(1,)] or len(cutover) != 1 or cutover[0][0] != 1:
+            assert tuple(sorted(existing)) == before
+            raise ValueError("unsupported_workflow_adapter_version")
+        if cutover[0][1] not in {
+            "installed_legacy_only", "enable_requested",
+            "compatibility_verified", "enabled", "disable_requested",
+            "draining", "drained",
+        } or cutover[0][2] != "workflow_cutover_reconciler":
+            raise ValueError("partial_or_ambiguous_isolated_adapter")
+        return "reopened"
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        statement = ""
+        for line in schema.splitlines(keepends=True):
+            statement += line
+            if sqlite3.complete_statement(statement):
+                if statement.strip():
+                    conn.execute(statement)
+                statement = ""
+        if statement.strip():
+            raise ValueError("incomplete_isolated_adapter_schema")
+        conn.execute("INSERT INTO workflow_adapter_versions VALUES (1)")
+        conn.execute(
+            "INSERT INTO workflow_cutover_state VALUES "
+            "(1,1,'installed_legacy_only','workflow_cutover_reconciler',1,NULL,NULL,'now')"
+        )
+        event = canonical({
+            "event": "adapter_installed",
+            "state_before": None,
+            "state_after": "installed_legacy_only",
+            "schema_version": 1,
+        })
+        conn.execute(
+            "INSERT INTO workflow_cutover_events VALUES (?,?,?,?,?,?,?)",
+            (
+                "cutover-event-1", 1, None, "installed_legacy_only", None,
+                sha256_bytes(event), "now",
+            ),
+        )
+        if before_commit is not None:
+            before_commit()
+        conn.commit()
+        return "installed_legacy_only"
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def source_manifest(fixtures: Iterable[Path], *, source_pin: str) -> dict[str, object]:
@@ -1584,6 +1666,8 @@ def admit_review_dispatch(
     effect_key = f"workflow-review-launch:{request_id}:{assignment_generation}"
     conn.execute("BEGIN IMMEDIATE")
     try:
+        if _cutover_row(conn)[1] != "enabled":
+            raise ValueError("workflow_new_runs_disabled")
         current = _current_dispatch_contract(conn, instance_id=instance_id, round_id=round_id)
         if current[9] != expected_authority_generation:
             raise ValueError("authority_generation_stale")
@@ -1711,6 +1795,8 @@ def _dispatch_row(conn: sqlite3.Connection, outbox_id: str) -> tuple[object, ...
 
 
 def _claim_revalidation_reason(conn: sqlite3.Connection, row: tuple[object, ...]) -> str | None:
+    if _cutover_row(conn)[1] != "enabled":
+        return "workflow_new_runs_disabled"
     try:
         current = _current_dispatch_contract(conn, instance_id=str(row[16]), round_id=str(row[17]))
     except ValueError as exc:
@@ -2092,3 +2178,582 @@ def record_review_callback(
     except Exception:
         conn.rollback()
         raise
+
+
+def _cutover_row(conn: sqlite3.Connection) -> tuple[object, ...]:
+    row = conn.execute(
+        "SELECT schema_version,state,recovery_owner,generation,operation_key,disable_reason "
+        "FROM workflow_cutover_state WHERE singleton=1"
+    ).fetchone()
+    if row is None or row[0] != 1 or row[2] != "workflow_cutover_reconciler":
+        raise ValueError("workflow_cutover_marker_incoherent")
+    return row
+
+
+def _append_cutover_event(
+    conn: sqlite3.Connection,
+    *,
+    state_before: str,
+    state_after: str,
+    operation_key: str | None,
+) -> None:
+    seq = int(conn.execute(
+        "SELECT COALESCE(MAX(event_seq),0)+1 FROM workflow_cutover_events"
+    ).fetchone()[0])
+    body = canonical({
+        "event_seq": seq,
+        "state_before": state_before,
+        "state_after": state_after,
+        "operation_key": operation_key,
+    })
+    conn.execute(
+        "INSERT INTO workflow_cutover_events VALUES (?,?,?,?,?,?,?)",
+        (
+            f"cutover-event-{seq}", seq, state_before, state_after,
+            operation_key, sha256_bytes(body), "now",
+        ),
+    )
+
+
+def request_workflow_enable(
+    conn: sqlite3.Connection,
+    *,
+    operation_key: str,
+    after_commit: Callable[[str], None] | None = None,
+) -> str:
+    """Record the separately authorized cutover request; never infer it."""
+    _require_idle(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = _cutover_row(conn)
+        if row[1] != "installed_legacy_only":
+            if row[4] == operation_key and row[1] in {
+                "enable_requested", "compatibility_verified", "enabled",
+            }:
+                conn.commit()
+                return str(row[1])
+            raise ValueError(f"workflow_enable_not_allowed:{row[1]}")
+        conn.execute(
+            "UPDATE workflow_cutover_state SET state='enable_requested', "
+            "generation=generation+1,operation_key=?,updated_at='now' WHERE singleton=1",
+            (operation_key,),
+        )
+        _append_cutover_event(
+            conn, state_before="installed_legacy_only",
+            state_after="enable_requested", operation_key=operation_key,
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    if after_commit is not None:
+        after_commit("enable_requested")
+    return "enable_requested"
+
+
+def recover_workflow_cutover(
+    conn: sqlite3.Connection,
+    *,
+    after_stage_commit: Callable[[str], None] | None = None,
+) -> str:
+    """Advance only already-authorized enable stages under one durable owner."""
+    _require_idle(conn)
+    while True:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = _cutover_row(conn)
+            state = str(row[1])
+            operation_key = None if row[4] is None else str(row[4])
+            if state == "enable_requested":
+                target = "compatibility_verified"
+            elif state == "compatibility_verified":
+                target = "enabled"
+            else:
+                conn.commit()
+                return state
+            conn.execute(
+                "UPDATE workflow_cutover_state SET state=?,generation=generation+1,"
+                "updated_at='now' WHERE singleton=1 AND state=?",
+                (target, state),
+            )
+            _append_cutover_event(
+                conn, state_before=state, state_after=target,
+                operation_key=operation_key,
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        if after_stage_commit is not None:
+            after_stage_commit(target)
+
+
+_TEMPLATE_COMPONENT = re.compile(r"[a-z][a-z0-9-]{0,62}")
+
+
+def _workflow_namespace(org_slug: str, team: str) -> str:
+    if not _TEMPLATE_COMPONENT.fullmatch(org_slug) or not _TEMPLATE_COMPONENT.fullmatch(team):
+        raise ValueError("invalid_workflow_template_namespace")
+    return f"org/{org_slug}/team/{team}"
+
+
+def publish_workflow_template(
+    conn: sqlite3.Connection,
+    *,
+    org_slug: str,
+    team: str,
+    template_name: str,
+    principal: str,
+    operation_key: str,
+    expected_current_version: int,
+    definition: object,
+    compiler_pin: str = "workflow-compiler@1",
+    validator_pin: str = "workflow-validator@1",
+    source_pin: str = "operator-input@1",
+) -> tuple[str, str, int]:
+    """Append one immutable canonical template body under version CAS."""
+    namespace = _workflow_namespace(org_slug, team)
+    if not _TEMPLATE_COMPONENT.fullmatch(template_name):
+        raise ValueError("invalid_workflow_template_name")
+    body = canonical(definition)
+    content_digest = sha256_bytes(body)
+    request_digest = sha256_bytes(canonical({
+        "namespace": namespace,
+        "template_name": template_name,
+        "expected_current_version": expected_current_version,
+        "content_digest": content_digest,
+        "compiler_pin": compiler_pin,
+        "validator_pin": validator_pin,
+        "source_pin": source_pin,
+    }))
+    identity_id = _dispatch_identity("workflow-template", namespace, template_name)
+    _require_idle(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        prior = conn.execute(
+            "SELECT request_digest,template_identity_id,result_version "
+            "FROM workflow_template_publish_operations "
+            "WHERE org_slug=? AND principal=? AND operation_key=?",
+            (org_slug, principal, operation_key),
+        ).fetchone()
+        if prior is not None:
+            if prior[0] != request_digest or prior[1] != identity_id:
+                raise ValueError("template_publish_operation_conflict")
+            conn.commit()
+            return namespace, template_name, int(prior[2])
+        identity = conn.execute(
+            "SELECT namespace,template_name,current_version,status "
+            "FROM workflow_template_identities WHERE id=?",
+            (identity_id,),
+        ).fetchone()
+        if identity is None:
+            if expected_current_version != 0:
+                raise ValueError("template_version_cas_stale")
+            conn.execute(
+                "INSERT INTO workflow_template_identities VALUES (?,?,?,?,?,?)",
+                (identity_id, namespace, template_name, 0, "active", "now"),
+            )
+            current = 0
+        else:
+            if identity[:2] != (namespace, template_name) or identity[3] != "active":
+                raise ValueError("template_identity_not_publishable")
+            current = int(identity[2])
+        if current != expected_current_version:
+            raise ValueError("template_version_cas_stale")
+        if conn.execute(
+            "SELECT 1 FROM workflow_template_identity_versions "
+            "WHERE template_identity_id=? AND content_digest=?",
+            (identity_id, content_digest),
+        ).fetchone() is not None:
+            raise ValueError("template_content_already_published")
+        version = current + 1
+        draft_id = _dispatch_identity("workflow-template-draft", identity_id, version, request_digest)
+        version_id = _dispatch_identity("workflow-template-version", identity_id, version, content_digest)
+        conn.execute(
+            "INSERT INTO workflow_template_drafts VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                draft_id, namespace, template_name, body, content_digest,
+                compiler_pin, validator_pin, source_pin, principal, "now",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO workflow_template_versions VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                version_id, draft_id, namespace, template_name, version, body,
+                content_digest, compiler_pin, validator_pin, source_pin,
+                principal, "now",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO workflow_template_identity_versions VALUES (?,?,?,?)",
+            (identity_id, version, version_id, content_digest),
+        )
+        conn.execute(
+            "UPDATE workflow_template_identities SET current_version=? WHERE id=? "
+            "AND current_version=?",
+            (version, identity_id, current),
+        )
+        conn.execute(
+            "INSERT INTO workflow_template_publish_operations VALUES (?,?,?,?,?,?,?,?)",
+            (
+                org_slug, principal, operation_key, request_digest, identity_id,
+                expected_current_version, version, version_id,
+            ),
+        )
+        conn.commit()
+        return namespace, template_name, version
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def activate_workflow_template(
+    conn: sqlite3.Connection,
+    *,
+    org_slug: str,
+    principal: str,
+    operation_key: str,
+    instance_id: str,
+    template_namespace: str,
+    template_name: str,
+    template_version: int,
+    authority_namespace: str,
+    authority_generation: int,
+    authority_digest: str,
+    expected_activation_revision: int,
+) -> tuple[str, int]:
+    """CAS an instance to one exact immutable template and authority version."""
+    identity_id = _dispatch_identity(
+        "workflow-template", template_namespace, template_name,
+    )
+    request_digest = sha256_bytes(canonical({
+        "instance_id": instance_id,
+        "template": [template_namespace, template_name, template_version],
+        "authority": [authority_namespace, authority_generation, authority_digest],
+        "expected_activation_revision": expected_activation_revision,
+    }))
+    _require_idle(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if _cutover_row(conn)[1] != "enabled":
+            raise ValueError("workflow_new_runs_disabled")
+        prior = conn.execute(
+            "SELECT request_digest,activation_id FROM workflow_activation_operations "
+            "WHERE org_slug=? AND principal=? AND operation_key=?",
+            (org_slug, principal, operation_key),
+        ).fetchone()
+        if prior is not None:
+            if prior[0] != request_digest:
+                raise ValueError("workflow_activation_operation_conflict")
+            revision = conn.execute(
+                "SELECT activation_revision FROM workflow_activations WHERE id=?",
+                (prior[1],),
+            ).fetchone()
+            conn.commit()
+            return str(prior[1]), int(revision[0])
+        active = conn.execute(
+            "SELECT activation_id,activation_revision FROM workflow_active_activations "
+            "WHERE instance_id=?",
+            (instance_id,),
+        ).fetchone()
+        current_revision = 0 if active is None else int(active[1])
+        if current_revision != expected_activation_revision:
+            raise ValueError("workflow_activation_cas_stale")
+        version_row = conn.execute(
+            "SELECT template_version_id FROM workflow_template_identity_versions "
+            "WHERE template_identity_id=? AND version=?",
+            (identity_id, template_version),
+        ).fetchone()
+        if version_row is None:
+            raise ValueError("workflow_template_version_missing")
+        authority = conn.execute(
+            "SELECT current_generation,snapshot_digest,state "
+            "FROM workflow_authority_pointers WHERE namespace=?",
+            (authority_namespace,),
+        ).fetchone()
+        if authority != (authority_generation, authority_digest, "ready"):
+            raise ValueError("workflow_activation_authority_stale")
+        revision = current_revision + 1
+        activation_id = _dispatch_identity(
+            "workflow-activation", instance_id, revision, request_digest,
+        )
+        if active is not None:
+            conn.execute(
+                "UPDATE workflow_activations SET state='superseded' WHERE id=? AND state='active'",
+                (active[0],),
+            )
+        conn.execute(
+            "INSERT INTO workflow_activations VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                activation_id, instance_id, revision, identity_id, version_row[0],
+                authority_namespace, authority_generation, authority_digest,
+                request_digest, principal, "active", "now",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO workflow_active_activations(instance_id,activation_id,activation_revision) "
+            "VALUES (?,?,?) ON CONFLICT(instance_id) DO UPDATE SET "
+            "activation_id=excluded.activation_id,activation_revision=excluded.activation_revision",
+            (instance_id, activation_id, revision),
+        )
+        conn.execute(
+            "INSERT INTO workflow_activation_operations VALUES (?,?,?,?,?)",
+            (org_slug, principal, operation_key, request_digest, activation_id),
+        )
+        conn.commit()
+        return activation_id, revision
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def claim_workflow_recovery(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    recovery_owner: str,
+    claim_token: str,
+) -> str:
+    """Claim exactly the owner derived from the durable workflow bridge."""
+    _require_idle(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        bridged = conn.execute(
+            "SELECT 1 FROM workflow_request_task_bridges WHERE task_id=?",
+            (task_id,),
+        ).fetchone() is not None
+        if bridged:
+            record_class, expected_owner = "workflow_task", "workflow_recovery"
+        else:
+            tasks_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'"
+            ).fetchone() is not None
+            if not tasks_exists or conn.execute(
+                "SELECT 1 FROM tasks WHERE id=?", (task_id,),
+            ).fetchone() is None:
+                raise ValueError("recovery_record_missing")
+            record_class, expected_owner = "legacy_task", "legacy_recovery"
+        if recovery_owner != expected_owner:
+            raise ValueError(f"recovery_owner_mismatch:{expected_owner}")
+        prior = conn.execute(
+            "SELECT recovery_owner,claim_token,effect_key FROM workflow_recovery_claims "
+            "WHERE record_id=?",
+            (task_id,),
+        ).fetchone()
+        if prior is not None:
+            if prior[:2] == (recovery_owner, claim_token):
+                conn.commit()
+                return str(prior[2])
+            raise ValueError("recovery_record_already_claimed")
+        effect_key = f"{recovery_owner}:{task_id}"
+        conn.execute(
+            "INSERT INTO workflow_recovery_claims VALUES (?,?,?,?,?,'claimed','now')",
+            (task_id, record_class, recovery_owner, claim_token, effect_key),
+        )
+        conn.commit()
+        return effect_key
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def request_workflow_disable(
+    conn: sqlite3.Connection,
+    *,
+    operation_key: str,
+    reason: str,
+) -> str:
+    """Fence new activation/request admission before drain work begins."""
+    _require_idle(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = _cutover_row(conn)
+        if row[1] != "enabled":
+            if row[4] == operation_key and row[1] in {
+                "disable_requested", "draining", "drained",
+            }:
+                conn.commit()
+                return str(row[1])
+            raise ValueError(f"workflow_disable_not_allowed:{row[1]}")
+        conn.execute(
+            "UPDATE workflow_cutover_state SET state='disable_requested',"
+            "generation=generation+1,operation_key=?,disable_reason=?,updated_at='now' "
+            "WHERE singleton=1",
+            (operation_key, reason),
+        )
+        _append_cutover_event(
+            conn, state_before="enabled", state_after="disable_requested",
+            operation_key=operation_key,
+        )
+        conn.commit()
+        return "disable_requested"
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def project_workflow_drain(conn: sqlite3.Connection) -> list[dict[str, str]]:
+    """Return truthful blocking owner/action rows for nonterminal F5 work."""
+    rows = conn.execute(
+        "SELECT id,state,host_launch_started,recovery_owner FROM workflow_dispatch_outbox "
+        "WHERE state NOT IN ('cancelled','completed') ORDER BY id"
+    ).fetchall()
+    projection: list[dict[str, str]] = []
+    for outbox_id, state, launch_started, recovery_owner in rows:
+        if state in {"queued", "claimed"} and int(launch_started) == 0:
+            owner, action = "workflow_cutover_reconciler", "cancel_before_launch"
+        elif state == "running":
+            owner, action = "callback_reconciler", "wait_for_exact_callback_or_cancel"
+        else:
+            owner, action = "operator", "reconcile_possible_host_effect"
+        projection.append({
+            "outbox_id": str(outbox_id),
+            "state": str(state),
+            "owner": owner,
+            "action": action,
+            "stored_recovery_owner": str(recovery_owner),
+        })
+    return projection
+
+
+def reconcile_uncertain_dispatch(
+    conn: sqlite3.Connection,
+    *,
+    outbox_id: str,
+    outcome: str,
+) -> str:
+    """Apply an explicit operator disposition; absence of proof never retries."""
+    if outcome != "confirmed_no_launch":
+        raise ValueError("unsupported_uncertain_disposition")
+    _require_idle(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = _dispatch_row(conn, outbox_id)
+        if row[3] == "cancelled":
+            conn.commit()
+            return "cancelled"
+        if row[3] != "uncertain":
+            raise ValueError(f"dispatch_not_uncertain:{row[3]}")
+        conn.execute(
+            "UPDATE workflow_dispatch_outbox SET state='cancelled',"
+            "recovery_owner='operator',last_error='operator_confirmed_no_launch',"
+            "updated_at='now' WHERE id=?",
+            (outbox_id,),
+        )
+        conn.execute(
+            "UPDATE workflow_request_task_bridges SET state='cancelled' "
+            "WHERE request_id=?", (row[2],),
+        )
+        conn.execute(
+            "UPDATE workflow_dispatch_operations SET state='cancelled' WHERE id=?",
+            (row[1],),
+        )
+        _append_dispatch_event(
+            conn, operation_id=str(row[1]),
+            event_kind="uncertain_reconciled_no_launch",
+            state_before="uncertain", state_after="cancelled",
+            payload={"operator_disposition": outcome},
+        )
+        conn.commit()
+        return "cancelled"
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def advance_workflow_drain(
+    conn: sqlite3.Connection,
+    *,
+    after_draining_commit: Callable[[str], None] | None = None,
+) -> str:
+    """Cancel only provably prelaunch work, then declare drained iff empty."""
+    _require_idle(conn)
+    row = _cutover_row(conn)
+    if row[1] == "disable_requested":
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            operation_key = None if row[4] is None else str(row[4])
+            conn.execute(
+                "UPDATE workflow_cutover_state SET state='draining',"
+                "generation=generation+1,updated_at='now' WHERE singleton=1 "
+                "AND state='disable_requested'"
+            )
+            _append_cutover_event(
+                conn, state_before="disable_requested", state_after="draining",
+                operation_key=operation_key,
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        if after_draining_commit is not None:
+            after_draining_commit("draining")
+    elif row[1] == "drained":
+        return "drained"
+    elif row[1] != "draining":
+        raise ValueError(f"workflow_drain_not_allowed:{row[1]}")
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        safe = conn.execute(
+            "SELECT id FROM workflow_dispatch_outbox WHERE "
+            "(state='queued' OR state='claimed') AND host_launch_started=0 ORDER BY id"
+        ).fetchall()
+        for (outbox_id,) in safe:
+            dispatch = _dispatch_row(conn, str(outbox_id))
+            _cancel_dispatch_in_transaction(
+                conn, dispatch, reason="workflow_disable_drain",
+            )
+        blockers = project_workflow_drain(conn)
+        if not blockers:
+            operation_key = _cutover_row(conn)[4]
+            conn.execute(
+                "UPDATE workflow_cutover_state SET state='drained',"
+                "generation=generation+1,updated_at='now' WHERE singleton=1 "
+                "AND state='draining'"
+            )
+            _append_cutover_event(
+                conn, state_before="draining", state_after="drained",
+                operation_key=None if operation_key is None else str(operation_key),
+            )
+            result = "drained"
+        else:
+            result = "draining"
+        conn.commit()
+        return result
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def assess_workflow_downgrade(conn: sqlite3.Connection) -> dict[str, object]:
+    """Current-binary preflight; never claims an old binary observes F6."""
+    row = _cutover_row(conn)
+    counts = {
+        "template_versions": int(conn.execute(
+            "SELECT COUNT(*) FROM workflow_template_identity_versions"
+        ).fetchone()[0]),
+        "activations": int(conn.execute(
+            "SELECT COUNT(*) FROM workflow_activations"
+        ).fetchone()[0]),
+        "dispatches": int(conn.execute(
+            "SELECT COUNT(*) FROM workflow_dispatch_operations"
+        ).fetchone()[0]),
+    }
+    ever_enabled = conn.execute(
+        "SELECT 1 FROM workflow_cutover_events WHERE state_after IN "
+        "('enable_requested','compatibility_verified','enabled') LIMIT 1"
+    ).fetchone() is not None
+    supported = (
+        row[1] == "installed_legacy_only"
+        and not ever_enabled
+        and all(value == 0 for value in counts.values())
+    )
+    return {
+        "supported": supported,
+        "reason": "legacy_only_no_workflow_data" if supported
+        else "unsupported_workflow_downgrade",
+        "old_binary_recovery_owner": False,
+        "state": row[1],
+        "counts": counts,
+    }

@@ -1156,3 +1156,217 @@ projection before rollout. No implementation starts until these protected
 choices are accepted. Comparative study remains NOT RUN and off the Phase1
 critical path; fork/join, pipeline carriers and Phase2 migration remain excluded.
 Evidence remains **UNACCEPTED / D5 NOT READY**.
+
+## 2026-09-24 F6 compatibility, cutover, recovery ownership and template CAS (TASK-8859)
+
+This is the active F6 proposal and isolated executable proof. It supersedes
+earlier statements that F6 itself is pending; every production delta below is
+still protected and unimplemented. No runtime module imports this helper or
+DDL, no migration is installed, no old binary has been changed, and no
+production compatibility approval follows from the evidence.
+
+### One template identity and activation model
+
+The recommendation is an organization/team-scoped namespace with one stable
+name: `org/<org-slug>/team/<team-slug>/<template-name>`. The stored identity is
+the tuple `(namespace, template_name)`, where `namespace` is exactly
+`org/<org-slug>/team/<team-slug>`. Each component uses lowercase ASCII
+`[a-z][a-z0-9-]{0,62}` with no implicit Unicode, case, whitespace, alias or
+filesystem normalization. The isolated model intentionally reserves no names.
+Whether `system-*`, `release-*`, or other prefixes must be reserved, and whether
+existing display names receive a separate non-identity field, remains an exact
+Founder disposition; production must not invent that policy.
+
+`workflow_template_identities` owns the stable identity and monotonic current
+version. `workflow_template_versions` owns immutable canonical JSON bytes,
+SHA-256 content digest, compiler/validator/source pins, publisher and timestamp;
+`workflow_template_identity_versions` binds each body to one positive,
+gap-free version. Publication uses
+`(org_slug, authenticated_principal, operation_key)` plus a canonical request
+digest and `expected_current_version`. The transaction starts with
+`BEGIN IMMEDIATE`, re-reads the identity/current version, inserts draft/body/
+identity mapping/replay receipt, and advances the pointer in one commit.
+Identical key and digest returns the existing version. The same key with any
+changed payload conflicts. A new key with stale expected version, duplicate
+content, or two simultaneous writers from the same predecessor yields exactly
+one next version and zero losing residue; no overwrite, duplicate or gap is
+permitted.
+
+Publication is not activation. `workflow_activations` appends one immutable
+instance activation revision binding exact template identity/version and exact
+authority namespace/generation/digest. `workflow_active_activations` is the
+per-instance pointer. Activation is a separately authorized CAS on
+`expected_activation_revision`; publishing v2 cannot retarget an instance on
+v1, restart cannot resolve through a mutable latest pointer, and reviewer/
+author reassignment cannot change it. Only an explicit reactivation operation
+with the current activation revision may append v2 and supersede v1. Template
+version publication remains permitted while new runs are disabled because it
+creates no execution; activation/template-start and F5 request admission are
+fenced.
+
+### Additive install and cutover owner
+
+Proposed production ownership is
+`runtime/infrastructure/workflow_schema.py:install_or_recover` plus
+`WorkflowCompatibilityStore`, called by `Database.__init__` only after all
+currently required preflight/migration owners and before `OrgState.load`
+attaches the org. The isolated `install_workflow_adapter` owns one
+`BEGIN IMMEDIATE`; either every additive workflow table, version row, cutover
+row and first event commits, or zero `workflow_%` residue exists. It never
+repairs a partial, conflicting, newer or unknown layout and never runs a DROP,
+table rebuild, legacy UPDATE, backup restore or destructive rollback.
+
+The singleton `workflow_cutover_state` is the sole compatibility/cutover
+marker: `(schema_version=1, state, recovery_owner, generation, operation_key,
+disable_reason)`. Its immutable event sequence records every transition. The
+only enable recovery owner is `workflow_cutover_reconciler`, with legal states:
+
+`installed_legacy_only -> enable_requested -> compatibility_verified -> enabled`
+
+Install never enables work. `enable_requested` requires a separately authorized
+operation. Cold recovery may advance only that already-authorized request,
+committing compatibility verification before enabled. Reopen and repeated
+recovery are state-idempotent. Interruption before the install commit leaves no
+workflow tables; interruption after any committed enable stage resumes forward
+under the same operation/owner and preserves every template/version/activation/
+request/outbox identity. A corrupt or unsupported marker fails closed without
+writes.
+
+The executed compatibility boundary is additive and preservation-only:
+
+- fresh empty SQLite and current v2 `RuntimeDir.init -> DaemonState.from_runtime
+  -> OrgState.load -> Database.__init__` layouts install the same adapter;
+- exact embedded repository bytes from
+  `fb7139a1...:src/infrastructure/database.py` execute their authentic v0
+  `Database.__init__/_create_tables`, including DB-backed enrollment and legacy
+  task/result/audit storage, before the additive installer runs;
+- exact embedded repository bytes from
+  `dc7fb3a...:src/runtime.py` execute authentic v1 `RuntimeDir.init`, producing
+  the flat schema-1 marker/directories, and the historical DB initializer owns
+  its `opc.db` before additive install;
+- complete pre/post schemas and rows for every touched legacy table, including
+  audit `task_id`, enrollment identity and task identity/status/brief, remain
+  byte/value identical. Runtime marker and teams bytes remain identical.
+
+The historical-source inventory remains acquisition provenance, not execution
+evidence. The F6 test invokes the SHA-verified decompressed bytes in an isolated
+subprocess with only the historical modules' required test stubs; the executable
+assertion, not the inventory label, supports the initialization claim.
+
+### Old-reader and downgrade truth
+
+Additive tables do not make an old binary a safe owner of workflow records. An
+old binary cannot observe `workflow_cutover_state`, the bridge, activation pins
+or `uncertain`; therefore it cannot be made fail closed by this new protocol.
+The supported operator sequence is: while the current binary still owns the
+store, call the downgrade preflight; proceed only in
+`installed_legacy_only` when no enable history, template version, activation or
+dispatch exists. Once enable was requested or workflow data exists, downgrade
+is explicitly unsupported. The operator must retain/start a compatible binary;
+running an old binary anyway is outside the guarantee and may mutate legacy
+tables without understanding workflow ownership.
+
+A bounded old-layout observation is supported only through a SQLite read-only
+connection: it sees legacy task/audit bytes unchanged and cannot mutate legacy
+or workflow tables. It is not a recovery owner. No test claims an unmodified old
+binary calls the preflight, honors the marker, or is prevented from hostile or
+accidental same-UID writes.
+
+### Exclusive recovery, disable and drain
+
+The durable F5 `workflow_request_task_bridges` row is the record-class
+discriminator. A bridged task is owned only by `workflow_recovery`; an ordinary
+task absent from that bridge is owned only by `legacy_recovery`.
+`WorkflowRecoveryRouter.claim` (proposed
+`runtime/workflows/recovery.py`) derives the class after its own
+`BEGIN IMMEDIATE` and inserts one `workflow_recovery_claims` row/effect key.
+Wrong-owner claims write nothing; two cold/concurrent contenders produce one
+claim/effect; reopen returns the same owner. New binaries must not backfill,
+infer or adopt ordinary legacy tasks into workflow recovery. Current
+`runtime/daemon/__main__.py:_sweep_on_startup` remains the legacy owner;
+workflow startup reconciliation must route bridged rows away before either
+loop can enqueue.
+
+Disable uses the same marker and begins with an admission fence:
+
+`enabled -> disable_requested -> draining -> drained`
+
+`request_workflow_disable` commits `disable_requested` before drain work.
+Template activation/template-start and F5 request admission then reject with
+zero residue. Existing history and immutable versions remain readable;
+publication alone remains allowed. During `draining`:
+
+| F5 durable state | Allowed action | Owner / drain effect |
+| --- | --- | --- |
+| `queued` | cancel before launch | cutover reconciler; terminal history retained |
+| `claimed`, `host_launch_started=0` | cancel before launch | cutover reconciler; no effect row |
+| `claimed`, `host_launch_started=1` | reconcile possible host effect | operator; blocks drained |
+| `running` | exact callback reconciliation or supervised cancellation | callback/cancellation owner; blocks drained |
+| `uncertain` | explicit supported host reconciliation or `confirmed_no_launch` disposition | operator; never retryable; blocks drained |
+| `cancelled` / `completed` | history/read only | terminal; does not block drained |
+
+`project_workflow_drain` reports exact outbox state, responsible owner, stored
+owner and required action. It never calls `running`/`uncertain` complete or
+retryable. `advance_workflow_drain` cancels only queued and provably prelaunch
+claimed work; it declares `drained` only when no nonterminal outbox remains.
+Restart/reopen preserves the marker and projection. Legacy startup and workflow
+recovery cannot both launch one work item because the bridge-derived claim is
+exclusive before enqueue/effect.
+
+### Executable requirement map
+
+The actual seam is the shared proposed DDL, `install_workflow_adapter` and F6
+helpers in `u0_evidence_helpers.py`, selected by `pytest ... -k proposed_f6`.
+Fifteen controls cover the required eight groups:
+
+1. parametrized fresh/current/executed-v0/executed-v1 initialization with
+   complete legacy schema/row and marker-byte preservation;
+2. repeated install/reopen state identity and unsupported-version zero-write
+   refusal;
+3. pre-install-commit rollback plus interruption after every enable stage,
+   followed by two cold idempotent recoveries;
+4. bridge-derived legacy/workflow owner mismatch refusal plus two real SQLite
+   connection contenders yielding one claim/effect after reopen;
+5. current-binary downgrade refusal after workflow data and read-only legacy
+   observation with no old-reader recovery ownership;
+6. disable admission refusal, queued/claimed cancellation, running/uncertain
+   truthful projection, explicit reconciliation and restart-stable drained;
+7. first/next template publish, identical replay, changed payload/key conflict,
+   stale CAS and two final publisher contenders yielding versions `[1,2]`;
+8. activation pinned to v1 across v2 publication, reopen and assignment change,
+   followed only by explicit expected-revision reactivation to v2.
+
+These are process-crash/SQLite controls. They do not prove power-loss durability,
+distributed atomic commit, same-UID exclusion, or old-binary cooperation.
+
+### Protected production decisions and delivery units
+
+F6 recommends acceptance of the following exact choices but approves none:
+
+| Delta | Recommendation / owner | Dependency | Estimate | Required implementation/review/QA proof |
+| --- | --- | --- | --- | --- |
+| Additive schema installer and singleton cutover marker in `runtime/infrastructure/workflow_schema.py` | accept; backend owner | exact migration number and Founder schema/compatibility approval | 2–3 engineer-days | fresh/current/v0/v1 installed fixtures, every transaction/interruption boundary, foreign/integrity checks, immutable legacy bytes |
+| D1 template store in `runtime/workflows/templates.py:WorkflowTemplateStore.publish_version` | accept stable org/team/name plus immutable monotonic bodies/CAS; backend owner | D1 publisher authority plus naming/reservation disposition | 2–3 days | replay/conflict/stale/two-writer tests, canonical digest vectors, namespace authorization and route/API parity |
+| Separate activation CAS in `WorkflowTemplateStore.activate` | accept exact version+authority pin; backend owner | D2 activation authority and F4 ready generation | 1–2 days | publish-does-not-retarget, restart/reassignment pin, stale/current reactivation races |
+| Recovery routing in `runtime/workflows/recovery.py:WorkflowRecoveryRouter` and startup join before `_sweep_on_startup` enqueue | accept bridge-derived exclusive owner; runtime owner | F5 task insertion bridge and startup integration approval | 2–3 days | real legacy/workflow task schedules, boot/reaper/cancel/parent-wake routing, one launch/effect, malformed/missing ownership fail-closed |
+| Disable/drain coordinator and pending/error projection | accept marker fence and state matrix above; runtime/API owner | F5 outbox, supervised cancellation and operator disposition policy | 2–3 days | real queue/claim/host/callback restarts, every state projection, no uncertain-as-complete/retry, CLI/UI parity |
+| Downgrade preflight/operator prerequisite | accept unsupported-after-enable boundary; operations owner | release/deployment owner and maintained upgrade docs | 1 day | installed old-layout read-only rehearsal, refusal receipts and rollback-free operator procedure; no old-binary enforcement claim |
+
+Review must separately audit additive-only SQL, migration order, state/event CAS,
+canonicalization and namespace collisions, old-reader claims, bridge ownership,
+startup ordering, uncertain/drain truth and unchanged overloaded fields. QA must
+exercise installed fresh/current/v0/v1 stores, cold interruption/repeat,
+concurrent publishers/recovery claimants, activation pinning, every drain state,
+downgrade refusal and public pending/error behavior. Exact current production
+symbols and hashes are recorded in TASK-8859 Native Impact Evidence.
+
+F4-D remains pending for production schema/coordinator, supported-writer
+pre-fences, route barriers and startup republish. F5 remains delivered only as
+an isolated request/task/outbox/uncertain-launch contract; its six production
+deltas remain protected. F6 now supplies the recommended compatibility/cutover
+decision and proof, but all production implementation, D1/D2 authority,
+naming-reservation policy, review and QA gates remain pending. Comparative study
+is **NOT RUN** and off the critical path; exhaustive Phase2 fanout, general
+fork/join, pipeline carriers and coding migration remain out of scope. Evidence
+remains **UNACCEPTED / D5 NOT READY** until independent gates and Founder
+disposition.

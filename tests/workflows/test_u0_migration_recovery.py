@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import os
 import sqlite3
 import subprocess
@@ -18,25 +17,36 @@ from tests.workflows.u0_evidence_helpers import (
     ProfileOrg,
     PublicationInterrupted,
     accept_current_join,
+    activate_workflow_template,
+    advance_workflow_drain,
     admit_review_dispatch,
     admit_authority_request,
     begin_review_host_launch,
     cancel_review_dispatch,
     claim_review_dispatch,
+    claim_workflow_recovery,
     compensate_authority_publication,
     compensate_profile_operation,
     coordinate_profile_operation,
     fence_authority_namespace,
+    install_workflow_adapter,
     mutate_profile_dependency,
     publish_authority_generation,
+    publish_workflow_template,
+    project_workflow_drain,
     reconcile_profile_operation,
     recover_authority_publication,
     recover_review_dispatch,
+    recover_workflow_cutover,
+    reconcile_uncertain_dispatch,
     record_review_callback,
     record_review_running,
     register_profile_dependency,
+    request_workflow_disable,
+    request_workflow_enable,
     republish_profile_dependents,
     revalidate_authority_dispatch,
+    assess_workflow_downgrade,
     sha256_bytes,
 )
 
@@ -51,47 +61,133 @@ def _adapter(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA foreign_keys=ON")
     schema = (Path(__file__).parents[1] / "fixtures" / "workflow_u0" / "proposed_workflow_schema.sql").read_text()
-    existing = {
-        row[0]
-        for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'workflow_%'"
-        )
-    }
-    if existing:
-        expected = set(re.findall(r"CREATE TABLE (workflow_[a-z_]+)", schema))
-        if existing != expected or "workflow_adapter_versions" not in existing:
-            conn.close()
-            raise ValueError("partial_or_ambiguous_isolated_adapter")
-        marker = conn.execute("SELECT version FROM workflow_adapter_versions").fetchall()
-        if marker != [(1,)]:
-            conn.close()
-            raise ValueError("partial_or_ambiguous_isolated_adapter")
-        return conn
-    conn.execute("BEGIN IMMEDIATE")
     try:
-        # executescript commits an open transaction, so execute each complete
-        # DDL statement under this adapter-owned transaction instead.
-        statement = ""
-        for line in schema.splitlines(keepends=True):
-            statement += line
-            if sqlite3.complete_statement(statement):
-                if statement.strip():
-                    conn.execute(statement)
-                statement = ""
-        if statement.strip():
-            raise ValueError("incomplete_isolated_adapter_schema")
-        conn.execute("INSERT INTO workflow_adapter_versions VALUES (1)")
-        conn.commit()
+        install_workflow_adapter(conn, schema=schema)
     except Exception:
-        conn.rollback()
         conn.close()
         raise
     return conn
 
 
+def _workflow_schema_text() -> str:
+    return (
+        Path(__file__).parents[1]
+        / "fixtures"
+        / "workflow_u0"
+        / "proposed_workflow_schema.sql"
+    ).read_text()
+
+
+def _historical_inventory() -> dict[str, object]:
+    return json.loads(
+        (
+            Path(__file__).parents[1]
+            / "fixtures"
+            / "workflow_u0"
+            / "historical_sources.json"
+        ).read_text()
+    )
+
+
+def _historical_source(name: str) -> bytes:
+    import base64
+    import gzip
+    import hashlib
+
+    history = next(
+        item for item in _historical_inventory()["histories"]
+        if item["name"] == name
+    )
+    source = history["source"]
+    raw = gzip.decompress(base64.b64decode(source["gzip_base64"], validate=True))
+    assert hashlib.sha256(raw).hexdigest() == source["sha256"]
+    return raw
+
+
+def _execute_historical_v0_database(path: Path) -> None:
+    harness = r'''
+import sys, types
+from pathlib import Path
+src = types.ModuleType("src"); src.__path__ = []
+models = types.ModuleType("src.models")
+class _Value:
+    def __init__(self, value): self.value = value
+class TaskStatus:
+    PENDING = _Value("pending"); IN_PROGRESS = _Value("in_progress")
+    COMPLETED = _Value("completed"); FAILED = _Value("failed")
+    BLOCKED = _Value("blocked"); ESCALATED = _Value("escalated")
+class BlockKind:
+    DELEGATED = _Value("delegated"); BLOCKED_ON_JOB = _Value("blocked_on_job")
+models.TaskStatus = TaskStatus; models.BlockKind = BlockKind
+models.TaskRecord = object; models.TalkRecord = object
+sys.modules["src"] = src; sys.modules["src.models"] = models
+namespace = {"__name__": "historical_v0_database"}
+exec(compile(sys.stdin.buffer.read(), "historical-v0-database.py", "exec"), namespace)
+db = namespace["Database"](Path(sys.argv[1]))
+db._conn.execute("INSERT INTO tasks(id,status,assigned_agent,team,brief,created_at,updated_at) VALUES ('TASK-LEGACY','pending','legacy-agent','engineering','legacy brief','old','old')")
+db._conn.execute("INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES ('TASK-LEGACY','legacy-agent','legacy_action','{\"scope\":\"legacy\"}','old')")
+db._conn.execute("INSERT INTO agent_enrollments(name,description,system_prompt,repos,executor,allow_rules,status,created_at,updated_at) VALUES ('legacy-agent','legacy description','legacy prompt','{}','claude','[]','active','old','old')")
+db._conn.commit(); db._conn.close()
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", harness, str(path)],
+        input=_historical_source("v0-db-backed-enrollment"),
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+
+
+def _execute_historical_v1_runtime(path: Path) -> None:
+    harness = r'''
+import sys, types
+from pathlib import Path
+src = types.ModuleType("src"); src.__path__ = []
+orch = types.ModuleType("src.orchestrator"); orch.__path__ = []
+teams = types.ModuleType("src.orchestrator.teams")
+class TeamsRegistry:
+    @staticmethod
+    def seed_empty(runtime):
+        if not runtime.teams_config_path.exists():
+            runtime.teams_config_path.write_text("teams: {}\n")
+teams.TeamsRegistry = TeamsRegistry
+sys.modules["src"] = src; sys.modules["src.orchestrator"] = orch
+sys.modules["src.orchestrator.teams"] = teams
+namespace = {"__name__": "historical_v1_runtime"}
+exec(compile(sys.stdin.buffer.read(), "historical-v1-runtime.py", "exec"), namespace)
+runtime = namespace["RuntimeDir"].init(Path(sys.argv[1]), slug="legacy-flat")
+assert runtime.marker_file.read_text()
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", harness, str(path)],
+        input=_historical_source("v1-flat-single-org"),
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+
+
+def _legacy_snapshot(path: Path) -> dict[str, tuple[str, list[tuple[object, ...]]]]:
+    conn = sqlite3.connect(path)
+    try:
+        tables = conn.execute(
+            "SELECT name,sql FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'workflow_%' AND name NOT LIKE 'sqlite_%' "
+            "ORDER BY name"
+        ).fetchall()
+        return {
+            str(name): (
+                str(sql),
+                conn.execute(f'SELECT * FROM "{name}" ORDER BY rowid').fetchall(),
+            )
+            for name, sql in tables
+        }
+    finally:
+        conn.close()
+
+
 def _seed(conn: sqlite3.Connection) -> None:
-    conn.execute("INSERT INTO workflow_template_drafts VALUES ('d','eng',X'61','d0','compiler@1','validator@1','source@1','founder','now')")
-    conn.execute("INSERT INTO workflow_template_versions VALUES ('v','d','eng',1,X'61','v0','compiler@1','validator@1','source@1','founder')")
+    conn.execute("INSERT INTO workflow_template_drafts VALUES ('d','eng','legacy-fixture',X'61','d0','compiler@1','validator@1','source@1','founder','now')")
+    conn.execute("INSERT INTO workflow_template_versions VALUES ('v','d','eng','legacy-fixture',1,X'61','v0','compiler@1','validator@1','source@1','founder','now')")
+    conn.execute("UPDATE workflow_cutover_state SET state='enabled', operation_key='legacy-fixture-enabled'")
     conn.execute("INSERT INTO workflow_authorization_revisions VALUES ('a','eng',1,X'61','a0','source@1','now')")
     conn.execute("INSERT INTO workflow_active_authorizations VALUES ('eng','a')")
     conn.execute("INSERT INTO workflow_binding_snapshots VALUES ('b','v','a',X'61','b0','now')")
@@ -2643,3 +2739,538 @@ def test_proposed_f5_current_callback_completes_once_without_duplicate_effect(
         "completed", "sess-ok", "result-ok"
     )
     assert conn.execute("SELECT COUNT(*) FROM workflow_dispatch_effects").fetchone() == (1,)
+
+
+def test_proposed_f6_template_first_publish_uses_expected_current_version_cas(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "f6-template-first.db"
+    conn = _adapter(path)
+    result = publish_workflow_template(
+        conn,
+        org_slug="acme",
+        team="product",
+        template_name="product-design",
+        principal="product_manager",
+        operation_key="publish-v1",
+        expected_current_version=0,
+        definition={"nodes": ["draft", "review", "approved"]},
+    )
+    assert result == ("org/acme/team/product", "product-design", 1)
+
+
+@pytest.mark.parametrize("layout", ["fresh", "current", "v0", "v1"])
+def test_proposed_f6_additive_install_preserves_fresh_current_and_executed_historical_layouts(
+    tmp_path: Path,
+    layout: str,
+) -> None:
+    """The same installer runs after authentic initializers, never source labels."""
+    if layout == "fresh":
+        path = tmp_path / "fresh.db"
+        sqlite3.connect(path).close()
+        layout_bytes: dict[str, bytes] = {}
+    elif layout == "current":
+        path = tmp_path / "current.db"
+        db = Database(path)
+        db.execute(
+            "INSERT INTO tasks(id,status,assigned_agent,team,brief,created_at,updated_at) "
+            "VALUES ('TASK-CURRENT','pending','current-agent','engineering','current brief','now','now')"
+        )
+        db.execute(
+            "INSERT INTO audit_log(task_id,agent,action,payload,timestamp) "
+            "VALUES ('TASK-CURRENT','current-agent','current_action','{}','now')"
+        )
+        db._conn.commit()
+        db.close()
+        layout_bytes = {}
+    elif layout == "v0":
+        path = tmp_path / "v0.db"
+        _execute_historical_v0_database(path)
+        layout_bytes = {}
+    else:
+        root = tmp_path / "v1-runtime"
+        _execute_historical_v1_runtime(root)
+        path = root / "opc.db"
+        _execute_historical_v0_database(path)
+        layout_bytes = {
+            "opc.yaml": (root / "opc.yaml").read_bytes(),
+            "teams.yaml": (root / "org" / "teams.yaml").read_bytes(),
+        }
+
+    legacy_before = _legacy_snapshot(path)
+    conn = _adapter(path)
+    assert conn.execute(
+        "SELECT schema_version,state,recovery_owner FROM workflow_cutover_state"
+    ).fetchone() == (1, "installed_legacy_only", "workflow_cutover_reconciler")
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    conn.close()
+    assert _legacy_snapshot(path) == legacy_before
+    if layout == "v0":
+        assert legacy_before["audit_log"][1][0][1:4] == (
+            "TASK-LEGACY", "legacy-agent", "legacy_action"
+        )
+        assert legacy_before["agent_enrollments"][1][0][0] == "legacy-agent"
+    if layout == "v1":
+        assert (root / "opc.yaml").read_bytes() == layout_bytes["opc.yaml"]
+        assert (root / "org" / "teams.yaml").read_bytes() == layout_bytes["teams.yaml"]
+
+
+def test_proposed_f6_repeated_install_is_state_idempotent_and_unknown_versions_fail_closed(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "install-idempotent.db"
+    first = _adapter(path)
+    first_dump = list(first.iterdump())
+    first.close()
+    second = _adapter(path)
+    assert list(second.iterdump()) == first_dump
+    second.execute("PRAGMA ignore_check_constraints=ON")
+    second.execute("UPDATE workflow_adapter_versions SET version=2")
+    second.commit()
+    corrupt = list(second.iterdump())
+    second.close()
+    with pytest.raises(ValueError, match="unsupported_workflow_adapter_version"):
+        _adapter(path)
+    check = sqlite3.connect(path)
+    assert list(check.iterdump()) == corrupt
+    check.close()
+
+    partial_path = tmp_path / "install-conflicting-partial.db"
+    partial = sqlite3.connect(partial_path)
+    partial.execute("CREATE TABLE workflow_cutover_state(foreign_marker TEXT)")
+    partial.execute("INSERT INTO workflow_cutover_state VALUES ('preserve-me')")
+    partial.commit()
+    partial_before = list(partial.iterdump())
+    with pytest.raises(ValueError, match="partial_or_ambiguous_isolated_adapter"):
+        install_workflow_adapter(partial, schema=_workflow_schema_text())
+    assert list(partial.iterdump()) == partial_before
+    partial.close()
+
+
+@pytest.mark.parametrize(
+    "interrupted_stage",
+    ["before_install_commit", "enable_requested", "compatibility_verified", "enabled"],
+)
+def test_proposed_f6_install_and_cutover_interruptions_recover_once_and_twice_cold(
+    tmp_path: Path,
+    interrupted_stage: str,
+) -> None:
+    path = tmp_path / f"cutover-{interrupted_stage}.db"
+    schema = _workflow_schema_text()
+    if interrupted_stage == "before_install_commit":
+        raw = sqlite3.connect(path)
+        raw.execute("PRAGMA foreign_keys=ON")
+        with pytest.raises(RuntimeError, match="interrupt-before-install-commit"):
+            install_workflow_adapter(
+                raw,
+                schema=schema,
+                before_commit=lambda: (_ for _ in ()).throw(
+                    RuntimeError("interrupt-before-install-commit")
+                ),
+            )
+        raw.close()
+        check = sqlite3.connect(path)
+        assert check.execute(
+            "SELECT name FROM sqlite_master WHERE name LIKE 'workflow_%'"
+        ).fetchall() == []
+        check.close()
+        conn = _adapter(path)
+    else:
+        conn = _adapter(path)
+
+    def interrupt(stage: str) -> None:
+        if stage == interrupted_stage:
+            raise RuntimeError(f"interrupt-after-{stage}")
+
+    if interrupted_stage == "enable_requested":
+        with pytest.raises(RuntimeError, match="interrupt-after-enable_requested"):
+            request_workflow_enable(
+                conn, operation_key="authorize-cutover", after_commit=interrupt,
+            )
+    else:
+        request_workflow_enable(conn, operation_key="authorize-cutover")
+        if interrupted_stage in {"compatibility_verified", "enabled"}:
+            with pytest.raises(RuntimeError, match=f"interrupt-after-{interrupted_stage}"):
+                recover_workflow_cutover(conn, after_stage_commit=interrupt)
+    conn.close()
+
+    cold_one = _adapter(path)
+    assert recover_workflow_cutover(cold_one) == "enabled"
+    rows_after_one = _complete_join_state(path)
+    cold_one.close()
+    cold_two = _adapter(path)
+    assert recover_workflow_cutover(cold_two) == "enabled"
+    assert _complete_join_state(path) == rows_after_one
+    assert cold_two.execute(
+        "SELECT state,recovery_owner FROM workflow_cutover_state"
+    ).fetchone() == ("enabled", "workflow_cutover_reconciler")
+    cold_two.close()
+
+
+def test_proposed_f6_legacy_and_workflow_recovery_owners_exclude_each_other_and_dual_claim(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "recovery-owners.db"
+    db = Database(path)
+    db.execute(
+        "INSERT INTO tasks(id,status,assigned_agent,team,brief,created_at,updated_at) "
+        "VALUES ('TASK-LEGACY','pending','legacy','engineering','legacy','now','now')"
+    )
+    db._conn.commit()
+    db.close()
+    conn = _seed_f5(path)
+    workflow_task = _admit_f5(conn, suffix="owned")
+    assert workflow_task
+    conn.close()
+
+    with pytest.raises(ValueError, match="recovery_owner_mismatch:legacy_recovery"):
+        claim_workflow_recovery(
+            sqlite3.connect(path), task_id="TASK-LEGACY",
+            recovery_owner="workflow_recovery", claim_token="wrong-legacy",
+        )
+    with pytest.raises(ValueError, match="recovery_owner_mismatch:workflow_recovery"):
+        claim_workflow_recovery(
+            sqlite3.connect(path), task_id="TASK-F5-owned",
+            recovery_owner="legacy_recovery", claim_token="wrong-workflow",
+        )
+
+    barrier = threading.Barrier(2)
+    outcomes: list[object] = []
+
+    def contender(token: str) -> None:
+        contender_conn = sqlite3.connect(path, timeout=3)
+        try:
+            barrier.wait()
+            outcomes.append(claim_workflow_recovery(
+                contender_conn, task_id="TASK-F5-owned",
+                recovery_owner="workflow_recovery", claim_token=token,
+            ))
+        except Exception as exc:
+            outcomes.append(exc)
+        finally:
+            contender_conn.close()
+
+    workers = [threading.Thread(target=contender, args=(f"claim-{index}",)) for index in range(2)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(5)
+    assert not any(worker.is_alive() for worker in workers)
+    assert sum(isinstance(value, str) for value in outcomes) == 1
+    assert sum(isinstance(value, ValueError) for value in outcomes) == 1
+
+    final = sqlite3.connect(path)
+    assert claim_workflow_recovery(
+        final, task_id="TASK-LEGACY", recovery_owner="legacy_recovery",
+        claim_token="legacy-claim",
+    ) == "legacy_recovery:TASK-LEGACY"
+    assert final.execute(
+        "SELECT record_id,record_class,recovery_owner,effect_key FROM "
+        "workflow_recovery_claims ORDER BY record_id"
+    ).fetchall() == [
+        ("TASK-F5-owned", "workflow_task", "workflow_recovery", "workflow_recovery:TASK-F5-owned"),
+        ("TASK-LEGACY", "legacy_task", "legacy_recovery", "legacy_recovery:TASK-LEGACY"),
+    ]
+    winning_token = final.execute(
+        "SELECT claim_token FROM workflow_recovery_claims WHERE record_id='TASK-F5-owned'"
+    ).fetchone()[0]
+    with pytest.raises(ValueError, match="recovery_record_already_claimed"):
+        claim_workflow_recovery(
+            final, task_id="TASK-F5-owned", recovery_owner="workflow_recovery",
+            claim_token=f"not-{winning_token}",
+        )
+    claim_review_dispatch(
+        final, outbox_id=workflow_task, claim_token=winning_token,
+        claim_owner="workflow_recovery",
+    )
+    begin_review_host_launch(
+        final, outbox_id=workflow_task, claim_token=winning_token,
+    )
+    record_review_running(
+        final, outbox_id=workflow_task, claim_token=winning_token,
+        session_id="sess-owned", host_execution_id="host-owned",
+    )
+    expected_effect_key = final.execute(
+        "SELECT effect_key FROM workflow_dispatch_outbox WHERE id=?",
+        (workflow_task,),
+    ).fetchone()[0]
+    assert final.execute(
+        "SELECT effect_key,task_id,session_id,host_execution_id "
+        "FROM workflow_dispatch_effects WHERE outbox_id=?",
+        (workflow_task,),
+    ).fetchall() == [
+        (expected_effect_key, "TASK-F5-owned", "sess-owned", "host-owned")
+    ]
+    final.close()
+
+    reopened = sqlite3.connect(path)
+    assert recover_review_dispatch(
+        reopened, outbox_id=workflow_task,
+    ) == "running:callback_reconciler"
+    assert reopened.execute(
+        "SELECT COUNT(*) FROM workflow_dispatch_effects WHERE outbox_id=?",
+        (workflow_task,),
+    ).fetchone() == (1,)
+    reopened.close()
+
+
+def test_proposed_f6_old_reader_boundary_is_read_only_and_downgrade_truthful(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "old-reader.db"
+    db = Database(path)
+    db.execute(
+        "INSERT INTO tasks(id,status,assigned_agent,team,brief,created_at,updated_at) "
+        "VALUES ('TASK-LEGACY','pending','legacy','engineering','legacy','now','now')"
+    )
+    db.execute(
+        "INSERT INTO audit_log(task_id,agent,action,payload,timestamp) "
+        "VALUES ('TASK-LEGACY','legacy','legacy_action','{}','now')"
+    )
+    db._conn.commit()
+    db.close()
+    legacy_before = _legacy_snapshot(path)
+    conn = _adapter(path)
+    assert assess_workflow_downgrade(conn) == {
+        "supported": True,
+        "reason": "legacy_only_no_workflow_data",
+        "old_binary_recovery_owner": False,
+        "state": "installed_legacy_only",
+        "counts": {"template_versions": 0, "activations": 0, "dispatches": 0},
+    }
+    request_workflow_enable(conn, operation_key="enable")
+    recover_workflow_cutover(conn)
+    publish_workflow_template(
+        conn, org_slug="acme", team="product", template_name="product-design",
+        principal="manager", operation_key="publish", expected_current_version=0,
+        definition={"nodes": ["draft"]},
+    )
+    assessment = assess_workflow_downgrade(conn)
+    assert assessment["supported"] is False
+    assert assessment["reason"] == "unsupported_workflow_downgrade"
+    assert assessment["old_binary_recovery_owner"] is False
+    conn.close()
+
+    old = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    assert old.execute(
+        "SELECT id,status,brief FROM tasks WHERE id='TASK-LEGACY'"
+    ).fetchone() == ("TASK-LEGACY", "pending", "legacy")
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        old.execute("UPDATE tasks SET status='in_progress' WHERE id='TASK-LEGACY'")
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        old.execute("DELETE FROM workflow_template_versions")
+    old.close()
+    assert _legacy_snapshot(path) == legacy_before
+
+
+def test_proposed_f6_disable_fences_new_runs_and_drain_projects_every_f5_owner(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "disable-drain.db"
+    conn = _seed_f5(path)
+    queued = _admit_f5(conn, suffix="queued")
+    claimed = _admit_f5(conn, suffix="claimed")
+    claim_review_dispatch(conn, outbox_id=claimed, claim_token="claim-c", claim_owner="worker-c")
+    running = _admit_f5(conn, suffix="running")
+    claim_review_dispatch(conn, outbox_id=running, claim_token="claim-r", claim_owner="worker-r")
+    begin_review_host_launch(conn, outbox_id=running, claim_token="claim-r")
+    record_review_running(
+        conn, outbox_id=running, claim_token="claim-r",
+        session_id="sess-running", host_execution_id="host-running",
+    )
+    uncertain = _admit_f5(conn, suffix="uncertain")
+    claim_review_dispatch(conn, outbox_id=uncertain, claim_token="claim-u", claim_owner="worker-u")
+    begin_review_host_launch(conn, outbox_id=uncertain, claim_token="claim-u")
+    recover_review_dispatch(
+        sqlite3.connect(path), outbox_id=uncertain, claim_owner_proven_dead=True,
+    )
+
+    assert request_workflow_disable(
+        conn, operation_key="disable-new-runs", reason="operator_cutover",
+    ) == "disable_requested"
+    before_refusal = _complete_join_state(path)
+    with pytest.raises(ValueError, match="workflow_new_runs_disabled"):
+        _admit_f5(conn, suffix="refused-after-disable")
+    with pytest.raises(ValueError, match="workflow_new_runs_disabled"):
+        activate_workflow_template(
+            conn, org_slug="org", principal="operator", operation_key="start-refused",
+            instance_id="instance-9", template_namespace="missing",
+            template_name="missing", template_version=1,
+            authority_namespace="eng", authority_generation=1,
+            authority_digest="authority-v1", expected_activation_revision=0,
+        )
+    assert _complete_join_state(path) == before_refusal
+
+    assert advance_workflow_drain(conn) == "draining"
+    projection = project_workflow_drain(conn)
+    assert projection == [
+        {
+            "outbox_id": running, "state": "running",
+            "owner": "callback_reconciler", "action": "wait_for_exact_callback_or_cancel",
+            "stored_recovery_owner": "callback_reconciler",
+        },
+        {
+            "outbox_id": uncertain, "state": "uncertain",
+            "owner": "operator", "action": "reconcile_possible_host_effect",
+            "stored_recovery_owner": "operator",
+        },
+    ]
+    assert conn.execute(
+        "SELECT id,state FROM workflow_dispatch_outbox WHERE id IN (?,?) ORDER BY id",
+        (queued, claimed),
+    ).fetchall() == sorted([(queued, "cancelled"), (claimed, "cancelled")])
+    assert record_review_callback(
+        conn, outbox_id=running, task_id="TASK-F5-running",
+        session_id="sess-running", result_id="result-running",
+        result_bytes=b"done", observed_revision=4,
+    ) == "accepted"
+    assert reconcile_uncertain_dispatch(
+        conn, outbox_id=uncertain, outcome="confirmed_no_launch",
+    ) == "cancelled"
+    assert advance_workflow_drain(conn) == "drained"
+    conn.close()
+    reopened = _adapter(path)
+    assert advance_workflow_drain(reopened) == "drained"
+    assert project_workflow_drain(reopened) == []
+    reopened.close()
+
+
+def test_proposed_f6_template_replay_conflict_stale_cas_and_two_publishers_leave_one_chain(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "template-cas.db"
+    conn = _adapter(path)
+    first = publish_workflow_template(
+        conn, org_slug="acme", team="product", template_name="product-design",
+        principal="manager", operation_key="publish-v1", expected_current_version=0,
+        definition={"nodes": ["draft", "review"]},
+    )
+    after_first = _complete_join_state(path)
+    assert publish_workflow_template(
+        conn, org_slug="acme", team="product", template_name="product-design",
+        principal="manager", operation_key="publish-v1", expected_current_version=0,
+        definition={"nodes": ["draft", "review"]},
+    ) == first
+    assert _complete_join_state(path) == after_first
+    with pytest.raises(ValueError, match="template_publish_operation_conflict"):
+        publish_workflow_template(
+            conn, org_slug="acme", team="product", template_name="product-design",
+            principal="manager", operation_key="publish-v1", expected_current_version=0,
+            definition={"nodes": ["changed"]},
+        )
+    with pytest.raises(ValueError, match="template_version_cas_stale"):
+        publish_workflow_template(
+            conn, org_slug="acme", team="product", template_name="product-design",
+            principal="manager", operation_key="changed-key", expected_current_version=0,
+            definition={"nodes": ["draft", "review"]},
+        )
+    assert _complete_join_state(path) == after_first
+    conn.close()
+
+    barrier = threading.Barrier(2)
+    outcomes: list[object] = []
+
+    def publisher(label: str) -> None:
+        contender_conn = _adapter(path)
+        try:
+            barrier.wait()
+            outcomes.append(publish_workflow_template(
+                contender_conn, org_slug="acme", team="product",
+                template_name="product-design", principal="manager",
+                operation_key=f"publish-v2-{label}", expected_current_version=1,
+                definition={"nodes": ["draft", "review", label]},
+            ))
+        except Exception as exc:
+            outcomes.append(exc)
+        finally:
+            contender_conn.close()
+
+    workers = [threading.Thread(target=publisher, args=(label,)) for label in ("a", "b")]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(5)
+    assert not any(worker.is_alive() for worker in workers)
+    assert sum(isinstance(value, tuple) for value in outcomes) == 1
+    assert sum(isinstance(value, ValueError) for value in outcomes) == 1
+    check = _adapter(path)
+    assert check.execute(
+        "SELECT version FROM workflow_template_identity_versions ORDER BY version"
+    ).fetchall() == [(1,), (2,)]
+    assert check.execute(
+        "SELECT current_version FROM workflow_template_identities"
+    ).fetchone() == (2,)
+    assert check.execute(
+        "SELECT COUNT(*),COUNT(DISTINCT content_digest) FROM workflow_template_identity_versions"
+    ).fetchone() == (2, 2)
+    check.close()
+
+
+def test_proposed_f6_activation_stays_pinned_across_publish_reopen_and_reassignment_until_reactivation_cas(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "activation-pin.db"
+    conn = _adapter(path)
+    _seed(conn)
+    conn.commit()
+    publish_workflow_template(
+        conn, org_slug="acme", team="product", template_name="product-design",
+        principal="manager", operation_key="publish-v1", expected_current_version=0,
+        definition={"nodes": ["draft"]},
+    )
+    conn.execute(
+        "INSERT INTO workflow_authority_pointers VALUES "
+        "('org/acme',7,'journal-acme','authority-acme-v7','ready',0)"
+    )
+    conn.commit()
+    first_id, first_revision = activate_workflow_template(
+        conn, org_slug="acme", principal="founder", operation_key="activate-v1",
+        instance_id="instance-9", template_namespace="org/acme/team/product",
+        template_name="product-design", template_version=1,
+        authority_namespace="org/acme", authority_generation=7,
+        authority_digest="authority-acme-v7", expected_activation_revision=0,
+    )
+    assert first_revision == 1
+    publish_workflow_template(
+        conn, org_slug="acme", team="product", template_name="product-design",
+        principal="manager", operation_key="publish-v2", expected_current_version=1,
+        definition={"nodes": ["draft", "review"]},
+    )
+    conn.execute(
+        "UPDATE workflow_current_assignments SET principal='replacement-reviewer' "
+        "WHERE instance_id='instance-9' AND role_key='reviewer:implementation'"
+    )
+    conn.commit()
+    conn.close()
+
+    reopened = _adapter(path)
+    assert reopened.execute(
+        "SELECT a.id,a.activation_revision,m.version,a.authority_generation,a.authority_digest "
+        "FROM workflow_active_activations p JOIN workflow_activations a ON a.id=p.activation_id "
+        "JOIN workflow_template_identity_versions m ON m.template_version_id=a.template_version_id"
+    ).fetchone() == (first_id, 1, 1, 7, "authority-acme-v7")
+    with pytest.raises(ValueError, match="workflow_activation_cas_stale"):
+        activate_workflow_template(
+            reopened, org_slug="acme", principal="founder",
+            operation_key="reactivate-stale", instance_id="instance-9",
+            template_namespace="org/acme/team/product", template_name="product-design",
+            template_version=2, authority_namespace="org/acme",
+            authority_generation=7, authority_digest="authority-acme-v7",
+            expected_activation_revision=0,
+        )
+    second_id, second_revision = activate_workflow_template(
+        reopened, org_slug="acme", principal="founder",
+        operation_key="reactivate-v2", instance_id="instance-9",
+        template_namespace="org/acme/team/product", template_name="product-design",
+        template_version=2, authority_namespace="org/acme",
+        authority_generation=7, authority_digest="authority-acme-v7",
+        expected_activation_revision=1,
+    )
+    assert second_revision == 2 and second_id != first_id
+    assert reopened.execute(
+        "SELECT activation_revision,state FROM workflow_activations ORDER BY activation_revision"
+    ).fetchall() == [(1, "superseded"), (2, "active")]
+    assert reopened.execute(
+        "SELECT activation_id,activation_revision FROM workflow_active_activations"
+    ).fetchone() == (second_id, 2)
+    reopened.close()
