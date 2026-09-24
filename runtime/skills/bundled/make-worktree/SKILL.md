@@ -130,12 +130,24 @@ Unix ownership.
 
 ## Cleanup
 
-At the end of every task — even on blocker/error paths — remove the worktree:
+Before the final completion callback — including blocker/error paths — assess
+the exact task-owned worktree. Preserve it when it is dirty, staged, untracked,
+committed but not present in a durable remote ref, associated with an open or
+closed-unmerged PR,
+still referenced by a live session/control/process/fd, explicitly deferred, or
+when any identity, ownership, probe, or deadline fact is unavailable or
+uncertain. Do not infer eligibility from a task-like directory name.
+
+Only after every preservation check succeeds, change to the primary checkout
+and remove that exact registered path without force:
 
 ```bash
 cd repos/<repo_name>
-git worktree remove .claude/worktrees/<task_id> --force
-git branch -D task/<task_id> 2>/dev/null || true
+git worktree remove .claude/worktrees/<task_id>
 ```
 
-If cleanup fails (uncommitted changes you wanted to keep), leave the worktree and surface this in the completion report's `risks_flagged`.
+Never delete the task branch. If a preservation check fails or removal returns
+nonzero, leave the worktree and branch intact and add
+`worktree-deferred: <specific reason>` to the completion report's
+`risks_flagged`. Make one bounded attempt only; do not schedule or perform a
+retry, force removal, historical scan, prune, or cache sweep.

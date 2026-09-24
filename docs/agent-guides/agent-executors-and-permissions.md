@@ -91,6 +91,25 @@ skill computes the workspace root as 5 parents above the task worktree
 exists. It is a narrow, non-permission tool with no DB, API, schema, audit,
 auth, notification, or sandbox footprint.
 
+The same skill makes completion ordering explicit: once publication work is
+done, attempt safe worktree cleanup or record
+`worktree-deferred: <specific reason>` in the existing completion risks, then
+make `report-completion` the final action. Cleanup uses literal
+`git worktree remove .claude/worktrees/<task_id>` only after the worktree is
+clean, its commit is durable, it has no open or closed-unmerged PR, and no live
+session/process reference remains. It never uses `--force` and never deletes a
+branch.
+
+Independently, the runtime has a forward-only terminal hook for exact
+`completed`, `failed`, and `cancelled` transitions. It resolves only the
+registered assigned agent's canonical `repos/happyranch` task worktree and
+fails closed across ownership, realpath/device, Git registration/branch,
+cleanliness, remote durability, PR, liveness, recorded-deferral, and deadline
+gates. Each shipping hook makes one attempt after terminal durability and
+applicable teardown; errors and uncertainty preserve. It does not scan or
+schedule cleanup, and it deliberately excludes `superseded`, `blocked_on_job`,
+accepted/restart completion-recovery settlement, and historical residue.
+
 **Custom-adapter profiles** (D7B, ``command_adapter_id: custom-adapter:<id>``)
 route through ``CustomAdapterExecutor`` instead — see
 [Custom adapter profiles](#custom-adapter-profiles-thr-107-d7b) below.

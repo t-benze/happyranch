@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import re
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -1926,6 +1927,123 @@ def test_run_agent_skips_session_registration_when_tracker_not_attached(
         )
 
     assert captured == [(task_id, "engineering_head", "sess-eh")]
+
+
+@pytest.mark.parametrize(
+    "preservation, expected_outcome",
+    [
+        (None, ("removed", "eligible")),
+        ("dirty", ("preserved", "worktree-dirty")),
+        ("open-pr", ("preserved", "unmerged-pull-request")),
+        ("live", ("preserved", "live-session")),
+        ("foreign", ("preserved", "agent-unregistered")),
+        ("probe-error", ("preserved", "probe-error")),
+        ("timeout", ("preserved", "probe-timeout")),
+    ],
+)
+def test_run_agent_integrity_refusal_persists_failed_then_reclaims_without_launch(
+    orchestrator, test_runtime, monkeypatch, preservation, expected_outcome,
+):
+    from runtime.daemon.sessions import SessionTracker
+    from runtime.orchestrator import run_step as run_step_module
+    from runtime.orchestrator.workspace_adapters import WorkspaceIntegrityError
+
+    agent = "engineering_head"
+    _setup_workspaces(test_runtime, [agent])
+    orchestrator._teams = TeamsRegistry._from_layout(
+        {"engineering": {"manager": agent, "workers": []}},
+        test_runtime.root,
+    )
+    task_id = orchestrator.create_task("integrity refusal")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    orchestrator.attach_sessions(SessionTracker())
+
+    primary = test_runtime.workspaces_dir / agent / "repos" / "happyranch"
+    primary.mkdir(parents=True)
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=primary, text=True,
+            capture_output=True, check=True,
+        )
+
+    git("init", "-b", "main")
+    git("config", "user.email", "tests@example.invalid")
+    git("config", "user.name", "HappyRanch tests")
+    (primary / "tracked.txt").write_text("base\n")
+    git("add", "tracked.txt")
+    git("commit", "-m", "test base")
+    git("update-ref", "refs/remotes/origin/main", "HEAD")
+    candidate = primary / ".claude" / "worktrees" / task_id
+    candidate.parent.mkdir(parents=True)
+    git("worktree", "add", "-b", f"task/{task_id}", str(candidate))
+    if preservation == "dirty":
+        (candidate / "tracked.txt").write_text("dirty\n")
+    elif preservation == "live":
+        orchestrator._sessions.set_active(task_id, agent, "sess-live")
+    elif preservation == "foreign":
+        orchestrator._db.update_task(task_id, assigned_agent="foreign_agent")
+
+    monkeypatch.setattr(
+        "runtime.orchestrator.orchestrator.materialize_workspace_skills",
+        lambda *args, **kwargs: [],
+    )
+
+    def refuse(*args, **kwargs):
+        raise WorkspaceIntegrityError("test-integrity", "refused")
+
+    monkeypatch.setattr(
+        "runtime.orchestrator.orchestrator.validate_workspace_skills_integrity",
+        refuse,
+    )
+    real_run = run_step_module._run_terminal_worktree_command
+
+    def fake_run(args, *, cwd, timeout):
+        if args[0] == "gh":
+            assert orchestrator._db.get_task(task_id).status is TaskStatus.FAILED
+            if preservation == "timeout":
+                raise subprocess.TimeoutExpired(args, timeout)
+            if preservation == "open-pr":
+                return subprocess.CompletedProcess(
+                    args, 0, '[{"number": 887, "state": "OPEN"}]\n', "",
+                )
+            return subprocess.CompletedProcess(args, 0, "[]\n", "")
+        return real_run(args, cwd=cwd, timeout=timeout)
+
+    monkeypatch.setattr(run_step_module, "_run_terminal_worktree_command", fake_run)
+    monkeypatch.setattr(
+        run_step_module,
+        "_terminal_worktree_process_reference",
+        (
+            lambda *_: (_ for _ in ()).throw(RuntimeError("probe failed"))
+            if preservation == "probe-error" else None
+        ),
+    )
+    original_reclaim = run_step_module._reclaim_terminal_task_worktree
+    outcomes = []
+
+    def observed_reclaim(*args, **kwargs):
+        outcome = original_reclaim(*args, **kwargs)
+        outcomes.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(
+        run_step_module, "_reclaim_terminal_task_worktree", observed_reclaim,
+    )
+    executor = MagicMock()
+
+    with patch.object(orchestrator, "_build_executor", return_value=executor):
+        result, report = orchestrator._run_agent(task_id, agent, "prompt")
+
+    assert result.success is False
+    assert report is None
+    assert orchestrator._db.get_task(task_id).status is TaskStatus.FAILED
+    executor.run.assert_not_called()
+    assert outcomes == [expected_outcome]
+    assert candidate.exists() is (preservation is not None)
+    if preservation is not None:
+        assert str(candidate) in git("worktree", "list", "--porcelain").stdout
+    assert git("show-ref", "--verify", f"refs/heads/task/{task_id}").returncode == 0
 
 
 def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_runtime, test_settings, monkeypatch):

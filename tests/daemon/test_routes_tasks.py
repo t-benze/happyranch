@@ -2229,6 +2229,81 @@ def test_cancel_marks_task_cancelled_with_cancelled_at_and_note(client_with_runt
     assert t.note == "cancelled by founder: rerouting"
 
 
+def test_cancel_attempts_reclamation_after_job_phase(
+    client_with_runtime, monkeypatch,
+):
+    from runtime.models import TaskRecord, TaskStatus
+
+    client, state = client_with_runtime
+    state.db.insert_task(TaskRecord(
+        id="T-RECLAIM", brief="x", assigned_agent="dev_agent",
+    ))
+    events = []
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._kill_jobs_for_terminating_task",
+        lambda _orch, tid: events.append(("jobs", tid)),
+    )
+
+    def reclaim(_orch, tid):
+        events.append(("reclaim", tid, state.db.get_task(tid).status))
+
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        reclaim,
+    )
+
+    response = client.post(
+        "/api/v1/orgs/alpha/tasks/T-RECLAIM/cancel",
+        json={"rationale": "done"},
+    )
+
+    assert response.status_code == 200
+    assert events == [
+        ("jobs", "T-RECLAIM"),
+        ("reclaim", "T-RECLAIM", TaskStatus.CANCELLED),
+    ]
+
+
+def test_live_cancel_clears_control_before_reclamation(
+    client_with_runtime, monkeypatch,
+):
+    from runtime.models import TaskRecord, TaskStatus
+
+    client, state = client_with_runtime
+    state.db.insert_task(TaskRecord(
+        id="T-LIVE-RECLAIM", brief="x", assigned_agent="dev_agent",
+        status=TaskStatus.IN_PROGRESS,
+    ))
+    state.sessions.set_active("T-LIVE-RECLAIM", "dev_agent", "sess-live")
+    controls = []
+    state.sessions.set_cancel_control(
+        "T-LIVE-RECLAIM", "dev_agent", "sess-live",
+        lambda: controls.append("cancelled"),
+    )
+    observed = []
+
+    def reclaim(_orch, tid):
+        observed.append((
+            state.db.get_task(tid).status,
+            state.sessions.get_active(tid, "dev_agent"),
+            state.sessions.get_cancel_control(tid, "dev_agent"),
+        ))
+
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        reclaim,
+    )
+
+    response = client.post(
+        "/api/v1/orgs/alpha/tasks/T-LIVE-RECLAIM/cancel",
+        json={"rationale": "done"},
+    )
+
+    assert response.status_code == 200
+    assert controls == ["cancelled"]
+    assert observed == [(TaskStatus.CANCELLED, None, None)]
+
+
 def test_cancel_cascades_down_subtree(client_with_runtime):
     """Default cascade=True must cancel every non-terminal descendant and
     leave already-terminal siblings untouched."""
@@ -2445,7 +2520,7 @@ def test_revisit_handles_cancelled_predecessor(
 
 
 def test_revisit_handles_escalated_predecessor(
-    tmp_home, app, daemon_state, org_state, auth_headers,
+    tmp_home, app, daemon_state, org_state, auth_headers, monkeypatch,
 ) -> None:
     from runtime.models import BlockKind, TaskRecord, TaskStatus
     db = org_state.db
@@ -2454,6 +2529,10 @@ def test_revisit_handles_escalated_predecessor(
         "TASK-052",
         status=TaskStatus.ESCALATED, block_kind=None,
         note="halted",
+    )
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *args: pytest.fail("SUPERSEDED continuation must not reclaim"),
     )
     r = TestClient(app).post(
         "/api/v1/orgs/alpha/tasks/TASK-052/revisit", json={"founder_note": "ruled"},

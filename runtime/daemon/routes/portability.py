@@ -328,6 +328,11 @@ async def reconcile_portability(
                 task_id, task.assigned_agent or "unknown",
             )
             _enqueue_parent_if_waiting(org.orchestrator, task_id)
+            if org.orchestrator is not None:
+                from runtime.orchestrator.run_step import (
+                    _reclaim_terminal_task_worktree,
+                )
+                _reclaim_terminal_task_worktree(org.orchestrator, task_id)
 
         after = _task_state_summary(org.db.get_task(task_id))
         AuditLogger(org.db).log_portability_reconciled(

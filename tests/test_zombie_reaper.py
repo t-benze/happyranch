@@ -191,8 +191,14 @@ def test_consume_zombie_fingerprint_replay_cannot_continue_twice(tmp_path):
 
 
 @pytest.mark.parametrize("agent", ["dev_agent", "engineering_manager"])
-def test_consume_zombie_fingerprint_worker_and_legacy_compatibility(tmp_path, agent):
+def test_consume_zombie_fingerprint_worker_and_legacy_compatibility(
+    tmp_path, agent, monkeypatch,
+):
     db, orch, task_id, _ = _seed_zombie_authority_result(tmp_path)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *_: pytest.fail("zombie result settlement must not reclaim"),
+    )
     compat_id = f"T-ZOMBIE-COMPAT-{agent}"
     session_id = f"sess-{agent}"
     db.insert_task(TaskRecord(
@@ -714,13 +720,20 @@ def test_parent_woken_when_zombie_child_cancelled(db: Database):
     mock_orch = MagicMock()
     mock_orch._db = db
 
+    order = []
     with patch(
-        "runtime.orchestrator.run_step._enqueue_parent_if_waiting"
-    ) as mock_enqueue:
+        "runtime.orchestrator.run_step._enqueue_parent_if_waiting",
+        side_effect=lambda *args: order.append("parent"),
+    ) as mock_enqueue, patch(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        side_effect=lambda *args: order.append("reclaim"),
+    ) as mock_reclaim:
         _sweep_org_zombies(db, now=_now(), uptime=999, warm_up_seconds=30,
                            orchestrator=mock_orch)
         # _enqueue_parent_if_waiting should have been called for the child.
         mock_enqueue.assert_called_once_with(mock_orch, child_id)
+        mock_reclaim.assert_called_once_with(mock_orch, child_id)
+        assert order == ["parent", "reclaim"]
 
     # Child should be cancelled.
     t = db.get_task(child_id)
@@ -728,6 +741,125 @@ def test_parent_woken_when_zombie_child_cancelled(db: Database):
     assert t.cancelled_at is not None
     assert t.completed_at is not None
     assert t.block_kind is None
+    assert t.note == "zombie reaped: session died without completing"
+
+
+def test_v2_ttl_cancel_reclaims_only_after_successful_cas(db: Database, monkeypatch):
+    task_id = "T-V2-RECLAIM"
+    flag_time = _ago(FLAG_TTL_NO_FINGERPRINT_SECONDS + 5)
+    db.insert_task(TaskRecord(
+        id=task_id, brief="v2 zombie", team="engineering",
+        assigned_agent="dev_agent", status=TaskStatus.IN_PROGRESS,
+    ))
+    db.update_task(
+        task_id,
+        current_session_id="sess-v2",
+        last_heartbeat=_stale_hb().isoformat(),
+        executor_pid=ZOMBIE_PID,
+        zombie_flagged_at=flag_time.isoformat(),
+    )
+    mock_orch = MagicMock()
+    mock_orch._db = db
+    observed = []
+    monkeypatch.setattr(
+        "runtime.daemon.zombie_reaper._session_policy_family",
+        lambda *_: "v2",
+    )
+
+    def committed_cas(**kwargs):
+        db.update_task(
+            task_id,
+            status=TaskStatus.CANCELLED,
+            cancelled_at=kwargs["cancelled_at"],
+            completed_at=kwargs["cancelled_at"],
+            block_kind=None,
+        )
+        observed.append("cas")
+        return True
+
+    monkeypatch.setattr(db, "cancel_zombie_without_fingerprint", committed_cas)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._enqueue_parent_if_waiting",
+        lambda *_: observed.append("parent"),
+    )
+
+    def reclaim(_orch, actual_task_id):
+        assert db.get_task(actual_task_id).status is TaskStatus.CANCELLED
+        observed.append("reclaim")
+
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        reclaim,
+    )
+
+    _sweep_org_zombies(
+        db, now=_now(), uptime=999, warm_up_seconds=30,
+        orchestrator=mock_orch,
+    )
+
+    assert observed == ["cas", "parent", "reclaim"]
+
+
+def test_v2_lost_cas_never_reclaims(db: Database, monkeypatch):
+    task_id = "T-V2-LOST-CAS"
+    flag_time = _ago(FLAG_TTL_NO_FINGERPRINT_SECONDS + 5)
+    db.insert_task(TaskRecord(
+        id=task_id, brief="v2 zombie", team="engineering",
+        assigned_agent="dev_agent", status=TaskStatus.IN_PROGRESS,
+    ))
+    db.update_task(
+        task_id,
+        current_session_id="sess-v2",
+        last_heartbeat=_stale_hb().isoformat(),
+        executor_pid=ZOMBIE_PID,
+        zombie_flagged_at=flag_time.isoformat(),
+    )
+    monkeypatch.setattr(
+        "runtime.daemon.zombie_reaper._session_policy_family",
+        lambda *_: "v2",
+    )
+    monkeypatch.setattr(db, "cancel_zombie_without_fingerprint", lambda **_: False)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *_: pytest.fail("lost CAS must not reclaim"),
+    )
+
+    _sweep_org_zombies(
+        db, now=_now(), uptime=999, warm_up_seconds=30,
+        orchestrator=MagicMock(),
+    )
+
+    assert db.get_task(task_id).status is TaskStatus.IN_PROGRESS
+
+
+def test_zombie_cancel_without_orchestrator_has_no_reclamation(
+    db: Database, monkeypatch,
+):
+    task_id = "T-NO-ORCH"
+    flag_time = _ago(FLAG_TTL_NO_FINGERPRINT_SECONDS + 5)
+    db.insert_task(TaskRecord(
+        id=task_id, brief="zombie", assigned_agent="dev_agent",
+        status=TaskStatus.IN_PROGRESS,
+    ))
+    db.update_task(
+        task_id,
+        current_session_id="sess-dead",
+        last_heartbeat=_stale_hb().isoformat(),
+        executor_pid=ZOMBIE_PID,
+        zombie_flagged_at=flag_time.isoformat(),
+    )
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *_: pytest.fail("orchestrator=None must not reclaim"),
+    )
+
+    _sweep_org_zombies(
+        db, now=_now(), uptime=999, warm_up_seconds=30,
+        orchestrator=None,
+    )
+
+    t = db.get_task(task_id)
+    assert t.status is TaskStatus.CANCELLED
     assert t.note == "zombie reaped: session died without completing"
 
 

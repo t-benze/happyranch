@@ -26,6 +26,7 @@ from runtime.models import (
     NextStep,
     StepRecord,
     TaskRecord,
+    TaskStatus,
 )
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.executors import (
@@ -852,6 +853,10 @@ class Orchestrator:
                 ),
                 status=TaskStatus.FAILED,
             )
+            from runtime.orchestrator.run_step import (
+                _reclaim_terminal_task_worktree,
+            )
+            _reclaim_terminal_task_worktree(self, task_id)
             return ExecutorResult(
                 success=False,
                 duration_seconds=0,
