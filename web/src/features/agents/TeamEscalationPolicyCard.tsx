@@ -202,7 +202,7 @@ export function TeamEscalationPolicyCard({
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="font-display text-text-primary text-base font-medium">Team escalation policy</h3>
-          <p className="text-text-muted mt-1 text-xs">Owned by the Engineering team, not by this agent.</p>
+          <p className="text-text-muted mt-1 text-xs">Owned by the {formatTeam(data.team)} team, not by this agent.</p>
         </div>
         <span className="bg-accent-soft text-accent-text rounded-full px-2 py-1 text-xs">Team-owned</span>
       </div>

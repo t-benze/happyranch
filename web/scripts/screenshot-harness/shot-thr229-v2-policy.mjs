@@ -252,6 +252,8 @@ try {
   const emptyState = await pageState();
   assert(emptyState.textareas[0].value === projection.v2_starter.what_to_escalate, 'empty editor did not use server What to escalate starter bytes');
   assert(emptyState.textareas[1].value === projection.v2_starter.what_not_to_escalate, 'empty editor did not use server What not to escalate starter bytes');
+  assert(emptyState.text.includes('Owned by the Engineering team, not by this agent.'), 'Engineering ownership copy is not team-derived');
+  assert(emptyState.text.includes('← Back to Engineering Manager'), 'Engineering back link is not manager-derived');
   const emptyDb = await fixture.rpc('snapshot');
   assert(emptyDb.counts.releases === 0 && emptyDb.counts.activations === 0, 'empty GET wrote a policy release');
   evidence.screenshots.empty = await screenshot('01-loaded-empty');
@@ -325,6 +327,22 @@ try {
   assert(unavailable.textareas.length === 0, 'worker unavailable page exposed a policy editor');
   evidence.screenshots.unavailable = await screenshot('04-worker-unavailable');
 
+  const contentPolicyUrl = `${base}/orgs/isolated-org/agents/content_manager/team-escalation-policy`;
+  await pw(['goto', contentPolicyUrl]);
+  await waitForPage(`document.querySelectorAll('textarea').length === 2`, 'Content eligible editor');
+  const contentProjection = await evalJson(`fetch('/api/v1/orgs/isolated-org/agents/content_manager/team-escalation-policy', {
+    headers: { Authorization: 'Bearer ' + sessionStorage.getItem('happyranch.token') },
+  }).then((response) => response.json())`);
+  const contentState = await pageState();
+  assert(contentProjection.team === 'content' && contentProjection.target_manager === 'content_manager', 'Content projection identity is wrong');
+  assert(contentProjection.v2_starter.policy_id === 'team-ed7002b439e9ac84-dual-text', 'server projected the wrong Content starter identity');
+  assert(contentState.text.includes('Owned by the Content team, not by this agent.'), 'Content ownership copy is not team-derived');
+  assert(!contentState.text.includes('Owned by the Engineering team, not by this agent.'), 'Content surface leaked Engineering ownership copy');
+  assert(contentState.text.includes('Content · Content Manager'), 'Content page header is not team/manager-derived');
+  assert(contentState.text.includes('← Back to Content Manager'), 'Content back link is not manager-derived');
+  assert(contentState.url === contentPolicyUrl, 'Content navigation resolved to the wrong policy route');
+  evidence.screenshots.content_copy_navigation = await screenshot('05-content-copy-navigation');
+
   evidence.assertions = {
     empty_exact_starters: true,
     first_receipt: firstReceipt,
@@ -340,6 +358,17 @@ try {
     invalid_token_no_rows: true,
     dev_agent_status: devStatus,
     dev_agent_editor_count: unavailable.textareas.length,
+    engineering_copy_navigation: {
+      owner: 'Owned by the Engineering team, not by this agent.',
+      back_link: '← Back to Engineering Manager',
+    },
+    content_copy_navigation: {
+      owner: 'Owned by the Content team, not by this agent.',
+      back_link: '← Back to Content Manager',
+      heading: 'Content · Content Manager',
+      url: contentPolicyUrl,
+      engineering_owner_absent: true,
+    },
   };
   await writeFile(join(OUT, 'browser-receipt.json'), `${JSON.stringify(evidence, null, 2)}\n`);
   console.log(JSON.stringify({ ok: true, receipt: join(OUT, 'browser-receipt.json'), screenshots: evidence.screenshots }, null, 2));
