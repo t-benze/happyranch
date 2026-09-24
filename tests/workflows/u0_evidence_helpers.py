@@ -2116,12 +2116,40 @@ def record_review_callback(
     conn.execute("BEGIN IMMEDIATE")
     try:
         prior = conn.execute(
-            "SELECT result_digest, disposition FROM workflow_dispatch_callbacks WHERE result_id=?",
+            """SELECT c.result_digest, c.disposition,
+                      c.outbox_id, o.operation_id, o.request_id,
+                      c.task_id, c.session_id, c.observed_revision,
+                      o.artifact_revision, b.instance_id, b.assigned_principal,
+                      b.assignment_generation, b.session_id,
+                      q.round_id, q.principal, q.assignment_generation,
+                      op.instance_id, op.round_id
+               FROM workflow_dispatch_callbacks c
+               JOIN workflow_dispatch_outbox o ON o.id=c.outbox_id
+               JOIN workflow_request_task_bridges b ON b.request_id=o.request_id
+               JOIN workflow_review_requests q ON q.id=o.request_id
+               JOIN workflow_dispatch_operations op ON op.id=o.operation_id
+               WHERE c.result_id=?""",
             (result_id,),
         ).fetchone()
         if prior is not None:
             if prior[0] != result_digest:
                 raise ValueError("callback_result_conflict")
+            replay_bridge = conn.execute(
+                """SELECT o.id, o.operation_id, o.request_id,
+                          ?, ?, ?, o.artifact_revision,
+                          b.instance_id, b.assigned_principal,
+                          b.assignment_generation, b.session_id,
+                          q.round_id, q.principal, q.assignment_generation,
+                          op.instance_id, op.round_id
+                   FROM workflow_dispatch_outbox o
+                   JOIN workflow_request_task_bridges b ON b.request_id=o.request_id
+                   JOIN workflow_review_requests q ON q.id=o.request_id
+                   JOIN workflow_dispatch_operations op ON op.id=o.operation_id
+                   WHERE o.id=?""",
+                (task_id, session_id, observed_revision, outbox_id),
+            ).fetchone()
+            if replay_bridge is None or prior[2:] != replay_bridge:
+                raise ValueError("callback_result_bridge_conflict")
             conn.commit()
             return str(prior[1])
         row = _dispatch_row(conn, outbox_id)

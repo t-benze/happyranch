@@ -78,6 +78,16 @@ def _workflow_schema_text() -> str:
     ).read_text()
 
 
+def _active_u0_spec_text() -> str:
+    return (
+        Path(__file__).parents[2]
+        / "docs"
+        / "superpowers"
+        / "specs"
+        / "2026-09-09-product-design-u0.md"
+    ).read_text()
+
+
 def _historical_inventory() -> dict[str, object]:
     return json.loads(
         (
@@ -2741,6 +2751,70 @@ def test_proposed_f5_current_callback_completes_once_without_duplicate_effect(
     assert conn.execute("SELECT COUNT(*) FROM workflow_dispatch_effects").fetchone() == (1,)
 
 
+def test_proposed_f5_result_replay_is_bound_to_the_original_callback_bridge(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "f5-callback-bridge-replay.db"
+    conn = _seed_f5(path)
+
+    completed = _admit_f5(conn, suffix="completed-a")
+    claim_review_dispatch(
+        conn, outbox_id=completed, claim_token="claim-a", claim_owner="worker-a",
+    )
+    begin_review_host_launch(conn, outbox_id=completed, claim_token="claim-a")
+    record_review_running(
+        conn, outbox_id=completed, claim_token="claim-a",
+        session_id="sess-a", host_execution_id="host-a",
+    )
+    assert record_review_callback(
+        conn, outbox_id=completed, task_id="TASK-F5-completed-a",
+        session_id="sess-a", result_id="shared-result",
+        result_bytes=b"same-result-bytes", observed_revision=4,
+    ) == "accepted"
+
+    running = _admit_f5(conn, suffix="running-b")
+    claim_review_dispatch(
+        conn, outbox_id=running, claim_token="claim-b", claim_owner="worker-b",
+    )
+    begin_review_host_launch(conn, outbox_id=running, claim_token="claim-b")
+    record_review_running(
+        conn, outbox_id=running, claim_token="claim-b",
+        session_id="sess-b", host_execution_id="host-b",
+    )
+    before_cross_bridge_replay = _complete_join_state(path)
+
+    with pytest.raises(ValueError, match="callback_result_bridge_conflict"):
+        record_review_callback(
+            conn, outbox_id=running, task_id="TASK-F5-running-b",
+            session_id="sess-b", result_id="shared-result",
+            result_bytes=b"same-result-bytes", observed_revision=4,
+        )
+    assert _complete_join_state(path) == before_cross_bridge_replay
+    assert conn.execute(
+        "SELECT state,recovery_owner FROM workflow_dispatch_outbox WHERE id=?",
+        (completed,),
+    ).fetchone() == ("completed", "none")
+    assert conn.execute(
+        "SELECT state,recovery_owner FROM workflow_dispatch_outbox WHERE id=?",
+        (running,),
+    ).fetchone() == ("running", "callback_reconciler")
+    assert conn.execute(
+        "SELECT outbox_id,task_id,session_id,result_id,observed_revision,accepted,disposition "
+        "FROM workflow_dispatch_callbacks WHERE result_id='shared-result'",
+    ).fetchone() == (
+        completed, "TASK-F5-completed-a", "sess-a", "shared-result", 4, 1,
+        "accepted",
+    )
+
+    with pytest.raises(ValueError, match="callback_result_conflict"):
+        record_review_callback(
+            conn, outbox_id=completed, task_id="TASK-F5-completed-a",
+            session_id="sess-a", result_id="shared-result",
+            result_bytes=b"conflicting-result-bytes", observed_revision=4,
+        )
+    assert _complete_join_state(path) == before_cross_bridge_replay
+
+
 def test_proposed_f6_template_first_publish_uses_expected_current_version_cas(
     tmp_path: Path,
 ) -> None:
@@ -2757,6 +2831,33 @@ def test_proposed_f6_template_first_publish_uses_expected_current_version_cas(
         definition={"nodes": ["draft", "review", "approved"]},
     )
     assert result == ("org/acme/team/product", "product-design", 1)
+
+
+def test_proposed_f6_schema_vocabulary_matches_the_active_delivery_contract() -> None:
+    schema = _workflow_schema_text()
+    spec = _active_u0_spec_text()
+
+    assert schema.count("CREATE TABLE workflow_adapter_versions ") == 1
+    assert "workflow_schema_metadata" not in schema
+    assert (
+        "CREATE TABLE workflow_cutover_state (singleton INTEGER PRIMARY KEY "
+        "CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=1), "
+        "state TEXT NOT NULL"
+    ) in schema
+    assert (
+        "recovery_owner TEXT NOT NULL "
+        "CHECK(recovery_owner='workflow_cutover_reconciler')"
+    ) in schema
+    assert "workflow_cutover_state.owner" not in schema
+
+    assert "`workflow_adapter_versions(version=1)`" in spec
+    assert "`workflow_cutover_state.recovery_owner`" in spec
+    assert "`workflow_cutover_reconciler`" in spec
+    assert "`runtime/infrastructure/workflow_schema.py:install_or_recover`" in spec
+    assert "`WorkflowCompatibilityStore`, called by `Database.__init__`" in spec
+    assert "Database.initialize" not in spec
+    assert Database.__init__.__name__ == "__init__"
+    assert install_workflow_adapter.__name__ == "install_workflow_adapter"
 
 
 @pytest.mark.parametrize("layout", ["fresh", "current", "v0", "v1"])
@@ -3061,6 +3162,27 @@ def test_proposed_f6_old_reader_boundary_is_read_only_and_downgrade_truthful(
         old.execute("DELETE FROM workflow_template_versions")
     old.close()
     assert _legacy_snapshot(path) == legacy_before
+
+
+def test_proposed_f6_empty_drained_store_is_not_downgrade_eligible(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "empty-drained-downgrade.db"
+    conn = _adapter(path)
+    request_workflow_enable(conn, operation_key="enable-before-drain")
+    assert recover_workflow_cutover(conn) == "enabled"
+    assert request_workflow_disable(
+        conn, operation_key="disable-before-downgrade", reason="operator_cutover",
+    ) == "disable_requested"
+    assert advance_workflow_drain(conn) == "drained"
+
+    assert assess_workflow_downgrade(conn) == {
+        "supported": False,
+        "reason": "unsupported_workflow_downgrade",
+        "old_binary_recovery_owner": False,
+        "state": "drained",
+        "counts": {"template_versions": 0, "activations": 0, "dispatches": 0},
+    }
 
 
 def test_proposed_f6_disable_fences_new_runs_and_drain_projects_every_f5_owner(

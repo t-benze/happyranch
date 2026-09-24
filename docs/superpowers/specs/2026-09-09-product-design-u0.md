@@ -1067,9 +1067,13 @@ retry/reopen returns the existing outbox. Reuse with any different digest or
 target is a conflict and writes nothing. The outbox/effect key is
 `workflow-review-launch:<request_id>:<assignment_generation>`; task/session/
 result IDs are independent bridge identities. Events use `(operation_id,
-event_seq)` plus canonical bytes/digest. Result IDs are globally idempotent:
-same ID/digest returns its retained disposition; a different digest conflicts
-with zero mutation.
+event_seq)` plus canonical bytes/digest. Result IDs are globally unique but
+idempotent only for the same complete callback bridge. A replay must match the
+retained result ID/digest, owning outbox, operation/request, task/session,
+current artifact revision, assignment generation and assigned reviewer
+principal before returning its retained disposition. Reusing an ID for another
+bridge conflicts with zero mutation even when the result bytes/digest match; a
+different digest also conflicts with zero mutation.
 
 | Durable state | Meaning | Sole automatic recovery owner | Permitted recovery |
 | --- | --- | --- | --- |
@@ -1093,10 +1097,13 @@ renders `queued`/`claimed`/`running` as pending with owner and last event,
 `reconciliation_required` with no retry action.
 
 Every callback is appended with task/session/result/digest, observed revision,
-accepted bit and disposition. A cancelled, uncertain, wrong-task/session or
-stale-revision callback is retained but cannot change the operation/bridge,
-advance a superseded revision, recreate a task or insert another launch effect.
-Only the exact current running callback completes the bridge and operation.
+accepted bit and disposition. The normalized outbox/request/operation and
+bridge rows retain assignment generation and assigned reviewer binding. An
+identical replay must match that full stored identity. A cancelled, uncertain,
+wrong-task/session, cross-bridge result-ID reuse or stale-revision callback
+cannot change the operation/bridge, advance a superseded revision, recreate a
+task or insert another launch effect. Only the exact current running callback
+completes the bridge and operation.
 
 ### Current seams and executable controls
 
@@ -1113,7 +1120,7 @@ joined, not replaced or weakened.
 
 The executable seam is the six F5 tables in
 `tests/fixtures/workflow_u0/proposed_workflow_schema.sql`, the F5 helpers in
-`tests/workflows/u0_evidence_helpers.py`, and ten controls selected by
+`tests/workflows/u0_evidence_helpers.py`, and eleven controls selected by
 `pytest .../test_u0_migration_recovery.py -k proposed_f5`. Together they prove:
 (1) stale authority and noncurrent PRD revisions leave no request/task/outbox
 residue; (2) request+bridge+event+outbox commit atomically and an independent
@@ -1125,7 +1132,10 @@ effect; (6) queued, claimed, committed-pre-notify, running-confirmed and host-
 uncertain reopen boundaries name an owner; (7) possible launch without proof
 becomes `uncertain` and cannot be claimed again; (8) stable host proof reconciles
 without a second launch; and (9) late, duplicate, stale and current callbacks
-retain attribution without resurrection, revision advance or duplicate effect.
+retain attribution without resurrection, revision advance or duplicate effect,
+including exact rejection of same-ID/same-digest reuse across two distinct
+running/completed bridges while ordinary same-bridge identical replay remains
+idempotent.
 Assertions compare complete independent snapshots or exact cross-table rows and
 zero-residue negatives.
 
@@ -1216,10 +1226,13 @@ row and first event commits, or zero `workflow_%` residue exists. It never
 repairs a partial, conflicting, newer or unknown layout and never runs a DROP,
 table rebuild, legacy UPDATE, backup restore or destructive rollback.
 
-The singleton `workflow_cutover_state` is the sole compatibility/cutover
-marker: `(schema_version=1, state, recovery_owner, generation, operation_key,
-disable_reason)`. Its immutable event sequence records every transition. The
-only enable recovery owner is `workflow_cutover_reconciler`, with legal states:
+The adapter schema-version discriminator is exactly
+`workflow_adapter_versions(version=1)`. The singleton
+`workflow_cutover_state` is the sole compatibility/cutover marker;
+`workflow_cutover_state.recovery_owner` is exactly
+`workflow_cutover_reconciler`. Its row is `(schema_version=1, state,
+recovery_owner, generation, operation_key, disable_reason)`, and its immutable
+event sequence records every transition. The legal states are:
 
 `installed_legacy_only -> enable_requested -> compatibility_verified -> enabled`
 
@@ -1317,17 +1330,19 @@ exclusive before enqueue/effect.
 
 The actual seam is the shared proposed DDL, `install_workflow_adapter` and F6
 helpers in `u0_evidence_helpers.py`, selected by `pytest ... -k proposed_f6`.
-Fifteen controls cover the required eight groups:
+Seventeen controls cover the required eight groups:
 
-1. parametrized fresh/current/executed-v0/executed-v1 initialization with
-   complete legacy schema/row and marker-byte preservation;
+1. exact schema marker/owner/initializer/installer vocabulary plus parametrized
+   fresh/current/executed-v0/executed-v1 initialization with complete legacy
+   schema/row and marker-byte preservation;
 2. repeated install/reopen state identity and unsupported-version zero-write
    refusal;
 3. pre-install-commit rollback plus interruption after every enable stage,
    followed by two cold idempotent recoveries;
 4. bridge-derived legacy/workflow owner mismatch refusal plus two real SQLite
    connection contenders yielding one claim/effect after reopen;
-5. current-binary downgrade refusal after workflow data and read-only legacy
+5. current-binary downgrade refusal after workflow data, explicit refusal of an
+   empty but enable-history-bearing `drained` store, and read-only legacy
    observation with no old-reader recovery ownership;
 6. disable admission refusal, queued/claimed cancellation, running/uncertain
    truthful projection, explicit reconciliation and restart-stable drained;
