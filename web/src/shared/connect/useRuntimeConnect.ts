@@ -274,11 +274,10 @@ export type WorkspaceAdapterId = (typeof WORKSPACE_ADAPTER_IDS)[number];
  *  do NOT derive, fallback, or guess this path client-side.
  *
  *  The wrapper itself declares `workspace_adapter_id` in the manifest body
- *  — this selects which convention (Claude-style `.claude/settings.json` +
- *  `CLAUDE.md`, or AGENTS.md-style for codex/opencode/pi) HappyRanch uses
- *  to bootstrap agent workspaces assigned to this CLI later. The founder
- *  never picks this; only the wrapper author knows which convention their
- *  CLI expects. */
+ *  — every convention creates a regular `AGENTS.md` plus raw relative
+ *  `CLAUDE.md -> AGENTS.md`; the selector retains only provider-specific
+ *  ancillary bootstrap/settings distinctions. The founder never picks this;
+ *  only the wrapper author knows which convention their CLI expects. */
 export function buildDirectConnectPrompt(
   name: string,
   token: string,

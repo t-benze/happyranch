@@ -323,13 +323,19 @@ def test_accepted_recovery_root_escalation_positive_control_uses_real_authority(
     assert db.list_thread_messages("THR-RECOVERY")
 
 
-def test_nonroot_manager_recovery_escalation_is_parent_routed_and_consumed(tmp_path):
+def test_nonroot_manager_recovery_escalation_is_parent_routed_and_consumed(
+    tmp_path, monkeypatch,
+):
     """A parent-linked manager result has no root authority/escalation effects."""
     from runtime.orchestrator.orchestrator import completion_report_from_result_row
     from runtime.orchestrator.run_step import _consume_accepted_completion_recovery
     from runtime.infrastructure.audit_logger import AuditLogger
 
     db, orch, queue, task_id, _ = _seed_manager_recovery_result(tmp_path)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *_: pytest.fail("accepted non-root recovery must not reclaim"),
+    )
     db.insert_task(TaskRecord(
         id="TASK-PARENT", brief="parent", status=TaskStatus.IN_PROGRESS,
         task_type="task",
@@ -828,12 +834,18 @@ def test_sweep_orphaned_result_replay_cannot_continue_twice(tmp_path):
     assert db.execute("SELECT COUNT(*) FROM authority_evaluations").fetchone()[0] == 1
 
 
-def test_accepted_manager_done_recovery_reuses_its_step_audit_after_crash(tmp_path):
+def test_accepted_manager_done_recovery_reuses_its_step_audit_after_crash(
+    tmp_path, monkeypatch,
+):
     """A crash after the manager step audit replays the exact admitted result once."""
     from runtime.orchestrator.orchestrator import completion_report_from_result_row
     from runtime.orchestrator.run_step import _consume_accepted_completion_recovery
 
     db, orch, queue, task_id, _ = _seed_manager_recovery_result(tmp_path)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *_: pytest.fail("accepted root recovery must not reclaim"),
+    )
     db.update_task(task_id, current_session_id="origin-manager")
     assert db.claim_task_completion_recovery(
         task_id=task_id, agent="engineering_manager", origin_session_id="origin-manager",
@@ -1289,8 +1301,14 @@ def test_accepted_manager_done_recovery_final_owner_and_receipt_fences(tmp_path,
 
 
 @pytest.mark.parametrize("agent", ["dev_agent", "engineering_manager"])
-def test_sweep_orphaned_result_worker_and_legacy_compatibility(tmp_path, agent):
+def test_sweep_orphaned_result_worker_and_legacy_compatibility(
+    tmp_path, agent, monkeypatch,
+):
     db, orch, queue = _seed_org_with_orch(tmp_path)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *_: pytest.fail("restart result settlement must not reclaim"),
+    )
     task_id = f"TASK-COMPAT-{agent}"
     session_id = f"sess-{agent}"
     db.insert_task(TaskRecord(
@@ -1402,7 +1420,7 @@ def test_accepted_recovery_reentry_after_effects_is_consumed_without_duplicate_a
 
 @pytest.mark.parametrize("failure_point", ["terminal", "before_ledger", "after_ledger"])
 def test_accepted_leaf_completion_recovery_is_atomic_and_preserves_exact_verdict(
-    tmp_path, failure_point,
+    tmp_path, failure_point, monkeypatch,
 ):
     """A real admitted SUBTASK callback commits its two audit facts together.
 
@@ -1415,6 +1433,10 @@ def test_accepted_leaf_completion_recovery_is_atomic_and_preserves_exact_verdict
     from runtime.orchestrator.run_step import _consume_accepted_completion_recovery
 
     db, orch, queue = _seed_org_with_orch(tmp_path)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *_: pytest.fail("accepted leaf recovery must not reclaim"),
+    )
     db.insert_task(TaskRecord(
         id="TASK-PARENT", brief="parent", team="engineering",
         status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
@@ -2171,9 +2193,13 @@ def test_accepted_blocked_recovery_restart_consumes_once_then_resumes_owned_job(
 @pytest.mark.parametrize("binding", ["origin", "recovery"])
 @pytest.mark.parametrize("executor_pid", [None, 424242])
 def test_sweep_restart_settles_unaccepted_recovery_before_pid_liveness_and_reconciles_owned_job(
-    tmp_path, binding, executor_pid,
+    tmp_path, binding, executor_pid, monkeypatch,
 ):
     db, orch, queue = _seed_org_with_orch(tmp_path)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *_: pytest.fail("restart recovery settlement must not reclaim"),
+    )
     _claim_interrupted_recovery(db, "TASK-REC", binding=binding)
     _seed_job(db, "JOB-REC", "TASK-REC", status="running")
     db.insert_task(TaskRecord(id="TASK-OTHER", brief="other"))
@@ -2399,10 +2425,14 @@ def test_late_callback_after_restart_settlement_is_rejected_without_revival(tmp_
     assert db.get_task_results("TASK-REC") == []
 
 
-def test_sweep_in_progress_to_failed(tmp_path: Path) -> None:
+def test_sweep_in_progress_to_failed(tmp_path: Path, monkeypatch) -> None:
     db = _seed_org(tmp_path)
     db.insert_task(TaskRecord(id="T-1", brief="x"))
     db.update_task("T-1", status=TaskStatus.IN_PROGRESS)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *_: pytest.fail("startup without orchestrator must not reclaim"),
+    )
 
     _sweep_on_startup(db, TaskQueue(), "test")
 
@@ -2410,6 +2440,76 @@ def test_sweep_in_progress_to_failed(tmp_path: Path) -> None:
     assert t.status == TaskStatus.FAILED
     # THR-079: null executor_pid → fail-closed with undeterminable liveness note.
     assert t.note and "liveness undeterminable" in t.note
+
+
+def test_sweep_failed_writer_attempts_reclamation_after_audit_and_parent_wake(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    db.insert_task(TaskRecord(
+        id="T-RECLAIM", brief="x", assigned_agent="dev_agent",
+    ))
+    db.update_task("T-RECLAIM", status=TaskStatus.IN_PROGRESS)
+    observed = []
+
+    def reclaim(actual_orch, task_id):
+        observed.append((
+            actual_orch is orch,
+            db.get_task(task_id).status,
+            [row["action"] for row in db.get_audit_logs(task_id)],
+        ))
+
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        reclaim,
+    )
+
+    _sweep_on_startup(db, queue, "test", orch)
+
+    assert observed == [(
+        True,
+        TaskStatus.FAILED,
+        ["daemon_restart_failure"],
+    )]
+
+
+@pytest.mark.parametrize("executor_pid", [None, 99999], ids=["unknown", "dead"])
+def test_startup_failure_shipping_seam_removes_real_eligible_linked_worktree(
+    tmp_path: Path, monkeypatch, executor_pid,
+) -> None:
+    from runtime.daemon.sessions import SessionTracker
+    from tests.test_run_step import (
+        _admit_terminal_worktree,
+        _git,
+        _registered_terminal_worktree,
+    )
+
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    task_id = f"TASK-STARTUP-REAL-{'UNKNOWN' if executor_pid is None else 'DEAD'}"
+    db.insert_task(TaskRecord(
+        id=task_id,
+        brief="real startup reclamation",
+        assigned_agent="dev_agent",
+        status=TaskStatus.IN_PROGRESS,
+    ))
+    if executor_pid is not None:
+        db.update_task(task_id, executor_pid=executor_pid)
+    primary, candidate = _registered_terminal_worktree(
+        orch._paths, task_id,
+    )
+    orch.attach_sessions(SessionTracker())
+    _admit_terminal_worktree(monkeypatch)
+
+    _sweep_on_startup(db, queue, "test", orch)
+
+    assert db.get_task(task_id).status is TaskStatus.FAILED
+    assert not candidate.exists()
+    assert str(candidate) not in _git(
+        primary, "worktree", "list", "--porcelain",
+    ).stdout
+    assert _git(
+        primary, "show-ref", "--verify", f"refs/heads/task/{task_id}",
+    ).returncode == 0
 
 
 def test_sweep_parked_delegated_with_all_children_terminal_reenqueues(tmp_path):

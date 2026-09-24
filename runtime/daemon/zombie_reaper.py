@@ -243,8 +243,12 @@ def _sweep_org_zombies(
                         cancelled_at=now.isoformat(),
                     )
                     if committed and orchestrator is not None:
-                        from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+                        from runtime.orchestrator.run_step import (
+                            _enqueue_parent_if_waiting,
+                            _reclaim_terminal_task_worktree,
+                        )
                         _enqueue_parent_if_waiting(orchestrator, task_id)
+                        _reclaim_terminal_task_worktree(orchestrator, task_id)
                     continue
                 # TTL expired — cancel.
                 # THR-079 ruling: no auto-revisit. Cancel via the existing
@@ -261,8 +265,12 @@ def _sweep_org_zombies(
                 )
                 audit.log_zombie_cancelled(task_id, agent)
                 if orchestrator is not None:
-                    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+                    from runtime.orchestrator.run_step import (
+                        _enqueue_parent_if_waiting,
+                        _reclaim_terminal_task_worktree,
+                    )
                     _enqueue_parent_if_waiting(orchestrator, task_id)
+                    _reclaim_terminal_task_worktree(orchestrator, task_id)
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +301,7 @@ def _consume_zombie_fingerprint(
     _consume_completion_report(
         orchestrator, task_id, orphaned_report,
         result_row_id=fingerprint.get("id"),
+        reclaim_terminal_worktree=False,
     )
 
 

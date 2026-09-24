@@ -17,9 +17,14 @@ escalated}.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
+import stat
+import subprocess
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Callable, NamedTuple
 
 from runtime.models import BlockKind, TaskStatus
@@ -42,6 +47,300 @@ TERMINAL_STATES = frozenset({
 # block_kind IS NULL (a live subprocess) is deliberately NOT a parked carrier.
 # Phase 3 (THR-037): the deprecated BLOCKED status was retired.
 _PARKED_CARRIER_STATUSES = frozenset({TaskStatus.IN_PROGRESS})
+
+_TERMINAL_WORKTREE_STATUSES = frozenset({
+    TaskStatus.COMPLETED,
+    TaskStatus.FAILED,
+    TaskStatus.CANCELLED,
+})
+_TERMINAL_WORKTREE_TIMEOUT_SECONDS = 5.0
+_TERMINAL_WORKTREE_OUTPUT_LIMIT = 1_000_000
+_TERMINAL_WORKTREE_MAX_PROCESSES = 32_768
+_TERMINAL_WORKTREE_MAX_FDS = 131_072
+
+
+class TerminalWorktreeReclaimOutcome(NamedTuple):
+    """Bounded, non-raising disposition for one terminal hook attempt."""
+
+    kind: str
+    reason: str
+
+
+def _run_terminal_worktree_command(
+    args: list[str], *, cwd: Path, timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run one literal bounded probe/action without a shell."""
+    return subprocess.run(
+        args,
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        timeout=max(timeout, 0.001),
+        check=False,
+    )
+
+
+def _terminal_worktree_remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("terminal worktree reclamation deadline expired")
+    return remaining
+
+
+def _terminal_worktree_path_has_symlink(path: Path) -> bool:
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if stat.S_ISLNK(current.lstat().st_mode):
+            return True
+    return False
+
+
+def _terminal_worktree_path_contains(root: Path, target: str) -> bool:
+    if target.endswith(" (deleted)"):
+        target = target[:-10]
+    if not os.path.isabs(target):
+        return False
+    try:
+        return os.path.commonpath((str(root), os.path.normpath(target))) == str(root)
+    except (OSError, ValueError):
+        return False
+
+
+def _terminal_worktree_process_reference(
+    candidate: Path, deadline: float,
+) -> str | None:
+    """Return a preservation reason for a live/uncertain same-UID /proc ref."""
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return "process-probe-unavailable"
+    try:
+        entries = [entry for entry in proc.iterdir() if entry.name.isdigit()]
+    except OSError:
+        return "process-probe-unavailable"
+    if len(entries) > _TERMINAL_WORKTREE_MAX_PROCESSES:
+        return "process-probe-truncated"
+
+    uid = os.getuid()
+    observed_fds = 0
+    for entry in entries:
+        _terminal_worktree_remaining(deadline)
+        try:
+            owner = entry.stat(follow_symlinks=False).st_uid
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return "process-probe-uncertain"
+        if owner != uid:
+            continue
+
+        try:
+            cwd_target = os.readlink(entry / "cwd")
+        except FileNotFoundError:
+            continue
+        except OSError:
+            if not entry.exists():
+                continue
+            return "process-probe-uncertain"
+        if _terminal_worktree_path_contains(candidate, cwd_target):
+            return "live-process-reference"
+
+        try:
+            with os.scandir(entry / "fd") as fds:
+                for fd in fds:
+                    _terminal_worktree_remaining(deadline)
+                    observed_fds += 1
+                    if observed_fds > _TERMINAL_WORKTREE_MAX_FDS:
+                        return "process-probe-truncated"
+                    try:
+                        fd_target = os.readlink(fd.path)
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
+                        if not entry.exists():
+                            break
+                        return "process-probe-uncertain"
+                    if _terminal_worktree_path_contains(candidate, fd_target):
+                        return "live-process-reference"
+        except FileNotFoundError:
+            continue
+        except OSError:
+            if not entry.exists():
+                continue
+            return "process-probe-uncertain"
+    return None
+
+
+def _reclaim_terminal_task_worktree(
+    orch: "Orchestrator", task_id: str,
+) -> TerminalWorktreeReclaimOutcome:
+    """Remove one exact clean, durable, quiescent task worktree fail-closed.
+
+    This is a forward-only, one-shot terminal hook.  It never scans for other
+    worktrees, retries, deletes a branch, changes task state, signals a process,
+    or raises into the terminal transition that called it.
+    """
+    deadline = time.monotonic() + _TERMINAL_WORKTREE_TIMEOUT_SECONDS
+
+    def preserve(reason: str) -> TerminalWorktreeReclaimOutcome:
+        logger.info("terminal worktree %s preserved: %s", task_id, reason)
+        return TerminalWorktreeReclaimOutcome("preserved", reason)
+
+    def run(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        result = _run_terminal_worktree_command(
+            args,
+            cwd=cwd,
+            timeout=_terminal_worktree_remaining(deadline),
+        )
+        _terminal_worktree_remaining(deadline)
+        if len(result.stdout) + len(result.stderr) > _TERMINAL_WORKTREE_OUTPUT_LIMIT:
+            raise ValueError("terminal worktree probe output exceeded limit")
+        return result
+
+    try:
+        _terminal_worktree_remaining(deadline)
+        task = orch._db.get_task(task_id)
+        if task is None:
+            return preserve("task-missing")
+        if task.status not in _TERMINAL_WORKTREE_STATUSES:
+            return preserve("status-ineligible")
+        agent = task.assigned_agent
+        if not agent or agent not in orch.teams.all_agents():
+            return preserve("agent-unregistered")
+
+        primary = orch._paths.workspaces_dir / agent / "repos" / "happyranch"
+        candidate = primary / ".claude" / "worktrees" / task_id
+        if not primary.is_absolute() or not candidate.is_absolute():
+            return preserve("path-noncanonical")
+        if candidate.parent != primary / ".claude" / "worktrees":
+            return preserve("path-noncanonical")
+        if not os.path.lexists(primary):
+            return preserve("primary-missing")
+        if _terminal_worktree_path_has_symlink(primary):
+            return preserve("primary-symlinked")
+        if primary.resolve(strict=True) != primary:
+            return preserve("primary-noncanonical")
+        if not os.path.lexists(candidate):
+            return preserve("worktree-absent")
+        if _terminal_worktree_path_has_symlink(candidate):
+            return preserve("worktree-symlinked")
+        if candidate.resolve(strict=True) != candidate:
+            return preserve("worktree-noncanonical")
+        if primary.stat().st_dev != candidate.stat().st_dev:
+            return preserve("cross-device")
+
+        bare = run(["git", "rev-parse", "--is-bare-repository"], primary)
+        if bare.returncode != 0 or bare.stdout.strip() != "false":
+            return preserve("primary-not-nonbare")
+        top = run(["git", "rev-parse", "--show-toplevel"], primary)
+        if top.returncode != 0 or Path(top.stdout.strip()) != primary:
+            return preserve("primary-root-mismatch")
+
+        listed = run(["git", "worktree", "list", "--porcelain"], primary)
+        if listed.returncode != 0:
+            return preserve("worktree-registration-unknown")
+        record: dict[str, str] | None = None
+        for raw_record in listed.stdout.strip().split("\n\n"):
+            fields: dict[str, str] = {}
+            for line in raw_record.splitlines():
+                key, _, value = line.partition(" ")
+                fields[key] = value
+            if fields.get("worktree") == str(candidate):
+                record = fields
+                break
+        if record is None:
+            return preserve("worktree-unregistered")
+        expected_branch = f"refs/heads/task/{task_id}"
+        if candidate.name != task_id or record.get("branch") != expected_branch:
+            return preserve("worktree-identity-mismatch")
+
+        status = run(
+            ["git", "status", "--porcelain", "--untracked-files=all"], candidate,
+        )
+        if status.returncode != 0:
+            return preserve("worktree-status-unknown")
+        if status.stdout:
+            return preserve("worktree-dirty")
+
+        durable = run([
+            "git", "for-each-ref", "--contains", "HEAD",
+            "--format=%(refname)", "refs/remotes",
+        ], candidate)
+        if durable.returncode != 0:
+            return preserve("remote-ref-unknown")
+        if not [line for line in durable.stdout.splitlines() if line.startswith("refs/remotes/")]:
+            return preserve("commit-not-durable")
+
+        branch = f"task/{task_id}"
+        pull_requests = run([
+            "gh", "pr", "list", "--state", "all", "--head", branch,
+            "--json", "number,state", "--limit", "100",
+        ], primary)
+        if pull_requests.returncode != 0:
+            return preserve("pull-request-probe-unknown")
+        try:
+            pr_rows = json.loads(pull_requests.stdout)
+        except (json.JSONDecodeError, TypeError):
+            return preserve("pull-request-probe-unknown")
+        if (
+            not isinstance(pr_rows, list)
+            or len(pr_rows) >= 100
+            or any(
+                not isinstance(row, dict)
+                or not isinstance(row.get("number"), int)
+                or row.get("state") not in {"OPEN", "CLOSED", "MERGED"}
+                for row in pr_rows
+            )
+        ):
+            return preserve("pull-request-probe-unknown")
+        if any(row["state"] != "MERGED" for row in pr_rows):
+            return preserve("unmerged-pull-request")
+
+        sessions = getattr(orch, "_sessions", None)
+        if sessions is None:
+            return preserve("session-tracker-unavailable")
+        try:
+            if any(tid == task_id for tid, _agent, _sid in sessions.iter_active()):
+                return preserve("live-session")
+            if sessions.iter_task_cancel_controls(task_id):
+                return preserve("live-control")
+            if sessions.iter_task_pids(task_id):
+                return preserve("live-pid")
+        except Exception:
+            return preserve("session-probe-unknown")
+
+        process_reason = _terminal_worktree_process_reference(candidate, deadline)
+        if process_reason is not None:
+            return preserve(process_reason)
+
+        _terminal_worktree_remaining(deadline)
+        results = orch._db.get_task_results(task_id)
+        applicable = [row for row in results if row.get("agent") == agent]
+        if applicable:
+            risks = applicable[-1].get("risks_flagged")
+            if risks is not None and not isinstance(risks, list):
+                return preserve("deferral-evidence-unknown")
+            if any(
+                isinstance(risk, str) and risk.startswith("worktree-deferred:")
+                for risk in (risks or [])
+            ):
+                return preserve("recorded-deferral")
+
+        removed = run(
+            ["git", "worktree", "remove", str(candidate)],
+            primary,
+        )
+        if removed.returncode != 0:
+            return preserve("remove-failed")
+        logger.info("terminal worktree %s removed", task_id)
+        return TerminalWorktreeReclaimOutcome("removed", "eligible")
+    except subprocess.TimeoutExpired:
+        return preserve("probe-timeout")
+    except TimeoutError:
+        return preserve("deadline-expired")
+    except Exception:
+        logger.exception("terminal worktree %s probe failed closed", task_id)
+        return preserve("probe-error")
 
 
 def is_root(task: "TaskRecord") -> bool:
@@ -569,7 +868,11 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             # The ledger/result/current-owner binding changed after the
             # callback was observed.  Never fall back to an unrelated latest
             # result row; terminally fail closed instead.
-            _fail(orch, task_id, note="accepted completion recovery result no longer matches durable binding")
+            _fail(
+                orch, task_id,
+                note="accepted completion recovery result no longer matches durable binding",
+                reclaim_terminal_worktree=False,
+            )
             _enqueue_parent_if_waiting(orch, task_id, root_auto_revisit_spawned=False)
             _maybe_post_thread_followup(
                 orch, task_id, status=TaskStatus.FAILED, auto_revisit_spawned=False,
@@ -646,6 +949,7 @@ def _consume_accepted_completion_recovery(
     if _recovery_kind != "no_v2":
         _consume_completion_report(
             orch, task_id, report, result_row_id=_resolved_recovery_row,
+            reclaim_terminal_worktree=False,
         )
         return
     effects_applied = (
@@ -658,7 +962,10 @@ def _consume_accepted_completion_recovery(
         # recovery transaction.  A missing job remains an ordinary fail-closed
         # outcome; it is not a recoverable partial receipt.
         if any(db.get_job_status(jid) is None for jid in deduped):
-            _consume_completion_report(orch, task_id, report, result_row_id=result_row_id)
+            _consume_completion_report(
+                orch, task_id, report, result_row_id=result_row_id,
+                reclaim_terminal_worktree=False,
+            )
             return
         transitioned = db.consume_accepted_blocked_task_completion_recovery(
             task_id=task_id, agent=agent, session_id=session_id,
@@ -773,6 +1080,7 @@ def _consume_accepted_completion_recovery(
             recovery_reentry=(current.task_type == "task"),
             recovery_owner=(agent, session_id) if current.task_type == "task" else None,
             recovery_result_id=result_row_id if current.task_type == "task" else None,
+            reclaim_terminal_worktree=False,
         )
         # ``run_authority_hook`` may have returned the already-authorized
         # same root to pending.  Couple its exact recovery receipt now; a
@@ -1130,6 +1438,7 @@ def _consume_completion_report(
     *, result_row_id: int | None = None, recovery_reentry: bool = False,
     recovery_owner: tuple[str, str] | None = None,
     recovery_result_id: int | None = None,
+    reclaim_terminal_worktree: bool = True,
 ) -> None:
     """Guard the common consumer with the v2 decision-dispatch receipt.
 
@@ -1147,6 +1456,10 @@ def _consume_completion_report(
     if task is None:
         return
     agent = task.assigned_agent or "unknown"
+    reclaim_kwargs = (
+        {} if reclaim_terminal_worktree
+        else {"reclaim_terminal_worktree": False}
+    )
     resolved_row_id = _resolve_completion_result_row_id(db, task_id, report, result_row_id)
     outcome = _v2_decision_dispatch_gate(orch, task_id, report, resolved_row_id, agent)
     if outcome.kind == _V2_DECISION_DISPATCH_SKIP:
@@ -1156,6 +1469,7 @@ def _consume_completion_report(
             orch, task_id, report, result_row_id=resolved_row_id,
             recovery_reentry=recovery_reentry, recovery_owner=recovery_owner,
             recovery_result_id=recovery_result_id,
+            **reclaim_kwargs,
         )
         return
     # ADMITTED: the winning claim authorizes exactly one consumer entry.  The
@@ -1168,6 +1482,7 @@ def _consume_completion_report(
             orch, task_id, report, result_row_id=resolved_row_id,
             recovery_reentry=recovery_reentry, recovery_owner=recovery_owner,
             recovery_result_id=recovery_result_id,
+            **reclaim_kwargs,
         )
     except BaseException:
         # On exception, attempt the prescribed refusal with that SAME causal
@@ -1206,6 +1521,7 @@ def _consume_completion_report_body(
     *, result_row_id: int | None = None, recovery_reentry: bool = False,
     recovery_owner: tuple[str, str] | None = None,
     recovery_result_id: int | None = None,
+    reclaim_terminal_worktree: bool = True,
 ) -> None:
     """Consume a persisted CompletionReport and apply its transition.
 
@@ -1229,6 +1545,10 @@ def _consume_completion_report_body(
     if task is None:
         return
     agent = task.assigned_agent or "unknown"
+    reclaim_kwargs = (
+        {} if reclaim_terminal_worktree
+        else {"reclaim_terminal_worktree": False}
+    )
     # THR-181 Track A (founder lifecycle envelope): the single-use continuation
     # envelope, when ACTIVE, marks this consumption as the continued turn's
     # decision — PROVIDED the consumed report is NOT a replay of the original
@@ -1266,7 +1586,10 @@ def _consume_completion_report_body(
             for jid in deduped:
                 if db.get_job_status(jid) is None:
                     note = f"self-blocked but job {jid} not found"
-                    _fail(orch, task_id, note=note)
+                    _fail(
+                        orch, task_id, note=note,
+                        **reclaim_kwargs,
+                    )
                     _enqueue_parent_if_waiting(orch, task_id)
                     _maybe_post_thread_followup(
                         orch, task_id,
@@ -1297,7 +1620,10 @@ def _consume_completion_report_body(
             return
         # Existing escalated path (waiting_on_job_ids empty).
         note = f"self-blocked: {report.output_summary}"
-        _fail(orch, task_id, note=note)
+        _fail(
+            orch, task_id, note=note,
+            **reclaim_kwargs,
+        )
         _enqueue_parent_if_waiting(orch, task_id)
         _maybe_post_thread_followup(
             orch, task_id,
@@ -1350,7 +1676,12 @@ def _consume_completion_report_body(
     # ---- 7. Dispatch on action ----
     if decision.action == "done":
         if recovery_owner is None:
-            completed = _complete(orch, task_id, note=decision.summary or report.output_summary, output_dir=report.output_dir)
+            completed = _complete(
+                orch, task_id,
+                note=decision.summary or report.output_summary,
+                output_dir=report.output_dir,
+                **reclaim_kwargs,
+            )
         else:
             completed = _complete(orch, task_id, note=decision.summary or report.output_summary,
                                   output_dir=report.output_dir,
@@ -1361,7 +1692,8 @@ def _consume_completion_report_body(
                                       orch, task_id,
                                       status=TaskStatus.COMPLETED,
                                       auto_revisit_spawned=False,
-                                  ))
+                                  ),
+                                  **reclaim_kwargs)
         if not completed:
             return
         if recovery_owner is None:
@@ -1383,6 +1715,7 @@ def _consume_completion_report_body(
             _fail(
                 orch, task_id,
                 note=f"non-root escalation requested ({reason}); routed to parent",
+                **reclaim_kwargs,
             )
             _enqueue_parent_if_waiting(orch, task_id)
             _maybe_post_thread_followup(
@@ -1474,7 +1807,11 @@ def _consume_completion_report_body(
         except (KeyError, ValueError):
             expected_manager = None
         if expected_manager != agent or task.current_session_id is None:
-            _fail(orch, task_id, note="manager supersession claim is not current")
+            _fail(
+                orch, task_id,
+                note="manager supersession claim is not current",
+                **reclaim_kwargs,
+            )
             _enqueue_parent_if_waiting(orch, task_id)
             _maybe_post_thread_followup(
                 orch, task_id, status=TaskStatus.FAILED, auto_revisit_spawned=False,
@@ -1539,7 +1876,10 @@ def _consume_completion_report_body(
         err = validate_fanout_decision(decision)
         if err is not None:
             note = f"invalid fanout: {err}"
-            _fail(orch, task_id, note=note)
+            _fail(
+                orch, task_id, note=note,
+                **reclaim_kwargs,
+            )
             _enqueue_parent_if_waiting(orch, task_id)
             _maybe_post_thread_followup(
                 orch, task_id,
@@ -1555,7 +1895,10 @@ def _consume_completion_report_body(
             )
             if child_err is not None:
                 note = f"invalid fanout: {child_err}"
-                _fail(orch, task_id, note=note)
+                _fail(
+                    orch, task_id, note=note,
+                    **reclaim_kwargs,
+                )
                 _enqueue_parent_if_waiting(orch, task_id)
                 _maybe_post_thread_followup(
                     orch, task_id,
@@ -1582,7 +1925,10 @@ def _consume_completion_report_body(
                 )
                 if leg_err is not None:
                     note = f"invalid fanout: {leg_err}"
-                    _fail(orch, task_id, note=note)
+                    _fail(
+                        orch, task_id, note=note,
+                        **reclaim_kwargs,
+                    )
                     _enqueue_parent_if_waiting(orch, task_id)
                     _maybe_post_thread_followup(
                         orch, task_id,
@@ -1704,7 +2050,10 @@ def _consume_completion_report_body(
                 )
             else:
                 note = f"invalid delegate: {err}"
-                _fail(orch, task_id, note=note)
+                _fail(
+                    orch, task_id, note=note,
+                    **reclaim_kwargs,
+                )
                 _enqueue_parent_if_waiting(orch, task_id)
                 _maybe_post_thread_followup(
                     orch, task_id,
@@ -1794,7 +2143,10 @@ def _consume_completion_report_body(
                     # wake their parent; root tasks escalate under this revise limit.
                     reason = f"iteration_budget_exhausted: revise budget ({cap} rounds) exhausted"
                     if not is_root(task):
-                        _fail(orch, task_id, note=reason)
+                        _fail(
+                            orch, task_id, note=reason,
+                            **reclaim_kwargs,
+                        )
                         _enqueue_parent_if_waiting(orch, task_id)
                         _maybe_post_thread_followup(
                             orch, task_id,
@@ -1852,7 +2204,10 @@ def _consume_completion_report_body(
                     )
             except ValueError as e:
                 note = f"invalid decision attachments: {e}"
-                _fail(orch, task_id, note=note)
+                _fail(
+                    orch, task_id, note=note,
+                    **reclaim_kwargs,
+                )
                 _enqueue_parent_if_waiting(orch, task_id)
                 _maybe_post_thread_followup(
                     orch, task_id,
@@ -1899,7 +2254,10 @@ def _consume_completion_report_body(
 
     # ---- 8. Unknown action ----
     note = f"unknown action: {decision.action}"
-    _fail(orch, task_id, note=note)
+    _fail(
+        orch, task_id, note=note,
+        **reclaim_kwargs,
+    )
     _enqueue_parent_if_waiting(orch, task_id)
     _maybe_post_thread_followup(
         orch, task_id,
@@ -2918,7 +3276,8 @@ def _is_already_terminal(orch: "Orchestrator", task_id: str) -> bool:
 def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str | None = None,
               recovery_owner: tuple[str, str, int] | None = None,
               after_recovery_cleanup: Callable[[], None] | None = None,
-              after_recovery_parent_effect: Callable[[], None] | None = None) -> bool:
+              after_recovery_parent_effect: Callable[[], None] | None = None,
+              reclaim_terminal_worktree: bool = True) -> bool:
     from datetime import datetime, timezone
     # Idempotence guard: /cancel may have already taken this task to FAILED
     # between Popen return and here. Don't resurrect a cancelled task back to
@@ -2941,6 +3300,8 @@ def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str 
     orch._update_task_history(task_id)
     if recovery_owner is None:
         _kill_jobs_for_terminating_task(orch, task_id)
+        if reclaim_terminal_worktree:
+            _reclaim_terminal_task_worktree(orch, task_id)
     elif orch._db.mark_task_completion_recovery_callback_consumed(
         task_id=task_id, agent=recovery_owner[0], session_id=recovery_owner[1],
         result_row_id=recovery_owner[2], settled_at=datetime.now(timezone.utc).isoformat(),
@@ -2953,7 +3314,10 @@ def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str 
     return True
 
 
-def _fail(orch: "Orchestrator", task_id: str, *, note: str) -> None:
+def _fail(
+    orch: "Orchestrator", task_id: str, *, note: str,
+    reclaim_terminal_worktree: bool = True,
+) -> None:
     from datetime import datetime, timezone
     # Idempotence guard — same rationale as _complete. When /cancel SIGTERMs
     # the subprocess, run_step re-enters via the post-execution classifier and
@@ -2992,6 +3356,8 @@ def _fail(orch: "Orchestrator", task_id: str, *, note: str) -> None:
     _log_verdict_if_delegated(orch, task_id, success=False)
     orch._update_task_history(task_id)
     _kill_jobs_for_terminating_task(orch, task_id)
+    if reclaim_terminal_worktree:
+        _reclaim_terminal_task_worktree(orch, task_id)
 
 
 def _handoff_consumed_recovery_terminal_effects(

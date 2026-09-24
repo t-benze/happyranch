@@ -392,6 +392,29 @@ recovery. `false` prevents those action admissions and affects later admissions
 only; it cannot revoke an already admitted call. Malformed values retain the
 shared loader's existing error behavior.
 
+## Terminal task-worktree reclamation
+
+Terminal task-worktree reclamation has no configuration key or cadence. On the
+approved ordinary `completed`, `failed`, and `cancelled` writer seams, after
+durable terminal state and applicable process/session/control/job teardown, the
+runtime makes one bounded attempt for only the assigned registered agent's
+literal `repos/happyranch/.claude/worktrees/<task-id>` candidate. It requires a
+canonical non-symlink same-device primary and worktree, exact Git registration
+and branch identity, clean status, durable remote containment, no open or
+closed-unmerged PR, no live session/control/PID/cwd/fd reference, no recorded
+`worktree-deferred:` risk, and a shared deadline. Unknown, unavailable,
+malformed, timed-out, dirty, unpublished, live, foreign, or ambiguous evidence
+preserves the worktree.
+
+Successful removal is literal non-force `git worktree remove`; no branch is
+deleted. A failed gate or removal is a typed/logged preservation outcome and
+never changes terminal semantics or schedules a retry. `superseded`,
+`blocked_on_job`, accepted/restart completion-recovery settlement, legacy
+normalization, and historical cleanup remain outside this mechanism. This is
+separate from `workspace_cleanup.enabled` and
+`workspace_cleanup.reclamation_actions_enabled`; neither switch expands or
+disables the terminal hook.
+
 ## Agent Configuration: Single Source of Truth (THR-095)
 
 **Founder-ratified invariant (THR-095 option B):** Every piece of agent

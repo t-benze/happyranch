@@ -51,10 +51,11 @@ class DirectManifestV2(BaseModel):
         ...,
         description=(
             "Which first-party workspace-bootstrap convention this CLI's "
-            "agent workspaces should use (Claude-style .claude/settings.json "
-            "+ CLAUDE.md, or AGENTS.md-style for codex/opencode/pi). Declared "
-            "by the connecting wrapper, not chosen by the founder — only the "
-            "wrapper author knows which convention their CLI expects."
+            "agent workspaces should use. Every convention creates a regular "
+            "AGENTS.md plus raw relative CLAUDE.md -> AGENTS.md pair; "
+            "provider-specific ancillary bootstrap/settings remain adapter-defined. "
+            "Declared by the connecting wrapper, not chosen by the founder — only "
+            "the wrapper author knows which convention their CLI expects."
         ),
     )
 
