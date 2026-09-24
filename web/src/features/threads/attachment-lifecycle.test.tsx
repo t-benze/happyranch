@@ -13,7 +13,7 @@ import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
-import { renderWithProviders } from '@/test/render';
+import { I18nTestBoundary, renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 
 const SLUG = 'alpha';
@@ -1093,9 +1093,13 @@ describe('attachment lifecycle — lost response and post-200 tail failure (C6)'
     const user = userEvent.setup();
     render(
       <MemoryRouter initialEntries={[`/orgs/${SLUG}/threads/THR-001`]}>
-        <AppProvider client={client}>
-          <AppRoutes />
-        </AppProvider>
+        {/* Bespoke mount mirrors production `AppShell` (I18nProvider outside
+            AppProvider): the W2a shell reads locale from the real provider. */}
+        <I18nTestBoundary>
+          <AppProvider client={client}>
+            <AppRoutes />
+          </AppProvider>
+        </I18nTestBoundary>
       </MemoryRouter>,
     );
     const composer = await screen.findByLabelText(/Compose follow-up/i);

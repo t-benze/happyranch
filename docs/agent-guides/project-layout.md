@@ -48,29 +48,52 @@ Tracked source is split by product surface:
 |   |-- thread_forward.py
 |   `-- client/client.py
 |-- runtime/                     # Python runtime package shipped by pyproject
-|   |-- config.py, models.py, runtime.py
+|   |-- config.py, models.py, runtime.py, system_assistant.py
+|   |-- adapters/                # Claude, Codex, opencode, and Pi adapters
 |   |-- daemon/                  # FastAPI app, routes, queue, sessions, jobs/thread runners
 |   |-- infrastructure/          # SQLite, audit, KB, learnings, threads, artifacts
 |   |-- orchestrator/            # task state machine, executors, prompts, teams, workspaces, chains
-|   |-- skills/bundled/          # release-owned agent instructions and supporting assets
+|   |-- platform/                # process/session backends and platform enforcement
+|   |-- portability/             # org portability classification helpers
+|   |-- remote_access/           # managed remote-access client and packaging support
+|   |-- remote_jobs/             # pure v1 remote-job contracts; no transport/controller yet
+|   |-- skills/                  # bundled contracts, managed catalog packages, and skill machinery
+|   |   |-- bundled/             # release-owned instructions and supporting assets
+|   |   `-- <managed-slug>/      # catalog package when skill.yaml is present
 |   `-- tools/                   # runtime tooling
 |-- web/                         # React SPA; build output goes to web/dist/
 |   |-- src/                     # features, hooks, design-system, host, lib/api, mocks, tests
 |   |-- public/                  # static brand assets
 |   `-- scripts/                 # web-local build/design-system helpers
+|-- app/                         # macOS app and Linux connector/sidecar sources
+|-- deploy/remote-access/        # remote-access deployment assets and runbook
+|-- labs/tenant_isolation/       # isolated tenant-isolation research harness
+|-- packaging/                   # daemon packaging/build entrypoints
+|-- scripts/                     # daemon/web helpers, local CI, and migrations
+|   `-- migrations/              # forward-only DB/filesystem migration scripts
 |-- skills/happyranch/           # founder-facing CLI skill and shell helper
 |-- docs/
 |   |-- agent-guides/            # on-demand agent/developer reference
-|   |-- product/                 # product notes
-|   |-- setup/
-|   `-- superpowers/{plans,specs}/
+|   |-- adr/                     # architecture decision records
+|   |-- design-overhaul/         # dated product/design project artifacts
+|   |-- manual/                  # documentation-site source
+|   |-- operations/              # operator runbooks and release checklists
+|   |-- product/                 # product notes and PRDs
+|   |-- superpowers/{plans,specs}/ # historical plans and indexed design history
+|   `-- local-ci.md, jenkins-jobs.md # supported development/CI operations
 |-- examples/orgs/hk-macau-tourism/  # canonical sample org tree
-|-- scripts/                     # daemon/web helpers and one-off migrations
-|   `-- migrations/              # forward-only DB/filesystem migration scripts
-`-- tests/                       # root tests plus client/, daemon/, infrastructure/, integration/, orchestrator/, contract/
+|-- org/config.yaml              # shipped eligibility-policy guard/fixture used by tests
+`-- tests/                       # Python unit, contract, daemon, integration, and fixture coverage
 ```
 
 `pyproject.toml` packages `runtime` and `cli`; imports in tests and app code should use those packages. Do not treat top-level `src/` as canonical source unless tracked `.py` files are added there and packaging/imports are updated.
+
+The tracked root `org/config.yaml` has one narrow in-repo role:
+`tests/test_skill_cutover_completeness.py` reads the real file as the shipped
+skill-eligibility-policy guard and fixture. It is not packaged as a top-level
+org by `pyproject.toml`. Deployed org content lives under
+`<runtime>/orgs/<slug>/org/`, while the canonical bootstrap example remains
+`examples/orgs/hk-macau-tourism/`.
 
 ## Runtime Container
 

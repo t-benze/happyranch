@@ -442,6 +442,7 @@ def test_activation_does_not_turn_guessed_release_into_oracle(client_with_runtim
         "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy/activations",
         json={
             "release_id": "APR-guessed", "expected_previous_epoch": 99,
+            "expected_selector_id": None,
             "request_id": "REQ-activate", "action": "reactivate_rollback",
             "acknowledge_shared_credential_attribution": True,
         },
@@ -461,6 +462,7 @@ def test_history_is_bounded_paginated_secret_free_and_activation_bootstraps(clie
     created = client.post(f"{base}/releases", json=_release_body()).json()["release"]
     activated = client.post(f"{base}/activations", json={
         "release_id": created["id"], "expected_previous_epoch": 0,
+        "expected_selector_id": None,
         "request_id": "REQ-activate-first", "action": "activate",
         "acknowledge_shared_credential_attribution": True,
     })

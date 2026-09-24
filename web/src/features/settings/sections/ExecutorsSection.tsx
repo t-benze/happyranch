@@ -34,20 +34,25 @@ import { Button } from '@/design-system/primitives/Button';
 import { ConnectFlow } from '@/shared/connect/ConnectFlow';
 import type { ConnectMode } from '@/shared/connect/useRuntimeConnect';
 import { RUNTIME_PROFILES_KEY } from '@/hooks/runtime-executors';
+import { useTranslation } from '@/hooks/i18n';
 import { ExecutorBinariesSection } from './ExecutorBinariesSection';
 import { CustomProfilesSection } from './CustomProfilesSection';
 
 /** Connected-card subtitle for the Settings mount, keyed on the originating
  *  mode. The onboarding "manage your CLIs anytime from Settings" clause is
  *  dropped — it is circular on the Settings surface itself. */
-function connectedSubtitle(via: ConnectMode): string {
+function connectedSubtitleKey(
+  via: ConnectMode,
+): 'settings.executors.connected.custom' | 'settings.executors.connected.builtin' {
   return via === 'custom'
-    ? 'Your custom CLI is registered and available to every org.'
-    : 'This CLI is registered — the daemon can now launch agents on it.';
+    ? 'settings.executors.connected.custom'
+    : 'settings.executors.connected.builtin';
 }
 
 export function ExecutorsSection(): JSX.Element {
+  const { t, render } = useTranslation();
   const [connecting, setConnecting] = useState(false);
+  const connectedSubtitle = (via: ConnectMode): string => t(connectedSubtitleKey(via));
   const qc = useQueryClient();
 
   /** Collapse back to the list. Invalidate BOTH management queries so a connect
@@ -77,16 +82,16 @@ export function ExecutorsSection(): JSX.Element {
                 className="text-text-secondary hover:text-text-primary inline-flex items-center gap-1.5 text-xs"
               >
                 <ArrowLeft aria-hidden="true" size={14} />
-                Back to executors
+                {t('settings.executors.back')}
               </button>
               <h3 className="font-display text-text-primary mt-3 text-base font-semibold">
-                Connect a CLI
+                {t('settings.executors.connectCli')}
               </h3>
             </div>
           }
           connectedPrimaryAction={
             <Button type="button" onClick={backToList}>
-              Done
+              {t('settings.executors.done')}
             </Button>
           }
         />
@@ -110,7 +115,7 @@ export function ExecutorsSection(): JSX.Element {
             data-testid="connect-a-cli"
           >
             <Plug aria-hidden="true" size={16} />
-            Connect a CLI
+            {t('settings.executors.connectCli')}
           </Button>
         </div>
       )}
@@ -118,15 +123,16 @@ export function ExecutorsSection(): JSX.Element {
       {/* Read-only notice — always visible at the bottom, verbatim (Step-0 §6-5). */}
       <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
         <h3 className="text-text-primary text-sm font-medium">
-          Per-agent executor assignment
+          {t('settings.executors.assignment.title')}
         </h3>
         <p className="text-text-secondary mt-1 text-sm">
-          Assign executors to individual agents from the{' '}
-          <a href="../agents" className="text-accent hover:underline">
-            Agents page
-          </a>.
-          Each agent's executor (claude, codex, opencode, pi) is set during
-          enrollment and cannot be changed from Settings.
+          {render('settings.executors.assignment.body', {
+            link: (
+              <a href="../agents" className="text-accent hover:underline">
+                {t('settings.executors.assignment.agentsPage')}
+              </a>
+            ),
+          })}
         </p>
       </div>
     </section>

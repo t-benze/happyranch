@@ -705,6 +705,30 @@ def test_exact_untouched_merged_s2_upgrades_and_preserves_every_unrelated_byte_v
         "remote_enrollment_challenge_expiry",
         "task_completion_recoveries",
     }
+    # Additive THR-229 v2 authority tables (checkpoints B1 control tables, the
+    # C1 immutable launch-binding table, the C2 result-keyed attempt journal,
+    # the C3b candidate/pin/claim-audit tables and the C3c immutable
+    # evaluation table) exist in every current Database initialization and are
+    # unrelated to the remote-job migration under test. Excluding their
+    # table/index/trigger rows keeps the assertion focused on the preserved
+    # historical schema instead of reporting an expected additive table as
+    # corruption.
+    additive_authority_tables = {
+        "authority_policy_v2_releases",
+        "authority_policy_v2_activations",
+        "authority_policy_active_selector",
+        "authority_policy_active_selector_history",
+        "authority_policy_v2_control_audit",
+        "authority_policy_v2_session_bindings",
+        "authority_policy_v2_attempts",
+        "authority_policy_v2_candidates",
+        "authority_policy_v2_pins",
+        "authority_policy_v2_candidate_audit",
+        "authority_policy_v2_evaluations",
+        "authority_policy_v2_continue_envelopes",
+        "authority_policy_v2_recovery_notifications",
+        "authority_policy_v2_root_dispatch",
+    }
     def unrelated(schema: list[tuple]) -> list[tuple]:
         return [
             row for row in schema
@@ -713,7 +737,7 @@ def test_exact_untouched_merged_s2_upgrades_and_preserves_every_unrelated_byte_v
                 "remote_runners",
                 "remote_runner_enrollment_challenges",
                 "task_completion_recoveries",
-            }
+            } | additive_authority_tables
         ]
     assert unrelated(after_schema) == unrelated(before_schema)
     for table, rows in before_rows.items():

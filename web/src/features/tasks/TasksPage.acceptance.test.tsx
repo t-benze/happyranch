@@ -11,6 +11,7 @@ import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvi
 import { mockDashboardApi } from '@/design-system/providers/_mock-dashboard';
 import { mockTasksApi } from '@/design-system/providers/_mock-tasks';
 import { __resetTokenCacheForTests } from '@/lib/auth';
+import { I18nTestBoundary } from '@/test/render';
 import type { TaskRecord } from '@/lib/api/types';
 import { server } from '@/test/server';
 
@@ -51,7 +52,7 @@ function client() {
 function Location() { const location = useLocation(); return <output aria-label="Current URL">{location.pathname}</output>; }
 function mount(qc: ReturnType<typeof client>, slug = 'org-a') {
   const result = render(<MemoryRouter initialEntries={[`/orgs/${slug}/tasks`]}><AppProvider client={qc}>
-    <Link to="/orgs/org-a/tasks">Go A</Link><Link to="/orgs/org-b/tasks">Go B</Link><Location /><AppRoutes />
+    <Link to="/orgs/org-a/tasks">Go A</Link><Link to="/orgs/org-b/tasks">Go B</Link><Location /><I18nTestBoundary><AppRoutes /></I18nTestBoundary>
   </AppProvider></MemoryRouter>);
   mounts.push(result); return result;
 }

@@ -19,6 +19,9 @@ import { RouterProvider, createMemoryRouter } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { AppProvider } from '@/design-system/providers/AppProvider';
 import { resetCapacityOrdering } from '@/design-system/providers/_capacity-ordering';
+import { I18nProvider } from '@/hooks/i18n';
+import type { LocalePreferenceAdapter } from '@/lib/i18n';
+import { I18nTestBoundary } from '@/test/render';
 
 const NativeRequest = globalThis.Request;
 
@@ -35,6 +38,11 @@ export interface RenderGuardedOptions {
    * during-write cases exist to observe (accepted 2.13).
    */
   resetOrdering?: boolean;
+  /**
+   * Optional locale preference adapter (e.g. `savedLocaleAdapter('zh-CN')`).
+   * Omitted, the mount uses the default `I18nTestBoundary` exactly as before.
+   */
+  i18nAdapter?: LocalePreferenceAdapter;
 }
 
 /**
@@ -72,7 +80,20 @@ export function renderGuarded(ui: ReactNode, options: RenderGuardedOptions = {})
     });
   const entries = options.entries ?? ['/'];
   const router = createMemoryRouter(
-    [{ path: '*', element: <AppProvider client={client}>{ui}</AppProvider> }],
+    [{
+      path: '*',
+      element: (
+        options.i18nAdapter ? (
+          <I18nProvider adapter={options.i18nAdapter}>
+            <AppProvider client={client}>{ui}</AppProvider>
+          </I18nProvider>
+        ) : (
+          <I18nTestBoundary>
+            <AppProvider client={client}>{ui}</AppProvider>
+          </I18nTestBoundary>
+        )
+      ),
+    }],
     { initialEntries: entries, initialIndex: options.index ?? entries.length - 1 },
   );
   const view = render(<RouterProvider router={router} />);

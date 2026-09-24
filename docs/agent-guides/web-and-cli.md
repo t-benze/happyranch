@@ -38,7 +38,7 @@ The SPA supports mutations, including task cancellation/revisit and Settings.
 Use `web/src/routes.tsx`, API functions, and the OpenAPI snapshot for the current
 surface. The daemon defaults to loopback; remote access uses the connector.
 
-### Internationalization (W1 foundation)
+### Internationalization (W1 foundation + W2a shell + W2b onboarding + W2c Settings)
 
 The web console has a first-party, typed English/Simplified-Chinese contract in
 `web/src/lib/i18n/` (`locale`, `catalog`, `format`, `coverage`) with the
@@ -58,20 +58,115 @@ delegate to it, and `formatCount` takes an optional locale (omitting it keeps
 the legacy host-default behaviour). An unexpected catalog gap renders the
 English message with English plural grammar, never a raw key.
 
-W1 ships the foundation only. **No route or page is translated, no public
-language selector exists, and preview is not enabled.** Route/page translation
-is W2-W4 (W4 completes the coverage manifest); native preference persistence is
-N0/N1; full-mode automatic environment detection is implemented and unit-tested
-but not enabled until W5. `web/src/lib/i18n/coverage.ts` marks every
-not-yet-migrated mounted route namespace `english-only` (copy-bearing
-`index`/`*` included, copy-free redirects `not-applicable`) and lists the actual
-mounted dialogs, so English fallback is never mistaken for coverage. Foundation
-browser evidence (isolated Storybook probe + the real `main.tsx` startup in
-headless Chrome) runs via `web/scripts/i18n-browser-evidence.mjs`; it asserts the
-real asserted `navigator` language input, the first committed bilingual consumer
-text through the real provider/router (an `I18N_BROWSER_EVIDENCE`-gated,
-test-only build injection), and a causal negative control. Current
-contract: `docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
+**W2a** translated the mounted shell — AppBar page titles and controls, Sidebar
+navigation/aria/org-switcher/account copy, the root loading and NotFound
+fallback, the ErrorBoundary fallback copy, the AddOrgDialog, and the shared
+help/palette presentation — and added CJK-capable SYSTEM font fallbacks to
+`web/src/design-system/tokens/tokens.css` (no webfont download or dependency).
+AddOrgDialog, help and palette also localize the built-in dialog close control:
+`DialogContent` gained a backward-compatible optional `closeLabel` prop
+(defaulting to the legacy English `Close`) that callers pass from the catalog,
+and the pattern/primitive layers remain prop-driven with no locale hook import.
+AddOrgDialog stores the product-owned error identity plus the submitted slug and
+re-translates at render time, so an already-visible mapped error follows a
+locale switch without resubmission while unknown external daemon detail stays
+verbatim.
+
+**W2b** translated the onboarding route (`/onboarding`): `OnboardingPage`
+(first-run vs returning welcome, create/creating/success, the read-only
+broken-org list and the executor-prereq panel), the `ConnectRuntimeStep`
+wrapper chrome, and the shared `src/shared/connect/ConnectFlow.tsx` bodies
+(built-in/custom modes, waiting/committing/connected, retryable + terminal
+failure, clear/recovery, copy feedback and aria text). The add-org error
+classifier/renderer is now the single shared
+`src/lib/addOrgError.ts` consumed by both AddOrgDialog and the
+onboarding create step. Because `ConnectFlow` is shared with Settings ▸
+Executors, translating it also localizes that connect body, but the `settings`
+namespace stays `english-only` in the manifest (the surrounding Settings chrome
+and sections are not translated) and Settings is not claimed as translated.
+User-entered slugs, registered tool names/paths, the slug regex, broken-org raw
+errors and the generated copy-paste CLI prompt (raw step ids, tokens, routes)
+stay byte-for-byte verbatim; mapped categories re-translate on a locale switch
+with no resubmission.
+
+**W2c** translated the Settings surface (`/orgs/:slug/settings/*`): the page
+header, sub-nav, API loading/error copy and panel headings, plus the Assistant,
+Organization, Executors (registered list, custom profiles, binary paths) and
+Daemon / Capacity section bodies. Raw daemon errors, identifiers, executor and
+agent names, config keys, paths, commands and every capacity number stay
+verbatim; only product-owned surrounding copy is localized. The shared
+`EligibilityEditorDialog` (mounted by Organization but owned by Work Hours)
+stays English until W4. W2c also builds the client-only **Settings ▸
+Preferences** language selector (`sections/PreferencesSection.tsx`: English /
+简体中文 endonym radios with their own `lang`, immediate apply through the W1
+`setLocale`, `<html lang>` update, honest pending/saved/failed status) and
+splits the Settings shell so the `preferences` route renders OUTSIDE the
+`useSettings` loading/error/data gate; every other panel keeps that gate
+unchanged. Choosing a language never writes org settings or issues any API
+request. **The selector is closed in production until W3:**
+`src/features/settings/languagePreferenceGate.ts` mounts the sub-nav entry and
+route only when the build sets `VITE_ENABLE_I18N_PREFERENCES=true` (the
+existing `VITE_ENABLE_PROTOTYPES`/`VITE_ENABLE_KB_COMPOSE` build-flag pattern).
+Ordinary builds tree-shake the component out, and a direct
+`/settings/preferences` URL falls through to the existing settings catch-all
+redirect (Assistant). Vitest opens the gate per test with `vi.stubEnv`; the W2c
+browser harness (`web/scripts/w2c-preferences-browser-evidence.mjs`) builds a
+separate preview dist with the flag and checks that the ordinary dist excludes
+the component. It also proves that state-held Settings messages follow a locale
+switch (the Organization Work Hours banner re-translates in place) while raw
+daemon diagnostics stay verbatim, with causal negatives for a pre-translated
+banner (`--defect-dist`) and a translated diagnostic. There is no W3 secondary-pages disclosure yet, no browser/system
+language defaulting (unset/invalid stays English), and no preview is live.
+
+The rest of the console is still English: **route families are W3/W4 and the
+assistant dock body is W4. No public language selector is exposed and preview
+is not enabled.** Native preference persistence is N0/N1; full-mode automatic
+environment detection is implemented and unit-tested but not enabled until W5.
+`web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b/W2c-migrated namespaces
+(`root-shell`, `not-found`, `app-shell`, `help-and-palette`, `onboarding`,
+`settings`) `translated` and every other mounted route namespace `english-only` (copy-free
+redirects `not-applicable`), listing the actual mounted dialogs, so English
+fallback is never mistaken for coverage. Foundation browser evidence (isolated
+Storybook probe + the real `main.tsx` startup in headless Chrome) runs via
+`web/scripts/i18n-browser-evidence.mjs`; W2a shell evidence runs via
+`web/scripts/w2a-shell-browser-evidence.mjs` under an independent
+`I18N_W2A_EVIDENCE`-gated, test-only build injection. It reads the actual first
+committed Sidebar/AppBar DOM plus `<html lang>` and the real navigator
+read-back, retains a causal negative control (`I18N_W2A_EVIDENCE=negative`:
+wrong first shell, later corrected, must be rejected by the same predicate), and
+covers both locales across the observed 1440x900/390x844 light/dark
+combinations for root loading/no-org/NotFound/help (S11/S16)/AddOrg
+(S12/S17)/error/dormant-palette. In both switch directions it records the actual
+`document.activeElement`, retained DOM node identity, open state and
+selection/value for the help non-default tab (S16), the AddOrg typed slug +
+mapped error (S12 wide-light; S17 zh-narrow-light/en-narrow-dark/zh-wide-dark)
+and the palette query + non-default selected row (S13 wide-light; S18
+zh-narrow-light/en-narrow-dark/zh-wide-dark), and asserts each switch window
+issues no `PUT /settings/org` and no `POST /api/v1/orgs` (the palette windows
+also assert zero `/api/` requests, cache-only, per direction). It exercises the
+palette's localized X close control (S19) with native Enter/Space/Escape in both
+locales with populated and empty results (closes once, zero selection, unchanged
+pathname) while the search-input and non-default-row Enter still select once, and
+adds CJK-font and viewport-containment checks. Positive receipt: 375/375
+assertions, 30 PNGs. W2b onboarding evidence runs via
+`web/scripts/w2b-onboarding-browser-evidence.mjs` against the ORDINARY
+`web/dist` bundle and a synthetic `/api/v1` stub, driving the real `/onboarding`
+route with NO evidence-only bundle instrumentation: locale switches go through
+the supported browser `localStorage` preference plus a same-origin `storage`
+event (there is no public selector), so the harness proves the shipping bundle
+already satisfies the acceptance predicate. It covers first-run/returning
+routing, built-in/custom connect modes, the waiting/committed prompt bytes
+preserved across en→zh-CN→en, mapped-vs-raw error handling, success, the
+broken-org list and the prereq panel. For S4-S6 and S8-S10, each en→zh-CN and
+zh-CN→en transition records the actual `document.activeElement`, retained
+test-only DOM identity where stable, open phase/mode and state-specific raw
+values before and after. Every immediately scoped transition window asserts no
+`PUT /settings/org`, duplicate `POST /api/v1/orgs`, connect/mint mutation, or
+other `/api/` request; S4-S6 retain exactly one original create and S8 retains
+exactly one original mint. The exact assertion and PNG counts are bound to the
+pushed `receipt.json`.
+Current contract:
+`docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
 
 ### Web contract and navigation
 
@@ -633,6 +728,52 @@ window selector for 24h/7d/30d) backed by the same `/tokens?group_by=thread`
 route. It ranks threads by churn (`total`) DESC client-side, shows cache reads
 as a muted secondary number (never in the bar or the rank), and labels each
 thread's Model with the same precedence as the CLI table above.
+
+### Staged dual-text escalation-policy editor (THR-229, draft PR878)
+
+This surface is present only on the unmerged draft feature branch; it is not a
+running-production capability and performs no live activation. The eligible
+Engineering Manager's dedicated policy route shows exactly the editable
+`What to escalate` and `What not to escalate` textareas. A genuinely empty
+selector begins with the approved starter bytes; an active v2 selector reads
+both values and its release/version/digest, activation, selector and epoch from
+the authenticated projection. One confirmation sends both texts through the
+existing paired v2 release transaction. It never exposes the legacy split
+create/activate sequence, a one-text save, clause IDs, continuation phrases,
+rollback controls or a second evaluator.
+
+The client keeps a dirty pair across ordinary query renders and guards both
+SPA navigation and hard unload. It treats pending submission as single-flight,
+accepts success only after the paired receipt and authoritative refetch agree,
+reuses the exact request after an ambiguous outcome, and preserves the draft
+on selector conflicts until the operator deliberately reloads the current
+selector. The v2 history stream is immutable and read-only, shows both exact
+texts plus full release/activation/selector identity and timestamps, and owns
+pagination/error retry independently. Legacy history and outcomes appear only
+for an authenticated legacy-family projection. Unsupported, mixed, corrupt,
+unknown and worker targets fail closed without an editable fallback.
+
+For a v2-bound manager escalation, the injected role guidance supplies the
+binding identities and requires one structured `manager_self_evaluation` beside
+the ordinary `decision`. `happyranch report-completion --from-file` preserves
+that member for strict server validation; omission, explicit null, malformed or
+uncertain evidence fails closed. The CLI does not embed policy prose, a clause
+identifier, a canonical continuation phrase, or a second evaluator. Worker and
+ordinary non-escalation callbacks omit this field unless their injected contract
+explicitly requires it.
+
+The checked-in browser receipt driver is
+`web/scripts/screenshot-harness/shot-thr229-v2-policy.mjs`. It uses an owned
+runtime/database, loopback daemon and Vite proxy with real bootstrap auth; it
+proves empty bootstrap, paired persistence and full-reload readback/history, a
+two-text atomic rollback at the control-audit boundary followed by exact retry,
+invalid-token 401 with no row, and worker 404 with no editor. This checkpoint
+does not close the combined THR-229 feature, final parity, review/QA, merge or
+rollout gates. Source merge is not activation: compatible daemon, CLI, and
+manager-launch code must be deployed and old launch/completion consumers drained
+before any future production save/activation. Rollback is compatible-code-only;
+this candidate performs no deployment, save, activation, or natural production
+continuation.
 
 ## Agent-Side Callbacks
 

@@ -486,6 +486,46 @@ def test_cmd_report_completion_from_file_posts_loaded_body(tmp_path):
     assert body["suggested_reviewer_focus"] == ["signature canonicalization"]
 
 
+@pytest.mark.parametrize("evaluation", [None, False, "", [], {"malformed": True}])
+def test_cmd_report_completion_from_file_request_includes_explicit_evaluation(tmp_path, evaluation):
+    """Request construction only (mocked client); see the real loopback proof.
+
+    ``tests/daemon/test_completion_cli_loopback.py`` drives the shipping CLI
+    against a real HTTP server and asserts the received bytes and durable row.
+    """
+    import json
+    from cli.main import cmd_report_completion
+
+    completion_file = tmp_path / "completion.json"
+    completion_file.write_text(json.dumps({
+        "task_id": "TASK-042", "session_id": "sess-x", "agent": "engineering_manager",
+        "status": "completed", "summary": "done", "manager_self_evaluation": evaluation,
+    }))
+    client = MagicMock()
+    client.post.return_value.status_code = 200
+    args = MagicMock(org="alpha", from_file=str(completion_file))
+    with patch("cli.main.OpcClient.from_env", return_value=client):
+        cmd_report_completion(args)
+    assert client.post.call_args.kwargs["json"]["manager_self_evaluation"] == evaluation
+
+
+def test_cmd_report_completion_from_file_request_omits_evaluation_when_absent(tmp_path):
+    import json
+    from cli.main import cmd_report_completion
+
+    completion_file = tmp_path / "completion.json"
+    completion_file.write_text(json.dumps({
+        "task_id": "TASK-042", "session_id": "sess-x", "agent": "dev_agent",
+        "status": "completed", "summary": "done",
+    }))
+    client = MagicMock()
+    client.post.return_value.status_code = 200
+    args = MagicMock(org="alpha", from_file=str(completion_file))
+    with patch("cli.main.OpcClient.from_env", return_value=client):
+        cmd_report_completion(args)
+    assert "manager_self_evaluation" not in client.post.call_args.kwargs["json"]
+
+
 def test_completion_payload_from_file_accepts_output_dir(tmp_path):
     import json as _json
     from cli.main import _completion_payload_from_file
@@ -561,6 +601,35 @@ def test_completion_payload_from_file_omits_decision_when_absent(tmp_path):
     }))
     _, body = _completion_payload_from_file(str(path))
     assert "decision" not in body
+
+
+@pytest.mark.parametrize("value", [None, False, "", [], {"unexpected": "value"}])
+def test_completion_payload_from_file_preserves_explicit_manager_evaluation(tmp_path, value):
+    """Server validation must distinguish omission from every supplied value."""
+    import json as _json
+    from cli.main import _completion_payload_from_file
+
+    path = tmp_path / "evaluation.json"
+    path.write_text(_json.dumps({
+        "task_id": "TASK-001", "session_id": "sess-1", "agent": "engineering_manager",
+        "status": "completed", "summary": "done", "manager_self_evaluation": value,
+    }))
+    _, body = _completion_payload_from_file(str(path))
+    assert "manager_self_evaluation" in body
+    assert body["manager_self_evaluation"] == value
+
+
+def test_completion_payload_from_file_omits_manager_evaluation_when_absent(tmp_path):
+    import json as _json
+    from cli.main import _completion_payload_from_file
+
+    path = tmp_path / "no-evaluation.json"
+    path.write_text(_json.dumps({
+        "task_id": "TASK-001", "session_id": "sess-1", "agent": "engineering_manager",
+        "status": "completed", "summary": "done",
+    }))
+    _, body = _completion_payload_from_file(str(path))
+    assert "manager_self_evaluation" not in body
 
 
 def test_completion_payload_from_file_passes_waiting_on_job_ids_through(tmp_path):

@@ -22,6 +22,7 @@ import { ApiError } from '@/lib/api';
 import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
+import { useTranslation } from '@/hooks/i18n';
 import {
   BUILTINS,
   buildConnectPrompt,
@@ -50,7 +51,7 @@ interface ConnectFlowProps {
   /** Skip affordance rendered in the waiting-body footer. */
   waitingSkipSlot?: ReactNode;
   /** Connected-card subtitle copy, keyed on the originating flow. */
-  connectedSubtitle: (via: ConnectMode) => string;
+  connectedSubtitle: (via: ConnectMode) => ReactNode;
   /** Primary action rendered before "Connect another" on the connected card
    *  (onboarding: Continue → Step 2). Omit for none. */
   connectedPrimaryAction?: ReactNode;
@@ -121,6 +122,7 @@ export function BuiltinConnect({
   skipSlot?: ReactNode;
   waitingSkipSlot?: ReactNode;
 }): JSX.Element {
+  const { t } = useTranslation();
   const [kind, setKind] = useState<Kind | ''>('');
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
 
@@ -147,13 +149,11 @@ export function BuiltinConnect({
   return (
     <div className="mt-6 max-w-lg">
       <p className="text-text-secondary text-base leading-relaxed">
-        Pick the agentic CLI you run — Claude Code, Codex, opencode, or Pi. Paste
-        the generated prompt into it: it proves it works and tells HappyRanch
-        where its binary lives on this machine so it can launch it.
+        {t('onboarding.connect.builtin.intro')}
       </p>
 
       <div className="mt-6 space-y-2">
-        <Label htmlFor="builtin-kind">Pick your agentic CLI</Label>
+        <Label htmlFor="builtin-kind">{t('onboarding.connect.builtin.label')}</Label>
         <select
           id="builtin-kind"
           value={kind}
@@ -163,7 +163,7 @@ export function BuiltinConnect({
           }}
           className={FIELD_CLASS}
         >
-          <option value="">Choose an agentic CLI…</option>
+          <option value="">{t('onboarding.connect.builtin.placeholder')}</option>
           {KINDS.map((k) => (
             <option key={k} value={k}>
               {k}
@@ -175,8 +175,8 @@ export function BuiltinConnect({
       {flow.mint.isError && (
         <p className="text-feedback-danger mt-3 text-sm" role="alert">
           {flow.mint.error instanceof ApiError
-            ? `Could not generate a prompt (${flow.mint.error.status}).`
-            : 'Could not generate a prompt. Is the daemon reachable?'}
+            ? t('onboarding.connect.mintError.status', { status: flow.mint.error.status })
+            : t('onboarding.connect.mintError.unreachable')}
         </p>
       )}
 
@@ -186,13 +186,15 @@ export function BuiltinConnect({
           disabled={!kind || flow.mint.isPending}
           onClick={() => flow.start(kind)}
         >
-          {flow.mint.isPending ? 'Generating…' : 'Generate connect prompt'}
+          {flow.mint.isPending
+            ? t('onboarding.connect.generating')
+            : t('onboarding.connect.generate')}
         </Button>
         <Button
           type="button"
           onClick={onUseCustom}
         >
-          Connect a custom CLI instead
+          {t('onboarding.connect.useCustom')}
         </Button>
         {skipSlot}
       </div>
@@ -218,6 +220,7 @@ export function AdapterConnect({
   skipSlot?: ReactNode;
   waitingSkipSlot?: ReactNode;
 }): JSX.Element {
+  const { t, render } = useTranslation();
   const [nameInput, setNameInput] = useState('');
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
 
@@ -255,12 +258,13 @@ export function AdapterConnect({
           <div className="flex items-center gap-2">
             <Spinner className="text-accent h-4 w-4" />
             <p className="text-text-primary text-sm font-medium">
-              Finishing connection…
+              {t('onboarding.connect.committing.title')}
             </p>
           </div>
           <p className="text-text-secondary mt-2 text-xs">
-            <span className="font-mono">{flow.state.name}</span> reported in.
-            HappyRanch is verifying it now — this takes a moment.
+            {render('onboarding.connect.committing.body', {
+              name: <span className="font-mono">{flow.state.name}</span>,
+            })}
           </p>
         </div>
       </div>
@@ -313,7 +317,7 @@ export function AdapterConnect({
         connected={{ name: flow.state.name, path: flow.state.wrapperDestination, via: 'custom' }}
         subtitle={(via) =>
           via === 'custom'
-            ? 'Your custom CLI is connected directly. It is available to every org.'
+            ? t('onboarding.connect.connected.adapterSubtitle')
             : ''
         }
         onReset={flow.back}
@@ -327,13 +331,10 @@ export function AdapterConnect({
     <div className="mt-6 max-w-lg">
       <div className="border-accent/30 bg-accent/5 mb-4 rounded-r-md border-l-2 px-3 py-2">
         <p className="text-text-primary text-sm font-medium">
-          Create a custom adapter wrapper
+          {t('onboarding.connect.adapter.bannerTitle')}
         </p>
         <p className="text-text-secondary mt-0.5 text-xs">
-          Your CLI creates a small v1 adapter wrapper that speaks
-          HappyRanch&rsquo;s standard AdapterInput/AdapterOutput contract. It
-          reads the prompt from stdin, invokes your CLI, and returns a
-          normalized result. One POST connects it — no approval wait.
+          {t('onboarding.connect.adapter.bannerBody')}
         </p>
       </div>
       <form
@@ -343,10 +344,11 @@ export function AdapterConnect({
           generate();
         }}
       >
-        <Label htmlFor="adapter-name">Name this CLI</Label>
+        <Label htmlFor="adapter-name">{t('onboarding.connect.adapter.nameLabel')}</Label>
         <p className="text-text-muted -mt-1 text-xs">
-          A short identifier — becomes its executor name. The adapter id will
-          be <code className="font-mono">&lt;name&gt;-adapter</code>.
+          {render('onboarding.connect.adapter.nameHint', {
+            code: <code className="font-mono">&lt;name&gt;-adapter</code>,
+          })}
         </p>
         <Input
           id="adapter-name"
@@ -355,7 +357,7 @@ export function AdapterConnect({
             setNameInput(e.target.value);
             flow.mint.reset();
           }}
-          placeholder="e.g. my-cli"
+          placeholder={t('onboarding.connect.adapter.namePlaceholder')}
           autoFocus
           autoComplete="off"
           spellCheck={false}
@@ -364,17 +366,16 @@ export function AdapterConnect({
         <p className="text-xs">
           {nameInput && nameIsBuiltin ? (
             <span className="text-feedback-danger">
-              Pick a name that isn&rsquo;t a built-in (claude, codex, opencode,
-              pi) — connect those from the dropdown instead.
+              {t('onboarding.connect.adapter.builtinName')}
             </span>
           ) : nameValid ? (
             <span className="text-feedback-success inline-flex items-center gap-1 font-medium">
               <Check aria-hidden="true" size={13} />
-              Lowercase letters, numbers and hyphens
+              {t('onboarding.create.slugRule')}
             </span>
           ) : (
             <span className="text-text-muted">
-              Lowercase letters, numbers and hyphens · starts with a letter
+              {t('onboarding.connect.adapter.nameRule')}
             </span>
           )}
         </p>
@@ -382,13 +383,15 @@ export function AdapterConnect({
         {flow.mint.isError && (
           <p className="text-feedback-danger text-sm" role="alert">
             {flow.mint.error instanceof ApiError
-              ? `Could not generate a prompt (${flow.mint.error.status}).`
-              : 'Could not generate a prompt. Is the daemon reachable?'}
+              ? t('onboarding.connect.mintError.status', { status: flow.mint.error.status })
+              : t('onboarding.connect.mintError.unreachable')}
           </p>
         )}
         <div className="flex flex-wrap items-center gap-3 pt-3">
           <Button type="submit" disabled={!nameValid || flow.mint.isPending}>
-            {flow.mint.isPending ? 'Generating…' : 'Generate connect prompt'}
+            {flow.mint.isPending
+              ? t('onboarding.connect.generating')
+              : t('onboarding.connect.generate')}
           </Button>
           {onUseBuiltin && (
             <button
@@ -397,7 +400,7 @@ export function AdapterConnect({
               className="text-text-secondary hover:text-text-primary inline-flex items-center gap-1.5 text-xs underline-offset-2 hover:underline"
             >
               <ArrowLeft aria-hidden="true" size={14} />
-              Connect a built-in CLI instead
+              {t('onboarding.connect.useBuiltin')}
             </button>
           )}
           {skipSlot}
@@ -429,6 +432,7 @@ export function WaitingBody({
   onBack: () => void;
   skipSlot?: ReactNode;
 }): JSX.Element {
+  const { t, render } = useTranslation();
   const [copied, setCopied] = useState(false);
   const copy = (): void => {
     void navigator.clipboard?.writeText(prompt);
@@ -447,7 +451,7 @@ export function WaitingBody({
               <span className="bg-border-strong h-2 w-2 rounded-full" />
             </span>
             <span className="text-text-muted font-mono text-xs">
-              connect prompt · paste into your agentic CLI
+              {t('onboarding.connect.waiting.header')}
             </span>
           </div>
           <CopyButton copied={copied} onClick={copy} />
@@ -462,50 +466,52 @@ export function WaitingBody({
           {copied ? (
             <>
               <Check aria-hidden="true" />
-              Copied
+              {t('onboarding.connect.copied')}
             </>
           ) : (
             <>
               <CopyGlyph />
-              Copy prompt
+              {t('onboarding.connect.copyPrompt')}
             </>
           )}
         </Button>
         <span className="text-text-muted text-xs">
-          Then run it in your terminal — this screen updates live.
+          {t('onboarding.connect.waiting.hint')}
         </span>
       </div>
 
       {expired ? (
         <div className="border-feedback-warning/30 bg-feedback-warning/5 mt-6 rounded-lg border p-4">
           <p className="text-text-primary text-sm font-semibold">
-            This link expired
+            {t('onboarding.connect.expired.title')}
           </p>
           <p className="text-text-muted mt-1 text-xs">
-            The prompt is valid for about 30 minutes and this one lapsed before a
-            CLI connected. Nothing was lost — regenerate a fresh prompt.
+            {t('onboarding.connect.expired.body')}
           </p>
           <div className="mt-3">
             <Button variant="outline" onClick={onRegenerate} disabled={regenerating}>
               <RefreshCw aria-hidden="true" size={15} />
-              {regenerating ? 'Regenerating…' : 'Regenerate prompt'}
+              {regenerating
+                ? t('onboarding.connect.regenerating')
+                : t('onboarding.connect.regenerate')}
             </Button>
           </div>
         </div>
       ) : (
         <div
-          aria-label="Waiting for your CLI"
+          aria-label={t('onboarding.connect.waiting.aria')}
           className="border-border-default bg-surface mt-6 rounded-lg border p-4"
         >
           <div className="flex items-center gap-2">
             <Spinner className="text-accent h-4 w-4" />
             <p className="text-text-primary text-sm font-medium">
-              Waiting for <span className="font-mono">{name}</span> to connect…
+              {render('onboarding.connect.waiting.title', {
+                name: <span className="font-mono">{name}</span>,
+              })}
             </p>
           </div>
           <p className="text-text-muted mt-1 text-xs">
-            As your CLI runs the prompt, it completes these checks, then
-            registers:
+            {t('onboarding.connect.waiting.stepsLead')}
           </p>
           <ul className="mt-3 space-y-1.5">
             {CONFORMANCE_STEPS.map((s) => (
@@ -514,7 +520,7 @@ export function WaitingBody({
                   aria-hidden="true"
                   className="border-border-strong h-4 w-4 shrink-0 rounded-full border"
                 />
-                <span className="text-text-secondary text-sm">{s.label}</span>
+                <span className="text-text-secondary text-sm">{t(s.labelKey)}</span>
                 <span className="text-text-muted font-mono text-xs">{s.id}</span>
               </li>
             ))}
@@ -529,7 +535,7 @@ export function WaitingBody({
           className="text-text-secondary hover:text-text-primary inline-flex items-center gap-1.5 text-xs"
         >
           <ArrowLeft aria-hidden="true" size={14} />
-          Back to the prompt
+          {t('onboarding.connect.back')}
         </button>
         {skipSlot}
       </div>
@@ -558,6 +564,7 @@ export function AdapterWaitingBody({
   onBack: () => void;
   skipSlot?: ReactNode;
 }): JSX.Element {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const copy = (): void => {
     void navigator.clipboard?.writeText(prompt);
@@ -576,7 +583,7 @@ export function AdapterWaitingBody({
               <span className="bg-border-strong h-2 w-2 rounded-full" />
             </span>
             <span className="text-text-muted font-mono text-xs">
-              adapter connect prompt · paste into your CLI
+              {t('onboarding.connect.adapter.waiting.header')}
             </span>
           </div>
           <CopyButton copied={copied} onClick={copy} />
@@ -591,50 +598,50 @@ export function AdapterWaitingBody({
           {copied ? (
             <>
               <Check aria-hidden="true" />
-              Copied
+              {t('onboarding.connect.copied')}
             </>
           ) : (
             <>
               <CopyGlyph />
-              Copy prompt
+              {t('onboarding.connect.copyPrompt')}
             </>
           )}
         </Button>
         <span className="text-text-muted text-xs">
-          Create the wrapper, run the prompt — this screen updates live.
+          {t('onboarding.connect.adapter.waiting.hint')}
         </span>
       </div>
 
       {expired ? (
         <div className="border-feedback-warning/30 bg-feedback-warning/5 mt-6 rounded-lg border p-4">
           <p className="text-text-primary text-sm font-semibold">
-            This link expired
+            {t('onboarding.connect.expired.title')}
           </p>
           <p className="text-text-muted mt-1 text-xs">
-            The prompt is valid for about 30 minutes. Regenerate a fresh prompt.
+            {t('onboarding.connect.adapter.expired.body')}
           </p>
           <div className="mt-3">
             <Button variant="outline" onClick={onRegenerate} disabled={regenerating}>
               <RefreshCw aria-hidden="true" size={15} />
-              {regenerating ? 'Regenerating…' : 'Regenerate prompt'}
+              {regenerating
+                ? t('onboarding.connect.regenerating')
+                : t('onboarding.connect.regenerate')}
             </Button>
           </div>
         </div>
       ) : (
         <div
-          aria-label="Waiting for adapter submission"
+          aria-label={t('onboarding.connect.adapter.waiting.aria')}
           className="border-border-default bg-surface mt-6 rounded-lg border p-4"
         >
           <div className="flex items-center gap-2">
             <Spinner className="text-accent h-4 w-4" />
             <p className="text-text-primary text-sm font-medium">
-              Waiting for adapter submission…
+              {t('onboarding.connect.adapter.waiting.title')}
             </p>
           </div>
           <p className="text-text-muted mt-1 text-xs">
-            Your CLI should create a v1 adapter wrapper, complete the
-            conformance checks, and submit it. This screen updates when the
-            adapter appears.
+            {t('onboarding.connect.adapter.waiting.body')}
           </p>
         </div>
       )}
@@ -646,7 +653,7 @@ export function AdapterWaitingBody({
           className="text-text-secondary hover:text-text-primary inline-flex items-center gap-1.5 text-xs"
         >
           <ArrowLeft aria-hidden="true" size={14} />
-          Back to the prompt
+          {t('onboarding.connect.back')}
         </button>
         {skipSlot}
       </div>
@@ -671,6 +678,7 @@ export function AdapterRetryableBody({
   onRerun: () => void;
   onBack: () => void;
 }): JSX.Element {
+  const { t, render } = useTranslation();
   const [copied, setCopied] = useState(false);
   const copy = (): void => {
     void navigator.clipboard?.writeText(prompt);
@@ -683,19 +691,17 @@ export function AdapterRetryableBody({
         <div className="flex items-center gap-2">
           <AlertTriangle className="text-feedback-warning h-4 w-4" />
           <p className="text-text-primary text-sm font-medium">
-            Connection attempt failed — retry with changed artifacts
+            {t('onboarding.connect.retryable.title')}
           </p>
         </div>
         <p className="text-text-secondary mt-2 text-xs">
-          <span className="font-mono">{name}</span> reported in, but the
-          conformance probe failed. Modify the wrapper or child artifacts,
-          then rerun the existing prompt below before it expires. Unchanged
-          or reordered artifacts are refused; only one genuinely changed
-          candidate remains under this token.
+          {render('onboarding.connect.retryable.body', {
+            name: <span className="font-mono">{name}</span>,
+          })}
         </p>
         <div className="bg-surface-sunken mt-3 rounded p-3">
           <p className="text-feedback-danger font-mono text-xs">
-            Error: {reason}
+            {t('onboarding.connect.error.label', { detail: reason })}
           </p>
         </div>
       </div>
@@ -709,7 +715,7 @@ export function AdapterRetryableBody({
               <span className="bg-border-strong h-2 w-2 rounded-full" />
             </span>
             <span className="text-text-muted font-mono text-xs">
-              existing connect prompt · rerun with changed artifacts
+              {t('onboarding.connect.retryable.header')}
             </span>
           </div>
           <CopyButton copied={copied} onClick={copy} />
@@ -724,18 +730,18 @@ export function AdapterRetryableBody({
           {copied ? (
             <>
               <Check aria-hidden="true" />
-              Copied
+              {t('onboarding.connect.copied')}
             </>
           ) : (
             <>
               <CopyGlyph />
-              Copy prompt
+              {t('onboarding.connect.copyPrompt')}
             </>
           )}
         </Button>
         <Button variant="outline" onClick={onRerun}>
           <RefreshCw aria-hidden="true" size={15} />
-          I&apos;ve rerun the prompt — watch for the new attempt
+          {t('onboarding.connect.retryable.rerun')}
         </Button>
       </div>
 
@@ -746,7 +752,7 @@ export function AdapterRetryableBody({
           className="text-text-secondary hover:text-text-primary inline-flex items-center gap-1.5 text-xs"
         >
           <ArrowLeft aria-hidden="true" size={14} />
-          Back to the prompt
+          {t('onboarding.connect.back')}
         </button>
       </div>
     </div>
@@ -780,62 +786,68 @@ export function AdapterBindFailedBody({
   isClearing: boolean;
   clearError: unknown;
 }): JSX.Element {
+  const { t, render } = useTranslation();
   const [confirmingClear, setConfirmingClear] = useState(false);
   const clearErrorMessage = clearError instanceof ApiError
     ? (typeof clearError.detail === 'string' ? clearError.detail : clearError.message)
     : clearError instanceof Error ? clearError.message : null;
-  const categoryMessage = {
-    expired: 'This connect link expired before the CLI finished. Start over with a fresh prompt.',
-    exhausted: 'This lifecycle has used its allowed retry. Start over with a fresh registration.',
-    nonretryable: 'This failure is not retryable with the same artifacts.',
-  }[category];
+  const categoryMessageKey = {
+    expired: 'onboarding.connect.failed.category.expired',
+    exhausted: 'onboarding.connect.failed.category.exhausted',
+    nonretryable: 'onboarding.connect.failed.category.nonretryable',
+  } as const;
+  const categoryMessage = t(categoryMessageKey[category]);
   return (
     <div className="mt-6 max-w-lg">
       <div className="border-feedback-danger/30 bg-feedback-danger/5 rounded-lg border p-4">
         <div className="flex items-center gap-2">
           <AlertTriangle className="text-feedback-danger h-4 w-4" />
           <p className="text-text-primary text-sm font-medium">
-            Connection failed
+            {t('onboarding.connect.failed.title')}
           </p>
         </div>
         <p className="text-text-secondary mt-2 text-xs">
-          <span className="font-mono">{name}</span> reported in, but
-          HappyRanch could not finish connecting it. {categoryMessage}
+          {render('onboarding.connect.failed.body', {
+            name: <span className="font-mono">{name}</span>,
+            categoryMessage,
+          })}
         </p>
         <div className="bg-surface-sunken mt-3 rounded p-3">
           <p className="text-text-muted font-mono text-xs">
-            Operation: {adapterId}
+            {t('onboarding.connect.failed.operation', { operationId: adapterId })}
           </p>
           <p className="text-feedback-danger mt-1 font-mono text-xs">
-            Error: {error}
+            {t('onboarding.connect.error.label', { detail: error })}
           </p>
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <Button onClick={onRetry} disabled={isClearing}>
             <RefreshCw aria-hidden="true" size={15} />
-            Validate immutable snapshot
+            {t('onboarding.connect.validate')}
           </Button>
           <Button variant="outline" onClick={onBack}>
             <ArrowLeft aria-hidden="true" size={14} />
-            Back
+            {t('onboarding.connect.backShort')}
           </Button>
           {confirmingClear ? (
             <>
               <Button variant="destructive" onClick={onClear} disabled={isClearing}>
-                {isClearing ? 'Clearing…' : 'Confirm clear failed connection'}
+                {isClearing
+                  ? t('onboarding.connect.clearing')
+                  : t('onboarding.connect.clear.confirm')}
               </Button>
               <Button variant="secondary" onClick={() => setConfirmingClear(false)} disabled={isClearing}>
-                Cancel
+                {t('common.cancel')}
               </Button>
             </>
           ) : (
             <Button variant="secondary" onClick={() => setConfirmingClear(true)}>
-              Clear failed connection
+              {t('onboarding.connect.clear.action')}
             </Button>
           )}
         </div>
         <p className="text-text-muted mt-3 text-xs">
-          Validate immutable snapshot re-checks the persisted wrapper/child snapshot without changing artifacts. To retry with changed artifacts, clear this record and start over.
+          {t('onboarding.connect.clear.note')}
         </p>
         {clearErrorMessage && <p className="text-feedback-danger mt-2 text-sm" role="alert">{clearErrorMessage}</p>}
       </div>
@@ -852,17 +864,22 @@ export function FailedConnectionClearedBody({
   wrapperStatus: import('@/lib/api/directConnect').ForgetWrapperStatus;
   onReconnect: () => void;
 }): JSX.Element {
-  const wrapperMessage = {
-    already_absent: 'The failed wrapper was already absent.',
-    preserved_changed: 'The wrapper was preserved because it changed after the failed connection.',
-    preserved_unsafe: 'The wrapper was preserved because HappyRanch could not safely prove it matched.',
-  }[wrapperStatus];
+  const { t, render } = useTranslation();
+  const wrapperMessageKey = {
+    already_absent: 'onboarding.connect.cleared.alreadyAbsent',
+    preserved_changed: 'onboarding.connect.cleared.preservedChanged',
+    preserved_unsafe: 'onboarding.connect.cleared.preservedUnsafe',
+  } as const;
   return (
     <div className="mt-6 max-w-lg border-border-default bg-surface rounded-lg border p-4">
-      <p className="text-text-primary text-sm font-medium">Failed connection cleared</p>
-      <p className="text-text-secondary mt-2 text-sm"><span className="font-mono">{name}</span>&rsquo;s failed connection record was cleared.</p>
-      <p className="text-text-secondary mt-1 text-sm">{wrapperMessage}</p>
-      <Button className="mt-4" onClick={onReconnect}>Reconnect this CLI</Button>
+      <p className="text-text-primary text-sm font-medium">{t('onboarding.connect.cleared.title')}</p>
+      <p className="text-text-secondary mt-2 text-sm">
+        {render('onboarding.connect.cleared.body', {
+          name: <span className="font-mono">{name}</span>,
+        })}
+      </p>
+      <p className="text-text-secondary mt-1 text-sm">{t(wrapperMessageKey[wrapperStatus])}</p>
+      <Button className="mt-4" onClick={onReconnect}>{t('onboarding.connect.cleared.reconnect')}</Button>
     </div>
   );
 }
@@ -878,10 +895,11 @@ export function ConnectedCard({
   onReset,
 }: {
   connected: Connected;
-  subtitle: (via: ConnectMode) => string;
+  subtitle: (via: ConnectMode) => ReactNode;
   primaryAction?: ReactNode;
   onReset: () => void;
 }): JSX.Element {
+  const { t, render } = useTranslation();
   return (
     <>
       <div className="mt-3 flex items-center gap-3">
@@ -892,7 +910,9 @@ export function ConnectedCard({
           <Check size={22} />
         </span>
         <h1 className="font-display text-h1 text-text-primary font-medium">
-          <span className="font-mono">{connected.name}</span> connected.
+          {render('onboarding.connect.connected.title', {
+            name: <span className="font-mono">{connected.name}</span>,
+          })}
         </h1>
       </div>
       <p className="text-text-secondary mt-3 max-w-lg text-base leading-relaxed">
@@ -901,23 +921,23 @@ export function ConnectedCard({
 
       <div className="bg-surface border-border-default shadow-pasture-sm mt-6 max-w-lg rounded-lg border p-4">
         <p className="text-text-muted text-caption font-semibold tracking-wider uppercase">
-          Name
+          {t('onboarding.connect.connected.name')}
         </p>
         <p className="text-text-primary mt-1 font-mono text-sm font-medium">
           {connected.name}
         </p>
         <p className="text-text-muted text-caption mt-3 font-semibold tracking-wider uppercase">
-          Registered at
+          {t('onboarding.connect.connected.registeredAt')}
         </p>
         <p className="text-text-secondary mt-1 truncate font-mono text-xs">
-          {connected.path ?? 'registration required'}
+          {connected.path ?? t('onboarding.connect.connected.registrationRequired')}
         </p>
       </div>
 
       <div className="mt-6 flex items-center gap-2">
         {primaryAction}
         <Button variant="outline" onClick={onReset}>
-          Connect another
+          {t('onboarding.connect.connectAnother')}
         </Button>
       </div>
     </>
@@ -930,6 +950,7 @@ export function ConnectedCard({
 
 /** Honesty note shared by both copy-paste flows. */
 function HowThisWorks(): JSX.Element {
+  const { t, render } = useTranslation();
   return (
     <details className="group mt-5">
       <summary className="text-text-secondary hover:text-text-primary flex cursor-pointer list-none items-center gap-1.5 text-xs">
@@ -938,15 +959,16 @@ function HowThisWorks(): JSX.Element {
           size={14}
           className="transition-transform group-open:rotate-90"
         />
-        How this works
+        {t('onboarding.connect.how.title')}
       </summary>
       <p className="text-text-muted mt-2 max-w-lg pl-5 text-xs leading-relaxed">
-        The prompt carries a short-lived, scoped token valid for about{' '}
-        <span className="text-text-secondary font-medium">30 minutes</span>.
-        Copying doesn&rsquo;t run anything — nothing executes on your machine
-        until you paste and run it yourself. Connecting only makes the CLI
-        available to choose; assigning an agent to run on it is a separate,
-        later step.
+        {render('onboarding.connect.how.body', {
+          duration: (
+            <span className="text-text-secondary font-medium">
+              {t('onboarding.connect.how.duration')}
+            </span>
+          ),
+        })}
       </p>
     </details>
   );
@@ -959,6 +981,7 @@ function CopyButton({
   copied: boolean;
   onClick: () => void;
 }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <button
       type="button"
@@ -968,12 +991,12 @@ function CopyButton({
       {copied ? (
         <>
           <Check aria-hidden="true" size={13} className="text-feedback-success" />
-          Copied
+          {t('onboarding.connect.copied')}
         </>
       ) : (
         <>
           <CopyGlyph />
-          Copy
+          {t('onboarding.connect.copy')}
         </>
       )}
     </button>
