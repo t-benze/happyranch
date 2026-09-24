@@ -92,7 +92,7 @@ with no resubmission.
 **W2c** translated the Settings surface (`/orgs/:slug/settings/*`): the page
 header, sub-nav, API loading/error copy and panel headings, plus the Assistant,
 Organization, Executors (registered list, custom profiles, binary paths) and
-Daemon / Capacity section bodies. Raw daemon errors, identifiers, executor and
+Capacity section bodies. Raw daemon errors, identifiers, executor and
 agent names, config keys, paths, commands and every capacity number stay
 verbatim; only product-owned surrounding copy is localized. The shared
 `EligibilityEditorDialog` (mounted by Organization but owned by Work Hours)
@@ -275,9 +275,9 @@ fidelity.
 
 ### Settings
 
-The Settings surface ships as a full page (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*` route, entered from the footer-pinned **Settings** item in the Sidebar, with exactly four left sub-nav panels, in this order: Daemon / Capacity · Assistant · Organization · Executors. The Settings root, retired `system` and `agents` subroutes, and unknown subroutes resolve to Assistant with replace navigation. (`SettingsDialog` is retained unmounted for direct tests; it is not an application or prototype entry point.) It shows:
+The Settings surface ships as a full page (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*` route, entered from the footer-pinned **Settings** item in the Sidebar, with exactly four left sub-nav panels, in this order: Capacity · Assistant · Organization · Executors. The Settings root, retired `system` and `agents` subroutes, and unknown subroutes resolve to Assistant with replace navigation. (`SettingsDialog` is retained unmounted for direct tests; it is not an application or prototype entry point.) It shows:
 
-- **Daemon / Capacity** — stages the paired daemon-wide `queue_workers` and
+- **Capacity** — stages the paired daemon-wide `queue_workers` and
   `host_global_session_cap` values for a future operator-controlled restart.
   Saving never applies live and the page cannot restart the daemon: the running
   readouts are observations and are unchanged by a save. The panel holds `base`

@@ -1099,7 +1099,6 @@ export function DaemonCapacitySection(): JSX.Element {
                 <tr key={key}>
                   <th scope="row" className="border-border-default border-b p-3 text-left font-medium">
                     {label}
-                    <code className="text-text-secondary ml-2 font-mono text-xs font-normal">{key}</code>
                   </th>
                   <td className="border-border-default border-b p-3 font-mono">
                     {displaySnapshot.running_at_daemon_start[key]}
@@ -1157,7 +1156,6 @@ export function DaemonCapacitySection(): JSX.Element {
         <div className="border-border-default border-b pb-5">
           <label htmlFor="capacity-workers" className="text-text-primary text-sm font-semibold">
             {workersLabel}
-            <code className="text-text-secondary ml-2 font-mono text-xs font-normal">queue_workers</code>
           </label>
           <p id="capacity-workers-help" className="text-text-secondary mt-1 max-w-prose text-sm">
             {t('settings.capacity.workersHelp')}
@@ -1181,7 +1179,7 @@ export function DaemonCapacitySection(): JSX.Element {
               onChange={(event) => setWorkersText(event.target.value)}
             />
             <p id="capacity-workers-guidance" className="text-text-secondary text-sm">
-              {snapshot ? `${snapshot.guidance.queue_workers} ` : ''}{t('settings.capacity.guidanceOnly')}
+              {displayedSnapshot?.guidance.queue_workers}
             </p>
             {fieldErrors.queue_workers && (
               <p id="capacity-workers-error" role="alert" className="text-feedback-danger text-sm">
@@ -1194,7 +1192,6 @@ export function DaemonCapacitySection(): JSX.Element {
         <div className="border-border-default border-b py-5">
           <label htmlFor="capacity-cap" className="text-text-primary text-sm font-semibold">
             {capLabel}
-            <code className="text-text-secondary ml-2 font-mono text-xs font-normal">host_global_session_cap</code>
           </label>
           <p id="capacity-cap-help" className="text-text-secondary mt-1 max-w-prose text-sm">
             {t('settings.capacity.capHelp')}
@@ -1218,7 +1215,7 @@ export function DaemonCapacitySection(): JSX.Element {
               onChange={(event) => setCapText(event.target.value)}
             />
             <p id="capacity-cap-guidance" className="text-text-secondary text-sm">
-              {snapshot ? `${snapshot.guidance.host_global_session_cap} ` : ''}{t('settings.capacity.guidanceOnly')}
+              {displayedSnapshot?.guidance.host_global_session_cap}
             </p>
             {fieldErrors.host_global_session_cap && (
               <p id="capacity-cap-error" role="alert" className="text-feedback-danger text-sm">
@@ -1565,6 +1562,8 @@ export function DaemonCapacitySection(): JSX.Element {
         <summary className={`text-text-primary cursor-pointer p-4 text-sm font-medium ${FOCUS_RING_RAW}`}>{t('settings.capacity.details.summary')}</summary>
         {snapshot !== null && (
           <dl className="text-text-secondary grid grid-cols-1 gap-2 p-4 pt-0 text-sm sm:grid-cols-2">
+            <dt>{t('settings.capacity.details.configurationKeys')}</dt>
+            <dd className="font-mono text-xs">queue_workers · host_global_session_cap</dd>
             <dt>{t('settings.capacity.details.producerEnvelope')}</dt>
             <dd className="font-mono">{snapshot.producer_envelope}</dd>
             <dt>{t('settings.capacity.details.producerComponents')}</dt>
@@ -1595,7 +1594,7 @@ export function DaemonCapacitySection(): JSX.Element {
           if (!open && blocker.state === 'blocked') blocker.reset();
         }}
       >
-        <DialogContent aria-label={t('settings.capacity.dialog.aria')} className={DIALOG_FOCUS_RING}>
+        <DialogContent className={DIALOG_FOCUS_RING}>
           <DialogHeader>
             <DialogTitle>{t('settings.capacity.dialog.title')}</DialogTitle>
             <DialogDescription>
