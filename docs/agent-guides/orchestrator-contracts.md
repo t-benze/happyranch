@@ -261,9 +261,14 @@ as a second HTTP schema.
 ### Active team authority policy
 
 `authority_policy_store.py` owns immutable releases, activation history, candidate
-pins, and their transactional linkage. Eligible manager launches bind the exact
-rendered policy to the session; the hook consumes that binding, never a newly
-selected current activation. `authority.py` validates authenticated manager
+pins, and their transactional linkage. Every uniquely registered live team-manager
+launch binds the exact rendered policy to the session; the hook consumes that
+binding, never a newly selected current activation. Task, fresh/resumed thread,
+wake, dream, and schedule entry points independently revalidate the live AgentDef
+and exact single `teams.yaml` registration before selector access or binding. The
+bound team, not current registry state or caller input, is carried through attempt,
+candidate, evaluation, finalization, publication, and spend identities.
+`authority.py` validates authenticated manager
 self-evaluation for active-policy sessions and applies daemon-owned cancellation,
 budget, lineage, protected-boundary, replay, and CAS checks. Semantic evidence is
 advisory to those checks. The single-use continuation envelope grants only the
@@ -288,8 +293,14 @@ historical schema-layout inequality remain diagnostics; current owner/session,
 cancellation, active-work, budgets, protected drift, atomicity, replay, and
 closed audit evidence remain authoritative.
 
-The dedicated eligible-manager page edits the two values only as a pair and
-uses the authenticated selector projection/history. Landing or merging source
+The dedicated eligible-manager page is available uniformly to every valid
+registered manager, edits the two values only as a pair, and uses the
+authenticated team-scoped selector projection/history. The server owns the
+neutral starter bodies and deterministically derives each team's starter ID and
+title; there is no Engineering behavior branch. Legacy compatibility is data
+driven by `POLICY_BY_TEAM`: an absent definition projects a null template and
+refuses both legacy writers before store access. Existing Engineering persisted
+identities remain unchanged. Landing or merging source
 does not save or activate a production policy. A future activation requires
 compatible binaries everywhere and drained old manager launch and completion
 consumers; rollback is to compatible code, not an old consumer against new

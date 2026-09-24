@@ -1,8 +1,27 @@
 import hashlib
 import json
+from datetime import datetime, timezone
 
 from runtime.models import AuthorityPolicyActivation, AuthorityPolicyRelease
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+from runtime.orchestrator.teams import TeamManager, TeamsRegistry
+
+
+def policy_manager_context(store, *, manager: str = "engineering_manager",
+                           team: str = "engineering"):
+    root = store._db.db_path.parent
+    paths = OrgPaths(root=root)
+    paths.agents_dir.mkdir(parents=True, exist_ok=True)
+    agent = AgentDef(
+        name=manager, team=team, role="manager", executor="codex",
+        allow_rules=tuple(), repos={}, enrolled_by=None, enrolled_at_task=None,
+        enrolled_at=datetime.now(timezone.utc), system_prompt="prompt",
+        description="test manager",
+    )
+    (paths.agents_dir / f"{manager}.md").write_text(render_agent_text(agent))
+    return root, TeamsRegistry({team: TeamManager(manager, team, ())})
 
 
 def activate_test_policy(

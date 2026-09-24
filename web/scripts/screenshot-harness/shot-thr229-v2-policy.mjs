@@ -243,14 +243,20 @@ try {
   const policyUrl = `${base}/orgs/isolated-org/agents/engineering_manager/team-escalation-policy`;
   await pw(['goto', policyUrl]);
   await waitForPage(`document.querySelectorAll('textarea').length === 2`, 'empty eligible editor');
+  const projection = await evalJson(`fetch('/api/v1/orgs/isolated-org/agents/engineering_manager/team-escalation-policy', {
+    headers: { Authorization: 'Bearer ' + sessionStorage.getItem('happyranch.token') },
+  }).then((response) => response.json())`);
+  assert(projection.v2_starter.policy_id === 'team-8c85b6639e62e10b-dual-text', 'server projected the wrong Engineering starter identity');
+  assert(projection.v2_starter.what_to_escalate === STARTER_TO, 'server starter changed What to escalate bytes');
+  assert(projection.v2_starter.what_not_to_escalate === STARTER_NOT, 'server starter changed What not to escalate bytes');
   const emptyState = await pageState();
-  assert(emptyState.textareas[0].value === STARTER_TO, 'empty projection did not use exact What to escalate starter bytes');
-  assert(emptyState.textareas[1].value === STARTER_NOT, 'empty projection did not use exact What not to escalate starter bytes');
+  assert(emptyState.textareas[0].value === projection.v2_starter.what_to_escalate, 'empty editor did not use server What to escalate starter bytes');
+  assert(emptyState.textareas[1].value === projection.v2_starter.what_not_to_escalate, 'empty editor did not use server What not to escalate starter bytes');
   const emptyDb = await fixture.rpc('snapshot');
   assert(emptyDb.counts.releases === 0 && emptyDb.counts.activations === 0, 'empty GET wrote a policy release');
   evidence.screenshots.empty = await screenshot('01-loaded-empty');
 
-  await fillPair(STARTER_TO, STARTER_NOT);
+  await fillPair(projection.v2_starter.what_to_escalate, projection.v2_starter.what_not_to_escalate);
   await savePair();
   await waitForPage(`document.body.innerText.includes('Saved and activated immutable v2 release')`, 'first paired save readback');
   const firstDb = await fixture.rpc('snapshot');
@@ -348,7 +354,17 @@ try {
     await fixture.rpc('fault_off').catch(() => {});
     await fixture.rpc('stop').catch(() => {});
     if (fixture.processHandle.exitCode === null) {
-      await new Promise((resolvePromise) => fixture.processHandle.once('exit', resolvePromise));
+      await Promise.race([
+        new Promise((resolvePromise) => fixture.processHandle.once('exit', resolvePromise)),
+        sleep(5000),
+      ]);
+    }
+    if (fixture.processHandle.exitCode === null) {
+      fixture.processHandle.kill('SIGTERM');
+      await Promise.race([
+        new Promise((resolvePromise) => fixture.processHandle.once('exit', resolvePromise)),
+        sleep(5000),
+      ]);
     }
     if (fixture.stderr()) await writeFile(join(OUT, 'fixture-stderr.log'), fixture.stderr());
   }

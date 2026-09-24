@@ -46,7 +46,7 @@ from runtime.orchestrator.active_authority_policy import (
     resolve_active_team_policy_section,
 )
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
-from tests.authority_policy_test_factory import activate_test_policy
+from tests.authority_policy_test_factory import activate_test_policy, policy_manager_context
 
 TEAM = "engineering"
 MANAGER = "engineering_manager"
@@ -77,8 +77,10 @@ def _v2_receipt(store: AuthorityPolicyStore, *, prefix: str = "1", action: str =
 
 
 def _resolve(store: AuthorityPolicyStore):
+    root, teams = policy_manager_context(store)
     return resolve_active_team_policy_snapshot(
-        store=store, team=TEAM, agent_name=MANAGER, eligible=True,
+        store=store, root=root, teams=teams, team=TEAM,
+        agent_name=MANAGER, eligible=True,
     )
 
 
@@ -102,9 +104,11 @@ def _audit_rows(db, action, session_id="sess-1"):
 
 def test_empty_selector_is_static_and_never_claims_v2(tmp_path):
     store = _store(tmp_path)
+    root, teams = policy_manager_context(store)
     assert _resolve(store) is None
     assert resolve_active_team_policy_section(
-        store=store, team=TEAM, agent_name=MANAGER, eligible=True,
+        store=store, root=root, teams=teams, team=TEAM,
+        agent_name=MANAGER, eligible=True,
     ) == ""
     _bind(store._db, None)
     static_rows = _audit_rows(store._db, SESSION_POLICY_BINDING_ACTION)
@@ -172,12 +176,15 @@ def test_selected_v2_resolves_pair_and_binds_immutable_row(tmp_path):
 
 def test_worker_is_never_resolved_or_bound(tmp_path):
     store = _store(tmp_path)
+    root, teams = policy_manager_context(store)
     _v2_receipt(store)
     assert resolve_active_team_policy_snapshot(
-        store=store, team=TEAM, agent_name=WORKER, eligible=False,
+        store=store, root=root, teams=teams, team=TEAM,
+        agent_name=WORKER, eligible=False,
     ) is None
     assert resolve_active_team_policy_section(
-        store=store, team=TEAM, agent_name=WORKER, eligible=False,
+        store=store, root=root, teams=teams, team=TEAM,
+        agent_name=WORKER, eligible=False,
     ) == ""
 
 

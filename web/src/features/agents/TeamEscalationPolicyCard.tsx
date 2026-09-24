@@ -5,15 +5,12 @@ import { Button } from '@/design-system/primitives/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/design-system/primitives/Dialog';
 import { ApiError } from '@/lib/api';
 import {
-  AUTHORITY_POLICY_V2_STARTER,
   authorityPolicyActiveEpoch,
   type TeamEscalationPolicyResponse,
   type V2AuthorityPolicyControlResponse,
   type V2PairedControlRequest,
   useCreateTeamEscalationPolicyV2Release,
   useTeamEscalationPolicy,
-  useTeamEscalationPolicyHistory,
-  useTeamEscalationPolicyOutcomes,
   useTeamEscalationPolicyV2History,
 } from '@/hooks/authorityPolicy';
 import { useAgentsRoutes } from '@/hooks/agents';
@@ -39,7 +36,7 @@ export function TeamEscalationPolicyEntryCard({ agent }: { agent: { name: string
   return (
     <PolicyShell>
       <h3 className="font-display text-text-primary text-base font-medium">Manager-only team escalation policy</h3>
-      <p className="text-text-muted mt-1 text-xs">Engineering Manager access only.</p>
+      <p className="text-text-muted mt-1 text-xs">{formatTeam(agent.team)} manager · {agent.name}</p>
       {query.isLoading ? <p className="text-text-muted mt-3 text-xs">Loading active policy status…</p> : query.isError || !query.data ? <p role="alert" className="text-tier-red mt-3 text-xs">Could not load policy status.</p> : query.data.family === 'empty' ? <p className="text-text-muted mt-3 text-xs">No active release. Canonical dual-text bootstrap is available.</p> : <p className="text-text-muted mt-3 text-xs">Active {query.data.family === 'v2' ? 'dual-text ' : 'legacy '}v{query.data.active.release.version} · epoch {authorityPolicyActiveEpoch(query.data.active)} · {query.data.active.release.digest.slice(0, 12)}</p>}
       <Button asChild size="sm" className="mt-3"><Link to={routes.policy(agent.name)}>Open team escalation policy</Link></Button>
     </PolicyShell>
@@ -56,8 +53,6 @@ export function TeamEscalationPolicyCard({
   const query = useTeamEscalationPolicy(agent);
   const createV2Release = useCreateTeamEscalationPolicyV2Release();
   const v2History = useTeamEscalationPolicyV2History(agent);
-  const legacyHistory = useTeamEscalationPolicyHistory(agent);
-  const outcomes = useTeamEscalationPolicyOutcomes(agent);
   const [editor, setEditor] = useState<V2EditorState | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
@@ -103,8 +98,6 @@ export function TeamEscalationPolicyCard({
 
   const validationError = validateV2Draft(editor.draft);
   const v2HistoryItems = v2History.data?.pages.flatMap((page) => page.items) ?? [];
-  const legacyHistoryItems = legacyHistory.data?.pages.flatMap((page) => page.items) ?? [];
-  const outcomeItems = outcomes.data?.pages.flatMap((page) => page.items) ?? [];
   const pending = submitting || createV2Release.isPending;
   const canSave = data.family === 'empty' || dirty;
 
@@ -116,7 +109,7 @@ export function TeamEscalationPolicyCard({
   };
 
   const buildRequest = (): V2PairedControlRequest => ({
-    team: 'engineering',
+    team: data.team,
     policy_id: editor.draft.policyId,
     title: editor.draft.title,
     create_request_id: crypto.randomUUID(),
@@ -257,12 +250,6 @@ export function TeamEscalationPolicyCard({
       </div>
 
       <V2HistorySection history={v2History} items={v2HistoryItems} />
-      {data.family === 'legacy_v1' && <LegacyReadOnlySections
-        history={legacyHistory}
-        historyItems={legacyHistoryItems}
-        outcomes={outcomes}
-        outcomeItems={outcomeItems}
-      />}
     </PolicyShell>
   );
 }
@@ -288,28 +275,6 @@ function V2HistorySection({ history, items }: {
   );
 }
 
-function LegacyReadOnlySections({ history, historyItems, outcomes, outcomeItems }: {
-  history: ReturnType<typeof useTeamEscalationPolicyHistory>;
-  historyItems: NonNullable<ReturnType<typeof useTeamEscalationPolicyHistory>['data']>['pages'][number]['items'];
-  outcomes: ReturnType<typeof useTeamEscalationPolicyOutcomes>;
-  outcomeItems: NonNullable<ReturnType<typeof useTeamEscalationPolicyOutcomes>['data']>['pages'][number]['items'];
-}): JSX.Element {
-  return <>
-    <section aria-labelledby="legacy-policy-history-heading" className="border-border-subtle mt-5 border-t pt-4">
-      <h4 id="legacy-policy-history-heading" className="text-text-primary text-sm font-medium">Legacy policy history (read-only)</h4>
-      {history.isLoading ? <p className="text-text-muted mt-2 text-xs">Loading legacy history…</p> : history.isError && !historyItems.length ? <p role="alert" className="text-tier-red mt-2 text-xs">Could not load legacy policy history.</p> : !historyItems.length ? <p className="text-text-muted mt-2 text-xs">No immutable legacy releases.</p> : <ul className="mt-2 space-y-2">{historyItems.map((item) => <li key={`${item.release_id}-${item.activation?.id ?? 'inactive'}`} className="bg-surface-sunken rounded p-2 text-xs"><div>v{item.version} · {item.release_id} · {item.policy_digest}</div><div className="text-text-muted">{item.activation ? `legacy epoch ${item.activation.epoch} · ${item.activation.action}` : 'saved inactive'} · {item.release_created_at} · {item.actor_attribution}</div></li>)}</ul>}
-      {history.isError && historyItems.length > 0 && <p role="alert" className="text-tier-red mt-2 text-xs">Could not load more legacy history. Loaded releases are preserved.</p>}
-      {!history.isLoading && historyItems.length > 0 && <Button size="sm" variant="ghost" disabled={!history.hasNextPage || history.isFetchingNextPage} aria-label={history.isError ? 'Retry loading legacy history' : 'Load more legacy history'} onClick={() => void history.fetchNextPage()}>{history.isFetchingNextPage ? 'Loading more legacy history…' : history.isError ? 'Retry loading legacy history' : history.hasNextPage ? 'Load more legacy history' : 'End of legacy history'}</Button>}
-    </section>
-    <section aria-labelledby="policy-outcomes-heading" className="border-border-subtle mt-5 border-t pt-4">
-      <h4 id="policy-outcomes-heading" className="text-text-primary text-sm font-medium">Legacy manager self-evaluation outcomes (read-only)</h4>
-      {outcomes.isLoading ? <p className="text-text-muted mt-2 text-xs">Loading outcomes…</p> : outcomes.isError && !outcomeItems.length ? <p role="alert" className="text-tier-red mt-2 text-xs">Could not load outcomes.</p> : !outcomeItems.length ? <p className="text-text-muted mt-2 text-xs">No legacy manager self-evaluation outcomes yet.</p> : <ul className="mt-2 space-y-2">{outcomeItems.map((item) => <li key={item.candidate_id} className="bg-surface-sunken rounded p-2 font-mono text-xs"><div>{item.disposition ?? 'pending'} · {item.disposition_code ?? 'no durable evaluation'}</div><div className="text-text-muted">task {item.root_task_id} · session {item.manager_session_id} · release {item.release_id ?? 'missing'}</div><div className={item.receipt_state === 'complete' ? 'text-tier-green' : 'text-tier-amber'}>{item.receipt_state}</div></li>)}</ul>}
-      {outcomes.isError && outcomeItems.length > 0 && <p role="alert" className="text-tier-red mt-2 text-xs">Could not load more outcomes. Loaded outcomes are preserved.</p>}
-      {!outcomes.isLoading && outcomeItems.length > 0 && <Button size="sm" variant="ghost" disabled={!outcomes.hasNextPage || outcomes.isFetchingNextPage} aria-label={outcomes.isError ? 'Retry loading evaluation outcomes' : 'Load more evaluation outcomes'} onClick={() => void outcomes.fetchNextPage()}>{outcomes.isFetchingNextPage ? 'Loading more outcomes…' : outcomes.isError ? 'Retry loading outcomes' : outcomes.hasNextPage ? 'Load more outcomes' : 'End of outcomes'}</Button>}
-    </section>
-  </>;
-}
-
 function draftKey(draft: V2Draft): string {
   return JSON.stringify(draft);
 }
@@ -321,10 +286,10 @@ function editorFromProjection(data: TeamEscalationPolicyResponse): V2EditorState
     whatToEscalate: data.active.release.what_to_escalate,
     whatNotToEscalate: data.active.release.what_not_to_escalate,
   } : {
-    policyId: AUTHORITY_POLICY_V2_STARTER.policy_id,
-    title: AUTHORITY_POLICY_V2_STARTER.title,
-    whatToEscalate: AUTHORITY_POLICY_V2_STARTER.what_to_escalate,
-    whatNotToEscalate: AUTHORITY_POLICY_V2_STARTER.what_not_to_escalate,
+    policyId: data.v2_starter.policy_id,
+    title: data.v2_starter.title,
+    whatToEscalate: data.v2_starter.what_to_escalate,
+    whatNotToEscalate: data.v2_starter.what_not_to_escalate,
   };
   return {
     draft,
@@ -333,8 +298,13 @@ function editorFromProjection(data: TeamEscalationPolicyResponse): V2EditorState
     action: data.family === 'empty' ? 'bootstrap' : 'activate',
     sourceKey: data.family === 'v2'
       ? `${data.family}:${data.selector_id}:${data.active.release.id}:${data.active.release.digest}`
-      : `${data.family}:${data.selector_id}:${data.selector_epoch}`,
+      : `${data.team}:${data.family}:${data.selector_id}:${data.selector_epoch}:${data.v2_starter.policy_id}`,
   };
+}
+
+function formatTeam(team: string): string {
+  return team.split(/[_-]+/).filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
 }
 
 function validateV2Draft(draft: V2Draft): string | null {

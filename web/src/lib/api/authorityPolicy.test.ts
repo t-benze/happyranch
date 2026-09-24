@@ -15,6 +15,12 @@ const template = {
   title: 'Policy', normative_text: 'Text', clauses: [],
   continuation_phrase: 'server-authored phrase',
 };
+const v2Starter = {
+  policy_id: 'team-8c85b6639e62e10b-dual-text',
+  title: 'Engineering escalation policy',
+  what_to_escalate: 'Escalate starter.',
+  what_not_to_escalate: 'Continue starter.',
+};
 const SELECTOR_ID = `APS-${'c'.repeat(64)}`;
 const RELEASE_DIGEST = 'd'.repeat(64);
 const ACTIVATION_DIGEST = 'e'.repeat(64);
@@ -40,6 +46,7 @@ const empty = {
   selector_epoch: 0,
   bootstrap_required: true,
   bootstrap_template: template,
+  v2_starter: v2Starter,
 } as const;
 const legacy = {
   team: 'engineering',
@@ -50,6 +57,7 @@ const legacy = {
   selector_id: SELECTOR_ID,
   selector_epoch: 1,
   bootstrap_template: template,
+  v2_starter: v2Starter,
   active: {
     family: 'legacy_v1',
     activation_id: 'APA-1',
@@ -73,6 +81,7 @@ const v2 = {
   selector_id: SELECTOR_ID,
   selector_epoch: 2,
   bootstrap_template: template,
+  v2_starter: v2Starter,
   active: {
     family: 'v2',
     activation_id: 'APV2A-1',
@@ -119,9 +128,20 @@ describe('team escalation policy response contract', () => {
     })).toThrow('Invalid team escalation policy response');
   });
 
-  it('rejects a response that omits the server-authored bootstrap authority', () => {
+  it('rejects a response that omits the server-authored bootstrap member', () => {
     const { bootstrap_template: _omitted, ...withoutTemplate } = empty;
     expect(() => decodeTeamEscalationPolicyResponse(withoutTemplate))
+      .toThrow('Invalid team escalation policy response');
+  });
+
+  it('accepts exact null bootstrap template and rejects every other malformed shape', () => {
+    expect(decodeTeamEscalationPolicyResponse({ ...empty, team: 'content',
+      target_manager: 'content_manager', bootstrap_template: null }).bootstrap_template).toBeNull();
+    for (const malformed of [undefined, {}, [], '', 0]) {
+      expect(() => decodeTeamEscalationPolicyResponse({ ...empty, bootstrap_template: malformed }))
+        .toThrow('Invalid team escalation policy response');
+    }
+    expect(() => decodeTeamEscalationPolicyResponse({ ...empty, v2_starter: {} }))
       .toThrow('Invalid team escalation policy response');
   });
 

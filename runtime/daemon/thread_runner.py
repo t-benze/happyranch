@@ -1079,15 +1079,15 @@ async def run_invocation(
     except Exception:
         managed_skills_index = ""
 
-    # Resolve agent team before the unified materialization call.
-    try:
-        agent_team = "engineering"
-        for p in participants:
-            if p.agent_name == inv.agent_name:
-                agent_team = p.team
-                break
-    except Exception:
-        agent_team = "engineering"
+    # The live AgentDef is the only fallback-free team source. The shared
+    # policy resolver below independently requires the participant registry to
+    # agree, so an absent/stale/mismatched participant remains unbound.
+    agent_team = agent_def.team
+    policy_participant_team = (
+        agent_def.team
+        if any(participant.agent_name == inv.agent_name for participant in participants)
+        else None
+    )
 
     # Issue #536: serialize the complete pre-spawn skill materialization
     # transaction under a process-local workspace lock so concurrent
@@ -1214,10 +1214,16 @@ async def run_invocation(
         )
         from runtime.orchestrator.active_authority_policy import resolve_active_team_policy_section
         from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
-        active_policy_section = resolve_active_team_policy_section(
-            store=AuthorityPolicyStore(org_state.db), team=agent_team,
-            agent_name=inv.agent_name,
-            eligible=bool(getattr(org_state, "teams", None) and org_state.teams.is_team_manager(inv.agent_name)),
+        policy_teams = getattr(org_state, "teams", None)
+        active_policy_section = "" if (
+            policy_participant_team is None or policy_teams is None
+        ) else (
+            resolve_active_team_policy_section(
+                store=AuthorityPolicyStore(org_state.db), root=org_state.root,
+                teams=policy_teams, team=policy_participant_team,
+                agent_name=inv.agent_name,
+                eligible=policy_teams.is_team_manager(inv.agent_name),
+            )
         )
         if can_resume:
             new_messages = [m for m in messages if m.seq > last_seq]

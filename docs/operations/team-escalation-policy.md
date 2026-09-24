@@ -1,13 +1,17 @@
 # Team escalation policy operator contract
 
-The web surface is currently available only for the roster-confirmed
-`engineering/engineering_manager/manager` tuple. The server is authoritative;
-workers and every other manager receive the same `policy_surface_not_available`
-404 and their Agent response and DOM contain no policy surface.
+The web and API surface is available to every uniquely registered team manager.
+Eligibility requires one live AgentDef whose role is `manager` and whose team
+matches exactly one `teams.yaml` manager registration. Workers, unknown or
+deleted agents, role/team or registry mismatches, and managers registered for
+more than one team all receive the same `policy_surface_not_available` 404;
+policy storage and client caches are not consulted for those tuples.
 
 The eligible Agent detail contains a compact manager-only entry and active-status
-card. The full editor, immutable history, and self-evaluation outcomes live on
+card. The full editor and immutable dual-text history live on
 the dedicated `/orgs/:slug/agents/:agent_name/team-escalation-policy` route.
+The legacy policy-history and self-evaluation-outcome APIs and durable data are
+retained, but their two read-only UI sections and eager requests are removed.
 
 `GET .../team-escalation-policy/history` and `/outcomes` accept an opaque
 server cursor and `1 <= limit <= 50`. The first request omits `cursor`; its
@@ -41,7 +45,7 @@ rewriting its original bytes. A rejected or stale CAS leaves the saved release
 inactive and requires a refresh. All mutations truthfully attribute only the
 `shared local operator credential`.
 
-Daemon startup observes and initializes the eligible Engineering selector
+Daemon startup observes and initializes every valid registered-manager selector
 through that same transaction-owning initializer BEFORE any startup
 recovery/enqueue and before the API becomes available. Initialization is
 observation of authentic legacy history or a genuinely empty store — never an
@@ -49,14 +53,19 @@ activation. A missing, corrupt or unselected history, or an initializer-audit
 failure, refuses the launch with no partial initializer instead of manufacturing
 empty state or silently selecting legacy. Repeat/reopen reuses the same
 deterministic initializer with no duplicate rows, an already-selected v2 family
-stays v2, and an ineligible roster initializes no unrelated team. Dynamic launch,
+stays v2, and an invalid or ambiguous registration initializes no team. Existing
+Engineering selector, release, activation, digest, epoch, and failed-history
+identities are preserved without migration or rewrite. Dynamic launch,
 immutable launch binding, strict completion admission, automatic continuation,
 authenticated tagged generation admission, next-result spend, and startup/reaper
 recovery are implemented in the PR878 candidate. They consume the exact selected
 and session-pinned identity; startup initialization itself still grants none of
 that authority.
 
-The B2b2 client decodes the current projection and both history streams as
+The client waits for both the live roster and teams registry before eligibility,
+keys policy data by organization plus exact manager/team identity, and removes
+that tuple's policy/history cache immediately when eligibility changes. It
+decodes the current projection and dual-text history as
 discriminated `empty`/`legacy_v1`/`v2` types, rejecting malformed, mixed,
 unsupported or selector-less projections rather than casting v2 into the legacy
 clause shape or falling back to the latest legacy. The observed `selector_id` is
@@ -70,9 +79,13 @@ in transport. Real/mock hooks exist for the v2 control and v2 history, and a
 successful v2 control invalidates the current projection plus the v2 history
 stream while each family keeps its own pagination. The selector epoch stays
 distinct from the legacy family epoch. A selected v2 family renders the complete
-paired editor and never fabricates a v1 draft or v1 mutation. The current
-candidate also projects authenticated v2 history; legacy outcomes remain
-scoped to an authenticated legacy-family projection. Mixed, corrupt,
+paired editor and never fabricates a v1 draft or v1 mutation. The server is the
+sole source of the two frozen neutral v2 starter bodies and projects the uniform
+per-team identity `team-<sha256(team)[:16]>-dual-text` and display title.
+`bootstrap_template` is either an exact registered legacy template or `null`;
+missing legacy definitions make both legacy mutations fail with the same
+sanitized 404 before selector/store access. The current candidate also projects
+authenticated v2 history. Mixed, corrupt,
 unsupported, or ineligible targets fail closed without fallback.
 
 Selector-aware control API and paired editor:
