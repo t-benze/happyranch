@@ -26,7 +26,7 @@ def runtime(tmp_path: Path) -> OrgPaths:
         "teams:\n"
         "  engineering:\n"
         "    manager: engineering_head\n"
-        "    workers: [dev_agent, qa_engineer, agent0, agent1, agent2, agent3, agent4]\n"
+        "    workers: [dev_agent, code_reviewer, qa_engineer, agent0, agent1, agent2, agent3, agent4]\n"
     )
     return paths
 
@@ -313,11 +313,11 @@ class TestFanoutDatabase:
             TaskRecord(id="TASK-FTC1", brief="child 1", parent_task_id="TASK-FTP", assigned_agent="dev", task_type="subtask"),
             TaskRecord(id="TASK-FTC2", brief="child 2", parent_task_id="TASK-FTP", assigned_agent="qa", task_type="subtask"),
         ]
+        expected_claim = _fixture_retry_claim(db, "TASK-FTP")
         ok = db.try_delegate_many(
             "TASK-FTP", children, parent_note="Fan-out 2 children",
-            active_fanout_json='{"v":1}',
-        )
-        assert ok is True
+            active_fanout_json='{"v":1}', expected_claim=expected_claim)
+        assert isinstance(ok, Committed)
         c1 = db.get_task("TASK-FTC1")
         assert c1 is not None and c1.parent_task_id == "TASK-FTP"
         c2 = db.get_task("TASK-FTC2")
@@ -335,16 +335,18 @@ class TestFanoutDatabase:
         )
         db.insert_task(parent)
         children = [TaskRecord(id="TASK-FTC3", brief="c", parent_task_id="TASK-FTP2", task_type="subtask")]
-        ok = db.try_delegate_many("TASK-FTP2", children, parent_note="nope")
-        assert ok is False
+        expected_claim = _fixture_retry_claim(db, "TASK-FTP2")
+        ok = db.try_delegate_many("TASK-FTP2", children, parent_note="nope", expected_claim=expected_claim)
+        assert isinstance(ok, LostClaim)
         assert db.get_task("TASK-FTC3") is None
 
     def test_try_delegate_many_rejects_already_terminal(self, db):
         parent = TaskRecord(id="TASK-FTP3", brief="x", status=TaskStatus.COMPLETED)
         db.insert_task(parent)
         children = [TaskRecord(id="TASK-FTC4", brief="c", parent_task_id="TASK-FTP3", task_type="subtask")]
-        ok = db.try_delegate_many("TASK-FTP3", children, parent_note="nope")
-        assert ok is False
+        expected_claim = _fixture_retry_claim(db, "TASK-FTP3")
+        ok = db.try_delegate_many("TASK-FTP3", children, parent_note="nope", expected_claim=expected_claim)
+        assert isinstance(ok, LostClaim)
         assert db.get_task("TASK-FTC4") is None
 
     def test_try_delegate_many_get_children(self, db):
@@ -355,15 +357,17 @@ class TestFanoutDatabase:
             TaskRecord(id="TASK-FTC6", brief="c2", parent_task_id="TASK-FTP4", assigned_agent="qa", task_type="subtask"),
             TaskRecord(id="TASK-FTC7", brief="c3", parent_task_id="TASK-FTP4", assigned_agent="sr", task_type="subtask"),
         ]
-        ok = db.try_delegate_many("TASK-FTP4", children, parent_note="fanout 3")
-        assert ok is True
+        expected_claim = _fixture_retry_claim(db, "TASK-FTP4")
+        ok = db.try_delegate_many("TASK-FTP4", children, parent_note="fanout 3", expected_claim=expected_claim)
+        assert isinstance(ok, Committed)
         child_ids = db.get_children("TASK-FTP4")
         assert set(child_ids) == {"TASK-FTC5", "TASK-FTC6", "TASK-FTC7"}
 
     def test_try_delegate_many_non_existent_parent(self, db):
         children = [TaskRecord(id="TASK-FTC8", brief="c", parent_task_id="NONEXISTENT", task_type="subtask")]
-        ok = db.try_delegate_many("NONEXISTENT", children, parent_note="nope")
-        assert ok is False
+        expected_claim = _fixture_retry_claim(db, "NONEXISTENT")
+        ok = db.try_delegate_many("NONEXISTENT", children, parent_note="nope", expected_claim=expected_claim)
+        assert isinstance(ok, LostClaim)
         assert db.get_task("TASK-FTC8") is None
 
     def test_try_delegate_many_atomic_rollback_on_conflict(self, db):
@@ -383,14 +387,15 @@ class TestFanoutDatabase:
             TaskRecord(id="TASK-FTC-DUP", brief="child 1", parent_task_id="TASK-FTP-DUP", task_type="subtask"),
             TaskRecord(id="TASK-FTC-DUP", brief="child 2", parent_task_id="TASK-FTP-DUP", task_type="subtask"),
         ]
+        expected_claim = _fixture_retry_claim(db, "TASK-FTP-DUP")
         with pytest.raises(Exception):
-            db.try_delegate_many("TASK-FTP-DUP", children, parent_note="should roll back")
+            db.try_delegate_many("TASK-FTP-DUP", children, parent_note="should roll back", expected_claim=expected_claim)
 
         # Neither child was committed.
         assert db.get_task("TASK-FTC-DUP") is None
         # Parent unchanged.
         parent_after = db.get_task("TASK-FTP-DUP")
-        assert parent_after.status == TaskStatus.PENDING
+        assert RetryClaim.from_task(parent_after) == expected_claim
         assert parent_after.block_kind is None
 
     def test_try_delegate_many_atomic_sets_active_fanout(self, db):
@@ -402,11 +407,11 @@ class TestFanoutDatabase:
             TaskRecord(id="TASK-FTC-AF1", brief="c1", parent_task_id="TASK-FTP-AF", assigned_agent="dev", task_type="subtask"),
             TaskRecord(id="TASK-FTC-AF2", brief="c2", parent_task_id="TASK-FTP-AF", assigned_agent="qa", task_type="subtask"),
         ]
+        expected_claim = _fixture_retry_claim(db, "TASK-FTP-AF")
         ok = db.try_delegate_many(
             "TASK-FTP-AF", children, parent_note="fanout",
-            active_fanout_json='{"children_ids":["TASK-FTC-AF1","TASK-FTC-AF2"],"width":2}',
-        )
-        assert ok is True
+            active_fanout_json='{"children_ids":["TASK-FTC-AF1","TASK-FTC-AF2"],"width":2}', expected_claim=expected_claim)
+        assert isinstance(ok, Committed)
         p = db.get_task("TASK-FTP-AF")
         assert p.active_fanout is not None
         assert '"width":2' in p.active_fanout
@@ -627,7 +632,7 @@ class TestFanoutRunStep:
                     "width_cap_ack": 2,
                 }),
             )
-        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+        monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
 
         orch.run_step("T-FANOUT-1")
 
@@ -872,7 +877,7 @@ class TestFanoutRunStep:
                     "join_summary": "Review both",
                 }),
             )
-        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+        monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
 
         orch.run_step("T-FANOUT-STATE")
 
@@ -1122,7 +1127,7 @@ class TestFanoutPipeline:
                     "width_cap_ack": 2,
                 }),
             )
-        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+        monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
 
         orch.run_step("T-PLAIN1")
 
@@ -1183,7 +1188,7 @@ class TestFanoutPipeline:
                     "width_cap_ack": 2,
                 }),
             )
-        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+        monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
 
         orch.run_step("T-NOCLOBBER")
 
@@ -1245,11 +1250,11 @@ class TestFanoutPipeline:
             },
             {"agent": "qa_engineer", "prompt": "test"},
         ]
+        expected_claim = _fixture_retry_claim(db, "T-PIPE-DEFER")
         _spawn_fanout_children(
             orch, db.get_task("T-PIPE-DEFER"), "T-PIPE-DEFER", 1,
             children=children_payload, width=2,
-            manager_agent="engineering_head", step_audit_id=1,
-        )
+            manager_agent="engineering_head", step_audit_id=1, expected_claim=expected_claim)
         parent = db.get_task("T-PIPE-DEFER")
         assert parent.status == TaskStatus.IN_PROGRESS
         assert parent.block_kind == BlockKind.DELEGATED
@@ -1395,11 +1400,11 @@ class TestFanoutPipeline:
                 "then": [{"agent": "agent3", "prompt": "review2", "expect_verdict": "PASS"}],
             },
         ]
+        expected_claim = _fixture_retry_claim(db, "T-BARRIER1")
         _spawn_fanout_children(
             orch, db.get_task("T-BARRIER1"), "T-BARRIER1", 1,
             children=children_payload, width=2,
-            manager_agent="engineering_head", step_audit_id=1,
-        )
+            manager_agent="engineering_head", step_audit_id=1, expected_claim=expected_claim)
         parent = db.get_task("T-BARRIER1")
         assert parent.active_fanout is not None
 
@@ -1493,11 +1498,11 @@ class TestFanoutPipeline:
             },
             {"agent": "qa_engineer", "prompt": "test"},
         ]
+        expected_claim = _fixture_retry_claim(db, "T-FAILCLSD")
         _spawn_fanout_children(
             orch, db.get_task("T-FAILCLSD"), "T-FAILCLSD", 1,
             children=children_payload, width=2,
-            manager_agent="engineering_head", step_audit_id=1,
-        )
+            manager_agent="engineering_head", step_audit_id=1, expected_claim=expected_claim)
 
         children = db.get_children("T-FAILCLSD")
         assert len(children) == 2
@@ -1556,14 +1561,14 @@ class TestFanoutPipeline:
         q = _SlugQueue()
         orch._queue = q
         monkeypatch.setattr(orch, "_run_agent", lambda *args, **kwargs: (_make_result(), _make_report("done")))
+        expected_claim = _fixture_retry_claim(db, "T-NOREPORT")
         _spawn_fanout_children(
             orch, db.get_task("T-NOREPORT"), "T-NOREPORT", 1,
             children=[
                 {"agent": "dev_agent", "prompt": "build", "expect_verdict": "APPROVE"},
                 {"agent": "qa_engineer", "prompt": "plain"},
             ],
-            width=2, manager_agent="engineering_head", step_audit_id=1,
-        )
+            width=2, manager_agent="engineering_head", step_audit_id=1, expected_claim=expected_claim)
         carrier_id, plain_id = (
             next((cid for cid in db.get_children("T-NOREPORT") if db.get_task(cid).active_chain is not None)),
             next((cid for cid in db.get_children("T-NOREPORT") if db.get_task(cid).active_chain is None)),
@@ -1697,7 +1702,7 @@ class TestMutatingFanout:
                     "width_cap_ack": 2,
                 }),
             )
-        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+        monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
 
         orch.run_step("T-MUT-TYPE")
 
@@ -1758,7 +1763,7 @@ class TestMutatingFanout:
                     "width_cap_ack": 2,
                 }),
             )
-        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+        monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
 
         orch.run_step("T-READONLY")
 
@@ -1830,7 +1835,7 @@ class TestMutatingFanout:
             return _make_result(), _make_report(
                 output_summary=json.dumps({"action": "done"}),
             )
-        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+        monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
 
         # Step 1: parent runs fan-out
         orch.run_step("T-MUT-SPAWN")
@@ -1965,7 +1970,7 @@ class TestMutatingFanout:
                 return _make_result(), _make_report(
                     output_summary=json.dumps({"action": "done", "summary": "worker done"}),
                 )
-        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+        monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
 
         # Step 1: parent fans out
         orch.run_step("T-BARRIER")
@@ -2061,7 +2066,7 @@ class TestMutatingFanout:
                     "width_cap_ack": 2,
                 }),
             )
-        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+        monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
 
         orch.run_step("T-PIPE-TYPE")
 
@@ -2121,7 +2126,7 @@ class TestMutatingFanout:
                     "width_cap_ack": 5,
                 }),
             )
-        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+        monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
 
         orch.run_step("T-NO-GATE")
 
@@ -2184,7 +2189,7 @@ class TestMutatingFanout:
                     "width_cap_ack": 7,
                 }),
             )
-        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+        monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
 
         orch.run_step("T-WIDE7")
 
@@ -2225,7 +2230,7 @@ class TestMutatingFanout:
                     "width_cap_ack": 4,
                 }),
             )
-        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+        monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
 
         orch.run_step("T-WIDE4")
 
@@ -2281,7 +2286,7 @@ class TestMutatingFanout:
                     "width_cap_ack": 3,
                 }),
             )
-        monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+        monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
 
         orch.run_step("T-MUT-NOGATE")
 
@@ -2295,3 +2300,178 @@ class TestMutatingFanout:
             if db.get_task(cid).task_type == "task"
         ]
         assert len(mgr_children) == 1, "exactly one mutating (manager-targeted) child"
+
+
+from runtime.infrastructure.database import RetryClaim, Committed, LostClaim
+
+
+def _fixture_retry_claim(db, task_id):
+    """Establish the direct caller's owned fixture before entering the writer."""
+    from runtime.models import TaskRecord, TaskStatus
+    task = db.get_task(task_id)
+    if task is None:
+        return RetryClaim.from_task(TaskRecord(id=task_id, brief="missing claim",
+            assigned_agent="engineering_head", current_session_id="fixture-owner"))
+    if task.status == TaskStatus.PENDING:
+        db.update_task(task_id, status=TaskStatus.IN_PROGRESS, block_kind=None,
+                       assigned_agent=task.assigned_agent or "engineering_head",
+                       current_session_id="fixture-owner", orchestration_step_count=1)
+    return RetryClaim.from_task(db.get_task(task_id))
+
+
+
+def _owned_executor_fixture(db, run):
+    """Model the session binding performed by the real executor before its body."""
+    def bound(task_id, agent, prompt, **kwargs):
+        task = db.get_task(task_id)
+        assert task.status == TaskStatus.IN_PROGRESS and task.block_kind is None
+        db.update_task(task_id, current_session_id=_make_result().session_id)
+        return run(task_id, agent, prompt, **kwargs)
+    return bound
+
+
+@pytest.mark.parametrize("remote_predecessor", [False, True], ids=["local", "remote"])
+def test_verified_retry_pipeline_f1_structure(runtime, db, remote_predecessor):
+    """C5/F1: the final transaction creates carriers and first legs atomically.
+
+    The remote form differs only in how the accepted verifier reaches the
+    failed rows; it must not reparent either historical failure.
+    """
+    from runtime.orchestrator.chain import ChainState
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _spawn_fanout_children
+
+    predecessor = "TASK-001"
+    db.insert_task(TaskRecord(
+        id=predecessor, brief="original", team="engineering",
+        assigned_agent="engineering_head", status=TaskStatus.IN_PROGRESS,
+        current_session_id="origin-session", task_type="task",
+    ))
+    failed_ids = ("TASK-002", "TASK-003")
+    failed_agents = ("dev_agent", "qa_engineer")
+    for failed_id, agent in zip(failed_ids, failed_agents):
+        db.insert_task(TaskRecord(
+            id=failed_id, brief=f"failed {agent}", team="engineering",
+            assigned_agent=agent, status=TaskStatus.FAILED,
+            parent_task_id=predecessor, task_type="subtask",
+        ))
+
+    if remote_predecessor:
+        parent_id = db.try_manager_supersede(
+            predecessor,
+            actor_agent="engineering_head",
+            actor_session_id="origin-session",
+            expected_team="engineering",
+            successor_brief="verified successor",
+            rationale="bounded correction",
+            attestation={
+                "recovery_reason": "bounded correction",
+                "policy_product_intent_unchanged": True,
+                "no_budget_or_external_commitment": True,
+                "no_permission_or_cross_team_change": True,
+                "no_schema_auth_security_privacy_or_data_access_change": True,
+                "no_unresolved_founder_gate": True,
+            },
+        )
+        assert parent_id is not None
+    else:
+        parent_id = predecessor
+
+    db.update_task(
+        parent_id,
+        status=TaskStatus.IN_PROGRESS,
+        block_kind=None,
+        assigned_agent="engineering_head",
+        current_session_id="manager-session",
+        orchestration_step_count=4,
+        revision_count=1,
+    )
+    parent = db.get_task(parent_id)
+    original_failed_parents = {
+        failed_id: db.get_task(failed_id).parent_task_id for failed_id in failed_ids
+    }
+    children = [
+        {
+            "agent": agent,
+            "prompt": f"build {label}",
+            "revisit_of_task_id": failed_id,
+            "then": [
+                {
+                    "agent": "code_reviewer",
+                    "prompt": f"review {label}",
+                    "expect_verdict": "APPROVE",
+                },
+                {
+                    "agent": "qa_engineer",
+                    "prompt": f"verify {label}",
+                    "expect_verdict": "PASS",
+                },
+            ],
+        }
+        for agent, failed_id, label in zip(failed_agents, failed_ids, ("A", "B"))
+    ]
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+    queue = _SlugQueue()
+    orch._queue = queue
+    outcome = _spawn_fanout_children(
+        orch,
+        parent,
+        parent_id,
+        5,
+        expected_claim=RetryClaim.from_task(parent),
+        children=children,
+        width=2,
+        manager_agent="engineering_head",
+        join_summary="combine",
+        step_audit_id=91,
+    )
+    assert isinstance(outcome, Committed)
+
+    carriers = [
+        db.get_task(task_id)
+        for task_id in db.get_children(parent_id)
+        if task_id not in failed_ids
+    ]
+    assert len(carriers) == 2
+    assert len(queue._items) == 2
+    for carrier, failed_id, agent in zip(carriers, failed_ids, failed_agents):
+        assert (
+            carrier.status,
+            carrier.block_kind,
+            carrier.assigned_agent,
+            carrier.revisit_of_task_id,
+            carrier.current_session_id,
+        ) == (
+            TaskStatus.IN_PROGRESS,
+            BlockKind.DELEGATED,
+            agent,
+            failed_id,
+            None,
+        )
+        chain = ChainState.deserialize(carrier.active_chain)
+        assert chain.step_index == 0
+        assert chain.step_audit_id == 91
+        assert [leg.expect_verdict for leg in chain.legs] == ["APPROVE", "PASS"]
+        first_legs = [db.get_task(task_id) for task_id in db.get_children(carrier.id)]
+        assert len(first_legs) == 1
+        assert first_legs[0].status == TaskStatus.PENDING
+        assert first_legs[0].assigned_agent == agent
+        assert first_legs[0].revisit_of_task_id is None
+        assert ("test", first_legs[0].id) in queue._items
+        assert not [
+            row for row in db.get_audit_logs(carrier.id)
+            if row["action"] == "session_start"
+        ]
+
+    parked = db.get_task(parent_id)
+    assert parked.status == TaskStatus.IN_PROGRESS
+    assert parked.block_kind == BlockKind.DELEGATED
+    assert parked.orchestration_step_count == 4
+    assert parked.revision_count == 1
+    assert parked.active_fanout is not None
+    assert {
+        failed_id: db.get_task(failed_id).parent_task_id for failed_id in failed_ids
+    } == original_failed_parents

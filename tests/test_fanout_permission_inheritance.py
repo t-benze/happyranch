@@ -284,11 +284,11 @@ def test_spawn_identity_child_assigned_own_agent_not_parent(
     children_payload: list[dict] = [
         {"agent": "wrk", "prompt": "run tests"},
     ]
+    expected_claim = _fixture_retry_claim(db, "T-FANOUT-PERM")
     _spawn_fanout_children(
         orch, db.get_task("T-FANOUT-PERM"), "T-FANOUT-PERM", 1,
         children=children_payload, width=1,
-        manager_agent="mgr", step_audit_id=1,
-    )
+        manager_agent="mgr", step_audit_id=1, expected_claim=expected_claim)
 
     # ---- verify spawned child identity ----
     child_ids = db.get_children("T-FANOUT-PERM")
@@ -575,11 +575,11 @@ def test_run_agent_launches_child_with_own_workspace_not_parent(
     children_payload: list[dict] = [
         {"agent": "wrk", "prompt": "run tests"},
     ]
+    expected_claim = _fixture_retry_claim(db, "T-LAUNCH-PATH-PROBE")
     _spawn_fanout_children(
         orch, db.get_task("T-LAUNCH-PATH-PROBE"), "T-LAUNCH-PATH-PROBE", 1,
         children=children_payload, width=1,
-        manager_agent="mgr", step_audit_id=1,
-    )
+        manager_agent="mgr", step_audit_id=1, expected_claim=expected_claim)
 
     # Get the spawned child
     child_ids = db.get_children("T-LAUNCH-PATH-PROBE")
@@ -652,3 +652,20 @@ def test_run_agent_launches_child_with_own_workspace_not_parent(
     assert "Bash(docker *)" in mgr_rules_cli, (
         "sanity: manager should have docker rule"
     )
+
+
+from runtime.infrastructure.database import RetryClaim, Committed, LostClaim
+
+
+def _fixture_retry_claim(db, task_id):
+    """Establish the direct caller's owned fixture before entering the writer."""
+    from runtime.models import TaskRecord, TaskStatus
+    task = db.get_task(task_id)
+    if task is None:
+        return RetryClaim.from_task(TaskRecord(id=task_id, brief="missing claim",
+            assigned_agent="engineering_head", current_session_id="fixture-owner"))
+    if task.status == TaskStatus.PENDING:
+        db.update_task(task_id, status=TaskStatus.IN_PROGRESS, block_kind=None,
+                       assigned_agent=task.assigned_agent or "engineering_head",
+                       current_session_id="fixture-owner", orchestration_step_count=1)
+    return RetryClaim.from_task(db.get_task(task_id))

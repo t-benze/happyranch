@@ -1442,8 +1442,13 @@ Contract (founder-approved in THR-028, refined in THR-078):
 
 2. **Mechanical retry provenance (THR-078).** A manager may re-dispatch
    unchanged work or direct revised work with a valid `revisit_of_task_id`
-   link to a FAILED same-parent predecessor. The link records history; it
-   neither compares briefs nor itself authorizes root escalation. A later
+   link to a FAILED same-agent predecessor under the same parent, or under
+   a root connected to the current root by verified recorded supersessions.
+   Cross-root verification admits at most 20 root records (19 edges), joining
+   actual dispatch, founder revisit, manual resolution or manager-supersession
+   evidence. Brief text and arbitrary revisit links confer no authority. The
+   original failed child and parent are never rewritten. The link records
+   history; it neither compares briefs nor itself authorizes root escalation. A later
    COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors from
    causal selection (THR-183).
 
@@ -1538,3 +1543,30 @@ Branch 1 (in_progress + block_kind IS NULL — a live subprocess killed by the r
    child FAILED without enqueuing the parent. The existing N-wide all-children-
    terminal barrier in `_enqueue_parent_if_waiting` resolves when all legs
    report. The restart note survives to that eventual wake.
+
+
+### Retry spawn and refusal transactions
+
+`try_delegate` and `try_delegate_many` take the original owned report claim.
+Its optional result-row identity comes from the current report caller; the
+authority hook's historical latest-row lookup does not supply retry ownership.
+Under the Database RLock they begin an IMMEDIATE transaction before rereading
+that claim and retry lineage. A changed session, step, owner, state or callback
+binding yields `LostClaim` with no feedback or enqueue. With ownership intact,
+invalid provenance yields `InvalidLineage`; `Committed` alone permits child
+queues. Ordinary worker-of-record revision accounting commits in the same
+transaction as the child, attachment links/audits, chain and parent transition.
+Fanout adds no revision. Actual write errors roll back and propagate; existing
+callback results and decision history survive all refusals and rollbacks.
+
+Retry refusal uses two separate transactions. A atomically records the existing
+feedback result and orchestration audit and returns the parent to PENDING while
+preserving its original session and counters. B takes a fresh writer reservation,
+checks A's exact pending fingerprint and feedback row, and holds that reservation
+through the actual synchronous nonblocking enqueue. B writes nothing and always
+rolls back its reservation. Cancellation committed before B means zero insertion;
+if B wins, cancellation may commit after insertion and the queued item cannot
+claim a cancelled task. Queue failure preserves A's pending feedback and releases
+the reservation. Queue insertion is not a task claim or an exactly-once crash
+boundary; startup may enqueue PENDING again. Other feedback paths, general chain
+advancement and restart policy are unchanged.

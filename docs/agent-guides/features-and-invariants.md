@@ -343,8 +343,15 @@ Contract (founder-approved in THR-028; refined in THR-078):
    error context) is available so the task owner can author an updated brief.
 
 2. **Mechanical retry provenance.** A manager may re-dispatch unchanged work
-   or direct revised work with a valid `revisit_of_task_id` link to a FAILED
-   same-parent predecessor. The link records lineage; it does not classify a
+   or direct revised work with a valid `revisit_of_task_id` link to a
+   same-agent FAILED child under the current parent. A successor root may
+   instead name the same-agent FAILED child under a predecessor root only when
+   every intervening D/R/H/HT/M supersession is authenticated from its durable
+   producer records within the 20-root-record / 19-edge bound. The final
+   single/fanout spawn revalidates the original callback claim and lineage
+   after `BEGIN IMMEDIATE`; only `Committed` enqueues children. A remote link
+   cannot bypass an unresolved local failure, and no failed child is
+   reparented or rewritten. The link records lineage; it does not classify a
    brief, authorize root escalation, or cause daemon retry/successor creation.
    A later COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors
    from causal selection (THR-183). No schema migration or sibling counting.

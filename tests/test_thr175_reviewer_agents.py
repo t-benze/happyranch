@@ -176,11 +176,29 @@ def _run_delegate_decision(
     from runtime.models import CompletionReport
 
     def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        result = _make_result()
+        orch.db.update_task(
+            task_id, assigned_agent=agent, current_session_id=result.session_id,
+        )
+        if on_session_started is not None:
+            on_session_started(task_id, agent, result.session_id)
         report = CompletionReport(
             task_id=task_id, agent=agent, status="completed", confidence=80,
             output_summary=json.dumps(decision_payload),
         )
-        return _make_result(), report
+        # The shipping completion route persists the authenticated result row
+        # before the run-step consumer sees this report.  Preserve that causal
+        # row here so a prior synthetic feedback result cannot be mistaken for
+        # the corrected session's decision.
+        orch.db.insert_task_result(
+            task_id=task_id,
+            agent=agent,
+            session_id=result.session_id,
+            status=report.status,
+            confidence_score=report.confidence,
+            output_summary=report.output_summary,
+        )
+        return result, report
 
     orch._run_agent = fake_run_agent
     orch.run_step("T-DELEG-REJ")
@@ -243,8 +261,10 @@ def test_run_step_delegate_reviewer_then_leg_omitted_expectation_feedback_no_spa
 
     # Feedback task result recorded with remediation naming expect_verdict.
     results = db.get_task_results("T-DELEG-REJ")
-    assert len(results) == 1
-    feedback = results[0]["output_summary"]
+    assert len(results) == 2  # authenticated manager decision + feedback
+    feedback_rows = [r for r in results if "HARD REJECT" in r["output_summary"]]
+    assert len(feedback_rows) == 1
+    feedback = feedback_rows[0]["output_summary"]
     assert "HARD REJECT" in feedback
     assert 'expect_verdict: "APPROVE"' in feedback
     assert "code_reviewer" in feedback
@@ -316,9 +336,10 @@ def test_run_step_delegate_reviewer_first_leg_omitted_expectation_feedback_no_sp
     assert root.status == TaskStatus.PENDING
     assert db.get_children("T-DELEG-REJ") == []
     results = db.get_task_results("T-DELEG-REJ")
-    assert len(results) == 1
-    assert "HARD REJECT" in results[0]["output_summary"]
-    assert 'expect_verdict: "APPROVE"' in results[0]["output_summary"]
+    assert len(results) == 2  # authenticated manager decision + feedback
+    feedback_rows = [r for r in results if "HARD REJECT" in r["output_summary"]]
+    assert len(feedback_rows) == 1
+    assert 'expect_verdict: "APPROVE"' in feedback_rows[0]["output_summary"]
     assert orch._queue.qsize() == 1
     slug, tid = orch._queue.get_nowait()
     assert tid == "T-DELEG-REJ"
@@ -348,8 +369,11 @@ def test_run_step_delegate_missing_workspace_still_fails_task(runtime, db, monke
     assert root.note and "invalid delegate" in root.note
     assert "no workspace" in root.note
     assert db.get_children("T-DELEG-REJ") == []
-    # No feedback result, no self re-enqueue — the task is terminal.
-    assert db.get_task_results("T-DELEG-REJ") == []
+    # The authenticated manager decision is retained, but no synthetic
+    # feedback result or self re-enqueue is added — the task is terminal.
+    results = db.get_task_results("T-DELEG-REJ")
+    assert len(results) == 1
+    assert "HARD REJECT" not in results[0]["output_summary"]
     assert orch._queue.qsize() == 0
 
 

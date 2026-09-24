@@ -1,4 +1,7 @@
 import sqlite3
+
+
+from pathlib import Path
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -2820,8 +2823,9 @@ def test_try_delegate_succeeds_on_pending_parent(db):
         id="T-CHILD", brief="child work",
         assigned_agent="dev_agent", parent_task_id="T-PAR",
     )
-    ok = db.try_delegate("T-PAR", child, parent_note="Delegated to dev_agent (child=T-CHILD)")
-    assert ok is True
+    expected_claim = _fixture_retry_claim(db, "T-PAR")
+    ok = db.try_delegate("T-PAR", child, parent_note="Delegated to dev_agent (child=T-CHILD)", expected_claim=expected_claim)
+    assert isinstance(ok, Committed)
 
     par = db.get_task("T-PAR")
     assert par.status == TaskStatus.IN_PROGRESS
@@ -2947,8 +2951,9 @@ def test_try_delegate_rejects_cancelled_parent_and_inserts_no_child(db):
         id="T-CHILD", brief="child work",
         assigned_agent="dev_agent", parent_task_id="T-PAR",
     )
-    ok = db.try_delegate("T-PAR", child, parent_note="Delegated to dev_agent")
-    assert ok is False
+    expected_claim = _fixture_retry_claim(db, "T-PAR")
+    ok = db.try_delegate("T-PAR", child, parent_note="Delegated to dev_agent", expected_claim=expected_claim)
+    assert isinstance(ok, LostClaim)
 
     par = db.get_task("T-PAR")
     assert par.status == TaskStatus.FAILED  # unchanged
@@ -2964,15 +2969,17 @@ def test_try_delegate_rejects_terminal_parent(db):
                               assigned_agent="engineering_head"))
     db.update_task("T-PAR", status=TaskStatus.COMPLETED, note="done")
     child = TaskRecord(id="T-CHILD", brief="x", parent_task_id="T-PAR")
-    ok = db.try_delegate("T-PAR", child, parent_note="late delegate")
-    assert ok is False
+    expected_claim = _fixture_retry_claim(db, "T-PAR")
+    ok = db.try_delegate("T-PAR", child, parent_note="late delegate", expected_claim=expected_claim)
+    assert isinstance(ok, LostClaim)
     assert db.get_task("T-CHILD") is None
 
 
 def test_try_delegate_rejects_missing_parent(db):
     child = TaskRecord(id="T-CHILD", brief="x", parent_task_id="T-NOPE")
-    ok = db.try_delegate("T-NOPE", child, parent_note="x")
-    assert ok is False
+    expected_claim = _fixture_retry_claim(db, "T-NOPE")
+    ok = db.try_delegate("T-NOPE", child, parent_note="x", expected_claim=expected_claim)
+    assert isinstance(ok, LostClaim)
     assert db.get_task("T-CHILD") is None
 
 
@@ -5195,3 +5202,565 @@ def test_c14_latest_five_exact_ids_and_projection(db) -> None:
     assert newest["status"] == TaskStatus.COMPLETED.value
     assert newest["result_status"] == "completed"
     assert newest["output_summary"] == "done"
+
+
+# THR-091 C1: exercise the persisted producer, not hand-built positive audits.
+def _verified_retry_manager_edge(db):
+    parent = TaskRecord(
+        id=db.next_task_id(), brief="original", team="engineering",
+        assigned_agent="engineering_manager", status=TaskStatus.IN_PROGRESS,
+        current_session_id="producer-session",
+    )
+    db.insert_task(parent)
+    failed = TaskRecord(
+        id=db.next_task_id(), brief="failed work", team="engineering",
+        assigned_agent="dev_agent", status=TaskStatus.FAILED,
+        parent_task_id=parent.id, task_type="subtask",
+    )
+    db.insert_task(failed)
+    successor = db.try_manager_supersede(
+        parent.id, actor_agent=parent.assigned_agent,
+        actor_session_id=parent.current_session_id, expected_team=parent.team,
+        successor_brief="retry continuation", rationale="bounded correction",
+        attestation={
+            "recovery_reason": "bounded correction",
+            "policy_product_intent_unchanged": True,
+            "no_budget_or_external_commitment": True,
+            "no_permission_or_cross_team_change": True,
+            "no_schema_auth_security_privacy_or_data_access_change": True,
+            "no_unresolved_founder_gate": True,
+        },
+    )
+    assert successor
+    return parent.id, failed.id, successor
+
+
+def test_verified_retry_manager_producer_and_mutable_successor_brief(db):
+    from runtime.infrastructure.database import VerifiedRetry
+
+    parent, failed, successor = _verified_retry_manager_edge(db)
+    before = dict(db.execute("SELECT * FROM tasks WHERE id=?", (failed,)).fetchone())
+    db.update_task(successor, brief="later additive operator context")
+    assert db.verify_retry_link(successor, "dev_agent", failed) == VerifiedRetry(
+        (successor, parent),
+    )
+    assert dict(db.execute("SELECT * FROM tasks WHERE id=?", (failed,)).fetchone()) == before
+    assert db.get_task(parent).status == TaskStatus.SUPERSEDED
+    assert db.get_children(successor) == []
+
+
+@pytest.mark.parametrize("mutation,reason", [
+    ("UPDATE tasks SET status='completed' WHERE id=?", "retry_not_failed"),
+    ("UPDATE tasks SET assigned_agent='other' WHERE id=?", "retry_agent_mismatch"),
+])
+def test_verified_retry_rejects_changed_failed_child(db, mutation, reason):
+    from runtime.infrastructure.database import InvalidLineage
+
+    _, failed, successor = _verified_retry_manager_edge(db)
+    db.execute(mutation, (failed,))
+    db._conn.commit()
+    assert db.verify_retry_link(successor, "dev_agent", failed) == InvalidLineage(reason)
+    assert db.get_children(successor) == []
+
+
+@pytest.mark.parametrize("mutation,reason", [
+    ("UPDATE tasks SET status='failed' WHERE id=?", "predecessor_not_superseded"),
+    ("UPDATE tasks SET team='other' WHERE id=?", "team_mismatch"),
+    ("UPDATE tasks SET assigned_agent='other' WHERE id=?", "manager_mismatch"),
+    ("UPDATE manager_supersessions SET predecessor_brief='tampered' WHERE predecessor_task_id=?", "malformed_evidence"),
+    ("DELETE FROM audit_log WHERE task_id=? AND action='manager_supersession'", "malformed_evidence"),
+])
+def test_verified_retry_rejects_corrupt_manager_evidence(db, mutation, reason):
+    from runtime.infrastructure.database import InvalidLineage
+
+    parent, failed, successor = _verified_retry_manager_edge(db)
+    if mutation.startswith("UPDATE manager_supersessions"):
+        import sqlite3
+        from runtime.infrastructure.database import VerifiedRetry
+
+        # The real schema refuses this corruption before a reader sees it.
+        # Keep that protection installed in the isolated fixture as well.
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            db.execute(mutation, (parent,))
+        db._conn.rollback()
+        assert db.verify_retry_link(successor, "dev_agent", failed) == VerifiedRetry((successor, parent))
+    else:
+        db.execute(mutation, (parent,))
+        db._conn.commit()
+        assert db.verify_retry_link(successor, "dev_agent", failed) == InvalidLineage(reason)
+    assert db.get_children(successor) == []
+
+
+def test_verified_retry_same_parent_nested_and_missing_link(db):
+    from runtime.infrastructure.database import InvalidLineage, VerifiedRetry
+
+    parent, failed, successor = _verified_retry_manager_edge(db)
+    db.update_task(parent, parent_task_id=successor, task_type="subtask")
+    assert db.verify_retry_link(parent, "dev_agent", failed) == VerifiedRetry((parent,))
+    assert db.verify_retry_link(parent, "dev_agent", None) == InvalidLineage("retry_link_required")
+    assert db.verify_retry_link(parent, "fresh_worker", None) == VerifiedRetry((parent,))
+    assert db.verify_retry_link(successor, "dev_agent", "missing") == InvalidLineage("retry_not_found")
+
+
+def test_verified_retry_unrelated_malformed_audit_does_not_poison_edge(db):
+    from runtime.infrastructure.database import VerifiedRetry
+
+    parent, failed, successor = _verified_retry_manager_edge(db)
+    db.execute(
+        "INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES(?,?,?,?,?)",
+        ("unrelated", "founder", "escalation_superseded", "{", "2026-01-01"),
+    )
+    db._conn.commit()
+    assert db.verify_retry_link(successor, "dev_agent", failed) == VerifiedRetry((successor, parent))
+
+
+def test_verified_retry_duplicate_manager_observations_are_not_extra_edges(db):
+    from runtime.infrastructure.database import VerifiedRetry
+
+    parent, failed, successor = _verified_retry_manager_edge(db)
+    db.execute(
+        "INSERT INTO audit_log(task_id,agent,action,payload,timestamp) "
+        "SELECT task_id,agent,action,payload,timestamp FROM audit_log WHERE action='manager_supersession'",
+    )
+    db._conn.commit()
+    assert db.verify_retry_link(successor, "dev_agent", failed) == VerifiedRetry((successor, parent))
+
+
+def test_verified_retry_competing_successor_refused(db):
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from runtime.infrastructure.database import InvalidLineage
+
+    parent, failed, successor = _verified_retry_manager_edge(db)
+    AuditLogger(db).log_escalation_superseded(
+        parent, successor_root="competing", prior_block_kind="escalated", actor="founder",
+    )
+    assert db.verify_retry_link(successor, "dev_agent", failed) == InvalidLineage("competing_successors")
+    assert db.get_children(successor) == []
+
+
+def test_verified_retry_does_not_retire_local_failure_with_remote_link(db):
+    from runtime.infrastructure.database import InvalidLineage
+
+    _, failed, successor = _verified_retry_manager_edge(db)
+    local = db.next_task_id()
+    db.insert_task(TaskRecord(id=local, brief="local failure", status=TaskStatus.FAILED,
+                              parent_task_id=successor, assigned_agent="dev_agent", team="engineering"))
+    assert db.verify_retry_link(successor, "dev_agent", failed) == InvalidLineage("retry_link_required")
+
+
+def test_verified_retry_sql_errors_are_not_invalid_lineage(db, monkeypatch):
+    import sqlite3
+
+    _, failed, successor = _verified_retry_manager_edge(db)
+    error = sqlite3.OperationalError("reader unavailable")
+    def broken(*args):
+        raise error
+    monkeypatch.setattr(db, "_retry_manager_edge", broken)
+    with pytest.raises(sqlite3.OperationalError) as caught:
+        db.verify_retry_link(successor, "dev_agent", failed)
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("mutation,reason", [
+    ("UPDATE tasks SET parent_task_id='unrelated' WHERE id=?", "no_verified_supersession"),
+    ("UPDATE tasks SET parent_task_id='nested' WHERE id=?", "no_verified_supersession"),
+])
+def test_verified_retry_missing_root_or_nested_root(db, mutation, reason):
+    from runtime.infrastructure.database import InvalidLineage
+
+    parent, failed, successor = _verified_retry_manager_edge(db)
+    target = failed if "unrelated" in mutation else parent
+    db.execute(mutation, (target,))
+    db._conn.commit()
+    assert db.verify_retry_link(successor, "dev_agent", failed) == InvalidLineage(reason)
+
+
+def test_verified_retry_wrong_org_never_searches_another_database(db, tmp_path):
+    from runtime.infrastructure.database import Database, InvalidLineage
+
+    _, failed, successor = _verified_retry_manager_edge(db)
+    other = Database(tmp_path / "other.db")
+    try:
+        other.insert_task(TaskRecord(id=successor, brief="same-looking id", team="engineering",
+                                     assigned_agent="engineering_manager"))
+        assert other.verify_retry_link(successor, "dev_agent", failed) == InvalidLineage("retry_not_found")
+        assert other.get_children(successor) == []
+    finally:
+        other.close()
+
+
+@pytest.mark.parametrize("corruption,reason", [
+    ("malformed", "malformed_evidence"),
+    ("contradiction", "malformed_evidence"),
+    ("ambiguous", "ambiguous_predecessor"),
+])
+def test_verified_retry_candidate_audit_corruption(db, corruption, reason):
+    from runtime.infrastructure.database import InvalidLineage
+    import json
+
+    parent, failed, successor = _verified_retry_manager_edge(db)
+    if corruption == "ambiguous":
+        db.execute("INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES(?,?,?,?,?)",
+                   ("different-predecessor", "founder", "escalation_superseded",
+                    json.dumps({"successor_root": successor}), "2026-01-01"))
+    else:
+        row = db.execute("SELECT * FROM audit_log WHERE task_id=? AND action='manager_supersession'",
+                         (parent,)).fetchone()
+        payload = "{" if corruption == "malformed" else json.dumps({**json.loads(row["payload"]), "counterpart_task_id": "wrong"})
+        db.execute("UPDATE audit_log SET payload=? WHERE id=?", (payload, row["id"]))
+    db._conn.commit()
+    before = db._conn.total_changes
+    assert db.verify_retry_link(successor, "dev_agent", failed) == InvalidLineage(reason)
+    assert db._conn.total_changes == before
+    assert not db._conn.in_transaction
+
+
+def test_verified_retry_manager_successor_cannot_supersede_again(db):
+    parent, failed, successor = _verified_retry_manager_edge(db)
+    db.update_task(successor, status=TaskStatus.IN_PROGRESS, current_session_id="second-session")
+    evidence = db.execute("SELECT attestation_evidence FROM manager_supersessions WHERE predecessor_task_id=?",
+                          (parent,)).fetchone()[0]
+    import json
+    before = db._conn.total_changes
+    assert db.try_manager_supersede(
+        successor, actor_agent="engineering_manager", actor_session_id="second-session",
+        expected_team="engineering", successor_brief="forbidden second M", rationale="correction",
+        attestation=json.loads(evidence)["attestation"],
+    ) is None
+    assert db._conn.total_changes == before
+    assert db.get_children(successor) == []
+
+
+@pytest.mark.parametrize("length", [1, 2])
+def test_verified_retry_cyclic_recorded_candidates_fail_without_writes(db, length):
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from runtime.infrastructure.database import InvalidLineage
+
+    # Adversarial persisted rows only: no claim that a producer can create a cycle.
+    db.insert_task(TaskRecord(id="original", brief="unreachable original", team="engineering",
+                              assigned_agent="engineering_manager", status=TaskStatus.SUPERSEDED))
+    db.insert_task(TaskRecord(id="failed", brief="historical failure", team="engineering",
+                              assigned_agent="dev_agent", status=TaskStatus.FAILED, parent_task_id="original"))
+    roots = [f"cycle-{i}" for i in range(length)]
+    for root in roots:
+        db.insert_task(TaskRecord(id=root, brief="corrupt root", team="engineering",
+                                  assigned_agent="engineering_manager", status=TaskStatus.SUPERSEDED))
+    for i, root in enumerate(roots):
+        db.insert_audit_log(task_id=root, agent="founder", action="escalation_resolved", payload={
+            "decision": "supersede", "resolution_path": "manual_break_glass", "rationale": "fixture"})
+        AuditLogger(db).log_escalation_superseded(
+            root, successor_root=roots[(i + 1) % length], prior_block_kind="escalated", actor="founder")
+    changes = db._conn.total_changes
+    statements = []
+    db._conn.set_trace_callback(statements.append)
+    try:
+        assert db.verify_retry_link(roots[0], "dev_agent", "failed") == InvalidLineage("lineage_cycle")
+    finally:
+        db._conn.set_trace_callback(None)
+    assert db._conn.total_changes == changes
+    assert not db._conn.in_transaction
+    assert len(statements) < 30
+    assert all(statement.lstrip().startswith("SELECT") for statement in statements)
+
+
+from runtime.infrastructure.database import RetryClaim, Committed, LostClaim
+
+
+def _fixture_retry_claim(db, task_id):
+    """Establish the direct caller's owned fixture before entering the writer."""
+    from runtime.models import TaskRecord, TaskStatus
+    task = db.get_task(task_id)
+    if task is None:
+        return RetryClaim.from_task(TaskRecord(id=task_id, brief="missing claim",
+            assigned_agent="engineering_head", current_session_id="fixture-owner"))
+    if task.status == TaskStatus.PENDING:
+        db.update_task(task_id, status=TaskStatus.IN_PROGRESS, block_kind=None,
+                       assigned_agent=task.assigned_agent or "engineering_head",
+                       current_session_id="fixture-owner", orchestration_step_count=1)
+    return RetryClaim.from_task(db.get_task(task_id))
+
+
+def _retry_tx_fixture(db):
+    from runtime.infrastructure.database import RetryClaim
+    db.insert_task(TaskRecord(id="RT-P", brief="parent", team="engineering",
+        assigned_agent="manager", status=TaskStatus.IN_PROGRESS,
+        current_session_id="owner", orchestration_step_count=4,
+        revision_count=1, note="retained"))
+    db.insert_task(TaskRecord(id="RT-E", brief="earlier", parent_task_id="RT-P",
+        assigned_agent="worker", status=TaskStatus.COMPLETED))
+    db.insert_task_result(task_id="RT-P", agent="manager", session_id="owner",
+        status="completed", output_summary="retry", confidence_score=90,
+        decision_json='{"action":"delegate","agent":"worker"}')
+    rid = db._conn.execute("SELECT max(id) FROM task_results").fetchone()[0]
+    db.insert_audit_log("RT-P", "orchestrator", "orchestration_step",
+                        {"step_number":4,"decision":{"action":"delegate"}})
+    claim = RetryClaim.from_task(db.get_task("RT-P"), result_row_id=rid)
+    children = [TaskRecord(id=f"RT-C{i}", brief="child", parent_task_id="RT-P",
+                           assigned_agent="worker") for i in range(2)]
+    return claim, children
+
+
+def _retry_snapshot(db):
+    return {table: [dict(row) for row in db._conn.execute(f"SELECT * FROM {table} ORDER BY id")]
+            for table in ("tasks", "task_results", "audit_log", "task_attachments")}
+
+
+@pytest.mark.parametrize("many", [False, True])
+@pytest.mark.parametrize("fault", ["child", "attachment", "attachment_audit", "parent"])
+def test_verified_retry_transaction_rollback(db, many, fault):
+    import sqlite3
+    claim, children = _retry_tx_fixture(db)
+    attachments = [{"ordinal":0,"storage_key":"kNew","display_name":"new.txt",
+                    "size_bytes":3,"content_type":"text/plain"}]
+    table, event, condition = {
+        "child": ("tasks", "INSERT", "NEW.id='RT-C1'" if many else "NEW.id='RT-C0'"),
+        "attachment": ("task_attachments", "INSERT", "NEW.storage_key='kNew'"),
+        "attachment_audit": ("audit_log", "INSERT", "NEW.action='task_attachment_added'"),
+        "parent": ("tasks", "UPDATE", "NEW.id='RT-P' AND NEW.block_kind='delegated'"),
+    }[fault]
+    db._conn.execute(f"CREATE TEMP TRIGGER retry_fault BEFORE {event} ON {table} "
+                     f"WHEN {condition} BEGIN SELECT RAISE(ABORT,'{fault}'); END")
+    before = _retry_snapshot(db)
+    with pytest.raises(sqlite3.IntegrityError, match=f"^{fault}$"):
+        if many:
+            db.try_delegate_many("RT-P", children, expected_claim=claim, parent_note="park",
+                                 children_attachments=[attachments,None])
+        else:
+            db.try_delegate("RT-P", children[0], expected_claim=claim, parent_note="park",
+                            attachments=attachments, revision_delta=1, revision_cap=2)
+    assert _retry_snapshot(db) == before
+    assert not db._conn.in_transaction
+
+
+@pytest.mark.parametrize("many", [False, True])
+@pytest.mark.parametrize("changed", ["session", "step", "cancel", "result", "revision"])
+def test_verified_retry_transaction_lost_claim(db, many, changed):
+    claim, children = _retry_tx_fixture(db)
+    if changed == "result":
+        db._conn.execute("UPDATE task_results SET session_id='different' WHERE id=?", (claim.result_row_id,))
+        db._conn.commit()
+    else:
+        values = {"session":{"current_session_id":"new"}, "step":{"orchestration_step_count":5},
+                  "cancel":{"status":TaskStatus.CANCELLED, "cancelled_at":"2026-09-13T00:00:00Z"},
+                  "revision":{"revision_count":2}}[changed]
+        db.update_task("RT-P", **values)
+    before = _retry_snapshot(db)
+    if many:
+        answer = db.try_delegate_many("RT-P",children, expected_claim=claim,parent_note="park")
+    else:
+        answer = db.try_delegate("RT-P",children[0], expected_claim=claim,parent_note="park",revision_delta=1)
+    assert isinstance(answer, LostClaim)
+    assert _retry_snapshot(db) == before
+    assert not db._conn.in_transaction
+
+
+@pytest.mark.parametrize("many", [False, True])
+def test_verified_retry_transaction_commit(db, many):
+    claim, children = _retry_tx_fixture(db)
+    before = _retry_snapshot(db)
+    if many:
+        answer = db.try_delegate_many("RT-P", children, expected_claim=claim, parent_note="park")
+    else:
+        answer = db.try_delegate("RT-P",children[0],expected_claim=claim,parent_note="park",revision_delta=1,revision_cap=2)
+    assert isinstance(answer, Committed)
+    assert answer.child_ids == tuple(c.id for c in (children if many else children[:1]))
+    parent = db.get_task("RT-P")
+    assert parent.revision_count == (1 if many else 2)
+    assert parent.block_kind.value == "delegated"
+    assert _retry_snapshot(db)["task_results"] == before["task_results"]
+    assert _retry_snapshot(db)["audit_log"] == before["audit_log"]
+    assert not db._conn.in_transaction
+
+
+@pytest.mark.parametrize("fault", ["audit", "parent"])
+def test_verified_retry_feedback_rollback(db, fault):
+    import sqlite3
+    claim, _ = _retry_tx_fixture(db)
+    table, event = ("audit_log", "INSERT") if fault == "audit" else ("tasks", "UPDATE")
+    db._conn.execute(f"CREATE TEMP TRIGGER feedback_fault BEFORE {event} ON {table} "
+                     "BEGIN SELECT RAISE(ABORT,'feedback_fault'); END")
+    before = _retry_snapshot(db)
+    with pytest.raises(sqlite3.IntegrityError, match="^feedback_fault$"):
+        db.try_retry_feedback(claim,"invalid retry")
+    assert _retry_snapshot(db) == before
+    assert not db._conn.in_transaction
+
+
+@pytest.mark.parametrize("schedule", ["cancel_before_a", "cancel_between", "insert", "queue_error", "no_queue"])
+def test_verified_retry_feedback_no_write_admission(db, schedule):
+    from runtime.infrastructure.database import PendingRetry
+    from queue import Full
+    claim, _ = _retry_tx_fixture(db)
+    before = _retry_snapshot(db)
+    def cancel():
+        db.update_task("RT-P",status=TaskStatus.CANCELLED,cancelled_at="2026-09-13T00:00:00Z",note="cancelled")
+    if schedule == "cancel_before_a":
+        cancel()
+        cancelled = _retry_snapshot(db)
+        assert isinstance(db.try_retry_feedback(claim,"invalid retry"), LostClaim)
+        assert _retry_snapshot(db) == cancelled
+        return
+    pending = db.try_retry_feedback(claim,"invalid retry")
+    assert isinstance(pending,PendingRetry)
+    after = _retry_snapshot(db)
+    assert len(after["task_results"]) == len(before["task_results"])+1
+    assert len(after["audit_log"]) == len(before["audit_log"])+1
+    if schedule == "cancel_between":
+        cancel()
+    admission_before = _retry_snapshot(db)
+    calls=[]
+    failure=Full("real queue full")
+    def enqueue():
+        assert db._conn.in_transaction
+        if schedule == "queue_error":
+            raise failure
+        calls.append("insert")
+    sql=[]
+    db._conn.set_trace_callback(sql.append)
+    if schedule == "queue_error":
+        with pytest.raises(Full) as caught:
+            db.admit_retry_feedback(pending,enqueue)
+        assert caught.value is failure
+    else:
+        result = db.admit_retry_feedback(pending, None if schedule == "no_queue" else enqueue)
+        assert isinstance(result,LostClaim) if schedule == "cancel_between" else result == ("not_configured" if schedule == "no_queue" else "enqueued")
+    db._conn.set_trace_callback(None)
+    assert calls == (["insert"] if schedule == "insert" else [])
+    assert _retry_snapshot(db) == admission_before
+    assert not db._conn.in_transaction
+    assert not any(q.lstrip().upper().startswith(("INSERT","UPDATE","DELETE","COMMIT")) for q in sql)
+    db._conn.execute("BEGIN IMMEDIATE")
+    db._conn.rollback()
+
+
+@pytest.mark.parametrize("same_instance", [True, False])
+def test_verified_retry_admission_serializes_cancellation(db, same_instance):
+    import sqlite3
+    import threading
+    from runtime.infrastructure.database import Database, PendingRetry
+    claim, _ = _retry_tx_fixture(db)
+    pending = db.try_retry_feedback(claim,"invalid retry")
+    assert isinstance(pending,PendingRetry)
+    entered, attempted, release = threading.Event(), threading.Event(), threading.Event()
+    events, errors = [], []
+    filename = db._conn.execute("PRAGMA database_list").fetchone()[2]
+    other = db if same_instance else Database(Path(filename))
+    if not same_instance:
+        other._conn.execute("PRAGMA busy_timeout=250")
+    def enqueue():
+        entered.set()
+        assert attempted.wait(1)
+        assert release.wait(1)
+        events.append("insert")
+    def admit():
+        try:
+            assert db.admit_retry_feedback(pending,enqueue) == "enqueued"
+        except BaseException as exc:
+            errors.append(exc)
+    def cancel():
+        try:
+            assert entered.wait(1)
+            attempted.set()
+            if same_instance:
+                other.update_task("RT-P",status=TaskStatus.CANCELLED,cancelled_at="2026-09-13T00:00:00Z")
+                events.append("cancel_commit")
+            else:
+                try:
+                    other._conn.execute("BEGIN IMMEDIATE")
+                except sqlite3.OperationalError as exc:
+                    assert "locked" in str(exc)
+                    events.append("busy")
+                    release.set()
+                else:
+                    other._conn.rollback()
+                    raise AssertionError("second writer acquired reserved database")
+        except BaseException as exc:
+            errors.append(exc)
+            release.set()
+    a,b=threading.Thread(target=admit),threading.Thread(target=cancel)
+    a.start();b.start()
+    try:
+        assert attempted.wait(1)
+        if same_instance:
+            assert events == []
+            release.set()
+    finally:
+        a.join(2);b.join(2)
+        release.set()
+    assert not a.is_alive() and not b.is_alive()
+    assert not errors, errors
+    if not same_instance:
+        assert events == ["busy","insert"]
+        other.update_task("RT-P",status=TaskStatus.CANCELLED,cancelled_at="2026-09-13T00:00:00Z")
+        events.append("cancel_commit")
+        other.close()
+    assert events[-2:] == ["insert","cancel_commit"]
+    assert not db.try_claim_for_step("RT-P",TaskStatus.PENDING,None,5)
+    assert db.get_task("RT-P").status == TaskStatus.CANCELLED
+    assert not db._conn.in_transaction
+
+
+@pytest.mark.parametrize("many", [False, True])
+@pytest.mark.parametrize("mutation", ["lineage", "claim"])
+def test_verified_retry_final_reread_after_other_writer(db, many, mutation):
+    from runtime.infrastructure.database import Database, InvalidLineage, VerifiedRetry
+    claim, children = _retry_tx_fixture(db)
+    db.insert_task(TaskRecord(id="RT-F",brief="failed",parent_task_id="RT-P",
+                              assigned_agent="worker",status=TaskStatus.FAILED))
+    for child in children:
+        child.revisit_of_task_id = "RT-F"
+    assert isinstance(db.verify_retry_link("RT-P","worker","RT-F"),VerifiedRetry)
+    other = Database(Path(db._conn.execute("PRAGMA database_list").fetchone()[2]))
+    try:
+        if mutation == "lineage":
+            other.update_task("RT-F",status=TaskStatus.COMPLETED)
+        else:
+            other.update_task("RT-P",current_session_id="new-owner")
+        before = _retry_snapshot(db)
+        if many:
+            answer = db.try_delegate_many("RT-P",children,expected_claim=claim,parent_note="park")
+        else:
+            answer = db.try_delegate("RT-P",children[0],expected_claim=claim,parent_note="park",revision_delta=1)
+        if mutation == "lineage":
+            assert answer == InvalidLineage("retry_not_failed")
+        else:
+            assert isinstance(answer,LostClaim)
+        assert _retry_snapshot(db) == before
+        assert not db._conn.in_transaction
+    finally:
+        other.close()
+
+
+@pytest.mark.parametrize("leg_index", [0, 1])
+def test_verified_retry_carrier_leg_rollback(db, leg_index):
+    import sqlite3
+    from runtime.orchestrator.chain import ChainState
+    from runtime.models import ChainLeg
+    claim, children = _retry_tx_fixture(db)
+    chains=[]
+    for i, child in enumerate(children):
+        child.status=TaskStatus.IN_PROGRESS
+        child.block_kind=BlockKind.DELEGATED
+        chain=ChainState(step_index=0, first_leg_expect_verdict=None, step_audit_id=None,
+                          legs=[ChainLeg(agent="reviewer",prompt="review",expect_verdict="APPROVE")])
+        chains.append({"child_index":i,"active_chain_json":chain.serialize(),
+                       "first_leg":{"id":f"RT-L{i}","team":"engineering","brief":"build",
+                                    "assigned_agent":"worker","status":TaskStatus.PENDING}})
+    db._conn.execute(f"CREATE TEMP TRIGGER leg_fault BEFORE INSERT ON tasks WHEN NEW.id='RT-L{leg_index}' "
+                     "BEGIN SELECT RAISE(ABORT,'first_leg'); END")
+    before=_retry_snapshot(db)
+    with pytest.raises(sqlite3.IntegrityError,match="^first_leg$"):
+        db.try_delegate_many("RT-P",children,expected_claim=claim,parent_note="park",carrier_chains=chains)
+    assert _retry_snapshot(db) == before
+    assert not db._conn.in_transaction
+
+
+def test_verified_retry_pending_input_cannot_become_an_owned_claim(db):
+    claim, children=_retry_tx_fixture(db)
+    db.update_task("RT-P",status=TaskStatus.PENDING)
+    pending_claim=RetryClaim.from_task(db.get_task("RT-P"))
+    db.update_task("RT-P",status=TaskStatus.IN_PROGRESS)
+    before=_retry_snapshot(db)
+    assert isinstance(db.try_delegate("RT-P",children[0],expected_claim=pending_claim,
+                                     parent_note="park",revision_delta=1),LostClaim)
+    assert _retry_snapshot(db) == before

@@ -394,6 +394,14 @@ def test_second_failed_child_owner_proposal_reaches_real_continue_hook(
 
     def run(task_id, agent, prompt, on_session_started=None):
         nonlocal owner_turns
+        result = _make_result()
+        session_id = (
+            "proposal-session" if task_id == "T-ROOT" and owner_turns == 2
+            else result.session_id
+        )
+        db.update_task(task_id, assigned_agent=agent, current_session_id=session_id)
+        if on_session_started is not None:
+            on_session_started(task_id, agent, session_id)
         if task_id == "T-ROOT":
             owner_turns += 1
             if owner_turns == 1:
@@ -412,8 +420,8 @@ def test_second_failed_child_owner_proposal_reaches_real_continue_hook(
                     session_id="proposal-session", status="completed",
                     confidence_score=80, output_summary=encoded, decision_json=encoded,
                 )
-            return _make_result(), _make_report(output_summary=json.dumps(decision))
-        return _make_result(), _make_report(
+            return result, _make_report(output_summary=json.dumps(decision))
+        return result, _make_report(
             output_summary="terminal child failure", status="blocked",
         )
 

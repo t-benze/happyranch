@@ -2660,17 +2660,29 @@ def test_supported_replacement_lineage_shapes_hit_permanent_fence_without_residu
         revisit_of_task_id=replacement_id if revisit else None,
         task_type="subtask" if parent else "task",
     )
+    if parent:
+        from runtime.infrastructure.database import Committed, RetryClaim
+
+        assert org_state.db.try_claim_for_step(
+            replacement_id, TaskStatus.PENDING, None, 1,
+        )
+        org_state.db.update_task(
+            replacement_id, current_session_id=f"session-{shape}",
+        )
+        expected_claim = RetryClaim.from_task(org_state.db.get_task(replacement_id))
     if root_state == "fanout":
         assert org_state.db.try_delegate_many(
             replacement_id, [source], parent_note="fanout",
             active_fanout_json=json.dumps({"children": [source_id]}),
-        )
+            expected_claim=expected_claim,
+        ) == Committed((source_id,))
     elif parent:
         assert org_state.db.try_delegate(
             replacement_id, source, parent_note=shape,
             active_chain_json=(json.dumps({"current": source_id})
                                if root_state == "chain" else None),
-        )
+            expected_claim=expected_claim,
+        ) == Committed((source_id,))
     else:
         # The revisit HTTP producer's final persistence seam is insert_task;
         # revisit_of_task_id is the existing, unchanged lineage authority.
@@ -4743,3 +4755,67 @@ def test_route_abort_emits_cancelled_audits_per_pair(
         "dev_agent", "qa_engineer",
     }
     assert all(c["payload"]["reason"] == "founder_aborted" for c in cancelled)
+
+
+@pytest.mark.parametrize("status", ["pending", "consumed", "declined", "timeout", "failed"])
+@pytest.mark.parametrize("corruption", ["assignment", "unknown_status", "purpose", "trigger", "message", "audit", "thread"])
+def test_verified_retry_dispatch_retains_real_invocation_lifecycle(client_with_runtime, status, corruption):
+    from runtime.infrastructure.database import InvalidLineage, VerifiedRetry
+
+    client, org = client_with_runtime
+    db = org.db
+    manager = "engineering_head"
+    _seed_agent(org, manager, role="manager")
+    thread_id = "THR-RETRY"
+    db.insert_thread(ThreadRecord(id=thread_id, subject="retry", status=ThreadStatus.OPEN))
+    db.add_thread_participant(thread_id, manager, added_by="founder")
+    seq = db.append_thread_message(thread_id=thread_id, speaker="founder",
+                                   kind=ThreadMessageKind.MESSAGE, body_markdown="continue")
+    invocation = db.mint_thread_invocation(thread_id=thread_id, agent_name=manager,
+                                           triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY)
+    original = db.next_task_id()
+    db.insert_task(TaskRecord(id=original, brief="original", team="engineering",
+                              assigned_agent=manager, status=TaskStatus.ESCALATED))
+    failed = db.next_task_id()
+    db.insert_task(TaskRecord(id=failed, brief="failed work", team="engineering",
+                              assigned_agent="dev_agent", status=TaskStatus.FAILED,
+                              parent_task_id=original, task_type="subtask"))
+    response = client.post(f"/api/v1/orgs/alpha/threads/{thread_id}/dispatch", json={
+        "thread_id": thread_id, "invocation_token": invocation.invocation_token,
+        "dispatcher": manager, "target_agent": manager, "team": "engineering",
+        "brief": "retry continuation", "resolves": original,
+    })
+    assert response.status_code == 200, response.text
+    successor = response.json()["task_id"]
+    if status == "consumed":
+        db.consume_invocation(invocation.invocation_token)
+    elif status == "declined":
+        db.mark_invocation_declined(invocation.invocation_token, decline_reason="fixture decline")
+    elif status in ("timeout", "failed"):
+        db.discard_reply_delivery(thread_id, agent_name=manager,
+                                  decline_reason="fixture termination", status=ThreadInvocationStatus(status))
+    retained = db.get_invocation_any_status(invocation.invocation_token)
+    assert retained.status.value == status
+    assert retained.dispatched_task_id == successor
+    assert db.verify_retry_link(successor, "dev_agent", failed) == VerifiedRetry((successor, original))
+    assert db.get_children(successor) == []
+    # Corruption of this binding fails closed without rescuing it by proximity.
+    if corruption in ("assignment", "unknown_status", "purpose", "trigger"):
+        assignments = {
+            "assignment": "dispatched_task_id=NULL",
+            "unknown_status": "status='unknown'",
+            "purpose": "purpose='task_followup'",
+            "trigger": "triggering_seq=999999",
+        }
+        db.execute(f"UPDATE thread_invocations SET {assignments[corruption]} WHERE invocation_token=?",
+                   (invocation.invocation_token,))
+    elif corruption == "message":
+        db.execute("UPDATE thread_messages SET speaker='other' WHERE thread_id=? AND kind='system'",
+                   (thread_id,))
+    elif corruption == "audit":
+        db.execute("UPDATE audit_log SET agent='other' WHERE task_id=? AND action='thread_dispatch'",
+                   (thread_id,))
+    else:
+        db.execute("UPDATE tasks SET dispatched_from_thread_id='missing-thread' WHERE id=?", (successor,))
+    db._conn.commit()
+    assert db.verify_retry_link(successor, "dev_agent", failed) == InvalidLineage("invocation_binding")

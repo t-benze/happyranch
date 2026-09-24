@@ -5,10 +5,12 @@ import gzip
 import hashlib
 import re
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
+import runtime.infrastructure.database as database_module
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.remote_job_schema import (
     COMPLETE_STAGE,
@@ -221,7 +223,7 @@ def _snapshot(path: Path) -> tuple[list[tuple], list[tuple], list[tuple]]:
 
 def _complete_snapshot(path: Path) -> tuple[list[tuple], dict[str, list[tuple]]]:
     """Capture every persisted schema object and row without normalizing SQL."""
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn:
         schema = conn.execute(
             "SELECT type,name,tbl_name,rootpage,sql FROM sqlite_master "
             "ORDER BY type,name"
@@ -866,7 +868,7 @@ def test_identity_exact_shape_drift_refuses_before_any_mutation(
 ) -> None:
     path = tmp_path / f"identity-drift-{case_id.replace(':', '-')}.db"
     Database(path).close()
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn:
         conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute(f"DROP {kind.upper()} {name}")
         conn.execute(replacement)
@@ -876,6 +878,33 @@ def test_identity_exact_shape_drift_refuses_before_any_mutation(
         with pytest.raises(sqlite3.DatabaseError):
             Database(path)
         assert _complete_snapshot(path) == before
+
+
+def test_database_constructor_closes_owned_connection_on_schema_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "constructor-refusal.db"
+    Database(path).close()
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("DROP TABLE remote_runners")
+        conn.execute("CREATE TABLE remote_runners(id TEXT PRIMARY KEY, wrong TEXT)")
+        conn.commit()
+
+    real_connect = sqlite3.connect
+    opened: list[sqlite3.Connection] = []
+
+    def tracked_connect(*args, **kwargs):
+        connection = real_connect(*args, **kwargs)
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(database_module.sqlite3, "connect", tracked_connect)
+    with pytest.raises(sqlite3.DatabaseError, match="conflicting remote-job"):
+        Database(path)
+
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        opened[0].execute("SELECT 1")
 
 
 @pytest.mark.parametrize("table", [

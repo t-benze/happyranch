@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -145,14 +145,29 @@ def test_custom_cli_status_wait_exits_nonzero_when_still_pending(capsys, monkeyp
     assert "still pending" in capsys.readouterr().err
 
 
-def test_custom_cli_status_wait_bounds_slow_successful_status_requests(monkeypatch) -> None:
+@pytest.mark.parametrize("request_duration, expected_timeouts", [
+    (0.1, [0.1]),
+    (0.03, [0.1, 0.06, 0.02]),
+])
+def test_custom_cli_status_wait_bounds_slow_successful_status_requests(
+    monkeypatch, request_duration, expected_timeouts,
+) -> None:
     """The per-request timeout must share one --wait wall-clock budget."""
     from cli.commands import runtime
 
     client = MagicMock()
+    clock = [0.0]
+
+    def advance_clock(seconds: float) -> None:
+        clock[0] += seconds
+
+    # Model elapsed request/poll time without depending on OS scheduling.
+    monkeypatch.setattr(runtime, "time", SimpleNamespace(
+        monotonic=lambda: clock[0], sleep=advance_clock,
+    ))
 
     def slow_pending_status(*args, timeout: float = 0.25, **kwargs) -> MagicMock:
-        time.sleep(timeout)
+        advance_clock(min(request_duration, timeout))
         return _response({
             "wrapper_destination": "/runtime/adapters/my-cli-adapter",
             "operation_id": "op-123",
@@ -164,14 +179,16 @@ def test_custom_cli_status_wait_bounds_slow_successful_status_requests(monkeypat
     monkeypatch.setattr(runtime, "_WAIT_SECONDS", 0.1)
     monkeypatch.setattr(runtime, "_POLL_INTERVAL_SECONDS", 0.01)
 
-    started = time.monotonic()
+    started = clock[0]
     with patch("cli.commands.runtime.OpcClient.from_env", return_value=client), \
          pytest.raises(SystemExit, match="1"):
         runtime.cmd_custom_cli_status(_args(wait=True))
-    elapsed = time.monotonic() - started
+    elapsed = clock[0] - started
 
-    assert elapsed <= runtime._WAIT_SECONDS + 0.05
-    assert client.get.call_args.kwargs["timeout"] <= runtime._WAIT_SECONDS
+    assert elapsed == pytest.approx(runtime._WAIT_SECONDS)
+    timeouts = [call.kwargs["timeout"] for call in client.get.call_args_list]
+    assert timeouts == pytest.approx(expected_timeouts)
+    assert all(0 < timeout <= runtime._WAIT_SECONDS for timeout in timeouts)
 
 
 @pytest.mark.parametrize("profile_state", [None, "planned", "committed"])

@@ -9,7 +9,7 @@ import threading
 import time as _time
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -294,6 +294,68 @@ EXCHANGE_GRACE_SECONDS = 5 * 60
 # MAX_PRIORITY_WAIT: absolute fail-open bound from exchange open — the reaper
 # closes any exchange older than this (retained approved G1 = 4 hours).
 MAX_PRIORITY_WAIT_SECONDS = 4 * 60 * 60
+
+
+@dataclass(frozen=True)
+class VerifiedRetry:
+    """Read-only provenance result; final spawn must revalidate under its writer lock."""
+
+    path: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class InvalidLineage:
+    reason: str
+
+
+@dataclass(frozen=True)
+class RetryClaim:
+    """Original report ownership, captured before preflight or preparation."""
+
+    task_id: str
+    assigned_agent: str | None
+    team: str
+    current_session_id: str | None
+    step: int
+    active_chain: str | None
+    active_fanout: str | None
+    revision: int
+    note: str | None
+    status: TaskStatus
+    block_kind: BlockKind | None
+    cancelled_at: str | None
+    result_row_id: int | None = None
+
+    @classmethod
+    def from_task(cls, task: TaskRecord, *, result_row_id: int | None = None):
+        return cls(task.id, task.assigned_agent, task.team, task.current_session_id,
+                   task.orchestration_step_count, task.active_chain, task.active_fanout,
+                   task.revision_count, task.note, task.status, task.block_kind,
+                   task.cancelled_at, result_row_id)
+
+
+@dataclass(frozen=True)
+class Committed:
+    child_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LostClaim:
+    """No durable mutation or enqueue is permitted for this stale input."""
+
+
+SpawnOutcome = Committed | InvalidLineage | LostClaim
+
+
+@dataclass(frozen=True)
+class PendingRetry:
+    claim: RetryClaim
+    result_id: int
+    feedback: str
+
+
+class _RetryEvidenceRefusal(Exception):
+    """Internal control flow for invalid recorded evidence, never SQLite errors."""
 
 
 class LineageTooDeep(Exception):
@@ -1699,38 +1761,46 @@ class Database:
         # value to verify instrumentation fires.
         self._lock_warn_threshold_seconds = 1.0
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        from runtime.infrastructure.remote_job_schema import (
-            migrate_identity_enrollment_schema,
-            validate_identity_enrollment_schema_preflight,
-        )
+        try:
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA foreign_keys=ON")
+            from runtime.infrastructure.remote_job_schema import (
+                migrate_identity_enrollment_schema,
+                validate_identity_enrollment_schema_preflight,
+            )
 
-        # TASK-6611: this fail-closed guard and six-stage convergence are the
-        # first database-open schema/data operation.  In particular they run
-        # before WAL selection and every legacy/jobs/S2/open-path mutator.
-        validate_identity_enrollment_schema_preflight(self._conn)
-        migrate_identity_enrollment_schema(
-            self._conn,
-            stage_hook=getattr(self, "_remote_identity_schema_stage_hook", None),
-        )
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._migrate_jobs_table_if_needed()
-        self._migrate_drop_talk_surface_if_needed()
-        self._retire_skill_lifecycle_if_present()
-        self._create_tables()
-        self._migrate_remote_job_schema()
-        self._migrate_dark_authority_activation_seal_if_needed()
-        self._create_authority_tables()
-        self._retrofit_authority_policy_activation_trigger_if_needed()
-        self._retrofit_authority_audit_fk_if_needed()
-        self._retrofit_authority_lifecycle_trigger_if_needed()
-        self._ensure_task_attachments_storage_key_unique()
-        # Working-hours CRUD lives in its own module but shares THIS connection
-        # and lock so the single-connection serialization invariant (see
-        # `_synchronized`) is preserved across both surfaces.
-        self.work_hours = WorkHoursStore(self._conn, self._lock)
-        self.schedules = ScheduleStore(self._conn, self._lock)
+            # TASK-6611: this fail-closed guard and six-stage convergence are the
+            # first database-open schema/data operation.  In particular they run
+            # before WAL selection and every legacy/jobs/S2/open-path mutator.
+            validate_identity_enrollment_schema_preflight(self._conn)
+            migrate_identity_enrollment_schema(
+                self._conn,
+                stage_hook=getattr(self, "_remote_identity_schema_stage_hook", None),
+            )
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._migrate_jobs_table_if_needed()
+            self._migrate_drop_talk_surface_if_needed()
+            self._retire_skill_lifecycle_if_present()
+            self._create_tables()
+            self._migrate_remote_job_schema()
+            self._migrate_dark_authority_activation_seal_if_needed()
+            self._create_authority_tables()
+            self._retrofit_authority_policy_activation_trigger_if_needed()
+            self._retrofit_authority_audit_fk_if_needed()
+            self._retrofit_authority_lifecycle_trigger_if_needed()
+            self._ensure_task_attachments_storage_key_unique()
+            # Working-hours CRUD lives in its own module but shares THIS connection
+            # and lock so the single-connection serialization invariant (see
+            # `_synchronized`) is preserved across both surfaces.
+            self.work_hours = WorkHoursStore(self._conn, self._lock)
+            self.schedules = ScheduleStore(self._conn, self._lock)
+        except BaseException:
+            # Database owns the connection as soon as connect() succeeds.  A
+            # fail-closed schema check or interrupted migration can raise before
+            # callers receive an instance, so close here rather than depending
+            # on exception-frame collection to release SQLite descriptors.
+            self._conn.close()
+            raise
 
     def _migrate_remote_job_schema(self) -> None:
         """Install the exact additive generic remote-job S2 schema."""
@@ -4713,6 +4783,394 @@ class Database:
         )
         self._conn.commit()
 
+    @staticmethod
+    def _retry_object(raw: str) -> dict:
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise _RetryEvidenceRefusal("malformed_evidence") from exc
+        if not isinstance(value, dict):
+            raise _RetryEvidenceRefusal("malformed_evidence")
+        return value
+
+    def _retry_audits(self, task_id: str, action: str) -> list[tuple[str, dict]]:
+        # These are the actual org-local records, without a CLI pagination cap.
+        return [
+            (row["agent"], self._retry_object(row["payload"]))
+            for row in self._conn.execute(
+                "SELECT agent, payload FROM audit_log WHERE task_id=? AND action=?",
+                (task_id, action),
+            )
+        ]
+
+    def _retry_require_audit(
+        self, task_id: str, action: str, agent: str, expected: dict, *,
+        decision: str | None = None,
+    ) -> None:
+        observations = self._retry_audits(task_id, action)
+        if decision is not None:
+            # Earlier manual continues belong to this root's history, but do
+            # not describe its eventual supersession. Malformed JSON still
+            # fails in _retry_audits, rather than silently losing evidence.
+            observations = [(actor, payload) for actor, payload in observations
+                            if payload.get("decision") != "continue"]
+        if not observations or any(
+            actual_agent != agent or any(payload.get(k) != v for k, v in expected.items())
+            for actual_agent, payload in observations
+        ):
+            raise _RetryEvidenceRefusal("malformed_evidence")
+
+    def _retry_manager_edge(self, predecessor, successor, records: list) -> None:
+        normalized = {tuple(row) for row in records}
+        if len(normalized) != 1:
+            raise _RetryEvidenceRefusal("ambiguous_predecessor")
+        row = records[0]
+        actor = successor["assigned_agent"]
+        evidence = self._retry_object(row["attestation_evidence"])
+        attestation = evidence.get("attestation")
+        fields = (
+            "policy_product_intent_unchanged", "no_budget_or_external_commitment",
+            "no_permission_or_cross_team_change",
+            "no_schema_auth_security_privacy_or_data_access_change",
+            "no_unresolved_founder_gate",
+        )
+        if (
+            row["actor_agent"] != actor
+            or row["original_root_task_id"] != predecessor["id"]
+            or not isinstance(row["actor_session_id"], str) or not row["actor_session_id"]
+            or evidence.get("rule_version") != "manager_supersession_attestation.v1"
+            or evidence.get("actor_agent") != actor
+            or evidence.get("actor_session_id") != row["actor_session_id"]
+            or not isinstance(attestation, dict)
+            or not isinstance(attestation.get("recovery_reason"), str)
+            or not attestation["recovery_reason"].strip()
+            or any(attestation.get(field) is not True for field in fields)
+        ):
+            raise _RetryEvidenceRefusal("malformed_evidence")
+        for name in ("predecessor_brief", "successor_brief"):
+            if (not isinstance(row[name], str)
+                or hashlib.sha256(row[name].encode()).hexdigest() != row[name + "_sha256"]):
+                raise _RetryEvidenceRefusal("malformed_evidence")
+        payload = {key: row[key] for key in (
+            "original_root_task_id", "actor_session_id", "rationale",
+            "predecessor_brief_sha256", "successor_brief_sha256",
+        )}
+        payload["attestation_evidence"] = evidence
+        for task, other in ((predecessor, successor), (successor, predecessor)):
+            self._retry_require_audit(task["id"], "manager_supersession", actor, {
+                **payload, "counterpart_task_id": other["id"],
+            })
+
+    def _retry_dispatch_edge(self, predecessor, successor, evidence: dict) -> None:
+        thread_id = evidence.get("thread_id")
+        actor = successor["assigned_agent"]
+        if (
+            not isinstance(thread_id, str) or not thread_id
+            or successor["dispatched_from_thread_id"] != thread_id
+            or successor["revisit_of_task_id"] is not None
+            or evidence.get("founder_note") != f"thread {thread_id} dispatch by {actor}"
+        ):
+            raise _RetryEvidenceRefusal("invocation_binding")
+        bindings = self._conn.execute(
+            "SELECT invocation_token FROM thread_invocations "
+            "WHERE dispatched_task_id=? AND thread_id=? AND agent_name=?",
+            (successor["id"], thread_id, actor),
+        ).fetchall()
+        if len(bindings) != 1:
+            raise _RetryEvidenceRefusal("invocation_binding")
+        try:
+            inv = self.get_invocation_any_status(bindings[0]["invocation_token"])
+        except ValueError as exc:
+            raise _RetryEvidenceRefusal("invocation_binding") from exc
+        if (
+            inv is None or inv.dispatched_task_id != successor["id"]
+            or inv.thread_id != thread_id or inv.agent_name != actor
+            or inv.purpose not in (ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP)
+            or inv.status not in (
+                ThreadInvocationStatus.PENDING, ThreadInvocationStatus.CONSUMED,
+                ThreadInvocationStatus.DECLINED, ThreadInvocationStatus.TIMEOUT,
+                ThreadInvocationStatus.FAILED,
+            )
+            or self._conn.execute(
+                "SELECT 1 FROM thread_messages WHERE thread_id=? AND seq=?",
+                (thread_id, inv.triggering_seq),
+            ).fetchone() is None
+            or self._conn.execute("SELECT 1 FROM threads WHERE id=?", (thread_id,)).fetchone() is None
+        ):
+            raise _RetryEvidenceRefusal("invocation_binding")
+        expected = {"task_id": successor["id"], "dispatcher": actor,
+                    "target_agent": actor, "team": successor["team"]}
+        # Other dispatches in this thread are unrelated to this edge.
+        audits = self._conn.execute(
+            "SELECT agent, payload FROM audit_log WHERE task_id=? AND action='thread_dispatch' "
+            "AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.task_id') END=?",
+            (thread_id, successor["id"]),
+        ).fetchall()
+        if not audits or any(
+            row["agent"] != actor or any(self._retry_object(row["payload"]).get(k) != v
+                                          for k, v in expected.items()) for row in audits
+        ):
+            raise _RetryEvidenceRefusal("invocation_binding")
+        messages = self._conn.execute(
+            "SELECT speaker, kind, seq, system_payload_json FROM thread_messages "
+            "WHERE thread_id=? AND CASE WHEN json_valid(system_payload_json) "
+            "THEN json_extract(system_payload_json,'$.task_id') END=?",
+            (thread_id, successor["id"]),
+        ).fetchall()
+        messages = [row for row in messages if self._retry_object(row["system_payload_json"]).get("kind_tag") == "task_dispatched"]
+        if not messages or any(
+            row["speaker"] != actor or row["kind"] != "system" or row["seq"] <= inv.triggering_seq
+            or any(self._retry_object(row["system_payload_json"]).get(k) != v for k, v in expected.items())
+            for row in messages
+        ):
+            raise _RetryEvidenceRefusal("invocation_binding")
+
+    def _retry_escalation_edge(self, predecessor, successor, evidence: dict) -> None:
+        actor = evidence.get("actor")
+        prior = evidence.get("prior_block_kind")
+        if prior not in ("escalated", "delegated"):
+            raise _RetryEvidenceRefusal("malformed_evidence")
+        if actor == "thread-dispatch":
+            self._retry_dispatch_edge(predecessor, successor, evidence)
+        elif actor == "cli":
+            if successor["revisit_of_task_id"] != predecessor["id"]:
+                raise _RetryEvidenceRefusal("malformed_evidence")
+            audits = self._retry_audits(successor["id"], "revisit_of")
+            if not audits:
+                raise _RetryEvidenceRefusal("malformed_evidence")
+            for audit_actor, payload in audits:
+                cascade = payload.get("cascade")
+                if (
+                    audit_actor != "founder" or payload.get("actor") != "cli"
+                    or payload.get("predecessor_root") != predecessor["id"]
+                    or payload.get("prior_status") != "blocked-" + prior
+                    or not isinstance(cascade, list) or not cascade
+                    or not all(isinstance(item, str) for item in cascade)
+                    or len(set(cascade)) != len(cascade)
+                    or cascade[0] != predecessor["id"] or cascade[-1] != payload.get("flagged")
+                ):
+                    raise _RetryEvidenceRefusal("malformed_evidence")
+                for parent_id, child_id in zip(cascade, cascade[1:]):
+                    child = self._conn.execute("SELECT parent_task_id FROM tasks WHERE id=?", (child_id,)).fetchone()
+                    if child is None or child[0] != parent_id:
+                        raise _RetryEvidenceRefusal("malformed_evidence")
+            self._retry_require_audit(predecessor["id"], "revisit_spawned", "founder", {"new_root": successor["id"]})
+        elif actor in ("founder", successor["assigned_agent"]):
+            thread_id = evidence.get("thread_id")
+            expected = {"decision": "supersede", "resolution_path": "manual_break_glass"}
+            if actor != "founder":
+                if (
+                    not isinstance(thread_id, str) or not thread_id
+                    or successor["dispatched_from_thread_id"] != thread_id
+                    or predecessor["dispatched_from_thread_id"] != thread_id
+                    or self._conn.execute("SELECT 1 FROM threads WHERE id=?", (thread_id,)).fetchone() is None
+                ):
+                    raise _RetryEvidenceRefusal("malformed_evidence")
+                # Thread manual resolution has no stored token-to-successor join.
+                # The actual producer's resolution and supersession rows are authority.
+                expected.update(resolution_path="thread_manual_supersede", thread_id=thread_id)
+            if prior != "escalated" or successor["revisit_of_task_id"] is not None:
+                raise _RetryEvidenceRefusal("malformed_evidence")
+            self._retry_require_audit(
+                predecessor["id"], "escalation_resolved", actor, expected, decision="supersede",
+            )
+        else:
+            raise _RetryEvidenceRefusal("malformed_evidence")
+
+    @_synchronized
+    def verify_retry_link(self, parent_id: str, target_agent: str, failed_id: str | None) -> VerifiedRetry | InvalidLineage:
+        """Verify an explicit retry through recorded supersessions in this org DB.
+
+        Inclusive limit: twenty root task records, at most nineteen edges.
+        This read-only check is advisory until repeated inside the spawn transaction.
+        Brief text, task numbering and arbitrary revisit links confer no authority.
+        """
+        try:
+            local_failed = {row[0] for row in self._conn.execute(
+                "SELECT id FROM tasks WHERE parent_task_id=? AND assigned_agent=? AND status='failed'",
+                (parent_id, target_agent),
+            )}
+            if failed_id is None:
+                if local_failed:
+                    raise _RetryEvidenceRefusal("retry_link_required")
+                return VerifiedRetry((parent_id,))
+            failed = self._conn.execute("SELECT * FROM tasks WHERE id=?", (failed_id,)).fetchone()
+            if failed is None:
+                raise _RetryEvidenceRefusal("retry_not_found")
+            if failed["status"] != "failed":
+                raise _RetryEvidenceRefusal("retry_not_failed")
+            if failed["assigned_agent"] != target_agent:
+                raise _RetryEvidenceRefusal("retry_agent_mismatch")
+            if failed["parent_task_id"] == parent_id:
+                return VerifiedRetry((parent_id,))
+            # A remote historical link cannot retire an unresolved local retry.
+            retired = {row[0] for row in self._conn.execute(
+                "SELECT revisit_of_task_id FROM tasks WHERE parent_task_id=? AND revisit_of_task_id IS NOT NULL",
+                (parent_id,),
+            )}
+            if local_failed - retired:
+                raise _RetryEvidenceRefusal("retry_link_required")
+            current = self._conn.execute("SELECT * FROM tasks WHERE id=?", (parent_id,)).fetchone()
+            if current is None:
+                raise _RetryEvidenceRefusal("no_verified_supersession")
+            team, manager = current["team"], current["assigned_agent"]
+            path: list[str] = []
+            while True:
+                if current["id"] in path:
+                    raise _RetryEvidenceRefusal("lineage_cycle")
+                if len(path) == 20:
+                    raise _RetryEvidenceRefusal("lineage_record_limit_20")
+                if current["parent_task_id"] is not None or current["task_type"] != "task":
+                    raise _RetryEvidenceRefusal("no_verified_supersession")
+                if current["team"] != team:
+                    raise _RetryEvidenceRefusal("team_mismatch")
+                if current["assigned_agent"] != manager:
+                    raise _RetryEvidenceRefusal("manager_mismatch")
+                path.append(current["id"])
+                if current["id"] == failed["parent_task_id"]:
+                    return VerifiedRetry(tuple(path))
+                if len(path) == 20:
+                    raise _RetryEvidenceRefusal("lineage_record_limit_20")
+                manager_rows = self._conn.execute(
+                    "SELECT * FROM manager_supersessions WHERE successor_task_id=?", (current["id"],),
+                ).fetchall()
+                escalation_rows = self._conn.execute(
+                    "SELECT task_id,agent,payload FROM audit_log WHERE action='escalation_superseded' "
+                    "AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.successor_root') END=?",
+                    (current["id"],),
+                ).fetchall()
+                predecessors = {r["predecessor_task_id"] for r in manager_rows} | {r["task_id"] for r in escalation_rows}
+                if not predecessors:
+                    raise _RetryEvidenceRefusal("no_verified_supersession")
+                if len(predecessors) != 1:
+                    raise _RetryEvidenceRefusal("ambiguous_predecessor")
+                predecessor_id = predecessors.pop()
+                if predecessor_id in path:
+                    raise _RetryEvidenceRefusal("lineage_cycle")
+                predecessor = self._conn.execute("SELECT * FROM tasks WHERE id=?", (predecessor_id,)).fetchone()
+                if predecessor is None or predecessor["status"] != "superseded":
+                    raise _RetryEvidenceRefusal("predecessor_not_superseded")
+                outgoing = {r[0] for r in self._conn.execute(
+                    "SELECT successor_task_id FROM manager_supersessions WHERE predecessor_task_id=?", (predecessor_id,),
+                )}
+                outgoing_audits = self._retry_audits(predecessor_id, "escalation_superseded")
+                for audit_actor, payload in outgoing_audits:
+                    successor_id = payload.get("successor_root")
+                    if audit_actor != "founder" or not isinstance(successor_id, str) or not successor_id:
+                        raise _RetryEvidenceRefusal("malformed_evidence")
+                    outgoing.add(successor_id)
+                if len(outgoing) > 1:
+                    raise _RetryEvidenceRefusal("competing_successors")
+                if manager_rows and escalation_rows:
+                    raise _RetryEvidenceRefusal("ambiguous_predecessor")
+                if manager_rows:
+                    self._retry_manager_edge(predecessor, current, manager_rows)
+                else:
+                    normalized = {json.dumps(payload, sort_keys=True) for _, payload in outgoing_audits}
+                    if len(normalized) != 1:
+                        raise _RetryEvidenceRefusal("ambiguous_predecessor")
+                    self._retry_escalation_edge(predecessor, current, outgoing_audits[0][1])
+                current = predecessor
+        except _RetryEvidenceRefusal as exc:
+            return InvalidLineage(str(exc))
+
+    def _retry_claim_matches(self, claim: RetryClaim, *, pending: bool = False) -> bool:
+        if claim.status != TaskStatus.IN_PROGRESS or claim.block_kind is not None or claim.cancelled_at is not None:
+            return False
+        task = self.get_task(claim.task_id)
+        if (task is None or task.status != (TaskStatus.PENDING if pending else TaskStatus.IN_PROGRESS)
+                or task.block_kind is not None or task.cancelled_at is not None
+                or not claim.current_session_id or not claim.assigned_agent
+                or replace(RetryClaim.from_task(task, result_row_id=claim.result_row_id),
+                           status=TaskStatus.IN_PROGRESS if pending else task.status) != claim):
+            return False
+        if claim.result_row_id is not None:
+            row = self._conn.execute(
+                "SELECT task_id, agent, session_id FROM task_results WHERE id = ?",
+                (claim.result_row_id,),
+            ).fetchone()
+            if row is None or tuple(row) != (claim.task_id, claim.assigned_agent, claim.current_session_id):
+                return False
+        return True
+
+    def _retry_spawn_check(self, parent_id: str, children: list, claim: RetryClaim,
+                           revision_delta: int = 0, revision_cap: int = 0,
+                           *, ordinary: bool = False) -> InvalidLineage | LostClaim | None:
+        if parent_id != claim.task_id or not self._retry_claim_matches(claim):
+            return LostClaim()
+        for child in children:
+            if child.parent_task_id != parent_id:
+                return InvalidLineage("child_parent_mismatch")
+            outcome = self.verify_retry_link(parent_id, child.assigned_agent, child.revisit_of_task_id)
+            if isinstance(outcome, InvalidLineage):
+                return outcome
+        delta = 0
+        if ordinary:
+            row = self._conn.execute(
+                "SELECT assigned_agent FROM tasks WHERE parent_task_id = ? "
+                "AND status IN ('completed', 'failed') ORDER BY created_at, id LIMIT 1",
+                (parent_id,),
+            ).fetchone()
+            delta = int(row is not None and row[0] == children[0].assigned_agent
+                        and row[0] != claim.assigned_agent)
+        if delta != revision_delta or (delta and revision_cap > 0 and claim.revision >= revision_cap):
+            return LostClaim()
+        return None
+
+    @_synchronized
+    def try_retry_feedback(self, expected_claim: RetryClaim, feedback: str) -> PendingRetry | LostClaim:
+        """A: commit existing feedback result/audit and PENDING as one owned write."""
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            if not self._retry_claim_matches(expected_claim):
+                self._conn.rollback()
+                return LostClaim()
+            self._insert_task_result(
+                task_id=expected_claim.task_id, agent=expected_claim.assigned_agent,
+                session_id="", status="completed", confidence_score=0,
+                output_summary=feedback, risks_flagged=[],
+            )
+            result_id = self._conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            self.insert_audit_log_uncommitted(
+                task_id=expected_claim.task_id, agent="orchestrator", action="orchestration_step",
+                payload={"step_number": expected_claim.step,
+                         "decision": {"action": "feedback", "reason": feedback}},
+            )
+            self._conn.execute(
+                "UPDATE tasks SET status = 'pending', block_kind = NULL, updated_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), expected_claim.task_id),
+            )
+            self._conn.commit()
+            return PendingRetry(expected_claim, result_id, feedback)
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def admit_retry_feedback(self, pending: PendingRetry, enqueue) -> str | LostClaim:
+        """B: no-write admission; hold the writer reservation through synchronous enqueue.
+
+        Queue insertion is not a claim and is not crash-atomic with SQLite.
+        Startup may enqueue PENDING again after either side of this boundary.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            if not self._retry_claim_matches(pending.claim, pending=True):
+                return LostClaim()
+            row = self._conn.execute(
+                "SELECT task_id, agent, session_id, status, output_summary FROM task_results WHERE id = ?",
+                (pending.result_id,),
+            ).fetchone()
+            if row is None or tuple(row) != (pending.claim.task_id, pending.claim.assigned_agent,
+                                             "", "completed", pending.feedback):
+                return LostClaim()
+            if enqueue is None:
+                return "not_configured"
+            enqueue()
+            return "enqueued"
+        finally:
+            self._conn.rollback()
+
     @_synchronized
     def try_delegate_many(
         self, parent_id: str, children: list, *, parent_note: str,
@@ -4720,7 +5178,8 @@ class Database:
         children_attachments: list[list[dict] | None] | None = None,
         carrier_chains: list[dict] | None = None,
         uploaded_by: str = "orchestrator",
-    ) -> bool:
+        expected_claim: RetryClaim,
+    ) -> SpawnOutcome:
         """Atomic CAS: insert N child tasks + transition parent to
         IN_PROGRESS(DELEGATED) under a single explicit SQL transaction.
 
@@ -4745,27 +5204,24 @@ class Database:
         status, session_timeout_seconds, task_type). The first leg is
         inserted as a child of the carrier within the same transaction.
 
-        On True: all children (and carrier first legs) exist and parent has
-        transitioned.  On False: no DB changes were made.
+        Committed carries direct child/carrier IDs. InvalidLineage and
+        LostClaim carry no writes; the original claim is checked before
+        lineage. BEGIN IMMEDIATE precedes both authoritative rereads.
 
         Children must already have their IDs allocated (caller calls
         next_task_id() N times before invoking this method). Carrier first
         leg IDs must also be pre-allocated.
         """
-        cursor = self._conn.execute(
-            "SELECT status, cancelled_at FROM tasks WHERE id = ?", (parent_id,)
-        )
-        row = cursor.fetchone()
-        if row is None:
-            return False
-        if row["cancelled_at"] is not None or row["status"] in (
-            "completed", "failed", "superseded", "cancelled",
-        ):
-            return False
-        now = datetime.now(timezone.utc).isoformat()
         try:
-            # One explicit transaction: all child inserts + parent transition.
             self._conn.execute("BEGIN IMMEDIATE")
+            refusal = self._retry_spawn_check(
+                parent_id, children, expected_claim,
+
+            )
+            if refusal is not None:
+                self._conn.rollback()
+                return refusal
+            now = now_ts = datetime.now(timezone.utc).isoformat()
             for i, child in enumerate(children):
                 self._conn.execute(
                     """INSERT INTO tasks (id, status, assigned_agent, team, brief,
@@ -4852,12 +5308,11 @@ class Database:
                  active_fanout_json, now, parent_id),
             )
             self._conn.commit()
-            return True
-        except Exception:
+            return Committed(tuple(child.id for child in children))
+        except BaseException:
             self._conn.rollback()
             raise
 
-    @_synchronized
     @_synchronized
     def try_claim_for_step(
         self,
@@ -5403,47 +5858,28 @@ class Database:
         attachments: list[dict] | None = None,
         active_chain_json: str | None = None,
         uploaded_by: str = "orchestrator",
-    ) -> bool:
-        """Atomic CAS: insert child task + transition parent to
-        IN_PROGRESS(DELEGATED) (Path B: a parent waiting on its own children is
-        in progress, with the waiting reason kept in block_kind), rejecting if
-        parent is cancelled or already terminal.
+        expected_claim: RetryClaim,
+        revision_delta: int = 0,
+        revision_cap: int = 0,
+    ) -> SpawnOutcome:
+        """Commit the child, attachments, chain and ordinary revision atomically.
 
-        Closes the spawn-new-work race documented in
-        docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.3.
-        Atomicity guarantee: both the child INSERT and the parent UPDATE
-        happen under a single @_synchronized acquisition (threading.RLock,
-        reentrant). The cancel route's update_task also acquires this lock,
-        so the only two interleavings are:
-        - cancel before us: our SELECT sees cancelled_at != NULL → bail, no writes
-        - us before cancel: cancel sees parent in in_progress(delegated), transitions
-          to FAILED, and its cascade walks our newly-inserted child for cleanup
-
-        When ``attachments`` is provided, attachment links + audit rows
-        are inserted in the same transaction as the child task. A duplicate
-        storage_key raises sqlite3.IntegrityError (rolled back by caller).
-
-        When ``active_chain_json`` is provided, it is written to the parent's
-        active_chain column in the same transaction as the child insert +
-        parent status update. A crash or write failure rolls back everything
-        — no orphan chain state, no orphan child, no broken parent state.
-
-        On True: parent has transitioned and child exists.
-        On False: no DB changes were made (no orphan child, no parent overwrite).
+        BEGIN IMMEDIATE under RLock precedes original claim, callback binding,
+        lineage and worker-of-record rereads. LostClaim takes precedence over
+        InvalidLineage. Neither refusal writes; Committed alone permits enqueue.
+        All actual write/serialization errors roll back and propagate, preserving
+        prior callback results, decisions and parent state.
         """
-        cursor = self._conn.execute(
-            "SELECT status, cancelled_at FROM tasks WHERE id = ?", (parent_id,)
-        )
-        row = cursor.fetchone()
-        if row is None:
-            return False
-        if row["cancelled_at"] is not None or row["status"] in (
-            "completed", "failed", "superseded",
-        ):
-            return False
-        # Single transaction: child insert + attachment links/audit + parent update.
         try:
-            now_ts = datetime.now(timezone.utc).isoformat()
+            self._conn.execute("BEGIN IMMEDIATE")
+            refusal = self._retry_spawn_check(
+                parent_id, [child], expected_claim,
+                revision_delta, revision_cap, ordinary=True,
+            )
+            if refusal is not None:
+                self._conn.rollback()
+                return refusal
+            now = now_ts = datetime.now(timezone.utc).isoformat()
             self._conn.execute(
                 """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
@@ -5489,14 +5925,14 @@ class Database:
             now = datetime.now(timezone.utc).isoformat()
             self._conn.execute(
                 """UPDATE tasks
-                   SET status = ?, block_kind = ?, note = ?, updated_at = ?
+                   SET status = ?, block_kind = ?, note = ?, updated_at = ?, revision_count = revision_count + ?
                    WHERE id = ?""",
                 (TaskStatus.IN_PROGRESS.value, BlockKind.DELEGATED.value, parent_note,
-                 now, parent_id),
+                 now, revision_delta, parent_id),
             )
             self._conn.commit()
-            return True
-        except Exception:
+            return Committed((child.id,))
+        except BaseException:
             self._conn.rollback()
             raise
 
