@@ -1816,6 +1816,7 @@ class _InstructionPathState:
     kind: str  # absent | regular | symlink | unsupported
     data: bytes | None = None
     mode: int | None = None
+    uid: int | None = None
     raw_link: str | None = None
     detail: str | None = None
 
@@ -1837,14 +1838,22 @@ def _classify_instruction_path(path: Path) -> _InstructionPathState:
             return _InstructionPathState(
                 kind="unsupported", detail=f"readlink failed: {exc}"
             )
-        return _InstructionPathState(kind="symlink", raw_link=raw)
+        return _InstructionPathState(
+            kind="symlink",
+            mode=st.st_mode & 0o7777,
+            uid=st.st_uid,
+            raw_link=raw,
+        )
     if _stat.S_ISREG(st.st_mode):
         try:
             data = path.read_bytes()
         except OSError as exc:
             return _InstructionPathState(kind="unsupported", detail=f"read failed: {exc}")
         return _InstructionPathState(
-            kind="regular", data=data, mode=st.st_mode & 0o7777
+            kind="regular",
+            data=data,
+            mode=st.st_mode & 0o7777,
+            uid=st.st_uid,
         )
     return _InstructionPathState(kind="unsupported", detail="not a regular file")
 
@@ -1914,6 +1923,98 @@ def _atomic_write_regular(path: Path, data: bytes, mode: int = 0o644) -> None:
         except OSError:
             pass
         raise
+
+
+def _restore_instruction_path(path: Path, state: _InstructionPathState) -> None:
+    """Restore one snapshotted instruction path without following links.
+
+    Restoration uses a same-directory owned sibling plus ``os.replace`` for
+    regular files and symlinks. An absent pre-state removes only the live path
+    written by this attempt. Any unexpected non-regular live object fails
+    closed; external link targets are never opened or mutated.
+    """
+    current = _classify_instruction_path(path)
+    if current == state:
+        return
+
+    if state.kind == "absent":
+        if current.kind == "absent":
+            return
+        if current.kind not in {"regular", "symlink"}:
+            raise OSError(
+                f"refusing to remove unexpected {current.kind} at {path}"
+            )
+        path.unlink()
+    elif state.kind == "regular":
+        assert state.data is not None
+        staged = _reserve_sibling(
+            path.parent, f"{path.name}.happyranch-{_timestamp_suffix()}.restore.tmp"
+        )
+        try:
+            with open(staged, "wb") as fh:
+                fh.write(state.data)
+            os.chmod(staged, state.mode if state.mode is not None else 0o644)
+            if state.uid is not None and state.uid != os.getuid():
+                os.chown(staged, state.uid, -1)
+            os.replace(staged, path)
+        except Exception:
+            try:
+                staged.unlink()
+            except OSError:
+                pass
+            raise
+    elif state.kind == "symlink":
+        assert state.raw_link is not None
+        staged: Path | None = None
+        for _ in range(64):
+            candidate = path.parent / (
+                f"{path.name}.happyranch-{_timestamp_suffix()}.restore.lnk"
+            )
+            try:
+                os.symlink(state.raw_link, candidate)
+            except FileExistsError:
+                continue
+            staged = candidate
+            break
+        if staged is None:
+            raise OSError("could not reserve an owned instruction-link restore name")
+        try:
+            if state.uid is not None and state.uid != os.getuid():
+                os.lchown(staged, state.uid, -1)
+            os.replace(staged, path)
+        except Exception:
+            try:
+                staged.unlink()
+            except OSError:
+                pass
+            raise
+    else:  # unsupported input is rejected before the preservation barrier
+        raise OSError(f"cannot restore unsupported instruction state at {path}")
+
+    restored = _classify_instruction_path(path)
+    if restored != state:
+        raise OSError(
+            f"instruction-path restore verification failed at {path}: "
+            f"expected {state!r}, got {restored!r}"
+        )
+
+
+def _restore_instruction_pair(
+    agents: Path,
+    agents_state: _InstructionPathState,
+    claude: Path,
+    claude_state: _InstructionPathState,
+) -> list[str]:
+    """Best-effort exact compensation for a caught post-barrier failure."""
+    errors: list[str] = []
+    # Restore CLAUDE.md first so a captured reverse AGENTS.md -> CLAUDE.md
+    # never temporarily resolves through the new canonical link.
+    for path, state in ((claude, claude_state), (agents, agents_state)):
+        try:
+            _restore_instruction_path(path, state)
+        except Exception as exc:
+            errors.append(f"{path.name}: {exc}")
+    return errors
 
 
 def _claude_link_is_canonical(workspace: Path, state: _InstructionPathState) -> bool:
@@ -2029,8 +2130,11 @@ def write_canonical_instruction_pair(workspace: Path, content: str) -> None:
                 claude, f"preservation copy failed: {exc}"
             )
 
-    # ── AGENTS.md: regular canonical file ──
+    # ── Live pair transaction: compensate BOTH paths on caught failure ──
+    failure_path = agents
+    failure_action = "canonical write"
     try:
+        # AGENTS.md: regular canonical file.
         if agents_state.kind == "absent":
             _atomic_write_regular(agents, data)
         elif agents_state.kind == "regular":
@@ -2038,15 +2142,20 @@ def write_canonical_instruction_pair(workspace: Path, content: str) -> None:
                 _atomic_write_regular(agents, data, agents_state.mode or 0o644)
         else:  # symlink — atomic replace, never write through it
             _atomic_write_regular(agents, data)
-    except OSError as exc:
-        raise InstructionPairConflict(agents, f"canonical write failed: {exc}")
 
-    # ── CLAUDE.md: raw relative link to AGENTS.md ──
-    if not _claude_link_is_canonical(workspace, claude_state):
-        try:
+        # CLAUDE.md: raw relative link to AGENTS.md.
+        failure_path = claude
+        failure_action = "link creation"
+        if not _claude_link_is_canonical(workspace, claude_state):
             _replace_with_canonical_claude_link(claude)
-        except OSError as exc:
-            raise InstructionPairConflict(claude, f"link creation failed: {exc}")
+    except Exception as exc:
+        rollback_errors = _restore_instruction_pair(
+            agents, agents_state, claude, claude_state,
+        )
+        reason = f"{failure_action} failed: {exc}"
+        if rollback_errors:
+            reason += "; pair rollback failed: " + "; ".join(rollback_errors)
+        raise InstructionPairConflict(failure_path, reason) from exc
 
 
 def _stage_canonical_claude_link(workspace: Path) -> Path:

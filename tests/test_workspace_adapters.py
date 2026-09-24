@@ -1361,7 +1361,9 @@ def test_instruction_pair_claude_link_fault_retains_exact_old_state(
     external = tmp_dir / f"ext_{form}_{injection}.md"
     external.write_text("external bytes\n")
     _seed_fault_form(ws, external, form)
+    agents = ws / "AGENTS.md"
     claude = ws / "CLAUDE.md"
+    agents_before = _instruction_path_state(agents)
     claude_before = _instruction_path_state(claude)
     external_before = external.read_bytes()
 
@@ -1385,7 +1387,9 @@ def test_instruction_pair_claude_link_fault_retains_exact_old_state(
     assert str(claude) in str(excinfo.value), excinfo.value
     assert "link creation failed" in str(excinfo.value), excinfo.value
 
-    # Exact retained old state of the failure target (bytes/type/raw link/mode/uid).
+    # The writer is transactional across the pair: a post-barrier failure
+    # restores both live paths exactly, not only the immediate failure target.
+    assert _instruction_path_state(agents) == agents_before
     assert _instruction_path_state(claude) == claude_before
     # No owned temp/staging residue survives.
     assert _owned_temp_residue(ws) == []
@@ -1393,6 +1397,47 @@ def test_instruction_pair_claude_link_fault_retains_exact_old_state(
     assert external.read_bytes() == external_before
     # The pair is honestly still non-canonical.
     assert not canonical_instruction_pair_ok(ws)
+
+
+def test_instruction_pair_failure_after_both_real_writes_restores_pair(
+    tmp_dir, monkeypatch,
+):
+    """A caught failure after both replacements restores both exact pre-states."""
+    import runtime.orchestrator.workspace_adapters as wa
+
+    ws = tmp_dir / "w_after_both"
+    ws.mkdir()
+    external = tmp_dir / "external_after_both.md"
+    external.write_bytes(b"external bytes\n")
+    (ws / "AGENTS.md").write_bytes(b"old agents\n")
+    os.chmod(ws / "AGENTS.md", 0o640)
+    os.symlink(str(external), ws / "CLAUDE.md")
+    before = {
+        name: _instruction_path_state(ws / name)
+        for name in ("AGENTS.md", "CLAUDE.md")
+    }
+    external_before = external.read_bytes()
+    real_replace = wa._replace_with_canonical_claude_link
+
+    def replace_then_boom(path):
+        real_replace(path)
+        raise OSError("injected failure after both real instruction writes")
+
+    monkeypatch.setattr(wa, "_replace_with_canonical_claude_link", replace_then_boom)
+    with pytest.raises(InstructionPairConflict):
+        write_canonical_instruction_pair(ws, "canonical\n")
+
+    assert {
+        name: _instruction_path_state(ws / name)
+        for name in ("AGENTS.md", "CLAUDE.md")
+    } == before
+    assert _owned_temp_residue(ws) == []
+    assert external.read_bytes() == external_before
+    backups = sorted(p for p in ws.iterdir() if p.name.endswith(".bak"))
+    assert len(backups) == 1
+    assert _instruction_path_state(backups[0]) == (
+        "regular", b"old agents\n", 0o640, os.getuid(),
+    )
 
 
 def test_instruction_pair_reverse_agents_symlink_fault_retains_old_link(

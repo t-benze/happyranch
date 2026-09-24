@@ -7211,7 +7211,15 @@ def _install_boundary_kill(boundary: str, agent_name: str) -> None:
     if boundary == "B0":  # before Step 1 (Step-0 preflight/capture ran)
         agents_mod._executor_switch_materialize = lambda *a, **k: _sigkill_self()
     elif boundary == "B1":  # during Step 1 union materialization
-        wa_mod.materialize_workspace_skills_union = lambda *a, **k: _sigkill_self()
+        real_repair = wa_mod.SymlinkMaterializer.repair_workspace_skills
+
+        def first_root_then_kill(self, expected_specs, workspace, skills_subdir):
+            result = real_repair(self, expected_specs, workspace, skills_subdir)
+            assert skills_subdir == ".claude/skills"
+            _sigkill_self()
+            return result  # pragma: no cover - SIGKILL never returns
+
+        wa_mod.SymlinkMaterializer.repair_workspace_skills = first_root_then_kill
     elif boundary == "B2":  # inside Step 2, before the first instruction write
         agents_mod.ContextBuilder.ensure_workspace_ready = (
             lambda *a, **k: _sigkill_self()
@@ -7269,14 +7277,20 @@ def _install_boundary_kill(boundary: str, agent_name: str) -> None:
         raise AssertionError(f"unknown boundary {boundary}")
 
 
-def _seed_incomplete_pair_workspace(org_state):
+def _seed_incomplete_pair_workspace(org_state, *, external=None):
     """Active claude agent whose pair is incomplete (CLAUDE.md absent)."""
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
     (workspace / "repos" / "test" / ".git").mkdir(parents=True)
-    (workspace / "AGENTS.md").write_bytes(b"# pre-existing claude content\n")
+    agents = workspace / "AGENTS.md"
+    if external is None:
+        agents.write_bytes(b"# pre-existing claude content\n")
+    else:
+        external.write_bytes(b"# pre-existing claude content\n")
+        os.link(external, agents)
+    agents.chmod(0o640)
     (workspace / ".claude").mkdir(parents=True, exist_ok=True)
     (workspace / ".claude" / "settings.json").write_text('{"old": true}')
     return workspace
@@ -7380,6 +7394,68 @@ def _owned_temp_residue(workspace):
     return sorted(names)
 
 
+def _expected_codex_instruction_bytes(org_state, workspace) -> bytes:
+    """Build the exact Step-2 instruction payload without touching disk."""
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
+    adapter = CodexWorkspaceAdapter(
+        org_state.settings, OrgPaths(root=org_state.root), slug=org_state.slug,
+    )
+    with patch(
+        "runtime.orchestrator.workspace_adapters.write_canonical_instruction_pair",
+    ) as pair_writer:
+        adapter.write_agents_md(workspace, "dev_agent", "prompt\n")
+    assert pair_writer.call_count == 1
+    return pair_writer.call_args.args[1].encode()
+
+
+def _expected_system_contract_ids(workspace) -> set[str]:
+    expected: set[str] = set()
+    for context in ("task", "thread", "wake", "dream", "schedule", "bootstrap"):
+        expected |= _system_contract_ids_for_context(context, workspace)
+    return expected
+
+
+def _assert_exact_skill_root(org_state, workspace, root_name, *, present) -> None:
+    """Assert exact root membership, raw links, and source/canonical integrity."""
+    from runtime.orchestrator.workspace_adapters import _compute_dir_hash
+    from runtime.skills.canonical_store import CanonicalSkillStore
+
+    root = workspace / root_name
+    if not present:
+        assert not os.path.lexists(root), (root_name, _disk_artifacts(workspace))
+        return
+
+    expected_ids = _expected_system_contract_ids(workspace)
+    assert root.is_dir() and not root.is_symlink(), root
+    assert {entry.name for entry in root.iterdir()} == expected_ids
+    store = CanonicalSkillStore(settings=org_state.settings)
+    sources = org_state.settings.get_bundled_skills_dir()
+    for skill_id in sorted(expected_ids):
+        source = sources / skill_id
+        content_hash = _compute_dir_hash(source)
+        target = store.canonical_path(skill_id, "system", content_hash)
+        link = root / skill_id
+        assert link.is_symlink(), link
+        assert os.readlink(link) == os.path.relpath(target, link.parent)
+        assert link.resolve() == target.resolve()
+        assert _compute_dir_hash(link.resolve()) == content_hash
+
+
+def _assert_owned_inventory(workspace, *, expect_agents_backup: bool) -> None:
+    assert _owned_temp_residue(workspace) == []
+    owned = sorted(
+        p for p in workspace.iterdir() if ".happyranch-" in p.name
+    )
+    backups = [p for p in owned if p.name.endswith(".bak")]
+    assert len(backups) == (1 if expect_agents_backup else 0), [p.name for p in owned]
+    if backups:
+        assert backups[0].name.startswith("AGENTS.md.happyranch-")
+        assert _instruction_path_state(backups[0]) == (
+            "regular", b"# pre-existing claude content\n", 0o640, os.getuid(),
+        )
+
+
 @pytest.mark.parametrize("boundary", ["B0", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8"])
 def test_executor_switch_abrupt_death_b0_b8_retains_state_then_retry(
     tmp_home, app, org_state, auth_headers, daemon_state, runtime, boundary,
@@ -7397,12 +7473,12 @@ def test_executor_switch_abrupt_death_b0_b8_retains_state_then_retry(
     idempotent."""
     from runtime.orchestrator.workspace_adapters import instruction_pair_refusal
 
-    workspace = _seed_incomplete_pair_workspace(org_state)
     external = tmp_home / "external_sentinel.md"
-    external.write_text("external sentinel\n")
+    workspace = _seed_incomplete_pair_workspace(org_state, external=external)
     external_hash = hashlib.sha256(external.read_bytes()).hexdigest()
     agents_path = workspace / "AGENTS.md"
-    original_bytes = agents_path.read_bytes()
+    original_agents = _instruction_path_state(agents_path)
+    original_claude = _instruction_path_state(workspace / "CLAUDE.md")
     audit_before = _audit_agent_managed(org_state)
     authoritative_before = prompt_loader.load_agent(
         OrgPaths(root=org_state.root), "dev_agent",
@@ -7431,6 +7507,11 @@ def test_executor_switch_abrupt_death_b0_b8_retains_state_then_retry(
     fresh_state, fresh_app = _reopen_daemon(daemon_state, runtime)
     fresh_org = fresh_state.orgs["alpha"]
     assert fresh_org.db is not org_state.db
+    canonical_agents = (
+        "regular", _expected_codex_instruction_bytes(fresh_org, workspace),
+        original_agents[2], original_agents[3],
+    )
+    canonical_claude = ("symlink", "AGENTS.md", 0o777, os.getuid())
 
     # ── No persistent recovery record / journal / receipt ──
     for name in _disk_artifacts(workspace):
@@ -7449,8 +7530,33 @@ def test_executor_switch_abrupt_death_b0_b8_retains_state_then_retry(
     # ── Exact on-disk instruction state (bytes/type/raw link/mode/uid) ──
     agents_state = _instruction_path_state(agents_path)
     claude_state = _instruction_path_state(workspace / "CLAUDE.md")
-    assert agents_state[0] in ("absent", "regular"), agents_state
-    assert claude_state[0] in ("absent", "symlink", "regular"), claude_state
+    expected_pairs = {
+        "B0": (original_agents, original_claude),
+        "B1": (original_agents, original_claude),
+        "B2": (original_agents, original_claude),
+        "B3": (canonical_agents, original_claude),
+        "B4": (canonical_agents, canonical_claude),
+        "B5": (canonical_agents, canonical_claude),
+        "B6": (canonical_agents, canonical_claude),
+        "B7": (canonical_agents, canonical_claude),
+        "B8": (canonical_agents, canonical_claude),
+    }
+    expected_pair = expected_pairs[boundary]
+    assert (agents_state, claude_state) == expected_pair, {
+        "boundary": boundary,
+        "actual_agents": (
+            agents_state[0], hashlib.sha256(agents_state[1]).hexdigest()
+            if isinstance(agents_state[1], bytes) else agents_state[1],
+            agents_state[2], agents_state[3],
+        ),
+        "expected_agents": (
+            expected_pair[0][0], hashlib.sha256(expected_pair[0][1]).hexdigest()
+            if isinstance(expected_pair[0][1], bytes) else expected_pair[0][1],
+            expected_pair[0][2], expected_pair[0][3],
+        ),
+        "actual_claude": claude_state,
+        "expected_claude": expected_pair[1],
+    }
 
     verdict = instruction_pair_refusal(workspace)
     if boundary in _KILL_INCOMPLETE:
@@ -7459,32 +7565,33 @@ def test_executor_switch_abrupt_death_b0_b8_retains_state_then_retry(
         )
     else:
         assert verdict is None, f"{boundary}: expected a valid pair, got {verdict!r}"
-        assert agents_state == ("regular", None, agents_state[2], agents_state[3]) or (
-            agents_state[0] == "regular"
+        assert (agents_state, claude_state) == (
+            canonical_agents, canonical_claude,
         )
-        assert claude_state[0] == "symlink"
-        assert claude_state[1] == "AGENTS.md"
-        assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
 
     # ── Complete owned temp/backup inventory ──
-    assert _owned_temp_residue(workspace) == []
-    backups = sorted(workspace.glob("AGENTS.md.happyranch-*.bak"))
-    if boundary in ("B0", "B1", "B2"):
-        assert not backups, f"{boundary}: unexpected preservation copy {backups}"
-    else:
-        assert backups, f"{boundary}: original content must be preserved"
-        assert any(b.read_bytes() == original_bytes for b in backups), (
-            f"{boundary}: preservation copy must hold the original bytes"
-        )
+    _assert_owned_inventory(
+        workspace, expect_agents_backup=boundary not in ("B0", "B1", "B2"),
+    )
 
     # ── Both skill roots stay symmetric (union-before-reconcile) ──
-    claude_skills = workspace / ".claude" / "skills"
-    agents_skills = workspace / ".agents" / "skills"
-    assert claude_skills.exists() == agents_skills.exists(), (
-        f"{boundary}: asymmetric skill roots "
-        f"{claude_skills.exists()}/{agents_skills.exists()}"
+    expected_roots = {
+        "B0": (False, False),
+        "B1": (True, False),
+        "B2": (True, True),
+        "B3": (True, True),
+        "B4": (True, True),
+        "B5": (True, True),
+        "B6": (True, True),
+        "B7": (True, True),
+        "B8": (True, True),
+    }[boundary]
+    _assert_exact_skill_root(
+        fresh_org, workspace, ".claude/skills", present=expected_roots[0],
     )
-    assert not claude_skills.is_symlink() or not agents_skills.is_symlink()
+    _assert_exact_skill_root(
+        fresh_org, workspace, ".agents/skills", present=expected_roots[1],
+    )
 
     # ── External sentinel unchanged ──
     assert hashlib.sha256(external.read_bytes()).hexdigest() == external_hash
@@ -7493,8 +7600,12 @@ def test_executor_switch_abrupt_death_b0_b8_retains_state_then_retry(
     authoritative = prompt_loader.load_agent(
         OrgPaths(root=fresh_org.root), "dev_agent",
     ).executor
-    expects_new = boundary in ("B7", "B8")
-    assert authoritative == ("codex" if expects_new else "claude"), (
+    expected_executor = {
+        "B0": "claude", "B1": "claude", "B2": "claude",
+        "B3": "claude", "B4": "claude", "B5": "claude",
+        "B6": "claude", "B7": "codex", "B8": "codex",
+    }[boundary]
+    assert authoritative == expected_executor, (
         f"{boundary}: authoritative executor {authoritative!r}"
     )
     assert _audit_agent_managed(fresh_org) == audit_before, (
@@ -7529,6 +7640,13 @@ def test_executor_switch_abrupt_death_b0_b8_retains_state_then_retry(
         OrgPaths(root=fresh_org.root), "dev_agent",
     ).executor
     assert after_retry == authoritative
+
+    _assert_exact_skill_root(
+        fresh_org, workspace, ".claude/skills", present=True,
+    )
+    _assert_exact_skill_root(
+        fresh_org, workspace, ".agents/skills", present=True,
+    )
 
     # ── Second retry is idempotent (pair and preservation copies stable) ──
     after_first = agents_path.read_bytes()
@@ -7615,16 +7733,20 @@ def _install_boundary_exception(boundary, agent_name, monkeypatch):
         real_atomic = wa._atomic_write_regular
 
         def atomic_boom(path, data, mode=0o644):
+            result = real_atomic(path, data, mode)
             if path.name == "AGENTS.md":
-                raise OSError("injected AGENTS write failure")
-            return real_atomic(path, data, mode)
+                raise OSError("injected failure after real AGENTS write")
+            return result
 
         monkeypatch.setattr(wa, "_atomic_write_regular", atomic_boom)
     elif boundary == "B4":
-        def pair_boom(*a, **k):
-            raise RuntimeError("injected instruction-pair write failure")
+        real_link = wa._replace_with_canonical_claude_link
 
-        monkeypatch.setattr(wa, "write_canonical_instruction_pair", pair_boom)
+        def link_then_boom(*a, **k):
+            result = real_link(*a, **k)
+            raise RuntimeError("injected failure after both real instruction writes")
+
+        monkeypatch.setattr(wa, "_replace_with_canonical_claude_link", link_then_boom)
     elif boundary == "B5":
         real_ready = agents_mod.ContextBuilder.ensure_workspace_ready
 
@@ -7667,9 +7789,8 @@ def _install_boundary_exception(boundary, agent_name, monkeypatch):
 def test_executor_switch_caught_exception_b1_b8_rolls_back_in_process(
     tmp_home, app, org_state, auth_headers, boundary, monkeypatch,
 ):
-    workspace = _seed_incomplete_pair_workspace(org_state)
     external = tmp_home / "caught_external_sentinel.md"
-    external.write_text("external sentinel\n")
+    workspace = _seed_incomplete_pair_workspace(org_state, external=external)
     external_hash = hashlib.sha256(external.read_bytes()).hexdigest()
     agents_path = workspace / "AGENTS.md"
     claude_path = workspace / "CLAUDE.md"
@@ -7707,21 +7828,39 @@ def test_executor_switch_caught_exception_b1_b8_rolls_back_in_process(
     else:
         assert authoritative == "codex", (boundary, authoritative)
 
-    # ── Instruction pair exact in-process rollback (B1-B5) ──
+    # ── Boundary-specific exact pair state ──
     if boundary in _CAUGHT_ROLLBACK:
-        assert _instruction_path_state(agents_path) == agents_before, (
-            f"{boundary}: AGENTS.md not restored exactly"
+        expected_pair = (agents_before, claude_before)
+    else:
+        expected_pair = (
+            (
+                "regular", _expected_codex_instruction_bytes(org_state, workspace),
+                agents_before[2], agents_before[3],
+            ),
+            ("symlink", "AGENTS.md", 0o777, os.getuid()),
         )
-        assert _instruction_path_state(claude_path) == claude_before, (
-            f"{boundary}: CLAUDE.md not restored exactly"
-        )
+    assert (
+        _instruction_path_state(agents_path),
+        _instruction_path_state(claude_path),
+    ) == expected_pair, f"{boundary}: instruction pair state mismatch"
+
+    # B1/B2 fail before the pair writer; B3-B8 crossed the preservation
+    # barrier and therefore retain exactly one collision-safe AGENTS copy.
+    _assert_owned_inventory(
+        workspace, expect_agents_backup=boundary not in ("B1", "B2"),
+    )
+
+    # B1 is injected before union materialization; B2-B8 retain the exact
+    # complete both-root union produced by Step 1.
+    _assert_exact_skill_root(
+        org_state, workspace, ".claude/skills", present=boundary != "B1",
+    )
+    _assert_exact_skill_root(
+        org_state, workspace, ".agents/skills", present=boundary != "B1",
+    )
 
     # ── No fabricated audit row; no owned temp residue; external unchanged ──
     assert _audit_agent_managed(org_state) == audit_before, (
         f"{boundary}: an agent_managed audit row was written"
-    )
-    assert _owned_temp_residue(workspace) == [], (
-        f"{boundary}: owned temp/staging residue left: "
-        f"{_owned_temp_residue(workspace)}"
     )
     assert hashlib.sha256(external.read_bytes()).hexdigest() == external_hash

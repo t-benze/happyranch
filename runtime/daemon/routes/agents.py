@@ -1697,9 +1697,12 @@ async def set_agent_executor(
          ``provider=<NEW executor>`` so the correct adapter regenerates
          (Claude → CLAUDE.md/.claude/; others → AGENTS.md/.agents/).
 
-    Stale-file handling (away-from-Claude only): switching off Claude leaves
-    CLAUDE.md and .claude/ behind. By default these are WARNED about, not
-    deleted; ``clean=True`` opts into deleting them. Never auto-deletes.
+    Stale-file handling (away-from-Claude only): the canonical regular
+    ``AGENTS.md`` plus raw ``CLAUDE.md -> AGENTS.md`` pair and the managed
+    ``.claude/skills`` union are preserved for cross-provider discovery.
+    By default stale executor settings are warned about; ``clean=True``
+    removes only the accepted stale executor settings. Never auto-deletes
+    the canonical instruction pair or either managed skills root.
     """
     paths = OrgPaths(root=org.root)
 

@@ -1372,36 +1372,57 @@ def test_assistant_registration_backup_failure_preserves_originals(
     assert not list(ws.glob("*.bak"))
 
 
-def test_assistant_registration_post_first_write_failure_preserves_originals(
+@pytest.mark.parametrize("operation", ["registration", "bootstrap"])
+@pytest.mark.parametrize("failure_point", ["stage", "after_both"])
+def test_assistant_instruction_writer_post_barrier_failure_preserves_originals(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    operation: str, failure_point: str,
 ) -> None:
-    """An injected failure after the preservation barrier but before the
-    CLAUDE.md link exists must retain the old raw link and the backups."""
+    """Registration and bootstrap restore both paths at either live-write
+    failure seam, retain verified copies, and never change a linked inode."""
     import runtime.orchestrator.workspace_adapters as wa
     from runtime.system_assistant import prepare_assistant_registration_workspace
 
     ws = _seed_assistant_workspace(tmp_path)
-    (ws / "AGENTS.md").write_text("user agents\n")
+    external = tmp_path / "assistant-external.md"
+    external.write_text("user agents\n")
+    external.chmod(0o640)
+    os.link(external, ws / "AGENTS.md")
     (ws / "CLAUDE.md").write_text("user claude\n")
+    agents_before = _assistant_path_state(ws / "AGENTS.md")
     claude_before = _assistant_path_state(ws / "CLAUDE.md")
+    external_before = _assistant_path_state(external)
 
-    def boom(*_a, **_k):
-        raise OSError("injected link staging failure")
+    if failure_point == "stage":
+        def boom(*_a, **_k):
+            raise OSError("injected link staging failure")
 
-    monkeypatch.setattr(wa, "_stage_canonical_claude_link", boom)
+        monkeypatch.setattr(wa, "_stage_canonical_claude_link", boom)
+    else:
+        real_link = wa._replace_with_canonical_claude_link
+
+        def link_then_boom(*args, **kwargs):
+            real_link(*args, **kwargs)
+            raise OSError("injected failure after both real instruction writes")
+
+        monkeypatch.setattr(wa, "_replace_with_canonical_claude_link", link_then_boom)
     with pytest.raises(ValueError):
-        prepare_assistant_registration_workspace(tmp_path)
+        if operation == "registration":
+            prepare_assistant_registration_workspace(tmp_path)
+        else:
+            bootstrap_assistant_workspace(tmp_path, executor="codex")
 
+    assert _assistant_path_state(ws / "AGENTS.md") == agents_before
     assert _assistant_path_state(ws / "CLAUDE.md") == claude_before
-    backups = {
-        p.read_bytes() for p in ws.iterdir() if p.name.endswith(".bak")
+    assert _assistant_path_state(external) == external_before
+    owned = sorted(p for p in ws.iterdir() if ".happyranch-" in p.name)
+    backups = [p for p in owned if p.name.endswith(".bak")]
+    assert len(backups) == 2, [p.name for p in owned]
+    assert {p.read_bytes() for p in backups} == {
+        b"user agents\n", b"user claude\n",
     }
-    assert b"user agents\n" in backups
-    assert b"user claude\n" in backups
-    assert [
-        p.name for p in ws.iterdir()
-        if ".happyranch-" in p.name and not p.name.endswith(".bak")
-    ] == []
+    assert all(_assistant_path_state(p)[0] == "regular" for p in backups)
+    assert [p.name for p in owned if not p.name.endswith(".bak")] == []
 
 
 @pytest.mark.parametrize(

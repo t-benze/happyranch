@@ -219,6 +219,79 @@ def test_assistant_repair_refreshes_workspace(client: TestClient, runtime) -> No
     assert (paths.learnings_dir / "_index.md").is_file()
 
 
+@pytest.mark.parametrize("failure_point", ["stage", "after_both"])
+def test_assistant_repair_instruction_failure_restores_both_paths(
+    client: TestClient, runtime, tmp_home: Path,
+    monkeypatch: pytest.MonkeyPatch, failure_point: str,
+) -> None:
+    """The shipping repair route exposes the shared pair transaction: a
+    failure after the real AGENTS write or after both real writes restores
+    exact pair state and leaves only the verified preservation copies."""
+    import os
+    import stat
+
+    import runtime.orchestrator.workspace_adapters as wa
+
+    def state(path: Path):
+        if not os.path.lexists(path):
+            return ("absent", None, None, None)
+        st = os.lstat(path)
+        if stat.S_ISLNK(st.st_mode):
+            return ("symlink", os.readlink(path), st.st_mode & 0o7777, st.st_uid)
+        return ("regular", path.read_bytes(), st.st_mode & 0o7777, st.st_uid)
+
+    paths = system_assistant_paths(runtime.root)
+    paths.workspace.mkdir(parents=True)
+    external = tmp_home / f"assistant-repair-{failure_point}.md"
+    external.write_text("repair agents\n")
+    external.chmod(0o640)
+    os.link(external, paths.workspace / "AGENTS.md")
+    (paths.workspace / "CLAUDE.md").write_text("repair claude\n")
+    save_assistant_config(
+        runtime.root,
+        AssistantConfig(
+            selected_executor="codex",
+            selected_command=sys.executable,
+            selected_argv=[sys.executable],
+            workspace_path=str(paths.workspace),
+        ),
+    )
+    agents_before = state(paths.workspace / "AGENTS.md")
+    claude_before = state(paths.workspace / "CLAUDE.md")
+    external_before = state(external)
+
+    if failure_point == "stage":
+        def boom(*_a, **_k):
+            raise OSError("injected route link staging failure")
+
+        monkeypatch.setattr(wa, "_stage_canonical_claude_link", boom)
+    else:
+        real_link = wa._replace_with_canonical_claude_link
+
+        def link_then_boom(*args, **kwargs):
+            real_link(*args, **kwargs)
+            raise OSError("injected route failure after both real writes")
+
+        monkeypatch.setattr(wa, "_replace_with_canonical_claude_link", link_then_boom)
+
+    response = client.post("/api/v1/assistant/repair")
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "assistant_workspace_invalid"
+    assert state(paths.workspace / "AGENTS.md") == agents_before
+    assert state(paths.workspace / "CLAUDE.md") == claude_before
+    assert state(external) == external_before
+    owned = sorted(
+        p for p in paths.workspace.iterdir() if ".happyranch-" in p.name
+    )
+    backups = [p for p in owned if p.name.endswith(".bak")]
+    assert len(backups) == 2, [p.name for p in owned]
+    assert {p.read_bytes() for p in backups} == {
+        b"repair agents\n", b"repair claude\n",
+    }
+    assert [p.name for p in owned if not p.name.endswith(".bak")] == []
+
+
 @pytest.mark.parametrize("executor", ["claude", "codex"])
 def test_assistant_sequence_keeps_canonical_pair(
     client: TestClient, runtime, executor: str,
