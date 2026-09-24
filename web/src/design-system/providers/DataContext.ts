@@ -399,12 +399,25 @@ export interface AuthorityPolicyApi {
     import('@/lib/api/authorityPolicy').CreateAuthorityPolicyReleaseResponse
   >;
   useActivateTeamEscalationPolicyRelease: () => MutationLike<
-    { agentName: string; body: { release_id: string; expected_previous_epoch: number; request_id: string;
-      action: 'activate' | 'reactivate_rollback'; acknowledge_shared_credential_attribution: true } },
+    { agentName: string; body: import('@/lib/api/authorityPolicy').ActivateAuthorityPolicyReleaseRequest },
     unknown
+  >;
+  /** v2 paired save+activate; the two texts travel together. */
+  useCreateTeamEscalationPolicyV2Release: () => MutationLike<
+    { agentName: string; body: import('@/lib/api/authorityPolicy').V2PairedControlRequest },
+    import('@/lib/api/authorityPolicy').V2AuthorityPolicyControlResponse
+  >;
+  /** v2 select/rollback of an already-saved immutable release. */
+  useActivateTeamEscalationPolicyV2Release: () => MutationLike<
+    { agentName: string; body: import('@/lib/api/authorityPolicy').V2ActivationControlRequest },
+    import('@/lib/api/authorityPolicy').V2AuthorityPolicyControlResponse
   >;
   useTeamEscalationPolicyHistory: (agent: { name: string; team: string; role: string } | undefined) =>
     InfiniteQueryLike<import('@/lib/api/authorityPolicy').AuthorityPolicyHistoryResponse>;
+  useTeamEscalationPolicyV2History: (agent: { name: string; team: string; role: string } | undefined) =>
+    InfiniteQueryLike<import('@/lib/api/authorityPolicy').AuthorityPolicyV2HistoryResponse> & {
+      refetch: () => Promise<unknown>;
+    };
   useTeamEscalationPolicyOutcomes: (agent: { name: string; team: string; role: string } | undefined) =>
     InfiniteQueryLike<import('@/lib/api/authorityPolicy').AuthorityPolicyOutcomesResponse>;
 }
@@ -561,8 +574,14 @@ export interface SettingsApi {
     import('@/lib/api/types').OrgSettingsPatch,
     import('@/lib/api/types').SettingsSnapshot
   >;
-  useDaemonCapacity: () => QueryLike<import('@/lib/api/types').DaemonCapacitySnapshot>;
-  useUpdateDaemonCapacity: () => MutationLike<
+  /** Capacity slot only: `QueryLike` plus refresh/receipt/ordering metadata
+   *  (TASK-8537 G1). `QueryLike` itself is deliberately NOT widened. */
+  useDaemonCapacity: () => import('./_capacity-ordering').CapacityQueryLike<
+    import('@/lib/api/types').DaemonCapacitySnapshot
+  >;
+  /** Capacity slot only: `MutationLike` plus the settlement each request
+   *  produced (C3). `MutationLike` itself is deliberately NOT widened. */
+  useUpdateDaemonCapacity: () => import('./_capacity-ordering').CapacityMutationLike<
     import('@/lib/api/types').DaemonCapacityWrite,
     import('@/lib/api/types').DaemonCapacitySnapshot
   >;

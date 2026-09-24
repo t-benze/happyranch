@@ -15,6 +15,13 @@
  * contract + inline error mapping as the Sidebar's AddOrgDialog. Step 1 leads
  * first-run onboarding; a returning user adding another org starts at Step 2.
  *
+ * THR-118 W2b translates all product-owned presentation reachable from this
+ * route into en/zh-CN. User-entered slugs, registered tool names/paths, the
+ * slug regex, broken-org raw errors and the generated copy-paste CLI payloads
+ * (rendered by the shared ConnectFlow) stay byte-for-byte verbatim; mapped
+ * daemon error categories keep their identity and re-translate on a locale
+ * switch without resubmission.
+ *
  * Honesty fence (THR-061 §D; THR-088): no invented metric/badge/role/$/version;
  * Pasture tokens only, zero raw hex; no Baloo 2. Gated/deferred surfaces are
  * OMITTED, never fabricated:
@@ -34,6 +41,8 @@ import type { ExecutorPrereq } from '@/lib/api/types';
 import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
+import { useTranslation } from '@/hooks/i18n';
+import { classifyAddOrgError, renderAddOrgError, type AddOrgError } from '@/lib/addOrgError';
 import { ConnectRuntimeStep } from './ConnectRuntimeStep';
 
 /** Same slug contract the daemon enforces (mirror of AddOrgDialog). */
@@ -131,37 +140,47 @@ function WelcomeStep({
   existingCount: number;
   onStart: () => void;
 }): JSX.Element {
+  const { t, render } = useTranslation();
   const firstRun = existingCount === 0;
   return (
     <section className="pt-6 sm:pt-10">
       <RanchLogo className="text-brand-foreground h-14 w-14" />
       <p className="text-accent-text mt-5 text-xs font-semibold tracking-wider uppercase">
-        {firstRun ? 'Fresh start' : 'New workspace'}
+        {firstRun
+          ? t('onboarding.welcome.eyebrow.firstRun')
+          : t('onboarding.welcome.eyebrow.returning')}
       </p>
       <h1 className="font-display text-display text-text-primary mt-3 font-medium">
         {firstRun ? (
           <>
-            Welcome to HappyRanch.
+            {t('onboarding.welcome.title.firstRun')}
             <br />
-            Let&rsquo;s create your first org.
+            {t('onboarding.welcome.title.firstRunLine2')}
           </>
         ) : (
-          'Create another org'
+          t('onboarding.welcome.title.returning')
         )}
       </h1>
       <p className="text-text-secondary mt-3 max-w-lg text-base leading-relaxed">
-        An <span className="text-text-primary font-medium">org</span> is a
-        workspace where your agents, threads, and tasks live.{' '}
-        {firstRun
-          ? "You don't have one yet — create one to get started. Everything else stays quiet until then."
-          : 'Add another to run a separate one, or return to an existing org from the sidebar.'}
+        {render('onboarding.welcome.body.prefix', {
+          orgTerm: (
+            <span className="text-text-primary font-medium">
+              {t('onboarding.welcome.body.orgTerm')}
+            </span>
+          ),
+          tail: firstRun
+            ? t('onboarding.welcome.body.firstRun')
+            : t('onboarding.welcome.body.returning'),
+        })}
       </p>
       <div className="mt-7 flex flex-wrap items-center gap-4">
         <Button onClick={onStart}>
           <Plus />
-          {firstRun ? 'Create your first org' : 'Create another org'}
+          {firstRun
+            ? t('onboarding.welcome.cta.firstRun')
+            : t('onboarding.welcome.cta.returning')}
         </Button>
-        <span className="text-text-muted text-xs">Takes a few seconds.</span>
+        <span className="text-text-muted text-xs">{t('onboarding.welcome.timing')}</span>
       </div>
       <div className="border-border-default bg-surface-sunken mt-8 flex max-w-lg items-start gap-3 rounded-lg border p-4">
         <Info
@@ -170,12 +189,20 @@ function WelcomeStep({
           className="text-text-muted mt-0.5 shrink-0"
         />
         <p className="text-text-secondary text-xs leading-relaxed">
-          Creating an org sets up the workspace only. It does{' '}
-          <span className="text-text-primary font-semibold">not</span> install
-          agentic CLIs (<span className="font-mono">claude</span>,{' '}
-          <span className="font-mono">codex</span>,{' '}
-          <span className="font-mono">node</span>…) — you&rsquo;ll wire those up
-          separately from Settings once the org exists.
+          {render('onboarding.welcome.note', {
+            emphasis: (
+              <span className="text-text-primary font-semibold">
+                {t('onboarding.welcome.note.emphasis')}
+              </span>
+            ),
+            clis: (
+              <>
+                <span className="font-mono">claude</span>,{' '}
+                <span className="font-mono">codex</span>,{' '}
+                <span className="font-mono">node</span>
+              </>
+            ),
+          })}
         </p>
       </div>
     </section>
@@ -270,11 +297,11 @@ function XGlyph(): JSX.Element {
 }
 
 /** Ring spinner (creating + prereq-checking affordances). */
-function Spinner({ className }: { className?: string }): JSX.Element {
+function Spinner({ className, label }: { className?: string; label: string }): JSX.Element {
   return (
     <span
       role="status"
-      aria-label="Loading"
+      aria-label={label}
       className={`inline-block animate-spin rounded-full border-2 border-current border-t-transparent ${className ?? ''}`}
     />
   );
@@ -292,8 +319,9 @@ function CreateStep({
   onBack: () => void;
   onCreated: (slug: string) => void;
 }): JSX.Element {
+  const { t } = useTranslation();
   const [slug, setSlug] = useState('');
-  const [serverError, setServerError] = useState<string | null>(null);
+  const [serverError, setServerError] = useState<AddOrgError | null>(null);
   const qc = useQueryClient();
 
   const create = useMutation({
@@ -302,26 +330,16 @@ function CreateStep({
       qc.invalidateQueries({ queryKey: ['orgs'] });
       onCreated(resp.slug);
     },
-    onError: (err: unknown) => {
-      const e = err as { code?: string; status?: number; message?: string };
-      if (e.code === 'no_active_runtime') {
-        setServerError('No runtime is active yet — the daemon is still starting up. Try again in a moment.');
-      } else if (e.code === 'org_dir_has_data') {
-        setServerError(
-          `A directory for "${slug}" already exists and contains data. ` +
-            'It may be listed under broken orgs. Manual cleanup is required.',
-        );
-      } else if (e.code === 'org_exists' || e.code === 'org_dir_exists' || e.status === 409) {
-        setServerError(`An org with slug "${slug}" already exists.`);
-      } else if (e.code === 'invalid_slug') {
-        setServerError('Slug must match ^[a-z0-9-]{1,40}$.');
-      } else {
-        setServerError(e.message ?? 'Could not create org.');
-      }
+    onError: (err: unknown, variables) => {
+      // Store the error IDENTITY (not a rendered string) so a locale switch
+      // re-translates without resubmitting, and the raw unknown detail stays
+      // byte-for-byte (W2a review R1).
+      setServerError(classifyAddOrgError(err, variables.slug));
     },
   });
 
   const valid = SLUG_RE.test(slug);
+  const errorText = serverError ? renderAddOrgError(serverError, t) : null;
 
   const submit = (): void => {
     if (valid && !create.isPending) create.mutate({ slug });
@@ -335,10 +353,10 @@ function CreateStep({
   return (
     <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-8">
       <p className="text-accent-text text-xs font-semibold tracking-wider uppercase">
-        New org
+        {t('onboarding.create.eyebrow')}
       </p>
       <h1 className="font-display text-h1 text-text-primary mt-1.5 font-medium">
-        Name your org
+        {t('onboarding.create.heading')}
       </h1>
 
       <form
@@ -348,10 +366,9 @@ function CreateStep({
           submit();
         }}
       >
-        <Label htmlFor="onboarding-slug">Org slug</Label>
+        <Label htmlFor="onboarding-slug">{t('onboarding.create.slugLabel')}</Label>
         <p className="text-text-muted -mt-1 text-xs">
-          This is the org&rsquo;s permanent identifier. It can&rsquo;t be changed
-          later.
+          {t('onboarding.create.slugHint')}
         </p>
         <Input
           id="onboarding-slug"
@@ -360,7 +377,7 @@ function CreateStep({
             setSlug(e.target.value);
             setServerError(null);
           }}
-          placeholder="e.g. hk-macau-tourism"
+          placeholder={t('onboarding.create.slugPlaceholder')}
           autoFocus
           autoComplete="off"
           spellCheck={false}
@@ -370,20 +387,20 @@ function CreateStep({
           {valid ? (
             <span className="text-feedback-success inline-flex items-center gap-1 font-medium">
               <Check aria-hidden="true" size={13} />
-              Lowercase letters, numbers and hyphens
+              {t('onboarding.create.slugRule')}
             </span>
           ) : (
             <span className="text-text-muted">
-              Lowercase letters, numbers and hyphens
+              {t('onboarding.create.slugRule')}
             </span>
           )}
           <span className="text-text-muted font-mono">
             · ^[a-z0-9-]&#123;1,40&#125;$
           </span>
         </p>
-        {serverError && (
+        {errorText && (
           <p className="text-feedback-danger text-sm" role="alert">
-            {serverError}
+            {errorText}
           </p>
         )}
 
@@ -394,7 +411,7 @@ function CreateStep({
 
         <div className="flex items-center gap-2 pt-4">
           <Button type="submit" disabled={!valid || create.isPending}>
-            Create org
+            {t('onboarding.create.submit')}
           </Button>
           <Button
             type="button"
@@ -402,7 +419,7 @@ function CreateStep({
             onClick={onBack}
             disabled={create.isPending}
           >
-            Cancel
+            {t('common.cancel')}
           </Button>
         </div>
       </form>
@@ -412,17 +429,20 @@ function CreateStep({
 
 /** Centered progress card shown while POST /orgs is in flight. */
 function CreatingState({ slug }: { slug: string }): JSX.Element {
+  const { t, render } = useTranslation();
   return (
     <section
-      aria-label="Creating org"
+      aria-label={t('onboarding.creating.aria')}
       className="bg-surface border-border-default shadow-pasture-sm flex flex-col items-center rounded-lg border px-8 py-16 text-center"
     >
-      <Spinner className="text-accent h-8 w-8" />
+      <Spinner label={t('onboarding.loading')} className="text-accent h-8 w-8" />
       <h1 className="font-display text-h2 text-text-primary mt-5 font-medium">
-        Creating <span className="text-accent-text font-mono">{slug}</span>…
+        {render('onboarding.creating.heading', {
+          slug: <span className="text-accent-text font-mono">{slug}</span>,
+        })}
       </h1>
       <p className="text-text-secondary mt-2 text-sm">
-        Setting up the workspace.
+        {t('onboarding.creating.body')}
       </p>
     </section>
   );
@@ -439,6 +459,7 @@ function SuccessStep({
   slug: string;
   onCreateAnother: () => void;
 }): JSX.Element {
+  const { t, render } = useTranslation();
   const navigate = useNavigate();
   return (
     <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-8">
@@ -449,19 +470,20 @@ function SuccessStep({
         <Check size={22} />
       </span>
       <h1 className="font-display text-h2 text-text-primary mt-4 font-medium">
-        Org <span className="text-accent-text font-mono">{slug}</span> is ready.
+        {render('onboarding.success.heading', {
+          slug: <span className="text-accent-text font-mono">{slug}</span>,
+        })}
       </h1>
       <p className="text-text-secondary mt-2 text-sm leading-relaxed">
-        Your workspace is live. Next: wire up an agentic CLI from Settings,
-        then dispatch your first task.
+        {t('onboarding.success.body')}
       </p>
       <div className="mt-6 flex items-center gap-2">
         <Button onClick={() => navigate(`/orgs/${slug}/dashboard`)}>
-          Enter {slug}
+          {t('onboarding.success.enter', { slug })}
           <ArrowRight aria-hidden="true" />
         </Button>
         <Button variant="ghost" onClick={onCreateAnother}>
-          Create another
+          {t('onboarding.success.createAnother')}
         </Button>
       </div>
     </section>
@@ -477,6 +499,7 @@ function BrokenOrgList({
 }: {
   broken: { slug: string; error: string }[];
 }): JSX.Element {
+  const { t, render } = useTranslation();
   return (
     <section className="border-feedback-warning/30 bg-feedback-warning/5 rounded-lg border p-5">
       <div className="flex items-center gap-2">
@@ -486,12 +509,11 @@ function BrokenOrgList({
           className="text-feedback-warning shrink-0"
         />
         <h2 className="text-text-primary text-sm font-semibold">
-          {broken.length} org{broken.length === 1 ? '' : 's'} failed to load
+          {t('onboarding.broken.heading', { count: broken.length })}
         </h2>
       </div>
       <p className="text-text-muted mt-1 text-xs">
-        These workspaces are on disk but the daemon could not open them. The raw
-        error is shown as reported — fix it on the host.
+        {t('onboarding.broken.body')}
       </p>
       <ul className="mt-3 space-y-2">
         {broken.map((b) => (
@@ -499,9 +521,13 @@ function BrokenOrgList({
         ))}
       </ul>
       <p className="text-text-muted mt-3 text-xs">
-        Broken orgs don&rsquo;t block you — you can still{' '}
-        <span className="text-text-primary font-medium">create a new org</span>{' '}
-        while these stay parked.
+        {render('onboarding.broken.footer', {
+          link: (
+            <span className="text-text-primary font-medium">
+              {t('onboarding.broken.createNewOrg')}
+            </span>
+          ),
+        })}
       </p>
     </section>
   );
@@ -515,6 +541,7 @@ function BrokenOrgCard({
   slug: string;
   error: string;
 }): JSX.Element {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
   const copy = (): void => {
@@ -542,12 +569,12 @@ function BrokenOrgCard({
                 size={13}
                 className="text-feedback-success"
               />
-              Copied
+              {t('onboarding.broken.copied')}
             </>
           ) : (
             <>
               <CopyGlyph />
-              Copy error
+              {t('onboarding.broken.copyError')}
             </>
           )}
         </button>
@@ -562,6 +589,7 @@ function BrokenOrgCard({
 /* ------------------------------------------------------------------ */
 
 function ExecutorPrereqPanel(): JSX.Element | null {
+  const { t } = useTranslation();
   const prereqsQuery = useQuery({
     queryKey: ['health', 'prereqs'],
     queryFn: healthApi.getPrereqs,
@@ -573,12 +601,12 @@ function ExecutorPrereqPanel(): JSX.Element | null {
   if (prereqsQuery.isPending) {
     return (
       <section
-        aria-label="Executor readiness"
+        aria-label={t('onboarding.prereqs.aria')}
         className="border-border-default bg-surface mt-4 rounded-md border px-3 py-2.5"
       >
         <p className="text-text-muted flex items-center gap-2 text-xs">
-          <Spinner className="text-text-muted h-3.5 w-3.5" />
-          Checking host tools…
+          <Spinner label={t('onboarding.loading')} className="text-text-muted h-3.5 w-3.5" />
+          {t('onboarding.prereqs.checking')}
         </p>
       </section>
     );
@@ -597,7 +625,7 @@ function ExecutorPrereqPanel(): JSX.Element | null {
 
   return (
     <section
-      aria-label="Executor readiness"
+      aria-label={t('onboarding.prereqs.aria')}
       className="border-border-default bg-surface mt-4 rounded-md border p-3"
     >
       {/* FE-computed 'X of Y tools registered' summary — real data, no fabrication. */}
@@ -618,10 +646,7 @@ function ExecutorPrereqPanel(): JSX.Element | null {
           <Info aria-hidden="true" size={14} className="text-text-muted shrink-0" />
         )}
         <span>
-          <span className="text-text-primary font-medium">
-            {presentCount} of {total}
-          </span>{' '}
-          tools registered
+          {t('onboarding.prereqs.summary', { present: presentCount, total })}
         </span>
       </div>
 
@@ -636,6 +661,7 @@ function ExecutorPrereqPanel(): JSX.Element | null {
 
 /** One executor row: icon + name + path/hint + registered/not-registered pill. */
 function PrereqRow({ prereq }: { prereq: ExecutorPrereq }): JSX.Element {
+  const { t } = useTranslation();
   const { tool, present, path, hint } = prereq;
   return (
     <li className="border-border-default bg-surface-sunken/40 flex items-center gap-2.5 rounded-md border px-2.5 py-2">
@@ -655,11 +681,11 @@ function PrereqRow({ prereq }: { prereq: ExecutorPrereq }): JSX.Element {
             No `version` — the backend model does not return one. */}
         {present ? (
           <p className="text-text-muted text-caption truncate font-mono">
-            {path ?? 'connected'}
+            {path ?? t('onboarding.prereqs.connected')}
           </p>
         ) : (
           <p className="text-text-secondary text-caption leading-snug">
-            Not registered. {hint}
+            {t('onboarding.prereqs.notRegistered', { hint })}
           </p>
         )}
       </div>
@@ -670,7 +696,7 @@ function PrereqRow({ prereq }: { prereq: ExecutorPrereq }): JSX.Element {
             : 'text-feedback-danger bg-tier-red-tint'
         }`}
       >
-        {present ? 'registered' : 'not registered'}
+        {present ? t('onboarding.prereqs.registered') : t('onboarding.prereqs.notRegisteredPill')}
       </span>
     </li>
   );

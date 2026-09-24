@@ -47,6 +47,21 @@ operators must reload and inspect them before retrying. The response reports
 temporary-artifact state as `absent`, `present`, or `unknown`; cleanup failure
 never fabricates absence or overrides publication. The writer never performs a
 second unaudited replacement as compensation.
+
+**Observed divergence from the "exactly one honest terminal row" description
+above — described, not resolved here.** When the terminal audit insert itself
+fails after a successful atomic replace, the shipped behaviour records the
+durable `daemon_capacity_config_write_authorized` row and *no* terminal row at
+all, returning `config_publication_uncertain`
+(`tests/daemon/test_routes_settings.py::test_daemon_capacity_terminal_success_audit_failure_is_publication_uncertain`
+asserts the audit rows are exactly `["daemon_capacity_config_write_authorized"]`).
+Terminal audit completion is therefore **not guaranteed**, and nothing may
+assert that a rationale "is recorded in the audit entry". This note records the
+divergence between the description and the tested behaviour; it does not change
+backend auditing and does not assert that the two agree. The browser capacity
+panel's copy is qualified accordingly: it states that the reason is *included
+in the save request* and that auditing is addressed org-locally and
+bearer-attributed with terminal completion not guaranteed.
 The shared daemon bearer is required; it proves possession only and cannot be
 attributed to a verified person. Save is next-restart-only and cannot resize
 the startup worker or HostSessionSupervisor snapshots.
@@ -55,6 +70,18 @@ envelope/components and capability-derived effective admission cap/reason.
 A host cap below the envelope remains valid and warns about intentional
 backpressure; a cap above it warns that unused admission capacity creates no
 additional producers.
+
+**Frontend numeric limitation (NOT a contract change).** The browser editor
+refuses operator input outside `Number.MAX_SAFE_INTEGER` and withholds any
+consumed server numeric that did not survive `JSON.parse` as a safe integer.
+The API contract remains an unbounded positive integer; the browser bound is an
+editor representation limit only. A residual blind spot is retained and
+explicitly not closed: the shared HTTP client parses the response body and
+discards the raw text, so a raw *fractional* token that `JSON.parse` rounds
+into a safe integer (for example `9007199254740990.5` -> `9007199254740990`, or
+`1.0000000000000001` -> `1`) passes the guard undetected. Closing that read
+site needs a raw-text/BigInt-aware parse in the shared transport or a new API
+representation, and is a separate decision.
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -377,6 +404,29 @@ and a fixed login/session daemon (sshd-session, systemd --user, (sd-pam),
 ssh-agent, gpg-agent, gcr-ssh-agent) qualifies only by exact readable process
 name AND exact bounded cgroup role and is deliberately uninspected; any other
 unreadable same-user process is `unknown` and skips.
+
+## Terminal task-worktree reclamation
+
+Terminal task-worktree reclamation has no configuration key or cadence. On the
+approved ordinary `completed`, `failed`, and `cancelled` writer seams, after
+durable terminal state and applicable process/session/control/job teardown, the
+runtime makes one bounded attempt for only the assigned registered agent's
+literal `repos/happyranch/.claude/worktrees/<task-id>` candidate. It requires a
+canonical non-symlink same-device primary and worktree, exact Git registration
+and branch identity, clean status, durable remote containment, no open or
+closed-unmerged PR, no live session/control/PID/cwd/fd reference, no recorded
+`worktree-deferred:` risk, and a shared deadline. Unknown, unavailable,
+malformed, timed-out, dirty, unpublished, live, foreign, or ambiguous evidence
+preserves the worktree.
+
+Successful removal is literal non-force `git worktree remove`; no branch is
+deleted. A failed gate or removal is a typed/logged preservation outcome and
+never changes terminal semantics or schedules a retry. `superseded`,
+`blocked_on_job`, accepted/restart completion-recovery settlement, legacy
+normalization, and historical cleanup remain outside this mechanism. This is
+separate from `workspace_cleanup.enabled` and
+`workspace_cleanup.reclamation_actions_enabled`; neither switch expands or
+disables the terminal hook.
 
 ## Agent Configuration: Single Source of Truth (THR-095)
 

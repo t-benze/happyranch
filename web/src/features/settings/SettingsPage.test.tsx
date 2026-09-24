@@ -5,6 +5,7 @@ import { describe, expect, test, beforeEach } from 'vitest';
 import { useLocation, useNavigationType } from 'react-router-dom';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
+import { renderGuarded } from './sections/capacityTestMount';
 import { server } from '@/test/server';
 
 const SLUG = 'test-org';
@@ -68,7 +69,7 @@ function stubBaseHandlers() {
     ),
     http.get(`/api/v1/orgs/${SLUG}/settings/daemon-capacity`, () => HttpResponse.json({
       running_at_daemon_start: { queue_workers: 6, host_global_session_cap: 13 },
-      running_provenance: 'startup-resolved settings snapshot',
+      running_provenance: 'Resolved when the HappyRanch service started',
       persisted_yaml: { queue_workers: null, host_global_session_cap: null },
       next_start: { queue_workers: 6, host_global_session_cap: 13 },
       environment_shadowed: [], environment_warning: null,
@@ -161,7 +162,7 @@ describe('SettingsPage — sub-nav and routing', () => {
     const content = screen.getByTestId('settings-content');
     const subnav = within(content).getByRole('complementary');
     expect(within(subnav).getAllByRole('link').map((link) => link.textContent)).toEqual([
-      'Daemon / Capacity',
+      'Capacity',
       'Assistant',
       'Organization',
       'Executors',
@@ -181,7 +182,7 @@ describe('SettingsPage — sub-nav and routing', () => {
     const subnav = within(content).getByRole('complementary');
 
     for (const label of [
-      'Daemon / Capacity',
+      'Capacity',
       'Assistant',
       'Organization',
       'Executors',
@@ -193,13 +194,25 @@ describe('SettingsPage — sub-nav and routing', () => {
   });
 
   test('daemon capacity distinguishes running, not-set YAML, next start and no-live-apply copy', async () => {
-    mountAt(`/orgs/${SLUG}/settings/daemon-capacity`);
-    await screen.findByRole('heading', { name: 'Daemon / Capacity' });
-    await screen.findByText('6 workers / cap 13');
-    expect(screen.getByRole('alert')).toHaveTextContent(/bearer-based authorization cannot be attributed/);
-    expect(screen.getByText('Not set / Not set')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Save for next restart' })).toBeInTheDocument();
+    // The capacity panel mounts `useBlocker`, which REQUIRES a data router and
+    // throws under the shared `renderWithProviders` MemoryRouter — even when the
+    // blocker argument is false. This one case therefore mounts through the
+    // capacity-local data-router helper; every other case in this file is
+    // unaffected and keeps `renderWithProviders`.
+    renderGuarded(<AppRoutes />, { entries: [`/orgs/${SLUG}/settings/daemon-capacity`] });
+    await screen.findByRole('heading', { name: 'Capacity' }, { timeout: 5000 });
+
+    // Running, saved-in-file and expected-next-start are three NAMED columns,
+    // so no unlabelled pair is presented.
+    const table = await screen.findByRole('table');
+    expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual([
+      'Setting', 'In effect since startup', 'Saved configuration', 'Expected after next start',
+    ]);
+    expect(within(table).getAllByText('Not explicitly saved')).toHaveLength(2);
+    expect(document.body).toHaveTextContent(/cannot link that token to a verified person/);
+    expect(screen.getByRole('button', { name: 'Save for next start' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /restart daemon/i })).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/Apply now|Applied/);
   });
 
   test('sub-nav switches panels via navigation', async () => {

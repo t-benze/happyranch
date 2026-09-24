@@ -120,16 +120,19 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
     expect(unclassifiedRouteIdentities(identities)).toEqual([]);
   });
 
-  it('treats the copy-bearing catch-all/root shell as english-only, never not-applicable', () => {
-    // Reviewer red proof: `*` renders "Not found. Go home" and `index` renders
-    // the RootRedirect "Loading…" — both are user-facing English copy.
-    expect(classifyRouteToken('*')?.status).toBe('english-only');
-    expect(classifyRouteToken('index')?.status).toBe('english-only');
-    expect(classifyRouteIdentity('routes.tsx:*')?.status).toBe('english-only');
+  it('classifies the copy-bearing catch-all/root shell as translated (W2a)', () => {
+    // W2a migrated `*` (NotFound message + Go home link) and `index`
+    // (RootRedirect loading copy) into the catalog. The route modules now
+    // reference the shell keys instead of holding English literals.
+    expect(classifyRouteToken('*')?.status).toBe('translated');
+    expect(classifyRouteToken('index')?.status).toBe('translated');
+    expect(classifyRouteIdentity('routes.tsx:*')?.status).toBe('translated');
     const routes = read('src/routes.tsx');
-    expect(routes).toContain('Not found.');
-    expect(routes).toContain('Go home');
-    expect(routes).toContain('Loading…');
+    expect(routes).toContain('shell.notFound.body');
+    expect(routes).toContain('shell.loading');
+    const en = read('src/lib/i18n/locales/en.ts');
+    expect(en).toContain("'shell.notFound.body': 'Not found. {link}.'");
+    expect(en).toContain("'shell.loading': 'Loading…'");
   });
 
   it('classifies the true redirects as not-applicable via bare and qualified identities', () => {
@@ -147,10 +150,19 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
     }
   });
 
-  it('keeps the Settings copy-bearing subroutes english-only', () => {
-    for (const token of ['settings/*', 'assistant', 'daemon-capacity', 'organization', 'executors']) {
-      expect(classifyRouteToken(token)?.status, token).toBe('english-only');
+  it('classifies the W2c Settings copy-bearing subroutes (incl. gated preferences) translated', () => {
+    for (const token of [
+      'settings/*',
+      'assistant',
+      'daemon-capacity',
+      'organization',
+      'executors',
+      'preferences',
+    ]) {
+      expect(classifyRouteToken(token)?.status, token).toBe('translated');
     }
+    expect(scannedIdentities()).toContain('SettingsPage.tsx:preferences');
+    expect(surfacesFor('settings')).toContain('PreferencesSection');
   });
 
   it('catches a newly mounted unclassified route', () => {
@@ -163,16 +175,44 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
     ]);
   });
 
-  it('leaves all not-yet-migrated surfaces marked incomplete (no route-wide Chinese claim)', () => {
+  it('marks only the W2a/W2b/W2c-migrated namespaces translated and keeps later slices incomplete', () => {
     const summary = coverageSummary();
-    expect(summary.translated).toBe(0);
-    expect(summary.englishOnly).toBeGreaterThan(0);
+    expect(summary.translated).toBe(6);
+    const translated = COVERAGE_MANIFEST.filter((entry) => entry.status === 'translated')
+      .map((entry) => entry.namespace)
+      .sort();
+    expect(translated).toEqual([
+      'app-shell',
+      'help-and-palette',
+      'not-found',
+      'onboarding',
+      'root-shell',
+      'settings',
+    ]);
+    // Later W3/W4 slices and every route family remain honest English-only.
+    for (const namespace of [
+      'dashboard',
+      'threads',
+      'tasks',
+      'todos',
+      'kb',
+      'audit',
+      'skills',
+      'agents',
+      'jobs',
+      'health',
+      'usage',
+      'dreams',
+      'work-hours',
+      'artifacts',
+      'system-assistant',
+    ]) {
+      expect(namespaceStatus(namespace), namespace).toBe('english-only');
+    }
     for (const entry of COVERAGE_MANIFEST) {
       expect(['translated', 'english-only', 'not-applicable']).toContain(entry.status);
       if (NOT_APPLICABLE_NAMESPACES.includes(entry.namespace)) {
         expect(entry.status, `namespace ${entry.namespace}`).toBe('not-applicable');
-      } else {
-        expect(entry.status, `namespace ${entry.namespace}`).toBe('english-only');
       }
     }
   });

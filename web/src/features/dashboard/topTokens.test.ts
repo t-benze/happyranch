@@ -1,10 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import {
-  MODEL_FIX_CUTOVER_TS,
-  classifyModel,
-  toTopRows,
-  type RollupRow,
-} from './topTokens';
+import { MODEL_FIX_CUTOVER_TS, classifyModel } from '@/lib/modelClassification';
+import { toTopRows, type RollupRow } from './topTokens';
 
 /**
  * The Model-label precedence here MUST mirror the CLI's `classify_model`

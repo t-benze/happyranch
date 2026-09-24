@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +28,117 @@ from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.teams import TeamsRegistry
 from runtime.runtime import RuntimeDir
 from tests.test_workspace_cleanup_scheduler import _FakeQueue
+
+
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, text=True, capture_output=True, check=True,
+    )
+
+
+def _terminal_worktree(
+    runtime: OrgPaths,
+    db: Database,
+    task_id: str,
+    *,
+    status: TaskStatus = TaskStatus.PENDING,
+    agent: str = "dev_agent",
+    parent_task_id: str | None = None,
+    task_type: str = "task",
+    create_candidate: bool = True,
+):
+    """Create one disposable canonical primary + linked task worktree."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    primary, candidate = _registered_terminal_worktree(
+        runtime, task_id, agent=agent, create_candidate=create_candidate,
+    )
+
+    db.insert_task(TaskRecord(
+        id=task_id,
+        brief="terminal worktree",
+        assigned_agent=agent,
+        status=status,
+        parent_task_id=parent_task_id,
+        task_type=task_type,
+    ))
+    orch = Orchestrator(
+        db=db,
+        settings=Settings(),
+        paths=runtime,
+        slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+    orch.attach_sessions(SessionTracker())
+    return orch, primary, candidate
+
+
+def _registered_terminal_worktree(
+    runtime: OrgPaths,
+    task_id: str,
+    *,
+    agent: str = "dev_agent",
+    create_candidate: bool = True,
+) -> tuple[Path, Path]:
+    """Create the real disposable Git primary/worktree used by writer tests."""
+    primary = runtime.workspaces_dir / agent / "repos" / "happyranch"
+    primary.mkdir(parents=True)
+    _git(primary, "init", "-b", "main")
+    _git(primary, "config", "user.email", "tests@example.invalid")
+    _git(primary, "config", "user.name", "HappyRanch tests")
+    (primary / "tracked.txt").write_text("base\n")
+    _git(primary, "add", "tracked.txt")
+    _git(primary, "commit", "-m", "test base")
+    _git(primary, "update-ref", "refs/remotes/origin/main", "HEAD")
+    candidate = primary / ".claude" / "worktrees" / task_id
+    if create_candidate:
+        candidate.parent.mkdir(parents=True)
+        _git(primary, "worktree", "add", "-b", f"task/{task_id}", str(candidate))
+    return primary, candidate
+
+
+def _admit_real_terminal_worktree_reclamation(monkeypatch) -> None:
+    """Keep local Git and /proc probes real; make only the remote fact exact."""
+    from runtime.orchestrator import run_step as run_step_module
+
+    real_run = run_step_module._run_terminal_worktree_command
+
+    def fake_run(args, *, cwd, timeout):
+        if args[0] == "gh":
+            return subprocess.CompletedProcess(args, 0, "[]\n", "")
+        return real_run(args, cwd=cwd, timeout=timeout)
+
+    monkeypatch.setattr(run_step_module, "_run_terminal_worktree_command", fake_run)
+
+
+def _admit_terminal_worktree(monkeypatch) -> None:
+    """Keep the real local-git probes while making remote/process facts exact."""
+    from runtime.orchestrator import run_step as run_step_module
+
+    _admit_real_terminal_worktree_reclamation(monkeypatch)
+    monkeypatch.setattr(
+        run_step_module,
+        "_terminal_worktree_process_reference",
+        lambda candidate, deadline: None,
+    )
+
+
+def _record_terminal_worktree_outcomes(monkeypatch):
+    """Observe the real helper while a production terminal seam owns the call."""
+    from runtime.orchestrator import run_step as run_step_module
+
+    original = run_step_module._reclaim_terminal_task_worktree
+    outcomes = []
+
+    def observed(*args, **kwargs):
+        outcome = original(*args, **kwargs)
+        outcomes.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(
+        run_step_module, "_reclaim_terminal_task_worktree", observed,
+    )
+    return outcomes
 
 
 @pytest.fixture(autouse=True)
@@ -1720,6 +1833,745 @@ def test_complete_idempotent_on_terminal_task(runtime, db):
     assert t.status == TaskStatus.FAILED
     assert t.note == "cancelled by founder: stop"
     assert t.final_output_dir is None  # unchanged
+
+
+def test_terminal_worktree_skill_contract_is_durable_before_final_callback() -> None:
+    root = Path(__file__).parents[1]
+    start_task = (root / "runtime/skills/bundled/start-task/SKILL.md").read_text()
+    make_worktree = (root / "runtime/skills/bundled/make-worktree/SKILL.md").read_text()
+
+    assert "8. **Cleanup or record deferral.**" in start_task
+    assert "9. **Report completion.**" in start_task
+    assert start_task.index("8. **Cleanup or record deferral.**") < start_task.index(
+        "9. **Report completion.**"
+    )
+    assert "report-completion is the final action" in start_task
+    cleanup = make_worktree.split("## Cleanup", 1)[1]
+    assert "git worktree remove .claude/worktrees/<task_id>" in cleanup
+    assert "--force" not in cleanup
+    assert "git branch -D" not in cleanup
+    assert "worktree-deferred: <specific reason>" in cleanup
+
+
+def test_complete_reclaims_clean_durable_terminal_worktree(
+    runtime, db, monkeypatch,
+):
+    from runtime.orchestrator.run_step import _complete
+
+    task_id = "TASK-9001"
+    orch, primary, candidate = _terminal_worktree(runtime, db, task_id)
+    _admit_terminal_worktree(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+
+    assert _complete(orch, task_id, note="done") is True
+
+    assert db.get_task(task_id).status is TaskStatus.COMPLETED
+    assert outcomes == [("removed", "eligible")]
+    assert not candidate.exists()
+    assert _git(
+        primary, "show-ref", "--verify", f"refs/heads/task/{task_id}",
+    ).returncode == 0
+
+
+def test_fail_reclaims_clean_durable_terminal_worktree(runtime, db, monkeypatch):
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = "TASK-9002"
+    orch, _primary, candidate = _terminal_worktree(runtime, db, task_id)
+    _admit_terminal_worktree(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+
+    _fail(orch, task_id, note="failed")
+
+    assert db.get_task(task_id).status is TaskStatus.FAILED
+    assert outcomes == [("removed", "eligible")]
+    assert not candidate.exists()
+
+
+@pytest.mark.parametrize(
+    "dirty_kind, task_id",
+    [
+        ("unstaged", "TASK-9011"),
+        ("staged", "TASK-9012"),
+        ("untracked", "TASK-9013"),
+    ],
+)
+def test_fail_preserves_every_dirty_worktree_form(
+    runtime, db, monkeypatch, dirty_kind, task_id,
+):
+    from runtime.orchestrator.run_step import _fail
+
+    orch, _primary, candidate = _terminal_worktree(runtime, db, task_id)
+    _admit_terminal_worktree(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+    if dirty_kind == "unstaged":
+        (candidate / "tracked.txt").write_text("changed\n")
+    elif dirty_kind == "staged":
+        (candidate / "tracked.txt").write_text("changed\n")
+        _git(candidate, "add", "tracked.txt")
+    else:
+        (candidate / "untracked.txt").write_text("new\n")
+
+    _fail(orch, task_id, note="failed")
+
+    assert db.get_task(task_id).status is TaskStatus.FAILED
+    assert outcomes == [("preserved", "worktree-dirty")]
+    assert candidate.exists()
+
+
+def test_terminal_worktree_preserves_unpushed_commit(runtime, db, monkeypatch):
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = "TASK-9004"
+    orch, _primary, candidate = _terminal_worktree(runtime, db, task_id)
+    _admit_terminal_worktree(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+    (candidate / "tracked.txt").write_text("published later\n")
+    _git(candidate, "add", "tracked.txt")
+    _git(candidate, "commit", "-m", "local only")
+
+    _fail(orch, task_id, note="failed")
+
+    assert outcomes == [("preserved", "commit-not-durable")]
+    assert candidate.exists()
+
+
+@pytest.mark.parametrize(
+    "gh_result",
+    [
+        subprocess.CompletedProcess(
+            ["gh"], 0, '[{"number": 887, "state": "OPEN"}]\n', "",
+        ),
+        subprocess.CompletedProcess(["gh"], 1, "", "auth unavailable"),
+        subprocess.CompletedProcess(["gh"], 0, "not-json", ""),
+    ],
+    ids=["open-pr", "probe-error", "malformed"],
+)
+def test_terminal_worktree_preserves_open_pr_or_remote_uncertainty(
+    runtime, db, monkeypatch, gh_result,
+):
+    from runtime.orchestrator import run_step as run_step_module
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = "TASK-9005"
+    orch, _primary, candidate = _terminal_worktree(runtime, db, task_id)
+    real_run = run_step_module._run_terminal_worktree_command
+    calls = []
+
+    def fake_run(args, *, cwd, timeout):
+        if args[0] == "gh":
+            calls.append(tuple(args))
+            return gh_result
+        return real_run(args, cwd=cwd, timeout=timeout)
+
+    monkeypatch.setattr(run_step_module, "_run_terminal_worktree_command", fake_run)
+    monkeypatch.setattr(
+        run_step_module, "_terminal_worktree_process_reference",
+        lambda candidate, deadline: None,
+    )
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+
+    _fail(orch, task_id, note="failed")
+
+    assert candidate.exists()
+    assert len(calls) == 1
+    expected_reason = (
+        "unmerged-pull-request" if gh_result.returncode == 0
+        and gh_result.stdout.startswith("[") else "pull-request-probe-unknown"
+    )
+    if gh_result.stdout == "not-json":
+        expected_reason = "pull-request-probe-unknown"
+    assert outcomes == [("preserved", expected_reason)]
+
+
+def test_terminal_worktree_preserves_live_session_without_process_probe(
+    runtime, db, monkeypatch,
+):
+    from runtime.orchestrator import run_step as run_step_module
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = "TASK-9006"
+    orch, _primary, candidate = _terminal_worktree(runtime, db, task_id)
+    _admit_terminal_worktree(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+    orch._sessions.set_active(task_id, "dev_agent", "sess-live")
+    monkeypatch.setattr(
+        run_step_module,
+        "_terminal_worktree_process_reference",
+        lambda *_: pytest.fail("live tracker must preserve before /proc probing"),
+    )
+
+    _fail(orch, task_id, note="failed")
+
+    assert outcomes == [("preserved", "live-session")]
+    assert candidate.exists()
+
+
+def test_terminal_worktree_preserves_recorded_deferral(runtime, db, monkeypatch):
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = "TASK-9007"
+    orch, _primary, candidate = _terminal_worktree(runtime, db, task_id)
+    _admit_terminal_worktree(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+    db.insert_task_result(
+        task_id=task_id,
+        agent="dev_agent",
+        session_id="sess-finished",
+        status="completed",
+        confidence_score=80,
+        output_summary="done",
+        risks_flagged=["worktree-deferred: open PR"],
+    )
+
+    _fail(orch, task_id, note="failed")
+
+    assert outcomes == [("preserved", "recorded-deferral")]
+    assert candidate.exists()
+
+
+def test_terminal_worktree_remove_failure_is_one_shot_and_preserves_branch(
+    runtime, db, monkeypatch,
+):
+    from runtime.orchestrator import run_step as run_step_module
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = "TASK-9008"
+    orch, primary, candidate = _terminal_worktree(runtime, db, task_id)
+    real_run = run_step_module._run_terminal_worktree_command
+    removals = []
+
+    def fake_run(args, *, cwd, timeout):
+        if args[0] == "gh":
+            return subprocess.CompletedProcess(args, 0, "[]\n", "")
+        if "worktree" in args and "remove" in args:
+            removals.append(tuple(args))
+            return subprocess.CompletedProcess(args, 1, "", "busy")
+        return real_run(args, cwd=cwd, timeout=timeout)
+
+    monkeypatch.setattr(run_step_module, "_run_terminal_worktree_command", fake_run)
+    monkeypatch.setattr(
+        run_step_module,
+        "_terminal_worktree_process_reference",
+        lambda candidate, deadline: None,
+    )
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+
+    _fail(orch, task_id, note="failed")
+
+    assert candidate.exists()
+    assert outcomes == [("preserved", "remove-failed")]
+    assert len(removals) == 1
+    assert "--force" not in removals[0]
+    assert _git(
+        primary, "show-ref", "--verify", f"refs/heads/task/{task_id}",
+    ).returncode == 0
+
+
+@pytest.mark.parametrize(
+    "tracker_fact, expected_reason",
+    [("control", "live-control"), ("pid", "live-pid")],
+)
+def test_terminal_worktree_preserves_live_tracker_facts(
+    runtime, db, monkeypatch, tracker_fact, expected_reason,
+):
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = f"TASK-902-{tracker_fact}"
+    orch, _primary, candidate = _terminal_worktree(runtime, db, task_id)
+    _admit_terminal_worktree(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+    orch._sessions.set_active(task_id, "dev_agent", "sess-finished")
+    if tracker_fact == "control":
+        orch._sessions.set_cancel_control(
+            task_id, "dev_agent", "sess-finished", lambda: None,
+        )
+    else:
+        orch._sessions.set_pid(task_id, "dev_agent", "sess-finished", 4242)
+    monkeypatch.setattr(orch._sessions, "iter_active", lambda: [])
+
+    _fail(orch, task_id, note="failed")
+
+    assert outcomes == [("preserved", expected_reason)]
+    assert candidate.exists()
+
+
+def test_terminal_worktree_live_process_reference_is_one_shot(
+    runtime, db, monkeypatch,
+):
+    from runtime.orchestrator import run_step as run_step_module
+    from runtime.orchestrator.executors import ExecutorResult
+
+    task_id = "TASK-9020"
+    orch, _primary, candidate = _terminal_worktree(runtime, db, task_id)
+    _admit_terminal_worktree(monkeypatch)
+    probes = []
+    monkeypatch.setattr(
+        run_step_module,
+        "_terminal_worktree_process_reference",
+        lambda *_: probes.append("probe") or "live-process-reference",
+    )
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+    monkeypatch.setattr(
+        orch, "_run_agent",
+        lambda *args, **kwargs: (
+            ExecutorResult(
+                success=False, duration_seconds=1, session_id="sess-timeout",
+                error="Session timed out",
+            ),
+            None,
+        ),
+    )
+
+    orch.run_step(task_id)
+
+    assert db.get_task(task_id).status is TaskStatus.FAILED
+    assert outcomes == [("preserved", "live-process-reference")]
+    assert probes == ["probe"]
+    assert candidate.exists()
+
+
+@pytest.mark.skipif(not Path("/proc").is_dir(), reason="Linux /proc proof")
+@pytest.mark.parametrize("reference_kind", ["cwd", "fd"])
+def test_terminal_worktree_real_proc_reference_preserves_without_exit_retry(
+    runtime, db, monkeypatch, reference_kind,
+):
+    """The real same-UID scanner observes cwd/fd refs and remains one-shot."""
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = f"TASK-REAL-PROC-{reference_kind.upper()}"
+    orch, primary, candidate = _terminal_worktree(runtime, db, task_id)
+    _admit_real_terminal_worktree_reclamation(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+
+    script = (
+        "import sys; "
+        "held = open(sys.argv[1]) if sys.argv[1] else None; "
+        "print('ready', flush=True); sys.stdin.readline()"
+    )
+    held_path = str(candidate / "tracked.txt") if reference_kind == "fd" else ""
+    holder = subprocess.Popen(
+        [sys.executable, "-c", script, held_path],
+        cwd=candidate if reference_kind == "cwd" else primary,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "ready"
+
+        holder_proc = Path("/proc") / str(holder.pid)
+        assert holder_proc.stat(follow_symlinks=False).st_uid == os.getuid()
+        real_iterdir = Path.iterdir
+
+        def only_holder_pid(path):
+            if path == Path("/proc"):
+                return iter((holder_proc,))
+            return real_iterdir(path)
+
+        # Exercise the production scanner and the holder's real /proc cwd/fd,
+        # while excluding unrelated same-UID host processes whose deliberately
+        # fail-closed probe uncertainty is not part of this hermetic witness.
+        monkeypatch.setattr(Path, "iterdir", only_holder_pid)
+
+        _fail(orch, task_id, note="failed")
+
+        assert db.get_task(task_id).status is TaskStatus.FAILED
+        assert outcomes == [("preserved", "live-process-reference")]
+        assert candidate.exists()
+        assert str(candidate) in _git(
+            primary, "worktree", "list", "--porcelain",
+        ).stdout
+    finally:
+        if holder.poll() is None:
+            assert holder.stdin is not None
+            holder.stdin.write("\n")
+            holder.stdin.flush()
+            holder.wait(timeout=5)
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait(timeout=5)
+
+    # Process exit does not manufacture a second cleanup attempt.
+    assert holder.returncode == 0
+    assert outcomes == [("preserved", "live-process-reference")]
+    assert candidate.exists()
+
+
+def test_terminal_worktree_deadline_expiry_is_contained_and_not_retried(
+    runtime, db, monkeypatch,
+):
+    from runtime.orchestrator import run_step as run_step_module
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = "TASK-9021"
+    orch, _primary, candidate = _terminal_worktree(runtime, db, task_id)
+    monkeypatch.setattr(
+        run_step_module,
+        "_terminal_worktree_remaining",
+        lambda _deadline: (_ for _ in ()).throw(TimeoutError("expired")),
+    )
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+
+    _fail(orch, task_id, note="failed")
+
+    assert outcomes == [("preserved", "deadline-expired")]
+    assert candidate.exists()
+
+
+def test_terminal_worktree_probe_exception_cannot_change_terminal_semantics(
+    runtime, db, monkeypatch,
+):
+    from runtime.orchestrator import run_step as run_step_module
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = "TASK-9022"
+    orch, _primary, candidate = _terminal_worktree(runtime, db, task_id)
+    monkeypatch.setattr(
+        run_step_module,
+        "_run_terminal_worktree_command",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("probe broke")),
+    )
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+
+    _fail(orch, task_id, note="exact terminal note")
+
+    task = db.get_task(task_id)
+    assert task.status is TaskStatus.FAILED
+    assert task.note == "exact terminal note"
+    assert outcomes == [("preserved", "probe-error")]
+    assert candidate.exists()
+
+
+def test_terminal_worktree_branch_mismatch_is_preserved(
+    runtime, db, monkeypatch,
+):
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = "TASK-9023"
+    orch, _primary, candidate = _terminal_worktree(runtime, db, task_id)
+    _git(candidate, "branch", "-m", "task/FOREIGN")
+    _admit_terminal_worktree(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+
+    _fail(orch, task_id, note="failed")
+
+    assert outcomes == [("preserved", "worktree-identity-mismatch")]
+    assert candidate.exists()
+
+
+def test_terminal_worktree_unregistered_agent_is_preserved_without_git_probe(
+    runtime, db, monkeypatch,
+):
+    from runtime.orchestrator import run_step as run_step_module
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = "TASK-9024"
+    orch, _primary, candidate = _terminal_worktree(
+        runtime, db, task_id, agent="foreign_agent",
+    )
+    monkeypatch.setattr(
+        run_step_module,
+        "_run_terminal_worktree_command",
+        lambda *args, **kwargs: pytest.fail("unregistered agent must not probe git"),
+    )
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+
+    _fail(orch, task_id, note="failed")
+
+    assert outcomes == [("preserved", "agent-unregistered")]
+    assert candidate.exists()
+
+
+def test_terminal_worktree_symlink_candidate_is_preserved(
+    runtime, db, monkeypatch,
+):
+    from runtime.orchestrator import run_step as run_step_module
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = "TASK-9025"
+    orch, _primary, candidate = _terminal_worktree(runtime, db, task_id)
+    moved = candidate.with_name(f"{task_id}-moved")
+    candidate.rename(moved)
+    candidate.symlink_to(moved, target_is_directory=True)
+    monkeypatch.setattr(
+        run_step_module,
+        "_run_terminal_worktree_command",
+        lambda *args, **kwargs: pytest.fail("symlink gate must precede git probes"),
+    )
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+
+    _fail(orch, task_id, note="failed")
+
+    assert outcomes == [("preserved", "worktree-symlinked")]
+    assert candidate.is_symlink()
+
+
+@pytest.mark.parametrize("decoy_kind", ["primary", "nested", "scratch", "foreign"])
+def test_terminal_worktree_never_scans_task_like_decoys(
+    runtime, db, monkeypatch, decoy_kind,
+):
+    from runtime.orchestrator import run_step as run_step_module
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = f"TASK-DEC-{decoy_kind}"
+    orch, primary, candidate = _terminal_worktree(
+        runtime, db, task_id, create_candidate=False,
+    )
+    if decoy_kind == "primary":
+        decoy = primary
+    elif decoy_kind == "nested":
+        decoy = primary / "nested" / ".claude" / "worktrees" / task_id
+        decoy.mkdir(parents=True)
+    elif decoy_kind == "scratch":
+        decoy = (
+            runtime.workspaces_dir / "dev_agent" / ".happyranch"
+            / "scratch" / "worktrees" / task_id
+        )
+        decoy.mkdir(parents=True)
+    else:
+        decoy = (
+            runtime.workspaces_dir / "engineering_head" / "repos"
+            / "happyranch" / ".claude" / "worktrees" / task_id
+        )
+        decoy.mkdir(parents=True)
+    monkeypatch.setattr(
+        run_step_module,
+        "_run_terminal_worktree_command",
+        lambda *args, **kwargs: pytest.fail("absent canonical candidate must not scan"),
+    )
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+
+    _fail(orch, task_id, note="failed")
+
+    assert outcomes == [("preserved", "worktree-absent")]
+    assert not candidate.exists()
+    assert decoy.exists()
+
+
+@pytest.mark.parametrize("timeout_stage", ["remote", "remove"])
+def test_terminal_worktree_command_timeout_preserves_without_retry(
+    runtime, db, monkeypatch, timeout_stage,
+):
+    from runtime.orchestrator import run_step as run_step_module
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = f"TASK-TIMEOUT-{timeout_stage}"
+    orch, _primary, candidate = _terminal_worktree(runtime, db, task_id)
+    real_run = run_step_module._run_terminal_worktree_command
+    timed_calls = []
+
+    def fake_run(args, *, cwd, timeout):
+        is_target = (
+            timeout_stage == "remote" and args[0] == "gh"
+        ) or (
+            timeout_stage == "remove" and "worktree" in args and "remove" in args
+        )
+        if is_target:
+            timed_calls.append(tuple(args))
+            raise subprocess.TimeoutExpired(args, timeout)
+        if args[0] == "gh":
+            return subprocess.CompletedProcess(args, 0, "[]\n", "")
+        return real_run(args, cwd=cwd, timeout=timeout)
+
+    monkeypatch.setattr(run_step_module, "_run_terminal_worktree_command", fake_run)
+    monkeypatch.setattr(
+        run_step_module, "_terminal_worktree_process_reference", lambda *_: None,
+    )
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+
+    _fail(orch, task_id, note="failed")
+
+    assert outcomes == [("preserved", "probe-timeout")]
+    assert len(timed_calls) == 1
+    assert candidate.exists()
+
+
+def test_terminal_worktree_duplicate_attempt_observes_absence_without_retry(
+    runtime, db, monkeypatch,
+):
+    from runtime.orchestrator.run_step import (
+        _complete,
+        _reclaim_terminal_task_worktree,
+    )
+
+    task_id = "TASK-9031"
+    orch, _primary, candidate = _terminal_worktree(runtime, db, task_id)
+    _admit_terminal_worktree(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+
+    assert _complete(orch, task_id, note="done") is True
+    duplicate = _reclaim_terminal_task_worktree(orch, task_id)
+
+    assert outcomes == [("removed", "eligible")]
+    assert duplicate == ("preserved", "worktree-absent")
+    assert not candidate.exists()
+
+
+def test_terminal_worktree_attempt_is_scoped_to_exact_task_identity(
+    runtime, db, monkeypatch,
+):
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = "TASK-9026"
+    other_id = "TASK-9027"
+    orch, primary, candidate = _terminal_worktree(runtime, db, task_id)
+    other = primary / ".claude" / "worktrees" / other_id
+    _git(primary, "worktree", "add", "-b", f"task/{other_id}", str(other))
+    db.insert_task(TaskRecord(
+        id=other_id, brief="other", assigned_agent="dev_agent",
+        status=TaskStatus.COMPLETED, current_session_id="shared-session",
+    ))
+    db.update_task(task_id, current_session_id="shared-session")
+    _admit_terminal_worktree(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+
+    _fail(orch, task_id, note="failed")
+
+    assert outcomes == [("removed", "eligible")]
+    assert not candidate.exists()
+    assert other.exists()
+
+
+def test_blocked_on_job_is_not_reclaimed_until_later_terminal_transition(
+    runtime, db, monkeypatch,
+):
+    from runtime.models import CompletionReport
+    from runtime.orchestrator.run_step import _complete, _consume_completion_report
+
+    task_id = "TASK-9028"
+    orch, _primary, candidate = _terminal_worktree(runtime, db, task_id)
+    now = datetime.now(timezone.utc).isoformat()
+    db.insert_job(JobRecord(
+        id="JOB-9028", task_id=task_id, agent_name="dev_agent",
+        title="wait", rationale="test", script_text="true",
+        interpreter=JobInterpreter.BASH, status=JobStatus.RUNNING,
+        created_at=now,
+    ))
+    _admit_terminal_worktree(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+
+    _consume_completion_report(
+        orch, task_id,
+        CompletionReport(
+            task_id=task_id, agent="dev_agent", status="blocked",
+            confidence=80, output_summary="waiting",
+            waiting_on_job_ids=["JOB-9028"],
+        ),
+    )
+
+    parked = db.get_task(task_id)
+    assert parked.status is TaskStatus.IN_PROGRESS
+    assert parked.block_kind is BlockKind.BLOCKED_ON_JOB
+    assert outcomes == []
+    assert candidate.exists()
+
+    db.update_task(task_id, status=TaskStatus.IN_PROGRESS, block_kind=None)
+    assert _complete(orch, task_id, note="job finished") is True
+    assert outcomes == [("removed", "eligible")]
+    assert not candidate.exists()
+
+
+def test_delegated_child_reclamation_never_considers_parent_worktree(
+    runtime, db, monkeypatch,
+):
+    from runtime.orchestrator.run_step import _complete
+
+    parent_id = "TASK-9029"
+    db.insert_task(TaskRecord(
+        id=parent_id, brief="parent", assigned_agent="engineering_head",
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+    ))
+    task_id = "TASK-9030"
+    orch, primary, candidate = _terminal_worktree(
+        runtime, db, task_id, parent_task_id=parent_id, task_type="subtask",
+    )
+    parent_candidate = primary / ".claude" / "worktrees" / parent_id
+    _git(
+        primary, "worktree", "add", "-b", f"task/{parent_id}",
+        str(parent_candidate),
+    )
+    _admit_terminal_worktree(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+
+    assert _complete(orch, task_id, note="child done") is True
+
+    assert outcomes == [("removed", "eligible")]
+    assert not candidate.exists()
+    assert parent_candidate.exists()
+
+
+def test_superseded_worktree_is_ineligible_before_any_probe(runtime, db, monkeypatch):
+    from runtime.orchestrator import run_step as run_step_module
+    from runtime.orchestrator.run_step import _reclaim_terminal_task_worktree
+
+    task_id = "TASK-9009"
+    orch, _primary, candidate = _terminal_worktree(
+        runtime, db, task_id, status=TaskStatus.SUPERSEDED,
+    )
+    monkeypatch.setattr(
+        run_step_module,
+        "_run_terminal_worktree_command",
+        lambda *a, **k: pytest.fail("SUPERSEDED must invoke no probe"),
+    )
+
+    outcome = _reclaim_terminal_task_worktree(orch, task_id)
+
+    assert outcome.kind == "preserved"
+    assert outcome.reason == "status-ineligible"
+    assert candidate.exists()
+
+
+def test_manager_supersede_shipping_seam_never_calls_reclamation(
+    runtime, db, monkeypatch,
+):
+    task_id = "TASK-9014"
+    orch, _primary, candidate = _terminal_worktree(
+        runtime, db, task_id, agent="engineering_head",
+    )
+    db.update_task(
+        task_id,
+        status=TaskStatus.IN_PROGRESS,
+        block_kind=None,
+        current_session_id="sess-manager",
+    )
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *args: pytest.fail("manager supersession must not reclaim"),
+    )
+
+    _consume_manager_supersede(orch, task_id)
+
+    assert db.get_task(task_id).status is TaskStatus.SUPERSEDED
+    assert candidate.exists()
+
+
+def test_accepted_completion_recovery_never_reclaims_worktree(
+    runtime, db, monkeypatch,
+):
+    from runtime.orchestrator.run_step import _consume_completion_report
+
+    task_id = "TASK-9010"
+    orch, _primary, candidate = _terminal_worktree(runtime, db, task_id)
+    db.update_task(task_id, status=TaskStatus.IN_PROGRESS, block_kind=None)
+    calls = []
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *args: calls.append(args),
+    )
+
+    _consume_completion_report(
+        orch,
+        task_id,
+        _make_report(output_summary=json.dumps({"action": "done", "summary": "done"})),
+        reclaim_terminal_worktree=False,
+    )
+
+    assert db.get_task(task_id).status is TaskStatus.COMPLETED
+    assert candidate.exists()
+    assert calls == []
 
 
 def test_run_step_revisit_header_injected_on_first_step(

@@ -112,7 +112,7 @@ const RADIUS_CONTRACT: readonly RadiusRow[] = [
     expected: "rounded-sm",
     token: "--radius-sm",
     source: "layouts/AppShell/Sidebar.tsx",
-    startPattern: 'aria-label\\s*=\\s*"Account: You, Founder"',
+    startPattern: "aria-label=\\{t\\('shell\\.account\\.label'",
     endPattern: '<span\\s+aria-hidden\\s*=\\s*"true"',
   },
   {

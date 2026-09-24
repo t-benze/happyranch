@@ -144,9 +144,17 @@ Parameters:
 
    For updates: `happyranch kb update --org {ORG_SLUG} <slug> --agent <you> --from-file /tmp/kb-<slug>.md`. Resolve collision 409s by updating the existing entry instead of forcing a sibling. The `--from-file` pattern is mandatory across executors; in Claude sessions multi-line `happyranch` payloads are rejected by the `Bash(happyranch:*)` permission rule.
 
-8. **Report completion.** When you finish (success or blocker), write a JSON
+8. **Cleanup or record deferral.** Before the completion callback, apply the
+   `make-worktree` cleanup contract to the exact task-owned worktree. Remove it
+   only when every preservation check succeeds. Otherwise leave it intact and
+   add `worktree-deferred: <specific reason>` to `risks_flagged` in the
+   completion payload. Never force removal or delete the branch.
+
+9. **Report completion.** When you finish (success or blocker), write a JSON
    payload to a file and invoke `happyranch report-completion --org {ORG_SLUG} --from-file <path>` as
-   a single-line command. The file form is mandatory across executors. In
+   a single-line command as the final action of the session; nothing follows
+   it. `report-completion is the final action` is the controlling ordering
+   rule. The file form is mandatory across executors. In
    Claude sessions, multi-line bash commands with backslash continuations are
    rejected by the permission rule because newlines count as command
    separators and only the first subcommand matches `Bash(happyranch:*)`.
@@ -324,8 +332,6 @@ Parameters:
    happyranch report-completion --org {ORG_SLUG} --from-file /tmp/completion-<task_id>.json
    ```
 
-9. **Cleanup.** Always run worktree cleanup as the final step, even on the blocker path. The make-worktree skill describes how.
-
 ## Error handling
 
 - If `happyranch` returns non-zero, retry once after 1 second.
@@ -333,9 +339,87 @@ Parameters:
 
 ## Permission walls
 
-If your executor refuses a command and the operation needs founder-grade
-credentials, use the **jobs** skill. Submit a job with `review_required=true`
-and a concrete rationale, then report `status="blocked"` with its `JOB-NNN`
-in `waiting_on_job_ids`. Resume only through the existing job-result workflow.
-Pi has no HappyRanch-managed command-refusal surface; founder-grade operations
-still use reviewed jobs. Review does not grant new executor permissions.
+If your executor refuses one concrete command, first classify the failure (see
+the **jobs** skill). Only an actual executor permission/sandbox refusal is fixed
+by a reviewed job; a missing binary, an auth/credential error, a network/service
+failure, a denied product policy, and an ordinary command bug are not.
+
+**One-off operation.** Use the **jobs** skill to submit one reviewed bounded job
+with `review_required=true` and a concrete rationale, then report
+`status="blocked"` with its `JOB-NNN` in `waiting_on_job_ids`. Resume only
+through the existing job-result workflow. Pi has no HappyRanch-managed
+command-refusal surface, so founder-grade Pi operations still use a reviewed
+job. Review authorizes only that job and does not grant new executor permissions.
+
+Blocked report (worker shape):
+
+```json
+{
+  "task_id": "<TASK>",
+  "session_id": "<session>",
+  "agent": "<you>",
+  "status": "blocked",
+  "confidence": 0,
+  "summary": "Skill <slug>@<version> step N is blocked by an executor permission refusal; submitted reviewed JOB-NNN for the single minimum operation. Awaiting founder review.",
+  "waiting_on_job_ids": ["JOB-NNN"]
+}
+```
+
+```bash
+happyranch report-completion --org {ORG_SLUG} --from-file /tmp/completion-<task_id>.json
+```
+
+**Role-specific callback fields.** The shape above is the *worker* shape. Add
+the fields your injected role contract requires:
+
+- a **worker** sends `status` + `summary` (and `waiting_on_job_ids` only while a
+  live job wait exists);
+- a **reviewer/QA** role additionally sends `"verdict": "<value>"` (its role
+  contract defines the vocabulary);
+- a **team-manager** session additionally sends a top-level `"decision"` object.
+  Its injected role guidance conditionally requires `manager_self_evaluation`
+  for a versioned policy-bound escalation. When required, copy the complete
+  structured dual assessment and its injected binding identities beside
+  `decision`; omission, `null`, malformed, uncertain, or incomplete evidence
+  fails closed.
+  Do not invent policy wording, clause identifiers, a canonical phrase, or a
+  second evaluation. For decisions where the injected guidance
+  does not require that assessment, omit the field.
+  A worker must **never** manufacture a manager decision.
+
+**Real waits only.** `waiting_on_job_ids` requires `status="blocked"` and must
+list only real, currently non-terminal jobs owned by this task. An explicitly
+empty list is rejected (`400 empty_waiting_on_job_ids`), so **omit the key
+entirely** when no live job wait exists. Semantic unresolved work is not a live
+wait and must not be represented as one.
+
+**On resume, verify the actual receipt** (`happyranch jobs show` /
+`happyranch jobs output`) — command, cwd, output, exit code and observable side
+effects. Then:
+
+- `completed` with exit 0 — continue; do not repeat successful work.
+- `completed` with a non-zero exit — a **failed operation**; reconcile partial
+  side effects before any retry.
+- `failed` (`timeout`/`output_cap`/external kill) — may have partial side
+  effects; reconcile, then retry only the unfinished authorized work.
+- `rejected` — **terminal**: no re-wait and no automatic resubmission. If the
+  requirement cannot be met by an authorized alternative, report the precise
+  blocked disposition **omitting `waiting_on_job_ids` entirely**.
+- `running` — stay blocked; never duplicate the submission.
+
+**Context boundaries.** A normal active task session may submit a reviewed job.
+A resumed (ordinary) task may submit a new job only under ordinary rules if one
+is genuinely needed. A **completion-recovery turn** (THR-247) may only observe
+an already-owned job and its wait result — it cannot submit new jobs. A **thread
+turn** carries an `invocation_token` that authorizes only the thread callback:
+it is not a task session id and authorizes no job; route side-effect work through
+a supported task dispatch.
+
+**Lasting changes.** A reviewed job is for one operation. A *lasting* permission
+change goes through the founder-approved central `manage-agent` workflow
+invoked by a **team manager** (never the affected worker editing itself); a
+worker, or a manager changing its own rules, escalates to the founder. The
+executor-specific effects — Claude applies a new `allow_rules` entry on the next
+session, opencode stays inert until a bootstrap-forcing refresh, and Codex/Pi
+are not covered by that rail — are documented in the **manage-agent** skill and
+`docs/agent-guides/agent-executors-and-permissions.md`.

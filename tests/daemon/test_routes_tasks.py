@@ -2229,6 +2229,128 @@ def test_cancel_marks_task_cancelled_with_cancelled_at_and_note(client_with_runt
     assert t.note == "cancelled by founder: rerouting"
 
 
+def test_cancel_attempts_reclamation_after_job_phase(
+    client_with_runtime, monkeypatch,
+):
+    from runtime.models import TaskRecord, TaskStatus
+
+    client, state = client_with_runtime
+    state.db.insert_task(TaskRecord(
+        id="T-RECLAIM", brief="x", assigned_agent="dev_agent",
+    ))
+    events = []
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._kill_jobs_for_terminating_task",
+        lambda _orch, tid: events.append(("jobs", tid)),
+    )
+
+    def reclaim(_orch, tid):
+        events.append(("reclaim", tid, state.db.get_task(tid).status))
+
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        reclaim,
+    )
+
+    response = client.post(
+        "/api/v1/orgs/alpha/tasks/T-RECLAIM/cancel",
+        json={"rationale": "done"},
+    )
+
+    assert response.status_code == 200
+    assert events == [
+        ("jobs", "T-RECLAIM"),
+        ("reclaim", "T-RECLAIM", TaskStatus.CANCELLED),
+    ]
+
+
+def test_live_cancel_clears_control_before_reclamation(
+    client_with_runtime, monkeypatch,
+):
+    from runtime.models import TaskRecord, TaskStatus
+
+    client, state = client_with_runtime
+    state.db.insert_task(TaskRecord(
+        id="T-LIVE-RECLAIM", brief="x", assigned_agent="dev_agent",
+        status=TaskStatus.IN_PROGRESS,
+    ))
+    state.sessions.set_active("T-LIVE-RECLAIM", "dev_agent", "sess-live")
+    controls = []
+    state.sessions.set_cancel_control(
+        "T-LIVE-RECLAIM", "dev_agent", "sess-live",
+        lambda: controls.append("cancelled"),
+    )
+    observed = []
+
+    def reclaim(_orch, tid):
+        observed.append((
+            state.db.get_task(tid).status,
+            state.sessions.get_active(tid, "dev_agent"),
+            state.sessions.get_cancel_control(tid, "dev_agent"),
+        ))
+
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        reclaim,
+    )
+
+    response = client.post(
+        "/api/v1/orgs/alpha/tasks/T-LIVE-RECLAIM/cancel",
+        json={"rationale": "done"},
+    )
+
+    assert response.status_code == 200
+    assert controls == ["cancelled"]
+    assert observed == [(TaskStatus.CANCELLED, None, None)]
+
+
+@pytest.mark.parametrize("live", [False, True], ids=["no-live-b20", "live-b8"])
+def test_cancel_shipping_seam_removes_real_eligible_linked_worktree(
+    client_with_runtime, monkeypatch, live,
+):
+    from runtime.models import TaskRecord, TaskStatus
+    from tests.test_run_step import (
+        _admit_terminal_worktree,
+        _git,
+        _registered_terminal_worktree,
+    )
+
+    client, state = client_with_runtime
+    task_id = f"TASK-CANCEL-REAL-{'LIVE' if live else 'IDLE'}"
+    state.db.insert_task(TaskRecord(
+        id=task_id,
+        brief="real cancel reclamation",
+        assigned_agent="dev_agent",
+        status=TaskStatus.IN_PROGRESS if live else TaskStatus.PENDING,
+    ))
+    primary, candidate = _registered_terminal_worktree(
+        state.orchestrator._paths, task_id,
+    )
+    controls = []
+    if live:
+        state.sessions.set_active(task_id, "dev_agent", "sess-live")
+        state.sessions.set_cancel_control(
+            task_id, "dev_agent", "sess-live", lambda: controls.append("cancelled"),
+        )
+    _admit_terminal_worktree(monkeypatch)
+
+    response = client.post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/cancel",
+        json={"rationale": "done"},
+    )
+
+    assert response.status_code == 200
+    assert state.db.get_task(task_id).status is TaskStatus.CANCELLED
+    assert controls == (["cancelled"] if live else [])
+    assert not candidate.exists()
+    assert str(candidate) not in _git(
+        primary, "worktree", "list", "--porcelain",
+    ).stdout
+    assert _git(
+        primary, "show-ref", "--verify", f"refs/heads/task/{task_id}",
+    ).returncode == 0
+
+
 def test_cancel_cascades_down_subtree(client_with_runtime):
     """Default cascade=True must cancel every non-terminal descendant and
     leave already-terminal siblings untouched."""
@@ -2445,7 +2567,7 @@ def test_revisit_handles_cancelled_predecessor(
 
 
 def test_revisit_handles_escalated_predecessor(
-    tmp_home, app, daemon_state, org_state, auth_headers,
+    tmp_home, app, daemon_state, org_state, auth_headers, monkeypatch,
 ) -> None:
     from runtime.models import BlockKind, TaskRecord, TaskStatus
     db = org_state.db
@@ -2454,6 +2576,10 @@ def test_revisit_handles_escalated_predecessor(
         "TASK-052",
         status=TaskStatus.ESCALATED, block_kind=None,
         note="halted",
+    )
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *args: pytest.fail("SUPERSEDED continuation must not reclaim"),
     )
     r = TestClient(app).post(
         "/api/v1/orgs/alpha/tasks/TASK-052/revisit", json={"founder_note": "ruled"},
@@ -3239,6 +3365,734 @@ def test_list_roots_severity_rollup_reflects_escalated_child(
     assert r.status_code == 200
     task = r.json()["tasks"][0]
     assert task["severity_rollup"] == "escalated"
+
+
+# ── THR-266 / TASK-8671: /tasks/roots current-status rollup (C1-C11) ─────
+#
+# The wire field `severity_rollup` is the worst CURRENT status of the root's
+# parent_task_id subtree: only a historical FAILED descendant whose forward
+# same-parent revisit lineage leaves no unresolved FAILED leaf is excluded.
+# Mirrors the accepted design case map (SHA256 1e0ef4de…b17263).
+
+
+def _api_seed_rollup_task(
+    org_state, task_id, *, status, parent=None, revisit=None,
+    block_kind=None, created_at=None,
+):
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord
+
+    now = created_at or datetime.now(timezone.utc)
+    org_state.db.insert_task(TaskRecord(
+        id=task_id, brief=f"{task_id} brief", team="engineering",
+        assigned_agent="dev_agent", status=status, parent_task_id=parent,
+        revisit_of_task_id=revisit, block_kind=block_kind,
+        created_at=now, updated_at=now,
+    ))
+
+
+def _api_root_rollup(app, auth_headers, root_id="ROOT-A"):
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks/roots", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    tasks = {t["task_id"]: t for t in r.json()["tasks"]}
+    return tasks[root_id]["severity_rollup"]
+
+
+def _api_seed_revisit_history(org_state, successor, predecessor) -> None:
+    """Seed the supported revisit audit rows on a same-parent successor link.
+
+    Uses the shipped AuditLogger API (never a raw insert) so the detail
+    endpoint's ``revisit_of`` / ``revisit_spawned`` reads observe real history.
+    """
+    from runtime.infrastructure.audit_logger import AuditLogger
+
+    AuditLogger(org_state.db).log_revisit_of(
+        successor,
+        predecessor_root=predecessor,
+        flagged=predecessor,
+        cascade=[predecessor],
+        prior_status="failed",
+        founder_note="retry the failed attempt",
+    )
+    AuditLogger(org_state.db).log_revisit_spawned(predecessor, successor)
+
+
+def _api_task_detail(app, auth_headers, task_id):
+    r = TestClient(app).get(
+        f"/api/v1/orgs/alpha/tasks/{task_id}", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    return r.json()
+
+
+def _api_audit_actions(body, action):
+    return [e for e in body["audit_log"] if e["action"] == action]
+
+
+@pytest.mark.parametrize("successor_status", ["completed", "superseded"])
+def test_api_rollup_c1_linked_recovery_not_stale_failed(
+    tmp_home, app, org_state, auth_headers, successor_status,
+) -> None:
+    from runtime.models import BlockKind, TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED,
+    )
+    _api_seed_rollup_task(
+        org_state, "F1", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    _api_seed_rollup_task(
+        org_state, "S1", status=TaskStatus(successor_status),
+        parent="ROOT-A", revisit="F1",
+    )
+    assert _api_root_rollup(app, auth_headers) == "in_progress"
+
+
+@pytest.mark.parametrize("succ_status,succ_block", [
+    ("pending", None),
+    ("in_progress", None),
+    ("in_progress", "delegated"),
+    ("in_progress", "blocked_on_job"),
+])
+def test_api_rollup_c2_active_retry_exact_in_progress(
+    tmp_home, app, org_state, auth_headers, succ_status, succ_block,
+) -> None:
+    from runtime.models import BlockKind, TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED,
+    )
+    _api_seed_rollup_task(
+        org_state, "F1", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    _api_seed_rollup_task(
+        org_state, "S1", status=TaskStatus(succ_status), parent="ROOT-A",
+        revisit="F1",
+        block_kind=BlockKind(succ_block) if succ_block else None,
+    )
+    _api_seed_revisit_history(org_state, "S1", "F1")
+    assert _api_root_rollup(app, auth_headers) == "in_progress"
+
+    # The active retry's history survives the roots read, read back through
+    # the shipped task-detail endpoint (never solely db.get_task).
+    root_detail = _api_task_detail(app, auth_headers, "ROOT-A")
+    assert root_detail["task"]["status"] == "in_progress"
+    failed_detail = _api_task_detail(app, auth_headers, "F1")
+    assert failed_detail["task"]["status"] == "failed"
+    assert failed_detail["direct_revisits"] == ["S1"]
+    spawned = _api_audit_actions(failed_detail, "revisit_spawned")
+    assert [e["payload"]["new_root"] for e in spawned] == ["S1"]
+    successor_detail = _api_task_detail(app, auth_headers, "S1")
+    assert successor_detail["task"]["status"] == succ_status
+    assert successor_detail["task"]["revisit_of_task_id"] == "F1"
+    assert successor_detail["revisit_chain"] == ["S1", "F1"]
+    assert successor_detail["predecessor_prior_status"] == "failed"
+    revisit_of = _api_audit_actions(successor_detail, "revisit_of")
+    assert [e["payload"]["prior_status"] for e in revisit_of] == ["failed"]
+
+
+def test_api_rollup_c3_retry_fails_again_transition(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+    )
+    _api_seed_rollup_task(
+        org_state, "F1", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    _api_seed_rollup_task(
+        org_state, "F2", status=TaskStatus.FAILED, parent="ROOT-A", revisit="F1",
+    )
+    _api_seed_rollup_task(
+        org_state, "F3", status=TaskStatus.IN_PROGRESS, parent="ROOT-A",
+        revisit="F2",
+    )
+    assert _api_root_rollup(app, auth_headers) == "in_progress"
+    org_state.db.update_task("F3", status=TaskStatus.FAILED)
+    assert _api_root_rollup(app, auth_headers) == "failed"
+    _api_seed_rollup_task(
+        org_state, "F4", status=TaskStatus.COMPLETED, parent="ROOT-A",
+        revisit="F3",
+    )
+    assert _api_root_rollup(app, auth_headers) == "in_progress"
+
+
+@pytest.mark.parametrize("sibling_status", ["completed", "in_progress"])
+def test_api_rollup_c4_unrelated_newer_sibling(
+    tmp_home, app, org_state, auth_headers, sibling_status,
+) -> None:
+    from datetime import datetime, timedelta, timezone
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+    )
+    _api_seed_rollup_task(
+        org_state, "F1", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    _api_seed_rollup_task(
+        org_state, "N1", status=TaskStatus(sibling_status), parent="ROOT-A",
+        created_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    assert _api_root_rollup(app, auth_headers) == "failed"
+
+
+@pytest.mark.parametrize("branch_b_status,expected", [
+    ("failed", "failed"),
+    ("escalated", "escalated"),
+])
+def test_api_rollup_c5_parallel_branch_survives(
+    tmp_home, app, org_state, auth_headers, branch_b_status, expected,
+) -> None:
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+    )
+    _api_seed_rollup_task(
+        org_state, "F_A", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    _api_seed_rollup_task(
+        org_state, "S_A", status=TaskStatus.COMPLETED, parent="ROOT-A",
+        revisit="F_A",
+    )
+    _api_seed_rollup_task(
+        org_state, "B1", status=TaskStatus(branch_b_status), parent="ROOT-A",
+    )
+    assert _api_root_rollup(app, auth_headers) == expected
+
+
+def test_api_rollup_c5b_escalated_linked_successor(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+    )
+    _api_seed_rollup_task(
+        org_state, "F1", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    _api_seed_rollup_task(
+        org_state, "S1", status=TaskStatus.ESCALATED, parent="ROOT-A",
+        revisit="F1",
+    )
+    assert _api_root_rollup(app, auth_headers) == "escalated"
+
+
+def test_api_rollup_c6a_observed_8589_shape(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+    )
+    _api_seed_rollup_task(
+        org_state, "M1", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    _api_seed_rollup_task(
+        org_state, "M1c1", status=TaskStatus.COMPLETED, parent="M1",
+    )
+    _api_seed_rollup_task(
+        org_state, "M1r", status=TaskStatus.IN_PROGRESS, parent="ROOT-A",
+        revisit="M1",
+    )
+    _api_seed_rollup_task(
+        org_state, "M1r_child", status=TaskStatus.IN_PROGRESS, parent="M1r",
+    )
+    _api_seed_rollup_task(
+        org_state, "W", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    _api_seed_rollup_task(
+        org_state, "Wr1", status=TaskStatus.COMPLETED, parent="ROOT-A",
+        revisit="W",
+    )
+    _api_seed_rollup_task(
+        org_state, "Wr2", status=TaskStatus.IN_PROGRESS, parent="ROOT-A",
+        revisit="W",
+    )
+    assert _api_root_rollup(app, auth_headers) == "in_progress"
+
+
+def test_api_rollup_c6b_synthetic_replacement_manager(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+    )
+    _api_seed_rollup_task(
+        org_state, "M2", status=TaskStatus.IN_PROGRESS, parent="ROOT-A",
+    )
+    _api_seed_rollup_task(
+        org_state, "X", status=TaskStatus.FAILED, parent="M2",
+    )
+    assert _api_root_rollup(app, auth_headers) == "failed"
+    _api_seed_rollup_task(
+        org_state, "Xr", status=TaskStatus.IN_PROGRESS, parent="M2",
+        revisit="X",
+    )
+    assert _api_root_rollup(app, auth_headers) == "in_progress"
+    org_state.db.update_task("Xr", status=TaskStatus.COMPLETED)
+    assert _api_root_rollup(app, auth_headers) == "in_progress"
+
+
+def test_api_rollup_c6c_nested_retry_fails_again(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+    )
+    _api_seed_rollup_task(
+        org_state, "M1", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    _api_seed_rollup_task(
+        org_state, "M1r", status=TaskStatus.FAILED, parent="ROOT-A",
+        revisit="M1",
+    )
+    assert _api_root_rollup(app, auth_headers) == "failed"
+    _api_seed_rollup_task(
+        org_state, "M1r2", status=TaskStatus.COMPLETED, parent="ROOT-A",
+        revisit="M1r",
+    )
+    assert _api_root_rollup(app, auth_headers) == "in_progress"
+
+
+def test_api_rollup_c6d_unresolved_old_child_boundary(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+    )
+    _api_seed_rollup_task(
+        org_state, "M1", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    _api_seed_rollup_task(
+        org_state, "C", status=TaskStatus.FAILED, parent="M1",
+    )
+    _api_seed_rollup_task(
+        org_state, "M1r", status=TaskStatus.COMPLETED, parent="ROOT-A",
+        revisit="M1",
+    )
+    assert _api_root_rollup(app, auth_headers) == "failed"
+    _api_seed_rollup_task(
+        org_state, "Cr", status=TaskStatus.COMPLETED, parent="M1", revisit="C",
+    )
+    assert _api_root_rollup(app, auth_headers) == "in_progress"
+
+
+def test_api_rollup_c6d_variant_escalated_old_child(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+    )
+    _api_seed_rollup_task(
+        org_state, "M1", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    _api_seed_rollup_task(
+        org_state, "C", status=TaskStatus.ESCALATED, parent="M1",
+    )
+    _api_seed_rollup_task(
+        org_state, "M1r", status=TaskStatus.COMPLETED, parent="ROOT-A",
+        revisit="M1",
+    )
+    assert _api_root_rollup(app, auth_headers) == "escalated"
+
+
+def test_api_rollup_c6e_completed_child_alone_does_not_retire(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+    )
+    _api_seed_rollup_task(
+        org_state, "M", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    _api_seed_rollup_task(
+        org_state, "C", status=TaskStatus.COMPLETED, parent="M",
+    )
+    assert _api_root_rollup(app, auth_headers) == "failed"
+
+
+@pytest.mark.parametrize("succ_statuses,expected", [
+    (("completed", "failed"), "failed"),
+    (("completed", "in_progress"), "in_progress"),
+    (("completed", "superseded"), "in_progress"),
+    (("completed",), "in_progress"),
+])
+def test_api_rollup_c7_multiple_successors(
+    tmp_home, app, org_state, auth_headers, succ_statuses, expected,
+) -> None:
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+    )
+    _api_seed_rollup_task(
+        org_state, "F1", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    for idx, st in enumerate(succ_statuses, start=1):
+        _api_seed_rollup_task(
+            org_state, f"S{idx}", status=TaskStatus(st), parent="ROOT-A",
+            revisit="F1",
+        )
+    assert _api_root_rollup(app, auth_headers) == expected
+
+
+@pytest.mark.parametrize("order", [
+    ("completed", "failed"),
+    ("failed", "completed"),
+])
+def test_api_rollup_c7b_identical_timestamp(
+    tmp_home, app, org_state, auth_headers, order,
+) -> None:
+    from datetime import datetime, timezone
+    from runtime.models import TaskStatus
+
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+    )
+    _api_seed_rollup_task(
+        org_state, "F1", status=TaskStatus.FAILED, parent="ROOT-A",
+        created_at=base,
+    )
+    for idx, st in enumerate(order, start=1):
+        _api_seed_rollup_task(
+            org_state, f"S{idx}", status=TaskStatus(st), parent="ROOT-A",
+            revisit="F1", created_at=base,
+        )
+    assert _api_root_rollup(app, auth_headers) == "failed"
+
+
+def test_api_rollup_c7b_older_completed_successor_retires(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from datetime import datetime, timedelta, timezone
+    from runtime.models import TaskStatus
+
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+    )
+    _api_seed_rollup_task(
+        org_state, "F1", status=TaskStatus.FAILED, parent="ROOT-A",
+        created_at=base + timedelta(hours=1),
+    )
+    _api_seed_rollup_task(
+        org_state, "S1", status=TaskStatus.COMPLETED, parent="ROOT-A",
+        revisit="F1", created_at=base,
+    )
+    assert _api_root_rollup(app, auth_headers) == "in_progress"
+
+
+def test_api_rollup_c8_cancelled_only_successor(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+    )
+    _api_seed_rollup_task(
+        org_state, "F1", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    _api_seed_rollup_task(
+        org_state, "S1", status=TaskStatus.CANCELLED, parent="ROOT-A",
+        revisit="F1",
+    )
+    _api_seed_revisit_history(org_state, "S1", "F1")
+    assert _api_root_rollup(app, auth_headers) == "in_progress"
+
+    # The cancelled successor row/history is preserved and readable through the
+    # shipped endpoints; cancellation is never successful retirement.
+    root_detail = _api_task_detail(app, auth_headers, "ROOT-A")
+    assert root_detail["task"]["status"] == "in_progress"
+    failed_detail = _api_task_detail(app, auth_headers, "F1")
+    assert failed_detail["task"]["status"] == "failed"
+    assert failed_detail["direct_revisits"] == ["S1"]
+    assert [
+        e["payload"]["new_root"]
+        for e in _api_audit_actions(failed_detail, "revisit_spawned")
+    ] == ["S1"]
+    cancelled_detail = _api_task_detail(app, auth_headers, "S1")
+    assert cancelled_detail["task"]["status"] == "cancelled"
+    assert cancelled_detail["task"]["revisit_of_task_id"] == "F1"
+    assert cancelled_detail["revisit_chain"] == ["S1", "F1"]
+    assert cancelled_detail["predecessor_prior_status"] == "failed"
+    assert [
+        e["payload"]["prior_status"]
+        for e in _api_audit_actions(cancelled_detail, "revisit_of")
+    ] == ["failed"]
+
+
+def test_api_rollup_c8_cancelled_plus_failed_parallel(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+    )
+    _api_seed_rollup_task(
+        org_state, "F1", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    _api_seed_rollup_task(
+        org_state, "S1", status=TaskStatus.CANCELLED, parent="ROOT-A",
+        revisit="F1",
+    )
+    # The competing successor shares predecessor F1 (same parent), so the
+    # cancellation must not clear the still-unresolved FAILED sibling.
+    _api_seed_rollup_task(
+        org_state, "F2", status=TaskStatus.FAILED, parent="ROOT-A",
+        revisit="F1",
+    )
+    assert _api_root_rollup(app, auth_headers) == "failed"
+    assert org_state.db.get_task("F1").status == TaskStatus.FAILED
+    assert org_state.db.get_task("F2").status == TaskStatus.FAILED
+    assert set(org_state.db.get_direct_revisits("F1")) == {"S1", "F2"}
+    detail = _api_task_detail(app, auth_headers, "F1")
+    assert detail["task"]["status"] == "failed"
+    assert set(detail["direct_revisits"]) == {"S1", "F2"}
+
+
+def test_api_rollup_c8_cancelled_plus_escalated_parallel(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+    )
+    _api_seed_rollup_task(
+        org_state, "F1", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    _api_seed_rollup_task(
+        org_state, "S1", status=TaskStatus.CANCELLED, parent="ROOT-A",
+        revisit="F1",
+    )
+    # The competing successor shares predecessor F1 (same parent); the
+    # escalation survives the cancellation.
+    _api_seed_rollup_task(
+        org_state, "E1", status=TaskStatus.ESCALATED, parent="ROOT-A",
+        revisit="F1",
+    )
+    assert _api_root_rollup(app, auth_headers) == "escalated"
+    assert org_state.db.get_task("F1").status == TaskStatus.FAILED
+    assert org_state.db.get_task("S1").status == TaskStatus.CANCELLED
+    assert org_state.db.get_task("E1").status == TaskStatus.ESCALATED
+    assert set(org_state.db.get_direct_revisits("F1")) == {"S1", "E1"}
+    detail = _api_task_detail(app, auth_headers, "E1")
+    assert detail["task"]["status"] == "escalated"
+    assert detail["task"]["revisit_of_task_id"] == "F1"
+    assert detail["revisit_chain"] == ["E1", "F1"]
+
+
+def test_api_rollup_c8_cross_parent_link_ignored(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+    )
+    _api_seed_rollup_task(
+        org_state, "F1", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    _api_seed_rollup_task(
+        org_state, "M1", status=TaskStatus.IN_PROGRESS, parent="ROOT-A",
+    )
+    _api_seed_rollup_task(
+        org_state, "S1", status=TaskStatus.COMPLETED, parent="M1", revisit="F1",
+    )
+    assert _api_root_rollup(app, auth_headers) == "failed"
+
+
+def test_api_rollup_c8_self_and_two_cycle_conservative(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+    )
+    _api_seed_rollup_task(
+        org_state, "A", status=TaskStatus.FAILED, parent="ROOT-A", revisit="B",
+    )
+    _api_seed_rollup_task(
+        org_state, "B", status=TaskStatus.FAILED, parent="ROOT-A", revisit="A",
+    )
+    _api_seed_rollup_task(
+        org_state, "C", status=TaskStatus.FAILED, parent="ROOT-A", revisit="C",
+    )
+    assert _api_root_rollup(app, auth_headers) == "failed"
+
+
+@pytest.mark.parametrize("own_status", [
+    "in_progress", "escalated", "completed", "cancelled", "superseded",
+])
+def test_api_rollup_c8_no_child_fallback_root_own(
+    tmp_home, app, org_state, auth_headers, own_status,
+) -> None:
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus(own_status),
+    )
+    assert _api_root_rollup(app, auth_headers) == own_status
+
+
+def test_api_rollup_c9a_in_progress_root_refetch_transitions(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Exact refetch sequence for a fixed in_progress/delegated root, with
+    recurrence modelled by a newly failed row (never a completed->failed flip)
+    and history retained."""
+    from runtime.models import BlockKind, TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED,
+    )
+    _api_seed_rollup_task(
+        org_state, "F1", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    assert _api_root_rollup(app, auth_headers) == "failed"
+    _api_seed_rollup_task(
+        org_state, "S1", status=TaskStatus.IN_PROGRESS, parent="ROOT-A",
+        revisit="F1",
+    )
+    _api_seed_revisit_history(org_state, "S1", "F1")
+    assert _api_root_rollup(app, auth_headers) == "in_progress"
+    org_state.db.update_task("S1", status=TaskStatus.COMPLETED)
+    assert _api_root_rollup(app, auth_headers) == "in_progress"
+    _api_seed_rollup_task(
+        org_state, "F2", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    assert _api_root_rollup(app, auth_headers) == "failed"
+    # Root status and terminal rows are never lifecycle-flipped by the derive.
+    assert org_state.db.get_task("ROOT-A").status == TaskStatus.IN_PROGRESS
+    assert org_state.db.get_task("S1").status == TaskStatus.COMPLETED
+    assert org_state.db.get_task("F2").status == TaskStatus.FAILED
+    # The failed leaf, revisit chain and seeded audit history survive the
+    # accepted transitions, read back through the shipped detail endpoint.
+    failed_detail = _api_task_detail(app, auth_headers, "F1")
+    assert failed_detail["task"]["status"] == "failed"
+    assert failed_detail["direct_revisits"] == ["S1"]
+    assert failed_detail["revisit_chain"] == ["F1"]
+    assert [
+        e["payload"]["new_root"]
+        for e in _api_audit_actions(failed_detail, "revisit_spawned")
+    ] == ["S1"]
+    successor_detail = _api_task_detail(app, auth_headers, "S1")
+    assert successor_detail["task"]["status"] == "completed"
+    assert successor_detail["task"]["revisit_of_task_id"] == "F1"
+    assert successor_detail["revisit_chain"] == ["S1", "F1"]
+    assert successor_detail["predecessor_prior_status"] == "failed"
+    assert [
+        e["payload"]["prior_status"]
+        for e in _api_audit_actions(successor_detail, "revisit_of")
+    ] == ["failed"]
+    recurrence_detail = _api_task_detail(app, auth_headers, "F2")
+    assert recurrence_detail["task"]["status"] == "failed"
+    assert recurrence_detail["task"]["revisit_of_task_id"] is None
+    assert recurrence_detail["revisit_chain"] == ["F2"]
+    # The root's own row is never rewritten by the derive.
+    assert _api_task_detail(app, auth_headers, "ROOT-A")["task"]["status"] == "in_progress"
+
+
+def test_api_rollup_c9b_completed_root_refetch_transitions(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Exact refetch sequence for a fixed completed root: the root/completed
+    tie keeps the root; recurrence uses a new failing row."""
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(org_state, "ROOT-A", status=TaskStatus.COMPLETED)
+    _api_seed_rollup_task(
+        org_state, "F1", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    assert _api_root_rollup(app, auth_headers) == "failed"
+    _api_seed_rollup_task(
+        org_state, "S1", status=TaskStatus.IN_PROGRESS, parent="ROOT-A",
+        revisit="F1",
+    )
+    _api_seed_revisit_history(org_state, "S1", "F1")
+    assert _api_root_rollup(app, auth_headers) == "in_progress"
+    org_state.db.update_task("S1", status=TaskStatus.COMPLETED)
+    assert _api_root_rollup(app, auth_headers) == "completed"
+    _api_seed_rollup_task(
+        org_state, "F2", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    assert _api_root_rollup(app, auth_headers) == "failed"
+    assert org_state.db.get_task("ROOT-A").status == TaskStatus.COMPLETED
+    assert org_state.db.get_task("S1").status == TaskStatus.COMPLETED
+    # The completed root, its recovered lineage and the seeded audit history
+    # survive through the shipped detail endpoint.
+    assert _api_task_detail(app, auth_headers, "ROOT-A")["task"]["status"] == "completed"
+    failed_detail = _api_task_detail(app, auth_headers, "F1")
+    assert failed_detail["task"]["status"] == "failed"
+    assert failed_detail["direct_revisits"] == ["S1"]
+    assert [
+        e["payload"]["new_root"]
+        for e in _api_audit_actions(failed_detail, "revisit_spawned")
+    ] == ["S1"]
+    successor_detail = _api_task_detail(app, auth_headers, "S1")
+    assert successor_detail["task"]["status"] == "completed"
+    assert successor_detail["task"]["revisit_of_task_id"] == "F1"
+    assert successor_detail["revisit_chain"] == ["S1", "F1"]
+    assert successor_detail["predecessor_prior_status"] == "failed"
+    recurrence_detail = _api_task_detail(app, auth_headers, "F2")
+    assert recurrence_detail["task"]["status"] == "failed"
+    assert recurrence_detail["task"]["revisit_of_task_id"] is None
+
+
+def test_api_rollup_c11_out_of_subtree_successor_ignored(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(
+        org_state, "ROOT-A", status=TaskStatus.IN_PROGRESS,
+    )
+    _api_seed_rollup_task(
+        org_state, "F1", status=TaskStatus.FAILED, parent="ROOT-A",
+    )
+    _api_seed_rollup_task(
+        org_state, "ROOT-B", status=TaskStatus.COMPLETED, revisit="F1",
+    )
+    assert _api_root_rollup(app, auth_headers, "ROOT-A") == "failed"
+    assert _api_root_rollup(app, auth_headers, "ROOT-B") == "completed"
+
+
+def test_api_rollup_c11_matching_none_parents_never_admit(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.models import TaskStatus
+
+    _api_seed_rollup_task(org_state, "ROOT-A", status=TaskStatus.COMPLETED)
+    _api_seed_rollup_task(
+        org_state, "ROOT-B", status=TaskStatus.FAILED, revisit="ROOT-A",
+    )
+    assert _api_root_rollup(app, auth_headers, "ROOT-A") == "completed"
+    assert _api_root_rollup(app, auth_headers, "ROOT-B") == "failed"
 
 
 def test_list_roots_supports_status_filter(

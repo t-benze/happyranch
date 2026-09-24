@@ -78,6 +78,15 @@ describe('Storybook browser import safety', () => {
 
     const capacity = mockSettingsApi.useDaemonCapacity();
     expect(capacity.data?.effective_admission_cap).toBe(13);
+    // 19.6 — the capacity slot is widened with refresh/receipt/ordering
+    // members, so the browser-safe mock must implement them too. These are
+    // ADDITIVE: the value/mutation assertions above are unchanged and still
+    // pass, because they inspect selected values, never the query shape.
+    expect(typeof capacity.refetch).toBe('function');
+    expect(typeof capacity.isFetching).toBe('boolean');
+    expect(capacity.observation).not.toBeNull();
+    expect(capacity.observation?.outcome).toBe('usable');
+    await expect(capacity.refetch()).resolves.toBe(capacity.data);
     const capacityWrite = mockSettingsApi.useUpdateDaemonCapacity();
     await expect(capacityWrite.mutateAsync({} as DaemonCapacityWrite)).resolves.toEqual(capacity.data);
 

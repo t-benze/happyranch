@@ -26,7 +26,11 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowRight, Paperclip, Square, X } from 'lucide-react';
-import { MAX_THREAD_ATTACHMENTS, REMOVE_ATTACHMENT_LABEL } from '@/lib/threadAttachments';
+import {
+  MAX_THREAD_ATTACHMENTS,
+  REMOVE_ATTACHMENT_LABEL,
+  createSelectionIdFactory,
+} from '@/lib/threadAttachments';
 import { MentionTextarea } from './MentionTextarea';
 import type { AgentSummary } from '@/lib/api/agents';
 
@@ -147,18 +151,61 @@ export function Composer({
   const { draft, setDraft, clearDraft } = useThreadDraft(orgSlug, threadId);
   const canSend = Boolean(draft.trim() || attachments.length);
 
+  // Synchronous in-flight latch — blocks a second same-tick submit (double
+  // click, Enter+Send race) before the async `onSend` can set a re-render
+  // driven `pending` prop. Mirrors NewThreadDialog's submittingRef.
+  const submittingRef = useRef(false);
+  // The destination generation that currently owns the latch (null = none).
+  const submittingGenRef = useRef<number | null>(null);
+  // Monotonic destination generation. It advances on EVERY thread/org change —
+  // including A -> B -> A — so a submission started against a departed view can
+  // never look current again merely because the destination string repeats.
+  const destGenRef = useRef(0);
+  const threadKey = `${orgSlug}:${threadId}`;
+  const threadKeyRef = useRef(threadKey);
+  if (threadKeyRef.current !== threadKey) {
+    threadKeyRef.current = threadKey;
+    destGenRef.current += 1;
+    // A submission from the previous destination must not block this view's
+    // first submit while it is still in flight. Its own `finally` is keyed to
+    // its captured generation, so it cannot clear this view's newer latch.
+    submittingRef.current = false;
+    submittingGenRef.current = null;
+  }
+  // Stable, non-metadata chip identity (two identical Files stay distinct).
+  const selectionIdFactory = useRef<(() => string) | null>(null);
+  if (selectionIdFactory.current === null) {
+    selectionIdFactory.current = createSelectionIdFactory();
+  }
+  const nextSelectionId = selectionIdFactory.current;
+
+  // A full unmount is also a destination departure: invalidate any in-flight
+  // submission's generation so its late success cannot clear a draft the user
+  // retyped after remounting the same thread/org.
+  useEffect(() => () => { destGenRef.current += 1; }, []);
+
   const removeAttachment = (id: string) => {
     onAttachmentsChange?.(attachments.filter((item) => item.id !== id));
   };
 
   const submit = async () => {
-    if (!canSend || disabled || pending) return;
+    if (!canSend || disabled || pending || submittingRef.current) return;
+    submittingRef.current = true;
+    const submitGen = destGenRef.current;
+    submittingGenRef.current = submitGen;
     try {
       await onSend(draft, attachments);
-      clearDraft();
-      onAttachmentsChange?.([]);
+      if (destGenRef.current === submitGen) {
+        clearDraft();
+        onAttachmentsChange?.([]);
+      }
     } catch {
       // Composition surfaces via errorMessage; draft is preserved for retry.
+    } finally {
+      if (submittingGenRef.current === submitGen) {
+        submittingRef.current = false;
+        submittingGenRef.current = null;
+      }
     }
   };
 
@@ -217,7 +264,7 @@ export function Composer({
               onAttachmentsChange?.([
                 ...attachments,
                 ...files.map((file) => ({
-                  id: `${file.name}-${file.size}-${file.lastModified}`,
+                  id: nextSelectionId(),
                   file,
                 })),
               ].slice(0, MAX_THREAD_ATTACHMENTS));

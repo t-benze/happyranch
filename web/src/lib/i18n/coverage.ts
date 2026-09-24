@@ -2,11 +2,21 @@
  * @/lib/i18n/coverage — the checked mounted-route/namespace coverage manifest
  * (THR-118 W1).
  *
- * W1 ships the translation *foundation*, not a translation campaign. Every
- * mounted product surface is therefore recorded as `english-only`, and
- * redirect-only/catch-all tokens are `not-applicable`. The marker is explicit
- * machine-readable data: fallback English is never treated as coverage, and
- * the accompanying test fails when a newly mounted route token is not
+ * W1 shipped the translation *foundation*, not a translation campaign. W2a
+ * (THR-118) migrated the mounted shell: the root loading/not-found copy,
+ * the AppShell chrome (AppBar/Sidebar/ErrorBoundary/AddOrgDialog) and the
+ * shared help/palette presentation. W2b (THR-118) migrates the onboarding
+ * route (`/onboarding`: OnboardingPage, ConnectRuntimeStep and the shared
+ * ConnectFlow). W2c (THR-118) migrates the Settings surface (page chrome and
+ * the Assistant/Organization/Executors/Daemon-Capacity sections) and adds the
+ * production-gated `preferences` route (`PreferencesSection`). The shared
+ * Work Hours-owned `EligibilityEditorDialog` mounted by Organization stays
+ * English until W4. The other mounted product surfaces and the later slices
+ * (assistant dock body = W4, route families = W3/W4) remain `english-only` —
+ * fallback English is never treated as coverage.
+ * Redirect-only/catch-all
+ * tokens are `not-applicable`. The marker is explicit machine-readable data
+ * and the accompanying test fails when a newly mounted route token is not
  * classified here.
  *
  * `routeTokens` are the literal `path="..."` values declared in
@@ -55,15 +65,15 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'root-shell',
     routeTokens: ['index'],
-    status: 'english-only',
-    surfaces: ['RootRedirect (AppShell loading copy: "Loading…")'],
+    status: 'translated',
+    surfaces: ['RootRedirect (AppShell loading copy)'],
   },
   {
     namespace: 'not-found',
     routeTokens: ['*'],
-    status: 'english-only',
+    status: 'translated',
     qualifiedRouteTokens: ['routes.tsx:*'],
-    surfaces: ['NotFound ("Not found. Go home")'],
+    surfaces: ['NotFound (message + Go home link)'],
   },
   {
     namespace: 'redirects',
@@ -74,8 +84,11 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'onboarding',
     routeTokens: ['onboarding'],
-    status: 'english-only',
-    surfaces: ['OnboardingPage', 'ConnectRuntimeStep'],
+    status: 'translated',
+    // Shared <ConnectFlow> is translated by W2b and is mounted here; its
+    // Settings ▸ Executors mount does NOT make the `settings` namespace
+    // translated (the surrounding Settings chrome/sections remain English-only).
+    surfaces: ['OnboardingPage', 'ConnectRuntimeStep', 'ConnectFlow (shared)'],
   },
   {
     namespace: 'dashboard',
@@ -189,8 +202,17 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   },
   {
     namespace: 'settings',
-    routeTokens: ['settings/*', 'assistant', 'daemon-capacity', 'organization', 'executors'],
-    status: 'english-only',
+    // `preferences` is mounted only when the W2c closed gate is opened
+    // (`VITE_ENABLE_I18N_PREFERENCES=true`, test/evidence builds); W3 exposes it.
+    routeTokens: [
+      'settings/*',
+      'assistant',
+      'daemon-capacity',
+      'organization',
+      'executors',
+      'preferences',
+    ],
+    status: 'translated',
     surfaces: [
       'SettingsPage',
       'SettingsSubNav',
@@ -198,6 +220,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
       'DaemonCapacitySection',
       'OrganizationSection',
       'ExecutorsSection',
+      'PreferencesSection',
       'ReconfigureDialog',
       'EligibilityEditorDialog',
     ],
@@ -217,14 +240,21 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'app-shell',
     routeTokens: [],
-    status: 'english-only',
+    status: 'translated',
     surfaces: ['AppShell', 'AppBar', 'Sidebar', 'ErrorBoundary', 'AddOrgDialog'],
   },
   {
+    namespace: 'help-and-palette',
+    routeTokens: [],
+    status: 'translated',
+    surfaces: ['HelpDrawerHost', 'CommandPaletteHost'],
+  },
+  {
+    // Assistant dock BODY copy is W4; only its shell slot is mounted here.
     namespace: 'system-assistant',
     routeTokens: [],
     status: 'english-only',
-    surfaces: ['AssistantDockHost', 'CommandPaletteHost', 'HelpDrawerHost'],
+    surfaces: ['AssistantDockHost'],
   },
   {
     namespace: 'prototypes',
