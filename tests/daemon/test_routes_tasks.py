@@ -2310,7 +2310,7 @@ def test_cancel_shipping_seam_removes_real_eligible_linked_worktree(
 ):
     from runtime.models import TaskRecord, TaskStatus
     from tests.test_run_step import (
-        _admit_real_terminal_worktree_reclamation,
+        _admit_terminal_worktree,
         _git,
         _registered_terminal_worktree,
     )
@@ -2332,7 +2332,7 @@ def test_cancel_shipping_seam_removes_real_eligible_linked_worktree(
         state.sessions.set_cancel_control(
             task_id, "dev_agent", "sess-live", lambda: controls.append("cancelled"),
         )
-    _admit_real_terminal_worktree_reclamation(monkeypatch)
+    _admit_terminal_worktree(monkeypatch)
 
     response = client.post(
         f"/api/v1/orgs/alpha/tasks/{task_id}/cancel",

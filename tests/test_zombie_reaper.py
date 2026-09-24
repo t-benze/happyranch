@@ -834,7 +834,7 @@ def test_legacy_zombie_shipping_seam_removes_real_eligible_linked_worktree(
     tmp_path: Path, db: Database, monkeypatch,
 ):
     from tests.test_run_step import (
-        _admit_real_terminal_worktree_reclamation,
+        _admit_terminal_worktree,
         _git,
         _registered_terminal_worktree,
     )
@@ -854,7 +854,7 @@ def test_legacy_zombie_shipping_seam_removes_real_eligible_linked_worktree(
     primary, candidate = _registered_terminal_worktree(
         orch._paths, task_id,
     )
-    _admit_real_terminal_worktree_reclamation(monkeypatch)
+    _admit_terminal_worktree(monkeypatch)
 
     _sweep_org_zombies(
         db, now=_now(), uptime=999, warm_up_seconds=30, orchestrator=orch,
@@ -876,7 +876,7 @@ def test_v2_zombie_shipping_seam_removes_real_eligible_linked_worktree(
     from tests.test_authority_v2_attempt_admission import _seed_bound_task, _store
     from tests.test_authority_v2_startup_reaper import _flag_v2_zombie
     from tests.test_run_step import (
-        _admit_real_terminal_worktree_reclamation,
+        _admit_terminal_worktree,
         _git,
         _registered_terminal_worktree,
     )
@@ -895,7 +895,7 @@ def test_v2_zombie_shipping_seam_removes_real_eligible_linked_worktree(
     primary, candidate = _registered_terminal_worktree(
         orch._paths, "TASK-C2", agent="engineering_manager",
     )
-    _admit_real_terminal_worktree_reclamation(monkeypatch)
+    _admit_terminal_worktree(monkeypatch)
 
     _sweep_org_zombies(
         store._db, now=now, uptime=999, warm_up_seconds=0, orchestrator=orch,

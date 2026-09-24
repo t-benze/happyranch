@@ -2479,7 +2479,7 @@ def test_startup_failure_shipping_seam_removes_real_eligible_linked_worktree(
 ) -> None:
     from runtime.daemon.sessions import SessionTracker
     from tests.test_run_step import (
-        _admit_real_terminal_worktree_reclamation,
+        _admit_terminal_worktree,
         _git,
         _registered_terminal_worktree,
     )
@@ -2498,7 +2498,7 @@ def test_startup_failure_shipping_seam_removes_real_eligible_linked_worktree(
         orch._paths, task_id,
     )
     orch.attach_sessions(SessionTracker())
-    _admit_real_terminal_worktree_reclamation(monkeypatch)
+    _admit_terminal_worktree(monkeypatch)
 
     _sweep_on_startup(db, queue, "test", orch)
 

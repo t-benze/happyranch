@@ -286,7 +286,7 @@ def test_portability_cancel_shipping_seam_removes_real_eligible_linked_worktree(
     tmp_path: Path, monkeypatch,
 ) -> None:
     from tests.test_run_step import (
-        _admit_real_terminal_worktree_reclamation,
+        _admit_terminal_worktree,
         _git,
         _registered_terminal_worktree,
     )
@@ -298,7 +298,7 @@ def test_portability_cancel_shipping_seam_removes_real_eligible_linked_worktree(
     primary, candidate = _registered_terminal_worktree(
         org.orchestrator._paths, task_id,
     )
-    _admit_real_terminal_worktree_reclamation(monkeypatch)
+    _admit_terminal_worktree(monkeypatch)
 
     response = _client(state).post(
         "/api/v1/orgs/alpha/reconcile-portability",

@@ -2162,6 +2162,20 @@ def test_terminal_worktree_real_proc_reference_preserves_without_exit_retry(
         assert holder.stdout is not None
         assert holder.stdout.readline().strip() == "ready"
 
+        holder_proc = Path("/proc") / str(holder.pid)
+        assert holder_proc.stat(follow_symlinks=False).st_uid == os.getuid()
+        real_iterdir = Path.iterdir
+
+        def only_holder_pid(path):
+            if path == Path("/proc"):
+                return iter((holder_proc,))
+            return real_iterdir(path)
+
+        # Exercise the production scanner and the holder's real /proc cwd/fd,
+        # while excluding unrelated same-UID host processes whose deliberately
+        # fail-closed probe uncertainty is not part of this hermetic witness.
+        monkeypatch.setattr(Path, "iterdir", only_holder_pid)
+
         _fail(orch, task_id, note="failed")
 
         assert db.get_task(task_id).status is TaskStatus.FAILED
