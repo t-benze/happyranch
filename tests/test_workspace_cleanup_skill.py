@@ -615,17 +615,20 @@ def test_f5_procedure_refuses_symlinked_ancestor(tmp_path, body):
 
 
 def test_f5_procedure_refuses_on_scan_unknown_before_action(tmp_path, body):
-    # Directly assert the shipped scan gate is non-zero in this sandbox and that
-    # the procedure refuses without issuing the literal removal.
+    # Exercise the real shipped scanner with a deterministic observation cap.
+    # Host-context detection legitimately varies between direct and managed job
+    # execution, but an exhausted cap must always be UNKNOWN and therefore feed
+    # the procedure's already-covered no-removal refusal branch.
     fx = _build_procedure_fixture(tmp_path)
     scan = subprocess.run(
         [sys.executable, str(HELPER), "--target", str(fx["eligible"]),
-         "--containing-worktree", str(fx["eligible"]), "--json"],
+         "--containing-worktree", str(fx["eligible"]), "--json",
+         "--max-pids", "1"],
         capture_output=True, text=True)
     assert scan.returncode != 0, scan.stdout
     payload = json.loads(scan.stdout)
     assert payload["state"] == "unknown"
-    assert "host_context_unestablished" in " ".join(payload["reasons"])
+    assert "enumeration_truncated" in payload["reasons"]
 
 
 @pytest.mark.parametrize("marker", [MANUAL_FIRST_LINE, DAEMON_MARKER])
