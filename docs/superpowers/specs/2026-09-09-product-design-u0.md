@@ -1082,6 +1082,24 @@ principal before returning its retained disposition. Reusing an ID for another
 bridge conflicts with zero mutation even when the result bytes/digest match; a
 different digest also conflicts with zero mutation.
 
+The canonical committed-request replay tuple is mechanically enumerated once
+as: operation `id`, `org_slug`, authenticated `principal`, `operation_key`,
+`request_digest`, `instance_id`, `round_id`, and `request_id`; request `id`,
+`round_id`, assigned `principal`, `assignment_generation`, exact
+`request_scope_bytes`, `request_scope_digest`, and creation-time
+`supersedes_request_id`; bridge `request_id`, `operation_id`, `instance_id`,
+exact `task_id`, `assigned_principal`, and `assignment_generation`; outbox `id`,
+`operation_id`, `request_id`, `effect_key`, `authority_namespace`,
+`authority_generation`, `authority_digest`, `artifact_revision`, and
+`host_execution_key`; plus the immutable binding/template authority namespace,
+which must equal the stored outbox namespace. The actor-scoped lookup itself
+uses the first three idempotency dimensions before any result can be disclosed.
+Lifecycle-only operation/request/bridge/outbox state, session/result identity,
+claim fields, launch flag/observed execution, recovery owner, last error and
+timestamps are deliberately excluded: they may change after admission and
+cannot turn an otherwise identical authorized replay into a new-operation
+conflict.
+
 | Durable state | Meaning | Sole automatic recovery owner | Permitted recovery |
 | --- | --- | --- | --- |
 | `queued` | admission committed; notification may be absent | outbox publisher | re-notify/claim; never create a second operation |

@@ -1597,6 +1597,90 @@ def _dispatch_identity(prefix: str, *parts: object) -> str:
     return f"{prefix}-" + sha256_bytes(canonical(list(parts)))[:16]
 
 
+_DISPATCH_REPLAY_STABLE_IDENTITY_COLUMNS = (
+    ("operation_id", "op.id"),
+    ("operation_org_slug", "op.org_slug"),
+    ("operation_principal", "op.principal"),
+    ("operation_key", "op.operation_key"),
+    ("operation_request_digest", "op.request_digest"),
+    ("operation_instance_id", "op.instance_id"),
+    ("operation_round_id", "op.round_id"),
+    ("operation_request_id", "op.request_id"),
+    ("request_id", "q.id"),
+    ("request_round_id", "q.round_id"),
+    ("request_principal", "q.principal"),
+    ("request_assignment_generation", "q.assignment_generation"),
+    ("request_scope_bytes", "q.request_scope_bytes"),
+    ("request_scope_digest", "q.request_scope_digest"),
+    ("request_supersedes_request_id", "q.supersedes_request_id"),
+    ("bridge_request_id", "b.request_id"),
+    ("bridge_operation_id", "b.operation_id"),
+    ("bridge_instance_id", "b.instance_id"),
+    ("bridge_task_id", "b.task_id"),
+    ("bridge_assigned_principal", "b.assigned_principal"),
+    ("bridge_assignment_generation", "b.assignment_generation"),
+    ("outbox_id", "o.id"),
+    ("outbox_operation_id", "o.operation_id"),
+    ("outbox_request_id", "o.request_id"),
+    ("outbox_effect_key", "o.effect_key"),
+    ("outbox_authority_namespace", "o.authority_namespace"),
+    ("outbox_authority_generation", "o.authority_generation"),
+    ("outbox_authority_digest", "o.authority_digest"),
+    ("outbox_artifact_revision", "o.artifact_revision"),
+    ("outbox_host_execution_key", "o.host_execution_key"),
+    ("binding_authority_namespace", "tv.namespace"),
+)
+
+# Public evidence constant: the focused parity control pins this complete tuple,
+# while the query and comparison below are generated from the same definition.
+DISPATCH_REPLAY_STABLE_IDENTITY_FIELDS = tuple(
+    name for name, _column in _DISPATCH_REPLAY_STABLE_IDENTITY_COLUMNS
+)
+
+
+def _stored_dispatch_replay_identity(
+    conn: sqlite3.Connection,
+    *,
+    operation_id: str,
+) -> dict[str, object]:
+    columns = ",".join(
+        column for _name, column in _DISPATCH_REPLAY_STABLE_IDENTITY_COLUMNS
+    )
+    row = conn.execute(
+        f"""SELECT {columns}
+            FROM workflow_dispatch_operations op
+            JOIN workflow_review_requests q ON q.id=op.request_id
+            JOIN workflow_request_task_bridges b ON b.operation_id=op.id
+            JOIN workflow_dispatch_outbox o ON o.operation_id=op.id
+            JOIN workflow_instances i ON i.id=op.instance_id
+            JOIN workflow_binding_snapshots bs ON bs.id=i.binding_snapshot_id
+            JOIN workflow_template_versions tv ON tv.id=bs.template_version_id
+            WHERE op.id=?""",
+        (operation_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError("operation_replay_incoherent")
+    return dict(zip(DISPATCH_REPLAY_STABLE_IDENTITY_FIELDS, row, strict=True))
+
+
+def _bound_dispatch_authority_namespace(
+    conn: sqlite3.Connection,
+    *,
+    instance_id: str,
+) -> str:
+    row = conn.execute(
+        """SELECT tv.namespace
+           FROM workflow_instances i
+           JOIN workflow_binding_snapshots bs ON bs.id=i.binding_snapshot_id
+           JOIN workflow_template_versions tv ON tv.id=bs.template_version_id
+           WHERE i.id=?""",
+        (instance_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError("operation_replay_incoherent")
+    return str(row[0])
+
+
 def _append_dispatch_event(
     conn: sqlite3.Connection,
     *,
@@ -1728,39 +1812,45 @@ def admit_review_dispatch(
         if prior is not None:
             if prior[1:] != (request_digest, instance_id, round_id, request_id):
                 raise ValueError("operation_key_body_conflict")
-            replay = conn.execute(
-                """SELECT q.principal,q.assignment_generation,q.request_scope_bytes,
-                          q.request_scope_digest,b.operation_id,b.instance_id,b.task_id,
-                          b.assigned_principal,b.assignment_generation,o.id,o.operation_id,
-                          o.request_id,o.effect_key,o.authority_generation,
-                          o.authority_digest,o.artifact_revision,o.host_execution_key
-                   FROM workflow_review_requests q
-                   JOIN workflow_request_task_bridges b ON b.request_id=q.id
-                   JOIN workflow_dispatch_outbox o ON o.request_id=q.id
-                   WHERE q.id=?""",
-                (request_id,),
-            ).fetchone()
-            expected_replay = (
-                request_principal,
-                assignment_generation,
-                body,
-                request_digest,
-                prior[0],
-                instance_id,
-                task_id,
-                request_principal,
-                assignment_generation,
-                outbox_id,
-                prior[0],
-                request_id,
-                effect_key,
-                expected_authority_generation,
-                expected_authority_digest,
-                expected_revision,
-                effect_key,
+            authority_namespace = _bound_dispatch_authority_namespace(
+                conn, instance_id=instance_id
             )
-            if replay is None:
-                raise ValueError("operation_replay_incoherent")
+            replay = _stored_dispatch_replay_identity(
+                conn, operation_id=str(prior[0])
+            )
+            expected_replay: dict[str, object] = {
+                "operation_id": prior[0],
+                "operation_org_slug": org_slug,
+                "operation_principal": principal,
+                "operation_key": operation_key,
+                "operation_request_digest": request_digest,
+                "operation_instance_id": instance_id,
+                "operation_round_id": round_id,
+                "operation_request_id": request_id,
+                "request_id": request_id,
+                "request_round_id": round_id,
+                "request_principal": request_principal,
+                "request_assignment_generation": assignment_generation,
+                "request_scope_bytes": body,
+                "request_scope_digest": request_digest,
+                "request_supersedes_request_id": None,
+                "bridge_request_id": request_id,
+                "bridge_operation_id": prior[0],
+                "bridge_instance_id": instance_id,
+                "bridge_task_id": task_id,
+                "bridge_assigned_principal": request_principal,
+                "bridge_assignment_generation": assignment_generation,
+                "outbox_id": outbox_id,
+                "outbox_operation_id": prior[0],
+                "outbox_request_id": request_id,
+                "outbox_effect_key": effect_key,
+                "outbox_authority_namespace": authority_namespace,
+                "outbox_authority_generation": expected_authority_generation,
+                "outbox_authority_digest": expected_authority_digest,
+                "outbox_artifact_revision": expected_revision,
+                "outbox_host_execution_key": effect_key,
+                "binding_authority_namespace": authority_namespace,
+            }
             if replay != expected_replay:
                 raise ValueError("operation_replay_identity_conflict")
             existing = conn.execute(

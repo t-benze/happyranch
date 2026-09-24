@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from runtime.infrastructure.database import Database
+from tests.workflows import u0_evidence_helpers
 from tests.workflows.u0_evidence_helpers import (
     ProfileOperationInterrupted,
     ProfileOrg,
@@ -2625,11 +2626,13 @@ def test_proposed_f5_committed_replay_precedes_mutable_new_admission_gates(
         conn, operation_key="disable-after-admit", reason="operator_cutover"
     ) == "disable_requested"
     committed = _complete_join_state(path)
+    committed_bytes = conn.serialize()
 
     # An authenticated actor's identical durable operation is a read of the
     # retained result, not a new run, even after the admission fence changes.
     assert _admit_f5(conn) == first
     assert _complete_join_state(path) == committed
+    assert conn.serialize() == committed_bytes
 
     with pytest.raises(ValueError, match="operation_key_body_conflict"):
         _admit_f5(conn, body=b"changed-after-disable")
@@ -2661,6 +2664,138 @@ def test_proposed_f5_committed_replay_precedes_mutable_new_admission_gates(
     with pytest.raises(ValueError, match="workflow_new_runs_disabled"):
         _admit_f5(conn, suffix="genuinely-new")
     assert _complete_join_state(path) == committed
+
+
+def _assert_f5_replay_identity_refusal_is_zero_mutation(
+    conn: sqlite3.Connection,
+    path: Path,
+) -> None:
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    before_bytes = conn.serialize()
+    before_rows = _complete_join_state(path)
+    before_effects = conn.execute(
+        "SELECT * FROM workflow_dispatch_effects ORDER BY id"
+    ).fetchall()
+    with pytest.raises(ValueError, match="operation_replay_identity_conflict"):
+        _admit_f5(conn)
+    assert conn.serialize() == before_bytes
+    assert _complete_join_state(path) == before_rows
+    assert conn.execute(
+        "SELECT * FROM workflow_dispatch_effects ORDER BY id"
+    ).fetchall() == before_effects
+
+
+def test_proposed_f5_committed_replay_refuses_valid_different_request_round(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "f5-replay-request-round.db"
+    conn = _seed_f5(path)
+    _admit_f5(conn)
+    assert request_workflow_disable(
+        conn, operation_key="disable-after-admit", reason="operator_cutover"
+    ) == "disable_requested"
+    original = conn.execute(
+        "SELECT instance_id,submission_bytes,storage_ref,source_task_id,"
+        "source_session_id,author_principal FROM workflow_submissions LIMIT 1"
+    ).fetchone()
+    assert original is not None
+    conn.execute(
+        "INSERT INTO workflow_submissions VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (
+            "submission-replay-other-round",
+            original[0],
+            5,
+            original[1],
+            "submission-replay-other-round-digest",
+            original[2],
+            original[3],
+            original[4],
+            "submission-replay-other-round-result",
+            original[5],
+        ),
+    )
+    conn.execute(
+        "INSERT INTO workflow_rounds VALUES "
+        "('round-replay-other','instance-9','submission-replay-other-round',5,'reviewing')"
+    )
+    conn.execute(
+        "UPDATE workflow_review_requests SET round_id='round-replay-other' "
+        "WHERE id='request-f5-one'"
+    )
+    conn.commit()
+
+    _assert_f5_replay_identity_refusal_is_zero_mutation(conn, path)
+
+
+def test_proposed_f5_committed_replay_refuses_different_outbox_authority_namespace(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "f5-replay-authority-namespace.db"
+    conn = _seed_f5(path)
+    outbox_id = _admit_f5(conn)
+    assert request_workflow_disable(
+        conn, operation_key="disable-after-admit", reason="operator_cutover"
+    ) == "disable_requested"
+    conn.execute(
+        "UPDATE workflow_dispatch_outbox SET authority_namespace=? WHERE id=?",
+        ("org/forged/team/authority", outbox_id),
+    )
+    conn.commit()
+
+    _assert_f5_replay_identity_refusal_is_zero_mutation(conn, path)
+
+
+def test_proposed_f5_committed_replay_canonical_stable_identity_is_complete() -> None:
+    assert u0_evidence_helpers.DISPATCH_REPLAY_STABLE_IDENTITY_FIELDS == (
+        "operation_id",
+        "operation_org_slug",
+        "operation_principal",
+        "operation_key",
+        "operation_request_digest",
+        "operation_instance_id",
+        "operation_round_id",
+        "operation_request_id",
+        "request_id",
+        "request_round_id",
+        "request_principal",
+        "request_assignment_generation",
+        "request_scope_bytes",
+        "request_scope_digest",
+        "request_supersedes_request_id",
+        "bridge_request_id",
+        "bridge_operation_id",
+        "bridge_instance_id",
+        "bridge_task_id",
+        "bridge_assigned_principal",
+        "bridge_assignment_generation",
+        "outbox_id",
+        "outbox_operation_id",
+        "outbox_request_id",
+        "outbox_effect_key",
+        "outbox_authority_namespace",
+        "outbox_authority_generation",
+        "outbox_authority_digest",
+        "outbox_artifact_revision",
+        "outbox_host_execution_key",
+        "binding_authority_namespace",
+    )
+    lifecycle_only = {
+        "state",
+        "status",
+        "session_id",
+        "result_id",
+        "claim_token",
+        "claim_owner",
+        "host_launch_started",
+        "host_execution_id",
+        "recovery_owner",
+        "last_error",
+        "created_at",
+        "updated_at",
+    }
+    assert lifecycle_only.isdisjoint(
+        u0_evidence_helpers.DISPATCH_REPLAY_STABLE_IDENTITY_FIELDS
+    )
 
 
 def test_proposed_f5_claim_is_exclusive_and_revalidates_revocation_revision_and_ownership(
