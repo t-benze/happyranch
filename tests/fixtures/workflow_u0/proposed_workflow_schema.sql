@@ -96,7 +96,10 @@ CREATE INDEX workflow_dispatch_callbacks_outbox_idx ON workflow_dispatch_callbac
 -- F6 proposed compatibility/cutover and immutable template identity model.
 -- The singleton cutover row is the only workflow schema/cutover marker.  It
 -- does not reinterpret a legacy table or grant an old binary recovery
--- ownership.  The state machine is owned by ``workflow_cutover_reconciler``.
+-- ownership. Reopen derives the complete canonical table/column/key/CHECK/
+-- UNIQUE/FK/index/trigger layout from this exact DDL and rejects any mismatch;
+-- names plus marker rows are not sufficient. The state machine is owned by
+-- ``workflow_cutover_reconciler``.
 CREATE TABLE workflow_cutover_state (singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=1), state TEXT NOT NULL CHECK(state IN ('installed_legacy_only','enable_requested','compatibility_verified','enabled','disable_requested','draining','drained')), recovery_owner TEXT NOT NULL CHECK(recovery_owner='workflow_cutover_reconciler'), generation INTEGER NOT NULL CHECK(generation>=1), operation_key TEXT, disable_reason TEXT, updated_at TEXT NOT NULL);
 CREATE TABLE workflow_cutover_events (id TEXT PRIMARY KEY, event_seq INTEGER NOT NULL UNIQUE CHECK(event_seq>0), state_before TEXT, state_after TEXT NOT NULL, operation_key TEXT, event_digest TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL);
 

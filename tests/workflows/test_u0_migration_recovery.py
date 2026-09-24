@@ -78,6 +78,20 @@ def _workflow_schema_text() -> str:
     ).read_text()
 
 
+def _materialize_existing_adapter(path: Path, schema: str) -> sqlite3.Connection:
+    """Create a full-name-set adapter without using the installer under test."""
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.executescript(schema)
+    conn.execute("INSERT INTO workflow_adapter_versions VALUES (1)")
+    conn.execute(
+        "INSERT INTO workflow_cutover_state VALUES "
+        "(1,1,'installed_legacy_only','workflow_cutover_reconciler',1,NULL,NULL,'now')"
+    )
+    conn.commit()
+    return conn
+
+
 def _active_u0_spec_text() -> str:
     return (
         Path(__file__).parents[2]
@@ -2502,6 +2516,39 @@ def _f5_rows(path: Path) -> dict[str, list[tuple[object, ...]]]:
     return {name: value for name, value in rows.items() if name.startswith("workflow_dispatch_") or name == "workflow_request_task_bridges"}
 
 
+def _stable_host_evidence(
+    conn: sqlite3.Connection,
+    outbox_id: str,
+    *,
+    host_execution_id: str,
+    session_id: str,
+) -> dict[str, object]:
+    row = conn.execute(
+        """SELECT o.id,o.operation_id,o.request_id,b.task_id,b.assigned_principal,
+                  b.assignment_generation,o.artifact_revision,o.claim_token,
+                  o.effect_key,o.host_execution_key
+           FROM workflow_dispatch_outbox o
+           JOIN workflow_request_task_bridges b ON b.request_id=o.request_id
+           WHERE o.id=?""",
+        (outbox_id,),
+    ).fetchone()
+    assert row is not None
+    return {
+        "outbox_id": row[0],
+        "operation_id": row[1],
+        "request_id": row[2],
+        "task_id": row[3],
+        "assigned_principal": row[4],
+        "assignment_generation": row[5],
+        "artifact_revision": row[6],
+        "claim_token": row[7],
+        "effect_key": row[8],
+        "host_execution_key": row[9],
+        "host_execution_id": host_execution_id,
+        "session_id": session_id,
+    }
+
+
 def test_proposed_f5_stale_prd_revision_rejects_with_zero_residue(tmp_path: Path) -> None:
     path = tmp_path / "f5-stale-revision.db"
     conn = _seed_f5(path)
@@ -2566,6 +2613,54 @@ def test_proposed_f5_identical_replay_reuses_operation_and_conflict_adds_no_resi
     assert _complete_join_state(path) == after_first
     assert conn.execute("SELECT COUNT(*) FROM workflow_review_requests WHERE id='request-f5-one'").fetchone() == (1,)
     assert conn.execute("SELECT COUNT(*) FROM workflow_dispatch_outbox").fetchone() == (1,)
+
+
+def test_proposed_f5_committed_replay_precedes_mutable_new_admission_gates(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "f5-replay-after-disable.db"
+    conn = _seed_f5(path)
+    first = _admit_f5(conn)
+    assert request_workflow_disable(
+        conn, operation_key="disable-after-admit", reason="operator_cutover"
+    ) == "disable_requested"
+    committed = _complete_join_state(path)
+
+    # An authenticated actor's identical durable operation is a read of the
+    # retained result, not a new run, even after the admission fence changes.
+    assert _admit_f5(conn) == first
+    assert _complete_join_state(path) == committed
+
+    with pytest.raises(ValueError, match="operation_key_body_conflict"):
+        _admit_f5(conn, body=b"changed-after-disable")
+    assert _complete_join_state(path) == committed
+
+    with pytest.raises(ValueError, match="operation_replay_identity_conflict"):
+        _admit_f5(conn, expected_revision=3)
+    assert _complete_join_state(path) == committed
+
+    # A different authenticated caller cannot read the retained outbox. It is
+    # treated as a genuinely new operation and reaches the current fence.
+    with pytest.raises(ValueError, match="workflow_new_runs_disabled"):
+        admit_review_dispatch(
+            conn,
+            org_slug="org",
+            principal="different-operator",
+            operation_key="open-review-one",
+            body=b"review-one",
+            instance_id="instance-9",
+            round_id="round-9",
+            request_id="request-f5-one",
+            request_principal="reviewer-one",
+            assignment_generation=8,
+            task_id="TASK-F5-one",
+            expected_authority_generation=1,
+            expected_authority_digest="authority-v1",
+            expected_revision=4,
+        )
+    with pytest.raises(ValueError, match="workflow_new_runs_disabled"):
+        _admit_f5(conn, suffix="genuinely-new")
+    assert _complete_join_state(path) == committed
 
 
 def test_proposed_f5_claim_is_exclusive_and_revalidates_revocation_revision_and_ownership(
@@ -2678,14 +2773,158 @@ def test_proposed_f5_proven_stable_host_identity_reconciles_without_second_launc
     outbox = _admit_f5(conn)
     assert claim_review_dispatch(conn, outbox_id=outbox, claim_token="claim-proof", claim_owner="dead-worker") == "claimed"
     assert begin_review_host_launch(conn, outbox_id=outbox, claim_token="claim-proof") == "host_launch_started"
+    evidence = _stable_host_evidence(
+        conn,
+        outbox,
+        host_execution_id="host-stable-1",
+        session_id="sess-stable-1",
+    )
     assert recover_review_dispatch(
         sqlite3.connect(path), outbox_id=outbox, claim_owner_proven_dead=True,
-        observed_host_execution_id="host-stable-1", session_id="sess-stable-1",
-    ) == "running"
+        stable_host_evidence=evidence,
+    ) == "running:callback_reconciler"
     assert conn.execute("SELECT COUNT(*),MIN(host_execution_id),MAX(host_execution_id) FROM workflow_dispatch_effects").fetchone() == (
         1, "host-stable-1", "host-stable-1"
     )
-    assert recover_review_dispatch(sqlite3.connect(path), outbox_id=outbox) == "running:callback_reconciler"
+    after_reconciliation = _complete_join_state(path)
+    assert recover_review_dispatch(
+        sqlite3.connect(path), outbox_id=outbox, stable_host_evidence=evidence,
+    ) == "running:callback_reconciler"
+    assert _complete_join_state(path) == after_reconciliation
+
+
+def test_proposed_f5_uncertain_reconciliation_requires_complete_matching_stable_evidence(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "f5-uncertain-stable-proof.db"
+    conn = _seed_f5(path)
+    outbox = _admit_f5(conn, suffix="uncertain-proof")
+    claim_review_dispatch(
+        conn, outbox_id=outbox, claim_token="claim-proof", claim_owner="dead-worker"
+    )
+    begin_review_host_launch(conn, outbox_id=outbox, claim_token="claim-proof")
+    evidence = _stable_host_evidence(
+        conn,
+        outbox,
+        host_execution_id="host-stable-proof",
+        session_id="sess-stable-proof",
+    )
+    assert recover_review_dispatch(
+        sqlite3.connect(path), outbox_id=outbox, claim_owner_proven_dead=True
+    ) == "uncertain:operator"
+    uncertain = _complete_join_state(path)
+    assert recover_review_dispatch(sqlite3.connect(path), outbox_id=outbox) == "uncertain:operator"
+    assert _complete_join_state(path) == uncertain
+
+    incomplete = dict(evidence)
+    incomplete.pop("session_id")
+    with pytest.raises(ValueError, match="stable_host_evidence_incomplete"):
+        recover_review_dispatch(
+            sqlite3.connect(path), outbox_id=outbox, stable_host_evidence=incomplete
+        )
+    assert _complete_join_state(path) == uncertain
+
+    mismatched = dict(evidence, task_id="TASK-other")
+    with pytest.raises(ValueError, match="stable_host_evidence_mismatch"):
+        recover_review_dispatch(
+            sqlite3.connect(path), outbox_id=outbox, stable_host_evidence=mismatched
+        )
+    assert _complete_join_state(path) == uncertain
+
+    other = _admit_f5(conn, suffix="other-uncertain")
+    claim_review_dispatch(
+        conn, outbox_id=other, claim_token="claim-other", claim_owner="dead-worker"
+    )
+    begin_review_host_launch(conn, outbox_id=other, claim_token="claim-other")
+    recover_review_dispatch(
+        sqlite3.connect(path), outbox_id=other, claim_owner_proven_dead=True
+    )
+    before_cross_outbox = _complete_join_state(path)
+    with pytest.raises(ValueError, match="stable_host_evidence_mismatch"):
+        recover_review_dispatch(
+            sqlite3.connect(path), outbox_id=other, stable_host_evidence=evidence
+        )
+    assert _complete_join_state(path) == before_cross_outbox
+
+    assert recover_review_dispatch(
+        sqlite3.connect(path), outbox_id=outbox, stable_host_evidence=evidence
+    ) == "running:callback_reconciler"
+    reconciled = _complete_join_state(path)
+    assert conn.execute(
+        "SELECT COUNT(*),MIN(session_id),MIN(host_execution_id) "
+        "FROM workflow_dispatch_effects WHERE outbox_id=?",
+        (outbox,),
+    ).fetchone() == (1, "sess-stable-proof", "host-stable-proof")
+    assert recover_review_dispatch(
+        sqlite3.connect(path), outbox_id=outbox, stable_host_evidence=evidence
+    ) == "running:callback_reconciler"
+    assert _complete_join_state(path) == reconciled
+
+    wrong_session = dict(evidence, session_id="sess-cross-session")
+    with pytest.raises(ValueError, match="stable_host_evidence_mismatch"):
+        recover_review_dispatch(
+            sqlite3.connect(path), outbox_id=outbox, stable_host_evidence=wrong_session
+        )
+    assert _complete_join_state(path) == reconciled
+    conn.close()
+    cold = sqlite3.connect(path)
+    assert recover_review_dispatch(
+        cold, outbox_id=outbox, stable_host_evidence=evidence
+    ) == "running:callback_reconciler"
+    cold.close()
+    assert _complete_join_state(path) == reconciled
+
+
+def test_proposed_f5_uncertain_stable_evidence_reconciles_truthfully_during_drain(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "f5-uncertain-drain-proof.db"
+    conn = _seed_f5(path)
+    outbox = _admit_f5(conn, suffix="uncertain-drain")
+    claim_review_dispatch(
+        conn, outbox_id=outbox, claim_token="claim-drain", claim_owner="dead-worker"
+    )
+    begin_review_host_launch(conn, outbox_id=outbox, claim_token="claim-drain")
+    evidence = _stable_host_evidence(
+        conn,
+        outbox,
+        host_execution_id="host-drain-proof",
+        session_id="sess-drain-proof",
+    )
+    recover_review_dispatch(
+        sqlite3.connect(path), outbox_id=outbox, claim_owner_proven_dead=True
+    )
+    request_workflow_disable(
+        conn, operation_key="disable-with-uncertain", reason="operator_cutover"
+    )
+    assert advance_workflow_drain(conn) == "draining"
+    before_cancel = _complete_join_state(path)
+    with pytest.raises(ValueError, match="dispatch_requires_supervised_cancellation"):
+        cancel_review_dispatch(conn, outbox_id=outbox, reason="cannot-erase-host-proof")
+    assert _complete_join_state(path) == before_cancel
+
+    assert recover_review_dispatch(
+        sqlite3.connect(path), outbox_id=outbox, stable_host_evidence=evidence
+    ) == "running:callback_reconciler"
+    assert project_workflow_drain(conn) == [
+        {
+            "outbox_id": outbox,
+            "state": "running",
+            "owner": "callback_reconciler",
+            "action": "wait_for_exact_callback_or_cancel",
+            "stored_recovery_owner": "callback_reconciler",
+        }
+    ]
+    assert record_review_callback(
+        conn,
+        outbox_id=outbox,
+        task_id="TASK-F5-uncertain-drain",
+        session_id="sess-drain-proof",
+        result_id="result-drain-proof",
+        result_bytes=b"done",
+        observed_revision=4,
+    ) == "accepted"
+    assert advance_workflow_drain(conn) == "drained"
 
 
 def test_proposed_f5_late_duplicate_and_stale_callbacks_are_retained_without_resurrection(
@@ -2859,6 +3098,55 @@ def test_proposed_f6_schema_vocabulary_matches_the_active_delivery_contract() ->
     assert Database.__init__.__name__ == "__init__"
     assert install_workflow_adapter.__name__ == "install_workflow_adapter"
 
+    assert "stored identity is\n" in spec
+    assert "the tuple `(namespace, template_name)`" in spec
+    assert "(org_slug, namespace, template_name)" not in spec
+    assert "stable identity is ``(namespace, template_name)``" in schema
+    assert "UNIQUE(namespace,template_name)" in schema
+    assert "stored identity is ``(org_slug, namespace, template_name)``" not in schema
+
+
+@pytest.mark.parametrize(
+    "malformed_schema",
+    [
+        lambda schema: "\n".join(
+            "CREATE TABLE workflow_template_drafts(x TEXT);"
+            if line.startswith("CREATE TABLE workflow_template_drafts ") else line
+            for line in schema.splitlines()
+        ),
+        lambda schema: schema.replace(
+            "CHECK(current_version>=0)", "CHECK(current_version>0)", 1
+        ),
+        lambda schema: schema.replace(", UNIQUE(namespace,template_name));", ");", 1),
+        lambda schema: schema.replace(
+            "CREATE INDEX workflow_dispatch_outbox_state_idx ON workflow_dispatch_outbox(state,recovery_owner);\n",
+            "",
+            1,
+        ),
+        lambda schema: schema
+        + "\nCREATE TRIGGER workflow_unknown_trigger AFTER INSERT ON "
+        "workflow_template_drafts BEGIN SELECT 1; END;\n",
+    ],
+    ids=[
+        "reviewer-x-column-replacement",
+        "plausible-columns-wrong-check",
+        "plausible-columns-missing-unique",
+        "missing-index",
+        "unknown-trigger",
+    ],
+)
+def test_proposed_f6_full_name_set_with_malformed_layout_refuses_without_mutation(
+    tmp_path: Path,
+    malformed_schema: Callable[[str], str],
+) -> None:
+    path = tmp_path / "malformed-full-name-set.db"
+    conn = _materialize_existing_adapter(path, malformed_schema(_workflow_schema_text()))
+    before = conn.serialize()
+    with pytest.raises(ValueError, match="workflow_adapter_schema_mismatch"):
+        install_workflow_adapter(conn, schema=_workflow_schema_text())
+    assert conn.serialize() == before
+    conn.close()
+
 
 @pytest.mark.parametrize("layout", ["fresh", "current", "v0", "v1"])
 def test_proposed_f6_additive_install_preserves_fresh_current_and_executed_historical_layouts(
@@ -2925,6 +3213,10 @@ def test_proposed_f6_repeated_install_is_state_idempotent_and_unknown_versions_f
     first.close()
     second = _adapter(path)
     assert list(second.iterdump()) == first_dump
+    second.close()
+    third = _adapter(path)
+    assert list(third.iterdump()) == first_dump
+    second = third
     second.execute("PRAGMA ignore_check_constraints=ON")
     second.execute("UPDATE workflow_adapter_versions SET version=2")
     second.commit()
@@ -2946,6 +3238,51 @@ def test_proposed_f6_repeated_install_is_state_idempotent_and_unknown_versions_f
         install_workflow_adapter(partial, schema=_workflow_schema_text())
     assert list(partial.iterdump()) == partial_before
     partial.close()
+
+
+def test_proposed_f6_template_identity_is_org_scoped_namespace_name_with_immutable_cas(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "template-identity-parity.db"
+    conn = _adapter(path)
+    first = publish_workflow_template(
+        conn,
+        org_slug="acme",
+        team="product",
+        template_name="product-design",
+        principal="manager",
+        operation_key="acme-v1",
+        expected_current_version=0,
+        definition={"nodes": ["draft"]},
+    )
+    second_org = publish_workflow_template(
+        conn,
+        org_slug="other",
+        team="product",
+        template_name="product-design",
+        principal="manager",
+        operation_key="other-v1",
+        expected_current_version=0,
+        definition={"nodes": ["draft"]},
+    )
+    assert first == ("org/acme/team/product", "product-design", 1)
+    assert second_org == ("org/other/team/product", "product-design", 1)
+    assert conn.execute(
+        "SELECT namespace,template_name,current_version FROM workflow_template_identities "
+        "ORDER BY namespace"
+    ).fetchall() == [
+        ("org/acme/team/product", "product-design", 1),
+        ("org/other/team/product", "product-design", 1),
+    ]
+    assert [row[1] for row in conn.execute("PRAGMA table_info(workflow_template_identities)")] == [
+        "id", "namespace", "template_name", "current_version", "status", "created_at"
+    ]
+    identity_indexes = {
+        tuple(column[2] for column in conn.execute(f"PRAGMA index_info({index[1]})"))
+        for index in conn.execute("PRAGMA index_list(workflow_template_identities)")
+    }
+    assert ("namespace", "template_name") in identity_indexes
+    assert ("org_slug", "namespace", "template_name") not in identity_indexes
 
 
 @pytest.mark.parametrize(

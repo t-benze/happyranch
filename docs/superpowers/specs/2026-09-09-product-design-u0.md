@@ -1063,8 +1063,15 @@ external task/session control only after commit.
 The logical operation key is `(org_slug, authenticated_principal,
 operation_key)`; its digest covers action, instance/round/request/principal,
 assignment generation, exact task ID and request-body digest. An identical
-retry/reopen returns the existing outbox. Reuse with any different digest or
-target is a conflict and writes nothing. The outbox/effect key is
+authorized retry/reopen first resolves that actor-scoped durable operation and
+verifies its complete stored request, actor, bridge, authority/revision and
+outbox identities plus digests. It returns the existing outbox before mutable
+new-admission gates such as `disable_requested` or a later authority/revision
+change are evaluated. Reuse with any different digest, target or stable bridge
+identity is a conflict and writes nothing; another caller cannot read the
+retained result. Only a genuinely absent operation proceeds to enabled/current-
+authority/current-revision checks and the atomic admission transaction. The
+outbox/effect key is
 `workflow-review-launch:<request_id>:<assignment_generation>`; task/session/
 result IDs are independent bridge identities. Events use `(operation_id,
 event_seq)` plus canonical bytes/digest. Result IDs are globally unique but
@@ -1090,9 +1097,15 @@ A committed admission observed before post-commit notification is a normal
 does not prove that launch did not occur. Current SessionTracker/host-supervisor
 code exposes no durable stable execution lookup, so default recovery is operator-
 visible `uncertain`, with automatic replay disabled. A future supported adapter
-may prove the stable host execution ID and session; reconciliation then inserts
-the one effect and transitions to `running` idempotently. Operator projection
-renders `queued`/`claimed`/`running` as pending with owner and last event,
+may authenticate stable evidence; the isolated model only validates a complete
+envelope binding outbox, operation, request, task, assigned principal/generation,
+artifact revision, claim token, effect/host key, execution ID and session ID.
+Matching evidence inserts one effect and makes one durable
+`uncertain -> running` reconciliation. Identical evidence replay is read-only;
+incomplete, stale, mismatched, cross-outbox or cross-session evidence refuses
+without an unintended effect, including after disable/drain. This does not prove
+the host lookup, power-loss durability or exactly-once host launch. Operator
+projection renders `queued`/`claimed`/`running` as pending with owner and last event,
 `cancelled`/`completed` as terminal history, and `uncertain` as error/
 `reconciliation_required` with no retry action.
 
@@ -1120,18 +1133,21 @@ joined, not replaced or weakened.
 
 The executable seam is the six F5 tables in
 `tests/fixtures/workflow_u0/proposed_workflow_schema.sql`, the F5 helpers in
-`tests/workflows/u0_evidence_helpers.py`, and eleven controls selected by
+`tests/workflows/u0_evidence_helpers.py`, and fourteen controls selected by
 `pytest .../test_u0_migration_recovery.py -k proposed_f5`. Together they prove:
 (1) stale authority and noncurrent PRD revisions leave no request/task/outbox
 residue; (2) request+bridge+event+outbox commit atomically and an independent
-observer sees them before notification; (3) identical replay reuses all rows
-while conflicting replay adds none; (4) claims are exclusive and claim/start
+observer sees them before notification; (3) identical replay reuses all rows,
+including after disable, while conflicting/new/foreign-caller replay adds none
+or discloses no retained result; (4) claims are exclusive and claim/start
 revalidation fences stale/revoked/cancelled/foreign work; (5) cancellation
 before claim or after claim but before launch preserves history and creates no
 effect; (6) queued, claimed, committed-pre-notify, running-confirmed and host-
 uncertain reopen boundaries name an owner; (7) possible launch without proof
-becomes `uncertain` and cannot be claimed again; (8) stable host proof reconciles
-without a second launch; and (9) late, duplicate, stale and current callbacks
+becomes `uncertain` and cannot be claimed again; (8) complete identity-bound
+stable host evidence reconciles once without a second launch across mismatch,
+duplicate, cold-reopen and disable/drain schedules; and (9) late, duplicate,
+stale and current callbacks
 retain attribution without resurrection, revision advance or duplicate effect,
 including exact rejection of same-ID/same-digest reuse across two distinct
 running/completed bridges while ordinary same-bridge identical replay remains
@@ -1225,6 +1241,11 @@ attaches the org. The isolated `install_workflow_adapter` owns one
 row and first event commits, or zero `workflow_%` residue exists. It never
 repairs a partial, conflicting, newer or unknown layout and never runs a DROP,
 table rebuild, legacy UPDATE, backup restore or destructive rollback.
+On reopen it derives the complete canonical SQLite layout from the exact
+supplied DDL and compares every workflow table, column/default/key, CHECK,
+UNIQUE, foreign key, explicit/automatic index and trigger before reading the
+marker. A full table-name set is insufficient. Missing, added or conflicting
+layout refuses read-only; an exact valid layout reopens unchanged repeatedly.
 
 The adapter schema-version discriminator is exactly
 `workflow_adapter_versions(version=1)`. The singleton
@@ -1330,13 +1351,16 @@ exclusive before enqueue/effect.
 
 The actual seam is the shared proposed DDL, `install_workflow_adapter` and F6
 helpers in `u0_evidence_helpers.py`, selected by `pytest ... -k proposed_f6`.
-Seventeen controls cover the required eight groups:
+Twenty-three controls cover the required eight groups:
 
 1. exact schema marker/owner/initializer/installer vocabulary plus parametrized
    fresh/current/executed-v0/executed-v1 initialization with complete legacy
    schema/row and marker-byte preservation;
-2. repeated install/reopen state identity and unsupported-version zero-write
-   refusal;
+2. repeated/twice-cold install/reopen state identity, unsupported-version
+   zero-write refusal, and full-name-set adversarial replacements covering the
+   reviewer `workflow_template_drafts(x TEXT)` example, plausible wrong
+   CHECK/UNIQUE constraints, missing index and unknown trigger with byte-identical
+   refusal snapshots;
 3. pre-install-commit rollback plus interruption after every enable stage,
    followed by two cold idempotent recoveries;
 4. bridge-derived legacy/workflow owner mismatch refusal plus two real SQLite

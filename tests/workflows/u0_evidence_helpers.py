@@ -21,6 +21,63 @@ def canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
+def _execute_workflow_schema(conn: sqlite3.Connection, schema: str) -> None:
+    statement = ""
+    for line in schema.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            if statement.strip():
+                conn.execute(statement)
+            statement = ""
+    if statement.strip():
+        raise ValueError("incomplete_isolated_adapter_schema")
+
+
+def _workflow_schema_layout(conn: sqlite3.Connection) -> tuple[object, ...]:
+    """Return the complete canonical SQLite layout for workflow-owned objects."""
+    objects = conn.execute(
+        """SELECT type,name,tbl_name,sql
+           FROM sqlite_schema
+           WHERE type IN ('table','index','trigger')
+             AND (name LIKE 'workflow_%' OR tbl_name LIKE 'workflow_%')
+           ORDER BY type,name,tbl_name"""
+    ).fetchall()
+    normalized_objects = tuple(
+        (kind, name, table, None if sql is None else " ".join(str(sql).split()))
+        for kind, name, table, sql in objects
+    )
+    tables = tuple(
+        row[1] for row in normalized_objects if row[0] == "table"
+    )
+    table_metadata: list[tuple[object, ...]] = []
+    index_metadata: list[tuple[object, ...]] = []
+    for table in tables:
+        quoted_table = str(table).replace('"', '""')
+        table_metadata.append(
+            (
+                table,
+                tuple(conn.execute(f'PRAGMA table_xinfo("{quoted_table}")')),
+                tuple(conn.execute(f'PRAGMA foreign_key_list("{quoted_table}")')),
+            )
+        )
+        for index in conn.execute(f'PRAGMA index_list("{quoted_table}")'):
+            quoted_index = str(index[1]).replace('"', '""')
+            index_metadata.append(
+                (table, tuple(index), tuple(conn.execute(f'PRAGMA index_xinfo("{quoted_index}")')))
+            )
+    return normalized_objects, tuple(table_metadata), tuple(index_metadata)
+
+
+def _expected_workflow_schema_layout(schema: str) -> tuple[object, ...]:
+    expected = sqlite3.connect(":memory:")
+    try:
+        expected.execute("PRAGMA foreign_keys=ON")
+        _execute_workflow_schema(expected, schema)
+        return _workflow_schema_layout(expected)
+    finally:
+        expected.close()
+
+
 def install_workflow_adapter(
     conn: sqlite3.Connection,
     *,
@@ -31,7 +88,9 @@ def install_workflow_adapter(
 
     The caller supplies the exact fixture DDL.  This helper owns the install
     transaction and treats the version row plus singleton cutover row as one
-    marker.  It never repairs a partial/unknown/newer layout in place.
+    marker. Reopen compares every workflow table, column, key, constraint,
+    index and trigger to the canonical layout derived from the supplied DDL.
+    It never repairs a partial/unknown/newer layout in place.
     """
     if conn.in_transaction:
         raise ValueError("caller_transaction_not_allowed")
@@ -43,9 +102,10 @@ def install_workflow_adapter(
         )
     }
     if existing:
-        before = tuple(sorted(existing))
         if existing != expected:
             raise ValueError("partial_or_ambiguous_isolated_adapter")
+        if _workflow_schema_layout(conn) != _expected_workflow_schema_layout(schema):
+            raise ValueError("workflow_adapter_schema_mismatch")
         marker = conn.execute(
             "SELECT version FROM workflow_adapter_versions"
         ).fetchall()
@@ -54,7 +114,6 @@ def install_workflow_adapter(
             "FROM workflow_cutover_state"
         ).fetchall()
         if marker != [(1,)] or len(cutover) != 1 or cutover[0][0] != 1:
-            assert tuple(sorted(existing)) == before
             raise ValueError("unsupported_workflow_adapter_version")
         if cutover[0][1] not in {
             "installed_legacy_only", "enable_requested",
@@ -66,15 +125,7 @@ def install_workflow_adapter(
 
     conn.execute("BEGIN IMMEDIATE")
     try:
-        statement = ""
-        for line in schema.splitlines(keepends=True):
-            statement += line
-            if sqlite3.complete_statement(statement):
-                if statement.strip():
-                    conn.execute(statement)
-                statement = ""
-        if statement.strip():
-            raise ValueError("incomplete_isolated_adapter_schema")
+        _execute_workflow_schema(conn, schema)
         conn.execute("INSERT INTO workflow_adapter_versions VALUES (1)")
         conn.execute(
             "INSERT INTO workflow_cutover_state VALUES "
@@ -1645,9 +1696,11 @@ def admit_review_dispatch(
 ) -> str:
     """Atomically admit one review request/task bridge/outbox operation.
 
-    Authentication is assumed to have happened before this isolated service
-    seam.  Current authority and immutable PRD revision are re-read only after
-    this helper owns ``BEGIN IMMEDIATE``.  Notification is a post-commit hint.
+    Authentication/access is assumed to have happened before this isolated
+    service seam. Inside ``BEGIN IMMEDIATE``, an actor-scoped committed replay
+    is fully identity-checked before mutable new-admission gates. Current
+    authority and immutable PRD revision are then re-read only for genuinely
+    new operations. Notification is a post-commit hint.
     """
     _require_idle(conn)
     request_digest = sha256_bytes(
@@ -1666,6 +1719,58 @@ def admit_review_dispatch(
     effect_key = f"workflow-review-launch:{request_id}:{assignment_generation}"
     conn.execute("BEGIN IMMEDIATE")
     try:
+        prior = conn.execute(
+            """SELECT id,request_digest,instance_id,round_id,request_id
+               FROM workflow_dispatch_operations
+               WHERE org_slug=? AND principal=? AND operation_key=?""",
+            (org_slug, principal, operation_key),
+        ).fetchone()
+        if prior is not None:
+            if prior[1:] != (request_digest, instance_id, round_id, request_id):
+                raise ValueError("operation_key_body_conflict")
+            replay = conn.execute(
+                """SELECT q.principal,q.assignment_generation,q.request_scope_bytes,
+                          q.request_scope_digest,b.operation_id,b.instance_id,b.task_id,
+                          b.assigned_principal,b.assignment_generation,o.id,o.operation_id,
+                          o.request_id,o.effect_key,o.authority_generation,
+                          o.authority_digest,o.artifact_revision,o.host_execution_key
+                   FROM workflow_review_requests q
+                   JOIN workflow_request_task_bridges b ON b.request_id=q.id
+                   JOIN workflow_dispatch_outbox o ON o.request_id=q.id
+                   WHERE q.id=?""",
+                (request_id,),
+            ).fetchone()
+            expected_replay = (
+                request_principal,
+                assignment_generation,
+                body,
+                request_digest,
+                prior[0],
+                instance_id,
+                task_id,
+                request_principal,
+                assignment_generation,
+                outbox_id,
+                prior[0],
+                request_id,
+                effect_key,
+                expected_authority_generation,
+                expected_authority_digest,
+                expected_revision,
+                effect_key,
+            )
+            if replay is None:
+                raise ValueError("operation_replay_incoherent")
+            if replay != expected_replay:
+                raise ValueError("operation_replay_identity_conflict")
+            existing = conn.execute(
+                "SELECT id FROM workflow_dispatch_outbox WHERE operation_id=?",
+                (prior[0],),
+            ).fetchone()
+            if existing is None:
+                raise ValueError("operation_replay_incoherent")
+            conn.commit()
+            return existing[0]
         if _cutover_row(conn)[1] != "enabled":
             raise ValueError("workflow_new_runs_disabled")
         current = _current_dispatch_contract(conn, instance_id=instance_id, round_id=round_id)
@@ -1675,23 +1780,6 @@ def admit_review_dispatch(
             raise ValueError("authority_digest_stale")
         if current[2] != expected_revision:
             raise ValueError("artifact_revision_stale")
-        prior = conn.execute(
-            """SELECT id, request_digest, instance_id, round_id, request_id
-               FROM workflow_dispatch_operations
-               WHERE org_slug=? AND principal=? AND operation_key=?""",
-            (org_slug, principal, operation_key),
-        ).fetchone()
-        if prior is not None:
-            if prior[1:] != (request_digest, instance_id, round_id, request_id):
-                raise ValueError("operation_key_body_conflict")
-            existing = conn.execute(
-                "SELECT id FROM workflow_dispatch_outbox WHERE operation_id=?",
-                (prior[0],),
-            ).fetchone()
-            if existing is None:
-                raise ValueError("operation_replay_incoherent")
-            conn.commit()
-            return existing[0]
         conn.execute(
             "INSERT INTO workflow_review_requests VALUES (?,?,?,?,?,?, 'pending',NULL)",
             (
@@ -2018,10 +2106,13 @@ def recover_review_dispatch(
     *,
     outbox_id: str,
     claim_owner_proven_dead: bool = False,
-    observed_host_execution_id: str | None = None,
-    session_id: str | None = None,
+    stable_host_evidence: dict[str, object] | None = None,
 ) -> str:
-    """Cold recovery.  Possible host effect without proof becomes uncertain."""
+    """Cold recovery with identity-bound, caller-authenticated stable host proof.
+
+    The isolated model validates supplied evidence; it does not authenticate a
+    production host lookup and never claims exactly-once host launch.
+    """
     _require_idle(conn)
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -2029,6 +2120,106 @@ def recover_review_dispatch(
         if row[3] == "queued":
             conn.commit()
             return "queued:outbox_publisher"
+        if row[3] in {"claimed", "running", "uncertain"} and stable_host_evidence is not None:
+            required = {
+                "outbox_id", "operation_id", "request_id", "task_id",
+                "assigned_principal", "assignment_generation", "artifact_revision",
+                "claim_token", "effect_key", "host_execution_key",
+                "host_execution_id", "session_id",
+            }
+            if set(stable_host_evidence) != required or any(
+                stable_host_evidence[key] in {None, ""} for key in required
+            ):
+                raise ValueError("stable_host_evidence_incomplete")
+            effect_key, host_execution_key, stored_host_execution_id = conn.execute(
+                "SELECT effect_key,host_execution_key,host_execution_id "
+                "FROM workflow_dispatch_outbox WHERE id=?",
+                (outbox_id,),
+            ).fetchone()
+            expected = {
+                "outbox_id": row[0],
+                "operation_id": row[1],
+                "request_id": row[2],
+                "task_id": row[10],
+                "assigned_principal": row[11],
+                "assignment_generation": row[12],
+                "artifact_revision": row[9],
+                "claim_token": row[4],
+                "effect_key": effect_key,
+                "host_execution_key": host_execution_key,
+            }
+            if any(stable_host_evidence[key] != value for key, value in expected.items()):
+                raise ValueError("stable_host_evidence_mismatch")
+            execution_collision = conn.execute(
+                "SELECT outbox_id FROM workflow_dispatch_effects "
+                "WHERE host_execution_id=?",
+                (stable_host_evidence["host_execution_id"],),
+            ).fetchone()
+            if execution_collision is not None and execution_collision[0] != outbox_id:
+                raise ValueError("stable_host_evidence_mismatch")
+            if row[3] == "running":
+                running = conn.execute(
+                    """SELECT b.session_id,o.host_execution_id,e.effect_key,e.task_id,
+                              e.session_id,e.host_execution_id
+                       FROM workflow_dispatch_outbox o
+                       JOIN workflow_request_task_bridges b ON b.request_id=o.request_id
+                       JOIN workflow_dispatch_effects e ON e.outbox_id=o.id
+                       WHERE o.id=?""",
+                    (outbox_id,),
+                ).fetchone()
+                if running != (
+                    stable_host_evidence["session_id"],
+                    stable_host_evidence["host_execution_id"],
+                    effect_key,
+                    row[10],
+                    stable_host_evidence["session_id"],
+                    stable_host_evidence["host_execution_id"],
+                ) or stored_host_execution_id != stable_host_evidence["host_execution_id"]:
+                    raise ValueError("stable_host_evidence_mismatch")
+                conn.commit()
+                return "running:callback_reconciler"
+            if row[5] != 1:
+                raise ValueError("stable_host_evidence_mismatch")
+            state_before = str(row[3])
+            conn.execute(
+                """UPDATE workflow_dispatch_outbox
+                   SET state='running',host_execution_id=?,
+                       recovery_owner='callback_reconciler',last_error=NULL,updated_at='now'
+                   WHERE id=? AND state=?""",
+                (stable_host_evidence["host_execution_id"], outbox_id, state_before),
+            )
+            conn.execute(
+                "UPDATE workflow_request_task_bridges SET state='running',session_id=? "
+                "WHERE request_id=? AND state=?",
+                (stable_host_evidence["session_id"], row[2], state_before),
+            )
+            conn.execute(
+                "INSERT INTO workflow_dispatch_effects VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    _dispatch_identity("dispatch-effect", effect_key),
+                    outbox_id,
+                    effect_key,
+                    "host_launch_observed",
+                    row[10],
+                    stable_host_evidence["session_id"],
+                    stable_host_evidence["host_execution_id"],
+                    "now",
+                ),
+            )
+            _append_dispatch_event(
+                conn,
+                operation_id=str(row[1]),
+                event_kind="host_running_reconciled",
+                state_before=state_before,
+                state_after="running",
+                payload={
+                    "session_id": stable_host_evidence["session_id"],
+                    "host_execution_id": stable_host_evidence["host_execution_id"],
+                    "host_execution_key": host_execution_key,
+                },
+            )
+            conn.commit()
+            return "running:callback_reconciler"
         if row[3] == "running":
             conn.commit()
             return "running:callback_reconciler"
@@ -2063,16 +2254,6 @@ def recover_review_dispatch(
             )
             conn.commit()
             return "queued:outbox_publisher"
-        if observed_host_execution_id is not None and session_id is not None:
-            # A supported host adapter may prove the stable execution identity.
-            conn.commit()
-            return record_review_running(
-                conn,
-                outbox_id=outbox_id,
-                claim_token=str(row[4]),
-                session_id=session_id,
-                host_execution_id=observed_host_execution_id,
-            )
         conn.execute(
             """UPDATE workflow_dispatch_outbox
                SET state='uncertain', recovery_owner='operator',
