@@ -102,7 +102,7 @@ const REV_C = `sha256:${'c'.repeat(64)}`;
 function snapshot(overrides = {}) {
   return {
     running_at_daemon_start: { queue_workers: 3, host_global_session_cap: 10 },
-    running_provenance: 'startup-resolved settings snapshot',
+    running_provenance: 'Resolved when the HappyRanch service started',
     persisted_yaml: { queue_workers: 3, host_global_session_cap: 10 },
     next_start: { queue_workers: 3, host_global_session_cap: 10 },
     environment_shadowed: [],
@@ -118,8 +118,8 @@ function snapshot(overrides = {}) {
     restart_required: false,
     restart_pending: false,
     guidance: {
-      queue_workers: 'Starting guidance 4-6.',
-      host_global_session_cap: 'Starting guidance 11-13.',
+      queue_workers: 'Suggested starting range: 4–6. Adjust based on task wait times. This is guidance, not a required range.',
+      host_global_session_cap: 'Suggested starting range: 11–13. This applies to HappyRanch supervised sessions, not every process on the machine. The range is not enforced.',
       enforced: false,
     },
     authorization: 'daemon bearer required',
@@ -177,7 +177,7 @@ const C1_TIMES = { t0: C1_T0, t1: C1_T0 + 60_000, t2: C1_T0 + 120_000, t3: C1_T0
 const receiptText = (ms) => {
   const d = new Date(ms);
   const p = (n) => String(n).padStart(2, '0');
-  return `Last received ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} (this browser's clock)`;
+  return `Values received at ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} (your device time)`;
 };
 /** GET #0 and #1 are the SAME bytes, #2 fails, #3 (recovery) is usable again. */
 const C1_GET = (index) => (index === 2 ? FAIL(503, {}) : OK(snapshot()));
@@ -188,15 +188,15 @@ async function runC1Sequence(page, { recovery }) {
     const banner = [...document.querySelectorAll('p[role="alert"]')]
       .find((p) => p.innerText.includes('Could not refresh')) ?? null;
     return {
-      receipts: text.match(/Last received \d\d:\d\d:\d\d \(this browser's clock\)/g) ?? [],
+      receipts: text.match(/Values received at \d\d:\d\d:\d\d \(your device time\)/g) ?? [],
       bannerText: banner ? banner.innerText : null,
-      lastKnownLabel: text.includes('the last values this browser received'),
-      runningNowLabel: text.includes('observed from the daemon; not changed by saving'),
+      lastKnownLabel: text.includes('previously received values; the latest refresh did not confirm them'),
+      runningNowLabel: text.includes('observed from the running service; saving does not change them'),
     };
   });
   const refreshAt = async (ms) => {
     await page.clock.setFixedTime(ms);
-    await page.click('button:has-text("Refresh running state")');
+    await page.click('button:has-text("Refresh capacity values")');
   };
   const steps = { step0: await read() };
   await refreshAt(C1_TIMES.t1);
@@ -205,7 +205,7 @@ async function runC1Sequence(page, { recovery }) {
   await page.waitForTimeout(200);
   steps.step1 = await read();
   await refreshAt(C1_TIMES.t2);
-  await page.waitForSelector('text=Could not refresh. Current state unverified.', { timeout: 15000 }).catch(() => {});
+  await page.waitForSelector('text=Could not refresh, so the current values are unverified.', { timeout: 15000 }).catch(() => {});
   await page.waitForTimeout(200);
   steps.step2 = await read();
   if (recovery) {
@@ -293,7 +293,7 @@ const STATES = [
       await page.fill('#capacity-cap', '12');
       await page.fill('#capacity-reason', 'Raising task slots for the new team.');
       await page.click('button[type="submit"]');
-      await page.waitForSelector('text=Saving for next restart…', { timeout: 15000 });
+      await page.waitForSelector('text=Saving for next start…', { timeout: 15000 });
     },
   },
   {
@@ -311,7 +311,7 @@ const STATES = [
       await page.fill('#capacity-cap', '12');
       await page.fill('#capacity-reason', 'Raising task slots for the new team.');
       await page.click('button[type="submit"]');
-      await page.waitForSelector('text=Saved for next restart. Running limits are unchanged.', { timeout: 15000 });
+      await page.waitForSelector('text=Saved for the next start. Limits in effect now have not changed.', { timeout: 15000 });
     },
   },
   {
@@ -331,7 +331,7 @@ const STATES = [
       await page.fill('#capacity-cap', '12');
       await page.fill('#capacity-reason', 'Raising task slots for the new team.');
       await page.click('button[type="submit"]');
-      await page.waitForSelector('text=Keep my draft, rebase onto latest', { timeout: 15000 });
+      await page.waitForSelector('text=Keep my edits and use latest saved version', { timeout: 15000 });
     },
   },
   {
@@ -343,7 +343,7 @@ const STATES = [
       await page.fill('#capacity-cap', '12');
       await page.fill('#capacity-reason', 'Raising task slots for the new team.');
       await page.click('button[type="submit"]');
-      await page.waitForSelector('text=Save result unknown.', { timeout: 15000 });
+      await page.waitForSelector('text=HappyRanch could not confirm whether the save finished.', { timeout: 15000 });
     },
   },
   {
@@ -355,8 +355,8 @@ const STATES = [
     prep: async (page) => {
       await page.fill('#capacity-workers', '5');
       await page.fill('#capacity-reason', 'Checking the running state before saving.');
-      await page.click('button:has-text("Refresh running state")');
-      await page.waitForSelector('text=Could not refresh. Current state unverified.', { timeout: 15000 });
+      await page.click('button:has-text("Refresh capacity values")');
+      await page.waitForSelector('text=Could not refresh, so the current values are unverified.', { timeout: 15000 });
     },
   },
   {
@@ -368,8 +368,8 @@ const STATES = [
     prep: async (page) => {
       await page.fill('#capacity-workers', '5');
       await page.fill('#capacity-reason', 'Checking the running state before saving.');
-      await page.click('button:has-text("Refresh running state")');
-      await page.waitForSelector('text=Cannot read capacity configuration.', { timeout: 15000 });
+      await page.click('button:has-text("Refresh capacity values")');
+      await page.waitForSelector('text=HappyRanch could not read the saved capacity settings.', { timeout: 15000 });
     },
   },
   {
@@ -381,7 +381,7 @@ const STATES = [
     name: 'fallback-cap',
     get: () => OK(snapshot({
       effective_admission_cap: 4,
-      effective_admission_reason: 'Capability fallback binds because enforcement is unavailable.',
+      effective_admission_reason: 'The active execution backend cannot enforce every host-safety check, so HappyRanch is using a lower session limit.',
       warnings: ['Enforcement is unavailable on this platform; the conservative fallback cap binds.'],
     })),
   },
@@ -389,7 +389,7 @@ const STATES = [
     name: 'partial-override',
     get: () => OK(snapshot({
       environment_shadowed: ['queue_workers'],
-      environment_warning: 'The environment sets this value; a restart alone will not make the saved file win.',
+      environment_warning: 'An environment setting takes priority over the saved configuration. Restarting HappyRanch will not make the saved value take effect.',
       next_start: { queue_workers: 3, host_global_session_cap: 12 },
     })),
     prep: async (page) => {
@@ -401,7 +401,7 @@ const STATES = [
     name: 'runtime-unavailable',
     get: () => OK(snapshot({
       effective_admission_cap: null,
-      effective_admission_reason: 'No supervisor snapshot',
+      effective_admission_reason: 'HappyRanch cannot currently verify the overall supervised-session limit.',
     })),
   },
   {
@@ -449,7 +449,7 @@ const STATES = [
     // ...then a genuinely usable read at t3 recovers, and the receipt advances.
     name: 'identical-refresh-recovered',
     c1: { recovery: true },
-    frame: { sel: 'p:has-text("Last received")', label: 'recovered current-read receipt' },
+    frame: { sel: 'p:has-text("Values received at")', label: 'recovered current-read receipt' },
     get: C1_GET,
     prep: (page) => runC1Sequence(page, { recovery: true }),
   },
@@ -483,7 +483,7 @@ const DIRTY_DRAFT = async (page) => {
 /** The accepted override fixture: the environment shadows `queue_workers`. */
 const OVERRIDE_SNAPSHOT = () => snapshot({
   environment_shadowed: ['queue_workers'],
-  environment_warning: 'The environment sets this value; a restart alone will not make the saved file win.',
+  environment_warning: 'An environment setting takes priority over the saved configuration. Restarting HappyRanch will not make the saved value take effect.',
   next_start: { queue_workers: 3, host_global_session_cap: 12 },
 });
 
@@ -495,12 +495,12 @@ const SAVED_SNAPSHOT = (w, h, revision) => snapshot({
   revision,
 });
 
-const W_LABEL = 'Task session slots';
-const H_LABEL = 'Host session admission limit';
+const W_LABEL = 'Task session limit';
+const H_LABEL = 'Overall supervised-session limit';
 const pairText = (w, h) => `${W_LABEL} ${w}, ${H_LABEL} ${h}`;
-const UNKNOWN_COPY = 'Save result unknown. Your draft is retained. Reconnect and check saved values before trying again.';
-const RECONCILE_FIRST = 'Reconcile the saved values before saving again. Choose to rebase onto the latest saved values or to discard your draft and accept them.';
-const LEAVE_DIALOG = '[role="dialog"][aria-label="discard capacity draft confirmation"]';
+const UNKNOWN_COPY = 'HappyRanch could not confirm whether the save finished. Your edits are still here. Reconnect, then check the saved values before trying again.';
+const RECONCILE_FIRST = 'Review the latest saved values before saving again. Keep your edits using the latest version, or discard your edits and use the latest saved values.';
+const LEAVE_DIALOG = '[role="dialog"][aria-labelledby]';
 
 const countRequests = (method) => requestLog.filter((r) => r.method === method).length;
 
@@ -541,17 +541,17 @@ const READ_EDITOR = () => {
     .some((b) => b.textContent.trim() === label);
   return {
     headline: comparison?.querySelector('p')?.textContent.replace(/\s+/g, ' ').trim() ?? null,
-    acceptedBase: dd('Accepted base'),
-    yourDraft: dd('Your draft'),
+    acceptedBase: dd('Version you started from'),
+    yourDraft: dd('Your edits'),
     currentlySaved: dd('Currently saved'),
-    submitted: para('You submitted'),
-    newerDraft: para('Your current draft is'),
+    submitted: para('Your last save attempt sent'),
+    newerDraft: para('You have since changed the fields to'),
     alerts: [...(outcome?.querySelectorAll('p[role="alert"]') ?? [])].map((p) => p.textContent.trim()),
     refreshFailed: text.includes('Could not refresh'),
-    savedClaim: text.includes('Saved for next restart') || text.includes('Saved. No restart is pending'),
+    savedClaim: text.includes('Saved for the next start') || text.includes('Saved. These values already match'),
     changedElsewhere: text.includes('Configuration changed elsewhere.'),
-    rebaseOffered: button('Keep my draft, rebase onto latest'),
-    acceptOffered: button('Discard draft, accept latest'),
+    rebaseOffered: button('Keep my edits and use latest saved version'),
+    acceptOffered: button('Discard my edits and use latest saved version'),
     checkOffered: button('Check saved values'),
     dirty: text.includes('Unsaved changes.'),
     fields: {
@@ -562,7 +562,7 @@ const READ_EDITOR = () => {
     },
     focusedId: document.activeElement?.id || null,
     focusedTag: document.activeElement?.tagName ?? null,
-    dialogOpen: document.querySelector('[role="dialog"][aria-label="discard capacity draft confirmation"]') !== null,
+    dialogOpen: document.querySelector('[role="dialog"][aria-labelledby]') !== null,
     url: location.pathname,
   };
 };
@@ -576,8 +576,8 @@ const READ_EDITOR = () => {
  * `checkUsableVerdict`, which the acceptance gate recomputes.
  */
 const CHECK_REASON = 'Raising task slots for the new team.';
-const CHECK_EXPECTED_HEADLINE = 'Saved values now match what you submitted (5 / 12). '
-  + 'This does not confirm your request caused it.';
+const CHECK_EXPECTED_HEADLINE = 'The currently saved values match your last save attempt (5 / 12). '
+  + 'This does not prove that the attempt caused the change.';
 
 async function collectCheckEvidence(page) {
   const hit = await tabToFromStart(page, { text: 'Check saved values' });
@@ -592,7 +592,7 @@ async function collectCheckEvidence(page) {
   // A SEPARATE, deliberate Save attempt while the outcome is still unresolved:
   // it must be refused with the reconcile-first reason and send nothing.
   const saveStart = requestLog.length;
-  const save = await tabToFromStart(page, { text: 'Save for next restart' });
+  const save = await tabToFromStart(page, { text: 'Save for next start' });
   let afterSave = null;
   if (save) {
     await page.keyboard.press('Enter');
@@ -622,10 +622,10 @@ function checkUsableVerdict(ev) {
   if (ui.currentlySaved !== pairText(5, 12)) fail.push(`currently saved ${JSON.stringify(ui.currentlySaved)}`);
   if (ui.acceptedBase !== pairText(3, 10)) fail.push(`accepted base moved: ${JSON.stringify(ui.acceptedBase)}`);
   if (ui.yourDraft !== pairText(7, 14)) fail.push(`draft cell ${JSON.stringify(ui.yourDraft)}`);
-  if (ui.submitted !== `You submitted ${pairText(5, 12)} against revision ${REV_A}.`) {
+  if (ui.submitted !== `Your last save attempt sent ${W_LABEL} 5 and ${H_LABEL} 12 using configuration version ${REV_A}.`) {
     fail.push(`submitted record ${JSON.stringify(ui.submitted)}`);
   }
-  if (!(ui.newerDraft ?? '').startsWith(`Your current draft is ${pairText(7, 14)} and is still unsaved.`)) {
+  if (!(ui.newerDraft ?? '').startsWith(`You have since changed the fields to ${pairText(7, 14)}. Those edits were not part of the last save attempt.`)) {
     fail.push(`newer draft ${JSON.stringify(ui.newerDraft)}`);
   }
   if (!(ui.alerts ?? []).includes(UNKNOWN_COPY)) fail.push('Check cleared the unknown outcome');
@@ -658,9 +658,9 @@ const KEYBOARD_SCENARIOS = [
       { key: 'workers', id: 'capacity-workers' },
       { key: 'cap', id: 'capacity-cap' },
       { key: 'reason', id: 'capacity-reason' },
-      { key: 'save', text: 'Save for next restart' },
+      { key: 'save', text: 'Save for next start' },
       { key: 'discard', text: 'Discard draft' },
-      { key: 'refresh', text: 'Refresh running state' },
+      { key: 'refresh', text: 'Refresh capacity values' },
       { key: 'details', text: 'Capacity details' },
     ],
     operate: async (page) => {
@@ -696,9 +696,9 @@ const KEYBOARD_SCENARIOS = [
       { key: 'cap', id: 'capacity-cap' },
       { key: 'reason', id: 'capacity-reason' },
       { key: 'ack', type: 'checkbox' },
-      { key: 'save', text: 'Save for next restart' },
+      { key: 'save', text: 'Save for next start' },
       { key: 'discard', text: 'Discard draft' },
-      { key: 'refresh', text: 'Refresh running state' },
+      { key: 'refresh', text: 'Refresh capacity values' },
       { key: 'details', text: 'Capacity details' },
     ],
     operate: async (page) => {
@@ -738,15 +738,15 @@ const KEYBOARD_SCENARIOS = [
     prep: async (page) => {
       await DIRTY_DRAFT(page);
       await page.click('button[type="submit"]');
-      await page.waitForSelector('text=Save result unknown.', { timeout: 15000 });
+      await page.waitForSelector('text=HappyRanch could not confirm whether the save finished.', { timeout: 15000 });
       await page.fill('#capacity-workers', '7');
       await page.fill('#capacity-cap', '14');
     },
     start: '#capacity-workers',
     required: [
       { key: 'workers', id: 'capacity-workers' },
-      { key: 'save', text: 'Save for next restart' },
-      { key: 'refresh', text: 'Refresh running state' },
+      { key: 'save', text: 'Save for next start' },
+      { key: 'refresh', text: 'Refresh capacity values' },
       { key: 'check', text: 'Check saved values' },
     ],
     operate: async (page) => {
@@ -756,7 +756,7 @@ const KEYBOARD_SCENARIOS = [
       // The deliberate choice and the SEPARATE manual save accepted 11.9 /
       // 10.9 require: rebase keeps the NEWER draft, and only then does a
       // keyboard Save send it against the latest revision.
-      const rebase = await tabToFromStart(page, { text: 'Keep my draft, rebase onto latest' });
+      const rebase = await tabToFromStart(page, { text: 'Keep my edits and use latest saved version' });
       if (!rebase) {
         records.push({ op: 'check-rebase-manual-save', ok: false, detail: 'rebase never reached' });
         return records;
@@ -767,10 +767,10 @@ const KEYBOARD_SCENARIOS = [
       const afterChoice = await page.evaluate(READ_EDITOR);
       const putsAfterChoice = countRequests('PUT') - putsBefore;
       const start = requestLog.length;
-      const save = await tabToFromStart(page, { text: 'Save for next restart' });
+      const save = await tabToFromStart(page, { text: 'Save for next start' });
       if (save) {
         await page.keyboard.press('Enter');
-        await page.waitForSelector('text=Saved for next restart. Running limits are unchanged.', { timeout: 15000 })
+        await page.waitForSelector('text=Saved for the next start. Limits in effect now have not changed.', { timeout: 15000 })
           .catch(() => {});
         await page.waitForTimeout(300);
       }
@@ -821,17 +821,17 @@ const KEYBOARD_SCENARIOS = [
     prep: async (page) => {
       await DIRTY_DRAFT(page);
       await page.click('button[type="submit"]');
-      await page.waitForSelector('text=Keep my draft, rebase onto latest', { timeout: 15000 });
+      await page.waitForSelector('text=Keep my edits and use latest saved version', { timeout: 15000 });
     },
     start: '#capacity-workers',
     required: [
       { key: 'workers', id: 'capacity-workers' },
-      { key: 'save', text: 'Save for next restart' },
-      { key: 'rebase', text: 'Keep my draft, rebase onto latest' },
-      { key: 'accept', text: 'Discard draft, accept latest' },
+      { key: 'save', text: 'Save for next start' },
+      { key: 'rebase', text: 'Keep my edits and use latest saved version' },
+      { key: 'accept', text: 'Discard my edits and use latest saved version' },
     ],
     operate: async (page) => {
-      const hit = await tabTo(page, { text: 'Keep my draft, rebase onto latest' });
+      const hit = await tabTo(page, { text: 'Keep my edits and use latest saved version' });
       if (!hit) return { op: 'rebase', ok: false, detail: 'never reached' };
       const putsBefore = countRequests('PUT');
       await page.keyboard.press('Enter');
@@ -869,19 +869,19 @@ const KEYBOARD_SCENARIOS = [
     prep: async (page) => {
       await DIRTY_DRAFT(page);
       await page.click('button[type="submit"]');
-      await page.waitForSelector('text=Discard draft, accept latest', { timeout: 15000 });
+      await page.waitForSelector('text=Discard my edits and use latest saved version', { timeout: 15000 });
     },
     start: '#capacity-workers',
     required: [
       { key: 'workers', id: 'capacity-workers' },
-      { key: 'save', text: 'Save for next restart' },
-      { key: 'rebase', text: 'Keep my draft, rebase onto latest' },
-      { key: 'accept', text: 'Discard draft, accept latest' },
+      { key: 'save', text: 'Save for next start' },
+      { key: 'rebase', text: 'Keep my edits and use latest saved version' },
+      { key: 'accept', text: 'Discard my edits and use latest saved version' },
     ],
     operate: async (page) => {
       const records = [];
       const conflictPut = requestLog.find((r) => r.method === 'PUT') ?? null;
-      const hit = await tabToFromStart(page, { text: 'Discard draft, accept latest' });
+      const hit = await tabToFromStart(page, { text: 'Discard my edits and use latest saved version' });
       if (!hit) return [{ op: 'accept-latest', ok: false, detail: 'never reached' }];
       const putsBefore = countRequests('PUT');
       await page.keyboard.press('Enter');
@@ -917,10 +917,10 @@ const KEYBOARD_SCENARIOS = [
       }
       const reason = await tabTo(page, { id: 'capacity-reason' });
       if (reason) await page.keyboard.type('Fresh intent after accepting latest.');
-      const save = await tabTo(page, { text: 'Save for next restart' });
+      const save = await tabTo(page, { text: 'Save for next start' });
       if (save) {
         await page.keyboard.press('Enter');
-        await page.waitForSelector('text=Saved for next restart. Running limits are unchanged.', { timeout: 15000 })
+        await page.waitForSelector('text=Saved for the next start. Limits in effect now have not changed.', { timeout: 15000 })
           .catch(() => {});
         await page.waitForTimeout(300);
       }
@@ -998,7 +998,7 @@ const KEYBOARD_SCENARIOS = [
         await page.keyboard.press('Enter');
         await page.waitForTimeout(400);
         // Scoped by accessible name on purpose: the always-mounted assistant
-        // dock also carries `role="dialog"`, so a bare `[role="dialog"]` query
+        // dock also carries `role="dialog"`, so a bare `[role="dialog"][aria-labelledby]` query
         // is never false and would report the leave dialog as still open.
         const afterStay = await page.evaluate(() => ({
           activeTag: document.activeElement?.tagName ?? null,
@@ -1008,7 +1008,7 @@ const KEYBOARD_SCENARIOS = [
           cap: document.querySelector('#capacity-cap')?.value ?? null,
           reason: document.querySelector('#capacity-reason')?.value ?? null,
           ack: document.querySelector('#capacity-override input[type=checkbox]')?.checked ?? null,
-          dialogOpen: document.querySelector('[role="dialog"][aria-label="discard capacity draft confirmation"]') !== null,
+          dialogOpen: document.querySelector('[role="dialog"][aria-labelledby]') !== null,
           url: location.href,
         }));
         records.push({
@@ -1427,7 +1427,7 @@ function runGateSelftest(path) {
       expect: 'keyboard operations that did not take effect',
       mutate: (m) => {
         const op = m.keyboardOperations.find((o) => o.op === 'check-usable');
-        op.evidence.ui.headline = 'Could not refresh. Current state unverified.';
+        op.evidence.ui.headline = 'Could not refresh, so the current values are unverified.';
         return m;
       },
     },
@@ -1487,7 +1487,7 @@ function runGateSelftest(path) {
       mutate: (m) => {
         const rec = m.c1Sequences[0];
         rec.steps.step2.receipts = [receiptText(C1_TIMES.t0), receiptText(C1_TIMES.t0)];
-        rec.steps.step2.bannerText = `Could not refresh. Current state unverified. ${receiptText(C1_TIMES.t0)}`;
+        rec.steps.step2.bannerText = `Could not refresh, so the current values are unverified. ${receiptText(C1_TIMES.t0)}`;
         return m;
       },
     },
@@ -1669,7 +1669,7 @@ const CONTRAST_FN = () => {
   // capacity-owned surface, so it is measured with the rest of the panel.
   const roots = [
     document.querySelector('#capacity-panel-heading')?.closest('div'),
-    document.querySelector('[role="dialog"][aria-label="discard capacity draft confirmation"]'),
+    document.querySelector('[role="dialog"][aria-labelledby]'),
   ].filter((node) => node !== null && node !== undefined);
   const candidates = roots.flatMap((panel) => [...panel.querySelectorAll('*')].filter((node) => {
     if (node.matches('script, style, svg, path, canvas')) return false;
@@ -1743,7 +1743,7 @@ const CONTRAST_FN = () => {
     // Which capacity-owned root this sample belongs to. The leave dialog is
     // PORTALLED, so its samples need their own identity in the rollups rather
     // than being indistinguishable from panel text.
-    const inDialog = el.closest('[role="dialog"][aria-label="discard capacity draft confirmation"]') !== null;
+    const inDialog = el.closest('[role="dialog"][aria-labelledby]') !== null;
     const fg = parse(style.color);
     const bg = effectiveBackground(el);
     if (!fg || !bg) {
@@ -1981,7 +1981,7 @@ const RING_PROBE = () => {
   // same split the contrast rollups already use. The capacity panel and its
   // PORTALLED dialog are both in scope.
   const capacityRoot = document.querySelector('#capacity-panel-heading')?.closest('div') ?? null;
-  const dialogRoot = document.querySelector('[role="dialog"][aria-label="discard capacity draft confirmation"]');
+  const dialogRoot = document.querySelector('[role="dialog"][aria-labelledby]');
   const inScope = Boolean((capacityRoot && capacityRoot.contains(el))
     || (dialogRoot && dialogRoot.contains(el)));
   let surround = el.parentElement;
@@ -2037,7 +2037,7 @@ const RING_PROBE = () => {
     // it at all. The dialog's Close is identified by its aria-label.
     type: el.getAttribute('type'),
     ariaLabel: el.getAttribute('aria-label'),
-    text: (el.textContent ?? '').trim().slice(0, 40) || null,
+    text: (el.textContent ?? '').trim().slice(0, 96) || null,
     focusVisible: el.matches(':focus-visible'),
     outline: `${style.outlineStyle} ${style.outlineWidth} ${style.outlineColor}`,
     boxShadow: style.boxShadow,
@@ -2436,8 +2436,8 @@ try {
             liveRegions: document.querySelectorAll('[aria-live]').length,
             // Post-transition coherence: these three must never coexist with a
             // success banner (R8).
-            savedBanner: document.body.textContent.includes('Saved for next restart')
-              || document.body.textContent.includes('Saved. No restart is pending'),
+            savedBanner: document.body.textContent.includes('Saved for the next start')
+              || document.body.textContent.includes('Saved. These values already match'),
             unsavedChanges: document.body.textContent.includes('Unsaved changes.'),
             changedElsewhere: document.body.textContent.includes('Configuration changed elsewhere.'),
             submittedRecord: document.body.textContent.includes('You submitted'),
@@ -2513,7 +2513,7 @@ try {
         await kbPage.waitForSelector('#capacity-workers');
         if (scenario.prep) await scenario.prep(kbPage);
         // Some controls in the accepted 16.6 order only ENTER the tab ring once
-        // an earlier control has been operated — `Save for next restart` is
+        // an earlier control has been operated — `Save for next start` is
         // `disabled` while a shadowed key is unacknowledged (4.1b), and a
         // disabled control is not focusable. Those scenarios declare
         // `operateFirst`, so the keyboard operation runs BEFORE the walk and the
@@ -2668,7 +2668,7 @@ try {
     await ctlPage.waitForSelector('#capacity-workers');
     await DIRTY_DRAFT(ctlPage);
     await ctlPage.click('button[type="submit"]');
-    await ctlPage.waitForSelector('text=Save result unknown.', { timeout: 15000 });
+    await ctlPage.waitForSelector('text=HappyRanch could not confirm whether the save finished.', { timeout: 15000 });
     await ctlPage.fill('#capacity-workers', '7');
     await ctlPage.fill('#capacity-cap', '14');
     const evidence = await runOperate(collectCheckEvidence, ctlPage);

@@ -41,7 +41,7 @@ export const REV_C = `sha256:${'c'.repeat(64)}`;
 export function validSnapshot(overrides: Record<string, unknown> = {}) {
   return {
     running_at_daemon_start: { queue_workers: 3, host_global_session_cap: 10 },
-    running_provenance: 'startup-resolved settings snapshot',
+    running_provenance: 'Resolved when the HappyRanch service started',
     persisted_yaml: { queue_workers: 3, host_global_session_cap: 10 },
     next_start: { queue_workers: 3, host_global_session_cap: 10 },
     environment_shadowed: [] as string[],
@@ -87,10 +87,10 @@ function mount() {
   return renderGuarded(<DaemonCapacitySection />, { entries: ['/orgs/alpha/settings/daemon-capacity'] });
 }
 
-const workers = () => screen.getByLabelText(/Task session slots/);
-const cap = () => screen.getByLabelText(/Host session admission limit/);
+const workers = () => screen.getByLabelText(/Task session limit/);
+const cap = () => screen.getByLabelText(/Overall supervised-session limit/);
 const reasonBox = () => screen.getByLabelText('Reason for change');
-const saveButton = () => screen.getByRole('button', { name: /Save for next restart|Saving/ });
+const saveButton = () => screen.getByRole('button', { name: /Save for next start|Saving/ });
 
 async function fillAndSave(text = 'measured receipts') {
   const user = userEvent.setup();
@@ -125,7 +125,7 @@ describe('13 — loading, initial-unavailable, supervisor-null', () => {
   });
 
   test('13.4 supervisor-null reads Unavailable, never 0, and stays stageable', async () => {
-    loaded({ effective_admission_cap: null, effective_admission_reason: 'No supervisor snapshot' });
+    loaded({ effective_admission_cap: null, effective_admission_reason: 'HappyRanch cannot currently verify the overall supervised-session limit.' });
     mount();
     expect(screen.getAllByText(/Unavailable/).length).toBeGreaterThan(0);
     expect(document.body).toHaveTextContent(/runtime effect .* cannot be verified/i);
@@ -136,11 +136,11 @@ describe('13 — loading, initial-unavailable, supervisor-null', () => {
   });
 
   test('13.5 fallback cap renders beside startup configured and is distinguishable from 13.4', () => {
-    loaded({ effective_admission_cap: 4, effective_admission_reason: 'Capability fallback binds because enforcement is unavailable.' });
+    loaded({ effective_admission_cap: 4, effective_admission_reason: 'The active execution backend cannot enforce every host-safety check, so HappyRanch is using a lower session limit.' });
     mount();
-    expect(document.body).toHaveTextContent(/Capability fallback binds/);
-    expect(document.body).toHaveTextContent(/Startup configured host limit 10; running effective 4/);
-    expect(document.body).toHaveTextContent(/not a count of available slots/i);
+    expect(document.body).toHaveTextContent(/The active execution backend cannot enforce every host-safety check/);
+    expect(document.body).toHaveTextContent(/Configured at startup: 10\. Limit in effect now: 4/);
+    expect(document.body).toHaveTextContent(/not counts of sessions in use or available/i);
   });
 });
 
@@ -155,7 +155,7 @@ describe('1 / 18 — staged save copy and provenance', () => {
     }));
     mount();
     await fillAndSave();
-    expect(await screen.findByText('Saved. No restart is pending for these values.')).toBeInTheDocument();
+    expect(await screen.findByText('Saved. These values already match the limits in effect.')).toBeInTheDocument();
   });
 
   test('1.3b saved==next but next!=running still shows restart pending', async () => {
@@ -167,14 +167,14 @@ describe('1 / 18 — staged save copy and provenance', () => {
     }));
     mount();
     await fillAndSave();
-    expect(await screen.findByText('Saved for next restart. Running limits are unchanged.')).toBeInTheDocument();
+    expect(await screen.findByText('Saved for the next start. Limits in effect now have not changed.')).toBeInTheDocument();
   });
 
   test('18.1 the four-column header is reproduced and no unlabelled pair appears', () => {
     mount();
     const table = screen.getByRole('table');
     expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual([
-      'Setting', 'Running at startup', 'Saved in file', 'Expected next start',
+      'Setting', 'In effect since startup', 'Saved configuration', 'Expected after next start',
     ]);
     expect(document.body).not.toHaveTextContent(/(^|\s)3 \/ 10(\s|$)/);
   });
@@ -188,7 +188,7 @@ describe('1 / 18 — staged save copy and provenance', () => {
 
   test('18.3 / 14.5 the receipt is a browser clock, never a server age, and isStale is not surfaced', () => {
     mount();
-    expect(document.body).toHaveTextContent(/Last received \d{2}:\d{2}:\d{2} \(this browser's clock\)/);
+    expect(document.body).toHaveTextContent(/Values received at \d{2}:\d{2}:\d{2} \(your device time\)/);
     expect(document.body).not.toHaveTextContent(/as of|server time|seconds old|stale/i);
   });
 
@@ -203,15 +203,15 @@ describe('1 / 18 — staged save copy and provenance', () => {
     ]) {
       expect(body).not.toMatch(forbidden);
     }
-    expect(body).toMatch(/cannot be attributed to a verified person/);
-    expect(body).toMatch(/excludes headless System Assistant and job processes/);
+    expect(body).toMatch(/cannot link that token to a verified person/);
+    expect(body).toMatch(/does not include background Assistant or job processes/);
   });
 
   test('18.7 audit copy is qualified and never promises the entry is recorded', async () => {
     mount();
     await userEvent.click(screen.getByText('Capacity details'));
-    expect(document.body).toHaveTextContent(/Reason included in the save request/);
-    expect(document.body).toHaveTextContent(/terminal completion of the audit entry is not\s+guaranteed/i);
+    expect(document.body).toHaveTextContent(/Your reason is sent with the save request/);
+    expect(document.body).toHaveTextContent(/cannot guarantee that every failed or uncertain save produces a completed audit entry/i);
     expect(document.body).not.toHaveTextContent(/is recorded in the audit entry/i);
   });
 });
@@ -220,7 +220,7 @@ describe('1 / 18 — staged save copy and provenance', () => {
 describe('3 — partial environment override', () => {
   const shadowW = {
     environment_shadowed: ['queue_workers'],
-    environment_warning: 'Environment overrides win; a restart alone will not make YAML win.',
+    environment_warning: 'An environment setting takes priority over the saved configuration. Restarting HappyRanch will not make the saved value take effect.',
     next_start: { queue_workers: 3, host_global_session_cap: 12 },
   };
 
@@ -231,24 +231,24 @@ describe('3 — partial environment override', () => {
     await userEvent.type(workers(), '5');
     await userEvent.clear(cap());
     await userEvent.type(cap(), '14');
-    expect(document.body).toHaveTextContent(/Task session slots 3, Host session admission limit 14/);
-    expect(document.body).toHaveTextContent(/Task session slots is set by the environment/);
+    expect(document.body).toHaveTextContent(/Task session limit 3, Overall supervised-session limit 14/);
+    expect(document.body).toHaveTextContent(/Task session limit is set by the environment/);
     expect(document.body).not.toHaveTextContent(/resolves 3 \/ 12/);
-    expect(document.body).not.toHaveTextContent(/the saved value\b/i);
+    expect(document.body).not.toHaveTextContent(/saved file|YAML/i);
     // R6 / accepted 3.1: the CONSEQUENCE uses the resolved W = 3, so the
     // worker-pool total is 3 + 7 = 10 — never the drafted 5 + 7 = 12.
-    expect(screen.getByText('Worker-pool total').nextElementSibling?.firstChild?.textContent)
+    expect(screen.getAllByText('Total worker slots')[0].nextElementSibling?.firstChild?.textContent)
       .toBe('10');
-    expect(screen.getByText('Worker-pool total').parentElement?.textContent)
-      .toContain('3 task + 7 other producers');
-    expect(document.body).toHaveTextContent(/Host cap 14 is above the worker-pool total 10/);
-    expect(document.body).not.toHaveTextContent(/worker-pool total 12/);
+    expect(screen.getAllByText('Total worker slots')[0].parentElement?.textContent)
+      .toContain('3 task slots + 7 other worker slots');
+    expect(document.body).toHaveTextContent(/The overall session limit \(14\) is higher than the total worker slots \(10\)/);
+    expect(document.body).not.toHaveTextContent(/total worker slots 12/);
   });
 
   test('3.2 mirrored H-only shadow resolves W=5 / H=10 and names only the host limit', async () => {
     loaded({
       environment_shadowed: ['host_global_session_cap'],
-      environment_warning: 'Environment overrides win.',
+      environment_warning: 'An environment setting takes priority over the saved configuration. Restarting HappyRanch will not make the saved value take effect.',
       next_start: { queue_workers: 3, host_global_session_cap: 10 },
     });
     mount();
@@ -256,13 +256,13 @@ describe('3 — partial environment override', () => {
     await userEvent.type(workers(), '5');
     await userEvent.clear(cap());
     await userEvent.type(cap(), '14');
-    expect(document.body).toHaveTextContent(/Task session slots 5, Host session admission limit 10/);
-    expect(document.body).toHaveTextContent(/Host session admission limit is set by the environment/);
+    expect(document.body).toHaveTextContent(/Task session limit 5, Overall supervised-session limit 10/);
+    expect(document.body).toHaveTextContent(/Overall supervised-session limit is set by the environment/);
     // The direction compares the RESOLVED cap 10 against the pool 5 + 7 = 12.
-    expect(screen.getByText('Worker-pool total').parentElement?.textContent)
-      .toContain('5 task + 7 other producers');
-    expect(document.body).toHaveTextContent(/Host cap 10 is below the worker-pool total 12/);
-    expect(document.body).not.toHaveTextContent(/Host cap 14/);
+    expect(screen.getAllByText('Total worker slots')[0].parentElement?.textContent)
+      .toContain('5 task slots + 7 other worker slots');
+    expect(document.body).toHaveTextContent(/The overall session limit \(10\) is lower than the total worker slots \(12\)/);
+    expect(document.body).not.toHaveTextContent(/higher than the total worker slots/);
   });
 
   test('3.4 the preview is bounded and predicts no future effective cap', async () => {
@@ -275,7 +275,7 @@ describe('3 — partial environment override', () => {
     expect(document.body).not.toHaveTextContent(/effective admission (cap )?will|future effective|predicted/i);
     expect(document.body).not.toHaveTextContent(/effective next start/i);
     // The only effective-cap number on screen is the OBSERVED running one.
-    expect(screen.getByText('Host session admission limit running').parentElement?.textContent)
+    expect(screen.getByText('Overall supervised-session limit in effect').parentElement?.textContent)
       .toMatch(/10/);
   });
 });
@@ -308,7 +308,7 @@ describe('4 — acknowledgment identity', () => {
     await waitFor(() => expect(screen.queryByRole('checkbox')).not.toBeInTheDocument());
     // The panel and its preview are gone; Save is free without an ack.
     expect(document.body).not.toHaveTextContent(/set by the environment/);
-    expect(document.body).not.toHaveTextContent(/Environment override in effect/);
+    expect(document.body).not.toHaveTextContent(/An environment setting overrides a saved value/);
     expect(saveButton()).toBeEnabled();
     // The editor and reason survive the transition.
     expect(reasonBox()).toHaveValue('why!');
@@ -330,9 +330,9 @@ describe('4 — acknowledgment identity', () => {
 // ---------------------------------------------------------------------------
 describe('5 — draft consequence and precision', () => {
   test.each([
-    ['5', /below the worker-pool total 10/i],
-    ['10', /These configured limits align/i],
-    ['20', /above the worker-pool total 10/i],
+    ['5', /lower than the total worker slots \(10\)/i],
+    ['10', /These limits match/i],
+    ['20', /higher than the total worker slots \(10\)/i],
   ])('consequence direction for cap %s', async (value, expected) => {
     mount();
     await userEvent.clear(cap());
@@ -348,7 +348,7 @@ describe('5 — draft consequence and precision', () => {
       },
     });
     mount();
-    expect(document.body).toHaveTextContent(/Capacity details are inconsistent in this response/);
+    expect(document.body).toHaveTextContent(/HappyRanch returned conflicting capacity values/);
     expect(document.body).not.toHaveTextContent(/-2/);
     expect(saveButton()).toBeDisabled();
   });
@@ -363,7 +363,7 @@ describe('5 — draft consequence and precision', () => {
     mount();
     await userEvent.clear(workers());
     await userEvent.type(workers(), '9007199254740000');
-    expect(document.body).toHaveTextContent(/Worker-pool total is outside the range this editor can represent exactly/i);
+    expect(document.body).toHaveTextContent(/Total worker slots are outside the range this editor can represent exactly/i);
     expect(document.body).not.toHaveTextContent(/18014398509480988/);
   });
 
@@ -378,8 +378,8 @@ describe('5 — draft consequence and precision', () => {
     await userEvent.clear(workers());
     await userEvent.type(workers(), '5');
     // contribution = 7 - 3 = 4, so the pool total is 5 + 4 = 9 — never 5 + 7.
-    expect(document.body).toHaveTextContent(/5 task \+ 4 other producers/);
-    expect(document.body).not.toHaveTextContent(/\+ 7 other producers/);
+    expect(document.body).toHaveTextContent(/5 task slots \+ 4 other worker slots/);
+    expect(document.body).not.toHaveTextContent(/\+ 7 other worker slots/);
   });
 
   test('5.5 excess cap copy never claims added capability, before AND after a successful save', async () => {
@@ -392,13 +392,13 @@ describe('5 — draft consequence and precision', () => {
     mount();
     await userEvent.clear(cap());
     await userEvent.type(cap(), '30');
-    expect(document.body).toHaveTextContent(/Extra admission room does not create additional producers/);
+    expect(document.body).toHaveTextContent(/Raising this limit alone does not add worker slots/);
     expect(document.body).not.toHaveTextContent(/more capacity|higher throughput/i);
 
     // R9 5.5: the required POST-SUCCESS behaviour — the honest copy survives
     // into the result panel and no capability claim appears there either.
     await fillAndSave('raise the cap');
-    expect(await screen.findByText(/Saved for next restart/)).toBeVisible();
+    expect(await screen.findByText(/Saved for the next start/)).toBeVisible();
     expect(document.body).not.toHaveTextContent(/more capacity|higher throughput|additional capability|faster/i);
     expect(document.body).not.toHaveTextContent(/Applied|Apply now|Restart daemon/);
     // The pair settled at the saved values and the form is clean.
@@ -410,11 +410,11 @@ describe('5 — draft consequence and precision', () => {
 
 // ---------------------------------------------------------------------------
 describe('6 — absent keys, no-op semantics, rationale-only dirty', () => {
-  test('6.1 absent keys read "Not set in file" and fields seed from next_start', () => {
+  test('6.1 absent keys read "Not explicitly saved" and fields seed from next_start', () => {
     loaded({ persisted_yaml: { queue_workers: null, host_global_session_cap: null } });
     mount();
     const table = screen.getByRole('table');
-    expect(within(table).getAllByText('Not set in file')).toHaveLength(2);
+    expect(within(table).getAllByText('Not explicitly saved')).toHaveLength(2);
     expect(workers()).toHaveValue('3');
     expect(cap()).toHaveValue('10');
     expect(document.body).not.toHaveTextContent(/default/i);
@@ -424,13 +424,13 @@ describe('6 — absent keys, no-op semantics, rationale-only dirty', () => {
     mount();
     // The consequence panel IS rendered for a pristine form, so its absence
     // after typing a reason is a real transition, not a never-present element.
-    expect(document.body).toHaveTextContent(/Draft matches the saved configuration/);
+    expect(document.body).toHaveTextContent(/Your entries match the saved values/);
     await userEvent.type(reasonBox(), 'just the reason');
     expect(document.body).toHaveTextContent(/values are unchanged from the saved file; only the reason differs/);
     // Accepted 6.3 (S3): NO value-comparison / consequence panel in this state.
-    expect(document.body).not.toHaveTextContent(/Draft matches the saved configuration/);
-    expect(document.body).not.toHaveTextContent(/Draft changes the saved configuration/);
-    expect(screen.queryByText('Worker-pool total')).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/Your entries match the saved values/);
+    expect(document.body).not.toHaveTextContent(/Your edits differ from the saved values/);
+    expect(screen.queryByText(/task slots \+/)).not.toBeInTheDocument();
     // No prediction about whether the revision will move.
     expect(document.body).not.toHaveTextContent(/revision will|new revision/i);
     expect(document.body).toHaveTextContent(/Unsaved changes/);
@@ -444,14 +444,14 @@ describe('6 — absent keys, no-op semantics, rationale-only dirty', () => {
     // digits must NOT be read as identical state.
     expect(workers()).toHaveValue('3');
     expect(cap()).toHaveValue('10');
-    expect(within(screen.getByRole('table')).getAllByText('Not set in file')).toHaveLength(2);
+    expect(within(screen.getByRole('table')).getAllByText('Not explicitly saved')).toHaveLength(2);
     // Absent keys are still stageable with a reason (6.2 contrast).
     await userEvent.type(reasonBox(), 'stage both keys explicitly');
     expect(saveButton()).toBeEnabled();
     expect(document.body).not.toHaveTextContent(/no-op|nothing to save/i);
     // Staging absent keys to PRESENT at the same digits is a real change, so the
     // comparison panel appears and the form is genuinely dirty.
-    expect(document.body).toHaveTextContent(/Draft changes the saved configuration/);
+    expect(document.body).toHaveTextContent(/Your edits differ from the saved values/);
     expect(document.body).toHaveTextContent(/Unsaved changes/);
 
     // R9 6.4: the SAME component now sees keys PRESENT at identical digits.
@@ -461,9 +461,9 @@ describe('6 — absent keys, no-op semantics, rationale-only dirty', () => {
     await userEvent.type(reasonBox(), '!');
 
     // The digits are unchanged, but the presence reading is different: the
-    // "Not set in file" cells are gone and the values are shown instead.
+    // "Not explicitly saved" cells are gone and the values are shown instead.
     await waitFor(() => expect(
-      within(screen.getByRole('table')).queryAllByText('Not set in file'),
+      within(screen.getByRole('table')).queryAllByText('Not explicitly saved'),
     ).toHaveLength(0));
     expect(workers()).toHaveValue('3');
     expect(cap()).toHaveValue('10');
@@ -476,7 +476,7 @@ describe('6 — absent keys, no-op semantics, rationale-only dirty', () => {
     // at identical digits the transition is still a genuine configuration
     // change (presence moves absent -> present) and the comparison panel
     // correctly reflects that.
-    expect(document.body).toHaveTextContent(/Draft changes the saved configuration/);
+    expect(document.body).toHaveTextContent(/Your edits differ from the saved values/);
     expect(document.body).toHaveTextContent(/Unsaved changes/);
 
     // CONTRAST — a base whose keys were ALREADY present at the same digits is
@@ -490,9 +490,9 @@ describe('6 — absent keys, no-op semantics, rationale-only dirty', () => {
     expect(document.body).toHaveTextContent(
       /values are unchanged from the saved file; only the reason differs/i,
     );
-    expect(document.body).not.toHaveTextContent(/Draft changes the saved configuration/);
-    expect(document.body).not.toHaveTextContent(/Draft matches the saved configuration/);
-    expect(screen.queryByText('Worker-pool total')).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/Your edits differ from the saved values/);
+    expect(document.body).not.toHaveTextContent(/Your entries match the saved values/);
+    expect(screen.queryByText(/task slots \+/)).not.toBeInTheDocument();
     expect(document.body).toHaveTextContent(/Unsaved changes/);
     expect(saveButton()).toBeEnabled();
   });
@@ -514,8 +514,8 @@ describe('9 / 12 — rejection map (constructed ApiError; parseError itself is L
     mount();
     await fillAndSave();
     expect(await screen.findByText(/Latest saved values could not be read/)).toBeInTheDocument();
-    expect(document.body).toHaveTextContent(/no rebase is offered/);
-    expect(screen.queryByRole('button', { name: /rebase onto latest/i })).not.toBeInTheDocument();
+    expect(document.body).toHaveTextContent(/the update choices are unavailable/);
+    expect(screen.queryByRole('button', { name: /use latest saved version/i })).not.toBeInTheDocument();
   });
 
   test('9.2 a 409 whose latest has a quoted numeric is unusable, and "9" never renders as a number', async () => {
@@ -525,22 +525,22 @@ describe('9 / 12 — rejection map (constructed ApiError; parseError itself is L
     mount();
     await fillAndSave();
     expect(await screen.findByText(/Latest saved values could not be read/)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /rebase onto latest/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /use latest saved version/i })).not.toBeInTheDocument();
   });
 
   test.each([
-    ['12.1 401', new ApiError(401, null, {}), /valid daemon bearer is required; no values were changed/i],
-    ['12.1 403', new ApiError(403, null, {}), /valid daemon bearer is required/i],
+    ['12.1 401', new ApiError(401, null, {}), /valid daemon access token to save these settings. No values were changed by this request/i],
+    ['12.1 403', new ApiError(403, null, {}), /valid daemon access token to save these settings/i],
     ['12.2 422', new ApiError(422, null, {}), /whole number greater than zero/i],
     ['12.3 428', new ApiError(428, 'if_match_required', {}), /Refresh the saved settings before saving again/i],
     ['12.3 400', new ApiError(400, 'if_match_invalid', {}), /Refresh the saved settings before saving again/i],
     ['12.4 audit_failed', new ApiError(503, 'audit_failed', {}), /This request did not change the configuration/i],
-    ['12.5 write absent', new ApiError(503, 'config_write_failed', {}), /This request did not publish new values/i],
-    ['12.5 write present', new ApiError(503, 'config_write_failed', { artifact_state: 'present' }), /temporary artifact remains/i],
-    ['12.5 write unknown', new ApiError(503, 'config_write_failed', { artifact_state: 'unknown' }), /artifact state is unknown/i],
+    ['12.5 write absent', new ApiError(503, 'config_write_failed', {}), /This request did not save new values/i],
+    ['12.5 write present', new ApiError(503, 'config_write_failed', { artifact_state: 'present' }), /temporary save file remains/i],
+    ['12.5 write unknown', new ApiError(503, 'config_write_failed', { artifact_state: 'unknown' }), /could not determine whether a temporary save file remains/i],
     ['12.6 env confirm', new ApiError(409, 'environment_confirmation_required', {}), /Confirm the environment override/i],
-    ['12.8 unknown code', new ApiError(503, 'something_new', {}), /Save result unknown/i],
-    ['11.1 network', new Error('socket hang up'), /Save result unknown/i],
+    ['12.8 unknown code', new ApiError(503, 'something_new', {}), /HappyRanch could not confirm whether the save finished/i],
+    ['11.1 network', new Error('socket hang up'), /HappyRanch could not confirm whether the save finished/i],
   ])('%s maps to safe fixed copy', async (_name, error, expected) => {
     mutateAsync.mockRejectedValue(error);
     mount();
@@ -552,7 +552,7 @@ describe('9 / 12 — rejection map (constructed ApiError; parseError itself is L
     mutateAsync.mockRejectedValue(new ApiError(503, 'config_write_failed', {}));
     mount();
     await fillAndSave();
-    await screen.findByText(/This request did not publish new values/);
+    await screen.findByText(/This request did not save new values/);
     expect(document.body).not.toHaveTextContent(/previous authoritative file remains in use/i);
   });
 
@@ -560,7 +560,7 @@ describe('9 / 12 — rejection map (constructed ApiError; parseError itself is L
     mutateAsync.mockRejectedValue(new ApiError(500, null, {}));
     mount();
     await fillAndSave();
-    await screen.findByText(/Save result unknown/);
+    await screen.findByText(/HappyRanch could not confirm whether the save finished/);
     for (const forbidden of [/failed safely/i, /nothing changed/i, /no live capacity was changed/i]) {
       expect(document.body).not.toHaveTextContent(forbidden);
     }
@@ -573,7 +573,7 @@ describe('9 / 12 — rejection map (constructed ApiError; parseError itself is L
     }));
     mount();
     await fillAndSave();
-    await screen.findByText(/This request did not publish new values/);
+    await screen.findByText(/This request did not save new values/);
     const body = document.body.textContent ?? '';
     expect(body).not.toMatch(/secret/);
     expect(body).not.toMatch(/\/var\/lib|node:internal|\bat Module\./);
@@ -589,7 +589,7 @@ describe('15 — numeric honesty at the write site (Q8 is NOT solved)', () => {
     await userEvent.type(workers(), '9007199254740993');
     await userEvent.type(reasonBox(), 'why');
     await userEvent.click(saveButton());
-    expect(await screen.findByText(/Task session slots is outside the range this editor can represent exactly/i)).toBeInTheDocument();
+    expect(await screen.findByText(/This value is too large for this page to handle exactly/i)).toBeInTheDocument();
     expect(workers()).toHaveValue('9007199254740993');
     expect(document.body).not.toHaveTextContent('9007199254740992');
     expect(mutateAsync).not.toHaveBeenCalled();
@@ -611,7 +611,7 @@ describe('15 — numeric honesty at the write site (Q8 is NOT solved)', () => {
     await userEvent.type(workers(), '9007199254740992');
     await userEvent.type(reasonBox(), 'why');
     await userEvent.click(saveButton());
-    expect(await screen.findByText(/Task session slots is outside the range this editor can represent exactly/i)).toBeInTheDocument();
+    expect(await screen.findByText(/This value is too large for this page to handle exactly/i)).toBeInTheDocument();
     expect(mutateAsync).not.toHaveBeenCalled();
   });
 
@@ -640,7 +640,7 @@ describe('15 — numeric honesty at the write site (Q8 is NOT solved)', () => {
     // The blank field gets its OWN specific message — `capacityModel.ts:107`
     // separates `blank` from the malformed-grammar reason — so it is refused
     // with field-associated copy and is never coerced to 0 or NaN.
-    expect(await screen.findByText(/Task session slots is required/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Task session limit is required/i)).toBeInTheDocument();
     expect(workers()).toHaveValue('');
     expect(mutateAsync).not.toHaveBeenCalled();
   });
@@ -651,8 +651,8 @@ describe('15 — numeric honesty at the write site (Q8 is NOT solved)', () => {
     await userEvent.type(workers(), '9007199254740993');
     await userEvent.type(reasonBox(), 'why');
     await userEvent.click(saveButton());
-    await screen.findByText(/Task session slots is outside the range this editor can represent exactly/i);
-    expect(document.body).toHaveTextContent(/limit of this editor, not a limit of the daemon/i);
+    await screen.findByText(/This value is too large for this page to handle exactly/i);
+    expect(document.body).toHaveTextContent(/limit of the page, not a HappyRanch limit/i);
     expect(document.body).not.toHaveTextContent(/maximum (allowed|value|supported)/i);
   });
 
@@ -685,7 +685,7 @@ describe('15 — numeric honesty at the write site (Q8 is NOT solved)', () => {
         expect(
           document.body.textContent,
           `${slotName} = ${typeName}`,
-        ).toMatch(/Cannot read capacity configuration/);
+        ).toMatch(/HappyRanch could not read the saved capacity settings/);
         expect(document.body.textContent, `${slotName} = ${typeName}`).not.toMatch(/\b0\b/);
         view.unmount();
       }
@@ -697,11 +697,11 @@ describe('15 — numeric honesty at the write site (Q8 is NOT solved)', () => {
     for (const patch of [
       { persisted_yaml: { queue_workers: null, host_global_session_cap: 10 } },
       { persisted_yaml: { queue_workers: 3, host_global_session_cap: null } },
-      { effective_admission_cap: null, effective_admission_reason: 'No supervisor snapshot' },
+      { effective_admission_cap: null, effective_admission_reason: 'HappyRanch cannot currently verify the overall supervised-session limit.' },
     ]) {
       loaded(patch);
       const view = mount();
-      expect(screen.queryByText(/Cannot read capacity configuration/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/HappyRanch could not read the saved capacity settings/)).not.toBeInTheDocument();
       view.unmount();
     }
     // A fraction is not a safe integer: withheld, never shown as `5`.
@@ -733,7 +733,7 @@ describe('15 — numeric honesty at the write site (Q8 is NOT solved)', () => {
       loaded(patch);
       const view = mount();
       expect(document.body.textContent, JSON.stringify(patch))
-        .toMatch(/Cannot read capacity configuration/);
+        .toMatch(/HappyRanch could not read the saved capacity settings/);
       view.unmount();
     }
     // Relational: task_workers <= producer_envelope. A violation is
@@ -743,14 +743,14 @@ describe('15 — numeric honesty at the write site (Q8 is NOT solved)', () => {
       producer_components: { task_workers: 12, thread_workers: 0, dream_workers: 0, wake_workers: 0, schedule_workers: 0 },
     });
     mount();
-    expect(document.body.textContent).toMatch(/Capacity details are inconsistent in this response/);
+    expect(document.body.textContent).toMatch(/HappyRanch returned conflicting capacity values/);
     expect(document.body).not.toHaveTextContent(/-2/);
   });
 
   test('15.10 a null in a non-nullable position is unusable, never a zero', () => {
     loaded({ producer_envelope: null });
     mount();
-    expect(screen.getByRole('alert')).toHaveTextContent(/Cannot read capacity configuration/);
+    expect(screen.getByRole('alert')).toHaveTextContent(/HappyRanch could not read the saved capacity settings/);
     expect(document.body).not.toHaveTextContent(/envelope 0/);
   });
 
@@ -770,7 +770,7 @@ describe('15 — numeric honesty at the write site (Q8 is NOT solved)', () => {
         loaded(patch(bad));
         const view = mount();
         expect(document.body.textContent, `${slotName} = ${typeName}`)
-          .toMatch(/Cannot read capacity configuration/);
+          .toMatch(/HappyRanch could not read the saved capacity settings/);
         expect(document.body.textContent, `${slotName} = ${typeName}`).not.toMatch(/\b0\b/);
         view.unmount();
       }
@@ -783,7 +783,7 @@ describe('15 — numeric honesty at the write site (Q8 is NOT solved)', () => {
       loaded(patch);
       const view = mount();
       expect(document.body.textContent, JSON.stringify(patch))
-        .toMatch(/Cannot read capacity configuration/);
+        .toMatch(/HappyRanch could not read the saved capacity settings/);
       view.unmount();
     }
     // A FRACTION is not a safe integer: withheld, and 5.5 never renders as 5 —
@@ -860,7 +860,7 @@ describe('16 — accessibility wiring (not a screen-reader acceptance pass)', ()
     mutateAsync.mockResolvedValue(validSnapshot({ restart_pending: true, revision: REV_B }));
     mount();
     await fillAndSave();
-    const status = await screen.findByText(/Saved for next restart/);
+    const status = await screen.findByText(/Saved for the next start/);
     expect(status.closest('[role="status"]')).toHaveAttribute('aria-live', 'polite');
     expect(document.querySelector('[aria-live="assertive"]')).toBeNull();
   });
@@ -885,11 +885,11 @@ describe('16 — accessibility wiring (not a screen-reader acceptance pass)', ()
   test('16.6 the accepted TAB ORDER is walked, and every action is a real keyboard-operable control', async () => {
     loaded({
       environment_shadowed: ['queue_workers'],
-      environment_warning: 'Environment overrides win.',
+      environment_warning: 'An environment setting takes priority over the saved configuration. Restarting HappyRanch will not make the saved value take effect.',
       next_start: { queue_workers: 3, host_global_session_cap: 12 },
     });
     mount();
-    for (const name of [/Save for next restart/, /Discard draft/, /Refresh running state/]) {
+    for (const name of [/Save for next start/, /Discard draft/, /Refresh capacity values/]) {
       expect(screen.getByRole('button', { name })).toBeInstanceOf(HTMLButtonElement);
     }
     expect(screen.getByText('Capacity details').tagName).toBe('SUMMARY');
@@ -909,7 +909,7 @@ describe('16 — accessibility wiring (not a screen-reader acceptance pass)', ()
       screen.getByRole('checkbox'),
       saveButton(),
       screen.getByRole('button', { name: /Discard draft/ }),
-      screen.getByRole('button', { name: /Refresh running state/ }),
+      screen.getByRole('button', { name: /Refresh capacity values/ }),
     ];
     for (const next of expected) {
       await user.tab();
@@ -932,39 +932,77 @@ describe('16 — accessibility wiring (not a screen-reader acceptance pass)', ()
     await userEvent.clear(workers());
     await userEvent.type(workers(), '5');
     await fillAndSave('why');
-    await screen.findByText('Saved settings changed elsewhere. Your draft is preserved.');
+    await screen.findByText('The saved settings changed elsewhere. Your edits are still here.');
 
-    for (const name of ['Keep my draft, rebase onto latest', 'Discard draft, accept latest']) {
+    for (const name of ['Keep my edits and use latest saved version', 'Discard my edits and use latest saved version']) {
       expect(screen.getByRole('button', { name })).toBeInstanceOf(HTMLButtonElement);
     }
     // Operate one by keyboard only.
-    screen.getByRole('button', { name: 'Keep my draft, rebase onto latest' }).focus();
+    screen.getByRole('button', { name: 'Keep my edits and use latest saved version' }).focus();
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(
-      screen.queryByRole('button', { name: 'Keep my draft, rebase onto latest' }),
+      screen.queryByRole('button', { name: 'Keep my edits and use latest saved version' }),
     ).not.toBeInTheDocument());
   });
 
   test('16.8 important warnings are VISIBLE with the details disclosure collapsed', () => {
     loaded({
       restart_pending: true,
-      warnings: ['Producer envelope exceeds the admission limit.'],
+      warnings: ['The overall session limit (3) is lower than the total worker slots (4). Under high demand, some sessions may wait. You can still save this setting.'],
       environment_shadowed: ['queue_workers'],
-      environment_warning: 'Environment overrides win.',
+      environment_warning: 'An environment setting takes priority over the saved configuration. Restarting HappyRanch will not make the saved value take effect.',
     });
     mount();
-    expect(screen.getByText('Producer envelope exceeds the admission limit.')).toBeVisible();
-    expect(screen.getByText(/Environment overrides win/)).toBeVisible();
-    expect(screen.getByText(/A persisted next-start value differs/)).toBeVisible();
+    expect(screen.getByText('The overall session limit (3) is lower than the total worker slots (4). Under high demand, some sessions may wait. You can still save this setting.')).toBeVisible();
+    expect(screen.getByText(/An environment setting takes priority/)).toBeVisible();
+    expect(screen.getByText(/A saved value differs from the value in effect now/)).toBeVisible();
     // The disclosure is collapsed, so its contents are not what carries them.
     expect(document.querySelector('details')?.open).toBeFalsy();
   });
 
   test('16.9 warnings carry text, never colour alone', () => {
-    loaded({ warnings: ['Producer envelope exceeds the admission limit.'] });
+    loaded({ warnings: ['The overall session limit (3) is lower than the total worker slots (4). Under high demand, some sessions may wait. You can still save this setting.'] });
     mount();
-    const warning = screen.getByText('Producer envelope exceeds the admission limit.');
+    const warning = screen.getByText('The overall session limit (3) is lower than the total worker slots (4). Under high demand, some sessions may wait. You can still save this setting.');
     expect((warning.textContent ?? '').trim().length).toBeGreaterThan(10);
+  });
+
+  test('16.9b known and UNKNOWN/FUTURE server warnings are rendered verbatim (no prose parsing)', () => {
+    const known = 'The overall session limit (3) is lower than the total worker slots (4). Under high demand, some sessions may wait. You can still save this setting.';
+    const future = 'Future capacity notice: reservoir pressure is nominal.';
+    loaded({ warnings: [known, future] });
+    mount();
+    // A known structured relation is shown exactly as the daemon supplied it.
+    expect(screen.getByText(known)).toBeVisible();
+    // An unrecognized/future warning is neither silently hidden nor rewritten.
+    expect(screen.getByText(future)).toBeVisible();
+    expect(document.body).toHaveTextContent(future);
+  });
+
+  test('16.9c known capability variants and an unknown/future reason are shown verbatim', () => {
+    loaded({
+      effective_admission_cap: null,
+      effective_admission_reason: 'HappyRanch cannot currently verify the overall supervised-session limit.',
+    });
+    const nullCap = mount();
+    expect(document.body).toHaveTextContent(
+      'HappyRanch cannot currently verify the overall supervised-session limit.',
+    );
+    nullCap.unmount();
+
+    loaded({
+      effective_admission_cap: 4,
+      effective_admission_reason: 'The active execution backend cannot enforce every host-safety check, so HappyRanch is using a lower session limit.',
+    });
+    const fallback = mount();
+    expect(document.body).toHaveTextContent(
+      'The active execution backend cannot enforce every host-safety check, so HappyRanch is using a lower session limit.',
+    );
+    fallback.unmount();
+
+    loaded({ effective_admission_cap: 4, effective_admission_reason: 'Some future capability reason.' });
+    mount();
+    expect(document.body).toHaveTextContent('Some future capability reason.');
   });
 });
 
@@ -976,7 +1014,7 @@ describe('17 — navigation guard (beforeunload half)', () => {
     const event = new Event('beforeunload', { cancelable: true });
     window.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(true);
-    expect(screen.getByText(/Leaving or reloading will discard/i)).toBeInTheDocument();
+    expect(screen.getByText(/If you leave or reload, these edits will be lost/i)).toBeInTheDocument();
   });
 
   test('17.5 a clean form installs no warning', () => {
@@ -984,7 +1022,7 @@ describe('17 — navigation guard (beforeunload half)', () => {
     const event = new Event('beforeunload', { cancelable: true });
     window.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(false);
-    expect(screen.queryByText(/Leaving or reloading will discard/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/If you leave or reload, these edits will be lost/i)).not.toBeInTheDocument();
   });
 
   test('17.7 the guarded component mounts and renders normally with no navigation involved', () => {
@@ -1057,7 +1095,7 @@ describe('C3-N — own settlement vs. other observations (ordering branches)', (
     await screen.findByText('Configuration changed elsewhere.');
 
     await venue.respond(pairSnapshot(5, 12, REV_B));
-    await screen.findByText(/^Saved for next restart/);
+    await screen.findByText(/^Saved for the next start/);
     await waitFor(() => expect(workers()).toHaveValue('9'));
     expect(cap()).toHaveValue('9');
     expect(reasonBox()).toHaveValue('');
@@ -1091,7 +1129,7 @@ describe('C3-N — own settlement vs. other observations (ordering branches)', (
     expect(screen.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
 
     await venue.respond(pairSnapshot(5, 12, REV_B));
-    await screen.findByText(/^Saved for next restart/);
+    await screen.findByText(/^Saved for the next start/);
     // Then the own settlement itself renders: still no phantom.
     venue.observe(pairSnapshot(5, 12, REV_B),
       { issuedSeq: 8, settledSeq: 8, origin: 'write', outcome: 'usable', receiptAt: 3, sourceRevision: REV_B });
@@ -1120,7 +1158,7 @@ describe('C3-N — own settlement vs. other observations (ordering branches)', (
       { issuedSeq: 8, settledSeq: 8, origin: 'write', outcome: 'usable', receiptAt: 2, sourceRevision: REV_B });
     expect(screen.queryByText('Configuration changed elsewhere.')).not.toBeInTheDocument();
     await venue.respond(pairSnapshot(5, 12, REV_B));
-    await screen.findByText(/^Saved for next restart/);
+    await screen.findByText(/^Saved for the next start/);
     expect(screen.queryByText(/Unsaved changes/)).not.toBeInTheDocument();
 
     // Another editor moves it to 7/14, then restores 5/12 — the same revision
