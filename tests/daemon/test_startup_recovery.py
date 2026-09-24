@@ -2570,6 +2570,114 @@ def _seed_consumed_parent_handoff(db: Database) -> tuple[dict, dict]:
     return accepted, dict(accepted)
 
 
+def test_single_sweep_after_marker_cleanup_and_branch2_publish_one_parent_wake(
+    tmp_path, monkeypatch,
+):
+    """One sweep atomically arbitrates its cleanup tail with Branch 2.
+
+    The deque probe coordinates the historical check-then-enqueue race only.
+    Once production uses ``TaskQueue.enqueue_if_absent``, the probe is not a
+    shipping dependency: both producers instead meet at that public boundary.
+    """
+    from collections import deque
+
+    from runtime.daemon import jobs_runner
+
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    _seed_consumed_parent_handoff(db)
+    _seed_job(db, "JOB-OWNED", "TASK-CHILD-HANDOFF", "running")
+    queue.enqueue("test", "TASK-UNRELATED", metadata={"source": "control"})
+
+    admission_entered = threading.Event()
+    release_cleanup = threading.Event()
+    scans = threading.Barrier(2)
+    deque_lock = threading.Lock()
+
+    class CoordinatedDeque:
+        def __init__(self, values):
+            self.values = deque(values)
+            self.coordinate = True
+
+        def __len__(self):
+            return len(self.values)
+
+        def append(self, value):
+            self.values.append(value)
+
+        def popleft(self):
+            return self.values.popleft()
+
+        def __iter__(self):
+            snapshot = tuple(self.values)
+            with deque_lock:
+                coordinate = self.coordinate
+                if coordinate:
+                    admission_entered.set()
+            if coordinate:
+                scans.wait(timeout=2)
+                with deque_lock:
+                    self.coordinate = False
+            return iter(snapshot)
+
+    coordinated = CoordinatedDeque(queue._queue._queue)
+    queue._queue._queue = coordinated
+
+    # On the corrected path signal the same release from the public boundary;
+    # on the historical path the first private-deque scan provides the signal.
+    atomic_admit = getattr(queue, "enqueue_if_absent", None)
+    if atomic_admit is not None:
+        def observed_admit(*args, **kwargs):
+            admission_entered.set()
+            return atomic_admit(*args, **kwargs)
+        monkeypatch.setattr(queue, "enqueue_if_absent", observed_admit)
+
+    errors: list[BaseException] = []
+    workers: list[threading.Thread] = []
+    real_thread = threading.Thread
+    prior_inflight = dict(jobs_runner._INFLIGHT)
+    prior_kill_reasons = dict(jobs_runner._KILL_REASON_OVERRIDE)
+
+    async def paused_termination(*_args, **_kwargs):
+        assert release_cleanup.wait(2), "cleanup release was never signalled"
+        return []
+
+    def tracked_thread(*, target, daemon):
+        worker = real_thread(
+            target=lambda: _capture_worker_error(target, errors), daemon=daemon,
+        )
+        workers.append(worker)
+        return worker
+
+    def release_at_competing_admission() -> None:
+        if not admission_entered.wait(2):
+            errors.append(AssertionError("neither admission seam was reached"))
+        release_cleanup.set()
+
+    coordinator = real_thread(target=release_at_competing_admission)
+    coordinator.start()
+    monkeypatch.setattr(jobs_runner, "terminate_jobs_for_task", paused_termination)
+    monkeypatch.setattr(threading, "Thread", tracked_thread)
+    try:
+        _sweep_on_startup(db, queue, "test", orch)
+    finally:
+        release_cleanup.set()
+        coordinator.join(2)
+        for worker in workers:
+            worker.join(2)
+        jobs_runner._INFLIGHT.clear()
+        jobs_runner._INFLIGHT.update(prior_inflight)
+        jobs_runner._KILL_REASON_OVERRIDE.clear()
+        jobs_runner._KILL_REASON_OVERRIDE.update(prior_kill_reasons)
+
+    assert not coordinator.is_alive()
+    assert all(not worker.is_alive() for worker in workers), "cleanup worker leaked"
+    assert not errors
+    queued = list(coordinated.values)
+    assert queued[0] == ("test", "TASK-UNRELATED", {"source": "control"})
+    assert queued.count(("test", "TASK-PARENT-HANDOFF", None)) == 1
+    assert db.get_job("JOB-OWNED").reason == "task_ended"
+
+
 @pytest.mark.parametrize("captured_jobs,replace_before_handoff", [(0, False), (1, False), (0, True), (1, True)], ids=["zero-job", "one-job", "zero-job-winner", "one-job-winner"])
 def test_consumed_recovery_parent_handoff_is_receipt_owned_through_shipping_caller(tmp_path, monkeypatch, captured_jobs, replace_before_handoff):
     """The actual shipping handoff owns only its captured receipt and parent wake."""
