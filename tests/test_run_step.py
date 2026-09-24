@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -49,19 +50,9 @@ def _terminal_worktree(
     """Create one disposable canonical primary + linked task worktree."""
     from runtime.orchestrator.orchestrator import Orchestrator
 
-    primary = runtime.workspaces_dir / agent / "repos" / "happyranch"
-    primary.mkdir(parents=True)
-    _git(primary, "init", "-b", "main")
-    _git(primary, "config", "user.email", "tests@example.invalid")
-    _git(primary, "config", "user.name", "HappyRanch tests")
-    (primary / "tracked.txt").write_text("base\n")
-    _git(primary, "add", "tracked.txt")
-    _git(primary, "commit", "-m", "test base")
-    _git(primary, "update-ref", "refs/remotes/origin/main", "HEAD")
-    candidate = primary / ".claude" / "worktrees" / task_id
-    if create_candidate:
-        candidate.parent.mkdir(parents=True)
-        _git(primary, "worktree", "add", "-b", f"task/{task_id}", str(candidate))
+    primary, candidate = _registered_terminal_worktree(
+        runtime, task_id, agent=agent, create_candidate=create_candidate,
+    )
 
     db.insert_task(TaskRecord(
         id=task_id,
@@ -82,8 +73,32 @@ def _terminal_worktree(
     return orch, primary, candidate
 
 
-def _admit_terminal_worktree(monkeypatch) -> None:
-    """Keep the real local-git probes while making remote/process facts exact."""
+def _registered_terminal_worktree(
+    runtime: OrgPaths,
+    task_id: str,
+    *,
+    agent: str = "dev_agent",
+    create_candidate: bool = True,
+) -> tuple[Path, Path]:
+    """Create the real disposable Git primary/worktree used by writer tests."""
+    primary = runtime.workspaces_dir / agent / "repos" / "happyranch"
+    primary.mkdir(parents=True)
+    _git(primary, "init", "-b", "main")
+    _git(primary, "config", "user.email", "tests@example.invalid")
+    _git(primary, "config", "user.name", "HappyRanch tests")
+    (primary / "tracked.txt").write_text("base\n")
+    _git(primary, "add", "tracked.txt")
+    _git(primary, "commit", "-m", "test base")
+    _git(primary, "update-ref", "refs/remotes/origin/main", "HEAD")
+    candidate = primary / ".claude" / "worktrees" / task_id
+    if create_candidate:
+        candidate.parent.mkdir(parents=True)
+        _git(primary, "worktree", "add", "-b", f"task/{task_id}", str(candidate))
+    return primary, candidate
+
+
+def _admit_real_terminal_worktree_reclamation(monkeypatch) -> None:
+    """Keep local Git and /proc probes real; make only the remote fact exact."""
     from runtime.orchestrator import run_step as run_step_module
 
     real_run = run_step_module._run_terminal_worktree_command
@@ -94,6 +109,13 @@ def _admit_terminal_worktree(monkeypatch) -> None:
         return real_run(args, cwd=cwd, timeout=timeout)
 
     monkeypatch.setattr(run_step_module, "_run_terminal_worktree_command", fake_run)
+
+
+def _admit_terminal_worktree(monkeypatch) -> None:
+    """Keep the real local-git probes while making remote/process facts exact."""
+    from runtime.orchestrator import run_step as run_step_module
+
+    _admit_real_terminal_worktree_reclamation(monkeypatch)
     monkeypatch.setattr(
         run_step_module,
         "_terminal_worktree_process_reference",
@@ -2106,6 +2128,61 @@ def test_terminal_worktree_live_process_reference_is_one_shot(
     assert db.get_task(task_id).status is TaskStatus.FAILED
     assert outcomes == [("preserved", "live-process-reference")]
     assert probes == ["probe"]
+    assert candidate.exists()
+
+
+@pytest.mark.skipif(not Path("/proc").is_dir(), reason="Linux /proc proof")
+@pytest.mark.parametrize("reference_kind", ["cwd", "fd"])
+def test_terminal_worktree_real_proc_reference_preserves_without_exit_retry(
+    runtime, db, monkeypatch, reference_kind,
+):
+    """The real same-UID scanner observes cwd/fd refs and remains one-shot."""
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = f"TASK-REAL-PROC-{reference_kind.upper()}"
+    orch, primary, candidate = _terminal_worktree(runtime, db, task_id)
+    _admit_real_terminal_worktree_reclamation(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+
+    script = (
+        "import sys; "
+        "held = open(sys.argv[1]) if sys.argv[1] else None; "
+        "print('ready', flush=True); sys.stdin.readline()"
+    )
+    held_path = str(candidate / "tracked.txt") if reference_kind == "fd" else ""
+    holder = subprocess.Popen(
+        [sys.executable, "-c", script, held_path],
+        cwd=candidate if reference_kind == "cwd" else primary,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "ready"
+
+        _fail(orch, task_id, note="failed")
+
+        assert db.get_task(task_id).status is TaskStatus.FAILED
+        assert outcomes == [("preserved", "live-process-reference")]
+        assert candidate.exists()
+        assert str(candidate) in _git(
+            primary, "worktree", "list", "--porcelain",
+        ).stdout
+    finally:
+        if holder.poll() is None:
+            assert holder.stdin is not None
+            holder.stdin.write("\n")
+            holder.stdin.flush()
+            holder.wait(timeout=5)
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait(timeout=5)
+
+    # Process exit does not manufacture a second cleanup attempt.
+    assert holder.returncode == 0
+    assert outcomes == [("preserved", "live-process-reference")]
     assert candidate.exists()
 
 

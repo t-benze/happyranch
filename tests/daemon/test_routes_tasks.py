@@ -2304,6 +2304,53 @@ def test_live_cancel_clears_control_before_reclamation(
     assert observed == [(TaskStatus.CANCELLED, None, None)]
 
 
+@pytest.mark.parametrize("live", [False, True], ids=["no-live-b20", "live-b8"])
+def test_cancel_shipping_seam_removes_real_eligible_linked_worktree(
+    client_with_runtime, monkeypatch, live,
+):
+    from runtime.models import TaskRecord, TaskStatus
+    from tests.test_run_step import (
+        _admit_real_terminal_worktree_reclamation,
+        _git,
+        _registered_terminal_worktree,
+    )
+
+    client, state = client_with_runtime
+    task_id = f"TASK-CANCEL-REAL-{'LIVE' if live else 'IDLE'}"
+    state.db.insert_task(TaskRecord(
+        id=task_id,
+        brief="real cancel reclamation",
+        assigned_agent="dev_agent",
+        status=TaskStatus.IN_PROGRESS if live else TaskStatus.PENDING,
+    ))
+    primary, candidate = _registered_terminal_worktree(
+        state.orchestrator._paths, task_id,
+    )
+    controls = []
+    if live:
+        state.sessions.set_active(task_id, "dev_agent", "sess-live")
+        state.sessions.set_cancel_control(
+            task_id, "dev_agent", "sess-live", lambda: controls.append("cancelled"),
+        )
+    _admit_real_terminal_worktree_reclamation(monkeypatch)
+
+    response = client.post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/cancel",
+        json={"rationale": "done"},
+    )
+
+    assert response.status_code == 200
+    assert state.db.get_task(task_id).status is TaskStatus.CANCELLED
+    assert controls == (["cancelled"] if live else [])
+    assert not candidate.exists()
+    assert str(candidate) not in _git(
+        primary, "worktree", "list", "--porcelain",
+    ).stdout
+    assert _git(
+        primary, "show-ref", "--verify", f"refs/heads/task/{task_id}",
+    ).returncode == 0
+
+
 def test_cancel_cascades_down_subtree(client_with_runtime):
     """Default cascade=True must cancel every non-terminal descendant and
     leave already-terminal siblings untouched."""

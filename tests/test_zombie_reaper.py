@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import time as _time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from unittest.mock import MagicMock, patch
@@ -798,6 +799,116 @@ def test_v2_ttl_cancel_reclaims_only_after_successful_cas(db: Database, monkeypa
     )
 
     assert observed == ["cas", "parent", "reclaim"]
+
+
+def _real_reclamation_orchestrator(
+    tmp_path: Path, db: Database, *, manager: str, workers: tuple[str, ...],
+):
+    from runtime.config import Settings
+    from runtime.daemon.sessions import SessionTracker
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.teams import TeamsRegistry
+    from runtime.runtime import RuntimeDir
+
+    paths = OrgPaths(root=RuntimeDir.init(tmp_path / "rt").orgs_dir / "test")
+    paths.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.teams_config_path.write_text(
+        "teams:\n"
+        "  engineering:\n"
+        f"    manager: {manager}\n"
+        f"    workers: [{', '.join(workers)}]\n"
+    )
+    orch = Orchestrator(
+        db=db,
+        settings=Settings(),
+        paths=paths,
+        slug="test",
+        teams=TeamsRegistry.load(paths.root),
+    )
+    orch.attach_sessions(SessionTracker())
+    return orch
+
+
+def test_legacy_zombie_shipping_seam_removes_real_eligible_linked_worktree(
+    tmp_path: Path, db: Database, monkeypatch,
+):
+    from tests.test_run_step import (
+        _admit_real_terminal_worktree_reclamation,
+        _git,
+        _registered_terminal_worktree,
+    )
+
+    task_id = "TASK-ZOMBIE-LEGACY-REAL"
+    flag_time = _ago(FLAG_TTL_NO_FINGERPRINT_SECONDS + 5)
+    _insert_zombie_candidate(
+        db,
+        task_id,
+        last_heartbeat=_stale_hb(),
+        executor_pid=ZOMBIE_PID,
+        zombie_flagged_at=flag_time,
+    )
+    orch = _real_reclamation_orchestrator(
+        tmp_path, db, manager="engineering_head", workers=("dev_agent",),
+    )
+    primary, candidate = _registered_terminal_worktree(
+        orch._paths, task_id,
+    )
+    _admit_real_terminal_worktree_reclamation(monkeypatch)
+
+    _sweep_org_zombies(
+        db, now=_now(), uptime=999, warm_up_seconds=30, orchestrator=orch,
+    )
+
+    assert db.get_task(task_id).status is TaskStatus.CANCELLED
+    assert not candidate.exists()
+    assert str(candidate) not in _git(
+        primary, "worktree", "list", "--porcelain",
+    ).stdout
+    assert _git(
+        primary, "show-ref", "--verify", f"refs/heads/task/{task_id}",
+    ).returncode == 0
+
+
+def test_v2_zombie_shipping_seam_removes_real_eligible_linked_worktree(
+    tmp_path: Path, monkeypatch,
+):
+    from tests.test_authority_v2_attempt_admission import _seed_bound_task, _store
+    from tests.test_authority_v2_startup_reaper import _flag_v2_zombie
+    from tests.test_run_step import (
+        _admit_real_terminal_worktree_reclamation,
+        _git,
+        _registered_terminal_worktree,
+    )
+
+    store = _store(tmp_path)
+    _seed_bound_task(store)
+    now, _selected = _flag_v2_zombie(
+        store, age=FLAG_TTL_NO_FINGERPRINT_SECONDS + 5,
+    )
+    orch = _real_reclamation_orchestrator(
+        tmp_path,
+        store._db,
+        manager="engineering_manager",
+        workers=("dev_agent",),
+    )
+    primary, candidate = _registered_terminal_worktree(
+        orch._paths, "TASK-C2", agent="engineering_manager",
+    )
+    _admit_real_terminal_worktree_reclamation(monkeypatch)
+
+    _sweep_org_zombies(
+        store._db, now=now, uptime=999, warm_up_seconds=0, orchestrator=orch,
+    )
+
+    assert store._db.get_task("TASK-C2").status is TaskStatus.CANCELLED
+    assert not candidate.exists()
+    assert str(candidate) not in _git(
+        primary, "worktree", "list", "--porcelain",
+    ).stdout
+    assert _git(
+        primary, "show-ref", "--verify", "refs/heads/task/TASK-C2",
+    ).returncode == 0
 
 
 def test_v2_lost_cas_never_reclaims(db: Database, monkeypatch):

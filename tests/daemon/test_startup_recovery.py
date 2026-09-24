@@ -2473,6 +2473,45 @@ def test_sweep_failed_writer_attempts_reclamation_after_audit_and_parent_wake(
     )]
 
 
+@pytest.mark.parametrize("executor_pid", [None, 99999], ids=["unknown", "dead"])
+def test_startup_failure_shipping_seam_removes_real_eligible_linked_worktree(
+    tmp_path: Path, monkeypatch, executor_pid,
+) -> None:
+    from runtime.daemon.sessions import SessionTracker
+    from tests.test_run_step import (
+        _admit_real_terminal_worktree_reclamation,
+        _git,
+        _registered_terminal_worktree,
+    )
+
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    task_id = f"TASK-STARTUP-REAL-{'UNKNOWN' if executor_pid is None else 'DEAD'}"
+    db.insert_task(TaskRecord(
+        id=task_id,
+        brief="real startup reclamation",
+        assigned_agent="dev_agent",
+        status=TaskStatus.IN_PROGRESS,
+    ))
+    if executor_pid is not None:
+        db.update_task(task_id, executor_pid=executor_pid)
+    primary, candidate = _registered_terminal_worktree(
+        orch._paths, task_id,
+    )
+    orch.attach_sessions(SessionTracker())
+    _admit_real_terminal_worktree_reclamation(monkeypatch)
+
+    _sweep_on_startup(db, queue, "test", orch)
+
+    assert db.get_task(task_id).status is TaskStatus.FAILED
+    assert not candidate.exists()
+    assert str(candidate) not in _git(
+        primary, "worktree", "list", "--porcelain",
+    ).stdout
+    assert _git(
+        primary, "show-ref", "--verify", f"refs/heads/task/{task_id}",
+    ).returncode == 0
+
+
 def test_sweep_parked_delegated_with_all_children_terminal_reenqueues(tmp_path):
     """Path B Branch 2 (the landmine): a parent parked on its children is stored
     in_progress(delegated) — NOT blocked. The sweep MUST re-enqueue it when all
