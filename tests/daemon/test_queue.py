@@ -68,6 +68,76 @@ def test_enqueue_if_absent_publisher_exception_does_not_strand_future_wake() -> 
     with pytest.raises(RuntimeError, match="injected publication failure"):
         q.enqueue_if_absent("alpha", "TASK-PARENT", publisher=fail)
 
+    assert q._admission_reservations == set()
+    assert q.enqueue_if_absent("alpha", "TASK-PARENT") is True
+    assert q._queue.get_nowait() == ("alpha", "TASK-PARENT", None)
+
+
+def test_enqueue_if_absent_reserves_across_unlocked_publisher_interval() -> None:
+    """A competing producer loses while the external publisher is in flight."""
+    q = TaskQueue()
+    publisher_entered = threading.Event()
+    release_publisher = threading.Event()
+    errors: list[BaseException] = []
+    outcomes: list[bool] = []
+
+    def publisher() -> None:
+        publisher_entered.set()
+        assert release_publisher.wait(2), "publisher was never released"
+        q.enqueue("alpha", "TASK-PARENT", metadata={"source": "winner"})
+
+    def winner() -> None:
+        try:
+            outcomes.append(q.enqueue_if_absent(
+                "alpha", "TASK-PARENT", publisher=publisher,
+            ))
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=winner)
+    worker.start()
+    assert publisher_entered.wait(2), "publisher did not reach the external seam"
+    assert q._queue.empty()
+    assert q.enqueue_if_absent("alpha", "TASK-PARENT") is False
+    release_publisher.set()
+    worker.join(2)
+
+    assert not worker.is_alive()
+    assert not errors
+    assert outcomes == [True]
+    assert q._admission_reservations == set()
+    assert q._queue.get_nowait() == (
+        "alpha", "TASK-PARENT", {"source": "winner"},
+    )
+    assert q._queue.empty()
+
+
+def test_enqueue_if_absent_publisher_refusal_releases_reservation() -> None:
+    """A publisher that emits nothing cannot strand ownership."""
+    q = TaskQueue()
+
+    assert q.enqueue_if_absent(
+        "alpha", "TASK-PARENT", publisher=lambda: None,
+    ) is False
+    assert q._admission_reservations == set()
+    assert q.enqueue_if_absent("alpha", "TASK-PARENT") is True
+    assert q._queue.get_nowait() == ("alpha", "TASK-PARENT", None)
+
+
+def test_enqueue_if_absent_publisher_cancellation_releases_reservation() -> None:
+    """BaseException cancellation follows the same no-stranding contract."""
+    q = TaskQueue()
+
+    class InjectedCancellation(BaseException):
+        pass
+
+    def cancel() -> None:
+        raise InjectedCancellation
+
+    with pytest.raises(InjectedCancellation):
+        q.enqueue_if_absent("alpha", "TASK-PARENT", publisher=cancel)
+
+    assert q._admission_reservations == set()
     assert q.enqueue_if_absent("alpha", "TASK-PARENT") is True
     assert q._queue.get_nowait() == ("alpha", "TASK-PARENT", None)
 

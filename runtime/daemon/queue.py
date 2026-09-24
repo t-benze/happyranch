@@ -65,6 +65,7 @@ class TaskQueue:
     def __init__(self) -> None:
         self._admission_lock = threading.RLock()
         self._pending_counts: Counter[tuple[str, str]] = Counter()
+        self._admission_reservations: set[tuple[str, str]] = set()
         self._queue: asyncio.Queue[_QueueItem] = _TrackedAsyncQueue(
             self._admission_lock, self._record_dequeue,
         )
@@ -96,24 +97,35 @@ class TaskQueue:
         metadata: dict | None = None,
         publisher: Callable[[], None] | None = None,
     ) -> bool:
-        """Atomically publish only when this task has no pending queue item.
+        """Publish only when this task has no reservation or pending item.
 
         This is a narrow producer-selected boundary, not global coalescing:
         ordinary ``enqueue`` and ``put_nowait`` remain non-deduplicating.
         ``publisher`` lets generation-aware producers retain their existing
-        classification and metadata logic while the queue owns the indivisible
-        pending check plus publication. A dequeue removes the pending count at
-        the same locked operation, so a later qualifying wake is admitted.
+        classification and metadata logic.  Admission first claims an
+        in-memory reservation under the queue lock, then invokes that external
+        callback without the lock: DB-aware publishers must never participate
+        in a queue-lock/DB-lock cycle.  Concurrent bounded producers observe
+        the reservation and lose until publication succeeds or refuses.  The
+        reservation is always released; a successful insertion remains owned
+        by the pending count until the same locked dequeue operation, so a
+        later qualifying wake is admitted.
         """
         key = slug, task_id
         with self._admission_lock:
-            if self._pending_counts[key]:
+            if self._pending_counts[key] or key in self._admission_reservations:
                 return False
+            self._admission_reservations.add(key)
+        try:
             if publisher is None:
                 self.enqueue(slug, task_id, metadata=metadata)
             else:
                 publisher()
-            return self._pending_counts[key] > 0
+            with self._admission_lock:
+                return self._pending_counts[key] > 0
+        finally:
+            with self._admission_lock:
+                self._admission_reservations.discard(key)
 
     @staticmethod
     async def _heartbeat(dispatcher: _Dispatcher, slug: str, task_id: str) -> None:
