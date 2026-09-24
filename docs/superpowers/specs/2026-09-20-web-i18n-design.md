@@ -43,9 +43,10 @@ form/waiting/committing/connected/retryable/terminal-failure/cleared states,
 copy feedback, status text and aria labels). It extracts the single
 `web/src/lib/addOrgError.ts` classifier/renderer shared by AddOrgDialog and
 the onboarding create step. Because ConnectFlow is shared with Settings ▸
-Executors, translating it localizes that connect body too, but `settings`
-remains `english-only` (the surrounding Settings chrome/sections are not
-translated) and Settings/Preferences is not claimed as covered. User-entered
+Executors, translating it localizes that connect body too; at W2b (historical
+state, superseded by W2c below) `settings` remained `english-only` (the
+surrounding Settings chrome/sections were not yet translated) and
+Settings/Preferences was not claimed as covered. User-entered
 slugs, registered tool names/paths, the slug regex, broken-org raw errors and
 the generated copy-paste CLI prompt (raw step ids, tokens, route targets) stay
 byte-for-byte verbatim; mapped categories re-translate on a switch with no
@@ -462,5 +463,9 @@ semantics are preserved; locale switching issues no `PUT /settings/org` and no
 `/api/` request in the measured window. Onboarding preserves user-entered
 slugs, the slug regex, registered tool names/paths, broken-org raw errors and
 the generated copy-paste CLI prompt bytes verbatim; the shared ConnectFlow is
-the single implementation for onboarding and Settings ▸ Executors, and the
-`settings` namespace stays `english-only`.
+the single implementation for onboarding and Settings ▸ Executors. The
+`settings` namespace is `translated` (W2c: ordinary Settings chrome and the
+Assistant/Organization/Executors/Capacity sections; the Work Hours-owned
+`EligibilityEditorDialog` stays English until W4); only the Preferences
+route/selector remains production-gated (absent from ordinary builds) until W3
+acceptance opens it in W3b.
