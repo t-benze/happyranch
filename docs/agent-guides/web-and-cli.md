@@ -732,6 +732,52 @@ route. It ranks threads by churn (`total`) DESC client-side, shows cache reads
 as a muted secondary number (never in the bar or the rank), and labels each
 thread's Model with the same precedence as the CLI table above.
 
+### Staged dual-text escalation-policy editor (THR-229, draft PR878)
+
+This surface is present only on the unmerged draft feature branch; it is not a
+running-production capability and performs no live activation. The eligible
+Engineering Manager's dedicated policy route shows exactly the editable
+`What to escalate` and `What not to escalate` textareas. A genuinely empty
+selector begins with the approved starter bytes; an active v2 selector reads
+both values and its release/version/digest, activation, selector and epoch from
+the authenticated projection. One confirmation sends both texts through the
+existing paired v2 release transaction. It never exposes the legacy split
+create/activate sequence, a one-text save, clause IDs, continuation phrases,
+rollback controls or a second evaluator.
+
+The client keeps a dirty pair across ordinary query renders and guards both
+SPA navigation and hard unload. It treats pending submission as single-flight,
+accepts success only after the paired receipt and authoritative refetch agree,
+reuses the exact request after an ambiguous outcome, and preserves the draft
+on selector conflicts until the operator deliberately reloads the current
+selector. The v2 history stream is immutable and read-only, shows both exact
+texts plus full release/activation/selector identity and timestamps, and owns
+pagination/error retry independently. Legacy history and outcomes appear only
+for an authenticated legacy-family projection. Unsupported, mixed, corrupt,
+unknown and worker targets fail closed without an editable fallback.
+
+For a v2-bound manager escalation, the injected role guidance supplies the
+binding identities and requires one structured `manager_self_evaluation` beside
+the ordinary `decision`. `happyranch report-completion --from-file` preserves
+that member for strict server validation; omission, explicit null, malformed or
+uncertain evidence fails closed. The CLI does not embed policy prose, a clause
+identifier, a canonical continuation phrase, or a second evaluator. Worker and
+ordinary non-escalation callbacks omit this field unless their injected contract
+explicitly requires it.
+
+The checked-in browser receipt driver is
+`web/scripts/screenshot-harness/shot-thr229-v2-policy.mjs`. It uses an owned
+runtime/database, loopback daemon and Vite proxy with real bootstrap auth; it
+proves empty bootstrap, paired persistence and full-reload readback/history, a
+two-text atomic rollback at the control-audit boundary followed by exact retry,
+invalid-token 401 with no row, and worker 404 with no editor. This checkpoint
+does not close the combined THR-229 feature, final parity, review/QA, merge or
+rollout gates. Source merge is not activation: compatible daemon, CLI, and
+manager-launch code must be deployed and old launch/completion consumers drained
+before any future production save/activation. Rollback is compatible-code-only;
+this candidate performs no deployment, save, activation, or natural production
+continuation.
+
 ## Agent-Side Callbacks
 
 These are invoked by skills inside agent sessions. Do not invoke them by hand; doing so falsifies audit data.

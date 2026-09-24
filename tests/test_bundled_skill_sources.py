@@ -122,6 +122,8 @@ def test_start_task_source_is_generic_and_preserves_callback_contract(
     assert "happyranch report-completion --org {ORG_SLUG} --from-file" in body
     assert '"session_id": "<session_id>"' in body
     assert '"decision": {"action": "delegate"' in body
+    assert "conditionally requires `manager_self_evaluation`" in body
+    assert "Do not invent policy wording, clause identifiers, a canonical phrase" in body
     assert "Engineering frontend readiness gate" not in body
     assert "After initial Native Impact Evidence" not in body
     assert "TASK-5522" not in body

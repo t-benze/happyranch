@@ -47,6 +47,37 @@ FLAG_TTL_NO_FINGERPRINT_SECONDS = 5 * HEARTBEAT_INTERVAL_SECONDS  # 150s
 REAPER_INTERVAL_SECONDS = 30
 
 
+def _session_policy_family(db: Database, task) -> str:
+    """Classify the immutable launch binding; malformed/mixed fails closed."""
+    if not task.assigned_agent or not task.current_session_id:
+        return "legacy_or_none"
+    from runtime.orchestrator.active_authority_policy import (
+        load_session_policy_binding,
+        load_session_policy_snapshot,
+    )
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    try:
+        binding = load_session_policy_binding(
+            db=db, task_id=task.id, session_id=task.current_session_id,
+            agent_name=task.assigned_agent,
+        )
+        if binding is None:
+            return "legacy_or_none"
+        if isinstance(binding, dict) and binding.get("mode") == "v2":
+            return "v2"
+        # The version-aware reader deliberately returns the legacy payload
+        # without validating it.  Authenticate that immutable payload before
+        # granting the unchanged generic v1 reaper path; unknown, corrupt or
+        # mixed evidence must not become no-policy permission.
+        load_session_policy_snapshot(
+            db=db, store=AuthorityPolicyStore(db), task_id=task.id,
+            session_id=task.current_session_id, agent_name=task.assigned_agent,
+        )
+    except Exception:
+        return "malformed"
+    return "legacy_or_none"
+
+
 # ---------------------------------------------------------------------------
 # PID liveness probe
 # ---------------------------------------------------------------------------
@@ -150,6 +181,7 @@ def _sweep_org_zombies(
             ttl = FLAG_TTL_NO_FINGERPRINT_SECONDS  # longer — conservative
 
         agent = t.assigned_agent or "unknown"
+        policy_family = _session_policy_family(db, t)
 
         if t.zombie_flagged_at is None:
             # ── FIRST DETECTION: FLAG only, do NOT cancel ──
@@ -169,9 +201,25 @@ def _sweep_org_zombies(
                     _consume_zombie_fingerprint(
                         db, task_id, fingerprint, t, orchestrator,
                     )
-                    # Consumption moves the task terminal; clear the flag.
-                    db.update_task(task_id, zombie_flagged_at=None)
-                    audit.log_zombie_cleared(task_id, agent)
+                    if policy_family == "v2":
+                        # The real common consumer committed first.  The
+                        # Database-owned CAS now re-reads the exact immutable
+                        # result/session binding, v2 consumption receipt,
+                        # owner/session and original marker under
+                        # BEGIN IMMEDIATE.  A race preserves the winner.
+                        db.consume_v2_fingerprint_and_clear_zombie(
+                            task_id=task_id,
+                            expected_agent=agent,
+                            expected_session_id=t.current_session_id or "",
+                            result_id=fingerprint.get("id"),
+                            expected_zombie_flagged_at=t.zombie_flagged_at,
+                        )
+                    elif policy_family == "legacy_or_none":
+                        # Unchanged v1/no-policy behavior.
+                        db.update_task(task_id, zombie_flagged_at=None)
+                        audit.log_zombie_cleared(task_id, agent)
+                    # Malformed/mixed binding: the real consumer already
+                    # failed closed; never clear through a legacy fallback.
                 # No orchestrator (unit-test context): leave flagged, retry
                 # next sweep when orchestrator is present.
                 continue
@@ -184,6 +232,20 @@ def _sweep_org_zombies(
             else:
                 flag_time = datetime.fromisoformat(t.zombie_flagged_at)
             if (now - flag_time).total_seconds() >= ttl:
+                if policy_family == "malformed":
+                    continue
+                if policy_family == "v2":
+                    committed = db.cancel_zombie_without_fingerprint(
+                        task_id=task_id,
+                        expected_agent=agent,
+                        expected_session_id=t.current_session_id or "",
+                        expected_zombie_flagged_at=t.zombie_flagged_at,
+                        cancelled_at=now.isoformat(),
+                    )
+                    if committed and orchestrator is not None:
+                        from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+                        _enqueue_parent_if_waiting(orchestrator, task_id)
+                    continue
                 # TTL expired — cancel.
                 # THR-079 ruling: no auto-revisit. Cancel via the existing
                 # cancelled status transition, routed through shared

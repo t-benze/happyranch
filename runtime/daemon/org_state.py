@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -62,6 +63,11 @@ class OrgState:
     # every 10s by a coalesced asyncio scheduler. The HTTP route reads ONLY
     # from this projection; it never calls compose_dashboard_summary directly.
     dashboard_projection: DashboardProjectionManager = field(init=False)
+    # THR-229 checkpoint C2: owning daemon-process UUID recorded as the
+    # ``origin_boot_id`` on every admitted v2 attempt.  It is allocated once per
+    # live OrgState (daemon process), never per request and never from an OS
+    # boot identifier.  It is an ownership marker, not a credential.
+    authority_v2_origin_boot_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     _TERMINAL_STATUS_TO_EVENT = {
         TaskStatus.COMPLETED: "task_complete",
@@ -115,6 +121,31 @@ class OrgState:
             return history
         self.event_bus = EventBus(history_loader=loader)
         self.thread_store = ThreadStore(self.root / "threads")
+
+    def bind_authority_v2_owner(self) -> None:
+        """Bind the real owning-process identity + permission-surface reader.
+
+        THR-229 checkpoint C3d4b: the v2 claim/publication/housekeeping writers
+        read a trusted daemon-process boot identity and a server-owned
+        permission-surface digest.  Both bindings previously existed only on the
+        test/store seam; production now binds them once per live ``OrgState``,
+        BEFORE any startup recovery/publication and before the API admits work.
+
+        This allocates no new identity (``authority_v2_origin_boot_id`` already
+        exists) and rewrites no permission generation: the reader is the existing
+        strict server-side digest reader, closed over this org's orchestrator.
+        """
+        from runtime.orchestrator.authority import _strict_permission_surface_digest
+
+        self.db.bind_authority_policy_v2_process_boot_id(
+            self.authority_v2_origin_boot_id
+        )
+        orchestrator = self.orchestrator
+
+        def _reader(agent: str) -> str:
+            return _strict_permission_surface_digest(orchestrator, agent)
+
+        self.db.bind_authority_policy_v2_permission_surface_reader(_reader)
 
     def _synthesize_terminal_event(self, task) -> dict | None:
         if task.status in self._TERMINAL_STATUS_TO_EVENT:

@@ -95,6 +95,8 @@ from runtime.models import (
     AuthorityDisposition,
     AuthorityDispositionCode,
     AuthorityFenceResult,
+    AuthorityPolicyV2PermissionSurface,
+    AuthorityPolicyV2SchemaIntegrity,
     TaskStatus,
     ManagerSelfEvaluation,
     validate_authority_digest,
@@ -129,6 +131,26 @@ OUTCOME_CANCELLED_STALE = "cancelled_stale"
 OUTCOME_EVALUATOR_FAILURE = "evaluator_failure"
 OUTCOME_AUDIT_FAILURE = "audit_failure"
 OUTCOME_CAPTURE_FAILURE = "capture_failure"
+
+# THR-229 checkpoint C3d5a: the closed RETURN vocabulary of
+# ``run_authority_hook``.  ``continue_same_root``/``escalate`` keep the
+# unchanged v1 semantics.  A session whose AUTHENTICATED immutable launch
+# binding selects the v2 family is served entirely by the accepted pre-final/
+# final v2 stages; its bounded outcomes tell the directly coupled common
+# consumer that the authoritative v2 path handled the result so ordinary
+# escalation/notification must NOT run:
+#   * ``v2_continued`` -- the final continuation committed (or was exactly
+#     replayed) and post-final settlement/publication was attempted;
+#   * ``v2_refused``   -- durable refusal housekeeping committed a terminal
+#     refusal for the unfinalized attempt;
+#   * ``v2_pending``   -- the attempt/stage identity could not be safely
+#     finalized and refusal itself could not commit; the prior durable state is
+#     preserved as a bounded housekeeping obligation (later discovery unit).
+HOOK_ESCALATE = "escalate"
+HOOK_CONTINUE_SAME_ROOT = "continue_same_root"
+HOOK_V2_CONTINUED = "v2_continued"
+HOOK_V2_REFUSED = "v2_refused"
+HOOK_V2_PENDING = "v2_pending"
 
 AUDIT_ACTION_HOOK_OUTCOME = "authority_hook"
 AUDIT_ACTION_CONTINUED_SAME_ROOT = "authority_continued_same_root"
@@ -239,6 +261,546 @@ def _live_schema_digest(db) -> str:
         return "unavailable"
 
 
+# ── THR-229 C3a: independent constraint-sensitive v2 schema-integrity seam ──
+#
+# ``_release_schema_digest`` above is the LEGACY v1 behavior and stays exactly
+# as it is: it compares a live DB's raw DDL against a fresh ``Database()`` and
+# treats ANY difference as a drift signal.  A historical database migrated
+# forward by the current source legitimately differs from a fresh one in only
+# two ordered table layouts (``threads`` / ``thread_messages``), so the raw
+# digest alone cannot distinguish that accepted historical representation from
+# real constraint drift.  The functions below are the accepted v2
+# full-schema oracle: an INDEPENDENT, READ-ONLY, constraint-sensitive gate
+# whose reference is built from fresh current source plus only the two accepted
+# exact migrated table substitutions.  They produce integrity EVIDENCE only —
+# never policy authority, a clause match, or a grant — and they never repair
+# the candidate.
+
+V2_SCHEMA_INTEGRITY_CONTRACT = "authority-policy-v2-schema-integrity-v1"
+V2_PERMISSION_SURFACE_CONTRACT = "authority-policy-v2-permission-surface-v1"
+
+# Exact ordered ``CREATE TABLE`` bytes the current source produces when it
+# migrates the immutable historical constructor
+# (``f39b4934611ca13ab7d8b7fa2d7be983a4bfb7a5``) forward.  These are the ONLY
+# accepted historical substitutions; every other object must match fresh
+# current source exactly.  ``threads`` and ``thread_messages`` are the only
+# two tables whose ordered layout differs between fresh and migrated.
+_V2_MIGRATED_TABLE_CREATE_SQL: dict[str, str] = {
+    "threads": (
+        "CREATE TABLE threads (\n"
+        "                id TEXT PRIMARY KEY,\n"
+        "                subject TEXT NOT NULL,\n"
+        "                started_at TEXT NOT NULL,\n"
+        "                archived_at TEXT,\n"
+        "                status TEXT NOT NULL DEFAULT 'open',\n"
+        "                forwarded_from_id TEXT,\n"
+        "                forwarded_from_kind TEXT,\n"
+        "                turn_cap INTEGER NOT NULL DEFAULT 500,\n"
+        "                turns_used INTEGER NOT NULL DEFAULT 0,\n"
+        "                summary TEXT,\n"
+        "                transcript_path TEXT\n"
+        "            , composed_by TEXT NOT NULL DEFAULT 'founder',"
+        " composed_from_task_id TEXT, composed_from_dream_id TEXT,"
+        " pinned_at TEXT, mention_routing_enabled INTEGER NOT NULL DEFAULT 1)"
+    ),
+    "thread_messages": (
+        "CREATE TABLE thread_messages (\n"
+        "                id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+        "                thread_id TEXT NOT NULL,\n"
+        "                seq INTEGER NOT NULL,\n"
+        "                speaker TEXT NOT NULL,\n"
+        "                kind TEXT NOT NULL,\n"
+        "                body_markdown TEXT,\n"
+        "                addressed_to_json TEXT,\n"
+        "                decline_reason TEXT,\n"
+        "                system_payload_json TEXT,\n"
+        "                sent_from_task_id TEXT,\n"
+        "                created_at TEXT NOT NULL, mentions_json TEXT,\n"
+        "                FOREIGN KEY (thread_id) REFERENCES threads(id)\n"
+        "            )"
+    ),
+}
+
+_V2_INVENTORY_KINDS = ("tables", "indexes", "triggers", "views")
+_V2_SCHEMA_REFERENCE_CACHE: list[dict] | None = None
+
+
+@dataclass(frozen=True)
+class AuthorityPolicyV2SchemaIntegrityOutcome:
+    """Result of the v2 schema-integrity capture: bounded evidence on success,
+    a bounded machine-readable diagnostic on fail-closed refusal.  Exactly one
+    of ``evidence`` / ``diagnostic`` is set."""
+
+    evidence: AuthorityPolicyV2SchemaIntegrity | None
+    diagnostic: dict[str, object] | None
+
+
+def _v2_optional_text(value) -> object:
+    return None if value is None else str(value)
+
+
+def _v2_is_v2_object(name: str) -> bool:
+    return str(name).startswith("authority_policy_v2_")
+
+
+def _v2_is_reserved_internal_name(name: str) -> bool:
+    """True only for SQLite's reserved internal ``sqlite_`` prefix.
+
+    SQLite refuses to create a user object whose name begins with ``sqlite_``
+    in ANY ASCII case ("object name reserved for internal use"), so that exact
+    prefix is the internal namespace.  The comparison is case-insensitive to
+    match SQLite's own reserved-name rule, and it is a literal prefix test —
+    never a SQL ``LIKE`` pattern, whose ``_`` would be a single-character
+    wildcard and would wrongly hide legal user objects such as
+    ``sqliteXunreviewed``.
+    """
+    return str(name).lower().startswith("sqlite_")
+
+
+def _v2_index_xinfo(conn, index_name: str) -> list[list]:
+    return [
+        [int(seqno), int(cid), _v2_optional_text(name), int(desc), str(coll),
+         int(key)]
+        for seqno, cid, name, desc, coll, key in conn.execute(
+            'SELECT seqno, cid, name, "desc", coll, "key" '
+            'FROM pragma_index_xinfo(?) ORDER BY seqno',
+            (index_name,),
+        )
+    ]
+
+
+def _v2_capture_inventory(conn) -> dict:
+    """Complete non-internal schema inventory with ordered constraint
+    semantics: full table SQL (CHECK/UNIQUE/FK expressions), ordered
+    ``table_xinfo``, ``foreign_key_list``, complete ``index_xinfo`` including
+    expression sentinels/collation/key flags/cid, ``index_list``
+    origin/unique/partial, explicit index SQL and full trigger/view SQL.
+
+    Only internal ``sqlite_``-prefixed objects (including ``sqlite_sequence``
+    and the autoindex names) are excluded from the top-level inventory;
+    autoindex constraint metadata is retained inside each table's
+    ``index_list`` metadata.  The reserved prefix is matched as a literal,
+    case-insensitive prefix (never a SQL ``LIKE`` pattern), so legal user
+    objects that merely resemble internal names — e.g. ``sqliteXunreviewed`` —
+    stay in the inventory.  ``rootpage`` and allocator/row contents are never
+    read.
+    """
+    tables: dict[str, dict] = {}
+    indexes: dict[str, dict] = {}
+    triggers: dict[str, dict] = {}
+    views: dict[str, dict] = {}
+    rows = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+        "WHERE type IN ('table','index','trigger','view') "
+        "ORDER BY type, name"
+    ).fetchall()
+    for row in rows:
+        typ, name, tbl_name, sql = row[0], row[1], row[2], row[3]
+        if _v2_is_reserved_internal_name(name):
+            continue
+        if typ == "table":
+            xinfo = [
+                [int(cid), str(cname), _v2_optional_text(ctype), int(notnull),
+                 _v2_optional_text(dflt), int(pk), int(hidden)]
+                for cid, cname, ctype, notnull, dflt, pk, hidden in conn.execute(
+                    'SELECT cid, name, type, "notnull", dflt_value, pk, hidden '
+                    'FROM pragma_table_xinfo(?) ORDER BY cid',
+                    (name,),
+                )
+            ]
+            fks = [
+                [int(fid), int(seq), str(rtable), str(src),
+                 _v2_optional_text(dst), str(on_update), str(on_delete),
+                 str(match)]
+                for fid, seq, rtable, src, dst, on_update, on_delete, match in
+                conn.execute(
+                    'SELECT id, seq, "table", "from", "to", on_update, '
+                    'on_delete, match FROM pragma_foreign_key_list(?) '
+                    'ORDER BY id, seq',
+                    (name,),
+                )
+            ]
+            index_meta: dict[str, dict] = {}
+            for _seq, iname, unique, origin, partial in conn.execute(
+                'SELECT seq, name, "unique", origin, partial '
+                'FROM pragma_index_list(?)',
+                (name,),
+            ):
+                index_meta[str(iname)] = {
+                    "origin": str(origin),
+                    "unique": int(unique),
+                    "partial": int(partial),
+                    "xinfo": _v2_index_xinfo(conn, str(iname)),
+                }
+            tables[str(name)] = {
+                "sql": _v2_optional_text(sql),
+                "xinfo": xinfo,
+                "fks": fks,
+                "indexes": index_meta,
+            }
+        elif typ == "index":
+            indexes[str(name)] = {
+                "sql": _v2_optional_text(sql),
+                "tbl": str(tbl_name),
+                "xinfo": _v2_index_xinfo(conn, str(name)),
+            }
+        elif typ == "trigger":
+            triggers[str(name)] = {
+                "sql": _v2_optional_text(sql),
+                "tbl": str(tbl_name),
+            }
+        else:
+            views[str(name)] = {
+                "sql": _v2_optional_text(sql),
+                "tbl": str(tbl_name),
+            }
+    return {
+        "tables": tables,
+        "indexes": indexes,
+        "triggers": triggers,
+        "views": views,
+    }
+
+
+def _v2_apply_migrated_substitutions(conn, fresh: dict) -> dict:
+    """Apply ONLY the two accepted migrated table substitutions to the fresh
+    reference connection, then re-capture.  SQLite itself derives the ordered
+    column and index-cid consequences; no allowlist is learned from any
+    candidate database."""
+    explicit_index_sql = [
+        meta["sql"]
+        for meta in fresh["indexes"].values()
+        if meta["tbl"] in _V2_MIGRATED_TABLE_CREATE_SQL and meta["sql"]
+    ]
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("DROP TABLE IF EXISTS thread_messages")
+    conn.execute("DROP TABLE IF EXISTS threads")
+    for table in ("threads", "thread_messages"):
+        conn.execute(_V2_MIGRATED_TABLE_CREATE_SQL[table])
+    for sql in explicit_index_sql:
+        conn.execute(sql)
+    return _v2_capture_inventory(conn)
+
+
+def _v2_build_reference_inventories() -> list[dict] | None:
+    """Build the accepted reference inventories fresh from current source.
+
+    Returns ``[fresh, migrated]`` — the two and only two accepted ordered
+    representations — or ``None`` when the reference cannot be constructed
+    (fail closed).  The evaluated candidate database is never consulted.
+    """
+    global _V2_SCHEMA_REFERENCE_CACHE
+    if _V2_SCHEMA_REFERENCE_CACHE is not None:
+        return _V2_SCHEMA_REFERENCE_CACHE
+    try:
+        import tempfile
+        from pathlib import Path as _Path
+        from runtime.infrastructure.database import Database
+
+        with tempfile.TemporaryDirectory() as td:
+            reference = Database(_Path(td) / "v2-schema-reference.db")
+            try:
+                conn = reference._conn
+                fresh = _v2_capture_inventory(conn)
+                migrated = _v2_apply_migrated_substitutions(conn, fresh)
+            finally:
+                try:
+                    reference._conn.close()
+                except Exception:
+                    pass
+        _V2_SCHEMA_REFERENCE_CACHE = [fresh, migrated]
+    except Exception:
+        return None
+    return _V2_SCHEMA_REFERENCE_CACHE
+
+
+def _v2_inventory_digest(inventory: dict) -> str:
+    return _sha256(json.dumps(inventory, sort_keys=True, separators=(",", ":")))
+
+
+def _v2_inventory_mismatches(reference: dict, candidate: dict) -> list[dict]:
+    """Bounded structural mismatches between an accepted reference and the
+    candidate.  Each diagnostic names a category, an object kind/name and
+    whether the object is a v2 object; no raw schema/data/model prose."""
+    out: list[dict] = []
+
+    def _diag(code: str, kind: str, name: str) -> dict:
+        return {
+            "code": code,
+            "kind": kind,
+            "object": name,
+            "v2": _v2_is_v2_object(name),
+        }
+
+    for kind in _V2_INVENTORY_KINDS:
+        ref_names = reference[kind]
+        cand_names = candidate[kind]
+        for name in sorted(set(ref_names) - set(cand_names)):
+            code = "missing_v2_object" if _v2_is_v2_object(name) else "missing_object"
+            out.append(_diag(code, kind, name))
+        for name in sorted(set(cand_names) - set(ref_names)):
+            out.append(_diag("unexpected_object", kind, name))
+    table_names = sorted(set(reference["tables"]) & set(candidate["tables"]))
+    for name in table_names:
+        ref = reference["tables"][name]
+        cand = candidate["tables"][name]
+        if ref["sql"] != cand["sql"]:
+            out.append(_diag("table_sql_mismatch", "table", name))
+        if ref["xinfo"] != cand["xinfo"]:
+            out.append(_diag("table_column_layout_mismatch", "table", name))
+        if ref["fks"] != cand["fks"]:
+            out.append(_diag("table_foreign_key_mismatch", "table", name))
+        for iname in sorted(set(ref["indexes"]) - set(cand["indexes"])):
+            code = "missing_v2_object" if _v2_is_v2_object(iname) else "missing_object"
+            out.append(_diag(code, "index", iname))
+        for iname in sorted(set(cand["indexes"]) - set(ref["indexes"])):
+            out.append(_diag("unexpected_object", "index", iname))
+        for iname in sorted(set(ref["indexes"]) & set(cand["indexes"])):
+            if ref["indexes"][iname] != cand["indexes"][iname]:
+                out.append(_diag("table_index_metadata_mismatch", "index", iname))
+    index_names = sorted(set(reference["indexes"]) & set(candidate["indexes"]))
+    for name in index_names:
+        ref = reference["indexes"][name]
+        cand = candidate["indexes"][name]
+        if ref["sql"] != cand["sql"]:
+            out.append(_diag("index_sql_mismatch", "index", name))
+        if ref["xinfo"] != cand["xinfo"]:
+            out.append(_diag("index_xinfo_mismatch", "index", name))
+    trigger_names = sorted(set(reference["triggers"]) & set(candidate["triggers"]))
+    for name in trigger_names:
+        if reference["triggers"][name]["sql"] != candidate["triggers"][name]["sql"]:
+            out.append(_diag("trigger_sql_mismatch", "trigger", name))
+    view_names = sorted(set(reference["views"]) & set(candidate["views"]))
+    for name in view_names:
+        if reference["views"][name]["sql"] != candidate["views"][name]["sql"]:
+            out.append(_diag("view_sql_mismatch", "view", name))
+    return out
+
+
+def _v2_closest_mismatches(references: list[dict], candidate: dict) -> list[dict]:
+    """Diagnose against the accepted reference that the candidate is closest
+    to (fewest structural mismatches); ties keep the fresh reference first."""
+    scored = [
+        (len(_v2_inventory_mismatches(reference, candidate)), position, reference)
+        for position, reference in enumerate(references)
+    ]
+    scored.sort(key=lambda item: (item[0], item[1]))
+    return _v2_inventory_mismatches(scored[0][2], candidate)
+
+
+def _v2_data_integrity_check(conn) -> dict | None:
+    """Require ``integrity_check`` exactly ``ok`` and zero
+    ``foreign_key_check`` violations; a read defect fails closed."""
+    try:
+        rows = conn.execute("PRAGMA integrity_check").fetchall()
+    except Exception:
+        return {"code": "integrity_check_unavailable", "kind": "data",
+                "object": None, "v2": False}
+    if [tuple(row) for row in rows] != [("ok",)]:
+        return {"code": "integrity_check_failed", "kind": "data",
+                "object": None, "v2": False}
+    try:
+        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+    except Exception:
+        return {"code": "foreign_key_check_unavailable", "kind": "data",
+                "object": None, "v2": False}
+    if violations:
+        return {"code": "foreign_key_check_failed", "kind": "data",
+                "object": None, "v2": False}
+    return None
+
+
+def capture_authority_policy_v2_schema_integrity(
+    db,
+) -> AuthorityPolicyV2SchemaIntegrityOutcome:
+    """Read-only capture of constraint-sensitive v2 schema-integrity evidence.
+
+    The candidate's complete non-internal inventory must match an accepted
+    reference layout exactly, ``integrity_check`` must be exactly ``ok`` and
+    ``foreign_key_check`` must return zero violations.  On success the returned
+    outcome carries typed evidence holding the candidate's ACTUAL raw DDL
+    digest.  Any unknown layout, read/query error or unavailable reference
+    fails closed with a bounded machine-readable diagnostic and no evidence.
+    The candidate is never repaired or mutated.
+
+    Every candidate read and the frozen raw digest run inside ONE
+    ``Database.coherent_read_view()``: the shared-connection lock is held for
+    the whole capture and a single SQLite read snapshot is pinned, so a commit
+    on an independent connection cannot produce evidence assembled from an old
+    inventory plus a new digest.  A mutation invisible to that coherent
+    snapshot is caught by the subsequent ``recheck``.
+    """
+    references = None
+    try:
+        references = _v2_build_reference_inventories()
+    except Exception:
+        references = None
+    if not references:
+        return AuthorityPolicyV2SchemaIntegrityOutcome(
+            evidence=None,
+            diagnostic={"code": "reference_unavailable", "kind": "reference",
+                        "object": None, "v2": False},
+        )
+    try:
+        with db.coherent_read_view() as conn:
+            candidate = _v2_capture_inventory(conn)
+            if not any(
+                not _v2_inventory_mismatches(reference, candidate)
+                for reference in references
+            ):
+                mismatches = _v2_closest_mismatches(references, candidate)
+                diagnostic = mismatches[0] if mismatches else {
+                    "code": "inventory_mismatch", "kind": "inventory",
+                    "object": None, "v2": False,
+                }
+                return AuthorityPolicyV2SchemaIntegrityOutcome(
+                    evidence=None, diagnostic=diagnostic,
+                )
+            data_diagnostic = _v2_data_integrity_check(conn)
+            if data_diagnostic is not None:
+                return AuthorityPolicyV2SchemaIntegrityOutcome(
+                    evidence=None, diagnostic=data_diagnostic,
+                )
+            raw_digest = _live_schema_digest(db)
+            if not isinstance(raw_digest, str) or raw_digest == "unavailable":
+                return AuthorityPolicyV2SchemaIntegrityOutcome(
+                    evidence=None,
+                    diagnostic={"code": "candidate_digest_unavailable",
+                                "kind": "candidate", "object": None, "v2": False},
+                )
+            evidence = AuthorityPolicyV2SchemaIntegrity(
+                contract_version=V2_SCHEMA_INTEGRITY_CONTRACT,
+                raw_digest=raw_digest,
+                inventory_digest=_v2_inventory_digest(candidate),
+                object_count=sum(
+                    len(candidate[kind]) for kind in _V2_INVENTORY_KINDS
+                ),
+            )
+            return AuthorityPolicyV2SchemaIntegrityOutcome(
+                evidence=evidence, diagnostic=None,
+            )
+    except Exception:
+        return AuthorityPolicyV2SchemaIntegrityOutcome(
+            evidence=None,
+            diagnostic={"code": "candidate_unreadable", "kind": "candidate",
+                        "object": None, "v2": False},
+        )
+
+
+def recheck_authority_policy_v2_schema_integrity(
+    evidence: AuthorityPolicyV2SchemaIntegrity | None,
+    db,
+) -> bool:
+    """Deny ANY later raw-digest drift from the captured candidate.
+
+    A ``None`` (failed/unavailable) capture can never become a successful
+    recheck, and matching a *different* accepted layout after capture does not
+    authorize the changed attempt because the comparison is against the exact
+    raw digest frozen at capture time.
+    """
+    if evidence is None:
+        return False
+    if getattr(evidence, "contract_version", None) != V2_SCHEMA_INTEGRITY_CONTRACT:
+        return False
+    raw_digest = getattr(evidence, "raw_digest", None)
+    if not isinstance(raw_digest, str) or len(raw_digest) != 64:
+        return False
+    try:
+        current = _live_schema_digest(db)
+    except Exception:
+        return False
+    if not isinstance(current, str) or current == "unavailable":
+        return False
+    return current == raw_digest
+
+
+@dataclass(frozen=True)
+class AuthorityPolicyV2PermissionSurfaceOutcome:
+    """Result of the v2 permission-surface capture: bounded evidence on
+    success, a bounded machine-readable diagnostic on fail-closed refusal.
+    Exactly one of ``evidence`` / ``diagnostic`` is set.  There is deliberately
+    no permissive default and no sentinel digest: an absent reader, a read
+    defect, or a malformed value all yield ``evidence=None``."""
+
+    evidence: AuthorityPolicyV2PermissionSurface | None
+    diagnostic: dict[str, object] | None
+
+
+def _v2_permission_reader(db):
+    """Return the server-side permission reader bound on ``db`` or ``None``.
+
+    The reader is the narrowly scoped server-side orchestration seam; it is
+    never a caller-provided allow/deny boolean or a precomputed digest.
+    """
+    return getattr(db, "_v2_permission_surface_reader", None)
+
+
+def capture_authority_policy_v2_permission_surface(
+    db, agent: str,
+) -> AuthorityPolicyV2PermissionSurfaceOutcome:
+    """Read the current permission-surface digest through the bound reader.
+
+    The reader is called as ``reader(agent)`` inside the server process.  An
+    unbound reader, a raising read, or a value that is not exactly one 64-char
+    lower-hex digest fails closed with a bounded diagnostic and NO evidence, so
+    a later recheck can never authenticate a sentinel.
+    """
+    reader = _v2_permission_reader(db)
+    if reader is None:
+        return AuthorityPolicyV2PermissionSurfaceOutcome(
+            evidence=None,
+            diagnostic={"code": "permission_surface_unavailable",
+                        "kind": "permission", "object": None, "v2": False},
+        )
+    try:
+        digest = reader(agent)
+    except Exception:
+        return AuthorityPolicyV2PermissionSurfaceOutcome(
+            evidence=None,
+            diagnostic={"code": "permission_surface_unreadable",
+                        "kind": "permission", "object": None, "v2": False},
+        )
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        return AuthorityPolicyV2PermissionSurfaceOutcome(
+            evidence=None,
+            diagnostic={"code": "permission_surface_malformed",
+                        "kind": "permission", "object": None, "v2": False},
+        )
+    return AuthorityPolicyV2PermissionSurfaceOutcome(
+        evidence=AuthorityPolicyV2PermissionSurface(
+            contract_version=V2_PERMISSION_SURFACE_CONTRACT, digest=digest,
+        ),
+        diagnostic=None,
+    )
+
+
+def recheck_authority_policy_v2_permission_surface(
+    evidence: AuthorityPolicyV2PermissionSurface | None,
+    db, agent: str,
+) -> bool:
+    """Deny ANY later permission-surface change or unreadable read.
+
+    The comparison is against the reader's CURRENT value through the same
+    server-side seam; an unavailable reader, read defect or malformed value
+    never becomes a successful recheck.
+    """
+    if evidence is None:
+        return False
+    if getattr(evidence, "contract_version", None) != V2_PERMISSION_SURFACE_CONTRACT:
+        return False
+    digest = getattr(evidence, "digest", None)
+    if not isinstance(digest, str) or len(digest) != 64:
+        return False
+    current = capture_authority_policy_v2_permission_surface(db, agent)
+    if current.evidence is None:
+        return False
+    return current.evidence.digest == digest
+
+
 def _permission_digest(orch: "Orchestrator", agent: str) -> str:
     """Digest of the current org permission surface (org_config + the active
     agent definition). ``orch`` may be None in unit contexts — the digest
@@ -266,6 +828,35 @@ def _permission_digest(orch: "Orchestrator", agent: str) -> str:
             parts.append("agent_def:unavailable")
     except Exception:
         parts.append("agent_def:unavailable")
+    return _sha256("\x1f".join(parts))
+
+
+def _strict_permission_surface_digest(orch: "Orchestrator", agent: str) -> str:
+    """Read the live org permission surface or RAISE (never a sentinel digest).
+
+    This is the C3b claim/evidence server-side reader: unlike the legacy
+    ``_permission_digest`` it never degrades a read failure into a digest of
+    ``unavailable`` markers, so ``capture_authority_policy_v2_permission_surface``
+    fails closed when the surface cannot be read.  Bind it as the reader via
+    ``AuthorityPolicyStore.bind_v2_permission_surface_reader`` (partial on the
+    concrete orchestrator) before a v2 claim.
+    """
+    from runtime.orchestrator.org_config import load_org_config
+    from runtime.orchestrator.prompt_loader import load_agent
+
+    import dataclasses
+
+    org_config = load_org_config(orch._paths)
+    parts = [json.dumps(dataclasses.asdict(org_config), sort_keys=True, default=str)]
+    agent_def = load_agent(orch._paths, agent)
+    if agent_def is None:
+        raise ValueError("active agent definition unavailable")
+    parts.append(
+        json.dumps(
+            {"name": agent_def.name, "allow_rules": sorted(agent_def.allow_rules)},
+            sort_keys=True,
+        )
+    )
     return _sha256("\x1f".join(parts))
 
 
@@ -1154,6 +1745,20 @@ def _current_budget_ceilings(orch: "Orchestrator") -> int:
     return org_cap
 
 
+def authority_policy_v2_claim_eligibility(orch: "Orchestrator") -> dict[str, int]:
+    """Narrow server-owned mechanical-eligibility input for a v2 claim.
+
+    Returns only the org-config revise-round ceiling that the claim
+    transaction must enforce against the actual persisted
+    ``tasks.revision_count``; the Database re-reads every task/owner/session
+    fact itself and accepts no caller-supplied boolean.  This deliberately
+    does NOT consult ``_server_fact_clause`` adverse-review, partial-work or
+    raw-DDL must-escalate clauses: those remain v1 escalation diagnostics and
+    are never a v2 claim veto, and no phrase or clause unlock is introduced.
+    """
+    return {"max_revise_rounds": _current_budget_ceilings(orch)}
+
+
 def _server_evidence(
     orch: "Orchestrator",
     current: "TaskRecord",
@@ -1403,6 +2008,291 @@ def _is_successor_root(db, task_id: str) -> bool:
     return row is not None
 
 
+# THR-229 checkpoint C3d5a: closed mapping from one bounded v2 STAGE refusal
+# code into the terminal housekeeping refusal vocabulary.  The mapping is
+# total (any unmapped code fails closed to the generic pre-final interruption)
+# and never accepts caller prose.
+_V2_STAGE_REFUSAL_TO_HOUSEKEEPING = {
+    "owner_lost": "owner_lost",
+    "cancelled": "cancelled",
+    "claim_failed": "claim_failed",
+    "claim_audit_missing": "claim_audit_missing",
+    "evaluation_failed": "evaluation_failed",
+    "evaluation_audit_missing": "evaluation_audit_missing",
+    "evaluation_missing": "evaluation_audit_missing",
+    "consume_failed": "consume_failed",
+    "final_commit_failed": "final_commit_failed",
+    "identity_mismatch": "identity_mismatch",
+    "transaction_owned": "identity_mismatch",
+    "evidence_drift": "identity_mismatch",
+    "schema_drift": "identity_mismatch",
+    "already_claimed": "interrupted_pre_final",
+    "already_audited": "interrupted_pre_final",
+    "already_evaluated": "interrupted_pre_final",
+    "already_consumed": "interrupted_pre_final",
+}
+
+# The accepted pre-final stage sequence with the exact expected success status
+# of each Database-owned writer.  The writers themselves refuse any skipped or
+# repeated transition; this table only names the literal progression.
+_V2_PRE_FINAL_STAGE_SEQUENCE = (
+    ("claim", "claimed", "claim_v2_candidate"),
+    ("claim_audit", "claim_audited", "audit_v2_candidate_claim"),
+    ("evaluate", "evaluated", "evaluate_v2_candidate"),
+    ("evaluation_audit", "evaluation_audited", "audit_v2_candidate_evaluation"),
+    ("consume", "consumed", "consume_v2_candidate"),
+    ("consumed_audit", "consumed_audited", "audit_v2_candidate_consumption"),
+)
+
+_V2_INTERRUPTED_STAGE_REFUSAL = {
+    "admitted": "interrupted_pre_final",
+    "claimed": "claim_audit_missing",
+    "claim_audited": "evaluation_failed",
+    "evaluated": "evaluation_audit_missing",
+    "evaluation_audited": "consume_failed",
+    "consumed": "consume_audit_missing",
+    "consumed_audited": "final_commit_failed",
+}
+
+
+def refuse_authority_policy_v2_pre_final_on_startup(db) -> set[str] | None:
+    """Discover and refuse interrupted pre-final v2 attempts before recovery.
+
+    The returned roots own a pre-final obligation for this sweep and must not
+    enter any later accepted-recovery, pid-failure or Pending enqueue branch.
+    ``None`` means discovery itself was unreadable/malformed, so callers must
+    fail closed for every task-recovery branch in that startup pass.  A
+    same-current-boot live owner is deliberately included in the fence but the
+    Database writer returns ``housekeeping_pending`` without stealing it.
+    """
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+
+    store = AuthorityPolicyStore(db)
+    try:
+        targets = store.list_v2_unfinalized_attempts()
+    except Exception:
+        logger.exception("authority v2 startup refusal discovery failed")
+        return None
+    fenced_roots: set[str] = set()
+    for discovered in targets:
+        fenced_roots.add(discovered.root_task_id)
+        try:
+            target = store.get_v2_housekeeping_target(
+                root_task_id=discovered.root_task_id,
+                manager_agent=discovered.manager_agent,
+                manager_session_id=discovered.manager_session_id,
+                result_id=discovered.result_id,
+            )
+            if target is None or target.attempt_id != discovered.attempt_id:
+                continue
+            refusal_code = (
+                target.obligation_code
+                or _V2_INTERRUPTED_STAGE_REFUSAL.get(
+                    target.stage, "interrupted_pre_final",
+                )
+            )
+            store.finalize_v2_attempt_refusal(
+                root_task_id=target.root_task_id,
+                manager_agent=target.manager_agent,
+                manager_session_id=target.manager_session_id,
+                result_id=target.result_id,
+                refusal_code=refusal_code,
+            )
+        except Exception:
+            # The prior J/R/stage residue remains the retry obligation.  The
+            # root stays fenced from every later startup effect in this pass.
+            logger.exception(
+                "authority v2 startup refusal housekeeping failed for %s",
+                discovered.attempt_id,
+            )
+    return fenced_roots
+
+
+def _v2_request_refusal(
+    orch: "Orchestrator", task: "TaskRecord", agent: str, *,
+    result_row_id: int | None, owner_attempt_id: str | None, code: str,
+) -> str:
+    """Request durable refusal housekeeping for one unfinalized v2 attempt.
+
+    This never falls back to the ordinary escalation path.  ``v2_refused``
+    means the terminal refusal committed (or was exactly replayed);
+    ``v2_pending`` means safe attribution could not be established (or the
+    refusal transaction itself failed), so the prior durable state is preserved
+    and a later discovery unit owns the bounded obligation.
+    """
+    db = orch._db
+    if result_row_id is None:
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            error="v2 hook has no causal result row id; refusal housekeeping pending",
+        )
+        return HOOK_V2_PENDING
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    try:
+        outcome = AuthorityPolicyStore(db).finalize_v2_attempt_refusal(
+            root_task_id=task.id,
+            manager_agent=task.assigned_agent or agent,
+            manager_session_id=task.current_session_id or "",
+            result_id=result_row_id,
+            refusal_code=code,
+            owner_attempt_id=owner_attempt_id,
+        )
+    except Exception as exc:
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            error=f"v2 refusal housekeeping failed: {exc}",
+        )
+        return HOOK_V2_PENDING
+    status = getattr(outcome, "status", None)
+    if status in ("refused", "owner_lost", "already_refused"):
+        return HOOK_V2_REFUSED
+    # housekeeping_pending (or an unknown bounded value): prior state intact.
+    return HOOK_V2_PENDING
+
+
+def _run_authority_hook_v2(
+    orch: "Orchestrator",
+    task: "TaskRecord",
+    agent: str,
+    result_row_id: int | None,
+) -> str:
+    """The accepted automatic v2 pre-final -> final -> post-final path.
+
+    Selected from the AUTHENTICATED immutable launch binding (never a claimed
+    wire family, the live selector or a caller-provided self-evaluation).  The
+    persisted normalized callback report/attempt is authoritative: the Database
+    stage writers re-read the causal result body, the immutable binding, the
+    pinned release/activation/selector identity and the retained mechanical
+    eligibility at every boundary, so a caller-provided report or a second
+    self-evaluation can never manufacture or replace the evaluation.  No second
+    model invocation, phrase/clause allowlist, live-selector substitution,
+    adverse-review/partial-work/raw-DDL veto or second evaluator is introduced.
+    """
+    db = orch._db
+    if result_row_id is None:
+        return _v2_request_refusal(
+            orch, task, agent, result_row_id=None, owner_attempt_id=None,
+            code="identity_mismatch",
+        )
+    try:
+        attempt = db.get_authority_policy_v2_attempt_for_result(result_row_id)
+    except Exception:
+        attempt = None
+    if attempt is None:
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            error="v2 launch binding has no authenticated admitted attempt",
+        )
+        return _v2_request_refusal(
+            orch, task, agent, result_row_id=result_row_id,
+            owner_attempt_id=None, code="identity_mismatch",
+        )
+    # The attempt's own authenticated identity is the only identity used; a
+    # drift from the current task/session is a fail-closed refusal, never a
+    # fresh authority.
+    if (
+        attempt.root_task_id != task.id
+        or attempt.manager_agent != (task.assigned_agent or agent)
+        or attempt.manager_session_id != (task.current_session_id or "")
+    ):
+        return _v2_request_refusal(
+            orch, task, agent, result_row_id=result_row_id,
+            owner_attempt_id=attempt.owner_attempt_id, code="identity_mismatch",
+        )
+    if attempt.finalization_state == "continued":
+        # Already-final causal replay: existing exact post-final reconciliation,
+        # never a stage replay or a second mint.
+        try:
+            reconcile_authority_policy_v2_post_final(orch, root_task_id=task.id)
+        except Exception:
+            logger.exception("v2 hook %s: post-final reconciliation failed", task.id)
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CONTINUED_SAME_ROOT,
+        )
+        return HOOK_V2_CONTINUED
+    if attempt.finalization_state in ("refused", "owner_lost"):
+        return HOOK_V2_REFUSED
+
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    store = AuthorityPolicyStore(db)
+    max_revise_rounds = int(
+        authority_policy_v2_claim_eligibility(orch).get("max_revise_rounds", 0)
+    )
+    stage_kwargs = dict(
+        root_task_id=task.id,
+        manager_agent=attempt.manager_agent,
+        manager_session_id=attempt.manager_session_id,
+        result_id=result_row_id,
+        origin_boot_id=attempt.origin_boot_id,
+        owner_attempt_id=attempt.owner_attempt_id,
+        max_revise_rounds=max_revise_rounds,
+    )
+    for stage_name, expected_status, forwarder_name in _V2_PRE_FINAL_STAGE_SEQUENCE:
+        forwarder = getattr(store, forwarder_name)
+        try:
+            outcome = forwarder(**stage_kwargs)
+        except Exception as exc:
+            _record_hook_outcome(
+                db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+                error=f"v2 stage {stage_name} raised: {exc}",
+            )
+            return _v2_request_refusal(
+                orch, task, agent, result_row_id=result_row_id,
+                owner_attempt_id=attempt.owner_attempt_id,
+                code="interrupted_pre_final",
+            )
+        status = getattr(outcome, "status", None)
+        if status == "refused":
+            code = _V2_STAGE_REFUSAL_TO_HOUSEKEEPING.get(
+                getattr(outcome, "refusal_code", None), "interrupted_pre_final",
+            )
+            return _v2_request_refusal(
+                orch, task, agent, result_row_id=result_row_id,
+                owner_attempt_id=attempt.owner_attempt_id, code=code,
+            )
+        if status != expected_status:
+            _record_hook_outcome(
+                db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+                error=f"v2 stage {stage_name} unexpected status {status!r}",
+            )
+            return _v2_request_refusal(
+                orch, task, agent, result_row_id=result_row_id,
+                owner_attempt_id=attempt.owner_attempt_id,
+                code="interrupted_pre_final",
+            )
+    # ---- Final continuation (atomic; mints E/N/D and returns the root Pending) ----
+    try:
+        final = store.finalize_v2_continuation(**stage_kwargs)
+    except Exception as exc:
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            error=f"v2 final continuation raised: {exc}",
+        )
+        return _v2_request_refusal(
+            orch, task, agent, result_row_id=result_row_id,
+            owner_attempt_id=attempt.owner_attempt_id,
+            code="final_commit_failed",
+        )
+    final_status = getattr(final, "status", None)
+    if final_status not in ("continued", "already_continued"):
+        return _v2_request_refusal(
+            orch, task, agent, result_row_id=result_row_id,
+            owner_attempt_id=attempt.owner_attempt_id,
+            code="final_commit_failed",
+        )
+    # A committed final continuation is not undone (nor ordinarily escalated)
+    # because settlement/publication remains pending.  The existing C3d4b
+    # post-final seam owns exact settlement and authenticated publication.
+    try:
+        reconcile_authority_policy_v2_post_final(orch, root_task_id=task.id)
+    except Exception:
+        logger.exception("v2 hook %s: post-final reconciliation failed", task.id)
+    _record_hook_outcome(
+        db, task_id=task.id, agent=agent, outcome=OUTCOME_CONTINUED_SAME_ROOT,
+    )
+    return HOOK_V2_CONTINUED
+
+
 def run_authority_hook(
     orch: "Orchestrator",
     task: "TaskRecord",
@@ -1425,19 +2315,52 @@ def run_authority_hook(
     ``capture_failure`` outcome and never creates a candidate.
     """
     policy = POLICY_BY_TEAM.get(task.team)
-    if policy is None:
-        # No release-controlled policy for this team: hook not applicable.
-        return "escalate"
 
     db = orch._db
+    # ---- 0. Select the policy FAMILY from the AUTHENTICATED immutable
+    # result/session launch binding BEFORE any legacy snapshot handling.  A v2
+    # binding is served by the accepted pre-final/final v2 stages; the v1
+    # snapshot reader explicitly refuses a v2 binding, so it must never run for
+    # this session.  A mixed/malformed binding identity fails closed to the
+    # ordinary escalation path (recorded capture failure) but does NOT run the
+    # v1 candidate machinery.
+    from runtime.orchestrator.active_authority_policy import (
+        load_session_policy_binding, load_session_policy_snapshot, policy_from_release,
+        SELF_EVALUATION_CONTRACT_DIGEST, SELF_EVALUATION_CONTRACT_ID,
+        SELF_EVALUATION_CONTRACT_VERSION,
+    )
+    try:
+        session_binding = load_session_policy_binding(
+            db=db, task_id=task.id, session_id=task.current_session_id or "",
+            agent_name=agent,
+        )
+    except Exception as exc:
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            policy=policy, error=f"policy family resolution failed: {exc}",
+        )
+        return HOOK_ESCALATE
+    binding_mode = (
+        session_binding.get("mode") if isinstance(session_binding, dict) else None
+    )
+    if binding_mode == "v2":
+        return _run_authority_hook_v2(orch, task, agent, result_row_id)
+    if binding_mode not in (None, "legacy_static", "db_release"):
+        # Mixed/malformed/unknown family evidence: never a v1 fallback.
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            policy=policy,
+            error=f"unsupported policy binding family {binding_mode!r}",
+        )
+        return HOOK_ESCALATE
+
+    if policy is None:
+        # No release-controlled policy for this team: hook not applicable.
+        return HOOK_ESCALATE
+
     active_activation = None
     active_release = None
     try:
-        from runtime.orchestrator.active_authority_policy import (
-            load_session_policy_binding, load_session_policy_snapshot, policy_from_release,
-            SELF_EVALUATION_CONTRACT_DIGEST, SELF_EVALUATION_CONTRACT_ID,
-            SELF_EVALUATION_CONTRACT_VERSION,
-        )
         from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
         policy_store = AuthorityPolicyStore(db)
         launch_snapshot = load_session_policy_snapshot(
@@ -1448,16 +2371,12 @@ def run_authority_hook(
             active_activation = launch_snapshot.activation
             active_release = launch_snapshot.release
             policy = policy_from_release(active_release)
-        session_binding = load_session_policy_binding(
-            db=db, task_id=task.id, session_id=task.current_session_id or "",
-            agent_name=agent,
-        )
     except Exception as exc:
         _record_hook_outcome(
             db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
             policy=policy, error=f"active policy resolution failed: {exc}",
         )
-        return "escalate"
+        return HOOK_ESCALATE
     current = db.get_task(task.id)
     if current is None:
         return "escalate"
@@ -2040,9 +2959,15 @@ def run_authority_hook(
             return "escalate"
         # Re-enqueue the root for its next manager decision step. Best-effort:
         # the run_step claim CAS keeps at-most-once admission if a replay lands.
+        # THR-229 C3d4a: route through the common DB-aware entry so a root whose
+        # durable pointer is pending(G) publishes its generation instead of
+        # emitting an untagged fallback.
         queue = getattr(orch, "_queue", None)
         if queue is not None:
-            queue.put_nowait(orch._slug, task.id)
+            enqueue_task_generation_aware(
+                orch, queue, orch._slug, task.id,
+                ordinary_enqueue=lambda: queue.put_nowait(orch._slug, task.id),
+            )
         return "continue_same_root"
 
     # ESCALATE (fail-closed default): the existing escalation path proceeds.
@@ -2053,3 +2978,486 @@ def run_authority_hook(
         error=verdict.error,
     )
     return "escalate"
+
+
+def publish_authority_policy_v2_notifications(
+    orch, queue, *, limit: int | None = 32, root_task_id: str | None = None,
+) -> list[dict]:
+    """Real publication entry for pending v2 continuation generations.
+
+    Independently discovers EVERY ``needed``/``publishing``/``published``
+    recovery notification whose root dispatch pointer is ``pending(G)`` and has
+    no generation admission (including exact already-consumed recovery
+    receipts), then for each target:
+
+    1. claims publication through the authenticated C3d3a public store seam
+       (ONE ``BEGIN IMMEDIATE``; null lease alone is never proof and a live
+       lease is never stolen);
+    2. ONLY after a winning claim, calls the real ``TaskQueue.put_nowait``
+       OUTSIDE any DB transaction with
+       ``metadata={"authority_v2_generation": G, "publication_attempt": P}``;
+    3. authenticates and acknowledges the exact claim (``publishing`` ->
+       ``published`` + closed audit); if the consumer already admitted G, the
+       acknowledgement records only the exact ``publish_returned(P)``
+       observation and never regresses state.
+
+    ``P`` is diagnostic; only ``G`` is admission authority.  A failed claim
+    performs NO queue call.  A queue exception uses the existing bounded
+    audited failure path (the prior claim stays safely reclaimable).  An
+    acknowledgement/audit failure leaves the exact lease/state replayable.
+    This function performs no evaluation, no remint and no task mutation, and
+    returns bounded per-target receipts for the caller.
+    """
+    db = orch._db
+    receipts: list[dict] = []
+    try:
+        targets = db.list_authority_policy_v2_publication_targets()
+    except Exception as exc:  # discovery is read-only best effort
+        return [{"status": "discovery_failed", "error": type(exc).__name__}]
+    if root_task_id is not None:
+        # Common-entry single-target use: publication stays the SAME
+        # authenticated claim -> raw put -> exact ack sequence; only the
+        # discovery scope narrows.  A pending root with NO publishable
+        # notification yields an EMPTY receipt list, which the caller must
+        # treat as a refusal (never an ordinary fallback).
+        targets = [t for t in targets if t.root_task_id == root_task_id]
+    # ``limit`` bounds one call; ``None`` means "every discovered target" so a
+    # startup pass can guarantee coverage for every eligible root (no
+    # first-32-target starvation).  Claim/reclaim remains the authority, so a
+    # re-discovered live-lease row is a bounded refusal, never a duplicate put.
+    scoped = targets if limit is None else targets[: max(0, limit)]
+    for target in scoped:
+        # THR-229 C3d4b correction B: a per-target raised failure is a BOUNDED
+        # refusal, never a whole-pass abort.  The claim/acknowledgement
+        # transactions own their own rollback, so one bad target must not starve
+        # every unrelated eligible root discovered later in the same startup
+        # pass.  Nothing here becomes ordinary decision/evaluation/spend/remint
+        # permission: a refusal is returned to the caller, which still requires
+        # an actual authenticated publication of the exact generation.
+        try:
+            claim = db.claim_authority_policy_v2_notification_publication(
+                root_task_id=target.root_task_id,
+                manager_agent=target.manager_agent,
+                manager_session_id=target.manager_session_id,
+                result_id=target.result_id,
+            )
+        except Exception as exc:
+            receipts.append({
+                "status": "publication_claim_failed",
+                "reason": type(exc).__name__,
+                "notification_id": target.notification_id,
+            })
+            continue
+        if claim.status != "claimed":
+            receipts.append({
+                "status": claim.status,
+                "reason": claim.reason,
+                "notification_id": target.notification_id,
+            })
+            continue
+        try:
+            queue.put_nowait(
+                orch._slug,
+                target.root_task_id,
+                metadata={
+                    "authority_v2_generation": claim.generation_id,
+                    "publication_attempt": claim.publication_attempt,
+                },
+            )
+        except Exception as exc:
+            try:
+                failure = (
+                    db.record_authority_policy_v2_notification_publication_failure(
+                        root_task_id=target.root_task_id,
+                        manager_agent=target.manager_agent,
+                        manager_session_id=target.manager_session_id,
+                        result_id=target.result_id,
+                        publication_attempt=claim.publication_attempt,
+                        publisher_boot_id=claim.publisher_boot_id,
+                    )
+                )
+                reason = failure.reason
+            except Exception as record_exc:
+                # A failure-bookkeeping write failure keeps the prior
+                # ``publishing`` lease safely reclaimable and must not abort
+                # the pass; the original queue error stays authoritative.
+                reason = type(record_exc).__name__
+            receipts.append({
+                "status": "publish_failed",
+                "reason": reason,
+                "notification_id": target.notification_id,
+                "publication_attempt": claim.publication_attempt,
+                "error": type(exc).__name__,
+            })
+            continue
+        try:
+            ack = db.acknowledge_authority_policy_v2_notification_publication(
+                root_task_id=target.root_task_id,
+                manager_agent=target.manager_agent,
+                manager_session_id=target.manager_session_id,
+                result_id=target.result_id,
+                publication_attempt=claim.publication_attempt,
+                publisher_boot_id=claim.publisher_boot_id,
+            )
+        except Exception as exc:
+            # The raw tagged put already happened; the retained claim/lease
+            # stays recoverable and reclaimable, so a restart republishes and
+            # the non-bypassable generation fence still admits only once.
+            receipts.append({
+                "status": "publication_acknowledgement_failed",
+                "reason": type(exc).__name__,
+                "notification_id": target.notification_id,
+                "generation_id": claim.generation_id,
+                "publication_attempt": claim.publication_attempt,
+            })
+            continue
+        receipts.append({
+            "status": ack.status,
+            "reason": ack.reason,
+            "notification_id": target.notification_id,
+            "generation_id": claim.generation_id,
+            "publication_attempt": claim.publication_attempt,
+        })
+    return receipts
+
+
+# Closed bounded outcomes of the real post-final orchestration (THR-229 C3d4b).
+POST_FINAL_NOT_FINALIZED = "not_finalized"
+POST_FINAL_RECONCILED = "reconciled"
+POST_FINAL_SETTLEMENT_REFUSED = "settlement_refused"
+
+
+def reconcile_authority_policy_v2_post_final(
+    orch, *, root_task_id: str,
+) -> str:
+    """Settle the exact final receipt and publish the pending generation (C3d4b).
+
+    The real accepted-completion-recovery and startup seams call this for a root
+    whose v2 generation is already FINALIZED (an active continuation envelope
+    exists).  It performs ONLY the accepted R4 post-final bookkeeping:
+
+    1. derive the immutable E/attempt identity from durable rows -- never the
+       caller's latest result, the current session or any caller assertion;
+    2. settle the exact recovery receipt through the EXISTING public settlement
+       writer (genuine recovery branch when an exact Q exists; the ordinary
+       branch -- which requires real completion evidence -- when none does), or
+       authenticate an already-``callback_consumed`` settlement read-only;
+    2b. when the exact generation was already ADMITTED by a real consumer and the
+       transition-only receipt reader can no longer re-authenticate it, complete
+       its R4 step6 bookkeeping through the EXISTING admission-settlement writer
+       using the durable G and reserved session -- bookkeeping only, with no
+       republication, reclaim, second admission or launch authority;
+    3. independently discover and publish EVERY needed/publishing/published
+       pending-G notification for the root through the EXISTING authenticated
+       publisher (real claim -> raw tagged ``TaskQueue`` put OUTSIDE any
+       transaction -> exact acknowledgement).
+
+    Publication runs whether or not a Q transition happened, so a lost
+    in-memory queue after a committed ``published``, an old-boot ``publishing``
+    lease and an already-consumed receipt are all rediscovered.  Receipt
+    discovery is converged on the exact immutable E/R/session identity above and
+    the SAME potentially-related classification the ordinary settlement branch
+    uses: an unrelated ESTABLISHED TERMINAL historical receipt neither supplies
+    current authority nor blocks a healthy current accepted/consumed Q or genuine
+    ordinary evidence, while a related (partial/malformed/nonterminal/
+    unknown-state) or second potentially-related receipt still refuses
+    read-only.  It never
+    evaluates, remints, spends, launches, mutates the task outside the writers
+    above, or runs the ordinary decision body.  The outcome is AUTHENTICATED,
+    never inferred from an empty discovery: ``reconciled`` requires a real writer
+    ``settled``/``already_settled_exact`` outcome or an ACTUAL authenticated
+    publication of the EXACT generation.  A missing N, a missing D, a hidden
+    malformed target, a refused claim, a live lease, a discovery failure or any
+    other refusal returns ``settlement_refused`` with the prior residue and zero
+    queue calls, and never an ordinary fallback.
+
+    Returns one of the bounded ``POST_FINAL_*`` status strings.
+    """
+    db = getattr(orch, "_db", None)
+    from runtime.infrastructure.database import Database
+    if not isinstance(db, Database):
+        return POST_FINAL_NOT_FINALIZED
+    try:
+        envelope = db.get_authority_policy_v2_continue_envelope_for_root(
+            root_task_id
+        )
+    except Exception:
+        logger.exception(
+            "post-final %s: continuation envelope read failed", root_task_id,
+        )
+        return POST_FINAL_SETTLEMENT_REFUSED
+    if envelope is None:
+        return POST_FINAL_NOT_FINALIZED
+    try:
+        identity = db.get_authority_policy_v2_settlement_receipt_identity(
+            root_task_id=root_task_id, manager_agent=envelope.manager_agent,
+            manager_session_id=envelope.manager_session_id,
+            result_id=envelope.result_id,
+        )
+    except Exception:
+        logger.exception(
+            "post-final %s: settlement receipt identity read failed", root_task_id,
+        )
+        return POST_FINAL_SETTLEMENT_REFUSED
+    settled = False
+    committed_receipt = bool(identity) and not identity.get("conflict") and (
+        identity.get("state") == "callback_consumed"
+    )
+    try:
+        if identity is None:
+            # No recovery receipt at all: the finalized continuation must have
+            # been settled through the genuine ordinary completion evidence.
+            outcome = db.settle_authority_policy_v2_continuation_receipt(
+                root_task_id=root_task_id, manager_agent=envelope.manager_agent,
+                manager_session_id=envelope.manager_session_id,
+                result_id=envelope.result_id,
+            )
+        elif identity.get("conflict"):
+            # The receipt set cannot be reduced to exactly one receipt that IS the
+            # exact current causal recovery identity: never guess which is
+            # authoritative and never let one matching row settle behind a
+            # conflicting sibling.  Refuse read-only with the prior residue; the
+            # publisher independently refuses on the same conflicting proof, so
+            # no queue call happens.
+            outcome = None
+        else:
+            outcome = db.settle_authority_policy_v2_continuation_receipt(
+                root_task_id=root_task_id, manager_agent=envelope.manager_agent,
+                manager_session_id=envelope.manager_session_id,
+                result_id=envelope.result_id,
+                recovery_session_id=identity.get("recovery_session_id"),
+                accepted_result_id=identity.get("accepted_result_id"),
+                accepted_result_session_id=identity.get(
+                    "accepted_result_session_id"
+                ),
+            )
+        settled = getattr(outcome, "status", None) in (
+            "settled", "already_settled_exact",
+        )
+    except Exception:
+        logger.exception(
+            "post-final %s: continuation receipt settlement failed", root_task_id,
+        )
+    if not settled:
+        # The transition-only settlement reader above requires N ``needed``; a
+        # generation already ADMITTED (or admitted + settled) by a real consumer
+        # is beyond that reader, so complete/authenticate its exact R4 step6
+        # bookkeeping through the EXISTING admission-settlement writer.
+        settled = _settle_admitted_generation_bookkeeping(
+            db, root_task_id=root_task_id,
+        )
+    queue = getattr(orch, "_queue", None)
+    receipts: list[dict] = []
+    if queue is not None:
+        receipts = publish_authority_policy_v2_notifications(
+            orch, queue, root_task_id=root_task_id, limit=None,
+        )
+    if not settled and committed_receipt:
+        # The exact receipt is already durably ``callback_consumed`` but the
+        # transition-only settlement reader could not re-authenticate it (the
+        # publisher legitimately advanced N past ``needed``).  The ONLY
+        # affirmative proof in that case is an ACTUAL authenticated publication
+        # of the EXACT generation: the publisher's own claim re-authenticated the
+        # complete settlement evidence.  Empty discovery, a discovery failure, a
+        # live lease, a hidden malformed target or any other refusal is NEVER
+        # settlement authentication.
+        settled = any(
+            isinstance(receipt, dict)
+            and receipt.get("status") in ("published", "published_exact")
+            for receipt in receipts
+        )
+    return POST_FINAL_RECONCILED if settled else POST_FINAL_SETTLEMENT_REFUSED
+
+
+def _settle_admitted_generation_bookkeeping(db, *, root_task_id: str) -> bool:
+    """Complete exact admitted/settled generation bookkeeping (C3d4b).
+
+    Reached only when the transition-only receipt settlement reader could not
+    re-authenticate an already-``callback_consumed`` receipt (or an ordinary
+    completion) because the real consumer advanced the generation past
+    ``needed``.  It reads the immutable generation token G and its reserved
+    session from DURABLE rows -- never a caller assertion, the latest result or
+    the current session -- and calls the EXISTING admission-settlement writer,
+    which independently authenticates the complete post-final/admission/
+    publication/settlement evidence.  A missing/conflicting/corrupt admission
+    therefore refuses read-only.  This NEVER republishes or reclaims an admitted
+    generation, never performs a second generation admission and never grants
+    launch authority: the reserved owner token stays process-local and is not
+    reconstructed from durable UUIDs.
+    """
+    try:
+        dispatch = db.get_authority_policy_v2_root_dispatch(root_task_id)
+    except Exception:
+        logger.exception("post-final %s: root dispatch read failed", root_task_id)
+        return False
+    if dispatch is None or getattr(dispatch, "state", None) != "admitted":
+        return False
+    generation_id = getattr(dispatch, "generation_id", None)
+    if not isinstance(generation_id, str) or not generation_id:
+        return False
+    try:
+        notification = db.get_authority_policy_v2_recovery_notification(
+            generation_id
+        )
+    except Exception:
+        logger.exception(
+            "post-final %s: admitted generation read failed", root_task_id,
+        )
+        return False
+    if (
+        notification is None
+        or notification.root_task_id != root_task_id
+        or notification.state not in ("admitted", "settled")
+    ):
+        return False
+    next_session_id = getattr(notification, "next_session_id", None)
+    if not isinstance(next_session_id, str) or not next_session_id:
+        return False
+    try:
+        settlement = db.settle_v2_continuation_generation_admission(
+            root_task_id=root_task_id,
+            manager_agent=notification.manager_agent,
+            manager_session_id=notification.manager_session_id,
+            result_id=notification.result_id,
+            generation_id=generation_id,
+            next_session_id=next_session_id,
+        )
+    except Exception:
+        logger.exception(
+            "post-final %s: admitted generation settlement failed", root_task_id,
+        )
+        return False
+    return getattr(settlement, "status", None) in (
+        "settled", "already_settled_exact",
+    )
+
+
+# Closed bounded outcomes of the common DB-aware enqueue entry (THR-229 C3d4a).
+ENQUEUE_DISPATCH_ORDINARY = "ordinary"
+ENQUEUE_DISPATCH_PUBLISHED = "published"
+ENQUEUE_DISPATCH_REFUSED = "refused"
+ENQUEUE_DISPATCH_NO_QUEUE = "no_queue"
+
+
+def enqueue_task_generation_aware(
+    orch, queue, slug: str, task_id: str, *, metadata: dict | None = None,
+    ordinary_enqueue=None,
+) -> str:
+    """Common DB-aware task enqueue entry (THR-229 checkpoint C3d4a).
+
+    Resolves the TARGET root's durable v2 generation at PRODUCTION time -- the
+    target's OWN ``authority_policy_v2_root_dispatch`` pointer, never request
+    metadata and never a parent's token -- and routes accordingly:
+
+    * ``absent``   -> the unchanged ordinary enqueue (metadata preserved);
+    * ``pending``  -> the EXISTING authenticated notification publisher for this
+      exact root (real claim -> raw ``TaskQueue`` put OUTSIDE any transaction ->
+      exact acknowledgement).  A claim that did not win, a queue failure whose
+      audited failure obligation was recorded, or a pending root with no
+      publishable notification all REFUSE: no ordinary untagged fallback is ever
+      emitted for a pending v2 generation;
+    * ``admitted`` -> refuse (the generation was already reserved/launched; an
+      ordinary enqueue must not relaunch it);
+    * ``retired``  -> ordinary enqueue (a spent old generation must not
+      blanket-block legitimate later work);
+    * ``malformed``/``unreadable`` -> refuse (never ordinary permission).
+
+    The publisher transport stays DISTINCT from this entry (it calls
+    ``queue.put_nowait`` directly), so routing a pending root through the common
+    entry cannot recurse.  Publication may repeat; generation admission may not
+    (the DB claim fence remains the non-bypassable backstop).  Returns one of
+    the bounded ``ENQUEUE_DISPATCH_*`` status strings.
+
+    ``ordinary_enqueue`` optionally supplies the caller's EXACT legacy ordinary
+    call shape (e.g. ``put_nowait(slug, task_id)`` with no metadata kwarg for a
+    producer that never carried metadata).  Each converged producer preserves its
+    original call so the tuple/metadata shape and any queue-double contract are
+    unchanged; the default uses the shared legacy ``enqueue`` shape.
+    """
+    if queue is None:
+        return ENQUEUE_DISPATCH_NO_QUEUE
+
+    def _ordinary() -> None:
+        if ordinary_enqueue is not None:
+            ordinary_enqueue()
+        else:
+            _ordinary_enqueue(queue, slug, task_id, metadata)
+
+    db = getattr(orch, "_db", None)
+    # Only a genuine durable ``Database`` carries the classification read.  A
+    # duck-typed/mock orchestrator (a test double or an org with no durable
+    # authority state) is NOT permission to consult or bypass durable v2 state,
+    # so it keeps the unchanged ordinary path.
+    classifier = _durable_dispatch_classifier(db)
+    if classifier is None:
+        _ordinary()
+        return ENQUEUE_DISPATCH_ORDINARY
+    try:
+        classification = classifier(task_id)
+    except Exception:
+        logger.exception("enqueue %s: v2 dispatch classification failed", task_id)
+        return ENQUEUE_DISPATCH_REFUSED
+    kind = getattr(classification, "kind", None)
+    if kind == "pending":
+        # Route the EXACT pending generation through the authenticated publisher.
+        # The publisher performs the claim -> raw put -> ack itself; a refusal or
+        # an empty target set means NO queue call and NO ordinary fallback.
+        receipts = publish_authority_policy_v2_notifications(
+            orch, queue, root_task_id=task_id,
+        )
+        published = any(
+            isinstance(r, dict) and r.get("status") in ("published", "published_exact")
+            for r in receipts
+        )
+        return ENQUEUE_DISPATCH_PUBLISHED if published else ENQUEUE_DISPATCH_REFUSED
+    if kind in ("admitted", "malformed", "unreadable"):
+        logger.warning(
+            "enqueue %s: v2 dispatch %s refuses ordinary enqueue", task_id, kind,
+        )
+        return ENQUEUE_DISPATCH_REFUSED
+    # ``absent`` and ``retired`` keep the unchanged ordinary path; an unexpected
+    # kind can never become ordinary permission.
+    if kind != "absent" and kind != "retired":
+        return ENQUEUE_DISPATCH_REFUSED
+    _ordinary()
+    return ENQUEUE_DISPATCH_ORDINARY
+
+
+def _durable_dispatch_classifier(db):
+    """The real ``Database`` v2 dispatch classifier, or ``None``.
+
+    ``getattr(db, name)`` is deliberately NOT used alone: a bare ``MagicMock``
+    (or any duck-typed orchestrator) auto-creates that attribute and would make
+    the boundary either consult fabricated authority evidence or mis-classify
+    its return as a refusal.  Only an actual ``Database`` instance -- a real
+    durable target root -- may drive the classification.
+    """
+    if db is None:
+        return None
+    from runtime.infrastructure.database import Database
+    if not isinstance(db, Database):
+        return None
+    classifier = getattr(
+        db, "classify_authority_policy_v2_root_dispatch_for_enqueue", None,
+    )
+    return classifier if callable(classifier) else None
+
+
+def _ordinary_enqueue(queue, slug: str, task_id: str, metadata: dict | None) -> None:
+    """Raw ordinary enqueue preserving the legacy call shape exactly.
+
+    The common legacy entry (``runner.enqueue_task``, startup sweep) used
+    ``TaskQueue.enqueue``; real ``TaskQueue`` makes ``enqueue``/``put_nowait``
+    equivalent, and a few test doubles expose only one, so prefer ``enqueue``
+    and fall back to ``put_nowait``.  Producers whose original call was
+    ``put_nowait`` pass their exact shape through ``ordinary_enqueue`` instead.
+    """
+    put = getattr(queue, "enqueue", None)
+    if not callable(put):
+        put = getattr(queue, "put_nowait", None)
+    if not callable(put):
+        raise AttributeError("queue exposes neither enqueue nor put_nowait")
+    if metadata is None:
+        put(slug, task_id)
+    else:
+        put(slug, task_id, metadata=metadata)
