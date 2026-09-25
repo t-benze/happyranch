@@ -1152,7 +1152,7 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
     # ── tally identity classes for every examined record ────────────────────
     for rec in sorted(records.values(), key=lambda r: int(r.pid)):
         if rec.uid is None:
-            if rec.status_kind == VANISHED or rec.stat_kind == VANISHED:
+            if rec.stat_kind == VANISHED:
                 res.coverage["exited"] += 1
             else:
                 # B3: identity itself is unreadable -> UNKNOWN uid. This is not
@@ -1226,10 +1226,6 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
             res.coverage["reused_pids"] += 1
             continue
         cur_status = proc.read_text(pid, "status", 8192)
-        if cur_status.kind == VANISHED:
-            res.coverage["exited"] += 1
-            res.coverage["vanished"] += 1
-            continue
         if cur_status.kind != OK:
             res.reasons.append(f"identity_recheck_{cur_status.kind}:{pid}")
             res.coverage["unreadable_same_user"] += 1
@@ -1402,8 +1398,6 @@ def _thread_bracket(proc, pid: str, tid: str):
     if starttime is None:
         return None, "malformed"
     status = proc.read_text(pid, f"task/{tid}/status", 8192)
-    if status.kind == VANISHED:
-        return None, "gone"
     if status.kind != OK:
         return None, status.kind
     uid = _parse_uid(status.value)

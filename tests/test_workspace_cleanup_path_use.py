@@ -409,6 +409,66 @@ def test_f2_confirmed_exit_is_not_unknown(cpu):
     assert res.coverage["exited"] >= 1
 
 
+def test_f2_missing_leader_status_with_readable_stat_is_unknown(cpu):
+    proc = cpu.FakeProc(
+        {SELF: _spec(SELF),
+         "600": _spec("600", cwd=TARGET + "/occupied", ppid="0")},
+        vanish=[("600", "status")],
+        stat_map=dict(STAT_MAP),
+    )
+    res = cpu.scan(TARGET, proc=proc, self_pid=SELF, agent_uid=UID)
+    assert res.state == "unknown"
+    assert res.hits == []
+    assert any("identity_vanished:600" == reason for reason in res.reasons)
+    assert res.coverage["exited"] == 0
+
+
+def test_f2_leader_status_disappearing_after_readable_snapshot_is_unknown(cpu):
+    class _LeaderStatusVanishesAfterSnapshot(_HC.FakeProc):
+        status_reads = 0
+
+        def read_text(self, pid, rel, limit):
+            if pid == "600" and rel == "status":
+                self.status_reads += 1
+                if self.status_reads > 1:
+                    return _HC.Outcome(_HC.VANISHED)
+            return super().read_text(pid, rel, limit)
+
+    proc = _LeaderStatusVanishesAfterSnapshot(
+        {SELF: _spec(SELF),
+         "600": _spec("600", cwd=TARGET + "/occupied", ppid="0")},
+        stat_map=dict(STAT_MAP),
+    )
+    res = cpu.scan(TARGET, proc=proc, self_pid=SELF, agent_uid=UID)
+    assert res.state == "unknown"
+    assert res.hits == []
+    assert any("identity_recheck_vanished:600" == reason for reason in res.reasons)
+    assert res.coverage["exited"] == 0
+
+
+def test_f2_missing_thread_status_with_readable_stat_is_unknown(cpu):
+    proc = _threaded_proc(cpu)
+    proc.spec["600"]["ppid"] = "0"
+    proc.spec["600"]["threads"]["601"]["cwd"] = TARGET + "/occupied"
+    proc.vanish.add(("600", "task/601/status"))
+    res = cpu.scan(TARGET, proc=proc, self_pid=SELF, agent_uid=UID)
+    assert res.state == "unknown"
+    assert res.hits == []
+    assert any(
+        "thread_identity_vanished:600:601" == reason for reason in res.reasons
+    )
+    assert res.coverage["exited"] == 0
+
+
+def test_f2_missing_thread_stat_is_confirmed_exit(cpu):
+    proc = _threaded_proc(cpu)
+    proc.spec["600"]["ppid"] = "0"
+    proc.vanish.add(("600", "task/601/stat"))
+    res = cpu.scan(TARGET, proc=proc, self_pid=SELF, agent_uid=UID)
+    assert res.state == "clear_observation"
+    assert res.coverage["exited"] >= 1
+
+
 def test_f2_permission_error_is_unknown(cpu):
     proc = cpu.FakeProc({SELF: _spec(SELF), "600": _spec("600")},
                         deny=[("600", "cwd")], stat_map=dict(STAT_MAP))
