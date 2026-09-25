@@ -720,7 +720,7 @@ class TestSkillsCliReflection:
         out = capsys.readouterr().out
         # Check system contracts section does NOT list reflection
         # reflection appears only in Effective skills / Blocked, not in System Contracts
-        # The system contracts section should show exactly 7 contracts
+        # The system contracts section should show exactly 8 contracts
         assert "System Contracts (runtime-injected):" in out
         # review should appear in effective/blocked section, not system contracts
         # Verify the existing 7 contracts are still there
@@ -742,10 +742,6 @@ class TestSkillsCliRegistration:
         )
         choices = set(subparsers_action.choices.keys())
         assert "skills" in choices
-
-    def test_test_skill_cli_commands_exist_e2e(self):
-        """The existing test_skill_cli_commands_exist test should not need updating
-        for managed skills (they are `skills ...` commands, not `happyranch <skill_slug>`)."""
 
     def test_skills_catalog_list_subcommand(self):
         from cli.main import build_parser
@@ -1076,7 +1072,7 @@ class TestSystemContractsCliDisplay:
 
         out = capsys.readouterr().out
         assert "System Contracts (runtime-injected):" in out
-        assert "Total: 7 contract(s)" in out
+        assert "Total: 8 contract(s)" in out
         assert "start-task" in out
         assert "jobs" in out
         assert "make-worktree" in out
@@ -1102,7 +1098,7 @@ class TestSystemContractsCliDisplay:
         out = capsys.readouterr().out
         data = json.loads(out)
         assert "system_contracts" in data
-        assert len(data["system_contracts"]) == 7
+        assert len(data["system_contracts"]) == 8
         ids = [sc["id"] for sc in data["system_contracts"]]
         assert "start-task" in ids
         assert "jobs" in ids

@@ -1530,6 +1530,7 @@ _TASK_CONTEXT_CONTRACT_IDS = (
     "dream",
     "todos",
     "create-skill",
+    "workspace-cleanup",
 )
 
 
@@ -4187,3 +4188,55 @@ async def test_c13_disabled_with_actions_true_creates_nothing(
     )
     assert state.queue.items == []
     assert db.list_tasks(limit=1000) == []
+
+
+# ── (n) shared workspace-cleanup skill wording (THR-259 seq171/seq185) ────
+
+class TestComposeCleanupBriefSharedSkillWording:
+    """The daemon-composed brief names the ONE shared workspace-cleanup skill
+    and carries the approved seq171/seq185 current-use rule; the retired
+    live-session/task-process identity veto is gone."""
+
+    def _brief(self, run_number: int, *, thread_id: str | None = "THR-TEST") -> str:
+        snapshot = wcs.WorkspaceContextSnapshot(
+            available=True, workspaces_count=1, workspaces_bytes=1234,
+            largest=[("dev_agent", 1234)], worktrees_registered=2,
+            worktrees_terminal=1,
+        )
+        return wcs.compose_cleanup_brief(
+            org_slug="test", agent="dev_agent", task_id="TASK-TEST-1",
+            run_number=run_number, snapshot=snapshot, thread_id=thread_id,
+        )
+
+    def test_first_line_is_daemon_marker(self):
+        for run in (1, 3):
+            assert self._brief(run).splitlines()[0] == wcs._CLEANUP_BRIEF_MARKER
+
+    def test_names_shared_skill_and_manual_marker(self):
+        brief = self._brief(3)
+        assert "runtime/skills/bundled/workspace-cleanup/SKILL.md" in brief
+        assert "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)" in brief
+
+    def test_action_body_carries_seq171_185_rule_and_helper(self):
+        brief = self._brief(3)
+        assert "seq171/seq185" in brief
+        assert "check_path_use.py" in brief
+        assert "clear_observation" in brief
+        assert "exact readable process name AND exact bounded cgroup role" in brief
+
+    def test_retired_liveness_veto_absent(self):
+        for run in (1, 3):
+            brief = self._brief(run)
+            assert "Liveness requires both runtime and OS checks" not in brief
+            assert "validated executor PID identity" not in brief
+
+    def test_first_two_runs_remain_report_only(self):
+        for run in (1, 2):
+            brief = self._brief(run)
+            assert "STRICTLY REPORT-ONLY" in brief
+            assert "No cleanup action is authorized" in brief
+
+    def test_third_run_authorizes_non_force_only(self):
+        brief = self._brief(3)
+        assert "THIS RUN MAY PERFORM BOUNDED CLEANUP ACTIONS" in brief
+        assert "without --force" in brief.replace("\n", " ")

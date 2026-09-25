@@ -92,6 +92,10 @@ def _u0_hosted_source_contract() -> _U0HostedSourceContract:
         ("66980e58bcd0a60e0fe5bc12d55644d700ba04975ce97e18718533c8227e5735",
          "9fcc840b1f227e0a7b5710b598ec2f037526b96511ddbacb2d058f8888b3e948"):
             _U0HostedSourceContract(True, True),
+        # PR900 changes run_step only; both source behaviors remain verified.
+        ("318bb4504ffc25f6192c25b05e93bce910499156fe783e95935bea60f1734741",
+         "9fcc840b1f227e0a7b5710b598ec2f037526b96511ddbacb2d058f8888b3e948"):
+            _U0HostedSourceContract(True, True),
     }
     try:
         return contracts[source_pair]

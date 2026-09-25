@@ -252,6 +252,7 @@ class TestReflectionSkillNotInSystemContracts:
         assert "thread" in ids
         assert "dream" in ids
         assert "todos" in ids
+        assert "workspace-cleanup" in ids
 
 
 # ══════════════════════════════════════════════════════════════════════════

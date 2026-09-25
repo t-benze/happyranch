@@ -86,20 +86,20 @@ _REFLECTION_ELIGIBLE: frozenset[str] = frozenset({
 # superset to prevent cross-context withdrawal.
 SYSTEM_CONTRACT_EXPECTATIONS: dict[str, dict[bool, set[str]]] = {
     "task": {
-        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"},
-        False: {"start-task", "jobs", "thread", "dream", "todos"},
+        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"},
+        False: {"start-task", "jobs", "thread", "dream", "todos", "workspace-cleanup"},
     },
     "thread": {
-        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"},
-        False: {"start-task", "jobs", "thread", "dream", "todos"},
+        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"},
+        False: {"start-task", "jobs", "thread", "dream", "todos", "workspace-cleanup"},
     },
     "wake": {
-        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"},
-        False: {"start-task", "jobs", "thread", "dream", "todos"},
+        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"},
+        False: {"start-task", "jobs", "thread", "dream", "todos", "workspace-cleanup"},
     },
     "dream": {
-        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"},
-        False: {"start-task", "jobs", "thread", "dream", "todos"},
+        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"},
+        False: {"start-task", "jobs", "thread", "dream", "todos", "workspace-cleanup"},
     },
 }
 

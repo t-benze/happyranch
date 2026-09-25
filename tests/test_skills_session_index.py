@@ -845,7 +845,7 @@ class TestCallPathManagedSkillsIndex:
 
         # TASK-2511: pre-create runtime/skills/bundled/ source dirs so
         # ensure_system_contracts_materialized can inject + verify.
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]:
             src = test_settings.get_bundled_skills_dir() / sid
             src.mkdir(parents=True, exist_ok=True)
             (src / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {sid}.\n")

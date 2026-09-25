@@ -53,6 +53,7 @@ logger = logging.getLogger("happyranch.daemon")
 def _sweep_enqueue(
     queue: TaskQueue, slug: str, task_id: str,
     orchestrator: Orchestrator | None,
+    *, pending_once: bool = False,
 ) -> None:
     """Startup-sweep enqueue through the common DB-aware boundary (C3d4a).
 
@@ -62,11 +63,17 @@ def _sweep_enqueue(
     there is no durable classifier to consult and the unchanged ordinary enqueue
     is preserved.
     """
-    if orchestrator is None:
-        queue.enqueue(slug, task_id)
-        return
-    from runtime.orchestrator.authority import enqueue_task_generation_aware
-    enqueue_task_generation_aware(orchestrator, queue, slug, task_id)
+    def publish() -> None:
+        if orchestrator is None:
+            queue.enqueue(slug, task_id)
+            return
+        from runtime.orchestrator.authority import enqueue_task_generation_aware
+        enqueue_task_generation_aware(orchestrator, queue, slug, task_id)
+
+    if pending_once:
+        queue.enqueue_if_absent(slug, task_id, publisher=publish)
+    else:
+        publish()
 
 
 def _sweep_on_startup(
@@ -366,11 +373,9 @@ def _sweep_on_startup(
                 # wake.  This is intentionally limited to the delegated
                 # parent path; ordinary pending-task startup enqueue behavior
                 # remains unchanged.
-                if not any(
-                    queued_slug == slug and queued_task_id == task_id
-                    for queued_slug, queued_task_id, _ in queue._queue._queue
-                ):
-                    _sweep_enqueue(queue, slug, task_id, orchestrator)
+                _sweep_enqueue(
+                    queue, slug, task_id, orchestrator, pending_once=True,
+                )
 
         # Branch 3 — parked on jobs (blocked_on_job). Re-enqueue only when all
         # blocking jobs are terminal (jobs finished while the daemon was down);
@@ -388,11 +393,9 @@ def _sweep_on_startup(
                 # before a worker claims the first wake.  Keep the ordinary
                 # resume wake one-shot in the in-memory queue, as for the
                 # delegated parked carrier above.
-                if not any(
-                    queued_slug == slug and queued_task_id == task_id
-                    for queued_slug, queued_task_id, _ in queue._queue._queue
-                ):
-                    _sweep_enqueue(queue, slug, task_id, orchestrator)
+                _sweep_enqueue(
+                    queue, slug, task_id, orchestrator, pending_once=True,
+                )
 
         # Branch 4 — pending: re-enqueue (lost the original POST enqueue).
         elif t.status == TaskStatus.PENDING:

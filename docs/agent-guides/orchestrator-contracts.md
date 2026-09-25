@@ -31,6 +31,21 @@ in-memory `TeamsRegistry` agent and reconciles to the invocation's initial
 successful `0 -> 1` claim (the first two runs stay report-only); disabling the
 key affects later admissions only and cannot revoke an already admitted call.
 
+The daily trigger and manual dispatch share the ONE `workspace-cleanup` TASK
+system contract (`requires_repo=false`; source
+`runtime/skills/bundled/workspace-cleanup/SKILL.md`). Manual dispatch requires
+the exact first line `HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)`;
+an unmarked manual request is inventory-only. The bundled read-only
+`scripts/check_path_use.py` returns only `clear_observation`, `blocked`, or
+`unknown`: an authoritative recorded terminal status plus a fresh complete
+same-user process scan replaces separate live-session/task-to-process identity
+(THR-259 seq171), and a fixed login/session daemon qualifies only by exact
+readable process name AND exact bounded cgroup role (THR-259 seq185) and is
+deliberately uninspected. Any other unreadable same-user process is `unknown`
+and skips; root is outside the scan; positive non-exempt use blocks. This is a
+snapshot with disclosed later-opener/data-loss residual, not proof of OS-wide
+absence.
+
 The database-only reclamation selection helper is called only by `run_step`'s
 pre-agent hook, never by the scheduler. Supplied claim counts other than initial `0 -> 1` refuse before its
 per-read admission callback or SQL; a valid supplied pair still needs a fresh
@@ -1536,6 +1551,23 @@ accepted root-manager escalation is instead committed by the existing
 authority hook as `CONTINUE_SAME_ROOT`, the completion receipt is reconciled
 only from that committed causal result/candidate/envelope tuple and current
 owner; restart never reruns the evaluator or guesses from `pending` alone.
+
+Receipt-owned cleanup tails and startup Branch 2 can reach the same parent
+wake concurrently. They (and the already-bounded blocked-job startup producer)
+therefore use `TaskQueue.enqueue_if_absent`: the queue owns one thread-safe
+per-task reservation claimed under its lock; generation-aware and DB-aware
+publication then runs with that lock released. A concurrent bounded producer
+loses to either the reservation or an actual pending item. The reservation is
+cleared on publication success, refusal, exception, or cancellation, so a
+refused publication cannot strand future wake ownership. Callers never inspect
+`asyncio.Queue`'s private deque. Suppression is pending-only; removing the item
+for execution atomically clears the pending count, so a later valid transition
+can publish another wake. Unrelated entries retain FIFO order and ordinary
+enqueue remains deliberately non-coalescing. Tests must join every cleanup
+worker they create before another sweep, inspecting the queue, or restoring
+shared `jobs_runner` state; durable job settlement alone is not cleanup-tail
+completion.
+
 Branch 1 (in_progress + block_kind IS NULL — a live subprocess killed by the restart):
 
 1. **Mark failed with restart context.** The killed child's note is enriched to

@@ -61,7 +61,7 @@ _DEFAULT_AGENTS = ["engineering_head", "product_manager", "dev_agent", "payment_
 # System-contract IDs expected for "task" context with repos.
 # Must exist in runtime/skills/bundled/ so ensure_system_contracts_materialized
 # (TASK-2511) can inject + verify them.
-_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]
+_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]
 
 
 def _setup_protocol_skills(settings, contract_ids: list[str] | None = None) -> None:
@@ -2085,7 +2085,7 @@ def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_ru
     # Create source skill dirs in runtime/skills/bundled/ for the project_root temp.
     proto_skills = test_settings.get_bundled_skills_dir()
     proto_skills.mkdir(parents=True, exist_ok=True)
-    for sid in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+    for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "workspace-cleanup"):
         (proto_skills / sid).mkdir(parents=True, exist_ok=True)
         (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
 
@@ -2741,23 +2741,6 @@ def test_read_completion_from_db_corrupt_local_ci(orchestrator):
     report = orchestrator._read_completion_from_db("TASK-001", "dev_agent", "sess-corrupt")
     assert report is not None
     assert report.local_ci is None
-
-
-def test_local_ci_column_migration_idempotent(orchestrator):
-    """The ALTER TABLE ADD COLUMN local_ci TEXT migration is idempotent.
-    Running it twice via the _ensure_schema path does not crash."""
-    # The column already exists after the first migration run during DB init.
-    # We can verify by re-running the ALTER and catching sqlite3.OperationalError.
-    import sqlite3
-    try:
-        orchestrator._db._conn.execute(
-            "ALTER TABLE task_results ADD COLUMN local_ci TEXT"
-        )
-        # If we get here, the column already exists (no error) or was added.
-        # Either way, the idempotent migration pattern works.
-    except sqlite3.OperationalError:
-        # Expected: column already exists.
-        pass
 
 
 def test_orchestrator_requires_teams() -> None:
@@ -4748,7 +4731,7 @@ def test_preflight_checks_all_contracts_before_any_canonical_build(
 
     # Compute trusted hashes for ALL contracts before failure.
     trusted_hashes_before: dict[str, str] = {}
-    for cid in ["start-task", "jobs", "make-worktree", "thread"]:
+    for cid in ["start-task", "jobs", "make-worktree", "thread", "workspace-cleanup"]:
         d = proto_skills / cid
         if d.exists():
             trusted_hashes_before[cid] = _compute_dir_hash(d)
@@ -4828,7 +4811,7 @@ def test_preflight_checks_all_contracts_before_any_canonical_build(
 
     # ── No canonical package was built for non-seeded contracts ──────────
     # "jobs" was seeded by us — it should have exactly the seeded entry.
-    for cid in ["start-task", "jobs", "make-worktree", "thread"]:
+    for cid in ["start-task", "jobs", "make-worktree", "thread", "workspace-cleanup"]:
         pkg_base = store.root / cid / "system"
         if cid == "jobs":
             # Only the seeded package should exist
@@ -4861,7 +4844,7 @@ def test_preflight_checks_all_contracts_before_any_canonical_build(
     )
 
     # ── Trusted source hashes unchanged ───────────────────────────────────
-    for cid in ["start-task", "jobs", "make-worktree"]:
+    for cid in ["start-task", "jobs", "make-worktree", "workspace-cleanup"]:
         if cid in trusted_hashes_before:
             current_hash = _compute_dir_hash(proto_skills / cid)
             assert current_hash == trusted_hashes_before[cid], (
@@ -4972,7 +4955,7 @@ def test_preflight_context_union_raises_on_missing_source_executor_switch(
 
     # Compute trusted hashes of surviving contracts
     trusted_hashes: dict[str, str] = {}
-    for cid in ["start-task", "jobs", "make-worktree", "thread"]:
+    for cid in ["start-task", "jobs", "make-worktree", "thread", "workspace-cleanup"]:
         d = proto_skills / cid
         if d.exists():
             trusted_hashes[cid] = _compute_dir_hash(d)
