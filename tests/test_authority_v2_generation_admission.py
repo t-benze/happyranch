@@ -722,6 +722,79 @@ def test_direct_run_step_untagged_pending_requests_publication_without_admission
     assert _task_row(store)["orchestration_step_count"] == before_step + 1
 
 
+def test_queue_consumer_admits_and_launches_exact_v2_generation_once(
+    tmp_path, monkeypatch,
+):
+    """Untagged and duplicate tagged queue items cannot steal or replay G."""
+    import asyncio
+
+    from runtime.daemon.queue import TaskQueue
+    from runtime.orchestrator import run_step
+    from runtime.orchestrator.run_step import run_step_impl
+
+    monkeypatch.setattr(run_step, "_build_agent_prompt", lambda *a, **k: "prompt")
+    monkeypatch.setattr(
+        run_step, "_prepare_workspace_cleanup_reclamation_context",
+        lambda *a, **k: "",
+    )
+
+    store, row, attempt, outcome = _finalized(tmp_path)
+    store.bind_v2_process_boot_id(BOOT_A)
+    queue = TaskQueue()
+    # The stale/ordinary wake is deliberately first. It must refuse the
+    # pending pointer and may only request authenticated publication.
+    queue.enqueue("test-org", TASK_ID)
+    receipts = publish_authority_policy_v2_notifications(
+        _PublishOrch(store._db), queue,
+    )
+    assert receipts[0]["status"] == "published"
+    tagged = list(queue._queue._queue)[1]
+    assert tagged[:2] == ("test-org", TASK_ID)
+    assert tagged[2]["authority_v2_generation"] == outcome.notification_id
+    # A repeated in-memory delivery of the exact same published generation is
+    # permitted as queue shape; durable generation admission remains once-only.
+    queue.enqueue(tagged[0], tagged[1], metadata=dict(tagged[2]))
+
+    launches: list[tuple[str, str | None]] = []
+    dequeues: list[tuple[str, str, dict | None]] = []
+    before_step = _task_row(store)["orchestration_step_count"]
+
+    class _Orch:
+        _db = store._db
+        _slug = "test-org"
+        _audit = types.SimpleNamespace()
+        _settings = types.SimpleNamespace(max_orchestration_steps=10)
+        _queue = queue
+
+        def _build_session_id(self):
+            return RESERVED
+
+        def _run_agent(self, task_id, _agent, _prompt, **kwargs):
+            launches.append((task_id, kwargs.get("runtime_session_id")))
+            raise RuntimeError("test stops after observing the launch seam")
+
+    orch = _Orch()
+
+    class RecordingRouter:
+        def run_step(self, slug, task_id, metadata=None):
+            dequeues.append((slug, task_id, metadata))
+            run_step_impl(orch, task_id, metadata=metadata)
+
+    asyncio.run(queue.drain_sync(RecordingRouter()))
+
+    assert dequeues[:3] == [
+        ("test-org", TASK_ID, None),
+        tagged,
+        tagged,
+    ]
+    assert launches == [(TASK_ID, RESERVED)]
+    assert _task_row(store)["orchestration_step_count"] == before_step + 1
+    assert len(_stage_events(store, "generation_claimed")) == 1
+    assert len(_stage_events(store, "notification_settled")) == 1
+    assert _notification(store, outcome).state == "settled"
+    assert _dispatch(store).state == "admitted"
+
+
 def test_direct_run_step_ordinary_cas_loser_requests_no_publication(tmp_path, monkeypatch):
     """An ordinary CAS loser (no pending pointer) must NOT become a duplicate
     enqueue through a blindly invoked common producer: it requests NOTHING."""
