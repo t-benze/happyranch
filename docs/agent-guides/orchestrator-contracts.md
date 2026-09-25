@@ -1551,6 +1551,23 @@ accepted root-manager escalation is instead committed by the existing
 authority hook as `CONTINUE_SAME_ROOT`, the completion receipt is reconciled
 only from that committed causal result/candidate/envelope tuple and current
 owner; restart never reruns the evaluator or guesses from `pending` alone.
+
+Receipt-owned cleanup tails and startup Branch 2 can reach the same parent
+wake concurrently. They (and the already-bounded blocked-job startup producer)
+therefore use `TaskQueue.enqueue_if_absent`: the queue owns one thread-safe
+per-task reservation claimed under its lock; generation-aware and DB-aware
+publication then runs with that lock released. A concurrent bounded producer
+loses to either the reservation or an actual pending item. The reservation is
+cleared on publication success, refusal, exception, or cancellation, so a
+refused publication cannot strand future wake ownership. Callers never inspect
+`asyncio.Queue`'s private deque. Suppression is pending-only; removing the item
+for execution atomically clears the pending count, so a later valid transition
+can publish another wake. Unrelated entries retain FIFO order and ordinary
+enqueue remains deliberately non-coalescing. Tests must join every cleanup
+worker they create before another sweep, inspecting the queue, or restoring
+shared `jobs_runner` state; durable job settlement alone is not cleanup-tail
+completion.
+
 Branch 1 (in_progress + block_kind IS NULL — a live subprocess killed by the restart):
 
 1. **Mark failed with restart context.** The killed child's note is enriched to
