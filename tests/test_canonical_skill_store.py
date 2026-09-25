@@ -841,7 +841,7 @@ class TestImportSeamCoverage:
         # Create system-contract source dirs so materialize_workspace_skills
         # can resolve them (required by the fail-closed source-existence check).
         proto_skills = tmp_path / "runtime" / "skills" / "bundled"
-        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"):
             (proto_skills / sid).mkdir(parents=True, exist_ok=True)
             (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
 
@@ -1997,7 +1997,7 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
         # Create source directories for system contracts so
         # materialize_workspace_skills has something to build.
         protocol_skills = tmp_path / "runtime" / "skills" / "bundled"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]:
             d = protocol_skills / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\n")
@@ -2121,7 +2121,7 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
         # assertion below exercises the runner's actual failed packages,
         # not a separate empty store.
         materializer = SymlinkMaterializer(store)
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "workspace-cleanup"]:
             src_dir = protocol_skills / sid
             if src_dir.is_dir():
                 # Use the SAME production _compute_dir_hash the runner
@@ -2295,7 +2295,7 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
 
         # Create source directories for system contracts
         protocol_skills = tmp_path / "runtime" / "skills" / "bundled"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]:
             d = protocol_skills / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\n")
@@ -2426,7 +2426,7 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
         # assertion below exercises the runner's actual failed packages,
         # not a separate empty store.
         materializer = SymlinkMaterializer(store)
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "workspace-cleanup"]:
             src_dir = protocol_skills / sid
             if src_dir.is_dir():
                 # Use the SAME production _compute_dir_hash the runner

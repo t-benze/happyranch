@@ -1081,6 +1081,11 @@ def compose_cleanup_brief(
         "independent of all user Schedules. You are the responsible agent; "
         "you own this run.",
         "",
+        "This run follows the shared `workspace-cleanup` system skill exactly "
+        "(runtime/skills/bundled/workspace-cleanup/SKILL.md). Its manual-dispatch "
+        "first line is `HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN "
+        "(manual-dispatch)`; an unmarked manual request is inventory-only.",
+        "",
     )
     if run_number <= _REPORT_ONLY_RUN_LIMIT:
         body = [
@@ -1121,28 +1126,36 @@ def compose_cleanup_brief(
             "before action; act only when that same row says eligible. Any "
             "uncertainty is a skip.",
             "",
-            "Liveness requires both runtime and OS checks: active "
-            "SessionTracker/task binding, validated executor PID identity, "
-            "process cwd/executable, mapped/open files, and child processes "
-            "beneath the candidate/worktree. A missing capability or "
-            "permission is a skip. Pending job rows and blocked_on_job_ids "
-            "are diagnostics only, never liveness proof.",
+            "Current-use evidence follows the shared workspace-cleanup skill "
+            "and the approved THR-259 seq171/seq185 rule: an authoritative "
+            "recorded terminal status PLUS a fresh complete same-user process "
+            "observation replaces separate live-session/task-to-process "
+            "identity for terminal candidates, terminal cleanup peers, and the "
+            "two prior joined terminal scheduled occurrences. Run the bundled "
+            "read-only scripts/check_path_use.py helper; only "
+            "clear_observation may act; blocked or unknown always skips. The "
+            "fixed login/session daemons (sshd-session, systemd --user, "
+            "(sd-pam), ssh-agent, gpg-agent, gcr-ssh-agent) qualify only by "
+            "exact readable process name AND exact bounded cgroup role and are "
+            "deliberately uninspected; every other unreadable same-user "
+            "process is unknown and skips. Pending job rows and "
+            "blocked_on_job_ids are diagnostics only, never liveness proof.",
             "",
             "Allowed cache action: remove one literal real node_modules or "
             ".venv directory inside a registered, non-primary linked "
             "worktree of YOUR workspace, only when its immediate parent has "
             "the accepted lock/manifest, the owning task has been terminal "
-            "for 24 hours, no live evidence exists, path ownership is "
-            "unambiguous, it is not a symlink/shared target, and it is not "
-            "protected. Use one explicit non-force recursive library/command "
-            "invocation for that exact path. Never use a glob, parent root, "
-            "git clean, or rm -rf.",
+            "for 24 hours, the shared current-use observation clears, path "
+            "ownership is unambiguous, it is not a symlink/shared target, and "
+            "it is not protected. Use one explicit non-force recursive "
+            "library/command invocation for that exact path. Never use a "
+            "glob, parent root, git clean, or rm -rf.",
             "",
             "Allowed whole-worktree action: after seven terminal days, remove "
-            "one clean registered non-primary worktree only when no liveness "
-            "exists, no open/unmerged PR uses it, HEAD is preserved and "
-            "reachable from an approved durable ref (normally origin/main), "
-            "and no protection applies. Use only "
+            "one clean registered non-primary worktree only when the shared "
+            "current-use observation clears, no open/unmerged PR uses it, "
+            "HEAD is preserved and reachable from an approved durable ref "
+            "(normally origin/main), and no protection applies. Use only "
             "git -C <primary> worktree remove <literal-path> without "
             "--force. Use git worktree prune only for an already-missing "
             "registered path after dry-run confirms the exact stale record.",

@@ -191,6 +191,24 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
             SessionContext.BOOTSTRAP,
         ),
     ),
+    SystemContract(
+        id="workspace-cleanup",
+        name="Workspace Cleanup",
+        description=(
+            "Shared daily/manual own-workspace cleanup contract (THR-195/THR-259): "
+            "bounded, Git-aware, non-force reclamation of registered non-primary "
+            "task worktrees and their dependency caches, gated by an exact "
+            "same-user process observation and authoritative terminal/history/peer "
+            "joins."
+        ),
+        when_to_use=(
+            "Use when the task brief begins with the exact workspace-cleanup "
+            "manual-dispatch or daemon-triggered marker."
+        ),
+        source_path="runtime/skills/bundled/workspace-cleanup/SKILL.md",
+        contexts=(SessionContext.TASK,),
+        requires_repo=False,
+    ),
 )
 
 

@@ -20,6 +20,15 @@ transported remainder is exactly the returned `after` accounting or `null`, and
 publication failure stops later calls. The ordinary agent completion summary
 remains the normal callback/CLI result surface.
 
+The cleanup contract itself is the ONE shared `workspace-cleanup` TASK system
+skill (`requires_repo=false`), reachable from both workspace skill roots. Manual
+dispatch requires the exact first line `HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN
+(manual-dispatch)`; an unmarked manual request is inventory-only. Its bundled
+read-only `scripts/check_path_use.py` returns only `clear_observation`,
+`blocked`, or `unknown`, using the approved THR-259 seq171/seq185 rule (exact
+process name AND bounded cgroup role for fixed daemons; any other unreadable
+same-user process is `unknown`).
+
 ## Web UI
 
 ### Dashboard projection
