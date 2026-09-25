@@ -743,10 +743,6 @@ class TestSkillsCliRegistration:
         choices = set(subparsers_action.choices.keys())
         assert "skills" in choices
 
-    def test_test_skill_cli_commands_exist_e2e(self):
-        """The existing test_skill_cli_commands_exist test should not need updating
-        for managed skills (they are `skills ...` commands, not `happyranch <skill_slug>`)."""
-
     def test_skills_catalog_list_subcommand(self):
         from cli.main import build_parser
 

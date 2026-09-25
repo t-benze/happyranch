@@ -231,23 +231,6 @@ def test_legacy_post_returns_410_on_migrated_workspace(client_with_migrated_work
     assert r.json()["detail"]["migrate_to"].endswith("/memory/entries")
 
 
-def test_legacy_post_still_works_on_pre_migration_workspace(tmp_path, monkeypatch):
-    """Pre-migration workspaces — no memory/ dir — keep using the legacy endpoint.
-
-    This is a smoke test only; the legacy code path requires a real session,
-    which is heavy to set up in unit tests. We test that the 410 guard does NOT
-    fire on pre-migration workspaces (instead the request reaches the session
-    validation code path).
-    """
-    try:
-        from tests.daemon.conftest import _build_test_app  # noqa: F401
-    except ImportError:
-        pass
-    # If _build_test_app doesn't exist, skip this test with pytest.skip and
-    # rely on the integration test in T21 instead.
-    pytest.skip("Legacy session-validation test deferred to T21 integration test")
-
-
 def test_reindex_regenerates_file(client_with_migrated_workspace):
     client, token, slug, agent, ws = client_with_migrated_workspace
     # Seed a learning

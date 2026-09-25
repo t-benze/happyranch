@@ -228,16 +228,6 @@ class TestConformanceStateMachine:
             token, "alpha", "workspace_access", now=now
         )
 
-    def test_record_step_requires_loopback_origin(self):
-        """Step arrival should be gated on loopback origin.
-        The store's record_step_arrival method itself doesn't check loopback —
-        the daemon route that calls it does. This test confirms the store
-        correctly records when called for a valid token."""
-        # The loopback check is at the HTTP route layer (defense-in-depth);
-        # the store records any valid step for a valid token.
-        # This is verified by the existing positive test above.
-        pass  # Covered by test_record_step_arrival
-
     def test_all_complete_flips_only_when_every_step_arrived(self, store):
         now = 1_000_000.0
         token, _ = store.mint("alpha", "my-executor", now=now)

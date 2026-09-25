@@ -879,13 +879,6 @@ class TestNoPermissionExpansion:
         # should be unchanged.
         assert callable(allow_rules_for_agent)
 
-    def test_no_d5_permission_change(self):
-        """No permission-generation, allow-rule, or sandbox flag change."""
-        # Regression: D5 baseline-only — no new permission surfaces.
-        # This test is a documentation check, not a behavioral assertion.
-        pass
-
-
 class TestAdapterOutputIdentityBinding:
     """Fix 1: AdapterOutput validation rejects wrong adapter_version and session_id."""
 

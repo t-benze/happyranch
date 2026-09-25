@@ -1302,10 +1302,6 @@ class TestSetLifecycle:
             mem_store.set_lifecycle("MEM-001", "superseded", agent="x", reason="test")
         assert "unsupported_transition" in exc.value.code
 
-    def test_rejects_unsupported_transition_superseded_to_valid_when_promoted(self, mem_store: MemoryStore):
-        # superseded->valid IS supported; this test is about promoted lock
-        pass
-
     def test_rejects_noop_transition(self, mem_store: MemoryStore):
         _make_memory_item(mem_store, id="MEM-001", slug="a", title="T", lifecycle="valid")
         with pytest.raises(InvalidLearningEntry) as exc:

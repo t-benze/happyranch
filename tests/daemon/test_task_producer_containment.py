@@ -552,14 +552,6 @@ def test_session_tracker_cancel_control_lifecycle():
     assert calls == []
 
 
-def test_cancel_route_invokes_opaque_control_not_pid_signal(tmp_path, monkeypatch):
-    """The /tasks/{id}/cancel route invokes the SessionTracker opaque control
-    (off the event loop) for a wired session and NEVER signals its PID."""
-    # Covered deterministically by test_cancel_route_invokes_control_and_skips_pid_kill
-    # below (the async route test); this sync marker documents the contract.
-    assert True
-
-
 @pytest.mark.asyncio
 async def test_cancel_route_invokes_control_and_skips_pid_kill(client_with_runtime, monkeypatch):
     """Direct route invocation proof: a wired (task, agent) with a registered

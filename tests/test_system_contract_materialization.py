@@ -417,19 +417,6 @@ class TestCopySkillsTreeAtomicity:
     os.symlink() / os.unlink() atomicity guarantee: a reader either sees the
     old symlink target or the new one. No half-written file state exists."""
 
-    def test_atomic_replace_no_half_deleted_state(self, tmp_path):
-        """Canonical symlink model provides native atomicity.
-
-        The POSIX os.symlink()/os.unlink() operations are already atomic
-        at the filesystem level. A reader resolving a symlink always sees
-        either the old complete canonical target or the new one — never a
-        partial or half-deleted state. This is a stronger guarantee than
-        the previous tmp-rename-rmtree approach.
-        """
-        # This test is satisfied by POSIX semantics of the canonical model.
-        # The SymlinkMaterializer replaces symlinks atomically via unlink+create.
-        pass
-
     def test_concurrent_read_never_reads_stale_incomplete_content(self, tmp_path):
         """Concurrent read during canonical materialization always reads complete.
 

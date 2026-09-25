@@ -2597,23 +2597,6 @@ def test_read_completion_from_db_corrupt_local_ci(orchestrator):
     assert report.local_ci is None
 
 
-def test_local_ci_column_migration_idempotent(orchestrator):
-    """The ALTER TABLE ADD COLUMN local_ci TEXT migration is idempotent.
-    Running it twice via the _ensure_schema path does not crash."""
-    # The column already exists after the first migration run during DB init.
-    # We can verify by re-running the ALTER and catching sqlite3.OperationalError.
-    import sqlite3
-    try:
-        orchestrator._db._conn.execute(
-            "ALTER TABLE task_results ADD COLUMN local_ci TEXT"
-        )
-        # If we get here, the column already exists (no error) or was added.
-        # Either way, the idempotent migration pattern works.
-    except sqlite3.OperationalError:
-        # Expected: column already exists.
-        pass
-
-
 def test_orchestrator_requires_teams() -> None:
     import pytest
     from pathlib import Path
