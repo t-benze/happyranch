@@ -92,6 +92,11 @@ def _u0_hosted_source_contract() -> _U0HostedSourceContract:
         ("66980e58bcd0a60e0fe5bc12d55644d700ba04975ce97e18718533c8227e5735",
          "9fcc840b1f227e0a7b5710b598ec2f037526b96511ddbacb2d058f8888b3e948"):
             _U0HostedSourceContract(True, True),
+        # PR899's intentional synthetic merge with current main retains the
+        # expanded prior-step serializer and teardown scratch reporter.
+        ("66980e58bcd0a60e0fe5bc12d55644d700ba04975ce97e18718533c8227e5735",
+         "ec3f217c5857440daf3afc7d379ac8a7d3c33cfc6bd149e5ab1649d1ad23c5e8"):
+            _U0HostedSourceContract(True, True),
     }
     try:
         return contracts[source_pair]
@@ -100,6 +105,22 @@ def _u0_hosted_source_contract() -> _U0HostedSourceContract:
             "unverified U0 source contract: run_step/orchestrator sha256="
             f"{source_pair!r}"
         ) from error
+
+
+def test_u0_hosted_source_contract_accepts_pr899_synthetic_merge() -> None:
+    """The recorded PR899 merge pair selects its exact U0 behaviors."""
+    import runtime.orchestrator.orchestrator as orchestrator_module
+    import runtime.orchestrator.run_step as run_step_module
+
+    source_pair = (
+        hashlib.sha256(Path(run_step_module.__file__).read_bytes()).hexdigest(),
+        hashlib.sha256(Path(orchestrator_module.__file__).read_bytes()).hexdigest(),
+    )
+    assert source_pair == (
+        "66980e58bcd0a60e0fe5bc12d55644d700ba04975ce97e18718533c8227e5735",
+        "ec3f217c5857440daf3afc7d379ac8a7d3c33cfc6bd149e5ab1649d1ad23c5e8",
+    )
+    assert _u0_hosted_source_contract() == _U0HostedSourceContract(True, True)
 
 
 def test_u0_hosted_source_contract_rejects_unknown_source_pair(
