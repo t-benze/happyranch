@@ -1384,8 +1384,10 @@ def test_instruction_pair_claude_link_fault_retains_exact_old_state(
 
     with pytest.raises(InstructionPairConflict) as excinfo:
         write_canonical_instruction_pair(ws, "canonical\n")
-    assert str(claude) in str(excinfo.value), excinfo.value
+    assert "at CLAUDE.md" in str(excinfo.value), excinfo.value
+    assert str(claude) not in str(excinfo.value), excinfo.value
     assert "link creation failed" in str(excinfo.value), excinfo.value
+    assert str(claude) in excinfo.value.raw_diagnostic(), excinfo.value
 
     # The writer is transactional across the pair: a post-barrier failure
     # restores both live paths exactly, not only the immediate failure target.
@@ -1397,6 +1399,42 @@ def test_instruction_pair_claude_link_fault_retains_exact_old_state(
     assert external.read_bytes() == external_before
     # The pair is honestly still non-canonical.
     assert not canonical_instruction_pair_ok(ws)
+
+
+def test_instruction_pair_compensation_diagnostics_are_structured_and_capped(
+    tmp_dir,
+):
+    """Inner pair diagnostics use the same four-item cap as route rollback."""
+    import runtime.orchestrator.workspace_adapters as wa
+
+    raw_cause = "private bytes\n/private/absolute/path\x1b[31m"
+    failures = [
+        wa.InstructionPairCompensationFailure(
+            wa.InstructionPairCompensationOperation.RESTORE_PATH,
+            "AGENTS.md" if index % 2 == 0 else "CLAUDE.md",
+            OSError(f"{raw_cause}-{index}"),
+        )
+        for index in range(5)
+    ]
+    conflict = wa.InstructionPairConflict(
+        tmp_dir / "CLAUDE.md",
+        "raw primary detail",
+        operation=wa.InstructionPairOperation.LINK_CREATION,
+        compensation_failures=failures,
+    )
+
+    diagnostic = conflict.caller_diagnostic(max_compensation_failures=4)
+
+    nested = diagnostic.split("nested compensation incomplete: ", 1)[1]
+    assert len(nested.split("; ")) == 4
+    assert nested.endswith("... and 2 more compensation failure(s)")
+    assert "Failed to restore instruction path AGENTS.md" in diagnostic
+    assert "Failed to restore instruction path CLAUDE.md" in diagnostic
+    assert raw_cause not in diagnostic
+    assert str(tmp_dir) not in diagnostic
+    assert "\n" not in diagnostic and "\x1b" not in diagnostic
+    assert raw_cause in conflict.raw_diagnostic()
+    assert str(tmp_dir) in conflict.raw_diagnostic()
 
 
 def test_instruction_pair_failure_after_both_real_writes_restores_pair(

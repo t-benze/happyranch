@@ -8299,3 +8299,163 @@ def test_executor_switch_caught_b5_verification_mismatch_is_caller_safe(
     _assert_exact_skill_root(
         org_state, workspace, ".agents/skills", present=True,
     )
+
+
+def test_executor_switch_inner_pair_compensation_failure_is_caller_safe(
+    tmp_home, app, org_state, auth_headers, monkeypatch, caplog,
+):
+    """The shipping route never returns raw shared-writer rollback detail.
+
+    This reaches the real canonical-pair writer, observes its actual AGENTS.md
+    replacement, fails the CLAUDE.md link operation, and then fails both the
+    writer's inner AGENTS.md restore and the route journal's outer restore.
+    The final disk state is therefore honestly partial, while callers receive
+    only stable operation classifications and owned relative names.  Raw
+    primary/inner/outer causes remain available in daemon logs.
+    """
+    import logging
+
+    import runtime.daemon.routes.agents as agents_mod
+    import runtime.orchestrator.workspace_adapters as wa_mod
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / ".claude").mkdir(parents=True)
+    settings = workspace / ".claude" / "settings.json"
+    settings.write_bytes(b'{"old": true}\n')
+
+    sensitive_prior = b"TASK8963_SENSITIVE_PRIOR_INSTRUCTION_BYTES"
+    private_sentinel = "TASK8963_PRIVATE_PAIR_ROLLBACK_SENTINEL"
+    absolute_sentinel = str(workspace / "TASK8963_PRIVATE_ABSOLUTE_PATH")
+    repr_sentinel = f"_InstructionPathState(data={sensitive_prior!r})"
+    raw_inner = " | ".join((private_sentinel, absolute_sentinel, repr_sentinel))
+    raw_primary = f"TASK8963_RAW_LINK_FAILURE | {absolute_sentinel}"
+    raw_outer = f"TASK8963_RAW_OUTER_RESTORE_FAILURE | {absolute_sentinel}"
+
+    external = tmp_home / "inner_pair_compensation_external_sentinel.md"
+    external.write_bytes(sensitive_prior + b"\n")
+    agents_path = workspace / "AGENTS.md"
+    os.link(external, agents_path)
+    agents_path.chmod(0o640)
+    claude_path = workspace / "CLAUDE.md"
+    claude_path.write_bytes(b"# original CLAUDE instructions\n")
+    claude_path.chmod(0o600)
+
+    agents_before = _instruction_path_state(agents_path)
+    claude_before = _instruction_path_state(claude_path)
+    external_before = _instruction_path_state(external)
+    settings_before = _instruction_path_state(settings)
+    frontmatter_path = org_state.root / "org" / "agents" / "dev_agent.md"
+    frontmatter_before = frontmatter_path.read_bytes()
+    agent_yaml_before = (workspace / "agent.yaml").read_bytes()
+    audit_before = _audit_agent_managed(org_state)
+    assert _owned_temp_residue(workspace) == []
+    assert not list(workspace.glob("*.bak"))
+
+    actual_agents_writes: list[tuple] = []
+
+    def _fail_link_after_agents_write(claude):
+        state = _instruction_path_state(agents_path)
+        assert state[0] == "regular"
+        assert state != agents_before
+        actual_agents_writes.append(state)
+        raise OSError(raw_primary)
+
+    real_inner_restore = wa_mod._restore_instruction_path
+
+    def _fail_inner_agents_restore(path, state):
+        if path == agents_path:
+            raise OSError(raw_inner)
+        return real_inner_restore(path, state)
+
+    real_outer_restore = agents_mod._BootstrapRollbackJournal._restore_regular_file
+
+    def _fail_outer_agents_restore(cls, path, original):
+        if path == agents_path:
+            raise OSError(raw_outer)
+        return real_outer_restore(path, original)
+
+    monkeypatch.setattr(
+        wa_mod, "_replace_with_canonical_claude_link",
+        _fail_link_after_agents_write,
+    )
+    monkeypatch.setattr(wa_mod, "_restore_instruction_path", _fail_inner_agents_restore)
+    monkeypatch.setattr(
+        agents_mod._BootstrapRollbackJournal,
+        "_restore_regular_file",
+        classmethod(_fail_outer_agents_restore),
+    )
+    caplog.set_level(logging.ERROR, logger=agents_mod.__name__)
+
+    r = TestClient(app, raise_server_exceptions=False).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex", "clean": True},
+        headers=auth_headers,
+    )
+
+    assert r.status_code == 400, (r.status_code, r.text)
+    detail = r.json()["detail"]
+    assert set(detail) == {"code", "error", "message"}
+    assert detail["code"] == "executor_bootstrap_failed"
+    assert "instruction pair conflict at CLAUDE.md: link creation failed" in detail["error"]
+    assert "Failed to restore instruction path AGENTS.md" in detail["error"]
+    assert "Failed to restore file AGENTS.md" in detail["error"]
+    assert "cleanup/restore was incomplete" in detail["message"].lower()
+    assert "Any partial bootstrap files have been cleaned up." not in detail["message"]
+
+    for field in (detail["error"], detail["message"]):
+        assert sensitive_prior.decode() not in field
+        assert private_sentinel not in field
+        assert absolute_sentinel not in field
+        assert repr_sentinel not in field
+        assert "_InstructionPathState" not in field
+        assert "data=" not in field
+        assert raw_primary not in field
+        assert raw_inner not in field
+        assert raw_outer not in field
+        assert "pair rollback failed" not in field
+        assert "\n" not in field and "\r" not in field and "\x1b" not in field
+
+    raw_log = "\n".join(record.getMessage() for record in caplog.records)
+    assert raw_primary in raw_log
+    assert raw_inner in raw_log
+    assert raw_outer in raw_log
+    assert private_sentinel in raw_log
+    assert absolute_sentinel in raw_log
+    assert repr_sentinel in raw_log
+
+    # The route truthfully reports incomplete cleanup: AGENTS.md is the real
+    # generated regular file from the failed attempt, while every unaffected
+    # path and all durable state remain exact.
+    assert len(actual_agents_writes) == 1
+    assert _instruction_path_state(agents_path) == actual_agents_writes[0]
+    assert _instruction_path_state(agents_path) != agents_before
+    assert _instruction_path_state(claude_path) == claude_before
+    assert _instruction_path_state(external) == external_before
+    assert _instruction_path_state(settings) == settings_before
+    assert (workspace / "agent.yaml").read_bytes() == agent_yaml_before
+    assert frontmatter_path.read_bytes() == frontmatter_before
+    assert prompt_loader.load_agent(
+        OrgPaths(root=org_state.root), "dev_agent",
+    ).executor == "claude"
+    assert _audit_agent_managed(org_state) == audit_before
+    assert _owned_temp_residue(workspace) == []
+
+    backups = sorted(workspace.glob("*.happyranch-*.bak"))
+    assert len(backups) == 2, [p.name for p in backups]
+    assert {
+        p.name.split(".happyranch-", 1)[0]: _instruction_path_state(p)
+        for p in backups
+    } == {
+        "AGENTS.md": agents_before,
+        "CLAUDE.md": claude_before,
+    }
+    _assert_exact_skill_root(
+        org_state, workspace, ".claude/skills", present=True,
+    )
+    _assert_exact_skill_root(
+        org_state, workspace, ".agents/skills", present=True,
+    )

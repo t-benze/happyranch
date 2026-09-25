@@ -53,6 +53,7 @@ from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.agent_def import AgentDef, AgentParseError, Executor
 from runtime.orchestrator.context_builder import ContextBuilder
 from runtime.orchestrator.workspace_adapters import (
+    InstructionPairConflict,
     _workspace_skills_transaction,
     materialize_workspace_skills,
     validate_workspace_skills_integrity,
@@ -2083,10 +2084,15 @@ async def set_agent_executor(
             )
         except Exception as e:
             _logger = logging.getLogger(__name__)
+            logged_error = (
+                e.raw_diagnostic()
+                if isinstance(e, InstructionPairConflict)
+                else str(e)
+            )
             _logger.error(
                 "Executor switch: bootstrap failed after successful "
                 "union for provider=%s agent=%s: %s",
-                body.executor, agent_name, e,
+                body.executor, agent_name, logged_error,
             )
             # ── Bounded rollback compensation ──
             # 1. Remove ONLY declared bootstrap-owned artifacts newly created
@@ -2102,7 +2108,13 @@ async def set_agent_executor(
                     "Executor switch bootstrap cleanup errors: %s",
                     "; ".join(error.raw_diagnostic() for error in errors),
                 )
-            response_error = str(e)
+            response_error = (
+                e.caller_diagnostic(
+                    max_compensation_failures=_BOOTSTRAP_COMPENSATION_MAX_ERRORS,
+                )
+                if isinstance(e, InstructionPairConflict)
+                else str(e)
+            )
             message = (
                 "Executor workspace bootstrap failed after successful skill "
                 "materialization. The previous executor has been preserved. "

@@ -8,6 +8,7 @@ import subprocess
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -1796,6 +1797,38 @@ CANONICAL_CLAUDE_NAME = "CLAUDE.md"
 CANONICAL_CLAUDE_LINK_TARGET = "AGENTS.md"
 
 
+class InstructionPairOperation(StrEnum):
+    """Closed caller-visible classifications for canonical-pair failures."""
+
+    INPUT_INSPECTION = "input inspection failed"
+    PRESERVATION_COPY = "preservation copy failed"
+    CANONICAL_WRITE = "canonical write failed"
+    LINK_CREATION = "link creation failed"
+
+
+class InstructionPairCompensationOperation(StrEnum):
+    """Closed caller-visible classifications for pair compensation failures."""
+
+    RESTORE_PATH = "Failed to restore instruction path"
+
+
+@dataclass(frozen=True)
+class InstructionPairCompensationFailure:
+    """Structured pair rollback failure with raw detail reserved for logs."""
+
+    operation: InstructionPairCompensationOperation
+    owned_relative_path: str
+    cause: Exception
+
+    def caller_diagnostic(self) -> str:
+        """Return only stable classification and an owned relative name."""
+        return f"{self.operation.value} {self.owned_relative_path}"
+
+    def raw_diagnostic(self) -> str:
+        """Return full operator detail, including the original exception."""
+        return f"{self.caller_diagnostic()}: {self.cause}"
+
+
 class InstructionPairConflict(RuntimeError):
     """Raised when the canonical instruction pair cannot be converged safely.
 
@@ -1805,10 +1838,51 @@ class InstructionPairConflict(RuntimeError):
     an owned incomplete copy is removed).
     """
 
-    def __init__(self, path: Path, reason: str) -> None:
+    def __init__(
+        self,
+        path: Path,
+        reason: str,
+        *,
+        operation: InstructionPairOperation,
+        compensation_failures: list[InstructionPairCompensationFailure] | None = None,
+    ) -> None:
         self.path = Path(path)
         self.reason = reason
-        super().__init__(f"instruction pair conflict at {self.path}: {reason}")
+        self.operation = operation
+        self.compensation_failures = tuple(compensation_failures or ())
+        super().__init__(self.caller_diagnostic())
+
+    def caller_diagnostic(self, *, max_compensation_failures: int = 4) -> str:
+        """Return bounded caller-safe context without paths or exception text."""
+        diagnostic = (
+            f"instruction pair conflict at {self.path.name}: "
+            f"{self.operation.value}"
+        )
+        if not self.compensation_failures:
+            return diagnostic
+
+        visible = self.compensation_failures[:max_compensation_failures]
+        if len(self.compensation_failures) > max_compensation_failures:
+            visible = self.compensation_failures[:max_compensation_failures - 1]
+        nested = [failure.caller_diagnostic() for failure in visible]
+        omitted = len(self.compensation_failures) - len(visible)
+        if omitted > 0:
+            nested.append(f"... and {omitted} more compensation failure(s)")
+        return f"{diagnostic}; nested compensation incomplete: {'; '.join(nested)}"
+
+    def raw_diagnostic(self) -> str:
+        """Return complete operator detail for daemon logs only."""
+        diagnostic = (
+            f"instruction pair conflict at {self.path}: "
+            f"{self.operation.value}: {self.reason}"
+        )
+        if self.compensation_failures:
+            nested = "; ".join(
+                failure.raw_diagnostic()
+                for failure in self.compensation_failures
+            )
+            diagnostic = f"{diagnostic}; pair rollback failed: {nested}"
+        return diagnostic
 
 
 @dataclass(frozen=True)
@@ -2004,16 +2078,22 @@ def _restore_instruction_pair(
     agents_state: _InstructionPathState,
     claude: Path,
     claude_state: _InstructionPathState,
-) -> list[str]:
+) -> list[InstructionPairCompensationFailure]:
     """Best-effort exact compensation for a caught post-barrier failure."""
-    errors: list[str] = []
+    errors: list[InstructionPairCompensationFailure] = []
     # Restore CLAUDE.md first so a captured reverse AGENTS.md -> CLAUDE.md
     # never temporarily resolves through the new canonical link.
     for path, state in ((claude, claude_state), (agents, agents_state)):
         try:
             _restore_instruction_path(path, state)
         except Exception as exc:
-            errors.append(f"{path.name}: {exc}")
+            errors.append(
+                InstructionPairCompensationFailure(
+                    InstructionPairCompensationOperation.RESTORE_PATH,
+                    path.name,
+                    exc,
+                )
+            )
     return errors
 
 
@@ -2105,11 +2185,15 @@ def write_canonical_instruction_pair(workspace: Path, content: str) -> None:
 
     if agents_state.kind == "unsupported":
         raise InstructionPairConflict(
-            agents, agents_state.detail or "unsupported input"
+            agents,
+            agents_state.detail or "unsupported input",
+            operation=InstructionPairOperation.INPUT_INSPECTION,
         )
     if claude_state.kind == "unsupported":
         raise InstructionPairConflict(
-            claude, claude_state.detail or "unsupported input"
+            claude,
+            claude_state.detail or "unsupported input",
+            operation=InstructionPairOperation.INPUT_INSPECTION,
         )
 
     # ── Preservation barrier: ALL required copies for BOTH paths first ──
@@ -2118,7 +2202,9 @@ def write_canonical_instruction_pair(workspace: Path, content: str) -> None:
             _write_preservation_copy(agents, agents_state)
         except OSError as exc:
             raise InstructionPairConflict(
-                agents, f"preservation copy failed: {exc}"
+                agents,
+                str(exc),
+                operation=InstructionPairOperation.PRESERVATION_COPY,
             )
     if claude_state.kind == "regular" and claude_state.data != data:
         try:
@@ -2127,12 +2213,14 @@ def write_canonical_instruction_pair(workspace: Path, content: str) -> None:
             # A completed AGENTS.md copy (if any) is retained and identified;
             # only an owned incomplete CLAUDE.md copy is removed.
             raise InstructionPairConflict(
-                claude, f"preservation copy failed: {exc}"
+                claude,
+                str(exc),
+                operation=InstructionPairOperation.PRESERVATION_COPY,
             )
 
     # ── Live pair transaction: compensate BOTH paths on caught failure ──
     failure_path = agents
-    failure_action = "canonical write"
+    failure_operation = InstructionPairOperation.CANONICAL_WRITE
     try:
         # AGENTS.md: regular canonical file.
         if agents_state.kind == "absent":
@@ -2145,17 +2233,19 @@ def write_canonical_instruction_pair(workspace: Path, content: str) -> None:
 
         # CLAUDE.md: raw relative link to AGENTS.md.
         failure_path = claude
-        failure_action = "link creation"
+        failure_operation = InstructionPairOperation.LINK_CREATION
         if not _claude_link_is_canonical(workspace, claude_state):
             _replace_with_canonical_claude_link(claude)
     except Exception as exc:
         rollback_errors = _restore_instruction_pair(
             agents, agents_state, claude, claude_state,
         )
-        reason = f"{failure_action} failed: {exc}"
-        if rollback_errors:
-            reason += "; pair rollback failed: " + "; ".join(rollback_errors)
-        raise InstructionPairConflict(failure_path, reason) from exc
+        raise InstructionPairConflict(
+            failure_path,
+            str(exc),
+            operation=failure_operation,
+            compensation_failures=rollback_errors,
+        ) from exc
 
 
 def _stage_canonical_claude_link(workspace: Path) -> Path:
