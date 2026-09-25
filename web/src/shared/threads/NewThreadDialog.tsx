@@ -12,17 +12,17 @@ import { Button } from '@/design-system/primitives/Button';
 import { FormField } from '@/design-system/patterns/FormField';
 import { MentionTextarea } from '@/design-system/patterns/MentionTextarea';
 import { RecipientsInput } from '@/design-system/patterns/RecipientsInput';
-import { artifacts as artifactsApi, ApiError } from '@/lib/api';
+import { artifacts as artifactsApi } from '@/lib/api';
 import { useOrgSlug } from '@/lib/orgSlug';
 import {
   MAX_THREAD_ATTACHMENTS,
-  REMOVE_ATTACHMENT_LABEL,
   allocateArtifactName,
   attachmentContentType,
   createSelectionIdFactory,
 } from '@/lib/threadAttachments';
 import { useComposeThread } from '@/hooks/threads';
-import { describeError } from '@/lib/threadErrors';
+import { useTranslation } from '@/hooks/i18n';
+import { classifyThreadError, renderThreadError, type ThreadErrorView } from '@/lib/threadErrors';
 import type { AgentSummary } from '@/lib/api/types';
 import type { PendingAttachment } from '@/design-system/patterns/Composer';
 import type { ThreadAttachmentRef } from '@/lib/api/types';
@@ -53,13 +53,17 @@ interface Props {
 }
 
 export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = [], reflection }: Props): JSX.Element {
+  const { t } = useTranslation();
   const slug = useOrgSlug();
   const compose = useComposeThread();
   const [subject, setSubject] = useState('');
   const [recipientsRaw, setRecipientsRaw] = useState('');
   const [body, setBody] = useState('');
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Locale-neutral error descriptor (key/params or raw diagnostic), rendered
+  // through `t` at render time — a locale switch re-translates it in place and
+  // never resubmits. `t` is deliberately NOT a dependency of any callback/effect.
+  const [errorView, setErrorView] = useState<ThreadErrorView | null>(null);
   // True during the upload phase, so attach/send/remove disable from the first
   // click (compose.isPending only flips after the uploads finish).
   const [uploading, setUploading] = useState(false);
@@ -107,7 +111,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
     setRecipientsRaw(prefill?.recipients?.join(', ') ?? '');
     setBody(prefill?.body ?? '');
     setPendingAttachments([]);
-    setErrorMsg(null);
+    setErrorView(null);
   }, [open, prefill, slug]);
 
   // Full unmount must also abandon any in-flight submission.
@@ -127,13 +131,13 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
     const generation = dialogGenRef.current;
     const isCurrent = () => dialogGenRef.current === generation;
 
-    setErrorMsg(null);
+    setErrorView(null);
     const recipients = recipientsRaw
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
     if (!subject.trim() || !recipients.length || (!body.trim() && !pendingAttachments.length)) {
-      setErrorMsg('Subject, recipients, and a body or attachment are required.');
+      setErrorView({ detail: { kind: 'mapped', key: 'threads.newThread.required' } });
       submittingRef.current = false;
       return;
     }
@@ -207,12 +211,13 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
       // further re-entry is possible.
     } catch (err) {
       if (isCurrent()) {
-        const label = failedUpload ? `${failedUpload.file.name}: ` : '';
-        setErrorMsg(
-          err instanceof ApiError
-            ? label + describeError(err.code, `HTTP ${err.status}`)
-            : label + String(err),
-        );
+        // The file name is data (params), the "<name>: " prefix is product copy.
+        setErrorView({
+          ...(failedUpload
+            ? { label: { key: 'threads.newThread.uploadFailedFor', params: { name: failedUpload.file.name } } }
+            : {}),
+          detail: classifyThreadError(err),
+        });
         submittingRef.current = false;
       }
     } finally {
@@ -225,11 +230,11 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
     submittingRef.current = true;
     const generation = dialogGenRef.current;
     const isCurrent = () => dialogGenRef.current === generation;
-    setErrorMsg(null);
+    setErrorView(null);
 
     const agentName = reflection?.recipients?.[0];
     if (!agentName) {
-      setErrorMsg('Reflection requires a single agent recipient.');
+      setErrorView({ detail: { kind: 'mapped', key: 'threads.newThread.reflectionRequired' } });
       submittingRef.current = false;
       return;
     }
@@ -250,9 +255,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
       onClose();
     } catch (err) {
       if (isCurrent()) {
-        setErrorMsg(
-          err instanceof ApiError ? describeError(err.code, `HTTP ${err.status}`) : String(err),
-        );
+        setErrorView({ detail: classifyThreadError(err) });
         submittingRef.current = false;
       }
     } finally {
@@ -269,13 +272,17 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{prefill?.forwarded_from_id ? 'Forward thread' : 'New thread'}</DialogTitle>
+          <DialogTitle>
+            {prefill?.forwarded_from_id
+              ? t('threads.newThread.forwardTitle')
+              : t('threads.newThread.title')}
+          </DialogTitle>
           <DialogDescription className="sr-only">
-            Compose a new thread with subject, recipients, and body.
+            {t('threads.newThread.description')}
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
-          <FormField label="Subject" htmlFor={subjectId}>
+          <FormField label={t('threads.newThread.subjectLabel')} htmlFor={subjectId}>
             <input
               id={subjectId}
               type="text"
@@ -286,7 +293,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
             />
           </FormField>
           <FormField
-            label="Recipients (comma-separated agent names)"
+            label={t('threads.newThread.recipientsLabel')}
             htmlFor={recipientsId}
           >
             <RecipientsInput
@@ -295,26 +302,28 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
               onChange={setRecipientsRaw}
               agents={agents}
               placeholder="agent_a, agent_b"
+              mentionListLabel={t('threads.newThread.mentionList')}
             />
           </FormField>
-          <FormField label="Body (Markdown)" htmlFor={bodyId}>
+          <FormField label={t('threads.newThread.bodyLabel')} htmlFor={bodyId}>
             <MentionTextarea
               id={bodyId}
               value={body}
               onChange={setBody}
               agents={agents}
+              mentionListLabel={t('threads.newThread.mentionList')}
               onSubmit={() => { if (!submittingRef.current) submit(); }}
               disabled={inFlight}
               rows={6}
             />
           </FormField>
-          <FormField label="Attachments" htmlFor={`${idBase}-attachments`}>
+          <FormField label={t('threads.newThread.attachmentsLabel')} htmlFor={`${idBase}-attachments`}>
             <label className="border-border-subtle bg-surface text-caption hover:bg-surface-hover inline-flex w-fit cursor-pointer items-center gap-2 rounded-md border px-2 py-1">
               <Paperclip className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>Attach files</span>
+              <span>{t('threads.newThread.attachFiles')}</span>
               <input
                 id={`${idBase}-attachments`}
-                aria-label="Attach files"
+                aria-label={t('threads.newThread.attachFiles')}
                 type="file"
                 multiple
                 className="sr-only"
@@ -347,7 +356,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
                   <button
                     type="button"
                     className="text-text-muted hover:text-text"
-                    aria-label={REMOVE_ATTACHMENT_LABEL}
+                    aria-label={t('threads.newThread.removeAttachment')}
                     onClick={() => removeAttachment(item.id)}
                     disabled={inFlight}
                   >
@@ -357,7 +366,9 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
               ))}
             </div>
           )}
-          {errorMsg && <p className="text-feedback-danger text-xs">{errorMsg}</p>}
+          {errorView !== null && (
+            <p className="text-feedback-danger text-xs">{renderThreadError(errorView, t)}</p>
+          )}
         </div>
         <DialogFooter>
           {reflection ? (
@@ -366,12 +377,12 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
               onClick={handleReflection}
               disabled={inFlight}
             >
-              {inFlight ? 'Sending…' : 'Reflection'}
+              {inFlight ? t('threads.newThread.sending') : t('threads.newThread.reflection')}
             </Button>
           ) : null}
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
           <Button onClick={submit} disabled={inFlight}>
-            {inFlight ? 'Sending…' : 'Send'}
+            {inFlight ? t('threads.newThread.sending') : t('threads.newThread.send')}
           </Button>
         </DialogFooter>
       </DialogContent>

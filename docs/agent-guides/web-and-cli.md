@@ -47,7 +47,7 @@ The SPA supports mutations, including task cancellation/revisit and Settings.
 Use `web/src/routes.tsx`, API functions, and the OpenAPI snapshot for the current
 surface. The daemon defaults to loopback; remote access uses the connector.
 
-### Internationalization (W1 foundation + W2a shell + W2b onboarding + W2c Settings)
+### Internationalization (W1 foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads)
 
 The web console has a first-party, typed English/Simplified-Chinese contract in
 `web/src/lib/i18n/` (`locale`, `catalog`, `format`, `coverage`) with the
@@ -112,7 +112,8 @@ Preferences** language selector (`sections/PreferencesSection.tsx`: English /
 splits the Settings shell so the `preferences` route renders OUTSIDE the
 `useSettings` loading/error/data gate; every other panel keeps that gate
 unchanged. Choosing a language never writes org settings or issues any API
-request. **The selector is closed in production until W3:**
+request. **The selector is closed in production until W3b** (W3a translates
+Dashboard/Threads but does not open it):
 `src/features/settings/languagePreferenceGate.ts` mounts the sub-nav entry and
 route only when the build sets `VITE_ENABLE_I18N_PREFERENCES=true` (the
 existing `VITE_ENABLE_PROTOTYPES`/`VITE_ENABLE_KB_COMPOSE` build-flag pattern).
@@ -124,16 +125,18 @@ separate preview dist with the flag and checks that the ordinary dist excludes
 the component. It also proves that state-held Settings messages follow a locale
 switch (the Organization Work Hours banner re-translates in place) while raw
 daemon diagnostics stay verbatim, with causal negatives for a pre-translated
-banner (`--defect-dist`) and a translated diagnostic. There is no W3 secondary-pages disclosure yet, no browser/system
+banner (`--defect-dist`) and a translated diagnostic. There is no W3b secondary-pages disclosure yet, no browser/system
 language defaulting (unset/invalid stays English), and no preview is live.
 
-The rest of the console is still English: **route families are W3/W4 and the
-assistant dock body is W4. No public language selector is exposed and preview
-is not enabled.** Native preference persistence is N0/N1; full-mode automatic
+**W3a** translated the mounted Dashboard and Threads route families (`features/dashboard/**`, `features/threads/**` list/detail/composer/strips/dialogs and the shared `shared/threads/NewThreadDialog.tsx` it mounts); pure design-system patterns (Composer, ThreadHeader, InboxRow, StatValue, CrescentMoonBadge, RecipientsInput, MentionTextarea, …) take optional localized label props with English defaults, so their other callers are unchanged. Thread errors are held as locale-neutral `ThreadErrorView` descriptors (`lib/threadErrors.ts`: mapped catalog key/params, or `raw` text rendered byte-for-byte even when empty or equal to a catalog string) and rendered at render time. Authored thread titles, message Markdown, names, IDs, filenames/hrefs, raw delivery payloads and machine values stay verbatim; a locale switch keeps drafts, attachments, selection, open dialogs and focus and issues no request. W3a browser evidence runs `scripts/w3a-core-browser-evidence.mjs` against the ORDINARY dist (storage-event switching, no in-app instrumentation) with a Preferences-gate positive control dist. **W3b** (Tasks/Jobs plus the public opt-in preview) remains open, so the Preferences gate stays closed and an unset preference still renders English.
+
+The rest of the console is still English: **Tasks/Jobs are W3b, the other
+route families and the assistant dock body are W4. No public language selector
+is exposed and preview is not enabled.** Native preference persistence is N0/N1; full-mode automatic
 environment detection is implemented and unit-tested but not enabled until W5.
-`web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b/W2c-migrated namespaces
+`web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b/W2c/W3a-migrated namespaces
 (`root-shell`, `not-found`, `app-shell`, `help-and-palette`, `onboarding`,
-`settings`) `translated` and every other mounted route namespace `english-only` (copy-free
+`settings`, `dashboard`, `threads`) `translated` and every other mounted route namespace `english-only` (copy-free
 redirects `not-applicable`), listing the actual mounted dialogs, so English
 fallback is never mistaken for coverage. Foundation browser evidence (isolated
 Storybook probe + the real `main.tsx` startup in headless Chrome) runs via

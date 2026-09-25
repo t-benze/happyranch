@@ -7,6 +7,7 @@
  */
 import { Sparkline } from '@/design-system/patterns/Sparkline';
 import type { TeamPulseRow } from '@/lib/api/types';
+import { useTranslation } from '@/hooks/i18n';
 
 interface OrgPulseTableProps {
   rows: TeamPulseRow[];
@@ -27,8 +28,9 @@ const ACCEPTANCE_TEXT: Record<Tier, string> = {
 };
 
 export function OrgPulseTable({ rows }: OrgPulseTableProps): JSX.Element {
+  const { t } = useTranslation();
   if (rows.length === 0) {
-    return <p className="text-text-muted text-sm">No teams configured.</p>;
+    return <p className="text-text-muted text-sm">{t('dashboard.pulse.empty')}</p>;
   }
   return (
     <table className="w-full text-sm">
@@ -45,7 +47,7 @@ export function OrgPulseTable({ rows }: OrgPulseTableProps): JSX.Element {
             >
               <td className="text-text-primary py-2 font-medium">{r.team}</td>
               <td className="text-text-muted py-2 font-mono text-xs">
-                {r.members} agents
+                {t('dashboard.pulse.members', { count: r.members })}
               </td>
               <td className="py-2">
                 <Sparkline data={r.sparkline} variant={tier} />

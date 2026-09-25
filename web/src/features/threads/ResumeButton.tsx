@@ -1,11 +1,13 @@
 import { Button } from '@/design-system/primitives/Button';
 import { useResumeThread } from '@/hooks/threads';
+import { useTranslation } from '@/hooks/i18n';
 
 interface Props {
   threadId: string;
 }
 
 export function ResumeButton({ threadId }: Props): JSX.Element {
+  const { t } = useTranslation();
   const resume = useResumeThread(threadId);
   return (
     <Button
@@ -13,9 +15,9 @@ export function ResumeButton({ threadId }: Props): JSX.Element {
       size="sm"
       onClick={() => resume.mutateAsync()}
       disabled={resume.isPending}
-      title="Resume thread"
+      title={t('threads.resume.label')}
     >
-      {resume.isPending ? 'Resuming…' : 'Resume thread'}
+      {resume.isPending ? t('threads.resume.pending') : t('threads.resume.label')}
     </Button>
   );
 }

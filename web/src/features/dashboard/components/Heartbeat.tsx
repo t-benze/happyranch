@@ -14,6 +14,7 @@
  */
 import type { HeartbeatBucket } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
+import { useTranslation } from '@/hooks/i18n';
 
 interface HeartbeatProps {
   data: HeartbeatBucket[];
@@ -22,6 +23,7 @@ interface HeartbeatProps {
 
 
 export function Heartbeat({ data, nowIdx }: HeartbeatProps): JSX.Element {
+  const { t } = useTranslation();
   // Bar height is driven by the combined "activity-or-outcome" signal so an
   // hour with cascade-fails but no audit activity (failed > 0, steps == 0)
   // still paints a visible red bar — `failed` is sourced from terminal task
@@ -33,7 +35,7 @@ export function Heartbeat({ data, nowIdx }: HeartbeatProps): JSX.Element {
   return (
     <div
       className="flex h-9 items-end gap-1"
-      aria-label="Today's hourly activity"
+      aria-label={t('dashboard.heartbeat.label')}
     >
       {data.map((b, i) => {
         const signal = heightSignal(b);

@@ -102,14 +102,16 @@ stays English until W4) and built the client-only Settings ▸ Preferences
 language selector (`sections/PreferencesSection.tsx`). `SettingsPage` mounts the
 `preferences` route OUTSIDE the `useSettings` loading/error/data gate, so it
 works while the settings API is loading, failing or empty; the other panels
-keep that gate. The selector is closed in production until W3:
+keep that gate. The selector is closed in production until W3b (W3a translates
+Dashboard/Threads but does not open it):
 `languagePreferenceGate.ts` mounts it only when the build sets
 `VITE_ENABLE_I18N_PREFERENCES=true` (tests use `vi.stubEnv`; the W2c browser
 harness builds a separate preview dist), ordinary builds tree-shake it out, and
 a direct `/settings/preferences` URL falls to the existing Assistant redirect.
-Route families (W3/W4) and the assistant dock body (W4) remain untranslated.
-No public language selector is exposed and an unset preference still renders
-English until W3. The mount-time coverage
+**W3a** translated the mounted Dashboard and Threads route families (`features/dashboard/**`, `features/threads/**` list/detail/composer/strips/dialogs and the shared `shared/threads/NewThreadDialog.tsx` it mounts); pure design-system patterns (Composer, ThreadHeader, InboxRow, StatValue, CrescentMoonBadge, RecipientsInput, MentionTextarea, …) take optional localized label props with English defaults, so their other callers are unchanged. Thread errors are held as locale-neutral `ThreadErrorView` descriptors (`lib/threadErrors.ts`: mapped catalog key/params, or `raw` text rendered byte-for-byte even when empty or equal to a catalog string) and rendered at render time. Authored thread titles, message Markdown, names, IDs, filenames/hrefs, raw delivery payloads and machine values stay verbatim; a locale switch keeps drafts, attachments, selection, open dialogs and focus and issues no request. W3a browser evidence runs `scripts/w3a-core-browser-evidence.mjs` against the ORDINARY dist (storage-event switching, no in-app instrumentation) with a Preferences-gate positive control dist. **W3b** (Tasks/Jobs plus the public opt-in preview) remains open, so the Preferences gate stays closed and an unset preference still renders English.
+Other route families (W3b Tasks/Jobs, W4) and the assistant dock body (W4)
+remain untranslated. No public language selector is exposed and an unset
+preference still renders English until W3b. The mount-time coverage
 inventory lives in `src/lib/i18n/coverage.ts`: it separates copy-bearing routes
 (root shell `index`, the `*` NotFound catch-all and onboarding — now
 `translated`) from

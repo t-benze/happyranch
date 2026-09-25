@@ -23,6 +23,7 @@
  */
 import type { ReactNode } from 'react';
 import { formatTokens, formatCount } from '@/lib/format';
+import { formatCountFor, formatTokensFor, type Locale } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 
 interface StatValueProps {
@@ -35,6 +36,12 @@ interface StatValueProps {
   /** `right` (default) reserves a right-aligned box; `inline` for hero tiles. */
   align?: 'right' | 'inline';
   className?: string;
+  /**
+   * Optional explicit display locale (THR-118). Omitted → the historical
+   * English K/M text and host-default title, so existing callers are
+   * unchanged. Display only: the numeric value itself is never altered.
+   */
+  locale?: Locale;
 }
 
 export function StatValue({
@@ -43,8 +50,16 @@ export function StatValue({
   suffix,
   align = 'right',
   className,
+  locale,
 }: StatValueProps): JSX.Element {
-  const text = format === 'count' ? formatCount(value) : formatTokens(value);
+  const text =
+    locale === undefined
+      ? format === 'count'
+        ? formatCount(value)
+        : formatTokens(value)
+      : format === 'count'
+        ? formatCountFor(locale, value)
+        : formatTokensFor(locale, value);
   return (
     <span
       className={cn(
@@ -52,7 +67,7 @@ export function StatValue({
         align === 'right' && 'inline-block min-w-16 pr-1 text-right',
         className,
       )}
-      title={value.toLocaleString()}
+      title={locale === undefined ? value.toLocaleString() : formatCountFor(locale, value)}
     >
       {text}
       {suffix != null && (

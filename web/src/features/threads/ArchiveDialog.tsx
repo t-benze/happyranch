@@ -9,9 +9,9 @@ import {
 } from '@/design-system/primitives/Dialog';
 import { Button } from '@/design-system/primitives/Button';
 import { FormField } from '@/design-system/patterns/FormField';
-import { ApiError } from '@/lib/api';
 import { useArchiveThread } from '@/hooks/threads';
-import { describeError } from './strings';
+import { useTranslation } from '@/hooks/i18n';
+import { classifyThreadError, renderThreadError, type ThreadErrorView } from '@/lib/threadErrors';
 
 interface Props {
   threadId: string;
@@ -20,28 +20,29 @@ interface Props {
 }
 
 export function ArchiveDialog({ threadId, open, onClose }: Props): JSX.Element {
+  const { t } = useTranslation();
   const archive = useArchiveThread(threadId);
   const [summary, setSummary] = useState('');
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Locale-neutral error descriptor, rendered through `t` on every render so a
+  // mapped message re-translates in place and a raw diagnostic stays byte-exact.
+  const [errorView, setErrorView] = useState<ThreadErrorView | null>(null);
   const summaryId = useId();
 
   useEffect(() => {
     if (!open) return;
     setSummary('');
-    setErrorMsg(null);
+    setErrorView(null);
   }, [open]);
 
   const submit = async () => {
-    setErrorMsg(null);
+    setErrorView(null);
     try {
       await archive.mutateAsync({
         summary: summary.trim(),
       });
       onClose();
     } catch (err) {
-      setErrorMsg(
-        err instanceof ApiError ? describeError(err.code, `HTTP ${err.status}`) : String(err),
-      );
+      setErrorView({ detail: classifyThreadError(err) });
     }
   };
 
@@ -49,16 +50,15 @@ export function ArchiveDialog({ threadId, open, onClose }: Props): JSX.Element {
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Archive thread</DialogTitle>
+          <DialogTitle>{t('threads.dialog.archive.title')}</DialogTitle>
           <DialogDescription className="sr-only">
-            Archive this thread. A summary will be saved to the transcript.
+            {t('threads.dialog.archive.description')}
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
           <FormField
-            label="Founder summary (optional, will be saved to transcript)"
+            label={t('threads.dialog.archive.summaryLabel')}
             htmlFor={summaryId}
-            error={errorMsg ?? undefined}
           >
             <textarea
               id={summaryId}
@@ -68,12 +68,20 @@ export function ArchiveDialog({ threadId, open, onClose }: Props): JSX.Element {
               autoFocus
               className="input resize-y"
             />
+            {/* Same node/classes FormField renders for `error`, but gated on the
+                descriptor (not text truthiness) so an empty raw diagnostic
+                still renders byte-for-byte. */}
+            {errorView !== null && (
+              <p className="text-caption text-feedback-danger" role="alert">
+                {renderThreadError(errorView, t)}
+              </p>
+            )}
           </FormField>
         </div>
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
           <Button onClick={submit} disabled={archive.isPending}>
-            {archive.isPending ? 'Archiving…' : 'Archive'}
+            {archive.isPending ? t('threads.dialog.archive.pending') : t('threads.dialog.archive.confirm')}
           </Button>
         </DialogFooter>
       </DialogContent>

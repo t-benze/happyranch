@@ -8,9 +8,9 @@ import {
   DialogTitle,
 } from '@/design-system/primitives/Dialog';
 import { Button } from '@/design-system/primitives/Button';
-import { ApiError } from '@/lib/api';
 import { useRemoveParticipant } from '@/hooks/threads';
-import { describeError } from './strings';
+import { useTranslation } from '@/hooks/i18n';
+import { classifyThreadError, renderThreadError, type ThreadErrorView } from '@/lib/threadErrors';
 
 interface Props {
   threadId: string;
@@ -26,24 +26,24 @@ interface Props {
  * explicit Remove click before firing removeParticipantFromThread.
  */
 export function RemoveParticipantDialog({ threadId, agentName, open, onClose }: Props): JSX.Element {
+  const { t, render } = useTranslation();
   const remove = useRemoveParticipant(threadId);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Locale-neutral error descriptor rendered at render time.
+  const [errorView, setErrorView] = useState<ThreadErrorView | null>(null);
 
   useEffect(() => {
     if (!open) return;
-    setErrorMsg(null);
+    setErrorView(null);
   }, [open]);
 
   const submit = async () => {
     if (!agentName) return;
-    setErrorMsg(null);
+    setErrorView(null);
     try {
       await remove.mutateAsync({ agent_name: agentName });
       onClose();
     } catch (err) {
-      setErrorMsg(
-        err instanceof ApiError ? describeError(err.code, `HTTP ${err.status}`) : String(err),
-      );
+      setErrorView({ detail: classifyThreadError(err) });
     }
   };
 
@@ -51,17 +51,20 @@ export function RemoveParticipantDialog({ threadId, agentName, open, onClose }: 
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Remove participant</DialogTitle>
+          <DialogTitle>{t('threads.dialog.remove.title')}</DialogTitle>
           <DialogDescription>
-            Remove <span className="font-semibold">{agentName}</span> from this thread? They will
-            stop receiving messages and any pending replies are cancelled.
+            {render('threads.dialog.remove.description', {
+              name: <span className="font-semibold">{agentName}</span>,
+            })}
           </DialogDescription>
         </DialogHeader>
-        {errorMsg && <p className="text-feedback-danger text-body">{errorMsg}</p>}
+        {errorView !== null && (
+          <p className="text-feedback-danger text-body">{renderThreadError(errorView, t)}</p>
+        )}
         <DialogFooter>
-          <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button type="button" variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
           <Button type="button" onClick={submit} disabled={remove.isPending}>
-            {remove.isPending ? 'Removing…' : 'Remove'}
+            {remove.isPending ? t('threads.dialog.remove.pending') : t('threads.dialog.remove.confirm')}
           </Button>
         </DialogFooter>
       </DialogContent>

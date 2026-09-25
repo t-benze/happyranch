@@ -175,24 +175,25 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
     ]);
   });
 
-  it('marks only the W2a/W2b/W2c-migrated namespaces translated and keeps later slices incomplete', () => {
+  it('marks only the W2a/W2b/W2c/W3a-migrated namespaces translated and keeps later slices incomplete', () => {
     const summary = coverageSummary();
-    expect(summary.translated).toBe(6);
+    expect(summary.translated).toBe(8);
     const translated = COVERAGE_MANIFEST.filter((entry) => entry.status === 'translated')
       .map((entry) => entry.namespace)
       .sort();
     expect(translated).toEqual([
       'app-shell',
+      'dashboard',
       'help-and-palette',
       'not-found',
       'onboarding',
       'root-shell',
       'settings',
-    ]);
-    // Later W3/W4 slices and every route family remain honest English-only.
-    for (const namespace of [
-      'dashboard',
       'threads',
+    ]);
+    // W3b (Tasks/Jobs), W4 slices and every other route family remain honest
+    // English-only.
+    for (const namespace of [
       'tasks',
       'todos',
       'kb',

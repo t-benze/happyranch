@@ -3,15 +3,15 @@ design-system/patterns/KbdChip.tsx	19	210	rgba(0,0,0,0.4)	Existing inset-key sha
 design-system/primitives/Dialog.tsx	38	27	bg-black/60	Existing modal scrim palette utility frozen pending a separately reviewed semantic-token migration
 features/settings/SettingsDialog.tsx	474	59	bg-white	Existing checked-control foreground utility frozen pending a separately reviewed semantic-token migration
 features/settings/sections/OrganizationSection.tsx	587	59	bg-white	Existing checked-control foreground utility frozen pending a separately reviewed semantic-token migration
-features/threads/ThreadsPage.tsx	233	106	text-white	Existing progress-label foreground utility frozen pending a separately reviewed semantic-token migration
+features/threads/ThreadsPage.tsx	269	106	text-white	Existing progress-label foreground utility frozen pending a separately reviewed semantic-token migration
 features/work-hours-config/OverviewPage.tsx	123	65	bg-white	Existing progress-label foreground utility frozen pending a separately reviewed semantic-token migration
 features/work-hours-config/TierEditorDialog.tsx	400	69	bg-white	Existing slider-label foreground utility frozen pending a separately reviewed semantic-token migration
 design-system/patterns/CommandPalette.tsx	226	66	bg-transparent	legacy default Tailwind special colour utility
-design-system/patterns/Composer.tsx	285	97	bg-transparent	legacy default Tailwind special colour utility
-design-system/patterns/MessageBubble.tsx	64	170	bg-transparent	legacy default Tailwind special colour utility
+design-system/patterns/Composer.tsx	325	97	bg-transparent	legacy default Tailwind special colour utility
+design-system/patterns/MessageBubble.tsx	75	170	bg-transparent	legacy default Tailwind special colour utility
 design-system/patterns/Sparkline.tsx	55	24	stroke-current	legacy default Tailwind special colour utility
 design-system/patterns/StatusBadge.tsx	92	64	bg-current	legacy default Tailwind special colour utility
-design-system/patterns/TypingBubble.tsx	86	57	bg-current	legacy default Tailwind special colour utility
+design-system/patterns/TypingBubble.tsx	92	57	bg-current	legacy default Tailwind special colour utility
 design-system/patterns/semanticTone.ts	33	63	bg-transparent	legacy default Tailwind special colour utility
 design-system/primitives/Button.tsx	29	47	border-transparent	legacy default Tailwind special colour utility
 design-system/primitives/Button.tsx	31	55	border-transparent	legacy default Tailwind special colour utility
@@ -42,7 +42,7 @@ features/skills/SkillsPage.tsx	96	56	border-transparent	legacy default Tailwind 
 features/system-assistant/ConversationSwitcher.tsx	161	57	bg-transparent	legacy default Tailwind special colour utility
 features/tasks/TaskListRow.tsx	99	62	bg-current	legacy default Tailwind special colour utility
 features/tasks/TasksPage.tsx	107	64	bg-current	legacy default Tailwind special colour utility
-features/threads/ThreadsPage.tsx	1400	91	bg-current	legacy default Tailwind special colour utility
+features/threads/ThreadsPage.tsx	1490	91	bg-current	legacy default Tailwind special colour utility
 features/todos/components/StatusPill.tsx	27	60	bg-current	legacy default Tailwind special colour utility
 features/usage/UsagePage.tsx	730	57	border-transparent	legacy default Tailwind special colour utility
 features/usage/UsagePage.tsx	731	65	border-transparent	legacy default Tailwind special colour utility
