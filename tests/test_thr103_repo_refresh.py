@@ -159,7 +159,7 @@ def test_refresh_workspace_repos_swallows_failure_and_continues(
 
 # ── (c) _run_agent refreshes BEFORE executor.run, every provider ─────────
 
-_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]
+_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "workspace-cleanup"]
 
 
 def _setup_protocol_skills(settings) -> None:

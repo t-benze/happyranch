@@ -392,6 +392,19 @@ recovery. `false` prevents those action admissions and affects later admissions
 only; it cannot revoke an already admitted call. Malformed values retain the
 shared loader's existing error behavior.
 
+The daemon-composed daily brief and manual dispatch both follow the ONE shared
+`workspace-cleanup` TASK system contract (`requires_repo=false`; source
+`runtime/skills/bundled/workspace-cleanup/SKILL.md`), whose exact manual first
+line is `HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)` (an unmarked
+manual request is inventory-only). Its bundled read-only
+`scripts/check_path_use.py` applies the approved THR-259 seq171/seq185
+observation: an authoritative recorded terminal status plus a fresh complete
+same-user process scan replaces separate live-session/task-to-process identity,
+and a fixed login/session daemon (sshd-session, systemd --user, (sd-pam),
+ssh-agent, gpg-agent, gcr-ssh-agent) qualifies only by exact readable process
+name AND exact bounded cgroup role and is deliberately uninspected; any other
+unreadable same-user process is `unknown` and skips.
+
 ## Terminal task-worktree reclamation
 
 Terminal task-worktree reclamation has no configuration key or cadence. On the
