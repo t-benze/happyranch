@@ -1,10 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@/lib/api';
-import {
-  AUTHORITY_POLICY_V2_STARTER,
-  type V2PairedControlRequest,
-} from '@/hooks/authorityPolicy';
+import { type V2PairedControlRequest } from '@/hooks/authorityPolicy';
 import { TeamEscalationPolicyCard } from './TeamEscalationPolicyCard';
 
 const legacyTemplate = {
@@ -12,6 +9,12 @@ const legacyTemplate = {
   normative_text: 'Normative text',
   clauses: [{ id: 'esc-one', category: 'protected', condition: 'Stop.', action: 'escalate_to_founder' as const }],
   continuation_phrase: 'routine same-root follow-through of the already-completed slice',
+};
+const v2Starter = {
+  policy_id: 'team-8c85b6639e62e10b-dual-text',
+  title: 'Engineering escalation policy',
+  what_to_escalate: 'Escalate starter.',
+  what_not_to_escalate: 'Continue starter.',
 };
 const EMPTY_SELECTOR_ID = `APS-${'a'.repeat(64)}`;
 const ACTIVE_SELECTOR_ID = `APS-${'b'.repeat(64)}`;
@@ -26,6 +29,7 @@ const empty = {
   can_mutate: true as const, bootstrap_required: true as const,
   family: 'empty' as const, selector_id: EMPTY_SELECTOR_ID, selector_epoch: 0 as const,
   bootstrap_template: legacyTemplate,
+  v2_starter: v2Starter,
 };
 const legacyActive = {
   team: 'engineering' as const, target_manager: 'engineering_manager' as const,
@@ -33,6 +37,7 @@ const legacyActive = {
   family: 'legacy_v1' as const, contract_version: 'v1' as const,
   selector_id: ACTIVE_SELECTOR_ID, selector_epoch: 3,
   bootstrap_template: legacyTemplate,
+  v2_starter: v2Starter,
   active: {
     family: 'legacy_v1' as const,
     activation_id: 'APA-active', epoch: 7, action: 'activate' as const,
@@ -55,13 +60,14 @@ function activeV2(overrides: Partial<{ selectorId: string; selectorEpoch: number
     family: 'v2' as const, contract_version: 'v2' as const,
     selector_id: selectorId, selector_epoch: selectorEpoch,
     bootstrap_template: legacyTemplate,
+    v2_starter: v2Starter,
     active: {
       family: 'v2' as const,
       activation_id: ACTIVATION_ID, selector_epoch: selectorEpoch, action: 'activate' as const,
       created_at: '2026-09-03T00:00:00Z', actor_attribution: 'shared local operator credential' as const,
       release: {
-        id: RELEASE_ID, policy_id: AUTHORITY_POLICY_V2_STARTER.policy_id,
-        version: overrides.version ?? 2, title: overrides.title ?? AUTHORITY_POLICY_V2_STARTER.title,
+        id: RELEASE_ID, policy_id: v2Starter.policy_id,
+        version: overrides.version ?? 2, title: overrides.title ?? v2Starter.title,
         what_to_escalate: overrides.whatTo ?? 'Escalate scope changes.',
         what_not_to_escalate: overrides.whatNot ?? 'Continue ordinary work.',
         digest: RELEASE_DIGEST, actor_attribution: 'shared local operator credential' as const,
@@ -108,7 +114,7 @@ function controlResponse(request: V2PairedControlRequest) {
     selector_epoch: 1,
     previous_selector_id: request.expected_selector_id ?? EMPTY_SELECTOR_ID,
     receipt: {
-      team: 'engineering' as const,
+      team: request.team,
       kind: 'v2_create_activate' as const,
       create_request_id: request.create_request_id,
       create_request_digest: '2'.repeat(64),
@@ -153,13 +159,68 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
     render(<TeamEscalationPolicyCard agent={agent} />);
     const textareas = await screen.findAllByRole('textbox');
     expect(textareas).toHaveLength(2);
-    expect(screen.getByLabelText('What to escalate')).toHaveValue(AUTHORITY_POLICY_V2_STARTER.what_to_escalate);
-    expect(screen.getByLabelText('What not to escalate')).toHaveValue(AUTHORITY_POLICY_V2_STARTER.what_not_to_escalate);
-    expect(screen.getByText(AUTHORITY_POLICY_V2_STARTER.title)).toBeInTheDocument();
+    expect(screen.getByLabelText('What to escalate')).toHaveValue(v2Starter.what_to_escalate);
+    expect(screen.getByLabelText('What not to escalate')).toHaveValue(v2Starter.what_not_to_escalate);
+    expect(screen.getByText(v2Starter.title)).toBeInTheDocument();
     expect(screen.queryByText('Normative policy')).not.toBeInTheDocument();
     expect(screen.queryByText('Canonical continuation phrase')).not.toBeInTheDocument();
     expect(screen.queryByText('esc-one')).not.toBeInTheDocument();
+    expect(screen.getByText('Owned by the Engineering team, not by this agent.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save & activate' })).toBeEnabled();
+  });
+
+  it('completes a Content mutation through authoritative Content readback', async () => {
+    const contentStarter = { ...v2Starter,
+      policy_id: 'team-ed7002b439e9ac84-dual-text',
+      title: 'Content escalation policy',
+      what_to_escalate: 'Server Content escalate bytes.',
+      what_not_to_escalate: 'Server Content continue bytes.',
+    };
+    query.data = { ...empty, team: 'content', target_manager: 'content_manager',
+      bootstrap_template: null, v2_starter: contentStarter };
+    v2Create.mutateAsync.mockImplementation(async ({ body }) => controlResponse(body));
+    const engineeringReadback = activeV2({
+      selectorEpoch: 1,
+      title: contentStarter.title,
+      whatTo: 'Content changed escalate.',
+      whatNot: 'Content changed continue.',
+      version: 1,
+    });
+    const contentReadback = {
+      ...engineeringReadback,
+      team: 'content',
+      target_manager: 'content_manager',
+      bootstrap_template: null,
+      v2_starter: contentStarter,
+      active: {
+        ...engineeringReadback.active,
+        release: {
+          ...engineeringReadback.active.release,
+          policy_id: contentStarter.policy_id,
+          title: contentStarter.title,
+        },
+      },
+    };
+    query.refetch.mockImplementation(async () => {
+      query.data = contentReadback;
+      return { data: contentReadback };
+    });
+    render(<TeamEscalationPolicyCard agent={{ name: 'content_manager', team: 'content', role: 'manager' }} />);
+    expect(await screen.findByLabelText('What to escalate')).toHaveValue(contentStarter.what_to_escalate);
+    expect(screen.getByLabelText('What not to escalate')).toHaveValue(contentStarter.what_not_to_escalate);
+    expect(screen.getByText(contentStarter.title)).toBeInTheDocument();
+    expect(screen.getByText('Owned by the Content team, not by this agent.')).toBeInTheDocument();
+    expect(screen.queryByText('Owned by the Engineering team, not by this agent.')).not.toBeInTheDocument();
+    await editPairAndOpenConfirmation('Content changed escalate.', 'Content changed continue.');
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm save & activate' }));
+    await waitFor(() => expect(v2Create.mutateAsync).toHaveBeenCalledOnce());
+    expect(v2Create.mutateAsync.mock.calls[0][0].body).toMatchObject({
+      team: 'content', policy_id: contentStarter.policy_id, title: contentStarter.title,
+    });
+    expect(query.refetch).toHaveBeenCalledOnce();
+    expect(await screen.findByRole('status')).toHaveTextContent('Saved and activated immutable v2 release');
+    expect(screen.getByRole('status')).toHaveTextContent(RELEASE_ID);
+    expect(screen.getByRole('status')).toHaveTextContent(NEXT_SELECTOR_ID);
   });
 
   it('initializes active v2 bytes and truthfully shows release, activation, selector and digest identity', async () => {
@@ -185,8 +246,8 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
     await waitFor(() => expect(v2Create.mutateAsync).toHaveBeenCalledOnce());
     const request = v2Create.mutateAsync.mock.calls[0][0].body as V2PairedControlRequest;
     expect(request).toMatchObject({
-      team: 'engineering', policy_id: AUTHORITY_POLICY_V2_STARTER.policy_id,
-      title: AUTHORITY_POLICY_V2_STARTER.title,
+      team: 'engineering', policy_id: v2Starter.policy_id,
+      title: v2Starter.title,
       based_on_selector_id: ACTIVE_SELECTOR_ID,
       expected_selector_id: ACTIVE_SELECTOR_ID,
       action: 'activate',

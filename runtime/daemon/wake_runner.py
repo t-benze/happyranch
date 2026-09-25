@@ -242,10 +242,12 @@ async def run_wake(
 
     from runtime.orchestrator.active_authority_policy import resolve_active_team_policy_section
     from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
-    active_policy_section = resolve_active_team_policy_section(
-        store=AuthorityPolicyStore(org_state.db), team=agent_def.team,
+    policy_teams = getattr(org_state, "teams", None)
+    active_policy_section = "" if policy_teams is None else resolve_active_team_policy_section(
+        store=AuthorityPolicyStore(org_state.db), root=org_state.root,
+        teams=policy_teams, team=agent_def.team,
         agent_name=record.agent_name,
-        eligible=bool(getattr(org_state, "teams", None) and org_state.teams.is_team_manager(record.agent_name)),
+        eligible=policy_teams.is_team_manager(record.agent_name),
     )
     prompt = build_wake_prompt(
         org_slug=org_state.slug,

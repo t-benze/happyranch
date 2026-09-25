@@ -41,6 +41,7 @@ from runtime.orchestrator.active_authority_policy import (
     resolve_active_team_policy_snapshot,
 )
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+from tests.authority_policy_test_factory import policy_manager_context
 
 TEAM = "engineering"
 MANAGER = "engineering_manager"
@@ -74,8 +75,10 @@ def _activate_v2(store: AuthorityPolicyStore):
 def _seed_bound_task(store: AuthorityPolicyStore, *, task_id: str = TASK_ID,
                      session_id: str = SESSION_ID) -> dict:
     _activate_v2(store)
+    root, teams = policy_manager_context(store)
     snapshot = resolve_active_team_policy_snapshot(
-        store=store, team=TEAM, agent_name=MANAGER, eligible=True,
+        store=store, root=root, teams=teams, team=TEAM,
+        agent_name=MANAGER, eligible=True,
     )
     assert snapshot is not None and snapshot.family == "v2"
     persist_session_policy_binding(
@@ -315,6 +318,52 @@ def test_attempt_identity_is_deterministic_and_strict():
         AuthorityPolicyV2Attempt(**{**base, "result_id": 8})
     with pytest.raises(Exception):
         AuthorityPolicyV2Attempt(**{**base, "extra": "nope"})
+
+
+def test_downstream_attempt_identity_uses_immutable_content_binding(tmp_path):
+    store = _store(tmp_path)
+    team = "content"
+    manager = "content_manager"
+    task_id = "TASK-CONTENT-BOUND"
+    session_id = "sess-content-bound"
+    selector = store.ensure_authority_selector(team)
+    store.create_and_activate_v2({
+        "team": team, "policy_id": "team-ed7002b439e9ac84-dual-text",
+        "title": "Content escalation policy", "create_request_id": "content-create",
+        "activation_request_id": "content-activate",
+        "based_on_selector_id": selector.selector_id,
+        "expected_selector_id": selector.selector_id, "action": "bootstrap",
+        "what_to_escalate": WHAT_TO, "what_not_to_escalate": WHAT_NOT,
+    })
+    root, teams = policy_manager_context(store, manager=manager, team=team)
+    snapshot = resolve_active_team_policy_snapshot(
+        store=store, root=root, teams=teams, team=team,
+        agent_name=manager, eligible=True,
+    )
+    assert snapshot is not None
+    persist_session_policy_binding(
+        db=store._db, task_id=task_id, session_id=session_id,
+        agent_name=manager, snapshot=snapshot, provider_id="codex",
+        executor_kind="codex", model_id="default",
+    )
+    store._db.insert_task(TaskRecord(
+        id=task_id, status=TaskStatus.IN_PROGRESS, assigned_agent=manager,
+        team=team, brief="content binding identity", orchestration_step_count=1,
+    ))
+    expected = authority_policy_v2_attempt_id(
+        manager_agent=manager, manager_session_id=session_id, result_id=7,
+        root_task_id=task_id, team=team,
+    )
+    assert store._db._authority_policy_v2_attempt_id_for_identity(
+        root_task_id=task_id, manager_agent=manager,
+        manager_session_id=session_id, result_id=7,
+    ) == expected
+    # A later task-row drift cannot replace the session's immutable team.
+    store._db._conn.execute("UPDATE tasks SET team='engineering' WHERE id=?", (task_id,))
+    assert store._db._authority_policy_v2_attempt_id_for_identity(
+        root_task_id=task_id, manager_agent=manager,
+        manager_session_id=session_id, result_id=7,
+    ) == expected
 
 
 # ── atomic admission, replay and rollback ────────────────────────────────

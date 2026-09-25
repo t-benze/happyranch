@@ -685,8 +685,11 @@ def _carrier_admission(binding, task_id):
 def _bind_root(store, *, task_id, session_id, activate):
     if activate:
         _activate_v2(store)
+    from tests.authority_policy_test_factory import policy_manager_context
+    root, teams = policy_manager_context(store)
     snapshot = resolve_active_team_policy_snapshot(
-        store=store, team=TEAM, agent_name=MANAGER, eligible=True,
+        store=store, root=root, teams=teams, team=TEAM,
+        agent_name=MANAGER, eligible=True,
     )
     assert snapshot is not None and snapshot.family == "v2"
     persist_session_policy_binding(

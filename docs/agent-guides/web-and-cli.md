@@ -741,10 +741,13 @@ thread's Model with the same precedence as the CLI table above.
 ### Staged dual-text escalation-policy editor (THR-229, draft PR878)
 
 This surface is present only on the unmerged draft feature branch; it is not a
-running-production capability and performs no live activation. The eligible
-Engineering Manager's dedicated policy route shows exactly the editable
+running-production capability and performs no live activation. Every roster-
+confirmed manager with exactly one matching team registration has a dedicated
+policy route showing exactly the editable
 `What to escalate` and `What not to escalate` textareas. A genuinely empty
-selector begins with the approved starter bytes; an active v2 selector reads
+selector begins with the server-projected neutral starter bytes and uniform
+per-team derived ID/title; there is no client starter constant or Engineering
+special case. An active v2 selector reads
 both values and its release/version/digest, activation, selector and epoch from
 the authenticated projection. One confirmation sends both texts through the
 existing paired v2 release transaction. It never exposes the legacy split
@@ -756,10 +759,13 @@ SPA navigation and hard unload. It treats pending submission as single-flight,
 accepts success only after the paired receipt and authoritative refetch agree,
 reuses the exact request after an ambiguous outcome, and preserves the draft
 on selector conflicts until the operator deliberately reloads the current
-selector. The v2 history stream is immutable and read-only, shows both exact
+selector. Policy queries wait for both roster and team data, are keyed by the
+exact organization/manager/team tuple, and are evicted immediately on tuple loss
+or change to prevent cross-team flashes. The v2 history stream is immutable and read-only, shows both exact
 texts plus full release/activation/selector identity and timestamps, and owns
-pagination/error retry independently. Legacy history and outcomes appear only
-for an authenticated legacy-family projection. Unsupported, mixed, corrupt,
+pagination/error retry independently. The legacy history and outcome APIs/data
+remain available, but the two legacy read-only UI sections and their eager
+requests are removed. Unsupported, mixed, corrupt,
 unknown and worker targets fail closed without an editable fallback.
 
 For a v2-bound manager escalation, the injected role guidance supplies the

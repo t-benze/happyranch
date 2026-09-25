@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timezone
 from enum import StrEnum
 
-from typing import Literal, Mapping
+from typing import Annotated, Literal, Mapping
 
 from pydantic import BaseModel, Field, StrictBool, StrictInt, StrictStr, field_validator, model_validator
 
@@ -597,7 +597,10 @@ AUTHORITY_POLICY_SECRET_SHAPE_RE = re.compile(
     r"(?i)(?:authorization\s*:\s*bearer|bearer\s+[a-z0-9._-]{16,}|"
     r"(?:api[_-]?key|secret|password|token)\s*[:=]\s*\S{8,})"
 )
-AUTHORITY_POLICY_V2_TEAM = "engineering"
+AuthorityPolicyTeam = Annotated[
+    StrictStr,
+    Field(min_length=1, max_length=128, pattern=r"^\S(?:.*\S)?$"),
+]
 AUTHORITY_POLICY_V2_MAX_CANONICAL_BYTES = 65536
 _AUTHORITY_POLICY_V2_MAX_TITLE = 200
 _AUTHORITY_POLICY_V2_MAX_TEXT = 20000
@@ -618,7 +621,7 @@ class AuthorityPolicyV2Release(BaseModel):
 
     contract_digest: StrictStr
     policy_id: StrictStr
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     title: StrictStr
     version: StrictInt = Field(ge=1, le=2147483647)
     what_not_to_escalate: StrictStr
@@ -859,7 +862,7 @@ class AuthorityPolicyV2SessionBinding(BaseModel):
     release_id: StrictStr
     root_task_id: StrictStr
     selector_id: StrictStr
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     created_at: datetime = Field(default_factory=_now)
 
     @field_validator("contract_digest", "policy_digest")
@@ -1333,7 +1336,7 @@ class AuthorityPolicyV2Attempt(BaseModel):
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
     attempt_id: StrictStr
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     root_task_id: StrictStr
     manager_agent: StrictStr
     manager_session_id: StrictStr
@@ -1508,7 +1511,7 @@ class AuthorityPolicyV2Candidate(BaseModel):
 
     candidate_id: StrictStr
     claim_key: StrictStr
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     root_task_id: StrictStr
     manager_agent: StrictStr
     manager_session_id: StrictStr
@@ -1674,7 +1677,7 @@ class AuthorityPolicyV2Pin(BaseModel):
 
     candidate_id: StrictStr
     claim_key: StrictStr
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     root_task_id: StrictStr
     manager_agent: StrictStr
     manager_session_id: StrictStr
@@ -1777,7 +1780,7 @@ class AuthorityPolicyV2Evaluation(BaseModel):
     evaluation_id: StrictStr
     candidate_id: StrictStr
     claim_key: StrictStr
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     root_task_id: StrictStr
     manager_agent: StrictStr
     manager_session_id: StrictStr
@@ -1917,7 +1920,7 @@ class AuthorityPolicyV2CandidateAudit(BaseModel):
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
     candidate_id: StrictStr
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     root_task_id: StrictStr
     manager_agent: StrictStr
     manager_session_id: StrictStr
@@ -2126,7 +2129,7 @@ class AuthorityPolicyV2ContinueEnvelope(BaseModel):
     envelope_id: StrictStr
     candidate_id: StrictStr
     claim_key: StrictStr
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     root_task_id: StrictStr
     manager_agent: StrictStr
     manager_session_id: StrictStr
@@ -3285,7 +3288,7 @@ class AuthorityPolicyV2PairedControlRequest(BaseModel):
     """Strict paired create+activate request; client version/digest/ids are rejected."""
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     policy_id: StrictStr
     title: StrictStr
     create_request_id: StrictStr
@@ -3367,7 +3370,7 @@ class AuthorityPolicyV2ActivationControlRequest(BaseModel):
     """Strict activation request for an existing v2 release."""
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     release_id: StrictStr
     request_id: StrictStr
     expected_selector_id: StrictStr | None
@@ -3406,7 +3409,7 @@ class AuthorityPolicyV2ControlReceipt(BaseModel):
     """Deterministic receipt binding both request IDs/digests of a control write."""
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     kind: Literal["v2_create_activate", "v2_activate"]
     create_request_id: StrictStr | None
     create_request_digest: StrictStr | None
@@ -3500,7 +3503,7 @@ class AuthorityPolicyLegacyActivationRequest(BaseModel):
     """
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     release_id: StrictStr
     request_id: StrictStr
     expected_selector_id: StrictStr | None
@@ -3540,7 +3543,7 @@ class AuthorityPolicyLegacyReactivationRequest(BaseModel):
     """
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     activation_id: StrictStr
     request_id: StrictStr
     expected_selector_id: StrictStr | None
@@ -3576,7 +3579,7 @@ class AuthorityPolicyLegacyControlReceipt(BaseModel):
     """Deterministic receipt for a selector-aware legacy v1 selection."""
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     kind: Literal["legacy_activate", "legacy_reactivate_rollback"]
     request_id: StrictStr
     request_digest: StrictStr

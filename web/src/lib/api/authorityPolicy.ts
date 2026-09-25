@@ -17,12 +17,13 @@ export interface AuthorityPolicyTemplate {
 export type AuthorityPolicyFamily = 'empty' | 'legacy_v1' | 'v2';
 export type AuthorityPolicyControlAction = 'bootstrap' | 'activate' | 'reactivate_rollback';
 export const AUTHORITY_POLICY_ACTOR_ATTRIBUTION = 'shared local operator credential';
-export const AUTHORITY_POLICY_V2_STARTER = {
-  policy_id: 'engineering-dual-text',
-  title: 'Engineering escalation policy',
-  what_to_escalate: 'Escalate when the next action requires a product or external-contract change, significant architecture change, or substantial development effort beyond the approved scope. Also escalate decisions explicitly reserved for the founder that lack applicable authorization. Existing approval carries through ordinary implementation and recovery within its scope.',
-  what_not_to_escalate: 'Continue implementation, debugging, review corrections, testing, CI waits, evidence collection and worker reassignment within approved scope. Failed reviews, retries, incomplete worker results and recoverable execution failures alone do not require founder escalation. Continue to enforce the required review, QA and merge gates.',
-} as const;
+
+export interface AuthorityPolicyV2Starter {
+  policy_id: string;
+  title: string;
+  what_to_escalate: string;
+  what_not_to_escalate: string;
+}
 
 export interface LegacyAuthorityPolicyRelease {
   id: string;
@@ -71,11 +72,12 @@ export interface V2AuthorityPolicyActive {
 }
 
 interface TeamEscalationPolicyBase {
-  team: 'engineering';
-  target_manager: 'engineering_manager';
+  team: string;
+  target_manager: string;
   /** Server authorization remains authoritative for both mutations. */
   can_mutate: true;
-  bootstrap_template: AuthorityPolicyTemplate;
+  bootstrap_template: AuthorityPolicyTemplate | null;
+  v2_starter: AuthorityPolicyV2Starter;
   /** Observed selector identity; required on every selection write. */
   selector_id: string;
   selector_epoch: number;
@@ -191,7 +193,7 @@ export interface ActivateAuthorityPolicyReleaseRequest {
 
 /** Strict paired v2 save+activate. The two texts travel together. */
 export interface V2PairedControlRequest {
-  team: 'engineering';
+  team: string;
   policy_id: string;
   title: string;
   create_request_id: string;
@@ -206,7 +208,7 @@ export interface V2PairedControlRequest {
 
 /** Select/rollback of an already-saved immutable v2 release. */
 export interface V2ActivationControlRequest {
-  team: 'engineering';
+  team: string;
   release_id: string;
   request_id: string;
   expected_selector_id: string | null;
@@ -215,7 +217,7 @@ export interface V2ActivationControlRequest {
 }
 
 export interface V2AuthorityPolicyControlReceipt {
-  team: 'engineering';
+  team: string;
   kind: 'v2_create_activate' | 'v2_activate';
   create_request_id: string | null;
   create_request_digest: string | null;
@@ -280,7 +282,8 @@ function decodeClause(value: unknown, message: string): AuthorityPolicyClause {
   };
 }
 
-function decodeBootstrapTemplate(value: unknown, message: string): AuthorityPolicyTemplate {
+function decodeBootstrapTemplate(value: unknown, message: string): AuthorityPolicyTemplate | null {
+  if (value === null) return null;
   if (
     !isRecord(value) ||
     !isNonEmptyString(value.title) ||
@@ -295,6 +298,20 @@ function decodeBootstrapTemplate(value: unknown, message: string): AuthorityPoli
     normative_text: value.normative_text,
     clauses: value.clauses.map((clause) => decodeClause(clause, message)),
     continuation_phrase: value.continuation_phrase,
+  };
+}
+
+function decodeV2Starter(value: unknown, message: string): AuthorityPolicyV2Starter {
+  if (!isRecord(value) || !isNonEmptyString(value.policy_id) ||
+      !isNonEmptyString(value.title) || !isNonEmptyString(value.what_to_escalate) ||
+      !isNonEmptyString(value.what_not_to_escalate)) {
+    throw new Error(message);
+  }
+  return {
+    policy_id: value.policy_id,
+    title: value.title,
+    what_to_escalate: value.what_to_escalate,
+    what_not_to_escalate: value.what_not_to_escalate,
   };
 }
 
@@ -367,12 +384,15 @@ export function decodeTeamEscalationPolicyResponse(
   if (
     !isRecord(value) ||
     value.can_mutate !== true ||
-    value.team !== 'engineering' ||
-    value.target_manager !== 'engineering_manager'
+    !isNonEmptyString(value.team) ||
+    !isNonEmptyString(value.target_manager)
   ) {
     throw new Error(INVALID_POLICY_RESPONSE);
   }
   const bootstrap_template = decodeBootstrapTemplate(value.bootstrap_template, INVALID_POLICY_RESPONSE);
+  const v2_starter = decodeV2Starter(value.v2_starter, INVALID_POLICY_RESPONSE);
+  const team = value.team;
+  const target_manager = value.target_manager;
   const family = value.family;
   if (family !== 'empty' && family !== 'legacy_v1' && family !== 'v2') {
     throw new Error(INVALID_POLICY_RESPONSE);
@@ -395,10 +415,11 @@ export function decodeTeamEscalationPolicyResponse(
       throw new Error(INVALID_POLICY_RESPONSE);
     }
     return {
-      team: 'engineering',
-      target_manager: 'engineering_manager',
+      team,
+      target_manager,
       can_mutate: true,
       bootstrap_template,
+      v2_starter,
       selector_id: value.selector_id,
       selector_epoch: 0,
       family: 'empty',
@@ -422,10 +443,11 @@ export function decodeTeamEscalationPolicyResponse(
       throw new Error(INVALID_POLICY_RESPONSE);
     }
     return {
-      team: 'engineering',
-      target_manager: 'engineering_manager',
+      team,
+      target_manager,
       can_mutate: true,
       bootstrap_template,
+      v2_starter,
       selector_id: value.selector_id,
       selector_epoch: selectorEpoch,
       family: 'legacy_v1',
@@ -456,10 +478,11 @@ export function decodeTeamEscalationPolicyResponse(
     throw new Error(INVALID_POLICY_RESPONSE);
   }
   return {
-    team: 'engineering',
-    target_manager: 'engineering_manager',
+    team,
+    target_manager,
     can_mutate: true,
     bootstrap_template,
+    v2_starter,
     selector_id: value.selector_id,
     selector_epoch: selectorEpoch,
     family: 'v2',
@@ -588,8 +611,12 @@ export function decodeAuthorityPolicyV2HistoryResponse(
 
 export function decodeV2AuthorityPolicyControlResponse(
   value: unknown,
+  expectedTeam: string,
 ): V2AuthorityPolicyControlResponse {
   if (
+    !isNonEmptyString(expectedTeam) ||
+    expectedTeam.length > 128 ||
+    expectedTeam !== expectedTeam.trim() ||
     !isRecord(value) ||
     (value.control !== 'v2_create_activate' && value.control !== 'v2_activate') ||
     value.family !== 'v2' ||
@@ -605,7 +632,7 @@ export function decodeV2AuthorityPolicyControlResponse(
   }
   const receipt = value.receipt;
   if (
-    receipt.team !== 'engineering' ||
+    receipt.team !== expectedTeam ||
     (receipt.kind !== 'v2_create_activate' && receipt.kind !== 'v2_activate') ||
     !(receipt.create_request_id === null || isNonEmptyString(receipt.create_request_id)) ||
     !(receipt.create_request_digest === null ||
@@ -671,7 +698,7 @@ export const createAndActivateTeamEscalationPolicyV2 = (
 ): Promise<V2AuthorityPolicyControlResponse> =>
   request<unknown>(`/orgs/${slug}/agents/${agentName}/team-escalation-policy/v2/releases`, {
     method: 'POST', body,
-  }).then(decodeV2AuthorityPolicyControlResponse);
+  }).then((value) => decodeV2AuthorityPolicyControlResponse(value, body.team));
 
 export const activateTeamEscalationPolicyV2 = (
   slug: string,
@@ -680,7 +707,7 @@ export const activateTeamEscalationPolicyV2 = (
 ): Promise<V2AuthorityPolicyControlResponse> =>
   request<unknown>(`/orgs/${slug}/agents/${agentName}/team-escalation-policy/v2/activations`, {
     method: 'POST', body,
-  }).then(decodeV2AuthorityPolicyControlResponse);
+  }).then((value) => decodeV2AuthorityPolicyControlResponse(value, body.team));
 
 export const getTeamEscalationPolicyHistory = (slug: string, agentName: string, cursor?: string) =>
   request<unknown>(`/orgs/${slug}/agents/${agentName}/team-escalation-policy/history?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)
@@ -702,8 +729,8 @@ export const isEligiblePolicyManager = (agent: {
   name: string;
   team: string;
   role: string;
-} | undefined): boolean =>
-  // Structurally reusable seam; the current Engineering allowlist remains explicit.
-  agent?.name === 'engineering_manager' &&
-  agent.team === 'engineering' &&
-  agent.role === 'manager';
+} | undefined, teams: Array<{ name: string; manager: string }> | undefined): boolean => {
+  if (!agent || agent.role !== 'manager' || !teams) return false;
+  const registrations = teams.filter((team) => team.manager === agent.name);
+  return registrations.length === 1 && registrations[0].name === agent.team;
+};
