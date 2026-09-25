@@ -90,6 +90,20 @@ def test_approved_exception_names_and_roles(body):
     assert "deliberately" in normalized and "not inspected" in normalized
 
 
+def test_confirmed_exit_contract_distinguishes_absent_stat_from_incomplete_status(body):
+    normalized = " ".join(body.split())
+    assert (
+        "An independently absent PID/TID `stat` confirms that sampled process "
+        "or thread exited."
+    ) in normalized
+    assert (
+        "If the corresponding `stat` remains readable, a missing, unreadable, "
+        "or incomplete `status` is an incomplete identity -> `unknown`, not "
+        "confirmed exit."
+    ) in normalized
+    assert "A missing per-thread `stat`/`status`" not in normalized
+
+
 def test_retention_and_ordinal_contract(body):
     normalized = " ".join(body.split())
     assert "first **two**" in normalized

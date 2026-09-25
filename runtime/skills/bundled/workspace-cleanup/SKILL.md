@@ -122,10 +122,11 @@ It returns exactly one of `clear_observation`, `blocked`, or `unknown`
 - Any **other** unreadable same-user process makes coverage `unknown` ->
   skip. A readable occupied non-exempt member is `blocked`. Positive use
   blocks even when coverage is otherwise incomplete.
-- Confirmed exit (PID/TID vanished) is distinct from `EACCES`/`EPERM`, PID/TID
-  reuse, and changed real/effective/saved/fs credentials — those are `unknown`.
-  A missing per-thread `stat`/`status`, an unparseable starttime, or a denied
-  thread-status read is an incomplete identity, never a clean result.
+- An independently absent PID/TID `stat` confirms that sampled process or
+  thread exited. If the corresponding `stat` remains readable, a missing,
+  unreadable, or incomplete `status` is an incomplete identity -> `unknown`,
+  not confirmed exit. An unparseable starttime, PID/TID reuse, or changed
+  real/effective/saved/fs credentials is also `unknown`.
 - Per thread, the helper checks `cwd`, `root`, `exe`, `maps`, and the private
   FD table, and verifies cross-mount-namespace path identity. Every newly
   admitted read/iteration — including each maps line and each FD entry — is
