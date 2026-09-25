@@ -4075,12 +4075,18 @@ def _enqueue_parent_if_waiting(
         queue = getattr(orch, "_queue", None)
         if queue is None:
             return
-        queued = getattr(getattr(queue, "_queue", None), "_queue", ())
-        if not any(
-            queued_slug == orch._slug and queued_task_id == parent.id
-            for queued_slug, queued_task_id, _ in queued
-        ):
-            _enqueue_task_generation_aware(orch, parent.id)
+        enqueue_if_absent = getattr(queue, "enqueue_if_absent", None)
+        if callable(enqueue_if_absent):
+            enqueue_if_absent(
+                orch._slug,
+                parent.id,
+                publisher=lambda: _enqueue_task_generation_aware(orch, parent.id),
+            )
+            return
+        # Lightweight test adapters predate TaskQueue's atomic boundary. The
+        # production daemon always wires TaskQueue; retain adapter compatibility
+        # without reaching into either queue implementation's private storage.
+        _enqueue_task_generation_aware(orch, parent.id)
 
     # Chain-advance branch: if the parent has an active chain and the just-
     # terminated subtask completed cleanly, try to auto-advance to the next
