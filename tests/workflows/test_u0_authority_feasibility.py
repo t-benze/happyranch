@@ -92,9 +92,19 @@ def _u0_hosted_source_contract() -> _U0HostedSourceContract:
         ("66980e58bcd0a60e0fe5bc12d55644d700ba04975ce97e18718533c8227e5735",
          "9fcc840b1f227e0a7b5710b598ec2f037526b96511ddbacb2d058f8888b3e948"):
             _U0HostedSourceContract(True, True),
+        # Slice B changes orchestrator only; both source behaviors remain
+        # verified at the founder-approved integrated venue.
+        ("66980e58bcd0a60e0fe5bc12d55644d700ba04975ce97e18718533c8227e5735",
+         "421ba7994c4cc9a50e365178b4a3a36e4f4d36eaeff40bea72cb7d1b6b59bea2"):
+            _U0HostedSourceContract(True, True),
         # PR900 changes run_step only; both source behaviors remain verified.
         ("318bb4504ffc25f6192c25b05e93bce910499156fe783e95935bea60f1734741",
          "9fcc840b1f227e0a7b5710b598ec2f037526b96511ddbacb2d058f8888b3e948"):
+            _U0HostedSourceContract(True, True),
+        # Fresh current main plus Slice B changes both source digests while
+        # retaining the same independently verified behavior.
+        ("318bb4504ffc25f6192c25b05e93bce910499156fe783e95935bea60f1734741",
+         "421ba7994c4cc9a50e365178b4a3a36e4f4d36eaeff40bea72cb7d1b6b59bea2"):
             _U0HostedSourceContract(True, True),
     }
     try:
@@ -127,6 +137,25 @@ def test_u0_hosted_source_contract_rejects_unknown_source_pair(
     monkeypatch.setattr(orchestrator_module, "__file__", str(unknown_orchestrator))
     with pytest.raises(AssertionError, match="unverified U0 source contract"):
         _u0_hosted_source_contract()
+
+
+@pytest.fixture(autouse=True)
+def _canonical_pair_for_contained_launches(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.daemon import test_task_producer_containment as containment
+
+    original_make_orch = containment._make_orch
+
+    def make_orch_with_pair(*args, **kwargs):
+        result = original_make_orch(*args, **kwargs)
+        paths = result[0]._paths
+        for agent_name in ("engineering_head", "dev_agent"):
+            workspace = paths.workspaces_dir / agent_name
+            workspace.mkdir(parents=True, exist_ok=True)
+            (workspace / "AGENTS.md").write_text("# Test agent instructions\n")
+            (workspace / "CLAUDE.md").symlink_to("AGENTS.md")
+        return result
+
+    monkeypatch.setattr(containment, "_make_orch", make_orch_with_pair)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -3114,6 +3143,8 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         # and lock; the fanout itself creates no child workspace/archive bytes.
         assert held_spawn["workspaces"]["dev_agent"] == pre_spawn["workspaces"]["dev_agent"]
         assert set(held_spawn["workspaces"]["engineering_head"]) == {
+            "AGENTS.md",
+            "CLAUDE.md",
             f".happyranch/task-scratch-manifests/{parent_id}.json",
             f".happyranch/task-scratch-manifests/{parent_id}.lock",
         }
@@ -3134,7 +3165,7 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         assert both_launched_snapshot["controls"][parent_id] is False
         assert all(both_launched_snapshot["controls"][child] is True for child in children)
         assert set(both_launched_snapshot["workspaces"]["dev_agent"]) == {
-            "agent.yaml", "task_history.md",
+            "AGENTS.md", "CLAUDE.md", "agent.yaml", "task_history.md",
         } | {
             item for child in children
             for item in (f".happyranch/task-scratch-manifests/{child}.json",
