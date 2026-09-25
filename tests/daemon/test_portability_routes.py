@@ -40,10 +40,17 @@ DEAD_PID = 99999
 TOKEN = "test-bearer-token"
 
 
-def _seed_org(org_root: Path) -> None:
+def _seed_org(org_root: Path, *, registered_agent: bool = False) -> None:
     org_root.mkdir(parents=True)
     (org_root / "org").mkdir()
-    (org_root / "org" / "teams.yaml").write_text("teams: {}\n")
+    teams = (
+        "teams:\n"
+        "  engineering:\n"
+        "    manager: engineering_head\n"
+        "    workers: [dev_agent]\n"
+        if registered_agent else "teams: {}\n"
+    )
+    (org_root / "org" / "teams.yaml").write_text(teams)
 
 
 def _write_token() -> None:
@@ -52,9 +59,9 @@ def _write_token() -> None:
     (home / "daemon.token").write_text(TOKEN)
 
 
-def _make_state(tmp_path: Path) -> DaemonState:
+def _make_state(tmp_path: Path, *, registered_agent: bool = False) -> DaemonState:
     rt = RuntimeDir.init(tmp_path / "rt")
-    _seed_org(rt.orgs_dir / "alpha")
+    _seed_org(rt.orgs_dir / "alpha", registered_agent=registered_agent)
     _write_token()
     return DaemonState.from_runtime(rt, Settings())
 
@@ -225,10 +232,25 @@ def test_reconcile_refuses_unknown_task(tmp_path: Path) -> None:
     assert r.status_code == 404
 
 
-def test_reconcile_cancels_true_zombie_and_audits(tmp_path: Path) -> None:
+def test_reconcile_cancels_true_zombie_and_audits(
+    tmp_path: Path, monkeypatch,
+) -> None:
     state = _make_state(tmp_path)
     db = state.orgs["alpha"].db
     _insert_true_zombie(db, "T-Z")
+    observed = []
+
+    def reclaim(orch, task_id):
+        observed.append((
+            orch is state.orgs["alpha"].orchestrator,
+            db.get_task(task_id).status,
+            [row["action"] for row in db.get_audit_logs(task_id)],
+        ))
+
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        reclaim,
+    )
     client = _client(state)
     r = client.post(
         "/api/v1/orgs/alpha/reconcile-portability",
@@ -257,6 +279,41 @@ def test_reconcile_cancels_true_zombie_and_audits(tmp_path: Path) -> None:
     assert payload["disposition"] == "cancel"
     assert payload["before"]["status"] == "in_progress"
     assert payload["after"]["status"] == "cancelled"
+    assert observed == [(True, TaskStatus.CANCELLED, ["zombie_cancelled"])]
+
+
+def test_portability_cancel_shipping_seam_removes_real_eligible_linked_worktree(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    from tests.test_run_step import (
+        _admit_terminal_worktree,
+        _git,
+        _registered_terminal_worktree,
+    )
+
+    state = _make_state(tmp_path, registered_agent=True)
+    org = state.orgs["alpha"]
+    task_id = "TASK-PORTABILITY-REAL"
+    _insert_true_zombie(org.db, task_id)
+    primary, candidate = _registered_terminal_worktree(
+        org.orchestrator._paths, task_id,
+    )
+    _admit_terminal_worktree(monkeypatch)
+
+    response = _client(state).post(
+        "/api/v1/orgs/alpha/reconcile-portability",
+        json={"candidate_task_id": task_id, "disposition": "cancel"},
+    )
+
+    assert response.status_code == 200
+    assert org.db.get_task(task_id).status is TaskStatus.CANCELLED
+    assert not candidate.exists()
+    assert str(candidate) not in _git(
+        primary, "worktree", "list", "--porcelain",
+    ).stdout
+    assert _git(
+        primary, "show-ref", "--verify", f"refs/heads/task/{task_id}",
+    ).returncode == 0
 
 
 def test_reconcile_consume_result_without_fingerprint_refuses(tmp_path: Path) -> None:
@@ -272,8 +329,14 @@ def test_reconcile_consume_result_without_fingerprint_refuses(tmp_path: Path) ->
     assert r.json()["detail"]["code"] == "no_result_to_consume"
 
 
-def test_reconcile_consume_result_terminalizes(tmp_path: Path) -> None:
+def test_reconcile_consume_result_terminalizes(
+    tmp_path: Path, monkeypatch,
+) -> None:
     state = _make_state(tmp_path)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *_: pytest.fail("portability consume-result must not reclaim"),
+    )
     db = state.orgs["alpha"].db
     _insert_true_zombie(db, "T-Z")
     db.insert_task_result(

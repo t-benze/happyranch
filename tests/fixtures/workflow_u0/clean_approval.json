@@ -1,0 +1,1 @@
+{"scenario":"clean-approval","ancestors":["TASK-101"],"facts":{"maker":"maker-a","revision":"r1","digest":"d-r1","authority":"current","reviewers":["founder","implementation","test"],"historical_makers":["maker-a"]}}

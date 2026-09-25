@@ -40,6 +40,31 @@ claim, or call the consumer itself. Every helper SQL/decode observation fails cl
 this preserves the bounded hook admission accounting without implying SQL
 preemption.
 
+## Forward-only terminal task worktrees
+
+The runtime makes one bounded best-effort reclamation attempt after an ordinary
+task durably reaches exactly `completed`, `failed`, or `cancelled`, and only
+after the applicable process/session/control/job teardown. Shipping owners are
+ordinary `_complete`/`_fail`, `_run_agent`'s pre-launch workspace-integrity
+failure, daemon-startup liveness failure, successful legacy or V2 zombie
+cancellation, the task-cancel route, and portability cancellation. Accepted or
+restart completion-recovery settlement, `superseded`, `blocked_on_job`, legacy
+normalization, and every unlisted terminal writer do not call this helper.
+
+The only candidate is the registered assigned agent's literal
+`repos/happyranch/.claude/worktrees/<task-id>` under the canonical non-bare
+primary. Registered-agent ownership, unchanged non-symlink same-device paths,
+exact worktree registration and `task/<task-id>` branch, clean status, a HEAD
+contained by a durable remote ref, no open or closed-unmerged pull request, no
+live session/control/PID/cwd/fd reference, no latest applicable
+`worktree-deferred:` risk, and the shared deadline must all be proven. Any
+error, timeout, malformed response, missing or ambiguous identity, dirty or
+unpublished state, or live reference yields a typed logged preservation result.
+Success runs literal non-force `git worktree remove <path>` and never deletes a
+branch. The helper changes no task, result, parent, or audit state; signals no
+process; enqueues nothing; raises nothing into terminal semantics; and schedules
+no retry, scan, or historical reclamation.
+
 ## Org Content APIs
 
 `AgentDef` in `runtime/orchestrator/agent_def.py` represents an agent file: markdown with YAML frontmatter parsed/rendered by `parse_agent_text` and `render_agent_text`.

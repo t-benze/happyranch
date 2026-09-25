@@ -144,9 +144,17 @@ Parameters:
 
    For updates: `happyranch kb update --org {ORG_SLUG} <slug> --agent <you> --from-file /tmp/kb-<slug>.md`. Resolve collision 409s by updating the existing entry instead of forcing a sibling. The `--from-file` pattern is mandatory across executors; in Claude sessions multi-line `happyranch` payloads are rejected by the `Bash(happyranch:*)` permission rule.
 
-8. **Report completion.** When you finish (success or blocker), write a JSON
+8. **Cleanup or record deferral.** Before the completion callback, apply the
+   `make-worktree` cleanup contract to the exact task-owned worktree. Remove it
+   only when every preservation check succeeds. Otherwise leave it intact and
+   add `worktree-deferred: <specific reason>` to `risks_flagged` in the
+   completion payload. Never force removal or delete the branch.
+
+9. **Report completion.** When you finish (success or blocker), write a JSON
    payload to a file and invoke `happyranch report-completion --org {ORG_SLUG} --from-file <path>` as
-   a single-line command. The file form is mandatory across executors. In
+   a single-line command as the final action of the session; nothing follows
+   it. `report-completion is the final action` is the controlling ordering
+   rule. The file form is mandatory across executors. In
    Claude sessions, multi-line bash commands with backslash continuations are
    rejected by the permission rule because newlines count as command
    separators and only the first subcommand matches `Bash(happyranch:*)`.
@@ -323,8 +331,6 @@ Parameters:
    ```bash
    happyranch report-completion --org {ORG_SLUG} --from-file /tmp/completion-<task_id>.json
    ```
-
-9. **Cleanup.** Always run worktree cleanup as the final step, even on the blocker path. The make-worktree skill describes how.
 
 ## Error handling
 
