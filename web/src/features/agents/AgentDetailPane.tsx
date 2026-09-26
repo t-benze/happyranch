@@ -29,6 +29,8 @@ import {
 import { useTasksRoutes } from '@/hooks/tasks';
 import { useJobsList } from '@/hooks/jobs';
 import { useDensity } from '@/hooks/density';
+import { useTeamsList } from '@/hooks/teams';
+import { isEligiblePolicyManager } from '@/hooks/authorityPolicy';
 import { AgentAvatar } from './AgentAvatar';
 import { useExecutorOptions } from './useExecutorOptions';
 import { TeamEscalationPolicyEntryCard } from './TeamEscalationPolicyCard';
@@ -66,6 +68,7 @@ function useAccountabilityMetrics(agentName: string) {
 export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDetailPaneProps): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
   const agentsQuery = useAgentsList();
+  const teamsQuery = useTeamsList();
   const { density } = useDensity();
   const taskRoutes = useTasksRoutes();
   const learningsQuery = useAgentLearnings(agentName);
@@ -79,6 +82,9 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
   const executorOptions = useExecutorOptions();
 
   const agent = agentsQuery.data?.agents.find((a) => a.name === agentName);
+  const policyAgent = agent?.team && agent.role
+    ? { name: agent.name, team: agent.team, role: agent.role }
+    : undefined;
   const repos = useMemo(() => agent?.repos ?? {}, [agent?.repos]);
 
   // --- Dirty state ---
@@ -370,8 +376,11 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
 
       {/* --- Editable fields — Pasture card sections --- */}
       <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
-        {agent?.role === 'manager' && agent.team === 'engineering' && agent.name === 'engineering_manager' && (
-          <TeamEscalationPolicyEntryCard agent={{ name: agent.name, team: agent.team, role: agent.role }} />
+        {isEligiblePolicyManager(
+          policyAgent,
+          teamsQuery.data?.teams,
+        ) && policyAgent && (
+          <TeamEscalationPolicyEntryCard agent={policyAgent} />
         )}
         {/* Executor — live-derived dropdown (same source as AddAgentDialog) */}
         <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">

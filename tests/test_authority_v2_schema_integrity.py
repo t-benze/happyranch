@@ -709,6 +709,10 @@ def test_unreadable_candidate_and_corrupt_page_fail_closed(tmp_path):
     # A read/query defect fails closed with a bounded diagnostic.
     db = _pristine(tmp_path, "readfail.db")
     try:
+        # The candidate reader also constructs the lazy, source-owned reference.
+        # Prime that independent reference before replacing only the candidate
+        # read so this case is deterministic under xdist scheduling.
+        assert authority._v2_build_reference_inventories()
         original = authority._v2_capture_inventory
 
         def _boom(_conn):
@@ -1111,6 +1115,7 @@ def test_standalone_capture_releases_view_and_lock_on_success_and_failure(
         assert _lock_free_cross_thread(db)
 
         # Candidate read failure.
+        assert authority._v2_build_reference_inventories()
         with monkeypatch.context() as patch:
             patch.setattr(
                 authority, "_v2_capture_inventory",
@@ -1180,6 +1185,7 @@ def test_capture_inside_caller_transaction_releases_on_failure(
     db = _pristine(tmp_path)
     try:
         _begin_caller_row(db, "fail")
+        assert authority._v2_build_reference_inventories()
         with monkeypatch.context() as patch:
             patch.setattr(
                 authority, "_v2_capture_inventory",

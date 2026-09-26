@@ -988,6 +988,7 @@ class Orchestrator:
             persist_session_policy_binding,
             render_selected_team_policy,
             resolve_active_team_policy_snapshot,
+            resolve_policy_manager_team,
         )
         from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
         assert_no_reserved_team_policy_header(brief, source="task brief")
@@ -1000,9 +1001,14 @@ class Orchestrator:
         # resolved executor tuple is carried into both the rendered section and
         # the durable binding. A binding/audit failure raises before the
         # external launch, so no success is ever fabricated.
+        policy_team = resolve_policy_manager_team(
+            root=self._paths.root, agent_name=agent_name,
+            teams=self._teams, team_hint=team,
+        )
         policy_snapshot = resolve_active_team_policy_snapshot(
-            store=AuthorityPolicyStore(self._db), team=team, agent_name=agent_name,
-            eligible=self._teams.is_team_manager(agent_name),
+            store=AuthorityPolicyStore(self._db), root=self._paths.root,
+            teams=self._teams, team=team, agent_name=agent_name,
+            eligible=policy_team == team,
         )
         active_policy_section = (
             render_selected_team_policy(
@@ -1012,7 +1018,7 @@ class Orchestrator:
                 root_task_id=task_id, manager_session_id=session_id,
             ) if policy_snapshot is not None else ""
         )
-        if self._teams.is_team_manager(agent_name):
+        if policy_team == team:
             persist_session_policy_binding(
                 db=self._db, task_id=task_id, session_id=session_id,
                 agent_name=agent_name, snapshot=policy_snapshot,

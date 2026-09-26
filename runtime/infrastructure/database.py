@@ -107,7 +107,6 @@ from runtime.models import (
     AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISHED,
     AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED,
     AUTHORITY_POLICY_V2_RESULT_STAGE_SPENT,
-    AUTHORITY_POLICY_V2_TEAM,
     authority_policy_v2_attempt_id,
     authority_policy_v2_canonical_json_bytes,
     authority_policy_v2_candidate_claim_preimage,
@@ -7561,6 +7560,52 @@ class Database:
             return "claim_failed"
         return None
 
+    def _authority_policy_v2_attempt_id_for_identity(
+        self, *, root_task_id: str, manager_agent: str,
+        manager_session_id: str, result_id: int,
+    ) -> str:
+        """Derive an attempt identity from durable bound team evidence only.
+
+        Existing attempt rows win. Before an attempt exists, the immutable v2
+        session binding supplies the team; the persisted task team is the
+        final pre-admission source. If none exists, the bounded refusal ID uses
+        a null team member rather than inventing or defaulting a team.
+        """
+        row = self._conn.execute(
+            """SELECT attempt_id FROM authority_policy_v2_attempts
+               WHERE root_task_id=? AND manager_agent=?
+                 AND manager_session_id=? AND result_id=?""",
+            (root_task_id, manager_agent, manager_session_id, result_id),
+        ).fetchone()
+        if row is not None:
+            return str(row["attempt_id"])
+        binding = self._conn.execute(
+            """SELECT team FROM authority_policy_v2_session_bindings
+               WHERE root_task_id=? AND manager_agent=? AND manager_session_id=?""",
+            (root_task_id, manager_agent, manager_session_id),
+        ).fetchone()
+        task = self._conn.execute(
+            "SELECT team FROM tasks WHERE id=?", (root_task_id,),
+        ).fetchone()
+        team = binding["team"] if binding is not None else (
+            task["team"] if task is not None else None
+        )
+        if isinstance(team, str) and team:
+            return authority_policy_v2_attempt_id(
+                manager_agent=manager_agent,
+                manager_session_id=manager_session_id,
+                result_id=result_id,
+                root_task_id=root_task_id,
+                team=team,
+            )
+        return "APV2R-" + authority_policy_v2_sha256({
+            "manager_agent": manager_agent,
+            "manager_session_id": manager_session_id,
+            "result_id": result_id,
+            "root_task_id": root_task_id,
+            "team": None,
+        })
+
     def _authenticate_v2_claim_evidence_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
@@ -7578,10 +7623,9 @@ class Database:
         ``(refusal_code, None)`` on any mismatch/mutation/deletion, or
         ``(None, ctx)`` with the authenticated values.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
         row = self._conn.execute(
             """SELECT * FROM authority_policy_v2_attempts
@@ -7705,10 +7749,9 @@ class Database:
             capture_authority_policy_v2_permission_surface,
         )
 
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
         def _refused(code: str) -> AuthorityPolicyV2StageOutcome:
@@ -7946,10 +7989,9 @@ class Database:
             recheck_authority_policy_v2_schema_integrity,
         )
 
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
         if self._conn.in_transaction:
             return self._refuse_v2_stage(
@@ -8329,10 +8371,9 @@ class Database:
         result_id: int, origin_boot_id: str, owner_attempt_id: str, now: str,
         max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
         def _refused(code: str, candidate_id: str | None = None) -> AuthorityPolicyV2StageOutcome:
@@ -8454,10 +8495,9 @@ class Database:
         ROLLBACK or invalidate the live owner, so the caller's transaction and
         its work are left untouched.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
         if self._conn.in_transaction:
             return self._refuse_v2_stage(
@@ -8517,10 +8557,9 @@ class Database:
             authority_policy_v2_persisted_assessment_outcome,
         )
 
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
         def _refused(code: str, candidate_id: str | None = None) -> AuthorityPolicyV2StageOutcome:
@@ -8686,10 +8725,9 @@ class Database:
         The task and recovery receipt are unchanged, and no envelope,
         notification or dispatch is created.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
         if self._conn.in_transaction:
             return self._refuse_v2_stage(
@@ -8735,10 +8773,9 @@ class Database:
         result_id: int, origin_boot_id: str, owner_attempt_id: str, now: str,
         max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
         def _refused(code: str, candidate_id: str | None = None) -> AuthorityPolicyV2StageOutcome:
@@ -8844,10 +8881,9 @@ class Database:
         re-derives the outcome to authenticate V.  A failure preserves V and the
         evaluated K.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
         if self._conn.in_transaction:
             return self._refuse_v2_stage(
@@ -8893,10 +8929,9 @@ class Database:
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
         max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
         def _refused(code: str, candidate_id: str | None = None) -> AuthorityPolicyV2StageOutcome:
@@ -8977,10 +9012,9 @@ class Database:
         persisted V with NO second model call and NO repeated pure derivation.
         It mints no authority and does not change the task.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
         if self._conn.in_transaction:
             return self._refuse_v2_stage(
@@ -9025,10 +9059,9 @@ class Database:
         result_id: int, origin_boot_id: str, owner_attempt_id: str, now: str,
         max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
         def _refused(code: str, candidate_id: str | None = None) -> AuthorityPolicyV2StageOutcome:
@@ -9138,10 +9171,9 @@ class Database:
         hook remains fail-closed until the later finalization/refusal/recovery
         unit.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
         if self._conn.in_transaction:
             return self._refuse_v2_stage(
@@ -9573,10 +9605,9 @@ class Database:
         already-finalized J returns a read-only exact replay only when its exact
         refusal/completion evidence authenticates, and is never repaired.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
         def _pending(reason: str) -> AuthorityPolicyV2HousekeepingOutcome:
@@ -10585,10 +10616,9 @@ class Database:
         A legitimate finalized replay/reopen must authenticate without
         restoring a live pre-final owner, re-evaluating or reminting.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
         row = self._conn.execute(
             """SELECT * FROM authority_policy_v2_attempts
@@ -10905,10 +10935,9 @@ class Database:
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
         max_revise_rounds: int, now: str,
     ) -> AuthorityPolicyV2FinalizationOutcome:
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
         def _pending(reason: str, candidate_id: str | None = None) -> AuthorityPolicyV2FinalizationOutcome:
@@ -11160,10 +11189,9 @@ class Database:
         no queue call happen here.  A genuine failure poisons only the authentic
         winning owner and selects C3d1 refusal-only housekeeping.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
         if self._conn.in_transaction:
             return AuthorityPolicyV2FinalizationOutcome(
@@ -11561,10 +11589,9 @@ class Database:
         completion-consumer seam.  A failed settlement retains Pending/E/N/D/J
         and callback_accepted and permits ONLY exact settlement retry.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
         def _pending(reason: str, **kw) -> AuthorityPolicyV2SettlementOutcome:

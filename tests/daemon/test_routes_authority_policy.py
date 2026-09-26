@@ -14,7 +14,10 @@ from runtime.orchestrator.active_authority_policy import (
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+from runtime.orchestrator.teams import TeamManager
 from runtime.orchestrator.authority_policy import (
+    AuthorityClause,
+    AuthorityPolicy,
     CONTINUE_ROUTINE_PHRASE,
     ENGINEERING_PRE_ESCALATION_POLICY,
     PROMPT_DIGEST,
@@ -24,6 +27,11 @@ from runtime.orchestrator.authority_policy import (
 
 
 def _seed_agent(org, name="engineering_manager", *, team="engineering", role="manager"):
+    if role == "manager":
+        existing = org.teams._teams.get(team)
+        org.teams._teams[team] = TeamManager(
+            name=name, team=team, workers=() if existing is None else existing.workers,
+        )
     agent = AgentDef(
         name=name, team=team, role=role, executor="claude", allow_rules=tuple(),
         repos={}, enrolled_by=None, enrolled_at_task=None,
@@ -32,6 +40,47 @@ def _seed_agent(org, name="engineering_manager", *, team="engineering", role="ma
     paths = OrgPaths(root=org.root)
     paths.agents_dir.mkdir(parents=True, exist_ok=True)
     (paths.agents_dir / f"{name}.md").write_text(render_agent_text(agent))
+
+
+def test_content_manager_gets_null_legacy_template_and_server_projected_v2_starter(
+    client_with_runtime,
+):
+    client, org = client_with_runtime
+    _seed_agent(org, "content_manager", team="content")
+    base = "/api/v1/orgs/alpha/agents/content_manager/team-escalation-policy"
+
+    response = client.get(base)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["team"] == "content"
+    assert body["target_manager"] == "content_manager"
+    assert body["bootstrap_template"] is None
+    assert body["v2_starter"]["policy_id"] == "team-ed7002b439e9ac84-dual-text"
+    assert body["v2_starter"]["title"] == "Content escalation policy"
+    assert "Engineering pre-escalation" not in json.dumps(body)
+
+
+def test_content_legacy_controls_refuse_before_any_policy_store_access(client_with_runtime):
+    client, org = client_with_runtime
+    _seed_agent(org, "content_manager", team="content")
+    base = "/api/v1/orgs/alpha/agents/content_manager/team-escalation-policy"
+    counts = lambda: tuple(org.db.execute(f"SELECT COUNT(*) FROM {table} WHERE team='content'").fetchone()[0]
+                           for table in ("authority_policy_active_selector",
+                                         "authority_policy_active_selector_history",
+                                         "authority_policy_releases",
+                                         "authority_policy_v2_control_audit"))
+    before = counts()
+    create = client.post(f"{base}/releases", json=_release_body())
+    activate = client.post(f"{base}/activations", json={
+        "release_id": "APR-foreign", "expected_previous_epoch": 0,
+        "expected_selector_id": None, "request_id": "REQ-content-legacy",
+        "action": "activate", "acknowledge_shared_credential_attribution": True,
+    })
+    assert create.status_code == activate.status_code == 404
+    assert create.json() == activate.json() == {
+        "detail": {"code": "policy_surface_not_available"},
+    }
+    assert counts() == before == (0, 0, 0, 0)
 
 
 def _seed_active(org, *, normative_text="text"):
@@ -169,6 +218,18 @@ def test_eligible_empty_omits_active_and_agent_payload_stays_clean(client_with_r
         ],
         "continuation_phrase": CONTINUE_ROUTINE_PHRASE,
     }
+    # Independent reviewed oracle: reconstruct from the wire projection with
+    # literal identity bytes, never from POLICY_BY_TEAM, and pin the complete
+    # title/normative/ordered-clause/phrase payload through its canonical digest.
+    projected = AuthorityPolicy(
+        id="engineering/pre-escalation-authority", version="v1",
+        team="engineering", title=template["title"],
+        normative_text=template["normative_text"],
+        clauses=tuple(AuthorityClause(**clause) for clause in template["clauses"]),
+    )
+    assert projected.digest == (
+        "13678a903533423ffe2d3345f7d19852d914f888480149b8afac57d6240c3082"
+    )
     roster = client.get("/api/v1/orgs/alpha/agents")
     assert roster.status_code == 200
     assert b"policy" not in roster.content

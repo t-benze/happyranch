@@ -97,6 +97,11 @@ def _u0_hosted_source_contract() -> _U0HostedSourceContract:
         ("66980e58bcd0a60e0fe5bc12d55644d700ba04975ce97e18718533c8227e5735",
          "421ba7994c4cc9a50e365178b4a3a36e4f4d36eaeff40bea72cb7d1b6b59bea2"):
             _U0HostedSourceContract(True, True),
+        # PR899's intentional synthetic merge with current main retains the
+        # expanded prior-step serializer and teardown scratch reporter.
+        ("66980e58bcd0a60e0fe5bc12d55644d700ba04975ce97e18718533c8227e5735",
+         "ec3f217c5857440daf3afc7d379ac8a7d3c33cfc6bd149e5ab1649d1ad23c5e8"):
+            _U0HostedSourceContract(True, True),
         # PR900 changes run_step only; both source behaviors remain verified.
         ("318bb4504ffc25f6192c25b05e93bce910499156fe783e95935bea60f1734741",
          "9fcc840b1f227e0a7b5710b598ec2f037526b96511ddbacb2d058f8888b3e948"):
@@ -106,6 +111,14 @@ def _u0_hosted_source_contract() -> _U0HostedSourceContract:
         ("318bb4504ffc25f6192c25b05e93bce910499156fe783e95935bea60f1734741",
          "421ba7994c4cc9a50e365178b4a3a36e4f4d36eaeff40bea72cb7d1b6b59bea2"):
             _U0HostedSourceContract(True, True),
+        # PR899 after PR900 changes run_step only; both behaviors remain verified.
+        ("318bb4504ffc25f6192c25b05e93bce910499156fe783e95935bea60f1734741",
+         "ec3f217c5857440daf3afc7d379ac8a7d3c33cfc6bd149e5ab1649d1ad23c5e8"):
+            _U0HostedSourceContract(True, True),
+        # Slice B integrated after PR899 retains both verified U0 behaviors.
+        ("318bb4504ffc25f6192c25b05e93bce910499156fe783e95935bea60f1734741",
+         "388b019dbbecf22a912c92f38022f4a771ad0e3daafcc372ef81610fac1fc834"):
+            _U0HostedSourceContract(True, True),
     }
     try:
         return contracts[source_pair]
@@ -114,6 +127,22 @@ def _u0_hosted_source_contract() -> _U0HostedSourceContract:
             "unverified U0 source contract: run_step/orchestrator sha256="
             f"{source_pair!r}"
         ) from error
+
+
+def test_u0_hosted_source_contract_accepts_post_pr899_slice_b_merge() -> None:
+    """The exact post-PR899 Slice B pair selects its recorded U0 behaviors."""
+    import runtime.orchestrator.orchestrator as orchestrator_module
+    import runtime.orchestrator.run_step as run_step_module
+
+    source_pair = (
+        hashlib.sha256(Path(run_step_module.__file__).read_bytes()).hexdigest(),
+        hashlib.sha256(Path(orchestrator_module.__file__).read_bytes()).hexdigest(),
+    )
+    assert source_pair == (
+        "318bb4504ffc25f6192c25b05e93bce910499156fe783e95935bea60f1734741",
+        "388b019dbbecf22a912c92f38022f4a771ad0e3daafcc372ef81610fac1fc834",
+    )
+    assert _u0_hosted_source_contract() == _U0HostedSourceContract(True, True)
 
 
 def test_u0_hosted_source_contract_rejects_unknown_source_pair(
