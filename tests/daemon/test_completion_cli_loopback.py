@@ -110,6 +110,9 @@ def _seed_workspace(org, agent: str) -> None:
     workspace = paths.workspaces_dir / agent
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / "task_history.md").write_text(f"# Task History: {agent}\n")
+    # THR-262 Slice B: canonical instruction pair required before launch.
+    (workspace / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+    (workspace / "CLAUDE.md").symlink_to("AGENTS.md")
 
 
 def _install_engineering_team(org, manager: str) -> None:

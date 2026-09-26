@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 from unittest.mock import patch
 
 import pytest
@@ -2531,7 +2532,18 @@ def test_init_slice_c_error_when_marker_missing(
          patch("runtime.daemon.routes.agents.materialize_workspace_skills") as mock_mat:
         mock_ctx = MockCB.return_value
         mock_ctx.clone_repo.return_value = True
-        mock_ctx.ensure_workspace_ready.return_value = None
+
+        def _write_pair(*args, **_kwargs):
+            # THR-262 Slice B: produce a valid canonical pair but no skill
+            # marker, so the exact-profile readiness check still fails.
+            ws_arg = args[0]
+            (ws_arg / "AGENTS.md").write_text("canonical bootstrap\n")
+            claude = ws_arg / "CLAUDE.md"
+            if claude.is_symlink() or claude.exists():
+                claude.unlink()
+            os.symlink("AGENTS.md", claude)
+
+        mock_ctx.ensure_workspace_ready.side_effect = _write_pair
         mock_ctx.create_agent_dirs.return_value = None
         mock_mat.return_value = []  # no skill materialization => no claude marker
         events = _stream_init_bulk_events(app, auth_headers)
@@ -2561,9 +2573,16 @@ def test_init_slice_c_error_when_wrong_profile_marker_exists(
         mock_ctx.clone_repo.return_value = True
         mock_ctx.create_agent_dirs.return_value = None
 
-        def _write_wrong_marker(*_args, **_kwargs):
-            # Simulate a bootstrap that produced only the codex marker.
-            (ws / "AGENTS.md").write_text("stale codex bootstrap\n")
+        def _write_wrong_marker(*args, **_kwargs):
+            # Simulate a bootstrap that produced only the codex marker (and a
+            # valid canonical pair, so the pair gate passes) — the claude
+            # skill marker is still missing.
+            ws_arg = args[0]
+            (ws_arg / "AGENTS.md").write_text("stale codex bootstrap\n")
+            claude = ws_arg / "CLAUDE.md"
+            if claude.is_symlink() or claude.exists():
+                claude.unlink()
+            os.symlink("AGENTS.md", claude)
 
         mock_ctx.ensure_workspace_ready.side_effect = _write_wrong_marker
         mock_mat.return_value = []
@@ -3413,10 +3432,11 @@ def test_set_executor_away_from_claude_warns_stale_by_default(
         )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert set(body["stale_files"]) == {"CLAUDE.md", ".claude"}
+    assert set(body["stale_files"]) == {".claude/settings.json"}
     assert body["cleaned"] is False
     assert body["removed"] == []
-    # Nothing deleted without --clean.
+    # Nothing deleted without --clean; the shared canonical compatibility file
+    # and skills root are preserved (THR-262 Slice B).
     assert (workspace / "CLAUDE.md").exists()
     assert (workspace / ".claude").exists()
 
@@ -3441,9 +3461,15 @@ def test_set_executor_clean_deletes_stale_claude_files(
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["cleaned"] is True
-    assert set(body["removed"]) == {"CLAUDE.md", ".claude"}
-    assert not (workspace / "CLAUDE.md").exists()
-    assert not (workspace / ".claude").exists()
+    assert set(body["removed"]) == {".claude/settings.json"}
+    # THR-262 Slice B: the shared canonical instruction pair and
+    # ``.claude/skills`` are preserved; only the executor-only settings file
+    # is cleaned (and the emptied ``.claude`` directory).
+    assert (workspace / "CLAUDE.md").exists()
+    # ``.claude/skills`` (materialized by the switch) survives; only the
+    # executor-only settings file is cleaned.
+    assert not (workspace / ".claude" / "settings.json").exists()
+    assert (workspace / ".claude").exists()
 
 
 def test_set_executor_to_claude_reports_no_stale(
@@ -4180,10 +4206,24 @@ def test_set_executor_drift_tripwire_all_provider_shapes(
 
         violations: list[str] = []
 
+        declared_names = {_Path(rel).name for rel in declared_files}
+
         def _check(p, op):
             s = str(p)
-            if (s == ws_root or s.startswith(ws_root + _os.sep)) and s not in allowed:
-                violations.append(f"{op} {s}")
+            if not (s == ws_root or s.startswith(ws_root + _os.sep)):
+                return
+            if s in allowed:
+                return
+            # Owned collision-reserved staging siblings for a declared
+            # bootstrap-owned file (e.g. ``CLAUDE.md.happyranch-<stamp>.lnk``)
+            # are atomically renamed into place; an unrenamed one is still a
+            # violation. This keeps the tripwire exact for stray paths.
+            parent = _os.path.dirname(s)
+            base = _os.path.basename(s)
+            if parent == ws_root and base.endswith(".lnk") and ".happyranch-" in base:
+                if base.split(".happyranch-", 1)[0] in declared_names:
+                    return
+            violations.append(f"{op} {s}")
 
         real_write_text = _Path.write_text
         real_write_bytes = _Path.write_bytes
@@ -4796,14 +4836,15 @@ def test_set_executor_capture_second_read_fails_closed_before_materialize(
     Regression scenario: a present regular declared file (CLAUDE.md) whose
     bytes the Step-0 preflight gate (_bootstrap_uncapturable_owned_files)
     CAN read, but which the authoritative _BootstrapRollbackJournal.capture
-    cannot read (TOCTOU: read_bytes fails between the two reads). The old
+    cannot read (TOCTOU: the no-follow descriptor capture fails after the
+    preflight read). The old
     ordering ran capture AFTER materialization, recorded the file as
     uncapturable, and proceeded to ensure_workspace_ready — bootstrap could
     overwrite a present file whose original bytes were never captured
     (uncompensatable data-loss path).
 
-    The deterministic per-file call counter forces read #1 (preflight) to
-    succeed and read #2 (authoritative capture) to raise OSError, then
+    The deterministic capture seam lets the preflight read succeed and forces
+    the authoritative no-follow capture to raise OSError, then
     proves the switch fails closed during Step-0 preflight, BEFORE
     _executor_switch_materialize and before every
     filesystem/executor-state/frontmatter/audit mutation:
@@ -4835,17 +4876,20 @@ def test_set_executor_capture_second_read_fails_closed_before_materialize(
     target.write_bytes(original)
 
     target_abspath = _os.path.abspath(str(target))
-    read_counts: dict[str, int] = {}
+    capture_calls: list[str] = []
+    real_capture = agents_mod._BootstrapRollbackJournal._capture_regular_file
 
-    def _read_bytes(self, *a, **k):
-        if _os.path.abspath(str(self)) == target_abspath:
-            read_counts["CLAUDE.md"] = read_counts.get("CLAUDE.md", 0) + 1
-            if read_counts["CLAUDE.md"] == 2:
-                # Authoritative capture read fails; preflight read succeeded.
-                raise OSError("forced capture-read failure on present declared file")
-        return real_read_bytes(self, *a, **k)
+    def _capture_regular_file(cls, fp):
+        if _os.path.abspath(str(fp)) == target_abspath:
+            capture_calls.append("CLAUDE.md")
+            raise OSError("forced capture-read failure on present declared file")
+        return real_capture(fp)
 
-    monkeypatch.setattr(_Path, "read_bytes", _read_bytes)
+    monkeypatch.setattr(
+        agents_mod._BootstrapRollbackJournal,
+        "_capture_regular_file",
+        classmethod(_capture_regular_file),
+    )
 
     frontmatter_path = _paths(org_state).agents_dir / "dev_agent.md"
     frontmatter_before = frontmatter_path.read_text()
@@ -4884,11 +4928,8 @@ def test_set_executor_capture_second_read_fails_closed_before_materialize(
         headers=auth_headers,
     )
 
-    # ── The authoritative capture observed the file at Step 0 (read #2) ──
-    assert read_counts["CLAUDE.md"] >= 2, (
-        f"expected preflight (read 1) + authoritative capture (read 2) "
-        f"to both run, got {read_counts['CLAUDE.md']} reads"
-    )
+    # ── The authoritative no-follow capture observed the file at Step 0 ──
+    assert capture_calls == ["CLAUDE.md"]
 
     # ── FAIL-CLOSED: named preflight rejection BEFORE the first mutation ──
     assert r.status_code == 400, (
@@ -4902,8 +4943,8 @@ def test_set_executor_capture_second_read_fails_closed_before_materialize(
         f"Expected the uncapturable file named in the error, "
         f"got {body['detail']['error']}"
     )
-    assert "read_bytes" in body["detail"]["error"], (
-        f"Expected read_bytes failure named, got {body['detail']['error']}"
+    assert "no-follow content/metadata capture failed" in body["detail"]["error"], (
+        f"Expected no-follow capture failure named, got {body['detail']['error']}"
     )
 
     # ── No materialization, no bootstrap writer, no mutation ──
@@ -4941,7 +4982,7 @@ def test_bootstrap_journal_uncapturable_present_file_is_not_absent(
     tmp_home, monkeypatch,
 ) -> None:
     """THR-190 fix (TASK-5691/TASK-5704): _BootstrapRollbackJournal must
-    keep a present regular file whose read_bytes() raises OSError in a
+    keep a present regular file whose no-follow capture raises OSError in a
     DISTINCT state from an absent file. restore() must never unlink such a
     file (the old code collapsed both into None and deleted it); it reports
     a compensation error instead, and the file survives unchanged."""
@@ -4957,13 +4998,18 @@ def test_bootstrap_journal_uncapturable_present_file_is_not_absent(
     (workspace / "memory").mkdir(parents=True)
 
     real_read_bytes = _Path.read_bytes
+    real_capture = agents_mod._BootstrapRollbackJournal._capture_regular_file
 
-    def _read_bytes(self, *a, **k):
-        if str(self) == str(present):
+    def _capture_regular_file(cls, fp):
+        if str(fp) == str(present):
             raise OSError("forced OSError on present declared file")
-        return real_read_bytes(self, *a, **k)
+        return real_capture(fp)
 
-    monkeypatch.setattr(_Path, "read_bytes", _read_bytes)
+    monkeypatch.setattr(
+        agents_mod._BootstrapRollbackJournal,
+        "_capture_regular_file",
+        classmethod(_capture_regular_file),
+    )
 
     journal = agents_mod._BootstrapRollbackJournal.capture(workspace)
 
@@ -4977,11 +5023,75 @@ def test_bootstrap_journal_uncapturable_present_file_is_not_absent(
     )
 
     errors = journal.restore(workspace)
-    assert any("Uncapturable" in e and "CLAUDE.md" in e for e in errors), errors
+    assert any(
+        "Uncapturable" in e.raw_diagnostic()
+        and "CLAUDE.md" in e.raw_diagnostic()
+        for e in errors
+    ), errors
     # The file survives: not deleted, not overwritten, not treated as absent.
     assert real_read_bytes(present) == original, (
         "journal restore deleted/modified an uncapturable present file"
     )
+
+
+def test_bootstrap_journal_reports_regular_metadata_restore_failure(
+    tmp_path, monkeypatch,
+) -> None:
+    """Metadata reproduction errors remain explicit compensation failures."""
+    import runtime.daemon.routes.agents as agents_mod
+
+    target = tmp_path / "CLAUDE.md"
+    target.write_bytes(b"original\n")
+    target.chmod(0o600)
+    journal = agents_mod._BootstrapRollbackJournal.capture(tmp_path)
+    target.write_bytes(b"changed\n")
+    target.chmod(0o644)
+
+    real_fchmod = os.fchmod
+
+    def _fchmod(fd, mode):
+        if mode == 0o600:
+            raise OSError("forced metadata reproduction failure")
+        return real_fchmod(fd, mode)
+
+    monkeypatch.setattr(os, "fchmod", _fchmod)
+
+    errors = journal.restore(tmp_path)
+
+    assert len(errors) == 1, errors
+    assert errors[0].caller_diagnostic() == "Failed to restore file CLAUDE.md"
+    assert "forced metadata reproduction failure" in errors[0].raw_diagnostic()
+    assert not list(tmp_path.glob(".*.happyranch-restore-*"))
+
+
+def test_bootstrap_compensation_diagnostics_are_structured_and_capped():
+    """Caller diagnostics expose no raw causes and contain at most four items."""
+    from runtime.daemon.routes.agents import (
+        _BOOTSTRAP_OWNED_FILES,
+        _BootstrapCompensationFailure,
+        _BootstrapCompensationOperation,
+        _bounded_bootstrap_compensation_diagnostics,
+    )
+
+    raw_cause = "private bytes\n/private/absolute/path\x1b[31m"
+    failures = [
+        _BootstrapCompensationFailure(
+            _BootstrapCompensationOperation.RESTORE_FILE,
+            relative_path,
+            OSError(raw_cause),
+        )
+        for relative_path in _BOOTSTRAP_OWNED_FILES[:5]
+    ]
+
+    diagnostic = _bounded_bootstrap_compensation_diagnostics(failures)
+
+    assert len(diagnostic.split("; ")) == 4
+    assert diagnostic.endswith("... and 2 more compensation failure(s)")
+    assert "Failed to restore file CLAUDE.md" in diagnostic
+    assert "Failed to restore file AGENTS.md" in diagnostic
+    assert "Failed to restore file .claude/settings.json" in diagnostic
+    assert raw_cause not in diagnostic
+    assert "\n" not in diagnostic and "\x1b" not in diagnostic
 
 
 def test_set_executor_preflight_rejects_symlinked_claude_before_materialization(
@@ -7100,3 +7210,1252 @@ def test_run_step_fails_terminated_agent_without_executor(
     failed = org_state.db.get_task("TASK-TERM")
     assert failed.status == TaskStatus.FAILED
     assert "terminated" in failed.note.lower()
+
+
+# ── THR-262 Slice B: bounded journal link capture/restore + preflight ───
+
+
+def test_bootstrap_journal_captures_and_restores_canonical_link(tmp_path):
+    from runtime.daemon.routes.agents import _BootstrapRollbackJournal
+
+    (tmp_path / "AGENTS.md").write_text("canonical\n")
+    os.symlink("AGENTS.md", tmp_path / "CLAUDE.md")
+    journal = _BootstrapRollbackJournal.capture(tmp_path)
+    # Simulate a bootstrap that replaced the link with a regular file.
+    (tmp_path / "CLAUDE.md").unlink()
+    (tmp_path / "CLAUDE.md").write_text("clobbered\n")
+    errors = journal.restore(tmp_path)
+    assert errors == []
+    assert os.readlink(tmp_path / "CLAUDE.md") == "AGENTS.md"
+    assert (tmp_path / "AGENTS.md").read_text() == "canonical\n"
+
+
+def test_bootstrap_unsupported_owned_paths_accepts_canonical_link(tmp_path):
+    from runtime.daemon.routes.agents import _bootstrap_unsupported_owned_paths
+
+    (tmp_path / "AGENTS.md").write_text("canonical\n")
+    os.symlink("AGENTS.md", tmp_path / "CLAUDE.md")
+    assert _bootstrap_unsupported_owned_paths(tmp_path) == []
+
+
+def test_bootstrap_unsupported_owned_paths_rejects_foreign_claude_link(tmp_path):
+    from runtime.daemon.routes.agents import _bootstrap_unsupported_owned_paths
+
+    (tmp_path / "AGENTS.md").write_text("canonical\n")
+    (tmp_path / "OTHER.md").write_text("other\n")
+    os.symlink("OTHER.md", tmp_path / "CLAUDE.md")
+    assert "CLAUDE.md" in _bootstrap_unsupported_owned_paths(tmp_path)
+
+
+def test_bootstrap_unsupported_owned_paths_rejects_agents_symlink(tmp_path):
+    from runtime.daemon.routes.agents import _bootstrap_unsupported_owned_paths
+
+    (tmp_path / "AGENTS-real.md").write_text("canonical\n")
+    os.symlink("AGENTS-real.md", tmp_path / "AGENTS.md")
+    os.symlink("AGENTS.md", tmp_path / "CLAUDE.md")
+    unsupported = _bootstrap_unsupported_owned_paths(tmp_path)
+    assert "AGENTS.md" in unsupported
+
+
+# ── THR-262 Slice B: real owned-process SIGKILL/reopen B0-B8 matrix ──────
+#
+# A real disposable child process runs the executor switch and SIGKILLs itself
+# at exactly one named Step 0-5 boundary. The parent observes the durable
+# on-disk pair/backups/temps, the read-only startup pair verdict, and the
+# explicit operator retry. Caught-exception injection is a separate case and is
+# never substituted for this process-death proof.
+
+_KILL_INCOMPLETE = ("B0", "B1", "B2", "B3")
+
+
+def _sigkill_self() -> None:
+    os.kill(os.getpid(), 9)
+
+
+def _install_boundary_kill(boundary: str, agent_name: str) -> None:
+    import pathlib
+
+    import runtime.daemon.routes.agents as agents_mod
+    import runtime.orchestrator.workspace_adapters as wa_mod
+
+    if boundary == "B0":  # before Step 1 (Step-0 preflight/capture ran)
+        agents_mod._executor_switch_materialize = lambda *a, **k: _sigkill_self()
+    elif boundary == "B1":  # during Step 1 union materialization
+        real_repair = wa_mod.SymlinkMaterializer.repair_workspace_skills
+
+        def first_root_then_kill(self, expected_specs, workspace, skills_subdir):
+            result = real_repair(self, expected_specs, workspace, skills_subdir)
+            assert skills_subdir == ".claude/skills"
+            _sigkill_self()
+            return result  # pragma: no cover - SIGKILL never returns
+
+        wa_mod.SymlinkMaterializer.repair_workspace_skills = first_root_then_kill
+    elif boundary == "B2":  # inside Step 2, before the first instruction write
+        agents_mod.ContextBuilder.ensure_workspace_ready = (
+            lambda *a, **k: _sigkill_self()
+        )
+    elif boundary == "B3":  # between the two instruction-path writes
+        real_atomic = wa_mod._atomic_write_regular
+
+        def atomic_then_kill(path, data, mode=0o644):
+            real_atomic(path, data, mode)
+            if path.name == "AGENTS.md":
+                _sigkill_self()
+
+        wa_mod._atomic_write_regular = atomic_then_kill
+    elif boundary == "B4":  # immediately after both instruction writes
+        real_pair = wa_mod.write_canonical_instruction_pair
+
+        def pair_then_kill(workspace, content):
+            real_pair(workspace, content)
+            _sigkill_self()
+
+        wa_mod.write_canonical_instruction_pair = pair_then_kill
+    elif boundary == "B5":  # after Step 2 returns, before Step 3 begins
+        real_ready = agents_mod.ContextBuilder.ensure_workspace_ready
+
+        def ready_then_kill(self, *a, **k):
+            real_ready(self, *a, **k)
+            _sigkill_self()
+
+        agents_mod.ContextBuilder.ensure_workspace_ready = ready_then_kill
+    elif boundary == "B6":  # during Step 3 os.replace
+        real_replace = os.replace
+
+        def replace_then_kill(*args, **kwargs):
+            dst = args[1] if len(args) > 1 else kwargs.get("dst")
+            if dst is not None and str(dst).endswith(f"{agent_name}.md"):
+                _sigkill_self()
+            return real_replace(*args, **kwargs)
+
+        os.replace = replace_then_kill
+    elif boundary == "B7":  # during Step 4 --clean of executor-only files
+        real_unlink = pathlib.Path.unlink
+
+        def unlink_then_kill(self, *a, **k):
+            if self.name == "settings.json":
+                _sigkill_self()
+            return real_unlink(self, *a, **k)
+
+        pathlib.Path.unlink = unlink_then_kill
+    elif boundary == "B8":  # after Step 4, before the audit row
+        def audit_then_kill(self, *a, **k):
+            _sigkill_self()
+
+        agents_mod.AuditLogger.log_agent_managed = audit_then_kill
+    else:  # pragma: no cover
+        raise AssertionError(f"unknown boundary {boundary}")
+
+
+def _seed_incomplete_pair_workspace(org_state, *, external=None):
+    """Active claude agent whose pair is incomplete (CLAUDE.md absent)."""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    agents = workspace / "AGENTS.md"
+    if external is None:
+        agents.write_bytes(b"# pre-existing claude content\n")
+    else:
+        external.write_bytes(b"# pre-existing claude content\n")
+        os.link(external, agents)
+    agents.chmod(0o640)
+    (workspace / ".claude").mkdir(parents=True, exist_ok=True)
+    (workspace / ".claude" / "settings.json").write_text('{"old": true}')
+    return workspace
+
+
+def _run_init_retry(app, auth_headers, agent_name: str) -> list[dict]:
+    import json as _json
+
+    events: list[dict] = []
+    client = TestClient(app)
+    with client.stream(
+        "POST", "/api/v1/orgs/alpha/agents/init",
+        json={"agent": agent_name}, headers=auth_headers,
+    ) as r:
+        assert r.status_code == 200, r.text
+        for line in r.iter_lines():
+            if line.startswith("data:"):
+                events.append(_json.loads(line[len("data:"):].strip()))
+    return events
+
+
+def _disk_artifacts(workspace):
+    return sorted(p.name for p in workspace.iterdir())
+
+
+def _audit_agent_managed(org_state) -> list:
+    return [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+
+
+def _reopen_daemon(daemon_state, runtime):
+    """Tear down the live app/runtime/DB handles and construct a genuinely fresh
+    daemon/runtime/app from the same persisted org root and SQLite DB."""
+    from runtime.config import Settings
+    from runtime.daemon.app import create_app
+    from runtime.daemon.state import DaemonState
+    from runtime.runtime import RuntimeDir
+
+    for org in list(daemon_state.orgs.values()):
+        org.close()
+    daemon_state.orgs.clear()
+    store = getattr(daemon_state, "direct_connect_authority_store", None)
+    if store is not None:
+        store.close()
+        daemon_state.direct_connect_authority_store = None
+    fresh_state = DaemonState.from_runtime(RuntimeDir(runtime.root), Settings())
+    fresh_app = create_app(fresh_state)
+    return fresh_state, fresh_app
+
+
+def _startup_pair_gate(orch, agent_name, monkeypatch):
+    """Invoke the REAL ``Orchestrator._run_agent`` startup seam with a launch
+    spy. Returns ``(refusal_message_or_None, spy)``. The readiness marker is
+    satisfied so the assertion isolates the canonical instruction-pair gate."""
+    from unittest.mock import MagicMock
+
+    from runtime.orchestrator.executors import ExecutorResult
+    from runtime.orchestrator.orchestrator import WorkspaceNotInitialized
+
+    monkeypatch.setattr(orch, "_readiness_marker", lambda ws, p: ws / "AGENTS.md")
+    monkeypatch.setattr(orch, "_build_session_id", lambda: "sess-8753")
+    # Use the legacy uncontained launch body so the launch spy is invoked
+    # synchronously; the containment supervisor is unrelated to the pair gate.
+    monkeypatch.setattr(orch, "_host_supervisor", None)
+    task_id = orch.create_task("ping")
+    spy = MagicMock()
+    spy.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="sess-8753",
+    )
+    with patch.object(orch, "_build_executor", return_value=spy):
+        try:
+            orch._run_agent(task_id, agent_name, "any prompt")
+        except WorkspaceNotInitialized as exc:
+            return str(exc), spy
+    return None, spy
+
+
+def _instruction_path_state(path):
+    import stat as _stat
+
+    if not os.path.lexists(path):
+        return ("absent", None, None, None)
+    st = os.lstat(path)
+    if _stat.S_ISLNK(st.st_mode):
+        return ("symlink", os.readlink(path), st.st_mode & 0o7777, st.st_uid)
+    if _stat.S_ISREG(st.st_mode):
+        return ("regular", path.read_bytes(), st.st_mode & 0o7777, st.st_uid)
+    return ("other", None, st.st_mode & 0o7777, st.st_uid)
+
+
+def _owned_temp_residue(workspace):
+    names = []
+    for root in (workspace, workspace / ".claude", workspace / ".agents"):
+        if not root.is_dir():
+            continue
+        for p in root.iterdir():
+            if ".happyranch-" in p.name and not p.name.endswith(".bak"):
+                names.append(str(p.relative_to(workspace)))
+    return sorted(names)
+
+
+def _expected_codex_instruction_bytes(org_state, workspace) -> bytes:
+    """Build the exact Step-2 instruction payload without touching disk."""
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
+    adapter = CodexWorkspaceAdapter(
+        org_state.settings, OrgPaths(root=org_state.root), slug=org_state.slug,
+    )
+    with patch(
+        "runtime.orchestrator.workspace_adapters.write_canonical_instruction_pair",
+    ) as pair_writer:
+        adapter.write_agents_md(workspace, "dev_agent", "prompt\n")
+    assert pair_writer.call_count == 1
+    return pair_writer.call_args.args[1].encode()
+
+
+def _expected_system_contract_ids(workspace) -> set[str]:
+    expected: set[str] = set()
+    for context in ("task", "thread", "wake", "dream", "schedule", "bootstrap"):
+        expected |= _system_contract_ids_for_context(context, workspace)
+    return expected
+
+
+def _assert_exact_skill_root(org_state, workspace, root_name, *, present) -> None:
+    """Assert exact root membership, raw links, and source/canonical integrity."""
+    from runtime.orchestrator.workspace_adapters import _compute_dir_hash
+    from runtime.skills.canonical_store import CanonicalSkillStore
+
+    root = workspace / root_name
+    if not present:
+        assert not os.path.lexists(root), (root_name, _disk_artifacts(workspace))
+        return
+
+    expected_ids = _expected_system_contract_ids(workspace)
+    assert root.is_dir() and not root.is_symlink(), root
+    assert {entry.name for entry in root.iterdir()} == expected_ids
+    store = CanonicalSkillStore(settings=org_state.settings)
+    sources = org_state.settings.get_bundled_skills_dir()
+    for skill_id in sorted(expected_ids):
+        source = sources / skill_id
+        content_hash = _compute_dir_hash(source)
+        target = store.canonical_path(skill_id, "system", content_hash)
+        link = root / skill_id
+        assert link.is_symlink(), link
+        assert os.readlink(link) == os.path.relpath(target, link.parent)
+        assert link.resolve() == target.resolve()
+        assert _compute_dir_hash(link.resolve()) == content_hash
+
+
+def _assert_owned_inventory(workspace, *, expect_agents_backup: bool) -> None:
+    assert _owned_temp_residue(workspace) == []
+    owned = sorted(
+        p for p in workspace.iterdir() if ".happyranch-" in p.name
+    )
+    backups = [p for p in owned if p.name.endswith(".bak")]
+    assert len(backups) == (1 if expect_agents_backup else 0), [p.name for p in owned]
+    if backups:
+        assert backups[0].name.startswith("AGENTS.md.happyranch-")
+        assert _instruction_path_state(backups[0]) == (
+            "regular", b"# pre-existing claude content\n", 0o640, os.getuid(),
+        )
+
+
+@pytest.mark.parametrize("boundary", ["B0", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8"])
+def test_executor_switch_abrupt_death_b0_b8_retains_state_then_retry(
+    tmp_home, app, org_state, auth_headers, daemon_state, runtime, boundary,
+    monkeypatch,
+):
+    """THR-262 Slice B / founder seq59 C9: a REAL owned disposable process is
+    SIGKILLed at each named Step 0-5 boundary; the original app/runtime/DB
+    handles are then torn down and a genuinely fresh daemon/runtime/app is
+    constructed from the same persisted org root and SQLite DB. Reopen performs
+    no automatic restore and writes no persistent recovery record. The REAL
+    ``Orchestrator._run_agent`` startup seam (launch spy) refuses incomplete or
+    non-canonical pairs with an actionable ``init-agent`` message and zero
+    executor launch, while valid pairs proceed. The operator ``init-agent``
+    retry then reaches a terminal done/all_done result and a second retry is
+    idempotent."""
+    from runtime.orchestrator.workspace_adapters import instruction_pair_refusal
+
+    external = tmp_home / "external_sentinel.md"
+    workspace = _seed_incomplete_pair_workspace(org_state, external=external)
+    external_hash = hashlib.sha256(external.read_bytes()).hexdigest()
+    agents_path = workspace / "AGENTS.md"
+    original_agents = _instruction_path_state(agents_path)
+    original_claude = _instruction_path_state(workspace / "CLAUDE.md")
+    audit_before = _audit_agent_managed(org_state)
+    authoritative_before = prompt_loader.load_agent(
+        OrgPaths(root=org_state.root), "dev_agent",
+    ).executor
+    assert authoritative_before == "claude"
+
+    pid = os.fork()
+    if pid == 0:  # pragma: no cover - child process
+        try:
+            _install_boundary_kill(boundary, "dev_agent")
+            TestClient(app).put(
+                "/api/v1/orgs/alpha/agents/dev_agent/executor",
+                json={"executor": "codex", "clean": True},
+                headers=auth_headers,
+            )
+        except BaseException:
+            os._exit(3)
+        os._exit(0)
+    _, status = os.waitpid(pid, 0)
+    assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == 9, (
+        f"{boundary}: child not SIGKILLed, status={status}, "
+        f"artifacts={_disk_artifacts(workspace)}"
+    )
+
+    # ── Genuine reopen: close live handles, rebuild from persisted state ──
+    fresh_state, fresh_app = _reopen_daemon(daemon_state, runtime)
+    fresh_org = fresh_state.orgs["alpha"]
+    assert fresh_org.db is not org_state.db
+    canonical_agents = (
+        "regular", _expected_codex_instruction_bytes(fresh_org, workspace),
+        original_agents[2], original_agents[3],
+    )
+    canonical_claude = ("symlink", "AGENTS.md", 0o777, os.getuid())
+
+    # ── No persistent recovery record / journal / receipt ──
+    for name in _disk_artifacts(workspace):
+        lowered = name.lower()
+        assert "journal" not in lowered, f"{boundary}: persistent journal {name}"
+        assert "receipt" not in lowered, f"{boundary}: durable receipt {name}"
+        assert "recovery" not in lowered, f"{boundary}: recovery record {name}"
+    for root in (fresh_org.root, runtime.root):
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            lowered = path.name.lower()
+            assert "recovery" not in lowered, f"{boundary}: recovery record {path}"
+            assert "journal" not in lowered, f"{boundary}: journal {path}"
+
+    # ── Exact on-disk instruction state (bytes/type/raw link/mode/uid) ──
+    agents_state = _instruction_path_state(agents_path)
+    claude_state = _instruction_path_state(workspace / "CLAUDE.md")
+    expected_pairs = {
+        "B0": (original_agents, original_claude),
+        "B1": (original_agents, original_claude),
+        "B2": (original_agents, original_claude),
+        "B3": (canonical_agents, original_claude),
+        "B4": (canonical_agents, canonical_claude),
+        "B5": (canonical_agents, canonical_claude),
+        "B6": (canonical_agents, canonical_claude),
+        "B7": (canonical_agents, canonical_claude),
+        "B8": (canonical_agents, canonical_claude),
+    }
+    expected_pair = expected_pairs[boundary]
+    assert (agents_state, claude_state) == expected_pair, {
+        "boundary": boundary,
+        "actual_agents": (
+            agents_state[0], hashlib.sha256(agents_state[1]).hexdigest()
+            if isinstance(agents_state[1], bytes) else agents_state[1],
+            agents_state[2], agents_state[3],
+        ),
+        "expected_agents": (
+            expected_pair[0][0], hashlib.sha256(expected_pair[0][1]).hexdigest()
+            if isinstance(expected_pair[0][1], bytes) else expected_pair[0][1],
+            expected_pair[0][2], expected_pair[0][3],
+        ),
+        "actual_claude": claude_state,
+        "expected_claude": expected_pair[1],
+    }
+
+    verdict = instruction_pair_refusal(workspace)
+    if boundary in _KILL_INCOMPLETE:
+        assert verdict is not None, (
+            f"{boundary}: expected an incomplete pair refusal, got {verdict!r}"
+        )
+    else:
+        assert verdict is None, f"{boundary}: expected a valid pair, got {verdict!r}"
+        assert (agents_state, claude_state) == (
+            canonical_agents, canonical_claude,
+        )
+
+    # ── Complete owned temp/backup inventory ──
+    _assert_owned_inventory(
+        workspace, expect_agents_backup=boundary not in ("B0", "B1", "B2"),
+    )
+
+    # ── Both skill roots stay symmetric (union-before-reconcile) ──
+    expected_roots = {
+        "B0": (False, False),
+        "B1": (True, False),
+        "B2": (True, True),
+        "B3": (True, True),
+        "B4": (True, True),
+        "B5": (True, True),
+        "B6": (True, True),
+        "B7": (True, True),
+        "B8": (True, True),
+    }[boundary]
+    _assert_exact_skill_root(
+        fresh_org, workspace, ".claude/skills", present=expected_roots[0],
+    )
+    _assert_exact_skill_root(
+        fresh_org, workspace, ".agents/skills", present=expected_roots[1],
+    )
+
+    # ── External sentinel unchanged ──
+    assert hashlib.sha256(external.read_bytes()).hexdigest() == external_hash
+
+    # ── Authoritative executor frontmatter + no fabricated audit row ──
+    authoritative = prompt_loader.load_agent(
+        OrgPaths(root=fresh_org.root), "dev_agent",
+    ).executor
+    expected_executor = {
+        "B0": "claude", "B1": "claude", "B2": "claude",
+        "B3": "claude", "B4": "claude", "B5": "claude",
+        "B6": "claude", "B7": "codex", "B8": "codex",
+    }[boundary]
+    assert authoritative == expected_executor, (
+        f"{boundary}: authoritative executor {authoritative!r}"
+    )
+    assert _audit_agent_managed(fresh_org) == audit_before, (
+        f"{boundary}: an agent_managed audit row was written"
+    )
+
+    # ── REAL startup seam: refusal for incomplete pairs, launch for valid ──
+    refusal, spy = _startup_pair_gate(fresh_org.orchestrator, "dev_agent", monkeypatch)
+    if boundary in _KILL_INCOMPLETE:
+        assert refusal is not None, f"{boundary}: startup did not refuse"
+        assert "init-agent" in refusal and "dev_agent" in refusal, refusal
+        spy.run.assert_not_called()
+    else:
+        assert refusal is None, f"{boundary}: unexpected refusal {refusal!r}"
+        assert spy.run.call_count == 1, (
+            f"{boundary}: valid pair did not reach executor launch"
+        )
+
+    # ── Operator init-agent retry to a terminal done/all_done result ──
+    events = _run_init_retry(fresh_app, auth_headers, "dev_agent")
+    phases = [e.get("phase") for e in events]
+    assert "done" in phases, f"{boundary}: retry did not report done: {events}"
+    assert "all_done" in phases, f"{boundary}: retry did not report all_done: {events}"
+    assert instruction_pair_refusal(workspace) is None, (
+        f"{boundary}: init-agent retry did not complete the pair"
+    )
+    assert agents_path.is_file() and not agents_path.is_symlink()
+    assert (workspace / "CLAUDE.md").is_symlink()
+    assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
+    # Retry never rewrites the authoritative executor setting.
+    after_retry = prompt_loader.load_agent(
+        OrgPaths(root=fresh_org.root), "dev_agent",
+    ).executor
+    assert after_retry == authoritative
+
+    _assert_exact_skill_root(
+        fresh_org, workspace, ".claude/skills", present=True,
+    )
+    _assert_exact_skill_root(
+        fresh_org, workspace, ".agents/skills", present=True,
+    )
+
+    # ── Second retry is idempotent (pair and preservation copies stable) ──
+    after_first = agents_path.read_bytes()
+    link_first = os.readlink(workspace / "CLAUDE.md")
+    backups_first = sorted(p.name for p in workspace.glob("*.bak"))
+    _run_init_retry(fresh_app, auth_headers, "dev_agent")
+    assert agents_path.read_bytes() == after_first, (
+        f"{boundary}: second retry rewrote AGENTS.md"
+    )
+    assert os.readlink(workspace / "CLAUDE.md") == link_first
+    assert sorted(p.name for p in workspace.glob("*.bak")) == backups_first, (
+        f"{boundary}: second retry created an extra preservation copy"
+    )
+    assert instruction_pair_refusal(workspace) is None
+    assert hashlib.sha256(external.read_bytes()).hexdigest() == external_hash
+
+
+
+def test_init_agent_retry_stops_on_preserved_conflict_zero_mutation(
+    tmp_home, app, org_state, auth_headers,
+):
+    """THR-262 Slice B / founder seq59 C9: when the pair cannot be converged
+    safely (a directory at an instruction path), the explicit ``init-agent``
+    retry stops on a named preserved conflict, emits a per-agent error (never
+    ``done``/``all_done``), and leaves the pair and every unrelated byte
+    unchanged with no backup/temp residue."""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "AGENTS.md").write_text("# original agents\n")
+    (workspace / "CLAUDE.md").mkdir()
+    sentinel = workspace / "unrelated.txt"
+    sentinel.write_text("unrelated\n")
+
+    events = _run_init_retry(app, auth_headers, "dev_agent")
+
+    phases = [e.get("phase") for e in events]
+    assert "done" not in phases, phases
+    assert "all_done" not in phases, phases
+    error = next(e for e in events if e.get("phase") == "error")
+    assert "instruction pair conflict" in error["detail"], error
+    assert "CLAUDE.md" in error["detail"], error
+
+    assert (workspace / "AGENTS.md").read_text() == "# original agents\n"
+    assert (workspace / "CLAUDE.md").is_dir()
+    assert sentinel.read_text() == "unrelated\n"
+    assert not list(workspace.glob("*.bak"))
+    assert not list(workspace.glob("*.tmp"))
+
+
+# ── TASK-8744 F3: distinct parametrized caught-exception B1-B8 matrix ───────
+#
+# Each boundary injects a plain in-process exception at the SAME seam the
+# SIGKILL matrix uses. Unlike the process-death proof, the route's own
+# bounded rollback runs; B1-B5 must restore the exact prior instruction pair
+# and executor, and B6-B8 must surface an honest non-success without residue.
+# This is deliberately separate from (and never substitutes for) the real
+# SIGKILL/reopen proof above.
+
+_CAUGHT_ROLLBACK = ("B1", "B2", "B3", "B4", "B5")
+
+
+def _install_boundary_exception(boundary, agent_name, monkeypatch):
+    import pathlib
+
+    import runtime.daemon.routes.agents as agents_mod
+    import runtime.orchestrator.workspace_adapters as wa
+
+    if boundary == "B1":
+        monkeypatch.setattr(
+            agents_mod,
+            "_executor_switch_materialize",
+            lambda *a, **k: ["injected union materialization failure"],
+        )
+    elif boundary == "B2":
+        def boom(self, *a, **k):
+            raise RuntimeError("injected pre-write bootstrap failure")
+
+        monkeypatch.setattr(
+            agents_mod.ContextBuilder, "ensure_workspace_ready", boom,
+        )
+    elif boundary == "B3":
+        real_atomic = wa._atomic_write_regular
+
+        def atomic_boom(path, data, mode=0o644):
+            result = real_atomic(path, data, mode)
+            if path.name == "AGENTS.md":
+                raise OSError("injected failure after real AGENTS write")
+            return result
+
+        monkeypatch.setattr(wa, "_atomic_write_regular", atomic_boom)
+    elif boundary == "B4":
+        real_link = wa._replace_with_canonical_claude_link
+
+        def link_then_boom(*a, **k):
+            result = real_link(*a, **k)
+            raise RuntimeError("injected failure after both real instruction writes")
+
+        monkeypatch.setattr(wa, "_replace_with_canonical_claude_link", link_then_boom)
+    elif boundary == "B5":
+        real_ready = agents_mod.ContextBuilder.ensure_workspace_ready
+
+        def ready_then_raise(self, *a, **k):
+            real_ready(self, *a, **k)
+            raise RuntimeError("injected post-pair bootstrap failure")
+
+        monkeypatch.setattr(
+            agents_mod.ContextBuilder, "ensure_workspace_ready",
+            ready_then_raise,
+        )
+    elif boundary == "B6":
+        real_replace = os.replace
+
+        def replace_boom(src, dst, *a, **k):
+            if str(dst).endswith(f"{agent_name}.md"):
+                raise OSError("injected frontmatter replace failure")
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr(os, "replace", replace_boom)
+    elif boundary == "B7":
+        real_unlink = pathlib.Path.unlink
+
+        def unlink_boom(self, *a, **k):
+            if self.name == "settings.json":
+                raise OSError("injected clean unlink failure")
+            return real_unlink(self, *a, **k)
+
+        monkeypatch.setattr(pathlib.Path, "unlink", unlink_boom)
+    elif boundary == "B8":
+        def audit_boom(self, *a, **k):
+            raise RuntimeError("injected audit failure")
+
+        monkeypatch.setattr(agents_mod.AuditLogger, "log_agent_managed", audit_boom)
+    else:  # pragma: no cover
+        raise AssertionError(f"unknown boundary {boundary}")
+
+
+@pytest.mark.parametrize("boundary", ["B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8"])
+def test_executor_switch_caught_exception_b1_b8_rolls_back_in_process(
+    tmp_home, app, org_state, auth_headers, boundary, monkeypatch,
+):
+    external = tmp_home / "caught_external_sentinel.md"
+    workspace = _seed_incomplete_pair_workspace(org_state, external=external)
+    external_hash = hashlib.sha256(external.read_bytes()).hexdigest()
+    agents_path = workspace / "AGENTS.md"
+    claude_path = workspace / "CLAUDE.md"
+    agents_before = _instruction_path_state(agents_path)
+    claude_before = _instruction_path_state(claude_path)
+    audit_before = _audit_agent_managed(org_state)
+
+    _install_boundary_exception(boundary, "dev_agent", monkeypatch)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    r = client.put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex", "clean": True},
+        headers=auth_headers,
+    )
+
+    assert r.status_code != 200, (
+        f"{boundary}: caught failure unexpectedly succeeded: {r.text}"
+    )
+    if boundary in _CAUGHT_ROLLBACK:
+        assert r.status_code == 400, (boundary, r.status_code, r.text)
+        code = r.json()["detail"]["code"]
+        assert code in (
+            "executor_materialization_failed", "executor_bootstrap_failed",
+        ), (boundary, code)
+    else:
+        assert r.status_code >= 500, (boundary, r.status_code, r.text)
+
+    # ── Authoritative executor frontmatter ──
+    authoritative = prompt_loader.load_agent(
+        OrgPaths(root=org_state.root), "dev_agent",
+    ).executor
+    if boundary in _CAUGHT_ROLLBACK or boundary == "B6":
+        assert authoritative == "claude", (boundary, authoritative)
+    else:
+        assert authoritative == "codex", (boundary, authoritative)
+
+    # ── Boundary-specific exact pair state ──
+    if boundary in _CAUGHT_ROLLBACK:
+        expected_pair = (agents_before, claude_before)
+    else:
+        expected_pair = (
+            (
+                "regular", _expected_codex_instruction_bytes(org_state, workspace),
+                agents_before[2], agents_before[3],
+            ),
+            ("symlink", "AGENTS.md", 0o777, os.getuid()),
+        )
+    assert (
+        _instruction_path_state(agents_path),
+        _instruction_path_state(claude_path),
+    ) == expected_pair, f"{boundary}: instruction pair state mismatch"
+
+    # B1/B2 fail before the pair writer; B3-B8 crossed the preservation
+    # barrier and therefore retain exactly one collision-safe AGENTS copy.
+    _assert_owned_inventory(
+        workspace, expect_agents_backup=boundary not in ("B1", "B2"),
+    )
+
+    # B1 is injected before union materialization; B2-B8 retain the exact
+    # complete both-root union produced by Step 1.
+    _assert_exact_skill_root(
+        org_state, workspace, ".claude/skills", present=boundary != "B1",
+    )
+    _assert_exact_skill_root(
+        org_state, workspace, ".agents/skills", present=boundary != "B1",
+    )
+
+    # ── No fabricated audit row; no owned temp residue; external unchanged ──
+    assert _audit_agent_managed(org_state) == audit_before, (
+        f"{boundary}: an agent_managed audit row was written"
+    )
+    assert hashlib.sha256(external.read_bytes()).hexdigest() == external_hash
+
+
+def test_executor_switch_caught_b5_restores_divergent_regular_pair_metadata(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+):
+    """A real post-pair bootstrap failure restores both regular pre-states.
+
+    The general B1-B8 matrix starts with an absent CLAUDE.md.  This adverse B5
+    case exercises the other admitted pre-state: two divergent regular
+    instruction files whose bytes, modes, and owners must all survive the
+    route's caught-failure compensation exactly.
+    """
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / ".claude").mkdir(parents=True)
+    settings = workspace / ".claude" / "settings.json"
+    settings.write_bytes(b'{"old": true}\n')
+
+    # Keep an external hard-link sentinel for the AGENTS.md inode.  The pair
+    # writer and rollback must use atomic replacement, never write through
+    # this shared inode or otherwise alter the external target.
+    external = tmp_home / "caught_b5_external_sentinel.md"
+    external.write_bytes(b"# divergent original AGENTS instructions\n")
+    agents_path = workspace / "AGENTS.md"
+    os.link(external, agents_path)
+    agents_path.chmod(0o640)
+    claude_path = workspace / "CLAUDE.md"
+    claude_path.write_bytes(b"# divergent original CLAUDE instructions\n")
+    claude_path.chmod(0o600)
+
+    expected_uid = os.getuid()
+    agents_before = _instruction_path_state(agents_path)
+    claude_before = _instruction_path_state(claude_path)
+    external_before = _instruction_path_state(external)
+    settings_before = _instruction_path_state(settings)
+    assert agents_before == (
+        "regular", b"# divergent original AGENTS instructions\n",
+        0o640, expected_uid,
+    )
+    assert claude_before == (
+        "regular", b"# divergent original CLAUDE instructions\n",
+        0o600, expected_uid,
+    )
+    assert external_before == agents_before
+    assert _owned_temp_residue(workspace) == []
+    assert not list(workspace.glob("*.bak"))
+    assert not os.path.lexists(workspace / ".claude" / "skills")
+    assert not os.path.lexists(workspace / ".agents" / "skills")
+    audit_before = _audit_agent_managed(org_state)
+
+    _install_boundary_exception("B5", "dev_agent", monkeypatch)
+
+    r = TestClient(app, raise_server_exceptions=False).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex", "clean": True},
+        headers=auth_headers,
+    )
+
+    assert r.status_code == 400, (r.status_code, r.text)
+    detail = r.json()["detail"]
+    assert detail["code"] == "executor_bootstrap_failed"
+    assert "Any partial bootstrap files have been cleaned up." in detail["message"]
+    assert "cleanup/restore was incomplete" not in detail["message"].lower()
+    assert _instruction_path_state(agents_path) == agents_before
+    assert _instruction_path_state(claude_path) == claude_before
+    assert _instruction_path_state(external) == external_before
+    assert _instruction_path_state(settings) == settings_before
+    assert prompt_loader.load_agent(
+        OrgPaths(root=org_state.root), "dev_agent",
+    ).executor == "claude"
+    assert _audit_agent_managed(org_state) == audit_before
+    assert _owned_temp_residue(workspace) == []
+
+    backups = sorted(workspace.glob("*.happyranch-*.bak"))
+    assert len(backups) == 2, [p.name for p in backups]
+    backup_states = {
+        p.name.split(".happyranch-", 1)[0]: _instruction_path_state(p)
+        for p in backups
+    }
+    assert backup_states == {
+        "AGENTS.md": agents_before,
+        "CLAUDE.md": claude_before,
+    }
+    _assert_exact_skill_root(
+        org_state, workspace, ".claude/skills", present=True,
+    )
+    _assert_exact_skill_root(
+        org_state, workspace, ".agents/skills", present=True,
+    )
+
+
+def test_executor_switch_caught_b5_surfaces_incomplete_metadata_compensation(
+    tmp_home, app, org_state, auth_headers, monkeypatch, caplog,
+):
+    """The real route reports a bounded, truthful failed-compensation result.
+
+    A post-pair B5 failure first mutates the divergent regular instruction
+    pair through the shipping writer.  The real rollback then restores
+    AGENTS.md but cannot reproduce CLAUDE.md's captured mode because fchmod is
+    forced to fail.  The caller must see both the original bootstrap failure
+    and the bounded compensation failure, without a false cleanup-success
+    claim, while every unaffected invariant remains exact.
+    """
+    import logging
+
+    import runtime.daemon.routes.agents as agents_mod
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / ".claude").mkdir(parents=True)
+    settings = workspace / ".claude" / "settings.json"
+    settings.write_bytes(b'{"old": true}\n')
+
+    external = tmp_home / "caught_b5_compensation_external_sentinel.md"
+    external.write_bytes(b"# original AGENTS instructions\n")
+    agents_path = workspace / "AGENTS.md"
+    os.link(external, agents_path)
+    agents_path.chmod(0o640)
+    claude_path = workspace / "CLAUDE.md"
+    claude_path.write_bytes(b"# original CLAUDE instructions\n")
+    claude_path.chmod(0o600)
+
+    agents_before = _instruction_path_state(agents_path)
+    claude_before = _instruction_path_state(claude_path)
+    external_before = _instruction_path_state(external)
+    settings_before = _instruction_path_state(settings)
+    audit_before = _audit_agent_managed(org_state)
+    assert agents_before == (
+        "regular", b"# original AGENTS instructions\n", 0o640, os.getuid(),
+    )
+    assert claude_before == (
+        "regular", b"# original CLAUDE instructions\n", 0o600, os.getuid(),
+    )
+
+    _install_boundary_exception("B5", "dev_agent", monkeypatch)
+    real_fchmod = os.fchmod
+    long_unsafe_reason = (
+        "forced metadata reproduction failure\n\x1b[31m" + "X" * 2000
+    )
+
+    def _fchmod(fd, mode):
+        if mode == 0o600:
+            raise OSError(long_unsafe_reason)
+        return real_fchmod(fd, mode)
+
+    monkeypatch.setattr(os, "fchmod", _fchmod)
+    caplog.set_level(logging.ERROR, logger=agents_mod.__name__)
+
+    r = TestClient(app, raise_server_exceptions=False).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex", "clean": True},
+        headers=auth_headers,
+    )
+
+    assert r.status_code == 400, (r.status_code, r.text)
+    detail = r.json()["detail"]
+    assert set(detail) == {"code", "error", "message"}
+    assert detail["code"] == "executor_bootstrap_failed"
+    assert "injected post-pair bootstrap failure" in detail["error"]
+    assert "Failed to restore file CLAUDE.md" in detail["error"]
+    assert "forced metadata reproduction failure" not in detail["error"]
+    assert "cleanup/restore was incomplete" in detail["message"].lower()
+    assert "Failed to restore file CLAUDE.md" in detail["message"]
+    assert "Resolve the bootstrap error before retrying." in detail["message"]
+    assert (
+        "Any partial bootstrap files have been cleaned up."
+        not in detail["message"]
+    )
+    assert "\n" not in detail["error"] and "\x1b" not in detail["error"]
+    assert "\n" not in detail["message"] and "\x1b" not in detail["message"]
+    assert len(detail["error"]) <= 1200
+    assert len(detail["message"]) <= 1600
+    assert "X" * 1000 not in detail["error"]
+    assert "X" * 1000 not in detail["message"]
+    raw_log = "\n".join(record.getMessage() for record in caplog.records)
+    assert "forced metadata reproduction failure" in raw_log
+    assert "\x1b[31m" in raw_log
+    assert "X" * 2000 in raw_log
+
+    # Rollback is honestly partial: AGENTS.md and every unaffected owned file
+    # are exact, while CLAUDE.md remains the canonical link created by the real
+    # pair writer because its regular-file metadata could not be reproduced.
+    assert _instruction_path_state(agents_path) == agents_before
+    assert _instruction_path_state(claude_path) == (
+        "symlink", "AGENTS.md", 0o777, os.getuid(),
+    )
+    assert _instruction_path_state(external) == external_before
+    assert _instruction_path_state(settings) == settings_before
+    assert prompt_loader.load_agent(
+        OrgPaths(root=org_state.root), "dev_agent",
+    ).executor == "claude"
+    assert _audit_agent_managed(org_state) == audit_before
+    assert _owned_temp_residue(workspace) == []
+
+    backups = sorted(workspace.glob("*.happyranch-*.bak"))
+    assert len(backups) == 2, [p.name for p in backups]
+    assert {
+        p.name.split(".happyranch-", 1)[0]: _instruction_path_state(p)
+        for p in backups
+    } == {
+        "AGENTS.md": agents_before,
+        "CLAUDE.md": claude_before,
+    }
+    _assert_exact_skill_root(
+        org_state, workspace, ".claude/skills", present=True,
+    )
+    _assert_exact_skill_root(
+        org_state, workspace, ".agents/skills", present=True,
+    )
+
+
+def test_executor_switch_caught_b5_verification_mismatch_is_caller_safe(
+    tmp_home, app, org_state, auth_headers, monkeypatch, caplog,
+):
+    """Final restore verification detail stays in operator logs only.
+
+    This exercises the real route after the pair writer and B5 bootstrap
+    failure.  The replacement succeeds, but the resulting regular file is
+    made to differ before the journal's final verification.  That raw
+    verification exception contains both captured states, including their
+    bytes; callers must receive only the stable rollback operation and the
+    declared owned relative name.
+    """
+    import logging
+    from pathlib import Path as _Path
+
+    import runtime.daemon.routes.agents as agents_mod
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / ".claude").mkdir(parents=True)
+    settings = workspace / ".claude" / "settings.json"
+    settings.write_bytes(b'{"old": true}\n')
+
+    workspace_path_sentinel = str(
+        workspace / "TASK8871_PRIVATE_WORKSPACE_PATH"
+    ).encode()
+    temp_path_sentinel = str(
+        tmp_home / "TASK8871_PRIVATE_TEMP_PATH"
+    ).encode()
+    sensitive_prior = b"TASK8871_SENSITIVE_PRIOR_INSTRUCTION_BYTES"
+    restored_bytes = b"TASK8871_MISMATCHED_RESTORED_BYTES"
+    prior_claude = b"|".join(
+        (sensitive_prior, workspace_path_sentinel, temp_path_sentinel),
+    ) + b"\n"
+    mismatched_claude = b"|".join(
+        (restored_bytes, workspace_path_sentinel, temp_path_sentinel),
+    ) + b"\n"
+
+    external = tmp_home / "caught_b5_verify_external_sentinel.md"
+    external.write_bytes(b"# original AGENTS instructions\n")
+    agents_path = workspace / "AGENTS.md"
+    os.link(external, agents_path)
+    agents_path.chmod(0o640)
+    claude_path = workspace / "CLAUDE.md"
+    claude_path.write_bytes(prior_claude)
+    claude_path.chmod(0o600)
+
+    agents_before = _instruction_path_state(agents_path)
+    claude_before = _instruction_path_state(claude_path)
+    external_before = _instruction_path_state(external)
+    settings_before = _instruction_path_state(settings)
+    frontmatter_path = org_state.root / "org" / "agents" / "dev_agent.md"
+    frontmatter_before = frontmatter_path.read_bytes()
+    agent_yaml_before = (workspace / "agent.yaml").read_bytes()
+    audit_before = _audit_agent_managed(org_state)
+    assert _owned_temp_residue(workspace) == []
+    assert not list(workspace.glob("*.bak"))
+
+    _install_boundary_exception("B5", "dev_agent", monkeypatch)
+    real_replace = os.replace
+
+    def _replace_then_diverge(src, dst, *args, **kwargs):
+        real_replace(src, dst, *args, **kwargs)
+        if args or kwargs:
+            return
+        src_path = _Path(src)
+        dst_path = _Path(dst)
+        if (
+            dst_path == claude_path
+            and src_path.name.startswith(".CLAUDE.md.happyranch-restore-")
+        ):
+            dst_path.write_bytes(mismatched_claude)
+            dst_path.chmod(0o600)
+
+    monkeypatch.setattr(os, "replace", _replace_then_diverge)
+    caplog.set_level(logging.ERROR, logger=agents_mod.__name__)
+
+    r = TestClient(app, raise_server_exceptions=False).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex", "clean": True},
+        headers=auth_headers,
+    )
+
+    assert r.status_code == 400, (r.status_code, r.text)
+    detail = r.json()["detail"]
+    assert set(detail) == {"code", "error", "message"}
+    assert detail["code"] == "executor_bootstrap_failed"
+    assert "injected post-pair bootstrap failure" in detail["error"]
+    assert "cleanup/restore was incomplete" in detail["message"].lower()
+    assert "Any partial bootstrap files have been cleaned up." not in detail["message"]
+    assert "Failed to restore file CLAUDE.md" in detail["error"]
+    assert "Failed to restore file CLAUDE.md" in detail["message"]
+
+    caller_diagnostics = detail["error"].split(
+        "rollback compensation incomplete: ", 1,
+    )[1]
+    assert len(caller_diagnostics.split("; ")) <= 4
+    for field in (detail["error"], detail["message"]):
+        assert "\n" not in field and "\r" not in field
+        assert sensitive_prior.decode() not in field
+        assert restored_bytes.decode() not in field
+        assert workspace_path_sentinel.decode() not in field
+        assert temp_path_sentinel.decode() not in field
+        assert "_RegularFileState" not in field
+        assert "data=" not in field
+        assert "regular-file metadata/content verification failed:" not in field
+
+    # Operators retain the complete raw exception in daemon logs.
+    assert "regular-file metadata/content verification failed:" in caplog.text
+    assert "_RegularFileState(data=" in caplog.text
+    assert sensitive_prior.decode() in caplog.text
+    assert restored_bytes.decode() in caplog.text
+    assert workspace_path_sentinel.decode() in caplog.text
+    assert temp_path_sentinel.decode() in caplog.text
+
+    # The reported incomplete rollback matches the final disk state exactly.
+    assert _instruction_path_state(agents_path) == agents_before
+    assert _instruction_path_state(claude_path) == (
+        "regular", mismatched_claude, 0o600, os.getuid(),
+    )
+    assert _instruction_path_state(external) == external_before
+    assert _instruction_path_state(settings) == settings_before
+    assert (workspace / "agent.yaml").read_bytes() == agent_yaml_before
+    assert frontmatter_path.read_bytes() == frontmatter_before
+    assert prompt_loader.load_agent(
+        OrgPaths(root=org_state.root), "dev_agent",
+    ).executor == "claude"
+    assert _audit_agent_managed(org_state) == audit_before
+    assert _owned_temp_residue(workspace) == []
+
+    backups = sorted(workspace.glob("*.happyranch-*.bak"))
+    assert len(backups) == 2, [p.name for p in backups]
+    assert {
+        p.name.split(".happyranch-", 1)[0]: _instruction_path_state(p)
+        for p in backups
+    } == {
+        "AGENTS.md": agents_before,
+        "CLAUDE.md": claude_before,
+    }
+    _assert_exact_skill_root(
+        org_state, workspace, ".claude/skills", present=True,
+    )
+    _assert_exact_skill_root(
+        org_state, workspace, ".agents/skills", present=True,
+    )
+
+
+def test_executor_switch_inner_pair_compensation_failure_is_caller_safe(
+    tmp_home, app, org_state, auth_headers, monkeypatch, caplog,
+):
+    """The shipping route never returns raw shared-writer rollback detail.
+
+    This reaches the real canonical-pair writer, observes its actual AGENTS.md
+    replacement, fails the CLAUDE.md link operation, and then fails both the
+    writer's inner AGENTS.md restore and the route journal's outer restore.
+    The final disk state is therefore honestly partial, while callers receive
+    only stable operation classifications and owned relative names.  Raw
+    primary/inner/outer causes remain available in daemon logs.
+    """
+    import logging
+
+    import runtime.daemon.routes.agents as agents_mod
+    import runtime.orchestrator.workspace_adapters as wa_mod
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / ".claude").mkdir(parents=True)
+    settings = workspace / ".claude" / "settings.json"
+    settings.write_bytes(b'{"old": true}\n')
+
+    sensitive_prior = b"TASK8963_SENSITIVE_PRIOR_INSTRUCTION_BYTES"
+    private_sentinel = "TASK8963_PRIVATE_PAIR_ROLLBACK_SENTINEL"
+    absolute_sentinel = str(workspace / "TASK8963_PRIVATE_ABSOLUTE_PATH")
+    repr_sentinel = f"_InstructionPathState(data={sensitive_prior!r})"
+    raw_inner = " | ".join((private_sentinel, absolute_sentinel, repr_sentinel))
+    raw_primary = f"TASK8963_RAW_LINK_FAILURE | {absolute_sentinel}"
+    raw_outer = f"TASK8963_RAW_OUTER_RESTORE_FAILURE | {absolute_sentinel}"
+
+    external = tmp_home / "inner_pair_compensation_external_sentinel.md"
+    external.write_bytes(sensitive_prior + b"\n")
+    agents_path = workspace / "AGENTS.md"
+    os.link(external, agents_path)
+    agents_path.chmod(0o640)
+    claude_path = workspace / "CLAUDE.md"
+    claude_path.write_bytes(b"# original CLAUDE instructions\n")
+    claude_path.chmod(0o600)
+
+    agents_before = _instruction_path_state(agents_path)
+    claude_before = _instruction_path_state(claude_path)
+    external_before = _instruction_path_state(external)
+    settings_before = _instruction_path_state(settings)
+    frontmatter_path = org_state.root / "org" / "agents" / "dev_agent.md"
+    frontmatter_before = frontmatter_path.read_bytes()
+    agent_yaml_before = (workspace / "agent.yaml").read_bytes()
+    audit_before = _audit_agent_managed(org_state)
+    assert _owned_temp_residue(workspace) == []
+    assert not list(workspace.glob("*.bak"))
+
+    actual_agents_writes: list[tuple] = []
+
+    def _fail_link_after_agents_write(claude):
+        state = _instruction_path_state(agents_path)
+        assert state[0] == "regular"
+        assert state != agents_before
+        actual_agents_writes.append(state)
+        raise OSError(raw_primary)
+
+    real_inner_restore = wa_mod._restore_instruction_path
+
+    def _fail_inner_agents_restore(path, state):
+        if path == agents_path:
+            raise OSError(raw_inner)
+        return real_inner_restore(path, state)
+
+    real_outer_restore = agents_mod._BootstrapRollbackJournal._restore_regular_file
+
+    def _fail_outer_agents_restore(cls, path, original):
+        if path == agents_path:
+            raise OSError(raw_outer)
+        return real_outer_restore(path, original)
+
+    monkeypatch.setattr(
+        wa_mod, "_replace_with_canonical_claude_link",
+        _fail_link_after_agents_write,
+    )
+    monkeypatch.setattr(wa_mod, "_restore_instruction_path", _fail_inner_agents_restore)
+    monkeypatch.setattr(
+        agents_mod._BootstrapRollbackJournal,
+        "_restore_regular_file",
+        classmethod(_fail_outer_agents_restore),
+    )
+    caplog.set_level(logging.ERROR, logger=agents_mod.__name__)
+
+    r = TestClient(app, raise_server_exceptions=False).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex", "clean": True},
+        headers=auth_headers,
+    )
+
+    assert r.status_code == 400, (r.status_code, r.text)
+    detail = r.json()["detail"]
+    assert set(detail) == {"code", "error", "message"}
+    assert detail["code"] == "executor_bootstrap_failed"
+    assert "instruction pair conflict at CLAUDE.md: link creation failed" in detail["error"]
+    assert "Failed to restore instruction path AGENTS.md" in detail["error"]
+    assert "Failed to restore file AGENTS.md" in detail["error"]
+    assert "cleanup/restore was incomplete" in detail["message"].lower()
+    assert "Any partial bootstrap files have been cleaned up." not in detail["message"]
+
+    for field in (detail["error"], detail["message"]):
+        assert sensitive_prior.decode() not in field
+        assert private_sentinel not in field
+        assert absolute_sentinel not in field
+        assert repr_sentinel not in field
+        assert "_InstructionPathState" not in field
+        assert "data=" not in field
+        assert raw_primary not in field
+        assert raw_inner not in field
+        assert raw_outer not in field
+        assert "pair rollback failed" not in field
+        assert "\n" not in field and "\r" not in field and "\x1b" not in field
+
+    raw_log = "\n".join(record.getMessage() for record in caplog.records)
+    assert raw_primary in raw_log
+    assert raw_inner in raw_log
+    assert raw_outer in raw_log
+    assert private_sentinel in raw_log
+    assert absolute_sentinel in raw_log
+    assert repr_sentinel in raw_log
+
+    # The route truthfully reports incomplete cleanup: AGENTS.md is the real
+    # generated regular file from the failed attempt, while every unaffected
+    # path and all durable state remain exact.
+    assert len(actual_agents_writes) == 1
+    assert _instruction_path_state(agents_path) == actual_agents_writes[0]
+    assert _instruction_path_state(agents_path) != agents_before
+    assert _instruction_path_state(claude_path) == claude_before
+    assert _instruction_path_state(external) == external_before
+    assert _instruction_path_state(settings) == settings_before
+    assert (workspace / "agent.yaml").read_bytes() == agent_yaml_before
+    assert frontmatter_path.read_bytes() == frontmatter_before
+    assert prompt_loader.load_agent(
+        OrgPaths(root=org_state.root), "dev_agent",
+    ).executor == "claude"
+    assert _audit_agent_managed(org_state) == audit_before
+    assert _owned_temp_residue(workspace) == []
+
+    backups = sorted(workspace.glob("*.happyranch-*.bak"))
+    assert len(backups) == 2, [p.name for p in backups]
+    assert {
+        p.name.split(".happyranch-", 1)[0]: _instruction_path_state(p)
+        for p in backups
+    } == {
+        "AGENTS.md": agents_before,
+        "CLAUDE.md": claude_before,
+    }
+    _assert_exact_skill_root(
+        org_state, workspace, ".claude/skills", present=True,
+    )
+    _assert_exact_skill_root(
+        org_state, workspace, ".agents/skills", present=True,
+    )

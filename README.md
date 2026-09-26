@@ -371,8 +371,10 @@ To enroll an agent with a non-default executor, the manager's `manage-agent` pay
 
 After approval, the requested executor and repos are persisted to the agent's
 `org/agents/<name>.md` frontmatter (`AgentDef`), the declared repos are cloned
-into the workspace, and the workspace is bootstrapped with the matching
-surface (`AGENTS.md` for non-Claude executors, `CLAUDE.md` for Claude).
+into the workspace, and every built-in executor workspace is bootstrapped with
+a regular `AGENTS.md` plus a raw relative `CLAUDE.md -> AGENTS.md` link. Startup
+refuses an incomplete or noncanonical pair before executor launch and directs
+the operator to repair it with `happyranch init-agent <agent>`.
 
 ### Managing the daemon
 
@@ -599,7 +601,7 @@ client only hints field formats. Each save records an audit row.
 
 Each agent runs in its own persistent workspace inside the org directory. After `happyranch init-agent`, each workspace contains:
 
-- `CLAUDE.md` (Claude) or `AGENTS.md` (Codex/opencode/Pi) — agent identity, system prompt, available repos
+- A regular `AGENTS.md` plus a raw relative `CLAUDE.md -> AGENTS.md` link for every built-in executor — agent identity, system prompt, available repos. Startup refuses an incomplete or noncanonical pair before executor launch; repair it with `happyranch init-agent <agent>`.
 - `.claude/settings.json` + `.claude/skills/` (Claude) — permissions and skills
 - `.agents/skills/` (Codex/opencode/Pi) — shared skills tree
 - `opencode.json` (opencode only) — `permission.bash` map

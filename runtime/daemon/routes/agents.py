@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
@@ -52,6 +53,7 @@ from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.agent_def import AgentDef, AgentParseError, Executor
 from runtime.orchestrator.context_builder import ContextBuilder
 from runtime.orchestrator.workspace_adapters import (
+    InstructionPairConflict,
     _workspace_skills_transaction,
     materialize_workspace_skills,
     validate_workspace_skills_integrity,
@@ -188,6 +190,16 @@ def _bootstrap_readiness_marker(
         org_root=org.root,
         db=org.db,
     )
+
+    from runtime.orchestrator.workspace_adapters import instruction_pair_refusal
+
+    pair_refusal = instruction_pair_refusal(workspace)
+    if pair_refusal is not None:
+        raise RuntimeError(
+            f"instruction pair for {agent_name!r} is not canonical: "
+            f"{pair_refusal}. Run `happyranch init-agent {agent_name}` to "
+            "complete it."
+        )
 
     profile = get_registry().get_profile(provider)
     if profile is None:
@@ -1331,9 +1343,10 @@ def _get_valid_executors() -> tuple[str, ...]:
 _VALID_EXECUTORS: tuple[str, ...] = ()  # populated lazily
 
 # Claude-only workspace files that go stale when an agent switches AWAY from
-# the Claude executor: the new adapter writes AGENTS.md/.agents/ and never
-# removes these, so they linger unused. (.claude holds settings.json + skills.)
-_CLAUDE_ONLY_WORKSPACE_FILES: tuple[str, ...] = ("CLAUDE.md", ".claude")
+# the Claude executor. The shared canonical instruction pair
+# (``AGENTS.md`` + raw relative ``CLAUDE.md`` link) and ``.claude/skills`` are
+# PRESERVED; only the Claude-only ``.claude/settings.json`` is stale.
+_CLAUDE_ONLY_WORKSPACE_FILES: tuple[str, ...] = (".claude/settings.json",)
 
 
 # ---------------------------------------------------------------------------
@@ -1403,6 +1416,27 @@ def _bootstrap_legacy_migration_unsupported(workspace: Path) -> bool:
     return (workspace / "learnings").exists() and not (workspace / "memory").exists()
 
 
+def _is_canonical_claude_instruction_link(workspace: Path) -> bool:
+    """True when ``CLAUDE.md`` is the accepted raw relative ``AGENTS.md`` link.
+
+    THR-262 Slice B: the canonical instruction pair admits exactly one symlink
+    at an owned path — a same-directory relative ``CLAUDE.md -> AGENTS.md``
+    whose target is a regular file. Every other symlink remains unsupported.
+    """
+    import stat as _stat
+
+    link = workspace / "CLAUDE.md"
+    target = workspace / "AGENTS.md"
+    try:
+        if os.readlink(link) != "AGENTS.md":
+            return False
+        if not _stat.S_ISREG(os.lstat(target).st_mode):
+            return False
+        return os.path.realpath(link) == os.path.realpath(target)
+    except OSError:
+        return False
+
+
 def _bootstrap_unsupported_owned_paths(workspace: Path) -> list[str]:
     """Return owned paths bootstrap cannot safely mutate (symlink / non-regular).
 
@@ -1415,6 +1449,12 @@ def _bootstrap_unsupported_owned_paths(workspace: Path) -> list[str]:
     any mutation — including union materialization, which reconciles the
     bootstrap-owned ``.claude`` directory.
 
+    THR-262 Slice B admission: the single canonical instruction link
+    ``CLAUDE.md -> AGENTS.md`` (regular same-directory target) is accepted;
+    the journal now captures/restores its exact raw link text, so it is
+    losslessly compensable. Every other symlink/non-regular entry is still
+    rejected.
+
     Detection uses ``is_symlink`` first (an ``lstat`` that never follows the
     link), so a symlink is classified without reading or touching its
     target. ``exists``/``is_file``/``is_dir`` are only consulted after the
@@ -1424,6 +1464,8 @@ def _bootstrap_unsupported_owned_paths(workspace: Path) -> list[str]:
     for rel in _BOOTSTRAP_OWNED_FILES:
         fp = workspace / rel
         if fp.is_symlink():
+            if rel == "CLAUDE.md" and _is_canonical_claude_instruction_link(workspace):
+                continue
             unsupported.append(rel)
         elif fp.exists() and not fp.is_file():
             unsupported.append(rel)
@@ -1450,7 +1492,14 @@ def _bootstrap_uncapturable_owned_files(workspace: Path) -> list[str]:
     uncapturable: list[str] = []
     for rel in _BOOTSTRAP_OWNED_FILES:
         fp = workspace / rel
-        if fp.is_file() and not fp.is_symlink():
+        if fp.is_symlink():
+            # THR-262 Slice B: the admitted canonical instruction link must
+            # have readable raw link text, or capture cannot restore it.
+            try:
+                os.readlink(fp)
+            except OSError:
+                uncapturable.append(rel)
+        elif fp.is_file():
             try:
                 fp.read_bytes()
             except OSError:
@@ -1458,14 +1507,45 @@ def _bootstrap_uncapturable_owned_files(workspace: Path) -> list[str]:
     return uncapturable
 
 
+class _BootstrapCompensationOperation(StrEnum):
+    """Closed caller-visible classifications for rollback operations."""
+
+    UNCAPTURABLE_FILE = "Uncapturable owned file cannot be compensated"
+    RESTORE_LINK = "Failed to restore link"
+    REMOVE_NEW_FILE = "Failed to remove new file"
+    RESTORE_FILE = "Failed to restore file"
+    REMOVE_NEW_DIRECTORY = "Failed to remove new directory"
+
+
+@dataclass(frozen=True)
+class _BootstrapCompensationFailure:
+    """Structured rollback failure with raw detail reserved for daemon logs."""
+
+    operation: _BootstrapCompensationOperation
+    owned_relative_path: str
+    cause: OSError | None = None
+
+    def caller_diagnostic(self) -> str:
+        """Return only stable classification and declared relative name."""
+        return f"{self.operation.value} {self.owned_relative_path}"
+
+    def raw_diagnostic(self) -> str:
+        """Return full operator detail, including the original exception."""
+        diagnostic = self.caller_diagnostic()
+        if self.cause is not None:
+            diagnostic = f"{diagnostic}: {self.cause}"
+        return diagnostic
+
+
 class _BootstrapRollbackJournal:
     """Bounded record of bootstrap-owned filesystem state, captured pre-bootstrap.
 
     Records only ``_BOOTSTRAP_OWNED_FILES``/``_BOOTSTRAP_OWNED_DIRS``
     (absence/presence/type/content). ``restore`` returns a list of
-    compensation error strings (empty when clean). Files that did not exist
-    before bootstrap are removed; files that existed are restored to their
-    original bytes; newly-created owned directories are removed when empty.
+    structured compensation failures (empty when clean). Files that did not
+    exist before bootstrap are removed; files that existed are restored to
+    their original type, bytes, mode, and UID; newly-created owned directories
+    are removed when empty.
     Canonical skill links and all other workspace content are never touched.
     No broad workspace/repos traversal occurs on either the capture or the
     restore path.
@@ -1491,12 +1571,24 @@ class _BootstrapRollbackJournal:
     mutation should capture ever observe one.
     """
 
-    __slots__ = ("_files", "_uncapturable", "_dirs")
+    @dataclass(frozen=True)
+    class _RegularFileState:
+        data: bytes
+        mode: int
+        uid: int
+
+    __slots__ = ("_files", "_uncapturable", "_dirs", "_links")
 
     def __init__(self) -> None:
-        self._files: dict[str, bytes | None] = {}
+        self._files: dict[
+            str, _BootstrapRollbackJournal._RegularFileState | None
+        ] = {}
         self._uncapturable: set[str] = set()
         self._dirs: set[str] = set()
+        # THR-262 Slice B: exact raw link text for admitted symlink owned
+        # paths (the canonical CLAUDE.md -> AGENTS.md link), so restore can
+        # recreate the link rather than collapsing it to absent.
+        self._links: dict[str, str] = {}
 
     def uncapturable(self) -> list[str]:
         """Sorted declared files observed present-but-unreadable at capture.
@@ -1509,60 +1601,197 @@ class _BootstrapRollbackJournal:
         return sorted(self._uncapturable)
 
     @classmethod
+    def _capture_regular_file(cls, fp: Path) -> _RegularFileState:
+        """Capture one regular file from a no-follow descriptor."""
+        import stat as _stat
+
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(fp, flags)
+        try:
+            st = os.fstat(fd)
+            if not _stat.S_ISREG(st.st_mode):
+                raise OSError("declared file changed type during capture")
+            with os.fdopen(fd, "rb") as fh:
+                fd = -1
+                data = fh.read()
+            return cls._RegularFileState(
+                data=data,
+                mode=st.st_mode & 0o7777,
+                uid=st.st_uid,
+            )
+        finally:
+            if fd >= 0:
+                os.close(fd)
+
+    @classmethod
+    def _restore_regular_file(
+        cls, fp: Path, original: _RegularFileState,
+    ) -> None:
+        """Atomically restore one regular file without opening the live path."""
+        fd, staged_raw = tempfile.mkstemp(
+            prefix=f".{fp.name}.happyranch-restore-",
+            dir=fp.parent,
+        )
+        staged = Path(staged_raw)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fd = -1
+                fh.write(original.data)
+                fh.flush()
+                if original.uid != os.geteuid():
+                    os.fchown(fh.fileno(), original.uid, -1)
+                # Apply mode after ownership: chown may clear set-id bits.
+                os.fchmod(fh.fileno(), original.mode)
+            os.replace(staged, fp)
+            restored = cls._capture_regular_file(fp)
+            if restored != original:
+                raise OSError(
+                    "regular-file metadata/content verification failed: "
+                    f"expected {original!r}, got {restored!r}"
+                )
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                staged.unlink()
+            except FileNotFoundError:
+                pass
+
+    @staticmethod
+    def _restore_link(fp: Path, raw_link: str) -> None:
+        """Atomically restore exact raw link text via a collision-safe sibling."""
+        import stat as _stat
+
+        staged: Path | None = None
+        for counter in range(64):
+            candidate = fp.parent / (
+                f".{fp.name}.happyranch-restore-{os.getpid()}-{counter}.lnk"
+            )
+            try:
+                os.symlink(raw_link, candidate)
+            except FileExistsError:
+                continue
+            staged = candidate
+            break
+        if staged is None:
+            raise OSError("could not reserve an owned link-restore name")
+        try:
+            os.replace(staged, fp)
+            st = os.lstat(fp)
+            if not _stat.S_ISLNK(st.st_mode) or os.readlink(fp) != raw_link:
+                raise OSError("link restore verification failed")
+        finally:
+            try:
+                staged.unlink()
+            except FileNotFoundError:
+                pass
+
+    @classmethod
     def capture(cls, workspace: Path) -> "_BootstrapRollbackJournal":
+        import stat as _stat
+
         journal = cls()
         for rel in _BOOTSTRAP_OWNED_FILES:
             fp = workspace / rel
-            original: bytes | None = None
-            if fp.is_file() and not fp.is_symlink():
+            try:
+                st = os.lstat(fp)
+            except FileNotFoundError:
+                journal._files[rel] = None
+                continue
+            except OSError:
+                journal._uncapturable.add(rel)
+                continue
+            if _stat.S_ISLNK(st.st_mode):
+                # Admitted canonical instruction link: record exact raw text.
                 try:
-                    original = fp.read_bytes()
+                    journal._links[rel] = os.readlink(fp)
+                except OSError:
+                    journal._uncapturable.add(rel)
+                continue
+            if _stat.S_ISREG(st.st_mode):
+                try:
+                    journal._files[rel] = cls._capture_regular_file(fp)
                 except OSError:
                     # Present regular file whose bytes cannot be captured.
                     # Never collapse this into the absent (None) state —
                     # restore() would delete a file it could not read.
                     journal._uncapturable.add(rel)
-                    continue
-            journal._files[rel] = original
+                continue
+            # Step-0 preflight rejects a non-regular declared file before
+            # capture. Preserve the same fail-closed distinction here in
+            # case the path changes type between those two checks.
+            journal._uncapturable.add(rel)
         for dirname in _BOOTSTRAP_OWNED_DIRS:
             d = workspace / dirname
             if d.is_dir() and not d.is_symlink():
                 journal._dirs.add(dirname)
         return journal
 
-    def restore(self, workspace: Path) -> list[str]:
-        errors: list[str] = []
+    def restore(self, workspace: Path) -> list[_BootstrapCompensationFailure]:
+        errors: list[_BootstrapCompensationFailure] = []
         for rel in sorted(self._uncapturable):
             # Never delete or overwrite a file whose original bytes were
             # never captured; compensation cannot be lossless, so surface
             # the failure instead of guessing.
             errors.append(
-                f"Uncapturable owned file {rel} cannot be compensated"
+                _BootstrapCompensationFailure(
+                    _BootstrapCompensationOperation.UNCAPTURABLE_FILE,
+                    rel,
+                )
             )
+        for rel, raw_link in sorted(self._links.items()):
+            # THR-262 Slice B: recreate the exact captured raw relative link
+            # (never collapse an admitted canonical link to absent).
+            fp = workspace / rel
+            try:
+                self._restore_link(fp, raw_link)
+            except OSError as exc:
+                errors.append(
+                    _BootstrapCompensationFailure(
+                        _BootstrapCompensationOperation.RESTORE_LINK,
+                        rel,
+                        exc,
+                    )
+                )
         for rel, original in self._files.items():
             fp = workspace / rel
             if original is None:
                 # Absent before bootstrap — remove anything bootstrap created.
-                if fp.is_symlink() or fp.is_file():
-                    try:
-                        fp.unlink()
-                    except OSError as exc:
-                        errors.append(f"Failed to remove new file {rel}: {exc}")
-            elif fp.is_symlink() or not fp.is_file():
-                # Existed before but bootstrap replaced it with a link or
-                # deleted it — restore the original bytes.
                 try:
-                    if fp.is_symlink() or fp.exists():
+                    import stat as _stat
+                    st = os.lstat(fp)
+                    if _stat.S_ISLNK(st.st_mode) or _stat.S_ISREG(st.st_mode):
                         fp.unlink()
-                    fp.write_bytes(original)
+                    else:
+                        raise OSError(
+                            "refusing to remove unexpected non-regular path"
+                        )
+                except FileNotFoundError:
+                    pass
                 except OSError as exc:
-                    errors.append(f"Failed to restore file {rel}: {exc}")
+                    errors.append(
+                        _BootstrapCompensationFailure(
+                            _BootstrapCompensationOperation.REMOVE_NEW_FILE,
+                            rel,
+                            exc,
+                        )
+                    )
             else:
                 try:
-                    if fp.read_bytes() != original:
-                        fp.write_bytes(original)
+                    try:
+                        current = self._capture_regular_file(fp)
+                    except OSError:
+                        current = None
+                    if current != original:
+                        self._restore_regular_file(fp, original)
                 except OSError as exc:
-                    errors.append(f"Failed to restore file {rel}: {exc}")
+                    errors.append(
+                        _BootstrapCompensationFailure(
+                            _BootstrapCompensationOperation.RESTORE_FILE,
+                            rel,
+                            exc,
+                        )
+                    )
         # Remove newly-created owned directories (only when empty).
         for dirname in _BOOTSTRAP_OWNED_DIRS:
             d = workspace / dirname
@@ -1572,7 +1801,11 @@ class _BootstrapRollbackJournal:
                         d.rmdir()
                 except OSError as exc:
                     errors.append(
-                        f"Failed to remove new directory {dirname}: {exc}"
+                        _BootstrapCompensationFailure(
+                            _BootstrapCompensationOperation.REMOVE_NEW_DIRECTORY,
+                            dirname,
+                            exc,
+                        )
                     )
         return errors
 
@@ -1580,6 +1813,28 @@ class _BootstrapRollbackJournal:
 class SetExecutorBody(BaseModel):
     executor: str
     clean: bool = False
+
+
+_BOOTSTRAP_COMPENSATION_MAX_ERRORS = 4
+
+
+def _bounded_bootstrap_compensation_diagnostics(
+    errors: list[_BootstrapCompensationFailure],
+) -> str:
+    """Return caller-safe bounded prose for rollback compensation failures.
+
+    Raw exceptions remain available to daemon logging only.  The HTTP surface
+    is derived structurally from a closed operation classification and a
+    declared bootstrap-owned relative path, never from exception text.
+    """
+    visible = errors[:_BOOTSTRAP_COMPENSATION_MAX_ERRORS]
+    if len(errors) > _BOOTSTRAP_COMPENSATION_MAX_ERRORS:
+        visible = errors[:_BOOTSTRAP_COMPENSATION_MAX_ERRORS - 1]
+    diagnostics = [failure.caller_diagnostic() for failure in visible]
+    omitted = len(errors) - len(visible)
+    if omitted > 0:
+        diagnostics.append(f"... and {omitted} more compensation failure(s)")
+    return "; ".join(diagnostics)
 
 
 def _validate_executor(executor: str) -> None:
@@ -1626,12 +1881,17 @@ async def set_agent_executor(
          render_agent_text + tempfile + os.replace (same pattern as the
          manage-agent update path). This is the single authoritative store.
       2. executor bootstrap — via ContextBuilder.ensure_workspace_ready with
-         ``provider=<NEW executor>`` so the correct adapter regenerates
-         (Claude → CLAUDE.md/.claude/; others → AGENTS.md/.agents/).
+         ``provider=<NEW executor>`` so every built-in adapter regenerates the
+         common canonical ``AGENTS.md`` plus ``CLAUDE.md -> AGENTS.md`` pair,
+         while provider-specific settings and skill-root handling remain
+         adapter-owned.
 
-    Stale-file handling (away-from-Claude only): switching off Claude leaves
-    CLAUDE.md and .claude/ behind. By default these are WARNED about, not
-    deleted; ``clean=True`` opts into deleting them. Never auto-deletes.
+    Stale-file handling (away-from-Claude only): the canonical regular
+    ``AGENTS.md`` plus raw ``CLAUDE.md -> AGENTS.md`` pair and the managed
+    ``.claude/skills`` union are preserved for cross-provider discovery.
+    By default stale executor settings are warned about; ``clean=True``
+    removes only the accepted stale executor settings. Never auto-deletes
+    the canonical instruction pair or either managed skills root.
     """
     paths = OrgPaths(root=org.root)
 
@@ -1740,8 +2000,8 @@ async def set_agent_executor(
         # capture() is the single authoritative read of the declared write
         # surface. It runs BEFORE _executor_switch_materialize so the switch
         # can never mutate unless every pre-existing declared-write target
-        # has already been captured as rollback bytes/state. A declared file
-        # that gate 3 could read but capture cannot (TOCTOU second read)
+        # has already been captured as rollback type/content/metadata. A
+        # declared file that gate 3 could read but capture cannot (TOCTOU)
         # fails closed here, before any materialize/bootstrap/frontmatter/
         # audit mutation.
         rollback_journal = _BootstrapRollbackJournal.capture(workspace)
@@ -1753,7 +2013,7 @@ async def set_agent_executor(
                     "code": "executor_bootstrap_failed",
                     "error": (
                         "Bootstrap-owned file is present but cannot be "
-                        "captured (read_bytes failed): "
+                        "captured (no-follow content/metadata capture failed): "
                         + ", ".join(uncaptured)
                     ),
                     "message": (
@@ -1824,10 +2084,15 @@ async def set_agent_executor(
             )
         except Exception as e:
             _logger = logging.getLogger(__name__)
+            logged_error = (
+                e.raw_diagnostic()
+                if isinstance(e, InstructionPairConflict)
+                else str(e)
+            )
             _logger.error(
                 "Executor switch: bootstrap failed after successful "
                 "union for provider=%s agent=%s: %s",
-                body.executor, agent_name, e,
+                body.executor, agent_name, logged_error,
             )
             # ── Bounded rollback compensation ──
             # 1. Remove ONLY declared bootstrap-owned artifacts newly created
@@ -1841,20 +2106,39 @@ async def set_agent_executor(
             if errors:
                 _logger.error(
                     "Executor switch bootstrap cleanup errors: %s",
-                    "; ".join(errors),
+                    "; ".join(error.raw_diagnostic() for error in errors),
+                )
+            response_error = (
+                e.caller_diagnostic(
+                    max_compensation_failures=_BOOTSTRAP_COMPENSATION_MAX_ERRORS,
+                )
+                if isinstance(e, InstructionPairConflict)
+                else str(e)
+            )
+            message = (
+                "Executor workspace bootstrap failed after successful skill "
+                "materialization. The previous executor has been preserved. "
+                "Any partial bootstrap files have been cleaned up. Resolve "
+                "the bootstrap error before retrying."
+            )
+            if errors:
+                diagnostics = _bounded_bootstrap_compensation_diagnostics(errors)
+                response_error = (
+                    f"{response_error}; rollback compensation incomplete: "
+                    f"{diagnostics}"
+                )
+                message = (
+                    "Executor workspace bootstrap failed after successful skill "
+                    "materialization. The previous executor has been preserved. "
+                    "Cleanup/restore was incomplete: "
+                    f"{diagnostics}. Resolve the bootstrap error before retrying."
                 )
             raise HTTPException(
                 status_code=400,
                 detail={
                     "code": "executor_bootstrap_failed",
-                    "error": str(e),
-                    "message": (
-                        "Executor workspace bootstrap failed after "
-                        "successful skill materialization. The previous "
-                        "executor has been preserved. Any partial "
-                        "bootstrap files have been cleaned up. "
-                        "Resolve the bootstrap error before retrying."
-                    ),
+                    "error": response_error,
+                    "message": message,
                 },
             )
 
@@ -1923,6 +2207,16 @@ async def set_agent_executor(
                         target.unlink()
                     removed.append(name)
                 cleaned = True
+                # THR-262 Slice B: the shared canonical instruction pair and
+                # ``.claude/skills`` are preserved. Remove ``.claude`` only
+                # when cleaning genuinely emptied it.
+                claude_dir = workspace / ".claude"
+                if claude_dir.is_dir() and not claude_dir.is_symlink():
+                    try:
+                        if not any(claude_dir.iterdir()):
+                            claude_dir.rmdir()
+                    except OSError:
+                        pass
 
     AuditLogger(org.db).log_agent_managed(
         scope_id="founder",

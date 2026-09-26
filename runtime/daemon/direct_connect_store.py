@@ -1478,10 +1478,11 @@ class DirectConnectAuthorityStore:
 
         ``workspace_adapter_id`` is the candidate CLI's OWN declaration from
         its ``/connect`` manifest — not the value (if any) set at mint time.
-        Only the connecting wrapper knows which workspace-bootstrap
-        convention (Claude-style vs AGENTS.md-style) its underlying CLI
-        expects; the founder's mint-time value is an unrelated activation
-        trigger for the Slice-1A authority row and is never read here.
+        Every workspace-bootstrap convention creates a regular ``AGENTS.md``
+        plus raw relative ``CLAUDE.md -> AGENTS.md`` pair; only the connecting
+        wrapper knows which provider-specific ancillary bootstrap/settings its
+        underlying CLI expects. The founder's mint-time value is an unrelated
+        activation trigger for the Slice-1A authority row and is never read here.
         """
         now = time.time() if now is None else now
         fingerprint = fingerprint_registration_token(token_plaintext)

@@ -36,6 +36,9 @@ def test_manager_policy_identity_connected_launch_completion_hook(
     workspace = paths.workspaces_dir / manager
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / "task_history.md").write_text(f"# Task History: {manager}\n")
+    # THR-262 Slice B: canonical instruction pair required before launch.
+    (workspace / "AGENTS.md").write_text(f"# Agent: {manager}\n")
+    (workspace / "CLAUDE.md").symlink_to("AGENTS.md")
     org.orchestrator._teams._teams["engineering"] = TeamManager(
         name=manager, team="engineering", workers=("dev_agent",),
     )

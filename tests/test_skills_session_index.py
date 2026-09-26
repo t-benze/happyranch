@@ -813,6 +813,9 @@ def _setup_orch_workspace(test_runtime, agent: str = "dev_agent") -> None:
     ws = test_runtime.workspaces_dir / agent
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
+    # THR-262 Slice B: canonical instruction pair required before launch.
+    (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+    (ws / "CLAUDE.md").symlink_to("AGENTS.md")
     # Create agent.yaml and repos so materialization can proceed.
     (ws / "agent.yaml").write_text("executor: claude\n")
     (ws / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)

@@ -5,6 +5,7 @@ from enum import StrEnum
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path
+import os
 import shutil
 
 import yaml
@@ -116,8 +117,36 @@ def _managed_dir_invalid_detail(paths: SystemAssistantPaths) -> str | None:
     return _managed_dir_detail(paths, require_exists=True)
 
 
-def _bootstrap_file_invalid_detail(path: Path, filename: str) -> str | None:
+def _is_canonical_claude_instruction_link(path: Path) -> bool:
+    """True when *path* is the raw relative ``CLAUDE.md -> AGENTS.md`` link.
+
+    THR-262 Slice B: the assistant instruction pair admits exactly this one
+    same-workspace relative link whose target is a regular file; the generic
+    symlink rejection for every other path is unchanged.
+    """
+    import stat as _stat
+
+    target = path.parent / "AGENTS.md"
+    try:
+        if os.readlink(path) != "AGENTS.md":
+            return False
+        if not _stat.S_ISREG(os.lstat(target).st_mode):
+            return False
+        return os.path.realpath(path) == os.path.realpath(target)
+    except OSError:
+        return False
+
+
+def _bootstrap_file_invalid_detail(
+    path: Path, filename: str, *, allow_canonical_link: bool = False,
+) -> str | None:
     if path.is_symlink():
+        if (
+            allow_canonical_link
+            and filename == "CLAUDE.md"
+            and _is_canonical_claude_instruction_link(path)
+        ):
+            return None
         return f"assistant bootstrap file {filename} must not be a symlink"
     if not path.exists():
         return f"assistant bootstrap file {filename} is missing"
@@ -251,17 +280,18 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
                 else agent_invalid_detail
             ),
         )
-    expected = "CLAUDE.md" if config.selected_executor == "claude" else "AGENTS.md"
-    prompt_invalid_detail = _bootstrap_file_invalid_detail(
-        paths.workspace / expected,
-        expected,
-    )
-    if prompt_invalid_detail is not None:
+    # THR-262 Slice B: validate the canonical instruction pair for BOTH
+    # executor families — regular AGENTS.md plus a raw relative
+    # CLAUDE.md -> AGENTS.md resolving to it.
+    from runtime.orchestrator.workspace_adapters import instruction_pair_refusal
+
+    pair_refusal = instruction_pair_refusal(paths.workspace)
+    if pair_refusal is not None:
         return AssistantStatus(
             state=AssistantState.STALE_OR_BROKEN,
             selected_executor=config.selected_executor,
             workspace_path=config.workspace_path,
-            detail=prompt_invalid_detail,
+            detail=f"assistant instruction pair is not canonical: {pair_refusal}",
         )
     learnings_index_invalid_detail = _learnings_index_invalid_detail(
         paths.learnings_dir / "_index.md",
@@ -341,6 +371,29 @@ instructions.
 """
 
 
+def _write_assistant_instruction_pair(workspace: Path, prompt: str) -> None:
+    """Converge the assistant instruction pair through the shared writer.
+
+    THR-262 Slice B: both assistant registration and bootstrap must use the
+    already-approved canonical instruction-pair classifier/writer so divergent
+    regular ``AGENTS.md``/``CLAUDE.md`` bytes are never overwritten or unlinked
+    without a verified preservation copy, links are never written through, and
+    the pair-wide preservation barrier precedes either mutation. The shared
+    writer's ``InstructionPairConflict`` is surfaced as ``ValueError`` so the
+    assistant routes keep their documented ``assistant_workspace_invalid``
+    error contract.
+    """
+    from runtime.orchestrator.workspace_adapters import (
+        InstructionPairConflict,
+        write_canonical_instruction_pair,
+    )
+
+    try:
+        write_canonical_instruction_pair(workspace, prompt)
+    except InstructionPairConflict as exc:
+        raise ValueError(str(exc)) from exc
+
+
 def prepare_assistant_registration_workspace(runtime_root: Path) -> None:
     paths = system_assistant_paths(runtime_root)
     _reject_symlink(
@@ -373,8 +426,7 @@ def prepare_assistant_registration_workspace(runtime_root: Path) -> None:
         "assistant workspace is not a directory",
     )
     prompt = _registration_prompt()
-    (paths.workspace / "CLAUDE.md").write_text(prompt)
-    (paths.workspace / "AGENTS.md").write_text(prompt)
+    _write_assistant_instruction_pair(paths.workspace, prompt)
 
 
 def clear_assistant_config(runtime_root: Path) -> None:
@@ -390,7 +442,9 @@ def _reject_symlink(path: Path, detail: str) -> None:
 
 
 def _reject_existing_invalid_bootstrap_file(path: Path, filename: str) -> None:
-    invalid_detail = _bootstrap_file_invalid_detail(path, filename)
+    invalid_detail = _bootstrap_file_invalid_detail(
+        path, filename, allow_canonical_link=(filename == "CLAUDE.md"),
+    )
     if invalid_detail is None or invalid_detail.endswith(" is missing"):
         return
     raise ValueError(invalid_detail)
@@ -649,11 +703,4 @@ def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
     if not (paths.learnings_dir / "_index.md").exists():
         (paths.learnings_dir / "_index.md").write_text("# Learnings: system_assistant\n\n")
     prompt = _assistant_prompt()
-    claude_path = paths.workspace / "CLAUDE.md"
-    agents_path = paths.workspace / "AGENTS.md"
-    if selected_executor == "claude":
-        agents_path.unlink(missing_ok=True)
-        claude_path.write_text(prompt)
-    else:
-        claude_path.unlink(missing_ok=True)
-        agents_path.write_text(prompt)
+    _write_assistant_instruction_pair(paths.workspace, prompt)

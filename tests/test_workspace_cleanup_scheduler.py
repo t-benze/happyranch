@@ -1548,6 +1548,7 @@ def _setup_agent_workspace(runtime, agent: str, provider: str) -> None:
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
     (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+    (ws / "CLAUDE.md").symlink_to("AGENTS.md")
     ad = AgentDef(
         name=agent, team="engineering", role="worker",
         executor=provider, allow_rules=(), repos={},
