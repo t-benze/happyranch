@@ -116,6 +116,36 @@ def test_helper_reference_is_relative_to_skill(body):
     assert "scripts/check_path_use.py" in body
 
 
+def test_effectiveness_contract_uses_complete_history_and_exact_host_job(body):
+    procedure = _shipped_procedure(body)
+    assert "happyranch audit" in procedure and "--all-pages" in procedure
+    assert "happyranch jobs submit" in procedure
+    assert "happyranch jobs wait" in procedure
+    assert "happyranch jobs show" in procedure
+    assert "happyranch jobs output" in procedure
+    assert "clear_observation" in procedure
+    assert "scan_receipt_mismatch" in procedure
+    assert "# gate current-use-scan\n_wc_scan_job" in _shipped_gate_text(body)
+
+
+def test_effectiveness_contract_is_zsh_safe_and_preserves_dirty_cache_only(body):
+    procedure = _shipped_procedure(body)
+    assert "local owner status" not in procedure
+    assert "task_status=" in procedure
+    assert 'case "$task_status"' in procedure
+    assert "_wc_is_cache" in procedure
+    assert "dirty whole-worktree" in " ".join(body.split()).lower()
+    assert "Source bytes and Git status" in body
+
+
+def test_effectiveness_contract_names_remote_and_merged_preservation(body):
+    normalized = " ".join(body.split())
+    assert "freshly verified matching remote task branch" in normalized
+    assert "confirmed merged PR" in normalized
+    assert "may not preserve the original commit topology" in normalized
+    assert "closed-unmerged" in normalized
+
+
 # ── Behavioral resolver/materialization ───────────────────────────────────
 
 def test_resolver_includes_workspace_cleanup_without_repos(tmp_path):
@@ -217,8 +247,9 @@ def test_procedure_uses_the_documented_gate_commands(body):
     names = re.findall(r"^# gate (.+)$", _shipped_gate_text(body), re.M)
     assert len(names) >= 12, names
     for required in ("workspace-scope", "canonical-shape", "non-primary", "registration",
-                     "ownership", "not-symlink", "same-filesystem", "clean",
-                     "durable-head", "no-open-pr", "retention-age",
+                     "ownership", "filesystem-ownership", "protected-task",
+                     "not-symlink", "same-filesystem", "clean",
+                     "durable-preservation-and-pr", "retention-age",
                      "current-use-scan"):
         assert required in names
 
@@ -284,32 +315,11 @@ def test_r5_ownership_and_retention_gates_use_authoritative_facts(body, tmp_path
     assert run("retention-age", nonterm, age=86400).returncode != 0
 
 
-def test_r5_no_open_pr_gate_binds_to_primary_repository(body, tmp_path):
-    primary = tmp_path / "repos" / "demo"
-    primary.mkdir(parents=True)
-    _git("init", "-b", "main", str(primary))
-    (primary / "README.md").write_text("x\n")
-    _git("add", "-A", cwd=primary)
-    _git("commit", "-m", "base", cwd=primary)
-    _git("branch", "task/TASK-X", cwd=primary)
-    containing = primary / ".claude" / "worktrees" / "TASK-X"
-    containing.parent.mkdir(parents=True)
-    _git("worktree", "add", str(containing), "task/TASK-X", cwd=primary)
-    _git("remote", "add", "origin",
-         "https://github.com/demo/fixture.git", cwd=primary)
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    gh = bin_dir / "gh"
-    gh.write_text("#!/bin/sh\necho \"$*\" > \"$GH_LOG\"\necho 0\n")
-    gh.chmod(0o755)
-    env = dict(os.environ, PRIMARY=str(primary), CONTAINING=str(containing),
-               PATH=str(bin_dir) + os.pathsep + os.environ.get("PATH", ""),
-               GH_LOG=str(tmp_path / "gh.log"))
-    result = _run_shipped_gate(body, "no-open-pr", env)
-    assert result.returncode == 0, result.stderr
-    logged = (tmp_path / "gh.log").read_text()
-    assert "--repo demo/fixture" in logged, logged
-    assert "--head task/TASK-X" in logged, logged
+def test_r5_preservation_gate_calls_fresh_remote_and_all_pr_states(body):
+    procedure = _shipped_procedure(body)
+    assert 'ls-remote --exit-code origin "refs/heads/$branch"' in procedure
+    assert 'gh pr list --repo "$repo_slug" --head "$branch" --state all' in procedure
+    assert "mergedAt" in procedure and "headRefOid" in procedure
 
 
 def _git(*args, cwd=None):
@@ -366,15 +376,51 @@ def _write_stubs(bin_dir: Path) -> None:
         "d=m.get(sys.argv[1], {\"error\": \"missing\"})\n"
         "if isinstance(d,dict) and d.get(\"task_id\") is None: d=dict(d); d[\"task_id\"]=sys.argv[1]\n"
         "print(json.dumps(d))' \"$last\" ;;\n"
+        "  tasks)\n"
+        "    [ \"${WC_TASKS_FAIL:-0}\" = \"1\" ] && exit 1\n"
+        "    n=$(cat \"$WC_TASKS_COUNT\"); n=$((n+1)); echo \"$n\" > \"$WC_TASKS_COUNT\"\n"
+        "    if [ \"$n\" -gt 1 ] && [ -n \"$WC_TASKS_SECOND\" ]; then exec cat \"$WC_TASKS_SECOND\"; fi\n"
+        "    exec cat \"$WC_TASKS_FIRST\" ;;\n"
         "  audit)\n"
         "    [ \"${WC_AUDIT_FAIL:-0}\" = \"1\" ] && exit 1\n"
-        "    case \" $* \" in *\" --action workspace_cleanup_triggered \"*)\n"
-        "      count_file=\"$WC_TRIGGER_COUNT\"; first=\"$WC_AUDIT_TRIGGER\"; second=\"$WC_AUDIT_TRIGGER_SECOND\" ;;\n"
-        "      *) count_file=\"$WC_ALL_COUNT\"; first=\"$WC_AUDIT_ALL\"; second=\"$WC_AUDIT_ALL_SECOND\" ;;\n"
-        "    esac\n"
-        "    n=$(cat \"$count_file\"); n=$((n+1)); echo \"$n\" > \"$count_file\"\n"
+        "    n=$(cat \"$WC_TRIGGER_COUNT\"); n=$((n+1)); echo \"$n\" > \"$WC_TRIGGER_COUNT\"\n"
+        "    first=\"$WC_AUDIT_TRIGGER\"; second=\"$WC_AUDIT_TRIGGER_SECOND\"\n"
         "    if [ \"$n\" -gt 1 ] && [ -n \"$second\" ]; then exec cat \"$second\"; fi\n"
         "    exec cat \"$first\" ;;\n"
+        "  jobs)\n"
+        "    case \"$2\" in\n"
+        "      submit)\n"
+        "        [ \"$WC_JOB_SCENARIO\" = rejected ] && exit 1\n"
+        "        cp \"$last\" \"$WC_JOB_PAYLOAD\"\n"
+        "        echo 'ok: submitted JOB-1 (status=completed). Self-block your task referencing this ID.' ;;\n"
+        "      wait)\n"
+        "        case \"$WC_JOB_SCENARIO\" in\n"
+        "          timeout) echo '{\"status\":\"running\",\"timed_out\":true}' ;;\n"
+        "          failed) echo '{\"status\":\"failed\",\"timed_out\":false}' ;;\n"
+        "          *) echo '{\"status\":\"completed\",\"timed_out\":false}' ;;\n"
+        "        esac ;;\n"
+        "      show)\n"
+        "        exec python3 -c 'import datetime,json,os\n"
+        "p=json.load(open(os.environ[\"WC_JOB_PAYLOAD\"])); scenario=os.environ[\"WC_JOB_SCENARIO\"]\n"
+        "created=(\"2000-01-01T00:00:00+00:00\" if scenario==\"stale\" else datetime.datetime.now(datetime.timezone.utc).isoformat())\n"
+        "task=(\"TASK-WRONG\" if scenario==\"mismatched\" else p[\"task_id\"])\n"
+        "exit_code=(3 if scenario==\"completed_nonzero\" else 0)\n"
+        "print(\"JOB-1   completed   submitted \"+created); print(\"Agent:        dev_agent\"); print(\"Task:         \"+task); print(\"Interpreter:  \"+p[\"interpreter\"]); print(\"Cwd hint:     (workspace root)\"); print(); print(\"Title:        \"+p[\"title\"]); print(); print(\"Rationale:\"); print(\"  \"+p[\"rationale\"]); print(); print(\"Script:\"); print(\"  \"+p[\"script\"].rstrip()); print(); print(\"Exit code:    \"+str(exit_code))' ;;\n"
+        "      output)\n"
+        "        echo scan >> \"$WC_SCAN_LOG\"\n"
+        "        [ \"$WC_JOB_SCENARIO\" = output_cap ] && exit 1\n"
+        "        echo '--- stdout ---'\n"
+        "        case \"$WC_JOB_SCENARIO\" in\n"
+        "          malformed) echo 'not-json' ;;\n"
+        "          missing_output) : ;;\n"
+        "          use) printf '{\"state\":\"blocked\",\"target\":\"%s\"}\\n' \"$WC_REAL_CANDIDATE\" ;;\n"
+        "          unknown) printf '{\"state\":\"unknown\",\"target\":\"%s\"}\\n' \"$WC_REAL_CANDIDATE\" ;;\n"
+        "          output_mismatch) printf '{\"state\":\"clear_observation\",\"target\":\"/wrong\"}\\n' ;;\n"
+        "          *) printf '{\"state\":\"clear_observation\",\"target\":\"%s\"}\\n' \"$WC_REAL_CANDIDATE\" ;;\n"
+        "        esac\n"
+        "        echo '--- stderr ---' ;;\n"
+        "      *) exit 1 ;;\n"
+        "    esac ;;\n"
         "  *) echo 'unsupported' >&2; exit 1 ;;\n"
         "esac\n")
     hr.chmod(0o755)
@@ -386,13 +432,29 @@ def _write_stubs(bin_dir: Path) -> None:
         "repo=\"\"; prev=\"\"\n"
         "for a in \"$@\"; do [ \"$prev\" = \"--repo\" ] && repo=\"$a\"; prev=\"$a\"; done\n"
         "[ -n \"$repo\" ] || { echo 'missing --repo' >&2; exit 1; }\n"
-        "if [ \"${WC_OPEN_PR:-0}\" = \"1\" ]; then echo 1; else echo 0; fi\n")
+        "case \"${WC_PR_SCENARIO:-none}\" in\n"
+        "  none) echo '[]' ;;\n"
+        "  open) printf '[{\"number\":1,\"state\":\"OPEN\",\"mergedAt\":null,\"headRefName\":\"%s\",\"headRefOid\":\"%s\"}]\\n' \"$WC_BRANCH\" \"$WC_HEAD\" ;;\n"
+        "  closed) printf '[{\"number\":1,\"state\":\"CLOSED\",\"mergedAt\":null,\"headRefName\":\"%s\",\"headRefOid\":\"%s\"}]\\n' \"$WC_BRANCH\" \"$WC_HEAD\" ;;\n"
+        "  merged) printf '[{\"number\":1,\"state\":\"MERGED\",\"mergedAt\":\"2026-01-01T00:00:00Z\",\"headRefName\":\"%s\",\"headRefOid\":\"%s\"}]\\n' \"$WC_BRANCH\" \"$WC_HEAD\" ;;\n"
+        "  mismatch) printf '[{\"number\":1,\"state\":\"MERGED\",\"mergedAt\":\"2026-01-01T00:00:00Z\",\"headRefName\":\"%s\",\"headRefOid\":\"0000000000000000000000000000000000000000\"}]\\n' \"$WC_BRANCH\" ;;\n"
+        "  malformed) echo '{}' ;;\n"
+        "esac\n")
     gh.chmod(0o755)
     git = bin_dir / "git"
     git.write_text(
         "#!/bin/sh\n"
         "echo \"git $*\" >> \"$GIT_LOG\"\n"
         "case \"$*\" in *\"${WC_GIT_FAIL_MATCH:-__never__}\"*) exit 71;; esac\n"
+        "case \"$*\" in *\" ls-remote --exit-code origin \"*)\n"
+        "  case \"${WC_REMOTE_SCENARIO:-missing}\" in\n"
+        "    success) printf '%s\\trefs/heads/%s\\n' \"$WC_HEAD\" \"$WC_BRANCH\"; exit 0 ;;\n"
+        "    mismatch) printf '%040d\\trefs/heads/%s\\n' 0 \"$WC_BRANCH\"; exit 0 ;;\n"
+        "    malformed) echo malformed; exit 0 ;;\n"
+        "    fail) exit 71 ;;\n"
+        "    *) exit 2 ;;\n"
+        "  esac ;;\n"
+        "esac\n"
         "exec /usr/bin/git \"$@\"\n")
     git.chmod(0o755)
 
@@ -405,7 +467,13 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
                    audit_fail: bool = False, scan_state: str = "unknown",
                    candidate: Path, containing: Path,
                    acting: str = "TASK-ACTING", open_pr: int = 0,
-                   gh_fail: bool = False, git_fail_match: str = ""):
+                   gh_fail: bool = False, git_fail_match: str = "",
+                   task_map_second: dict | None = None,
+                   job_scenario: str | None = None,
+                   remote_scenario: str = "missing",
+                   pr_scenario: str | None = None,
+                   tasks_fail: bool = False,
+                   shell: str = "bash"):
     task_map = task_map if task_map is not None else {}
     audit = audit if audit is not None else []
     audit_all = audit if audit_all is None else audit_all
@@ -414,15 +482,24 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
     audit_trigger_second = (
         audit_trigger if audit_trigger_second is None else audit_trigger_second
     )
+    def task_rows(values):
+        rows = []
+        for task_id, value in values.items():
+            row = dict(value, task_id=task_id)
+            if task_id == containing.name:
+                row["brief"] = "ordinary owner task"
+            rows.append(row)
+        return rows
+
     (tmp_path / "task-map.json").write_text(json.dumps(task_map))
     for name, payload in (
-        ("audit-all.json", audit_all),
+        ("tasks-first.json", task_rows(task_map)),
+        ("tasks-second.json", task_rows(task_map_second or task_map)),
         ("audit-trigger.json", audit_trigger),
-        ("audit-all-second.json", audit_all_second),
         ("audit-trigger-second.json", audit_trigger_second),
     ):
         (tmp_path / name).write_text(json.dumps(payload))
-    (tmp_path / "all-count").write_text("0\n")
+    (tmp_path / "tasks-count").write_text("0\n")
     (tmp_path / "trigger-count").write_text("0\n")
     proc_src = tmp_path / "proc.sh"
     proc_src.write_text(_shipped_procedure(body))
@@ -453,22 +530,29 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
         "ORG": "test-org",
         "SKILL": str(fixture_skill),
         "ACTING_TASK": acting,
+        "SESSION_ID": "sess-fixture",
         "GIT_LOG": str(git_log),
         "GH_LOG": str(gh_log),
         "WC_TASK_MAP": str(tmp_path / "task-map.json"),
-        "WC_AUDIT_ALL": str(tmp_path / "audit-all.json"),
+        "WC_TASKS_FIRST": str(tmp_path / "tasks-first.json"),
+        "WC_TASKS_SECOND": str(tmp_path / "tasks-second.json"),
+        "WC_TASKS_COUNT": str(tmp_path / "tasks-count"),
+        "WC_TASKS_FAIL": "1" if tasks_fail else "0",
         "WC_AUDIT_TRIGGER": str(tmp_path / "audit-trigger.json"),
-        "WC_AUDIT_ALL_SECOND": str(tmp_path / "audit-all-second.json"),
         "WC_AUDIT_TRIGGER_SECOND": str(tmp_path / "audit-trigger-second.json"),
-        "WC_ALL_COUNT": str(tmp_path / "all-count"),
         "WC_TRIGGER_COUNT": str(tmp_path / "trigger-count"),
         "WC_AUDIT_FAIL": "1" if audit_fail else "0",
-        "WC_SCAN_STATE": scan_state,
         "WC_SCAN_LOG": str(tmp_path / "scan.log"),
+        "WC_JOB_PAYLOAD": str(tmp_path / "job-payload.json"),
+        "WC_JOB_SCENARIO": job_scenario or scan_state,
+        "WC_REAL_CANDIDATE": str(candidate.resolve()),
         "AGE_SECONDS": (
             "86400" if candidate.name in ("node_modules", ".venv") else "604800"
         ),
-        "WC_OPEN_PR": str(open_pr),
+        "WC_PR_SCENARIO": pr_scenario or ("open" if open_pr else "none"),
+        "WC_REMOTE_SCENARIO": remote_scenario,
+        "WC_BRANCH": f"task/{containing.name}",
+        "WC_HEAD": _git("rev-parse", "HEAD", cwd=containing).stdout.strip(),
         "WC_GH_FAIL": "1" if gh_fail else "0",
         "WC_GIT_FAIL_MATCH": git_fail_match,
         "TMPDIR": str(wc_tmp),
@@ -479,7 +563,7 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
         f'{shlex.quote(str(containing))}\n'
         'printf "RC=%s\\n" "$?"\n'
     )
-    result = subprocess.run(["bash", "-c", script], env=env,
+    result = subprocess.run([shell, "-c", script], env=env,
                             capture_output=True, text=True)
     rc_line = [ln for ln in result.stdout.splitlines() if ln.startswith("RC=")]
     rc = int(rc_line[-1].split("=", 1)[1]) if rc_line else None
@@ -488,8 +572,9 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
 
 
 def _occurrences(*task_ids: str) -> list[dict]:
-    return [{"task_id": tid, "action": "workspace_cleanup_triggered"}
-            for tid in task_ids]
+    return [{"id": i, "task_id": tid, "agent": "dev_agent",
+             "action": "workspace_cleanup_triggered"}
+            for i, tid in enumerate(task_ids, 1)]
 
 
 def _terminal_task(agent: str, *, age_days: int = 30,
@@ -537,7 +622,9 @@ def test_f5_procedure_refuses_before_action_for_each_branch(tmp_path, body):
                 "TASK-OCC-2": _terminal_task(agent)}
 
     # R7: fewer than two distinct prior terminal occurrences -> report-only.
-    r = run(task_map=good_map, audit=_occurrences("TASK-OCC-1"))
+    r = run(task_map={k: v for k, v in good_map.items()
+                      if k != "TASK-OCC-2"},
+            audit=_occurrences("TASK-OCC-1"))
     assert r["rc"] == 2 and "report_only" in r["stdout"], r
     assert "worktree remove" not in r["git_log"]
 
@@ -551,7 +638,9 @@ def test_f5_procedure_refuses_before_action_for_each_branch(tmp_path, body):
     assert "worktree remove" not in r["git_log"]
 
     # duplicates collapse: the same occurrence twice is still one.
-    r = run(task_map=good_map, audit=_occurrences("TASK-OCC-1", "TASK-OCC-1"))
+    r = run(task_map={k: v for k, v in good_map.items()
+                      if k != "TASK-OCC-2"},
+            audit=_occurrences("TASK-OCC-1", "TASK-OCC-1"))
     assert r["rc"] == 2 and "report_only_ordinal:1" in r["stdout"], r
 
     # R5: authoritative owner mismatch (OS UID is never used).
@@ -568,7 +657,7 @@ def test_f5_procedure_refuses_before_action_for_each_branch(tmp_path, body):
     assert r["rc"] == 2 and "target_nonterminal" in r["stdout"], r
 
     # gate refusal: dirty worktree (all joins complete).
-    dirty_map = dict(good_map)
+    dirty_map = {k: v for k, v in good_map.items() if k != "TASK-ELIGIBLE"}
     dirty_map["TASK-DIRTY"] = _terminal_task(agent)
     r = _run_procedure(tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
                        candidate=fx["dirty"], containing=fx["dirty"],
@@ -746,9 +835,13 @@ def test_r4_manual_peer_contributes_zero_to_first_two(tmp_path, body):
     assert fx["eligible"].exists()
 
 
-@pytest.mark.parametrize("scenario", ["missing", "conflicting", "saturated"])
-def test_r4_missing_conflicting_or_saturated_history_refuses(
-        tmp_path, body, scenario):
+@pytest.mark.parametrize(
+    "scenario, expected_rc",
+    [("relevant_missing", 2), ("conflicting", 2),
+     ("unrelated_saturated", 0)],
+)
+def test_r4_relevant_bad_history_refuses_but_unrelated_saturation_does_not(
+        tmp_path, body, scenario, expected_rc):
     fx = _build_procedure_fixture(tmp_path)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -761,24 +854,32 @@ def test_r4_missing_conflicting_or_saturated_history_refuses(
     }
     audit_all = _occurrences("TASK-OCC-1", "TASK-OCC-2")
     audit_trigger = list(audit_all)
-    if scenario == "missing":
-        audit_all.append({"task_id": "TASK-MISSING", "action": "session_start"})
+    if scenario == "relevant_missing":
+        audit_trigger += _occurrences("TASK-MISSING")
     elif scenario == "conflicting":
         task_map["TASK-CONFLICT"] = _terminal_task(agent, marker=MANUAL_FIRST_LINE)
         audit_all.append({"task_id": "TASK-CONFLICT", "action": "workspace_cleanup_triggered"})
         audit_trigger.append({"task_id": "TASK-CONFLICT", "action": "workspace_cleanup_triggered"})
     else:
-        audit_all = [{"task_id": f"TASK-SAT-{i}", "action": "session_start"}
-                     for i in range(1001)]
+        task_map.update({
+            f"TASK-SAT-{i}": dict(
+                _terminal_task(agent), brief="ordinary unrelated task",
+            )
+            for i in range(1001)
+        })
     result = _run_procedure(
         tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
         candidate=fx["eligible"], containing=fx["eligible"],
         task_map=task_map, audit_all=audit_all, audit_trigger=audit_trigger,
         scan_state="clear_observation",
     )
-    assert result["rc"] == 2, result
-    assert "worktree remove" not in result["git_log"]
-    assert fx["eligible"].exists()
+    assert result["rc"] == expected_rc, result
+    if expected_rc:
+        assert "worktree remove" not in result["git_log"]
+        assert fx["eligible"].exists()
+    else:
+        assert result["git_log"].count("worktree remove") == 1
+        assert not fx["eligible"].exists()
 
 
 def test_r4_new_manual_peer_after_claim_refuses_before_fresh_scan_and_action(
@@ -792,6 +893,9 @@ def test_r4_new_manual_peer_after_claim_refuses_before_fresh_scan_and_action(
         "TASK-ELIGIBLE": _terminal_task(agent),
         "TASK-OCC-1": _terminal_task(agent),
         "TASK-OCC-2": _terminal_task(agent),
+    }
+    task_map_second = {
+        **task_map,
         "TASK-NEW-PEER": {
             "assigned_agent": agent,
             "status": "in_progress",
@@ -807,6 +911,7 @@ def test_r4_new_manual_peer_after_claim_refuses_before_fresh_scan_and_action(
         candidate=fx["eligible"], containing=fx["eligible"],
         task_map=task_map, audit_all=first, audit_trigger=first,
         audit_all_second=second, audit_trigger_second=first,
+        task_map_second=task_map_second,
         scan_state="clear_observation",
     )
     assert result["rc"] == 2 and "nonterminal_peer:TASK-NEW-PEER" in result["stdout"], result
@@ -838,3 +943,209 @@ def test_r5_noncanonical_candidate_shape_refuses_before_removal(tmp_path, body):
     assert result["rc"] == 2, result
     assert "worktree remove" not in result["git_log"]
     assert bad.exists()
+
+
+def _complete_cleanup_evidence(agent="dev_agent"):
+    return {
+        "TASK-ELIGIBLE": _terminal_task(agent),
+        "TASK-OCC-1": _terminal_task(agent),
+        "TASK-OCC-2": _terminal_task(agent),
+    }, _occurrences("TASK-OCC-1", "TASK-OCC-2")
+
+
+@pytest.mark.parametrize(
+    "proof,remote,pr",
+    [("remote", "success", "none"), ("merged", "missing", "merged")],
+)
+def test_preservation_by_fresh_remote_branch_or_confirmed_merged_pr(
+        tmp_path, body, proof, remote, pr):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    (fx["eligible"] / f"{proof}.txt").write_text("durable evidence\n")
+    _git("add", "-A", cwd=fx["eligible"])
+    _git("commit", "-m", proof, cwd=fx["eligible"])
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map, audit_trigger=occurrences,
+        scan_state="clear_observation", remote_scenario=remote,
+        pr_scenario=pr,
+    )
+    assert result["rc"] == 0, result
+    assert result["git_log"].count("worktree remove") == 1
+    assert not fx["eligible"].exists()
+
+
+@pytest.mark.parametrize(
+    "remote,pr,gh_fail",
+    [
+        ("missing", "open", False),
+        ("missing", "closed", False),
+        ("missing", "malformed", False),
+        ("missing", "none", True),
+        ("mismatch", "none", False),
+        ("malformed", "none", False),
+        ("fail", "merged", False),
+        ("success", "mismatch", False),
+    ],
+)
+def test_preservation_refuses_bad_remote_or_pr_evidence(
+        tmp_path, body, remote, pr, gh_fail):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    (fx["eligible"] / "local.txt").write_text("not on main\n")
+    _git("add", "-A", cwd=fx["eligible"])
+    _git("commit", "-m", "local", cwd=fx["eligible"])
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map, audit_trigger=occurrences,
+        scan_state="clear_observation", remote_scenario=remote,
+        pr_scenario=pr, gh_fail=gh_fail,
+    )
+    assert result["rc"] == 2, result
+    assert "worktree remove" not in result["git_log"]
+    assert fx["eligible"].exists()
+
+
+@pytest.mark.parametrize(
+    "job_scenario",
+    ["use", "unknown", "completed_nonzero", "failed", "timeout",
+     "output_cap", "rejected", "malformed", "mismatched", "stale",
+     "missing_output", "output_mismatch"],
+)
+def test_host_job_receipt_failures_never_fall_back_or_mutate(
+        tmp_path, body, job_scenario):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map, audit_trigger=occurrences,
+        job_scenario=job_scenario,
+    )
+    assert result["rc"] == 2, result
+    assert "worktree remove" not in result["git_log"]
+    assert fx["eligible"].exists()
+    # The only scanner command is carried in the submitted job payload. The
+    # cleanup shell never executes the fixture helper directly.
+    payload = tmp_path / "job-payload.json"
+    if payload.exists():
+        assert "check_path_use.py" in json.loads(payload.read_text())["script"]
+    assert not (tmp_path / "shipped-skill" / "scan-direct.log").exists()
+
+
+@pytest.mark.parametrize("source", ["tasks", "audit"])
+def test_complete_history_command_failure_refuses_without_mutation(
+        tmp_path, body, source):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map, audit_trigger=occurrences,
+        scan_state="clear_observation", tasks_fail=source == "tasks",
+        audit_fail=source == "audit",
+    )
+    assert result["rc"] == 2, result
+    assert "worktree remove" not in result["git_log"]
+    assert fx["eligible"].exists()
+
+
+def test_real_shipped_procedure_executes_under_zsh(tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map, audit_trigger=occurrences,
+        scan_state="clear_observation", shell="zsh",
+    )
+    assert result["rc"] == 0, result
+    assert not fx["eligible"].exists()
+
+
+@pytest.mark.parametrize("cache_name", ["node_modules", ".venv"])
+def test_dirty_worktree_cache_only_removal_preserves_source_and_status(
+        tmp_path, body, cache_name):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    cache = fx["eligible"] / cache_name
+    cache.mkdir()
+    (cache / "large.bin").write_bytes(b"cache" * 100)
+    source = fx["eligible"] / "dirty-source.txt"
+    source.write_bytes(b"precious untracked bytes\x00\xff")
+    before_source = source.read_bytes()
+    before_status = subprocess.run(
+        ["git", "-C", str(fx["eligible"]), "status", "--porcelain=v1", "-z"],
+        check=True, capture_output=True,
+    ).stdout
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+    )
+    assert result["rc"] == 0, result
+    assert not cache.exists()
+    assert fx["eligible"].exists()
+    assert source.read_bytes() == before_source
+    after_status = subprocess.run(
+        ["git", "-C", str(fx["eligible"]), "status", "--porcelain=v1", "-z"],
+        check=True, capture_output=True,
+    ).stdout
+    assert after_status == before_status
+    assert "worktree remove" not in result["git_log"]
+    receipt = json.loads(result["stdout"].splitlines()[-2])
+    assert receipt["decision"] == "removed_cache"
+    assert receipt["allocated_bytes_after"] == 0
+
+
+@pytest.mark.parametrize("kind", ["nested", "symlink", "missing_manifest", "protected"])
+def test_cache_shape_manifest_symlink_and_protection_fail_closed(
+        tmp_path, body, kind):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    if kind == "nested":
+        cache = fx["eligible"] / "web" / "node_modules"
+        cache.mkdir(parents=True)
+    elif kind == "symlink":
+        real = tmp_path / "external-cache"
+        real.mkdir()
+        cache = fx["eligible"] / "node_modules"
+        cache.symlink_to(real, target_is_directory=True)
+    else:
+        cache = fx["eligible"] / "node_modules"
+        cache.mkdir()
+    task_map, occurrences = _complete_cleanup_evidence()
+    if kind == "missing_manifest":
+        (fx["eligible"] / "package-lock.json").unlink()
+    if kind == "protected":
+        task_map["TASK-ELIGIBLE"]["output_summary"] = "worktree-deferred: preserve"
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+    )
+    assert result["rc"] == 2, result
+    assert cache.exists() or cache.is_symlink()
+    assert "worktree remove" not in result["git_log"]

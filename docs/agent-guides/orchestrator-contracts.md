@@ -46,6 +46,17 @@ and skips; root is outside the scan; positive non-exempt use blocks. This is a
 snapshot with disclosed later-opener/data-loss residual, not proof of OS-wide
 absence.
 
+The scan runs only as a task-bound host-visible HappyRanch job. The procedure
+authenticates its exact fresh job/task/session/status/exit/output/scanner
+receipt and has no direct fallback. Complete candidate-specific task and
+filtered-trigger paging replaces the former org-wide capped-history veto.
+Durable preservation may be the accepted ref, a freshly verified exact origin
+task branch, or a confirmed merged PR (which preserves integrated content but
+may not preserve original commit topology). Whole-worktree removal still
+requires cleanliness; only a literal root dependency cache may be removed from
+an otherwise dirty worktree, after all cache gates, without changing tracked
+source bytes or Git status.
+
 The database-only reclamation selection helper is called only by `run_step`'s
 pre-agent hook, never by the scheduler. Supplied claim counts other than initial `0 -> 1` refuse before its
 per-read admission callback or SQL; a valid supplied pair still needs a fresh

@@ -122,10 +122,47 @@ def cmd_tasks(args: argparse.Namespace) -> None:
         params["status"] = args.status
     if getattr(args, "block_kind", None):
         params["block_kind"] = args.block_kind
-    r = client.get(f"/api/v1/orgs/{slug}/tasks", params=params)
-    if not _ok(r):
+    agent = getattr(args, "agent", None)
+    if isinstance(agent, str) and agent:
+        params["assigned_agent"] = agent
+    all_pages = getattr(args, "all_pages", False) is True
+    tasks: list[dict] = []
+    seen_ids: set[str] = set()
+    seen_cursors: set[str] = set()
+    cursor: str | None = None
+    while True:
+        page_params = dict(params)
+        if cursor is not None:
+            page_params["before"] = cursor
+        r = client.get(f"/api/v1/orgs/{slug}/tasks", params=page_params)
+        if not _ok(r):
+            return
+        body = r.json()
+        page = body.get("tasks") if isinstance(body, dict) else None
+        next_cursor = body.get("next_cursor") if isinstance(body, dict) else None
+        if not isinstance(page, list) or any(not isinstance(row, dict) for row in page):
+            print("Error: task pagination returned malformed entries", file=sys.stderr)
+            sys.exit(1)
+        for row in page:
+            task_id = row.get("task_id")
+            if not isinstance(task_id, str) or not task_id or task_id in seen_ids:
+                print("Error: task pagination returned duplicate or malformed ids", file=sys.stderr)
+                sys.exit(1)
+            seen_ids.add(task_id)
+            tasks.append(row)
+        if not all_pages or next_cursor is None:
+            break
+        if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
+            print("Error: task pagination cursor did not advance", file=sys.stderr)
+            sys.exit(1)
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+    if all_pages:
+        tasks.sort(key=lambda row: row["task_id"])
+    if getattr(args, "json", False) is True:
+        import json as _json
+        print(_json.dumps(tasks, indent=2))
         return
-    tasks = r.json()["tasks"]
     if not tasks:
         print("No tasks found.")
         return
@@ -325,13 +362,46 @@ def cmd_audit(args: argparse.Namespace) -> None:
         params["action"] = args.action
     if args.since is not None:
         params["since"] = args.since
+    all_pages = getattr(args, "all_pages", False) is True
     if args.limit is not None:
         params["limit"] = args.limit
+    elif all_pages:
+        params["limit"] = 1000
 
-    r = client.get(f"/api/v1/orgs/{slug}/audit", params=params)
-    if not _ok(r):
-        return
-    entries = r.json()["entries"]
+    entries: list[dict] = []
+    seen_ids: set[int] = set()
+    seen_cursors: set[str] = set()
+    cursor: str | None = None
+    while True:
+        page_params = dict(params)
+        if cursor is not None:
+            page_params["cursor"] = cursor
+        r = client.get(f"/api/v1/orgs/{slug}/audit", params=page_params)
+        if not _ok(r):
+            return
+        body = r.json()
+        page = body.get("entries") if isinstance(body, dict) else None
+        next_cursor = body.get("next_cursor") if isinstance(body, dict) else None
+        if not isinstance(page, list) or any(not isinstance(row, dict) for row in page):
+            print("Error: audit pagination returned malformed entries", file=sys.stderr)
+            sys.exit(1)
+        for row in page:
+            row_id = row.get("id")
+            if not isinstance(row_id, int) or isinstance(row_id, bool) or row_id in seen_ids:
+                print("Error: audit pagination returned duplicate or malformed ids", file=sys.stderr)
+                sys.exit(1)
+            seen_ids.add(row_id)
+            entries.append(row)
+        if not all_pages or next_cursor is None:
+            break
+        if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
+            print("Error: audit pagination cursor did not advance", file=sys.stderr)
+            sys.exit(1)
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+
+    if all_pages:
+        entries.sort(key=lambda row: row["id"])
 
     if args.json:
         print(_json.dumps(entries, indent=2))
@@ -1043,6 +1113,12 @@ def register(sub) -> None:
     p_tasks = sub.add_parser("tasks", help="List recent tasks")
     p_tasks.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_tasks.add_argument("--limit", type=int, default=20, help="Max tasks to show")
+    p_tasks.add_argument("--agent", default=None, help="Filter by assigned agent")
+    p_tasks.add_argument(
+        "--all-pages", action="store_true",
+        help="Follow task keyset pages to exhaustion; --limit is the page size",
+    )
+    p_tasks.add_argument("--json", action="store_true", help="Emit raw JSON")
     p_tasks.add_argument(
         "--status", default=None,
         help="Filter by task status (e.g. in_progress, escalated, completed, "
@@ -1066,6 +1142,11 @@ def register(sub) -> None:
                          help="ISO-8601 timestamp; only entries at or after this time")
     p_audit.add_argument("--limit", type=int, default=None,
                          help="Cap to the most recent N entries")
+    p_audit.add_argument(
+        "--all-pages", action="store_true",
+        help=("Follow the audit keyset cursor to exhaustion; --limit becomes "
+              "the bounded page size (default 1000)"),
+    )
     p_audit.add_argument("--json", action="store_true",
                          help="Emit raw JSON instead of the human-readable table")
     p_audit.set_defaults(func=cmd_audit)
