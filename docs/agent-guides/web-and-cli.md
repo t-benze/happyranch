@@ -29,6 +29,16 @@ read-only `scripts/check_path_use.py` returns only `clear_observation`,
 process name AND bounded cgroup role for fixed daemons; any other unreadable
 same-user process is `unknown`).
 
+Cleanup history reads use the backward-compatible `tasks --agent --all-pages
+--json` and `audit --all-pages --json` surfaces to exhaust candidate-specific
+keyset pages. Scanner execution is job-only and fail-closed on any non-exact or
+incomplete receipt. Fresh exact origin task branches and confirmed merged PRs
+can preserve a clean candidate in addition to the accepted durable ref; merged
+integration does not promise original commit topology. Dirty whole worktrees
+are never removed, while a literal root dependency cache can qualify under the
+separate 24-hour cache gates without changing tracked source bytes or Git
+status.
+
 ## Web UI
 
 ### Dashboard projection

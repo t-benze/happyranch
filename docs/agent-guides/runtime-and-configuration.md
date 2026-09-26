@@ -405,6 +405,16 @@ ssh-agent, gpg-agent, gcr-ssh-agent) qualifies only by exact readable process
 name AND exact bounded cgroup role and is deliberately uninspected; any other
 unreadable same-user process is `unknown` and skips.
 
+The shared procedure executes that scanner only through a task-bound,
+host-visible HappyRanch job and validates the exact fresh receipt; direct
+in-session fallback is forbidden. Candidate-related task and trigger evidence
+uses complete paging rather than an org-wide history cap. Preservation accepts
+the existing durable ref, a freshly verified matching origin task branch, or a
+confirmed merged PR; merged integration may not preserve original commit
+topology. Dirty whole worktrees remain protected, with the sole narrow exception
+of a literal root `.venv`/`node_modules` cache whose removal leaves tracked
+source bytes and Git status unchanged.
+
 ## Terminal task-worktree reclamation
 
 Terminal task-worktree reclamation has no configuration key or cadence. On the

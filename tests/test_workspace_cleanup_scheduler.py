@@ -4223,6 +4223,17 @@ class TestComposeCleanupBriefSharedSkillWording:
         assert "check_path_use.py" in brief
         assert "clear_observation" in brief
         assert "exact readable process name AND exact bounded cgroup role" in brief
+        assert "task-bound host-visible HappyRanch job" in brief
+        assert "exact job receipt" in brief
+        assert "no direct in-session fallback" in brief
+
+    def test_action_body_names_new_preservation_and_dirty_cache_contract(self):
+        brief = self._brief(3)
+        assert "freshly verified matching remote task branch" in brief
+        assert "confirmed merged PR" in brief
+        assert "may not preserve original commit topology" in brief
+        assert "otherwise dirty worktree" in brief
+        assert "source bytes and Git status unchanged" in brief
 
     def test_retired_liveness_veto_absent(self):
         for run in (1, 3):

@@ -694,3 +694,17 @@ literal-path fallback. A conflicting applicable systemd/unified cgroup path
 never grants an exception. This is a snapshot
 with accepted later-opener/write-interruption residual, never an OS-wide-absence
 or future-non-use guarantee.
+
+Both manual and daily procedures invoke that helper only through the supported
+task-bound host-visible HappyRanch jobs path and consume the exact fresh
+job/task/session/status/exit/output/scanner receipt; there is no direct
+in-session fallback. Candidate-specific assigned-task and filtered-trigger
+history is completely keyset-paged, so unrelated audit volume cannot veto a
+candidate, while missing, changing, conflicting, malformed, or incomplete
+relevant evidence still refuses. A clean whole worktree may prove preservation
+through the accepted durable ref, a freshly verified exact origin task branch,
+or a confirmed merged PR; a merged PR preserves integrated content but may not
+preserve original commit topology. A dirty worktree remains ineligible for
+whole removal, but its literal root `.venv` or `node_modules` may be removed
+after the same gates and 24-hour floor, with tracked source bytes and Git status
+proved unchanged.

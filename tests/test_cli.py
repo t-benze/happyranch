@@ -31,12 +31,69 @@ def test_tasks_subcommand():
     args = parser.parse_args(["tasks"])
     assert args.command == "tasks"
     assert args.limit == 20
+    assert args.agent is None
+    assert args.all_pages is False
+    assert args.json is False
 
 
 def test_tasks_with_limit():
     parser = build_parser()
     args = parser.parse_args(["tasks", "--limit", "5"])
     assert args.limit == 5
+
+
+def test_cmd_tasks_all_pages_filters_agent_and_follows_cursor(capsys):
+    from cli.main import cmd_tasks
+
+    fake = MagicMock()
+    fake.get.side_effect = [
+        MagicMock(status_code=200, json=lambda: {
+            "tasks": [{"task_id": "TASK-3", "brief": "three", "status": "completed"}],
+            "next_cursor": "TASK-3",
+        }),
+        MagicMock(status_code=200, json=lambda: {
+            "tasks": [{"task_id": "TASK-1", "brief": "one", "status": "completed"}],
+            "next_cursor": None,
+        }),
+    ]
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
+        cmd_tasks(MagicMock(
+            org=None, limit=1000, status=None, block_kind=None,
+            agent="dev_agent", all_pages=True, json=True,
+        ))
+    assert [row["task_id"] for row in json.loads(capsys.readouterr().out)] == [
+        "TASK-1", "TASK-3",
+    ]
+    assert fake.get.call_args_list[0].kwargs["params"] == {
+        "limit": 1000, "assigned_agent": "dev_agent",
+    }
+    assert fake.get.call_args_list[1].kwargs["params"] == {
+        "limit": 1000, "assigned_agent": "dev_agent", "before": "TASK-3",
+    }
+
+
+def test_cmd_tasks_all_pages_refuses_nonprogressing_cursor(capsys):
+    from cli.main import cmd_tasks
+
+    fake = MagicMock()
+    fake.get.side_effect = [
+        MagicMock(status_code=200, json=lambda: {
+            "tasks": [{"task_id": "TASK-3"}], "next_cursor": "TASK-3",
+        }),
+        MagicMock(status_code=200, json=lambda: {
+            "tasks": [], "next_cursor": "TASK-3",
+        }),
+    ]
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]), \
+         pytest.raises(SystemExit) as excinfo:
+        cmd_tasks(MagicMock(
+            org=None, limit=1000, status=None, block_kind=None,
+            agent="dev_agent", all_pages=True, json=True,
+        ))
+    assert excinfo.value.code == 1
+    assert "task pagination cursor" in capsys.readouterr().err
 
 
 def test_init_agent_subcommand():
@@ -888,6 +945,7 @@ def test_audit_subcommand_defaults():
     assert args.since is None
     assert args.limit is None
     assert args.json is False
+    assert args.all_pages is False
 
 
 def test_audit_subcommand_with_filters():
@@ -897,13 +955,88 @@ def test_audit_subcommand_with_filters():
         "--agent", "engineering_head",
         "--action", "session_end",
         "--limit", "5",
+        "--all-pages",
         "--json",
     ])
     assert args.task_id == "TASK-007"
     assert args.agent == "engineering_head"
     assert args.action == "session_end"
     assert args.limit == 5
+    assert args.all_pages is True
     assert args.json is True
+
+
+def test_cmd_audit_all_pages_follows_cursor_and_emits_one_json_array(capsys):
+    from cli.main import cmd_audit
+
+    fake = MagicMock()
+    fake.get.side_effect = [
+        MagicMock(
+            status_code=200,
+            json=lambda: {
+                "entries": [{"id": 3, "task_id": "TASK-3"}],
+                "next_cursor": "cursor-2",
+            },
+        ),
+        MagicMock(
+            status_code=200,
+            json=lambda: {
+                "entries": [
+                    {"id": 1, "task_id": "TASK-1"},
+                    {"id": 2, "task_id": "TASK-2"},
+                ],
+                "next_cursor": None,
+            },
+        ),
+    ]
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
+        cmd_audit(MagicMock(
+            org=None, task_id=None, agent="dev_agent", action=None,
+            since=None, limit=1000, json=True, all_pages=True,
+        ))
+
+    assert json.loads(capsys.readouterr().out) == [
+        {"id": 1, "task_id": "TASK-1"},
+        {"id": 2, "task_id": "TASK-2"},
+        {"id": 3, "task_id": "TASK-3"},
+    ]
+    assert fake.get.call_args_list[0].kwargs["params"] == {
+        "agent": "dev_agent", "limit": 1000,
+    }
+    assert fake.get.call_args_list[1].kwargs["params"] == {
+        "agent": "dev_agent", "limit": 1000, "cursor": "cursor-2",
+    }
+
+
+@pytest.mark.parametrize("bad_page", [
+    {"entries": [], "next_cursor": "same"},
+    {"entries": "not-a-list", "next_cursor": None},
+    {"entries": [{"id": 1}, {"id": 1}], "next_cursor": None},
+])
+def test_cmd_audit_all_pages_refuses_malformed_or_nonprogressing_pages(
+        bad_page, capsys):
+    from cli.main import cmd_audit
+
+    fake = MagicMock()
+    if bad_page["next_cursor"] == "same":
+        fake.get.side_effect = [
+            MagicMock(status_code=200, json=lambda: {
+                "entries": [{"id": 2}], "next_cursor": "same",
+            }),
+            MagicMock(status_code=200, json=lambda: bad_page),
+        ]
+    else:
+        fake.get.return_value = MagicMock(status_code=200, json=lambda: bad_page)
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]), \
+         pytest.raises(SystemExit) as excinfo:
+        cmd_audit(MagicMock(
+            org=None, task_id=None, agent="dev_agent", action=None,
+            since=None, limit=1000, json=True, all_pages=True,
+        ))
+    assert excinfo.value.code == 1
+    assert "audit pagination" in capsys.readouterr().err
 
 
 def test_cmd_audit_sends_filters_and_prints_table(capsys):
