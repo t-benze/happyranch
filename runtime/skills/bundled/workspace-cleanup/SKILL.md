@@ -379,13 +379,167 @@ else:
 PY
 }
 
+_wc_validate_isolated_cache() {
+  python3 - "$CANDIDATE" "$WC_ISOLATED_CANDIDATE" "$WC_ISOLATION_DIR" \
+    "$CONTAINING" "$WC_TMP/tree-boundary.json" <<'PY'
+import json, os, re, stat, subprocess, sys
+
+candidate, isolated, isolation_dir, containing, snapshot_path = map(
+    os.path.abspath, sys.argv[1:]
+)
+uid = os.getuid()
+cap = 200000
+
+def mountpoints():
+    result = set()
+    try:
+        with open("/proc/self/mountinfo", encoding="utf-8") as handle:
+            for line in handle:
+                fields = line.split()
+                if len(fields) < 5:
+                    raise RuntimeError("malformed_mountinfo")
+                value = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), fields[4])
+                result.add(os.path.abspath(value))
+        return result
+    except FileNotFoundError:
+        proc = subprocess.run(["mount"], capture_output=True, text=True, timeout=5)
+        if proc.returncode:
+            raise RuntimeError("mount_table_unavailable")
+        for line in proc.stdout.splitlines():
+            match = re.search(r" on (.+?) \\(", line)
+            if not match:
+                raise RuntimeError("malformed_mount_table")
+            result.add(os.path.abspath(match.group(1)))
+        return result
+
+def identity(path):
+    value = os.lstat(path)
+    return [value.st_dev, value.st_ino, value.st_mode, value.st_uid]
+
+def protected_snapshot(paths):
+    return {
+        path: (identity(path) if os.path.lexists(path) else None)
+        for path in paths
+    }
+
+def tree_snapshot(root_path):
+    mounts = mountpoints()
+    root = os.lstat(root_path)
+    if not stat.S_ISDIR(root.st_mode) or stat.S_ISLNK(root.st_mode) or root.st_uid != uid:
+        raise RuntimeError("invalid_isolated_root")
+    root_dev = root.st_dev
+    rows = []
+    pending = [root_path]
+    while pending:
+        path = pending.pop()
+        value = os.lstat(path)
+        if value.st_uid != uid:
+            raise RuntimeError("non_owned_entry")
+        if value.st_dev != root_dev:
+            raise RuntimeError("cross_device_entry")
+        if path != root_path and path in mounts:
+            raise RuntimeError("nested_mount")
+        rel = os.path.relpath(path, root_path)
+        if rel == ".":
+            rel = ""
+        if stat.S_ISLNK(value.st_mode):
+            resolved = os.path.realpath(path)
+            if resolved != root_path and not resolved.startswith(root_path.rstrip(os.sep) + os.sep):
+                raise RuntimeError("external_or_protected_symlink")
+        rows.append([
+            rel, value.st_dev, value.st_ino, value.st_mode, value.st_uid,
+            value.st_size, getattr(value, "st_blocks", 0),
+        ])
+        if len(rows) > cap:
+            raise RuntimeError("entry_cap")
+        if stat.S_ISDIR(value.st_mode) and not stat.S_ISLNK(value.st_mode):
+            try:
+                with os.scandir(path) as entries:
+                    children = [entry.path for entry in entries]
+            except OSError as exc:
+                raise RuntimeError("unreadable_entry") from exc
+            pending.extend(sorted(children, reverse=True))
+    return sorted(rows)
+
+with open(snapshot_path, encoding="utf-8") as handle:
+    expected = json.load(handle)
+if set(expected) != {"tree", "protected"}:
+    raise SystemExit(2)
+if os.path.dirname(isolation_dir) != containing:
+    raise SystemExit(3)
+if os.path.dirname(isolated) != isolation_dir:
+    raise SystemExit(3)
+if not os.path.basename(isolation_dir).startswith(".workspace-cleanup-isolate."):
+    raise SystemExit(3)
+if (os.path.basename(candidate) not in ("node_modules", ".venv")
+        or os.path.basename(isolated) != os.path.basename(candidate)):
+    raise SystemExit(3)
+if os.path.lexists(candidate):
+    raise SystemExit(4)
+isolation_identity = os.lstat(isolation_dir)
+if (not stat.S_ISDIR(isolation_identity.st_mode)
+        or stat.S_ISLNK(isolation_identity.st_mode)
+        or isolation_identity.st_uid != uid
+        or stat.S_IMODE(isolation_identity.st_mode) != 0o700):
+    raise SystemExit(5)
+root_rows = [row for row in expected["tree"] if row[0] == ""]
+if len(root_rows) != 1 or isolation_identity.st_dev != root_rows[0][1]:
+    raise SystemExit(5)
+expected_protected = expected["protected"]
+if protected_snapshot(expected_protected) != expected_protected:
+    raise SystemExit(6)
+first = tree_snapshot(isolated)
+if os.path.lexists(candidate):
+    raise SystemExit(7)
+second = tree_snapshot(isolated)
+if first != second or first != expected["tree"]:
+    raise SystemExit(8)
+if protected_snapshot(expected_protected) != expected_protected:
+    raise SystemExit(9)
+if os.path.lexists(candidate):
+    raise SystemExit(10)
+PY
+}
+
+_wc_restore_isolated_cache() {
+  [ -n "${WC_ISOLATED_CANDIDATE:-}" ] || return 1
+  [ -n "${WC_ISOLATION_DIR:-}" ] || return 1
+  if [ -e "$WC_ISOLATED_CANDIDATE" ] || [ -L "$WC_ISOLATED_CANDIDATE" ]; then
+    if [ -e "$CANDIDATE" ] || [ -L "$CANDIDATE" ]; then
+      return 1
+    fi
+    mv -- "$WC_ISOLATED_CANDIDATE" "$CANDIDATE" || return 1
+  fi
+  if [ -e "$WC_ISOLATION_DIR" ] || [ -L "$WC_ISOLATION_DIR" ]; then
+    rmdir -- "$WC_ISOLATION_DIR" || return 1
+  fi
+  return 0
+}
+
+_wc_isolate_cache() {
+  if ! WC_ISOLATION_DIR="$(mktemp -d "$CONTAINING/.workspace-cleanup-isolate.XXXXXX")"; then
+    return 1
+  fi
+  WC_ISOLATED_CANDIDATE="$WC_ISOLATION_DIR/$(basename "$CANDIDATE")"
+  export WC_ISOLATION_DIR WC_ISOLATED_CANDIDATE
+  if ! mv -- "$CANDIDATE" "$WC_ISOLATED_CANDIDATE"; then
+    rmdir -- "$WC_ISOLATION_DIR" 2>/dev/null || :
+    return 1
+  fi
+  _wc_validate_isolated_cache
+}
+
 _wc_verify_post_action() {
-  python3 - "$CANDIDATE" "$WC_TMP/tree-boundary.json" <<'PY'
+  python3 - "$CANDIDATE" "$WC_TMP/tree-boundary.json" \
+    "${WC_ISOLATED_CANDIDATE:-}" "${WC_ISOLATION_DIR:-}" <<'PY'
 import json, os, sys
 
-candidate, snapshot_path = sys.argv[1:]
+candidate, snapshot_path, isolated, isolation_dir = sys.argv[1:]
 if os.path.lexists(candidate):
     raise SystemExit(2)
+for path in (isolated, isolation_dir):
+    if path and os.path.lexists(path):
+        raise SystemExit(2)
 with open(snapshot_path, encoding="utf-8") as handle:
     protected = json.load(handle)["protected"]
 for path, expected in protected.items():
@@ -867,8 +1021,20 @@ run_cleanup_candidate() {
       if ! _wc_snapshot_tree; then
         { _wc_refuse "action_boundary_changed"; return 2; }
       fi
-      if ! rm -rf -- "$CANDIDATE"; then
+      if ! _wc_isolate_cache; then
+        _wc_restore_isolated_cache >/dev/null 2>&1 || :
+        { _wc_refuse "action_isolation_changed"; return 2; }
+      fi
+      if ! rm -rf -- "$WC_ISOLATED_CANDIDATE"; then
+        _wc_restore_isolated_cache >/dev/null 2>&1 || :
         { _wc_refuse "action_failed"; return 2; }
+      fi
+      if [ -e "$WC_ISOLATED_CANDIDATE" ] || [ -L "$WC_ISOLATED_CANDIDATE" ]; then
+        _wc_restore_isolated_cache >/dev/null 2>&1 || :
+        { _wc_refuse "action_residual"; return 2; }
+      fi
+      if ! rmdir -- "$WC_ISOLATION_DIR"; then
+        { _wc_refuse "action_isolation_residual"; return 2; }
       fi
       if ! git -C "$CONTAINING" status --porcelain=v1 -z | cmp -s - "$cache_status_before"; then
         { _wc_refuse "post_action_source_or_status_changed"; return 2; }
@@ -899,8 +1065,12 @@ run_cleanup_candidate() {
 
 ## Authorized actions (non-force only)
 
-- **Cache.** Remove one literal real `node_modules` or `.venv` directory inside a
-  registered, non-primary linked worktree of your own workspace, only when its
+- **Cache.** Atomically isolate one literal real `node_modules` or `.venv`
+  directory inside a same-filesystem private sibling boundary, revalidate its
+  inode/tree/owner/device and the protected-set identity against the complete
+  action snapshot, then remove only that isolated object. The cache must be
+  inside a registered, non-primary linked worktree of your own workspace, and
+  removal is allowed only when its
   immediate parent has the accepted lock/manifest, the owning task has been
   terminal past the 24-hour floor, durable preservation/no-open-or-unmerged-PR
   evidence clears, and the exact host-job current-use receipt clears. The
@@ -916,8 +1086,10 @@ run_cleanup_candidate() {
   **Never** `--force`. Never use `rm -rf`, a glob, a parent root, or
   `git clean` to remove a worktree; `git worktree prune` is allowed only for an
   already-missing registered path after a dry-run confirms the exact stale
-  record. The cache action above is the only `rm -rf`, and only on a literal
-  real `node_modules`/`.venv` candidate path.
+  record. The cache action above is the only `rm -rf`, and only on the literal
+  identity-revalidated isolated `node_modules`/`.venv` object. A changed or
+  reappearing original candidate path, isolation residue, or identity mismatch
+  fails stopped and never emits `removed_cache`.
 
 The procedure's JSON action receipt records the literal path, apparent and
 allocated bytes before/after, filesystem free space before/after, and the

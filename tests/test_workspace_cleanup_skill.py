@@ -8,8 +8,10 @@ exception rule, and non-force mechanisms.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -458,6 +460,30 @@ def _write_stubs(bin_dir: Path) -> None:
         "  *) exec /usr/bin/rm \"$@\" ;;\n"
         "esac\n")
     rm.chmod(0o755)
+    mv = bin_dir / "mv"
+    mv.write_text(
+        "#!/bin/sh\n"
+        "source=; destination=; for a in \"$@\"; do [ \"$a\" = -- ] && continue; "
+        "[ -z \"$source\" ] && source=\"$a\" || destination=\"$a\"; done\n"
+        "case \"${WC_MV_SCENARIO:-normal}\" in\n"
+        "  final-swap)\n"
+        "    if [ \"$source\" = \"$WC_REAL_CANDIDATE\" ]; then\n"
+        "      /usr/bin/mv \"$source\" \"$source.validated\" || exit $?\n"
+        "      mkdir \"$source\" || exit $?\n"
+        "      printf 'uninspected replacement\\n' > \"$source/replacement\" || exit $?\n"
+        "    fi\n"
+        "    exec /usr/bin/mv \"$@\" ;;\n"
+        "  isolation-drift)\n"
+        "    /usr/bin/mv \"$@\" || exit $?\n"
+        "    if [ \"$source\" = \"$WC_REAL_CANDIDATE\" ]; then\n"
+        "      /usr/bin/mv \"$destination\" \"$destination.validated\" || exit $?\n"
+        "      mkdir \"$destination\" || exit $?\n"
+        "      printf 'isolation replacement\\n' > \"$destination/replacement\" || exit $?\n"
+        "    fi\n"
+        "    exit 0 ;;\n"
+        "  *) exec /usr/bin/mv \"$@\" ;;\n"
+        "esac\n")
+    mv.chmod(0o755)
     git = bin_dir / "git"
     git.write_text(
         "#!/bin/sh\n"
@@ -491,6 +517,7 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
                    pr_scenario: str | None = None,
                    tasks_fail: bool = False,
                    action_drift: str = "", rm_scenario: str = "normal",
+                   mv_scenario: str = "normal",
                    shell: str = "bash"):
     task_map = task_map if task_map is not None else {}
     audit = audit if audit is not None else []
@@ -575,6 +602,7 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
         "WC_GIT_FAIL_MATCH": git_fail_match,
         "WC_ACTION_DRIFT": action_drift,
         "WC_RM_SCENARIO": rm_scenario,
+        "WC_MV_SCENARIO": mv_scenario,
         "TMPDIR": str(wc_tmp),
     })
     script = (
@@ -1012,6 +1040,56 @@ def test_action_boundary_cache_replacement_refuses_and_preserves_both_paths(
     assert (cache.parent / "node_modules.before" / "original").read_text() == "keep\n"
 
 
+def test_final_deletion_dispatch_swap_refuses_and_preserves_both_objects(
+        tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    cache = fx["eligible"] / "node_modules"
+    cache.mkdir()
+    (cache / "validated").write_text("validated bytes\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+        mv_scenario="final-swap",
+    )
+    assert result["rc"] == 2, result
+    assert '"decision":"removed_cache"' not in result["stdout"]
+    assert (cache / "replacement").read_text() == "uninspected replacement\n"
+    assert (cache.parent / "node_modules.validated" / "validated").read_text() == (
+        "validated bytes\n"
+    )
+
+
+def test_isolation_identity_drift_refuses_and_preserves_both_objects(
+        tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    cache = fx["eligible"] / "node_modules"
+    cache.mkdir()
+    (cache / "validated").write_text("validated bytes\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+        mv_scenario="isolation-drift",
+    )
+    assert result["rc"] == 2, result
+    assert '"decision":"removed_cache"' not in result["stdout"]
+    assert (cache / "replacement").read_text() == "isolation replacement\n"
+    preserved = list(fx["eligible"].glob(
+        ".workspace-cleanup-isolate.*/node_modules.validated/validated"
+    ))
+    assert len(preserved) == 1, preserved
+    assert preserved[0].read_text() == "validated bytes\n"
+
+
 def _complete_cleanup_evidence(agent="dev_agent"):
     return {
         "TASK-ELIGIBLE": _terminal_task(agent),
@@ -1146,12 +1224,15 @@ def test_real_shipped_procedure_executes_under_zsh(tmp_path, body):
     task_map, occurrences = _complete_cleanup_evidence()
     shell = shutil.which("zsh")
     if shell is None:
-        # GitHub's Python matrix image does not install zsh. The immutable-head
-        # local CI acceptance still executes this exact case with real zsh;
-        # the hosted matrix must continue exercising the delivered procedure
-        # rather than failing before it can start.
-        assert os.environ.get("CI") == "true"
-        shell = "bash"
+        pytest.fail(
+            "required real-zsh prerequisite unavailable: "
+            f"platform={platform.platform()!r} PATH={os.environ.get('PATH')!r}"
+        )
+    proof = subprocess.run(
+        [shell, "--version"], check=True, capture_output=True, text=True,
+    )
+    assert proof.stdout.startswith("zsh "), proof
+    assert Path(shell).resolve().name == "zsh"
     result = _run_procedure(
         tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
         candidate=fx["eligible"], containing=fx["eligible"],
@@ -1160,6 +1241,11 @@ def test_real_shipped_procedure_executes_under_zsh(tmp_path, body):
     )
     assert result["rc"] == 0, result
     assert not fx["eligible"].exists()
+
+
+def test_real_zsh_regression_never_substitutes_bash():
+    source = inspect.getsource(test_real_shipped_procedure_executes_under_zsh)
+    assert 'shell = "bash"' not in source
 
 
 @pytest.mark.parametrize("cache_name", ["node_modules", ".venv"])
@@ -1228,6 +1314,54 @@ def test_cache_post_action_presence_never_reports_success(tmp_path, body, scenar
     assert result["rc"] == 2, result
     assert cache.exists()
     assert '"decision":"removed_cache"' not in result["stdout"]
+
+
+def test_candidate_recreated_after_isolated_removal_never_reports_success(
+        tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    cache = fx["eligible"] / "node_modules"
+    cache.mkdir()
+    (cache / "validated").write_text("validated bytes\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+        rm_scenario="recreate",
+    )
+    assert result["rc"] == 2, result
+    assert cache.is_dir()
+    assert '"decision":"removed_cache"' not in result["stdout"]
+
+
+def test_unchanged_isolated_cache_removes_only_exact_candidate(tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    cache = fx["eligible"] / "node_modules"
+    cache.mkdir()
+    (cache / "validated").write_text("validated bytes\n")
+    sibling = fx["eligible"] / "preserve-sibling"
+    sibling.write_text("preserve\n")
+    protected = fx["workspace"] / "output"
+    protected.mkdir()
+    protected_identity = (protected.lstat().st_dev, protected.lstat().st_ino)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+    )
+    assert result["rc"] == 0, result
+    assert json.loads(result["stdout"].splitlines()[-2])["decision"] == "removed_cache"
+    assert not cache.exists()
+    assert sibling.read_text() == "preserve\n"
+    assert (protected.lstat().st_dev, protected.lstat().st_ino) == protected_identity
+    assert list(fx["eligible"].glob(".workspace-cleanup-isolate.*")) == []
 
 
 def test_changed_protected_identity_never_reports_success(tmp_path, body):
