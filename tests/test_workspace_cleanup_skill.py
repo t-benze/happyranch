@@ -79,6 +79,9 @@ def test_non_force_only_and_no_broad_deletion(body):
     assert "rm -rf" in normalized
     # R6: the no-production-residue prohibition is scoped to THIS implementation
     # and witness task, not a permanent veto on the skill's future authorized use.
+    # The phrase now appears only in the prohibition: cache recursion is the
+    # descriptor-rooted primitive, not a standalone rm dispatch.
+    assert 'rm -rf -- "$WC_ISOLATED_CANDIDATE"' not in _shipped_procedure(body)
     assert "implementation and witness task" in normalized
     assert "deletes no production residue" in normalized
     assert "never deletes production residue" not in normalized
@@ -133,7 +136,11 @@ def test_effectiveness_contract_uses_complete_history_and_exact_host_job(body):
     assert "jobs show" in procedure and "--task-id" in procedure
     assert "jobs output" in procedure and "--session-id" in procedure
     assert "_wc_snapshot_tree" in procedure
+    assert "_wc_delete_isolated_cache" in procedure
     assert "_wc_verify_post_action" in procedure
+    assert 'rm -rf -- "$WC_ISOLATED_CANDIDATE"' not in procedure
+    assert "--workspace-cleanup-delete-isolated-v1" in procedure
+    assert "os.supports_dir_fd" in procedure and "os.O_NOFOLLOW" in procedure
     assert "# gate current-use-scan\n_wc_scan_job" in _shipped_gate_text(body)
 
 
@@ -454,12 +461,45 @@ def _write_stubs(bin_dir: Path) -> None:
     rm.write_text(
         "#!/bin/sh\n"
         "case \"${WC_RM_SCENARIO:-normal}\" in\n"
+        "  final-dispatch-swap)\n"
+        "    /usr/bin/mv \"$WC_ISOLATED_CANDIDATE\" \"$WC_ISOLATED_CANDIDATE.validated\" || exit $?\n"
+        "    mkdir \"$WC_ISOLATED_CANDIDATE\" || exit $?\n"
+        "    printf 'unvalidated replacement\\n' > \"$WC_ISOLATED_CANDIDATE/replacement\" || exit $?\n"
+        "    exec /usr/bin/rm \"$@\" ;;\n"
         "  residual) exit 0 ;;\n"
         "  recreate) /usr/bin/rm \"$@\" || exit $?; mkdir \"$WC_REAL_CANDIDATE\"; exit 0 ;;\n"
         "  protected-change) /usr/bin/rm \"$@\" || exit $?; mv \"$WORKSPACE/output\" \"$WORKSPACE/output.before\" && mkdir \"$WORKSPACE/output\"; exit 0 ;;\n"
         "  *) exec /usr/bin/rm \"$@\" ;;\n"
         "esac\n")
     rm.chmod(0o755)
+    python = bin_dir / "python3"
+    python.write_text(
+        "#!/bin/sh\n"
+        "is_action=0\n"
+        "for arg in \"$@\"; do\n"
+        "  [ \"$arg\" = --workspace-cleanup-delete-isolated-v1 ] && is_action=1\n"
+        "done\n"
+        "if [ \"$is_action\" = 1 ]; then\n"
+        "  case \"${WC_ACTION_SCENARIO:-normal}\" in\n"
+        "    final-dispatch-swap)\n"
+        "      /usr/bin/mv \"$WC_ISOLATED_CANDIDATE\" \"$WC_ISOLATED_CANDIDATE.validated\" || exit $?\n"
+        "      mkdir \"$WC_ISOLATED_CANDIDATE\" || exit $?\n"
+        "      printf 'unvalidated replacement\\n' > \"$WC_ISOLATED_CANDIDATE/replacement\" || exit $? ;;\n"
+        "    action-fail) exit 71 ;;\n"
+        "  esac\n"
+        "fi\n"
+        f"{shlex.quote(sys.executable)} \"$@\"\n"
+        "rc=$?\n"
+        "if [ \"$is_action\" = 1 ] && [ \"$rc\" = 0 ]; then\n"
+        "  case \"${WC_ACTION_SCENARIO:-normal}\" in\n"
+        "    residual) mkdir -p \"$WC_ISOLATED_CANDIDATE\" ;;\n"
+        "    recreate) mkdir -p \"$WC_REAL_CANDIDATE\" ;;\n"
+        "    protected-change) mv \"$WORKSPACE/output\" \"$WORKSPACE/output.before\" && mkdir \"$WORKSPACE/output\" ;;\n"
+        "  esac\n"
+        "fi\n"
+        "exit \"$rc\"\n"
+    )
+    python.chmod(0o755)
     mv = bin_dir / "mv"
     mv.write_text(
         "#!/bin/sh\n"
@@ -518,6 +558,7 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
                    tasks_fail: bool = False,
                    action_drift: str = "", rm_scenario: str = "normal",
                    mv_scenario: str = "normal",
+                   action_scenario: str = "normal",
                    shell: str = "bash"):
     task_map = task_map if task_map is not None else {}
     audit = audit if audit is not None else []
@@ -603,6 +644,9 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
         "WC_ACTION_DRIFT": action_drift,
         "WC_RM_SCENARIO": rm_scenario,
         "WC_MV_SCENARIO": mv_scenario,
+        "WC_ACTION_SCENARIO": (
+            action_scenario if action_scenario != "normal" else rm_scenario
+        ),
         "TMPDIR": str(wc_tmp),
     })
     script = (
@@ -1054,14 +1098,17 @@ def test_final_deletion_dispatch_swap_refuses_and_preserves_both_objects(
         tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
         candidate=cache, containing=fx["eligible"], task_map=task_map,
         audit_trigger=occurrences, scan_state="clear_observation",
-        mv_scenario="final-swap",
+        rm_scenario="final-dispatch-swap",
+        action_scenario="final-dispatch-swap",
     )
     assert result["rc"] == 2, result
     assert '"decision":"removed_cache"' not in result["stdout"]
-    assert (cache / "replacement").read_text() == "uninspected replacement\n"
-    assert (cache.parent / "node_modules.validated" / "validated").read_text() == (
-        "validated bytes\n"
-    )
+    assert (cache / "replacement").read_text() == "unvalidated replacement\n"
+    preserved = list(fx["eligible"].glob(
+        ".workspace-cleanup-isolate.*/node_modules.validated/validated"
+    ))
+    assert len(preserved) == 1, preserved
+    assert preserved[0].read_text() == "validated bytes\n"
 
 
 def test_isolation_identity_drift_refuses_and_preserves_both_objects(
@@ -1088,6 +1135,28 @@ def test_isolation_identity_drift_refuses_and_preserves_both_objects(
     ))
     assert len(preserved) == 1, preserved
     assert preserved[0].read_text() == "validated bytes\n"
+
+
+def test_descriptor_rooted_action_primitive_failure_restores_without_success(
+        tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    cache = fx["eligible"] / "node_modules"
+    cache.mkdir()
+    (cache / "validated").write_text("validated bytes\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+        action_scenario="action-fail",
+    )
+    assert result["rc"] == 2, result
+    assert '"decision":"removed_cache"' not in result["stdout"]
+    assert (cache / "validated").read_text() == "validated bytes\n"
+    assert list(fx["eligible"].glob(".workspace-cleanup-isolate.*")) == []
 
 
 def _complete_cleanup_evidence(agent="dev_agent"):

@@ -501,6 +501,256 @@ if os.path.lexists(candidate):
 PY
 }
 
+_wc_delete_isolated_cache() {
+  WC_DELETE_STARTED="$WC_TMP/delete-isolated-started"
+  export WC_DELETE_STARTED
+  python3 - --workspace-cleanup-delete-isolated-v1 \
+    "$CANDIDATE" "$WC_ISOLATED_CANDIDATE" "$WC_ISOLATION_DIR" \
+    "$CONTAINING" "$WC_TMP/tree-boundary.json" "$WC_DELETE_STARTED" <<'PY'
+import json, os, re, stat, subprocess, sys
+
+marker, candidate, isolated, isolation_dir, containing, snapshot_path, started = sys.argv[1:]
+if marker != "--workspace-cleanup-delete-isolated-v1":
+    raise SystemExit(2)
+candidate, isolated, isolation_dir, containing, snapshot_path, started = map(
+    os.path.abspath,
+    (candidate, isolated, isolation_dir, containing, snapshot_path, started),
+)
+uid = os.getuid()
+cap = 200000
+
+# Refuse before mutation on a platform that cannot keep traversal rooted in
+# already opened, no-follow directory descriptors.
+required = (os.open, os.stat, os.unlink, os.rmdir)
+if (not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW")
+        or os.listdir not in os.supports_fd
+        or any(operation not in os.supports_dir_fd for operation in required)
+        or os.stat not in os.supports_follow_symlinks):
+    raise SystemExit(3)
+
+directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+if hasattr(os, "O_CLOEXEC"):
+    directory_flags |= os.O_CLOEXEC
+
+def mountpoints():
+    result = set()
+    try:
+        with open("/proc/self/mountinfo", encoding="utf-8") as handle:
+            for line in handle:
+                fields = line.split()
+                if len(fields) < 5:
+                    raise RuntimeError("malformed_mountinfo")
+                value = re.sub(
+                    r"\\([0-7]{3})",
+                    lambda match: chr(int(match.group(1), 8)),
+                    fields[4],
+                )
+                result.add(os.path.abspath(value))
+        return result
+    except FileNotFoundError:
+        process = subprocess.run(
+            ["mount"], capture_output=True, text=True, timeout=5,
+        )
+        if process.returncode:
+            raise RuntimeError("mount_table_unavailable")
+        for line in process.stdout.splitlines():
+            match = re.search(r" on (.+?) \\(", line)
+            if not match:
+                raise RuntimeError("malformed_mount_table")
+            result.add(os.path.abspath(match.group(1)))
+        return result
+
+def identity(value):
+    return [value.st_dev, value.st_ino, value.st_mode, value.st_uid]
+
+def row(relative, value):
+    return [
+        relative, value.st_dev, value.st_ino, value.st_mode, value.st_uid,
+        value.st_size, getattr(value, "st_blocks", 0),
+    ]
+
+def protected_snapshot(paths):
+    return {
+        path: (identity(os.lstat(path)) if os.path.lexists(path) else None)
+        for path in paths
+    }
+
+def opened_directory(parent_fd, name):
+    before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    descriptor = os.open(name, directory_flags, dir_fd=parent_fd)
+    after = os.fstat(descriptor)
+    if identity(before) != identity(after):
+        os.close(descriptor)
+        raise RuntimeError("directory_identity_changed")
+    return descriptor, after
+
+def descriptor_tree(root_fd):
+    mounts = mountpoints()
+    root = os.fstat(root_fd)
+    if (not stat.S_ISDIR(root.st_mode) or stat.S_ISLNK(root.st_mode)
+            or root.st_uid != uid):
+        raise RuntimeError("invalid_isolated_root")
+    root_dev = root.st_dev
+    rows = [row("", root)]
+
+    def walk(directory_fd, relative):
+        try:
+            names = sorted(os.listdir(directory_fd))
+        except OSError as exc:
+            raise RuntimeError("unreadable_entry") from exc
+        for name in names:
+            child_rel = os.path.join(relative, name) if relative else name
+            child_path = os.path.join(isolated, child_rel)
+            value = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if value.st_uid != uid:
+                raise RuntimeError("non_owned_entry")
+            if value.st_dev != root_dev:
+                raise RuntimeError("cross_device_entry")
+            if child_path in mounts:
+                raise RuntimeError("nested_mount")
+            rows.append(row(child_rel, value))
+            if len(rows) > cap:
+                raise RuntimeError("entry_cap")
+            if stat.S_ISDIR(value.st_mode) and not stat.S_ISLNK(value.st_mode):
+                child_fd, opened = opened_directory(directory_fd, name)
+                try:
+                    if row(child_rel, opened) != row(child_rel, value):
+                        raise RuntimeError("directory_identity_changed")
+                    walk(child_fd, child_rel)
+                finally:
+                    os.close(child_fd)
+
+    walk(root_fd, "")
+    return sorted(rows)
+
+def remove_tree(root_fd, expected_rows):
+    expected = {item[0]: item for item in expected_rows}
+
+    def direct_children(relative):
+        prefix = relative + os.sep if relative else ""
+        return {
+            path[len(prefix):]
+            for path in expected
+            if path.startswith(prefix)
+            and path != relative
+            and os.sep not in path[len(prefix):]
+        }
+
+    def remove_children(directory_fd, relative):
+        names = set(os.listdir(directory_fd))
+        if names != direct_children(relative):
+            raise RuntimeError("entry_set_changed")
+        for name in sorted(names):
+            child_rel = os.path.join(relative, name) if relative else name
+            before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if row(child_rel, before) != expected[child_rel]:
+                raise RuntimeError("entry_identity_changed")
+            if stat.S_ISDIR(before.st_mode) and not stat.S_ISLNK(before.st_mode):
+                child_fd, opened = opened_directory(directory_fd, name)
+                try:
+                    if row(child_rel, opened) != expected[child_rel]:
+                        raise RuntimeError("entry_identity_changed")
+                    remove_children(child_fd, child_rel)
+                    current = os.stat(
+                        name, dir_fd=directory_fd, follow_symlinks=False,
+                    )
+                    if identity(current) != identity(opened):
+                        raise RuntimeError("entry_identity_changed")
+                    os.rmdir(name, dir_fd=directory_fd)
+                finally:
+                    os.close(child_fd)
+            else:
+                os.unlink(name, dir_fd=directory_fd)
+        if os.listdir(directory_fd):
+            raise RuntimeError("entry_residual")
+
+    remove_children(root_fd, "")
+
+with open(snapshot_path, encoding="utf-8") as handle:
+    expected = json.load(handle)
+if set(expected) != {"tree", "protected"}:
+    raise SystemExit(4)
+if (os.path.dirname(isolation_dir) != containing
+        or os.path.dirname(isolated) != isolation_dir
+        or not os.path.basename(isolation_dir).startswith(
+            ".workspace-cleanup-isolate."
+        )
+        or os.path.basename(candidate) not in ("node_modules", ".venv")
+        or os.path.basename(isolated) != os.path.basename(candidate)
+        or os.path.lexists(candidate)):
+    raise SystemExit(5)
+
+containing_fd = isolation_fd = isolated_fd = None
+try:
+    containing_fd = os.open(containing, directory_flags)
+    if identity(os.fstat(containing_fd)) != identity(os.lstat(containing)):
+        raise RuntimeError("containing_identity_changed")
+    isolation_fd, isolation_value = opened_directory(
+        containing_fd, os.path.basename(isolation_dir),
+    )
+    if (isolation_value.st_uid != uid
+            or stat.S_IMODE(isolation_value.st_mode) != 0o700):
+        raise RuntimeError("invalid_isolation_directory")
+    isolated_fd, isolated_value = opened_directory(
+        isolation_fd, os.path.basename(isolated),
+    )
+    root_rows = [item for item in expected["tree"] if item[0] == ""]
+    if len(root_rows) != 1 or row("", isolated_value) != root_rows[0]:
+        raise RuntimeError("isolated_root_changed")
+    if isolation_value.st_dev != isolated_value.st_dev:
+        raise RuntimeError("isolation_device_changed")
+    if protected_snapshot(expected["protected"]) != expected["protected"]:
+        raise RuntimeError("protected_identity_changed")
+    first = descriptor_tree(isolated_fd)
+    second = descriptor_tree(isolated_fd)
+    if first != second or first != expected["tree"]:
+        raise RuntimeError("isolated_tree_changed")
+    if (os.path.lexists(candidate)
+            or identity(os.lstat(isolation_dir)) != identity(isolation_value)
+            or identity(os.lstat(isolated)) != identity(isolated_value)
+            or protected_snapshot(expected["protected"]) != expected["protected"]):
+        raise RuntimeError("action_boundary_changed")
+
+    started_fd = os.open(
+        started, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+    )
+    try:
+        os.write(started_fd, b"descriptor-rooted-delete-started\n")
+    finally:
+        os.close(started_fd)
+
+    remove_tree(isolated_fd, expected["tree"])
+    current = os.stat(
+        os.path.basename(isolated),
+        dir_fd=isolation_fd,
+        follow_symlinks=False,
+    )
+    if identity(current) != identity(isolated_value):
+        raise RuntimeError("isolated_root_changed")
+    os.rmdir(os.path.basename(isolated), dir_fd=isolation_fd)
+    if os.path.lexists(candidate):
+        raise RuntimeError("candidate_recreated")
+    if protected_snapshot(expected["protected"]) != expected["protected"]:
+        raise RuntimeError("protected_identity_changed")
+    current_isolation = os.stat(
+        os.path.basename(isolation_dir),
+        dir_fd=containing_fd,
+        follow_symlinks=False,
+    )
+    if identity(current_isolation) != identity(isolation_value):
+        raise RuntimeError("isolation_identity_changed")
+    if os.listdir(isolation_fd):
+        raise RuntimeError("isolation_residual")
+    os.rmdir(os.path.basename(isolation_dir), dir_fd=containing_fd)
+except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+    raise SystemExit(6)
+finally:
+    for descriptor in (isolated_fd, isolation_fd, containing_fd):
+        if descriptor is not None:
+            os.close(descriptor)
+PY
+}
+
 _wc_restore_isolated_cache() {
   [ -n "${WC_ISOLATED_CANDIDATE:-}" ] || return 1
   [ -n "${WC_ISOLATION_DIR:-}" ] || return 1
@@ -1025,15 +1275,17 @@ run_cleanup_candidate() {
         _wc_restore_isolated_cache >/dev/null 2>&1 || :
         { _wc_refuse "action_isolation_changed"; return 2; }
       fi
-      if ! rm -rf -- "$WC_ISOLATED_CANDIDATE"; then
-        _wc_restore_isolated_cache >/dev/null 2>&1 || :
+      if ! _wc_delete_isolated_cache; then
+        if [ ! -e "${WC_DELETE_STARTED:-}" ]; then
+          _wc_restore_isolated_cache >/dev/null 2>&1 || :
+        fi
         { _wc_refuse "action_failed"; return 2; }
       fi
       if [ -e "$WC_ISOLATED_CANDIDATE" ] || [ -L "$WC_ISOLATED_CANDIDATE" ]; then
         _wc_restore_isolated_cache >/dev/null 2>&1 || :
         { _wc_refuse "action_residual"; return 2; }
       fi
-      if ! rmdir -- "$WC_ISOLATION_DIR"; then
+      if [ -e "$WC_ISOLATION_DIR" ] || [ -L "$WC_ISOLATION_DIR" ]; then
         { _wc_refuse "action_isolation_residual"; return 2; }
       fi
       if ! git -C "$CONTAINING" status --porcelain=v1 -z | cmp -s - "$cache_status_before"; then
@@ -1068,7 +1320,10 @@ run_cleanup_candidate() {
 - **Cache.** Atomically isolate one literal real `node_modules` or `.venv`
   directory inside a same-filesystem private sibling boundary, revalidate its
   inode/tree/owner/device and the protected-set identity against the complete
-  action snapshot, then remove only that isolated object. The cache must be
+  action snapshot, then open and recursively remove only that isolated object
+  through authenticated no-follow directory descriptors. A replacement before
+  descriptor admission refuses without deletion; unsupported descriptor-
+  relative primitives refuse before mutation. The cache must be
   inside a registered, non-primary linked worktree of your own workspace, and
   removal is allowed only when its
   immediate parent has the accepted lock/manifest, the owning task has been
@@ -1086,8 +1341,8 @@ run_cleanup_candidate() {
   **Never** `--force`. Never use `rm -rf`, a glob, a parent root, or
   `git clean` to remove a worktree; `git worktree prune` is allowed only for an
   already-missing registered path after a dry-run confirms the exact stale
-  record. The cache action above is the only `rm -rf`, and only on the literal
-  identity-revalidated isolated `node_modules`/`.venv` object. A changed or
+  record. Cache recursion uses only the descriptor-rooted primitive above,
+  never `rm -rf` or a later standalone pathname dispatch. A changed or
   reappearing original candidate path, isolation residue, or identity mismatch
   fails stopped and never emits `removed_cache`.
 
