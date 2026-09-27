@@ -19,6 +19,14 @@ withdrawable. A tombstone committed during selection excludes the skill at the
 publication barrier; it does not recall already-running work. Canonical-store,
 production-boundary, and materialization tests own these guarantees.
 
+The runtime-global system assistant joins this same delivery path during
+supported register and repair. Its workspace has no repository and the call
+supplies no org database or managed catalog, so both discovery roots receive
+exactly `dream`, `jobs`, `start-task`, `thread`, `todos`, and
+`workspace-cleanup`; custom, managed, and repo-gated skills are not projected.
+Repeated repair is idempotent. Unsafe entries and corrupt canonical packages
+surface an assistant-workspace failure instead of being deleted or rebuilt.
+
 The daemon and executor share one OS identity. Integrity checks detect mismatches
 and refuse launches; they do not provide OS isolation or close same-UID TOCTOU
 windows. Existing corrupt packages are never rebuilt automatically. Manual

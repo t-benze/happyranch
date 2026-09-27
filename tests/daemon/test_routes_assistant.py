@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import sys
 from typing import Any
@@ -18,6 +19,36 @@ from runtime.system_assistant import (
     save_assistant_config,
     system_assistant_paths,
 )
+
+
+_ASSISTANT_SYSTEM_SKILLS = {
+    "dream",
+    "jobs",
+    "start-task",
+    "thread",
+    "todos",
+    "workspace-cleanup",
+}
+
+
+def _assistant_skill_targets(workspace: Path) -> dict[str, str]:
+    targets: dict[str, str] = {}
+    for skills_root in (
+        workspace / ".agents/skills",
+        workspace / ".claude/skills",
+    ):
+        assert {entry.name for entry in skills_root.iterdir()} == _ASSISTANT_SYSTEM_SKILLS
+        for slug in sorted(_ASSISTANT_SYSTEM_SKILLS):
+            link = skills_root / slug
+            assert link.is_symlink()
+            raw_target = os.readlink(link)
+            assert not os.path.isabs(raw_target)
+            target = (link.parent / raw_target).resolve(strict=True)
+            assert target.is_dir()
+            assert target.parent.name == "system"
+            assert target.parent.parent.name == slug
+            targets[f"{skills_root.parent.name}/{slug}"] = raw_target
+    return targets
 
 
 @pytest.fixture
@@ -176,6 +207,30 @@ def test_assistant_register_rejects_extra_fields(client: TestClient) -> None:
     assert response.status_code == 422
 
 
+def test_assistant_register_refuses_unsafe_skill_entry_without_partial_success(
+    client: TestClient, runtime,
+) -> None:
+    paths = system_assistant_paths(runtime.root)
+    unsafe = paths.workspace / ".claude/skills/jobs"
+    unsafe.mkdir(parents=True)
+    (unsafe / "keep.txt").write_text("operator data\n")
+
+    response = client.post(
+        "/api/v1/assistant/register",
+        json={
+            "executor": "codex",
+            "command": sys.executable,
+            "argv": [sys.executable],
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "assistant_workspace_invalid"
+    assert (unsafe / "keep.txt").read_text() == "operator data\n"
+    assert not paths.config_path.exists()
+    assert not (paths.workspace / ".agents/skills").exists()
+
+
 def test_assistant_init_prepares_registration_workspace(client: TestClient) -> None:
     response = client.post("/api/v1/assistant/init", json={})
     assert response.status_code == 200, response.text
@@ -217,6 +272,7 @@ def test_assistant_repair_refreshes_workspace(client: TestClient, runtime) -> No
     assert (paths.workspace / "agent.yaml").is_file()
     assert (paths.workspace / "CLAUDE.md").is_file()
     assert (paths.learnings_dir / "_index.md").is_file()
+    _assistant_skill_targets(paths.workspace)
 
 
 @pytest.mark.parametrize("failure_point", ["stage", "after_both"])
@@ -325,6 +381,16 @@ def test_assistant_sequence_keeps_canonical_pair(
     assert registered.status_code == 200, registered.text
     assert registered.json()["state"] == AssistantState.CONFIGURED
     _assert_pair()
+    skills_before = _assistant_skill_targets(paths.workspace)
+
+    metadata = paths.workspace / "assistant-metadata.json"
+    knowledge_note = paths.knowledge_dir / "founder-note.md"
+    log = paths.logs_dir / "session.log"
+    metadata.write_text("preserve metadata\n")
+    knowledge_note.write_text("preserve knowledge\n")
+    (paths.learnings_dir / "_index.md").write_text("preserve learnings\n")
+    log.write_text("preserve logs\n")
+    config_before = paths.config_path.read_bytes()
 
     status = client.get("/api/v1/assistant/status")
     assert status.status_code == 200, status.text
@@ -332,11 +398,23 @@ def test_assistant_sequence_keeps_canonical_pair(
     assert status.json()["selected_executor"] == executor
 
     # Repair, then repeat repair: both idempotent, pair preserved.
-    for _ in range(2):
+    for attempt in range(2):
+        if attempt == 1:
+            wrong = paths.workspace / ".agents/skills/jobs"
+            wrong.unlink()
+            wrong.symlink_to("../../outside-canonical-package")
         repaired = client.post("/api/v1/assistant/repair")
         assert repaired.status_code == 200, repaired.text
         assert repaired.json()["state"] == AssistantState.CONFIGURED
         _assert_pair()
+        assert _assistant_skill_targets(paths.workspace) == skills_before
+        assert metadata.read_text() == "preserve metadata\n"
+        assert knowledge_note.read_text() == "preserve knowledge\n"
+        assert (paths.learnings_dir / "_index.md").read_text() == (
+            "preserve learnings\n"
+        )
+        assert log.read_text() == "preserve logs\n"
+        assert paths.config_path.read_bytes() == config_before
 
     # Executor change direction: the pair is preserved, never unlinked.
     other = "codex" if executor == "claude" else "claude"
@@ -355,6 +433,37 @@ def test_assistant_sequence_keeps_canonical_pair(
     assert changed.json()["state"] == AssistantState.CONFIGURED
     assert changed.json()["selected_executor"] == other
     _assert_pair()
+    _assistant_skill_targets(paths.workspace)
+
+
+def test_assistant_repair_refuses_corrupt_canonical_skill_package(
+    client: TestClient, runtime,
+) -> None:
+    paths = system_assistant_paths(runtime.root)
+    registered = client.post(
+        "/api/v1/assistant/register",
+        json={
+            "executor": "codex",
+            "command": sys.executable,
+            "argv": [sys.executable],
+        },
+    )
+    assert registered.status_code == 200, registered.text
+    links_before = _assistant_skill_targets(paths.workspace)
+    config_before = paths.config_path.read_bytes()
+    package_file = (paths.workspace / ".claude/skills/jobs/SKILL.md").resolve(
+        strict=True
+    )
+    package_file.chmod(0o644)
+    package_file.write_text("corrupt canonical bytes\n")
+
+    response = client.post("/api/v1/assistant/repair")
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "assistant_workspace_invalid"
+    assert package_file.read_text() == "corrupt canonical bytes\n"
+    assert _assistant_skill_targets(paths.workspace) == links_before
+    assert paths.config_path.read_bytes() == config_before
 
 
 def test_assistant_repair_loads_config_under_lifecycle_lock(

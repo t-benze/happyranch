@@ -704,3 +704,39 @@ def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
         (paths.learnings_dir / "_index.md").write_text("# Learnings: system_assistant\n\n")
     prompt = _assistant_prompt()
     _write_assistant_instruction_pair(paths.workspace, prompt)
+
+    from runtime.config import Settings
+    from runtime.orchestrator.workspace_adapters import (
+        SystemContractMaterializationError,
+        materialize_workspace_skills_union,
+    )
+    from runtime.skills.canonical_store import CanonicalStoreError
+    from runtime.skills.symlink_materializer import SymlinkMaterializationError
+
+    settings = Settings()
+    try:
+        materialize_workspace_skills_union(
+            paths.workspace,
+            settings,
+            slug="system-assistant",
+            contexts=[
+                "task",
+                "thread",
+                "wake",
+                "dream",
+                "schedule",
+                "bootstrap",
+            ],
+            provider=selected_executor,
+            agent_name="system_assistant",
+            team="",
+            # The runtime-global assistant has no managed catalog or org
+            # database. Only the canonical system-contract union is eligible.
+            skills_root=paths.root / ".no-managed-skills",
+        )
+    except (
+        CanonicalStoreError,
+        SymlinkMaterializationError,
+        SystemContractMaterializationError,
+    ) as exc:
+        raise ValueError(f"assistant skill materialization failed: {exc}") from exc

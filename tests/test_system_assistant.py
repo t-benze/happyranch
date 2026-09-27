@@ -20,6 +20,36 @@ from runtime.system_assistant import (
 )
 
 
+_ASSISTANT_SYSTEM_SKILLS = {
+    "dream",
+    "jobs",
+    "start-task",
+    "thread",
+    "todos",
+    "workspace-cleanup",
+}
+
+
+def _assert_assistant_system_skill_links(workspace: Path) -> dict[str, str]:
+    raw_targets: dict[str, str] = {}
+    for skills_root in (
+        workspace / ".agents/skills",
+        workspace / ".claude/skills",
+    ):
+        assert {entry.name for entry in skills_root.iterdir()} == _ASSISTANT_SYSTEM_SKILLS
+        for slug in sorted(_ASSISTANT_SYSTEM_SKILLS):
+            link = skills_root / slug
+            assert link.is_symlink()
+            raw_target = os.readlink(link)
+            assert not os.path.isabs(raw_target)
+            target = (link.parent / raw_target).resolve(strict=True)
+            assert target.is_dir()
+            assert target.parent.name == "system"
+            assert target.parent.parent.name == slug
+            raw_targets[f"{skills_root.parent.name}/{slug}"] = raw_target
+    return raw_targets
+
+
 @pytest.fixture
 def resolve_executor_commands(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make ``shutil.which`` resolve the real executor commands to a fake path.
@@ -1335,12 +1365,72 @@ def test_assistant_bootstrap_repeat_is_idempotent(tmp_path: Path) -> None:
     agents_before = (ws / "AGENTS.md").read_bytes()
     link_before = os.readlink(ws / "CLAUDE.md")
     backups_before = sorted(p.name for p in ws.glob("*.bak"))
+    skills_before = _assert_assistant_system_skill_links(ws)
 
     bootstrap_assistant_workspace(tmp_path, executor="codex")
 
     assert (ws / "AGENTS.md").read_bytes() == agents_before
     assert os.readlink(ws / "CLAUDE.md") == link_before
     assert sorted(p.name for p in ws.glob("*.bak")) == backups_before
+    assert _assert_assistant_system_skill_links(ws) == skills_before
+
+
+def test_assistant_bootstrap_repairs_wrong_canonical_skill_target(
+    tmp_path: Path,
+) -> None:
+    bootstrap_assistant_workspace(tmp_path, executor="codex")
+    workspace = system_assistant_paths(tmp_path).workspace
+    wrong = workspace / ".agents/skills/jobs"
+    wrong.unlink()
+    wrong.symlink_to("../../outside-canonical-package")
+
+    bootstrap_assistant_workspace(tmp_path, executor="codex")
+
+    _assert_assistant_system_skill_links(workspace)
+    assert os.readlink(wrong) != "../../outside-canonical-package"
+
+
+def test_assistant_bootstrap_refuses_unsafe_skill_entry_without_other_root_links(
+    tmp_path: Path,
+) -> None:
+    workspace = system_assistant_paths(tmp_path).workspace
+    unsafe = workspace / ".claude/skills/jobs"
+    unsafe.mkdir(parents=True)
+    (unsafe / "keep.txt").write_text("operator data\n")
+
+    with pytest.raises(ValueError, match="assistant skill materialization failed"):
+        bootstrap_assistant_workspace(tmp_path, executor="codex")
+
+    assert (unsafe / "keep.txt").read_text() == "operator data\n"
+    assert not (workspace / ".agents/skills").exists()
+
+
+@pytest.mark.parametrize("corruption", ["content", "tree"])
+def test_assistant_bootstrap_refuses_corrupt_canonical_skill_package(
+    tmp_path: Path, corruption: str,
+) -> None:
+    bootstrap_assistant_workspace(tmp_path, executor="codex")
+    workspace = system_assistant_paths(tmp_path).workspace
+    links_before = _assert_assistant_system_skill_links(workspace)
+    package_file = (workspace / ".agents/skills/jobs/SKILL.md").resolve(strict=True)
+    package_root = package_file.parent
+    package_root.chmod(0o755)
+    if corruption == "content":
+        package_file.chmod(0o644)
+        package_file.write_text("corrupt canonical bytes\n")
+    else:
+        (package_root / "unexpected.txt").write_text("unexpected tree member\n")
+
+    with pytest.raises(ValueError, match="assistant skill materialization failed"):
+        bootstrap_assistant_workspace(tmp_path, executor="codex")
+
+    if corruption == "content":
+        assert package_file.read_text() == "corrupt canonical bytes\n"
+    else:
+        assert (package_root / "unexpected.txt").read_text() == (
+            "unexpected tree member\n"
+        )
+    assert _assert_assistant_system_skill_links(workspace) == links_before
 
 
 def test_assistant_registration_backup_failure_preserves_originals(

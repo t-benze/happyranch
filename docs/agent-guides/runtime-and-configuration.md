@@ -316,6 +316,15 @@ self-registration) — then auto-configures with no separate approval.
 `happyranch assistant` tells the user to run `happyranch assistant init` when
 no assistant config exists.
 
+Register and repair also reconcile the canonical system-contract union into
+both `<workspace>/.agents/skills/` and `<workspace>/.claude/skills/`. The
+runtime-global assistant has no repository or org custom-skill context, so the
+exact set is `dream`, `jobs`, `start-task`, `thread`, `todos`, and
+`workspace-cleanup`. Repeated repair preserves the instruction pair, config,
+knowledge, learnings, logs, and other assistant workspace content. Existing
+corrupt canonical packages or unsafe skill entries fail closed; bootstrap does
+not reconstruct corrupt packages or recursively remove operator content.
+
 entry keyed by the profile name before launch (THR-107 seq155). Custom-adapter
 profiles (``command_adapter_id: custom-adapter:<id>``) are an exception — they
 use the exact founder-APPROVED, hash-verified absolute adapter executable as
