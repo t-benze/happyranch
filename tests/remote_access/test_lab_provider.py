@@ -16,6 +16,7 @@ from __future__ import annotations
 import http.client
 import json
 import socket
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -77,6 +78,11 @@ def _harness_ctx_factory(route_policy_fixture, forwarder=None):
     harness = forwarder or ForwardingHarness()
 
     def factory(now):
+        authorization_state = default_authorization_state()
+        authorization_state.devices["device-a"] = replace(
+            authorization_state.devices["device-a"],
+            expires_at=now + timedelta(days=30),
+        )
         ctx = GatewayContext(
             connector_identity=default_identity(),
             proof=identity.DeviceProof(
@@ -89,7 +95,7 @@ def _harness_ctx_factory(route_policy_fixture, forwarder=None):
             ),
             proof_verifier=identity.StaticProofVerifier(identity.ProofVerdict(ok=True)),
             single_use_guard=identity.SingleUseGuard(),
-            authorization=AuthorizationVerifier(default_authorization_state()),
+            authorization=AuthorizationVerifier(authorization_state),
             # policy is current AT the decision time (issued 60s before now)
             policy=build_consumer(
                 route_policy_fixture, issued_at=now - timedelta(seconds=60)
