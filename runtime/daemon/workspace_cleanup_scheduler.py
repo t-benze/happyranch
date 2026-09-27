@@ -1144,6 +1144,12 @@ def compose_cleanup_brief(
             "deliberately uninspected; every other unreadable same-user "
             "process is unknown and skips. Pending job rows and "
             "blocked_on_job_ids are diagnostics only, never liveness proof.",
+            "The accepted host-job receipt is structured and closed-schema: it "
+            "must bind the current task/session to the actual job, agent, stored "
+            "command, interpreter, resolved cwd, timestamps, terminal result, "
+            "complete non-truncated output, and exact scanner coverage. PR "
+            "evidence is completely paginated and repeated; open, "
+            "closed-unmerged, duplicate, changing, or malformed rows refuse.",
             "",
             "Allowed cache action: remove one literal real node_modules or "
             ".venv directory inside a registered, non-primary linked "
@@ -1156,6 +1162,14 @@ def compose_cleanup_brief(
             "only that literal cache and prove tracked source bytes and Git "
             "status unchanged. Never remove or clean the dirty "
             "worktree, use a glob/parent root, or run git clean.",
+            "The containing worktree must be the owning primary checkout's "
+            "exact registered .claude/worktrees/<TASK> path on task/<TASK>. "
+            "Before action and at the action boundary, completely walk the "
+            "literal candidate without following symlinks; nested mounts, "
+            "cross-device or foreign-owned entries, protected descendants, "
+            "unreadable/capped/changing evidence, or identity drift refuse. "
+            "Count the root inode in byte totals; success requires literal "
+            "absence and unchanged protected-path identities.",
             "",
             "Allowed whole-worktree action: after seven terminal days, remove "
             "one clean registered non-primary worktree only when the shared "

@@ -47,15 +47,25 @@ snapshot with disclosed later-opener/data-loss residual, not proof of OS-wide
 absence.
 
 The scan runs only as a task-bound host-visible HappyRanch job. The procedure
-authenticates its exact fresh job/task/session/status/exit/output/scanner
-receipt and has no direct fallback. Complete candidate-specific task and
-filtered-trigger paging replaces the former org-wide capped-history veto.
+authenticates a closed-schema, non-truncated receipt binding the current
+task/session to the actual job, agent, stored command, interpreter, resolved
+cwd, timestamps, terminal result, complete output totals, and scanner coverage;
+it has no direct fallback. Complete candidate-specific task and filtered-trigger
+paging replaces the former org-wide capped-history veto. PR evidence is also
+completely paginated and repeated; open, closed-unmerged, duplicate, changing,
+conflicting, or malformed rows refuse.
 Durable preservation may be the accepted ref, a freshly verified exact origin
 task branch, or a confirmed merged PR (which preserves integrated content but
 may not preserve original commit topology). Whole-worktree removal still
 requires cleanliness; only a literal root dependency cache may be removed from
 an otherwise dirty worktree, after all cache gates, without changing tracked
 source bytes or Git status.
+The candidate's containing worktree must be registered at its owning primary's
+exact `.claude/worktrees/<TASK>` path on `task/<TASK>`. A complete no-follow
+`lstat` walk runs before and at action time, refusing nested mounts,
+cross-device/foreign-owned entries, protected descendants, unreadable or capped
+evidence, and identity drift. Accounting includes the root inode, and success
+requires literal candidate absence plus unchanged protected-path identities.
 
 The database-only reclamation selection helper is called only by `run_step`'s
 pre-agent hook, never by the scheduler. Supplied claim counts other than initial `0 -> 1` refuse before its

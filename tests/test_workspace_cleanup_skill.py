@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -125,6 +126,12 @@ def test_effectiveness_contract_uses_complete_history_and_exact_host_job(body):
     assert "happyranch jobs output" in procedure
     assert "clear_observation" in procedure
     assert "scan_receipt_mismatch" in procedure
+    assert "gh api graphql --paginate --slurp" in procedure
+    assert "jobs submit" in procedure and "--json" in procedure
+    assert "jobs show" in procedure and "--task-id" in procedure
+    assert "jobs output" in procedure and "--session-id" in procedure
+    assert "_wc_snapshot_tree" in procedure
+    assert "_wc_verify_post_action" in procedure
     assert "# gate current-use-scan\n_wc_scan_job" in _shipped_gate_text(body)
 
 
@@ -318,7 +325,8 @@ def test_r5_ownership_and_retention_gates_use_authoritative_facts(body, tmp_path
 def test_r5_preservation_gate_calls_fresh_remote_and_all_pr_states(body):
     procedure = _shipped_procedure(body)
     assert 'ls-remote --exit-code origin "refs/heads/$branch"' in procedure
-    assert 'gh pr list --repo "$repo_slug" --head "$branch" --state all' in procedure
+    assert "gh api graphql --paginate --slurp" in procedure
+    assert "totalCount" in procedure and "pageInfo" in procedure
     assert "mergedAt" in procedure and "headRefOid" in procedure
 
 
@@ -379,6 +387,7 @@ def _write_stubs(bin_dir: Path) -> None:
         "  tasks)\n"
         "    [ \"${WC_TASKS_FAIL:-0}\" = \"1\" ] && exit 1\n"
         "    n=$(cat \"$WC_TASKS_COUNT\"); n=$((n+1)); echo \"$n\" > \"$WC_TASKS_COUNT\"\n"
+        "    if [ \"$n\" -gt 1 ] && [ \"${WC_ACTION_DRIFT:-}\" = replace-cache ]; then mv \"$WC_REAL_CANDIDATE\" \"$WC_REAL_CANDIDATE.before\" && mkdir \"$WC_REAL_CANDIDATE\"; fi\n"
         "    if [ \"$n\" -gt 1 ] && [ -n \"$WC_TASKS_SECOND\" ]; then exec cat \"$WC_TASKS_SECOND\"; fi\n"
         "    exec cat \"$WC_TASKS_FIRST\" ;;\n"
         "  audit)\n"
@@ -391,34 +400,28 @@ def _write_stubs(bin_dir: Path) -> None:
         "    case \"$2\" in\n"
         "      submit)\n"
         "        [ \"$WC_JOB_SCENARIO\" = rejected ] && exit 1\n"
-        "        cp \"$last\" \"$WC_JOB_PAYLOAD\"\n"
-        "        echo 'ok: submitted JOB-1 (status=completed). Self-block your task referencing this ID.' ;;\n"
+        "        payload=; prev=; for a in \"$@\"; do [ \"$prev\" = --from-file ] && payload=\"$a\"; prev=\"$a\"; done\n"
+        "        [ -n \"$payload\" ] || exit 1\n"
+        "        cp \"$payload\" \"$WC_JOB_PAYLOAD\"\n"
+        "        exec python3 -c 'import datetime,json,os\n"
+        "p=json.load(open(os.environ[\"WC_JOB_PAYLOAD\"])); now=datetime.datetime.now(datetime.timezone.utc).isoformat()\n"
+        "print(json.dumps({\"id\":\"JOB-1\",\"status\":\"running\",\"created_at\":now,\"started_at\":now,\"cwd_resolved\":os.path.realpath(os.environ[\"WORKSPACE\"]),\"timeout_seconds\":20,\"events_url\":\"/events\",\"authentication\":{\"task_id\":p[\"task_id\"],\"session_id\":p[\"session_id\"]}},sort_keys=True))' ;;\n"
         "      wait)\n"
         "        case \"$WC_JOB_SCENARIO\" in\n"
         "          timeout) echo '{\"status\":\"running\",\"timed_out\":true}' ;;\n"
         "          failed) echo '{\"status\":\"failed\",\"timed_out\":false}' ;;\n"
         "          *) echo '{\"status\":\"completed\",\"timed_out\":false}' ;;\n"
         "        esac ;;\n"
-        "      show)\n"
-        "        exec python3 -c 'import datetime,json,os\n"
-        "p=json.load(open(os.environ[\"WC_JOB_PAYLOAD\"])); scenario=os.environ[\"WC_JOB_SCENARIO\"]\n"
-        "created=(\"2000-01-01T00:00:00+00:00\" if scenario==\"stale\" else datetime.datetime.now(datetime.timezone.utc).isoformat())\n"
-        "task=(\"TASK-WRONG\" if scenario==\"mismatched\" else p[\"task_id\"])\n"
-        "exit_code=(3 if scenario==\"completed_nonzero\" else 0)\n"
-        "print(\"JOB-1   completed   submitted \"+created); print(\"Agent:        dev_agent\"); print(\"Task:         \"+task); print(\"Interpreter:  \"+p[\"interpreter\"]); print(\"Cwd hint:     (workspace root)\"); print(); print(\"Title:        \"+p[\"title\"]); print(); print(\"Rationale:\"); print(\"  \"+p[\"rationale\"]); print(); print(\"Script:\"); print(\"  \"+p[\"script\"].rstrip()); print(); print(\"Exit code:    \"+str(exit_code))' ;;\n"
-        "      output)\n"
+        "      show|output)\n"
         "        echo scan >> \"$WC_SCAN_LOG\"\n"
-        "        [ \"$WC_JOB_SCENARIO\" = output_cap ] && exit 1\n"
-        "        echo '--- stdout ---'\n"
-        "        case \"$WC_JOB_SCENARIO\" in\n"
-        "          malformed) echo 'not-json' ;;\n"
-        "          missing_output) : ;;\n"
-        "          use) printf '{\"state\":\"blocked\",\"target\":\"%s\"}\\n' \"$WC_REAL_CANDIDATE\" ;;\n"
-        "          unknown) printf '{\"state\":\"unknown\",\"target\":\"%s\"}\\n' \"$WC_REAL_CANDIDATE\" ;;\n"
-        "          output_mismatch) printf '{\"state\":\"clear_observation\",\"target\":\"/wrong\"}\\n' ;;\n"
-        "          *) printf '{\"state\":\"clear_observation\",\"target\":\"%s\"}\\n' \"$WC_REAL_CANDIDATE\" ;;\n"
-        "        esac\n"
-        "        echo '--- stderr ---' ;;\n"
+        "        [ \"$WC_JOB_SCENARIO\" = malformed ] && { echo not-json; exit 0; }\n"
+        "        exec python3 -c 'import datetime,json,os\n"
+        "p=json.load(open(os.environ[\"WC_JOB_PAYLOAD\"])); scenario=os.environ[\"WC_JOB_SCENARIO\"]; now=datetime.datetime.fromtimestamp(os.stat(os.environ[\"WC_JOB_PAYLOAD\"]).st_mtime,datetime.timezone.utc).isoformat(); created=(\"2000-01-01T00:00:00+00:00\" if scenario==\"stale\" else now)\n"
+        "target=os.path.realpath(os.environ[\"WC_REAL_CANDIDATE\"]); containing=os.path.realpath(os.environ[\"CONTAINING\"]); st=os.stat(target); is_cache=os.path.basename(target) in (\"node_modules\",\".venv\"); cst=os.stat(containing)\n"
+        "coverage={\"agent_uid\":os.getuid(),\"self_pid\":\"123\",\"target_dev_ino\":[st.st_dev,st.st_ino],\"containing_worktree\":containing if is_cache else None,\"containing_worktree_dev_ino\":[cst.st_dev,cst.st_ino] if is_cache else None,\"target_present\":True,\"containing_worktree_present\":is_cache,\"total_pids\":1,\"same_user\":1,\"root\":0,\"other_user\":0,\"exempt\":0,\"scanned\":1,\"exited\":0,\"unreadable_same_user\":0,\"unreadable_unknown_uid\":0,\"identity_read_errors\":0,\"role_mismatch\":0,\"denied\":0,\"vanished\":0,\"errors\":0,\"truncated\":0,\"maps_truncated\":0,\"fd_truncated\":0,\"threads_truncated\":0,\"new_pids_after\":0,\"reused_pids\":0,\"mnt_ns_differs\":0,\"mnt_ns_path_unverified\":0,\"host_context\":{\"pid1_comm\":\"systemd\",\"pid_ns_agree\":True,\"mnt_agree\":True,\"proc_mounts\":1,\"stacked\":False,\"mountinfo\":\"ok\",\"pid1_ns_readable\":True,\"ok\":True},\"enum_passes\":2}\n"
+        "state=\"blocked\" if scenario==\"use\" else (\"unknown\" if scenario==\"unknown\" else \"clear_observation\"); scan={\"state\":state,\"target\":\"/wrong\" if scenario==\"output_mismatch\" else target,\"hits\":[{\"pid\":\"9\"}] if state==\"blocked\" else [],\"reasons\":[\"unknown\"] if state==\"unknown\" else [],\"coverage\":coverage,\"exempt\":[],\"cycles\":[{\"phase\":\"enumerate_pass\",\"pass\":0,\"new\":1}]}\n"
+        "stdout=\"\" if scenario==\"missing_output\" else json.dumps(scan,sort_keys=True)+\"\\n\"; task=\"TASK-WRONG\" if scenario==\"wrong_task\" else p[\"task_id\"]; auth={\"task_id\":p[\"task_id\"],\"session_id\":\"sess-wrong\" if scenario==\"wrong_session\" else p[\"session_id\"]}; job={\"id\":\"JOB-2\" if scenario==\"wrong_job\" else \"JOB-1\",\"task_id\":task,\"agent_name\":\"other\" if scenario==\"wrong_agent\" else \"dev_agent\",\"title\":p[\"title\"],\"rationale\":p[\"rationale\"],\"script_text\":\"echo spoof\" if scenario==\"wrong_script\" else p[\"script\"],\"interpreter\":\"zsh\" if scenario==\"wrong_interpreter\" else p[\"interpreter\"],\"cwd_hint\":None,\"cwd_resolved\":\"/wrong\" if scenario==\"wrong_cwd\" else os.path.realpath(os.environ[\"WORKSPACE\"]),\"status\":\"failed\" if scenario==\"wrong_status\" else \"completed\",\"exit_code\":3 if scenario in (\"completed_nonzero\",\"wrong_exit\") else 0,\"reason\":\"spoof\" if scenario==\"wrong_reason\" else None,\"duration_ms\":1,\"created_at\":created,\"started_at\":now,\"finished_at\":\"1999-01-01T00:00:00+00:00\" if scenario==\"wrong_time\" else now}\n"
+        "output={\"stdout\":stdout,\"stderr\":\"\",\"truncated_stdout\":scenario==\"output_cap\",\"truncated_stderr\":False,\"total_stdout_bytes\":len(stdout.encode())+(1 if scenario==\"total_mismatch\" else 0),\"total_stderr_bytes\":0}; receipt={\"authentication\":auth,\"job\":job,\"output\":output}; receipt=({\"job\":job} if scenario==\"minimal\" else receipt); receipt[\"extra\"]=1 if scenario==\"extra\" else receipt.get(\"extra\"); receipt.pop(\"extra\",None) if scenario!=\"extra\" else None; print(json.dumps(receipt,sort_keys=True))' ;;\n"
         "      *) exit 1 ;;\n"
         "    esac ;;\n"
         "  *) echo 'unsupported' >&2; exit 1 ;;\n"
@@ -429,18 +432,32 @@ def _write_stubs(bin_dir: Path) -> None:
         "#!/bin/sh\n"
         "echo \"gh $*\" >> \"$GH_LOG\"\n"
         "[ \"${WC_GH_FAIL:-0}\" = \"1\" ] && exit 71\n"
-        "repo=\"\"; prev=\"\"\n"
-        "for a in \"$@\"; do [ \"$prev\" = \"--repo\" ] && repo=\"$a\"; prev=\"$a\"; done\n"
-        "[ -n \"$repo\" ] || { echo 'missing --repo' >&2; exit 1; }\n"
-        "case \"${WC_PR_SCENARIO:-none}\" in\n"
-        "  none) echo '[]' ;;\n"
-        "  open) printf '[{\"number\":1,\"state\":\"OPEN\",\"mergedAt\":null,\"headRefName\":\"%s\",\"headRefOid\":\"%s\"}]\\n' \"$WC_BRANCH\" \"$WC_HEAD\" ;;\n"
-        "  closed) printf '[{\"number\":1,\"state\":\"CLOSED\",\"mergedAt\":null,\"headRefName\":\"%s\",\"headRefOid\":\"%s\"}]\\n' \"$WC_BRANCH\" \"$WC_HEAD\" ;;\n"
-        "  merged) printf '[{\"number\":1,\"state\":\"MERGED\",\"mergedAt\":\"2026-01-01T00:00:00Z\",\"headRefName\":\"%s\",\"headRefOid\":\"%s\"}]\\n' \"$WC_BRANCH\" \"$WC_HEAD\" ;;\n"
-        "  mismatch) printf '[{\"number\":1,\"state\":\"MERGED\",\"mergedAt\":\"2026-01-01T00:00:00Z\",\"headRefName\":\"%s\",\"headRefOid\":\"0000000000000000000000000000000000000000\"}]\\n' \"$WC_BRANCH\" ;;\n"
-        "  malformed) echo '{}' ;;\n"
-        "esac\n")
+        "[ \"$1\" = api ] && [ \"$2\" = graphql ] || { echo 'expected graphql' >&2; exit 1; }\n"
+        "exec python3 -c 'import json,os\n"
+        "scenario=os.environ.get(\"WC_PR_SCENARIO\",\"none\"); branch=os.environ[\"WC_BRANCH\"]; head=os.environ[\"WC_HEAD\"]\n"
+        "def row(number,state=\"MERGED\",merged=\"2026-01-01T00:00:00Z\",oid=None): return {\"number\":number,\"state\":state,\"mergedAt\":merged,\"headRefName\":branch,\"headRefOid\":oid or head}\n"
+        "if scenario==\"malformed\": print(\"{}\"); raise SystemExit\n"
+        "nodes=[]\n"
+        "if scenario in (\"open\",\"beyond100open\"): nodes=[row(i) for i in range(1,102)]+[row(102,\"OPEN\",None)]\n"
+        "elif scenario in (\"closed\",\"beyond100closed\"): nodes=[row(i) for i in range(1,102)]+[row(102,\"CLOSED\",None)]\n"
+        "elif scenario==\"merged\": nodes=[row(1)]\n"
+        "elif scenario==\"mismatch\": nodes=[row(1,oid=\"0\"*40)]\n"
+        "elif scenario==\"bad_merged_at\": nodes=[row(1,\"MERGED\",None)]\n"
+        "elif scenario==\"duplicate\": nodes=[row(1),row(1)]\n"
+        "pages=[{\"data\":{\"repository\":{\"pullRequests\":{\"totalCount\":len(nodes),\"nodes\":nodes,\"pageInfo\":{\"hasNextPage\":False,\"endCursor\":None}}}}}]\n"
+        "if scenario in (\"beyond100open\",\"beyond100closed\"): pages=[{\"data\":{\"repository\":{\"pullRequests\":{\"totalCount\":len(nodes),\"nodes\":nodes[:100],\"pageInfo\":{\"hasNextPage\":True,\"endCursor\":\"cursor-1\"}}}}},{\"data\":{\"repository\":{\"pullRequests\":{\"totalCount\":len(nodes),\"nodes\":nodes[100:],\"pageInfo\":{\"hasNextPage\":False,\"endCursor\":None}}}}}]\n"
+        "print(json.dumps(pages))'\n")
     gh.chmod(0o755)
+    rm = bin_dir / "rm"
+    rm.write_text(
+        "#!/bin/sh\n"
+        "case \"${WC_RM_SCENARIO:-normal}\" in\n"
+        "  residual) exit 0 ;;\n"
+        "  recreate) /usr/bin/rm \"$@\" || exit $?; mkdir \"$WC_REAL_CANDIDATE\"; exit 0 ;;\n"
+        "  protected-change) /usr/bin/rm \"$@\" || exit $?; mv \"$WORKSPACE/output\" \"$WORKSPACE/output.before\" && mkdir \"$WORKSPACE/output\"; exit 0 ;;\n"
+        "  *) exec /usr/bin/rm \"$@\" ;;\n"
+        "esac\n")
+    rm.chmod(0o755)
     git = bin_dir / "git"
     git.write_text(
         "#!/bin/sh\n"
@@ -473,6 +490,7 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
                    remote_scenario: str = "missing",
                    pr_scenario: str | None = None,
                    tasks_fail: bool = False,
+                   action_drift: str = "", rm_scenario: str = "normal",
                    shell: str = "bash"):
     task_map = task_map if task_map is not None else {}
     audit = audit if audit is not None else []
@@ -555,6 +573,8 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
         "WC_HEAD": _git("rev-parse", "HEAD", cwd=containing).stdout.strip(),
         "WC_GH_FAIL": "1" if gh_fail else "0",
         "WC_GIT_FAIL_MATCH": git_fail_match,
+        "WC_ACTION_DRIFT": action_drift,
+        "WC_RM_SCENARIO": rm_scenario,
         "TMPDIR": str(wc_tmp),
     })
     script = (
@@ -692,8 +712,9 @@ def test_f5_pr_query_is_bound_to_primary_repository(tmp_path, body):
                        audit=_occurrences("TASK-OCC-1", "TASK-OCC-2"))
     # The PR lookup must name the owning repository, never the workspace cwd.
     assert r["gh_log"], "gh was not invoked while evaluating no-open-pr"
-    assert "--repo demo/fixture" in r["gh_log"], r["gh_log"]
-    assert "--head task/TASK-ELIGIBLE" in r["gh_log"], r["gh_log"]
+    assert "-F owner=demo" in r["gh_log"], r["gh_log"]
+    assert "-F name=fixture" in r["gh_log"], r["gh_log"]
+    assert "-F headRefName=task/TASK-ELIGIBLE" in r["gh_log"], r["gh_log"]
     assert "worktree remove" not in r["git_log"]
 
 
@@ -763,7 +784,7 @@ def test_r4_exact_marker_two_distinct_terminal_joins_runs_literal_action(
                           cwd=fx["primary"]).stdout
     assert not fx["eligible"].exists()
     assert result["git_log"].count("worktree remove") == 1
-    assert (tmp_path / "scan.log").read_text().splitlines() == ["scan", "scan"]
+    assert (tmp_path / "scan.log").read_text().splitlines() == ["scan"] * 4
 
 
 @pytest.mark.parametrize(
@@ -916,7 +937,7 @@ def test_r4_new_manual_peer_after_claim_refuses_before_fresh_scan_and_action(
     )
     assert result["rc"] == 2 and "nonterminal_peer:TASK-NEW-PEER" in result["stdout"], result
     assert "worktree remove" not in result["git_log"]
-    assert (tmp_path / "scan.log").read_text().splitlines() == ["scan"]
+    assert (tmp_path / "scan.log").read_text().splitlines() == ["scan"] * 2
     assert fx["eligible"].exists()
 
 
@@ -943,6 +964,52 @@ def test_r5_noncanonical_candidate_shape_refuses_before_removal(tmp_path, body):
     assert result["rc"] == 2, result
     assert "worktree remove" not in result["git_log"]
     assert bad.exists()
+
+
+def test_wrong_registered_parent_refuses_and_preserves_path(tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    wrong = fx["primary"] / ".claude" / "unexpected" / "TASK-WRONG"
+    wrong.parent.mkdir(parents=True)
+    _git("worktree", "add", "-b", "task/TASK-WRONG", str(wrong),
+         "origin/main", cwd=fx["primary"])
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map = {
+        "TASK-WRONG": _terminal_task("dev_agent"),
+        "TASK-OCC-1": _terminal_task("dev_agent"),
+        "TASK-OCC-2": _terminal_task("dev_agent"),
+    }
+    occurrences = _occurrences("TASK-OCC-1", "TASK-OCC-2")
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=wrong, containing=wrong, task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+    )
+    assert result["rc"] == 2, result
+    assert wrong.exists()
+    assert "worktree remove" not in result["git_log"]
+
+
+def test_action_boundary_cache_replacement_refuses_and_preserves_both_paths(
+        tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    cache = fx["eligible"] / "node_modules"
+    cache.mkdir()
+    (cache / "original").write_text("keep\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+        action_drift="replace-cache",
+    )
+    assert result["rc"] == 2, result
+    assert cache.is_dir()
+    assert (cache.parent / "node_modules.before" / "original").read_text() == "keep\n"
 
 
 def _complete_cleanup_evidence(agent="dev_agent"):
@@ -984,6 +1051,10 @@ def test_preservation_by_fresh_remote_branch_or_confirmed_merged_pr(
     [
         ("missing", "open", False),
         ("missing", "closed", False),
+        ("missing", "beyond100open", False),
+        ("missing", "beyond100closed", False),
+        ("missing", "bad_merged_at", False),
+        ("missing", "duplicate", False),
         ("missing", "malformed", False),
         ("missing", "none", True),
         ("mismatch", "none", False),
@@ -1017,8 +1088,11 @@ def test_preservation_refuses_bad_remote_or_pr_evidence(
 @pytest.mark.parametrize(
     "job_scenario",
     ["use", "unknown", "completed_nonzero", "failed", "timeout",
-     "output_cap", "rejected", "malformed", "mismatched", "stale",
-     "missing_output", "output_mismatch"],
+     "output_cap", "rejected", "malformed", "wrong_job", "wrong_task",
+     "wrong_session", "wrong_agent", "wrong_script", "wrong_interpreter",
+     "wrong_cwd", "wrong_status", "wrong_exit", "wrong_reason", "wrong_time",
+     "stale", "missing_output", "output_mismatch", "total_mismatch",
+     "minimal", "extra"],
 )
 def test_host_job_receipt_failures_never_fall_back_or_mutate(
         tmp_path, body, job_scenario):
@@ -1070,11 +1144,19 @@ def test_real_shipped_procedure_executes_under_zsh(tmp_path, body):
     bin_dir.mkdir()
     _write_stubs(bin_dir)
     task_map, occurrences = _complete_cleanup_evidence()
+    shell = shutil.which("zsh")
+    if shell is None:
+        # GitHub's Python matrix image does not install zsh. The immutable-head
+        # local CI acceptance still executes this exact case with real zsh;
+        # the hosted matrix must continue exercising the delivered procedure
+        # rather than failing before it can start.
+        assert os.environ.get("CI") == "true"
+        shell = "bash"
     result = _run_procedure(
         tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
         candidate=fx["eligible"], containing=fx["eligible"],
         task_map=task_map, audit_trigger=occurrences,
-        scan_state="clear_observation", shell="zsh",
+        scan_state="clear_observation", shell=shell,
     )
     assert result["rc"] == 0, result
     assert not fx["eligible"].exists()
@@ -1093,6 +1175,12 @@ def test_dirty_worktree_cache_only_removal_preserves_source_and_status(
     source = fx["eligible"] / "dirty-source.txt"
     source.write_bytes(b"precious untracked bytes\x00\xff")
     before_source = source.read_bytes()
+    expected_apparent = sum(
+        path.lstat().st_size for path in (cache, cache / "large.bin")
+    )
+    expected_allocated = sum(
+        path.lstat().st_blocks * 512 for path in (cache, cache / "large.bin")
+    )
     before_status = subprocess.run(
         ["git", "-C", str(fx["eligible"]), "status", "--porcelain=v1", "-z"],
         check=True, capture_output=True,
@@ -1115,7 +1203,127 @@ def test_dirty_worktree_cache_only_removal_preserves_source_and_status(
     assert "worktree remove" not in result["git_log"]
     receipt = json.loads(result["stdout"].splitlines()[-2])
     assert receipt["decision"] == "removed_cache"
+    assert receipt["apparent_bytes_before"] == expected_apparent
+    assert receipt["allocated_bytes_before"] == expected_allocated
+    assert receipt["apparent_bytes_after"] == 0
     assert receipt["allocated_bytes_after"] == 0
+
+
+@pytest.mark.parametrize("scenario", ["residual", "recreate"])
+def test_cache_post_action_presence_never_reports_success(tmp_path, body, scenario):
+    fx = _build_procedure_fixture(tmp_path)
+    cache = fx["eligible"] / "node_modules"
+    cache.mkdir()
+    (cache / "precious").write_text("content\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+        rm_scenario=scenario,
+    )
+    assert result["rc"] == 2, result
+    assert cache.exists()
+    assert '"decision":"removed_cache"' not in result["stdout"]
+
+
+def test_changed_protected_identity_never_reports_success(tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    cache = fx["eligible"] / "node_modules"
+    cache.mkdir()
+    protected = fx["workspace"] / "output"
+    protected.mkdir()
+    original_inode = protected.lstat().st_ino
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+        rm_scenario="protected-change",
+    )
+    assert result["rc"] == 2, result
+    assert protected.lstat().st_ino != original_inode
+    assert '"decision":"removed_cache"' not in result["stdout"]
+
+
+@pytest.mark.parametrize("fault", ["nested_mount", "cross_device", "non_owned"])
+def test_recursive_boundary_executes_real_walker_and_refuses_faults(
+        tmp_path, body, fault):
+    match = re.search(
+        r"_wc_snapshot_tree\(\) \{.*?<<'PY'\n(.*?)\nPY\n\}", body, re.S,
+    )
+    assert match, "missing shipped recursive-boundary program"
+    program = match.group(1)
+    workspace = tmp_path / "workspace"
+    primary = workspace / "repos" / "demo"
+    containing = primary / ".claude" / "worktrees" / "TASK-WALK"
+    candidate = containing / "node_modules"
+    child = candidate / "child"
+    child.mkdir(parents=True)
+    (workspace / "output").mkdir()
+    destination = tmp_path / "snapshot.json"
+    if fault == "nested_mount":
+        program = program.replace(
+            "def mountpoints():\n",
+            "def mountpoints():\n    return {os.path.abspath(os.path.join(candidate, 'child'))}\n",
+            1,
+        )
+    else:
+        injected = """
+real_lstat = os.lstat
+def injected_lstat(path):
+    value = real_lstat(path)
+    if os.path.abspath(path) != os.path.abspath(os.path.join(candidate, "child")):
+        return value
+    class Changed:
+        pass
+    changed = Changed()
+    for name in ("st_dev", "st_ino", "st_mode", "st_uid", "st_size", "st_blocks"):
+        setattr(changed, name, getattr(value, name))
+    changed.st_dev += int(os.environ.get("INJECT_CROSS_DEVICE", "0"))
+    changed.st_uid += int(os.environ.get("INJECT_NON_OWNED", "0"))
+    return changed
+os.lstat = injected_lstat
+"""
+        program = program.replace("uid = os.getuid()\n", "uid = os.getuid()\n" + injected, 1)
+    script = tmp_path / "walker.py"
+    script.write_text(program)
+    env = dict(os.environ)
+    env["INJECT_CROSS_DEVICE"] = "1" if fault == "cross_device" else "0"
+    env["INJECT_NON_OWNED"] = "1" if fault == "non_owned" else "0"
+    result = subprocess.run(
+        [sys.executable, str(script), str(candidate), str(containing),
+         str(primary), str(workspace), str(destination)],
+        env=env, capture_output=True, text=True,
+    )
+    assert result.returncode != 0, result
+    assert child.exists()
+
+
+def test_recursive_boundary_refuses_protected_descendant_symlink(tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    cache = fx["eligible"] / "node_modules"
+    cache.mkdir()
+    protected = fx["workspace"] / "output"
+    protected.mkdir()
+    (cache / "protected-link").symlink_to(protected, target_is_directory=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+    )
+    assert result["rc"] == 2, result
+    assert cache.exists() and protected.exists()
 
 
 @pytest.mark.parametrize("kind", ["nested", "symlink", "missing_manifest", "protected"])

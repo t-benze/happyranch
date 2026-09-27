@@ -183,13 +183,32 @@ platform-specific `stat`.
 <!-- eligibility-commands:begin -->
 ```bash
 # gate workspace-scope
-python3 -c 'import os,sys; c=os.path.realpath(sys.argv[1]); w=os.path.realpath(sys.argv[2]).rstrip("/")+"/repos/"; sys.exit(0 if c.startswith(w) else 1)' "$CANDIDATE" "$WORKSPACE"
+python3 -c 'import os,sys
+c,k,p,w=map(os.path.abspath,sys.argv[1:5]); t=sys.argv[5]; repo_parent=os.path.join(w,"repos")
+ok=(all(x==os.path.realpath(x) for x in (c,k,p,w)) and os.path.dirname(p)==repo_parent and os.path.basename(p) not in ("",".") and k==os.path.join(p,".claude","worktrees",t) and (c==k or (os.path.basename(c) in ("node_modules",".venv") and os.path.dirname(c)==k)))
+raise SystemExit(0 if ok else 1)' "$CANDIDATE" "$CONTAINING" "$PRIMARY" "$WORKSPACE" "$TASK"
 # gate canonical-shape
 python3 -c 'import os,sys; c=os.path.abspath(sys.argv[1]); w=os.path.abspath(sys.argv[2]); cr=os.path.realpath(c); wr=os.path.realpath(w); cache=os.path.basename(c) in ("node_modules",".venv"); immediate=os.path.dirname(c)==w; sys.exit(0 if c==cr and w==wr and (c==w or (cache and immediate and c!=w)) else 1)' "$CANDIDATE" "$CONTAINING"
 # gate non-primary
 python3 -c 'import os,sys; sys.exit(0 if os.path.realpath(sys.argv[1])!=os.path.realpath(sys.argv[2]) else 1)' "$CONTAINING" "$PRIMARY"
 # gate registration
-python3 -c 'import os,subprocess,sys; p=subprocess.run(["git","-C",sys.argv[1],"worktree","list","--porcelain"],capture_output=True,text=True); want=os.path.realpath(sys.argv[2]); sys.exit(1) if p.returncode else None; sys.exit(0 if any(os.path.realpath(l[9:])==want for l in p.stdout.splitlines() if l.startswith("worktree ")) else 1)' "$PRIMARY" "$CONTAINING"
+python3 -c 'import os,subprocess,sys
+primary,want,task=sys.argv[1:]
+p=subprocess.run(["git","-C",primary,"worktree","list","--porcelain"],capture_output=True,text=True)
+if p.returncode: raise SystemExit(1)
+blocks=[]
+for raw in p.stdout.strip().split("\n\n"):
+ d={}
+ for line in raw.splitlines():
+  key,_,value=line.partition(" "); d.setdefault(key,[]).append(value)
+ blocks.append(d)
+matches=[d for d in blocks if len(d.get("worktree",[]))==1 and os.path.realpath(d["worktree"][0])==want]
+if len(matches)!=1 or matches[0].get("branch")!=["refs/heads/task/"+task]: raise SystemExit(1)
+def common(path):
+ q=subprocess.run(["git","-C",path,"rev-parse","--git-common-dir"],capture_output=True,text=True)
+ if q.returncode or len(q.stdout.splitlines())!=1: raise SystemExit(1)
+ value=q.stdout.strip(); return os.path.realpath(value if os.path.isabs(value) else os.path.join(path,value))
+raise SystemExit(0 if common(primary)==common(want) else 1)' "$PRIMARY" "$CONTAINING" "$TASK"
 # gate ownership
 python3 -c 'import json,os,sys; d=json.load(open(os.environ["TASK_JSON"])); sys.exit(0 if d.get("assigned_agent")==sys.argv[1] else 1)' "$AGENT"
 # gate filesystem-ownership
@@ -210,6 +229,8 @@ python3 -c 'import datetime,json,os,sys; d=json.load(open(os.environ["TASK_JSON"
 test -f "$(dirname "$CANDIDATE")/package-lock.json" || test -f "$(dirname "$CANDIDATE")/pnpm-lock.yaml" || test -f "$(dirname "$CANDIDATE")/yarn.lock" || test -f "$(dirname "$CANDIDATE")/uv.lock" || test -f "$(dirname "$CANDIDATE")/poetry.lock" || test -f "$(dirname "$CANDIDATE")/requirements.txt"
 # gate current-use-scan
 _wc_scan_job
+# gate recursive-boundary
+_wc_snapshot_tree
 ```
 <!-- eligibility-commands:end -->
 
@@ -243,8 +264,148 @@ _wc_is_cache() {
   case "$(basename "$CANDIDATE")" in node_modules|.venv) return 0;; *) return 1;; esac
 }
 
+_wc_snapshot_tree() {
+  local snapshot="$WC_TMP/tree-boundary.json"
+  python3 - "$CANDIDATE" "$CONTAINING" "$PRIMARY" "$WORKSPACE" "$snapshot" <<'PY'
+import json, os, re, stat, subprocess, sys, tempfile
+
+candidate, containing, primary, workspace, destination = map(os.path.abspath, sys.argv[1:])
+uid = os.getuid()
+cap = 200000
+
+def mountpoints():
+    result = set()
+    try:
+        with open("/proc/self/mountinfo", encoding="utf-8") as handle:
+            for line in handle:
+                fields = line.split()
+                if len(fields) < 5:
+                    raise RuntimeError("malformed_mountinfo")
+                value = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), fields[4])
+                result.add(os.path.abspath(value))
+        return result
+    except FileNotFoundError:
+        proc = subprocess.run(["mount"], capture_output=True, text=True, timeout=5)
+        if proc.returncode:
+            raise RuntimeError("mount_table_unavailable")
+        for line in proc.stdout.splitlines():
+            match = re.search(r" on (.+?) \\(", line)
+            if not match:
+                raise RuntimeError("malformed_mount_table")
+            result.add(os.path.abspath(match.group(1)))
+        return result
+
+def identity(path):
+    value = os.lstat(path)
+    return [value.st_dev, value.st_ino, value.st_mode, value.st_uid]
+
+protected_paths = [
+    workspace,
+    os.path.join(workspace, "repos"),
+    primary,
+    os.path.join(primary, ".git"),
+    os.path.join(workspace, "output"),
+    os.path.join(workspace, ".happyranch"),
+    os.path.join(workspace, ".agents"),
+    os.path.join(workspace, ".claude"),
+]
+if containing != candidate:
+    protected_paths.extend([containing, os.path.join(containing, ".git")])
+for protected_path in protected_paths:
+    if protected_path != candidate and protected_path.startswith(candidate.rstrip(os.sep) + os.sep):
+        raise RuntimeError("protected_descendant")
+
+def snapshot():
+    mounts = mountpoints()
+    root = os.lstat(candidate)
+    if not stat.S_ISDIR(root.st_mode) or stat.S_ISLNK(root.st_mode) or root.st_uid != uid:
+        raise RuntimeError("invalid_root")
+    root_dev = root.st_dev
+    rows = []
+    pending = [candidate]
+    while pending:
+        path = pending.pop()
+        value = os.lstat(path)
+        if value.st_uid != uid:
+            raise RuntimeError("non_owned_entry")
+        if value.st_dev != root_dev:
+            raise RuntimeError("cross_device_entry")
+        if path != candidate and path in mounts:
+            raise RuntimeError("nested_mount")
+        rel = os.path.relpath(path, candidate)
+        if rel == ".":
+            rel = ""
+        if stat.S_ISLNK(value.st_mode):
+            resolved = os.path.realpath(path)
+            if resolved != candidate and not resolved.startswith(candidate.rstrip(os.sep) + os.sep):
+                raise RuntimeError("external_or_protected_symlink")
+        rows.append([
+            rel, value.st_dev, value.st_ino, value.st_mode, value.st_uid,
+            value.st_size, getattr(value, "st_blocks", 0),
+        ])
+        if len(rows) > cap:
+            raise RuntimeError("entry_cap")
+        if stat.S_ISDIR(value.st_mode) and not stat.S_ISLNK(value.st_mode):
+            try:
+                with os.scandir(path) as entries:
+                    children = [entry.path for entry in entries]
+            except OSError as exc:
+                raise RuntimeError("unreadable_entry") from exc
+            pending.extend(sorted(children, reverse=True))
+    protected = {
+        path: (identity(path) if os.path.lexists(path) else None)
+        for path in protected_paths
+    }
+    return {"tree": sorted(rows), "protected": protected}
+
+first = snapshot()
+second = snapshot()
+if first != second:
+    raise SystemExit(2)
+if os.path.exists(destination):
+    with open(destination, encoding="utf-8") as handle:
+        if json.load(handle) != first:
+            raise SystemExit(3)
+else:
+    parent = os.path.dirname(destination)
+    fd, temporary = tempfile.mkstemp(prefix="tree-boundary-", dir=parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(first, handle, sort_keys=True)
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+PY
+}
+
+_wc_verify_post_action() {
+  python3 - "$CANDIDATE" "$WC_TMP/tree-boundary.json" <<'PY'
+import json, os, sys
+
+candidate, snapshot_path = sys.argv[1:]
+if os.path.lexists(candidate):
+    raise SystemExit(2)
+with open(snapshot_path, encoding="utf-8") as handle:
+    protected = json.load(handle)["protected"]
+for path, expected in protected.items():
+    if expected is None:
+        if os.path.lexists(path):
+            raise SystemExit(3)
+        continue
+    try:
+        value = os.lstat(path)
+    except OSError:
+        raise SystemExit(3)
+    actual = [value.st_dev, value.st_ino, value.st_mode, value.st_uid]
+    if actual != expected:
+        raise SystemExit(4)
+PY
+}
+
 _wc_git_preserved() {
-  local head branch remote_url repo_slug pr_json remote_rows remote_rc
+  local head branch remote_url repo_slug repo_owner repo_name pr_query
+  local pr_first pr_second remote_rows remote_rc
   local durable_ref=0 remote_match=0 merged_match
   head="$(git -C "$CONTAINING" rev-parse HEAD 2>/dev/null)" || return 1
   branch="$(git -C "$CONTAINING" rev-parse --abbrev-ref HEAD 2>/dev/null)" || return 1
@@ -253,22 +414,52 @@ _wc_git_preserved() {
   repo_slug="$(python3 -c 'import re,sys
 u=sys.argv[1].strip(); m=re.fullmatch(r"(?:https://github[.]com/|git@github[.]com:)([^/]+/[^/]+?)(?:[.]git)?",u); print(m.group(1) if m else "")' "$remote_url")"
   [ -n "$repo_slug" ] || return 1
-  pr_json="$WC_TMP/pr-evidence.json"
-  if ! gh pr list --repo "$repo_slug" --head "$branch" --state all --limit 100 \
-        --json number,state,mergedAt,headRefName,headRefOid > "$pr_json" 2>/dev/null; then
-    return 1
-  fi
+  repo_owner="${repo_slug%/*}"; repo_name="${repo_slug#*/}"
+  pr_query='query($owner:String!,$name:String!,$headRefName:String!,$endCursor:String){repository(owner:$owner,name:$name){pullRequests(first:100,after:$endCursor,headRefName:$headRefName,orderBy:{field:CREATED_AT,direction:ASC}){totalCount nodes{number state mergedAt headRefName headRefOid} pageInfo{hasNextPage endCursor}}}}'
+  pr_first="$WC_TMP/pr-pages-first.json"
+  pr_second="$WC_TMP/pr-pages-second.json"
+  gh api graphql --paginate --slurp -f query="$pr_query" \
+    -F owner="$repo_owner" -F name="$repo_name" -F headRefName="$branch" \
+    > "$pr_first" 2>/dev/null || return 1
+  gh api graphql --paginate --slurp -f query="$pr_query" \
+    -F owner="$repo_owner" -F name="$repo_name" -F headRefName="$branch" \
+    > "$pr_second" 2>/dev/null || return 1
   merged_match="$(python3 -c 'import json,sys
-d=json.load(open(sys.argv[1])); branch=sys.argv[2]; head=sys.argv[3]
-if not isinstance(d,list): raise SystemExit(2)
-merged=[]
-for row in d:
-    if not isinstance(row,dict) or not isinstance(row.get("number"),int) or row.get("headRefName")!=branch or not isinstance(row.get("state"),str): raise SystemExit(2)
-    if row.get("mergedAt") is None: raise SystemExit(3)
-    if row.get("headRefOid")!=head: raise SystemExit(4)
-    merged.append(row)
-if len(merged)>1: raise SystemExit(5)
-print("1" if len(merged)==1 else "0")' "$pr_json" "$branch" "$head")" || return 1
+def parse(path,branch,head):
+ pages=json.load(open(path))
+ if not isinstance(pages,list) or not pages: raise SystemExit(2)
+ rows=[]; seen=set(); totals=set(); cursors=set()
+ for index,page in enumerate(pages):
+  if not isinstance(page,dict) or set(page)!={"data"}: raise SystemExit(2)
+  data=page["data"]
+  if not isinstance(data,dict) or set(data)!={"repository"} or not isinstance(data["repository"],dict): raise SystemExit(2)
+  repo=data["repository"]
+  if set(repo)!={"pullRequests"} or not isinstance(repo["pullRequests"],dict): raise SystemExit(2)
+  prs=repo["pullRequests"]
+  if set(prs)!={"totalCount","nodes","pageInfo"}: raise SystemExit(2)
+  total=prs["totalCount"]; nodes=prs["nodes"]; info=prs["pageInfo"]
+  if isinstance(total,bool) or not isinstance(total,int) or total<0 or not isinstance(nodes,list) or len(nodes)>100: raise SystemExit(2)
+  if not isinstance(info,dict) or set(info)!={"hasNextPage","endCursor"} or not isinstance(info["hasNextPage"],bool): raise SystemExit(2)
+  cursor=info["endCursor"]
+  if index<len(pages)-1:
+   if info["hasNextPage"] is not True or not isinstance(cursor,str) or not cursor or cursor in cursors: raise SystemExit(2)
+   cursors.add(cursor)
+  elif info["hasNextPage"] is not False: raise SystemExit(2)
+  totals.add(total)
+  for row in nodes:
+   if not isinstance(row,dict) or set(row)!={"number","state","mergedAt","headRefName","headRefOid"}: raise SystemExit(2)
+   number=row["number"]
+   if isinstance(number,bool) or not isinstance(number,int) or number<=0 or number in seen: raise SystemExit(2)
+   seen.add(number)
+   if row["headRefName"]!=branch or row["headRefOid"]!=head or row["state"] not in ("OPEN","CLOSED","MERGED"): raise SystemExit(2)
+   if row["state"]!="MERGED" or not isinstance(row["mergedAt"],str) or not row["mergedAt"]: raise SystemExit(3)
+   rows.append(row)
+ if len(totals)!=1 or len(rows)!=next(iter(totals)): raise SystemExit(2)
+ return rows
+a=parse(sys.argv[1],sys.argv[3],sys.argv[4]); b=parse(sys.argv[2],sys.argv[3],sys.argv[4])
+if a!=b: raise SystemExit(4)
+if len(a)>1: raise SystemExit(5)
+print("1" if len(a)==1 else "0")' "$pr_first" "$pr_second" "$branch" "$head")" || return 1
   if git -C "$CONTAINING" merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
     durable_ref=1
   fi
@@ -291,8 +482,8 @@ raise SystemExit(0 if ok else 1)' "$remote_rows" "$head" "$branch"; then
 }
 
 _wc_scan_job() {
-  local nonce title rationale scan_script payload submit_out wait_json
-  local job_id show_file output_file started_epoch
+  local nonce title rationale scan_script payload submit_json wait_json
+  local job_id show_json output_json started_epoch
   [ -n "${ACTING_TASK:-}" ] && [ -n "${SESSION_ID:-}" ] || return 1
   nonce="wc-${ACTING_TASK}-$$-${RANDOM:-0}"
   title="Workspace cleanup path-use scan $nonce"
@@ -307,12 +498,19 @@ json.dump({"task_id":os.environ["ACTING_TASK"],"session_id":os.environ["SESSION_
     return 1
   fi
   started_epoch="$(date -u +%s)" || return 1
-  submit_out="$WC_TMP/scan-submit-$nonce.txt"
-  if ! happyranch jobs submit --org "$ORG" --from-file "$payload" > "$submit_out" 2>/dev/null; then
+  submit_json="$WC_TMP/scan-submit-$nonce.json"
+  if ! happyranch jobs submit --org "$ORG" --from-file "$payload" --json > "$submit_json" 2>/dev/null; then
     return 1
   fi
-  job_id="$(python3 -c 'import re,sys
-s=open(sys.argv[1]).read(); m=re.fullmatch(r"ok: submitted (JOB-[0-9]+) [(]status=(?:pending|running|completed)[)]. Self-block your task referencing this ID.\n?",s); print(m.group(1) if m else "")' "$submit_out")"
+  job_id="$(python3 -c 'import json,os,re,sys
+d=json.load(open(sys.argv[1])); required={"id","status","created_at","started_at","cwd_resolved","timeout_seconds","events_url","authentication"}
+if not isinstance(d,dict) or set(d)!=required or d.get("status")!="running": raise SystemExit(1)
+auth=d.get("authentication")
+if auth!={"task_id":os.environ["ACTING_TASK"],"session_id":os.environ["SESSION_ID"]}: raise SystemExit(1)
+job=d.get("id")
+if not isinstance(job,str) or re.fullmatch(r"JOB-[0-9]+",job) is None: raise SystemExit(1)
+if d.get("cwd_resolved")!=os.path.realpath(os.environ["WORKSPACE"]): raise SystemExit(1)
+print(job)' "$submit_json")"
   [ -n "$job_id" ] || return 1
   wait_json="$WC_TMP/scan-wait-$nonce.json"
   if ! happyranch jobs wait "$job_id" --timeout-seconds 30 --task-id "$ACTING_TASK" \
@@ -323,30 +521,141 @@ s=open(sys.argv[1]).read(); m=re.fullmatch(r"ok: submitted (JOB-[0-9]+) [(]statu
 d=json.load(open(sys.argv[1])); raise SystemExit(0 if d=={"status":"completed","timed_out":False} else 1)' "$wait_json"; then
     return 1
   fi
-  show_file="$WC_TMP/scan-show-$nonce.txt"
-  output_file="$WC_TMP/scan-output-$nonce.txt"
-  happyranch jobs show "$job_id" --org "$ORG" > "$show_file" 2>/dev/null || return 1
+  show_json="$WC_TMP/scan-show-$nonce.json"
+  output_json="$WC_TMP/scan-output-$nonce.json"
+  happyranch jobs show "$job_id" --org "$ORG" --json \
+    --task-id "$ACTING_TASK" --session-id "$SESSION_ID" > "$show_json" 2>/dev/null || return 1
   happyranch jobs output "$job_id" --stream both --max-bytes 1048576 \
-    --org "$ORG" > "$output_file" 2>/dev/null || return 1
+    --org "$ORG" --json --task-id "$ACTING_TASK" --session-id "$SESSION_ID" \
+    > "$output_json" 2>/dev/null || return 1
   export job_id started_epoch
-  if ! python3 -c 'import datetime,os,re,sys
-s=open(sys.argv[1]).read(); first=s.splitlines()[0] if s.splitlines() else ""
-m=re.fullmatch(re.escape(os.environ["job_id"])+r"   completed   submitted (\S+)",first)
-if not m: raise SystemExit(1)
-t=datetime.datetime.fromisoformat(m.group(1).replace("Z","+00:00")).timestamp()
-need=["Agent:        "+os.environ["AGENT"],"Task:         "+os.environ["ACTING_TASK"],"Interpreter:  bash","Cwd hint:     (workspace root)","Title:        "+os.environ["title"],os.environ["rationale"],"  "+os.environ["scan_script"],"Exit code:    0"]
-raise SystemExit(0 if t>=float(os.environ["started_epoch"])-2 and all(x in s for x in need) else 1)' "$show_file"; then
-    _wc_refuse "scan_receipt_mismatch" >/dev/null
-    return 1
-  fi
-  if ! python3 -c 'import json,os,sys
-s=open(sys.argv[1]).read(); a="--- stdout ---\n"; b="\n--- stderr ---\n"
-if not s.startswith(a) or b not in s: raise SystemExit(1)
-out,err=s[len(a):].split(b,1)
-if err.strip(): raise SystemExit(1)
-d=json.loads(out)
-ok=isinstance(d,dict) and d.get("state")=="clear_observation" and d.get("target")==os.path.realpath(os.environ["CANDIDATE"])
-raise SystemExit(0 if ok else 1)' "$output_file"; then
+  if ! cmp -s "$show_json" "$output_json" || ! python3 - "$show_json" <<'PY'
+import datetime, json, os, re, sys, time
+
+receipt = json.load(open(sys.argv[1]))
+if not isinstance(receipt, dict) or set(receipt) != {"authentication", "job", "output"}:
+    raise SystemExit(1)
+if receipt["authentication"] != {
+    "task_id": os.environ["ACTING_TASK"],
+    "session_id": os.environ["SESSION_ID"],
+}:
+    raise SystemExit(1)
+job = receipt["job"]
+job_keys = {
+    "id", "task_id", "agent_name", "title", "rationale", "script_text",
+    "interpreter", "cwd_hint", "cwd_resolved", "status", "exit_code",
+    "reason", "duration_ms", "created_at", "started_at", "finished_at",
+}
+if not isinstance(job, dict) or set(job) != job_keys:
+    raise SystemExit(1)
+if job != job | {
+    "id": os.environ["job_id"],
+    "task_id": os.environ["ACTING_TASK"],
+    "agent_name": os.environ["AGENT"],
+    "title": os.environ["title"],
+    "rationale": os.environ["rationale"],
+    "script_text": os.environ["scan_script"] + "\n",
+    "interpreter": "bash",
+    "cwd_hint": None,
+    "cwd_resolved": os.path.realpath(os.environ["WORKSPACE"]),
+    "status": "completed",
+    "exit_code": 0,
+    "reason": None,
+}:
+    raise SystemExit(1)
+if isinstance(job["duration_ms"], bool) or not isinstance(job["duration_ms"], int) or job["duration_ms"] < 0:
+    raise SystemExit(1)
+def instant(value):
+    if not isinstance(value, str):
+        raise SystemExit(1)
+    parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise SystemExit(1)
+    return parsed.timestamp()
+created, started, finished = map(instant, (job["created_at"], job["started_at"], job["finished_at"]))
+submitted = float(os.environ["started_epoch"])
+observed = time.time()
+if created < submitted - 2 or finished > observed + 2 or not created <= started <= finished:
+    raise SystemExit(1)
+output = receipt["output"]
+output_keys = {"stdout", "stderr", "truncated_stdout", "truncated_stderr", "total_stdout_bytes", "total_stderr_bytes"}
+if not isinstance(output, dict) or set(output) != output_keys:
+    raise SystemExit(1)
+if not isinstance(output["stdout"], str) or not isinstance(output["stderr"], str):
+    raise SystemExit(1)
+if output["truncated_stdout"] is not False or output["truncated_stderr"] is not False or output["stderr"] != "":
+    raise SystemExit(1)
+if output["total_stdout_bytes"] != len(output["stdout"].encode()) or output["total_stderr_bytes"] != 0:
+    raise SystemExit(1)
+scan = json.loads(output["stdout"])
+if not isinstance(scan, dict) or set(scan) != {"state", "target", "hits", "reasons", "coverage", "exempt", "cycles"}:
+    raise SystemExit(1)
+if scan["state"] != "clear_observation" or scan["target"] != os.path.realpath(os.environ["CANDIDATE"]):
+    raise SystemExit(1)
+if scan["hits"] != [] or scan["reasons"] != [] or not isinstance(scan["exempt"], list) or not isinstance(scan["cycles"], list):
+    raise SystemExit(1)
+coverage = scan["coverage"]
+coverage_keys = {
+    "agent_uid", "self_pid", "target_dev_ino", "containing_worktree",
+    "containing_worktree_dev_ino", "target_present", "containing_worktree_present",
+    "total_pids", "same_user", "root", "other_user", "exempt", "scanned",
+    "exited", "unreadable_same_user", "unreadable_unknown_uid",
+    "identity_read_errors", "role_mismatch", "denied", "vanished", "errors",
+    "truncated", "maps_truncated", "fd_truncated", "threads_truncated",
+    "new_pids_after", "reused_pids", "mnt_ns_differs",
+    "mnt_ns_path_unverified", "host_context", "enum_passes",
+}
+if not isinstance(coverage, dict) or set(coverage) != coverage_keys:
+    raise SystemExit(1)
+if isinstance(coverage["agent_uid"], bool) or not isinstance(coverage["agent_uid"], int):
+    raise SystemExit(1)
+if not isinstance(coverage["self_pid"], str) or not coverage["self_pid"].isdigit():
+    raise SystemExit(1)
+target_stat = os.stat(os.environ["CANDIDATE"])
+if coverage["target_present"] is not True or coverage["target_dev_ino"] != [target_stat.st_dev, target_stat.st_ino]:
+    raise SystemExit(1)
+is_cache = os.path.basename(os.environ["CANDIDATE"]) in ("node_modules", ".venv")
+if is_cache:
+    containing_stat = os.stat(os.environ["CONTAINING"])
+    if coverage["containing_worktree"] != os.path.realpath(os.environ["CONTAINING"]):
+        raise SystemExit(1)
+    if coverage["containing_worktree_present"] is not True or coverage["containing_worktree_dev_ino"] != [containing_stat.st_dev, containing_stat.st_ino]:
+        raise SystemExit(1)
+else:
+    if coverage["containing_worktree"] is not None or coverage["containing_worktree_dev_ino"] is not None or coverage["containing_worktree_present"] is not False:
+        raise SystemExit(1)
+counters = coverage_keys - {"self_pid", "target_dev_ino", "containing_worktree", "containing_worktree_dev_ino", "target_present", "containing_worktree_present", "host_context"}
+for key in counters:
+    if isinstance(coverage[key], bool) or not isinstance(coverage[key], int) or coverage[key] < 0:
+        raise SystemExit(1)
+if coverage["enum_passes"] < 1:
+    raise SystemExit(1)
+for key in ("unreadable_same_user", "unreadable_unknown_uid", "identity_read_errors", "denied", "errors", "truncated", "maps_truncated", "fd_truncated", "threads_truncated", "reused_pids", "mnt_ns_path_unverified"):
+    if coverage[key] != 0:
+        raise SystemExit(1)
+host = coverage["host_context"]
+host_keys = {"pid1_comm", "pid_ns_agree", "mnt_agree", "proc_mounts", "stacked", "mountinfo", "pid1_ns_readable", "ok"}
+if not isinstance(host, dict) or set(host) != host_keys or host["ok"] is not True or host["stacked"] is not False:
+    raise SystemExit(1)
+if host["pid1_comm"] not in ("systemd", "init") or not isinstance(host["proc_mounts"], int) or host["proc_mounts"] != 1:
+    raise SystemExit(1)
+for key in ("pid_ns_agree", "mnt_agree", "stacked", "pid1_ns_readable", "ok"):
+    if not isinstance(host[key], bool):
+        raise SystemExit(1)
+if not isinstance(host["mountinfo"], str):
+    raise SystemExit(1)
+for row in scan["exempt"]:
+    if not isinstance(row, dict) or set(row) != {"pid", "role", "basis", "exe", "comm", "unit", "gaps"}:
+        raise SystemExit(1)
+    if not isinstance(row["pid"], str) or not row["pid"].isdigit() or row["basis"] != "name_and_cgroup_role" or not isinstance(row["gaps"], list):
+        raise SystemExit(1)
+for row in scan["cycles"]:
+    if not isinstance(row, dict) or set(row) != {"phase", "pass", "new"} or row["phase"] != "enumerate_pass":
+        raise SystemExit(1)
+    if any(isinstance(row[key], bool) or not isinstance(row[key], int) or row[key] < 0 for key in ("pass", "new")):
+        raise SystemExit(1)
+PY
+  then
     _wc_refuse "scan_receipt_mismatch" >/dev/null
     return 1
   fi
@@ -356,12 +665,16 @@ raise SystemExit(0 if ok else 1)' "$output_file"; then
 _wc_measure_path() {
   python3 -c 'import json,os,sys
 p=sys.argv[1]; apparent=allocated=0
-for root,dirs,files in os.walk(p,followlinks=False):
+def add(q):
+    global apparent,allocated
+    st=os.lstat(q); apparent+=st.st_size; allocated+=getattr(st,"st_blocks",0)*512
+add(p)
+def failed(exc): raise exc
+for root,dirs,files in os.walk(p,followlinks=False,onerror=failed):
     for name in dirs+files:
         q=os.path.join(root,name)
-        try: st=os.lstat(q)
+        try: add(q)
         except OSError: raise SystemExit(2)
-        apparent+=st.st_size; allocated+=getattr(st,"st_blocks",0)*512
 v=os.statvfs(os.path.dirname(p)); print(json.dumps({"apparent":apparent,"allocated":allocated,"fs_free":v.f_bavail*v.f_frsize},sort_keys=True))' "$1"
 }
 
@@ -551,6 +864,9 @@ run_cleanup_candidate() {
       if ! cache_source_before="$(_wc_source_digest "$CONTAINING")"; then
         { _wc_refuse "cache_source_digest_unavailable"; return 2; }
       fi
+      if ! _wc_snapshot_tree; then
+        { _wc_refuse "action_boundary_changed"; return 2; }
+      fi
       if ! rm -rf -- "$CANDIDATE"; then
         { _wc_refuse "action_failed"; return 2; }
       fi
@@ -560,10 +876,19 @@ run_cleanup_candidate() {
       if [ "$cache_source_before" != "$(_wc_source_digest "$CONTAINING")" ]; then
         { _wc_refuse "post_action_source_or_status_changed"; return 2; }
       fi
+      if ! _wc_verify_post_action; then
+        { _wc_refuse "post_action_candidate_or_protected_changed"; return 2; }
+      fi
       _wc_removed_receipt "removed_cache" "$bytes_before" ;;
     *)
+      if ! _wc_snapshot_tree; then
+        { _wc_refuse "action_boundary_changed"; return 2; }
+      fi
       if ! git -C "$PRIMARY" worktree remove "$CANDIDATE"; then
         { _wc_refuse "action_failed"; return 2; }
+      fi
+      if ! _wc_verify_post_action; then
+        { _wc_refuse "post_action_candidate_or_protected_changed"; return 2; }
       fi
       _wc_removed_receipt "removed_worktree" "$bytes_before" ;;
   esac

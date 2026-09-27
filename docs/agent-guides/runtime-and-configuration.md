@@ -406,14 +406,24 @@ name AND exact bounded cgroup role and is deliberately uninspected; any other
 unreadable same-user process is `unknown` and skips.
 
 The shared procedure executes that scanner only through a task-bound,
-host-visible HappyRanch job and validates the exact fresh receipt; direct
-in-session fallback is forbidden. Candidate-related task and trigger evidence
-uses complete paging rather than an org-wide history cap. Preservation accepts
+host-visible HappyRanch job and validates a closed-schema, non-truncated receipt
+binding task/session, actual job, stored execution identity, terminal result,
+complete output totals, and scanner coverage; direct in-session fallback is
+forbidden. Candidate-related task and trigger evidence uses complete paging
+rather than an org-wide history cap. PR evidence is completely paginated and
+repeated, with every open, closed-unmerged, duplicate, changing, conflicting,
+or malformed result refusing. Preservation accepts
 the existing durable ref, a freshly verified matching origin task branch, or a
 confirmed merged PR; merged integration may not preserve original commit
 topology. Dirty whole worktrees remain protected, with the sole narrow exception
 of a literal root `.venv`/`node_modules` cache whose removal leaves tracked
 source bytes and Git status unchanged.
+The containing worktree must be at the owning primary's exact registered
+`.claude/worktrees/<TASK>` location on `task/<TASK>`. A complete no-follow
+`lstat` walk before and at action time refuses nested mounts, cross-device or
+foreign-owned entries, protected descendants, incomplete evidence, and drift.
+Root-plus-descendant byte accounting precedes action; a success receipt requires
+literal absence and unchanged protected-path identities.
 
 ## Terminal task-worktree reclamation
 

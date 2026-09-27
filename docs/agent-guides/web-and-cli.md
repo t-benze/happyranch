@@ -31,13 +31,24 @@ same-user process is `unknown`).
 
 Cleanup history reads use the backward-compatible `tasks --agent --all-pages
 --json` and `audit --all-pages --json` surfaces to exhaust candidate-specific
-keyset pages. Scanner execution is job-only and fail-closed on any non-exact or
-incomplete receipt. Fresh exact origin task branches and confirmed merged PRs
-can preserve a clean candidate in addition to the accepted durable ref; merged
-integration does not promise original commit topology. Dirty whole worktrees
-are never removed, while a literal root dependency cache can qualify under the
-separate 24-hour cache gates without changing tracked source bytes or Git
-status.
+keyset pages. Scanner execution is job-only and fail-closed on any non-exact,
+stale, spoofed, truncated, or incomplete structured receipt. `jobs submit
+--json` returns the authenticated submission identity; `jobs show --json` and
+`jobs output --json` require the current task/session and return the same closed
+receipt containing stored execution identity and complete output accounting.
+Fresh exact origin task branches and confirmed merged PRs can preserve a clean
+candidate in addition to the accepted durable ref; the PR query is completely
+paginated and repeated, and any open, closed-unmerged, duplicated, changing, or
+malformed row refuses. Merged integration does not promise original commit
+topology. Dirty whole worktrees are never removed, while a literal root
+dependency cache can qualify under the separate 24-hour cache gates without
+changing tracked source bytes or Git status. The removable worktree must be at
+its owning primary checkout's exact registered `.claude/worktrees/<TASK>` path.
+The literal root and descendants are walked without following symlinks before
+and at action time; nested mounts, cross-device or foreign-owned entries,
+protected descendants, incomplete evidence, and identity drift refuse. A
+success receipt requires measured root-plus-descendant bytes, actual candidate
+absence, and unchanged protected-path identities.
 
 ## Web UI
 
