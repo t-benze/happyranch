@@ -1800,6 +1800,36 @@ class Database:
             finally:
                 self._lock.release()
 
+    @contextmanager
+    def workflow_schema_transaction(self):
+        """Yield the shared connection for the one org-load schema unit.
+
+        U1A installs and validates the workflow-owned layout only through
+        ``OrgState.load``.  The installer needs the same connection and RLock
+        discipline as every other ``Database`` operation, with one
+        ``BEGIN IMMEDIATE`` covering its first schema observation through its
+        final marker/event write.  Filesystem, network, and host work are not
+        permitted inside this context.
+
+        A caller-owned transaction is rejected rather than joined: the
+        workflow layout is a complete atomic unit and must never be committed
+        or rolled back as an accidental side effect of another owner.
+        """
+        self._lock.acquire(blocking=True)
+        try:
+            if self._conn.in_transaction:
+                raise ValueError("workflow_schema_caller_transaction_not_allowed")
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield self._conn
+            except Exception:
+                self._conn.rollback()
+                raise
+            else:
+                self._conn.commit()
+        finally:
+            self._lock.release()
+
     def _retire_skill_lifecycle_if_present(self) -> None:
         """Permanently remove legacy lifecycle tables and their content blobs."""
         tables = {

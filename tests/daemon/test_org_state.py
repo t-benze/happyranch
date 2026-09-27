@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -7,10 +8,13 @@ import pytest
 
 from runtime.config import Settings
 from runtime.daemon.org_state import OrgState
+from runtime.daemon.state import DaemonState
+from runtime.infrastructure.database import Database
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 from runtime.orchestrator.org_validation import OrgConsistencyError
+from runtime.runtime import RuntimeDir
 
 
 def _seed_org(org_root: Path) -> None:
@@ -31,7 +35,61 @@ def test_org_state_load_opens_db_and_teams(tmp_path: Path) -> None:
     assert org.root == org_root
     assert org.db is not None
     assert org.teams is not None
+    assert [tuple(row) for row in org.db.execute(
+        "SELECT version FROM workflow_adapter_versions"
+    ).fetchall()] == [(1,)]
     org.close()
+
+
+def test_org_state_load_closes_new_database_when_workflow_install_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The approved org-only seam fails closed before teams/orchestrator load."""
+    from runtime.daemon import org_state
+
+    org_root = tmp_path / "rt" / "orgs" / "alpha"
+    _seed_org(org_root)
+    closed: list[Path] = []
+    real_close = org_state.Database.close
+
+    def close_and_record(db: Database) -> None:
+        closed.append(db.path)
+        real_close(db)
+
+    monkeypatch.setattr(org_state.Database, "close", close_and_record)
+    monkeypatch.setattr(
+        org_state,
+        "install_or_recover",
+        lambda _db: (_ for _ in ()).throw(ValueError("workflow-layout-invalid")),
+    )
+
+    with pytest.raises(ValueError, match="workflow-layout-invalid"):
+        OrgState.load(slug="alpha", root=org_root, settings=Settings())
+    assert closed == [OrgPaths(root=org_root).db_path]
+
+
+def test_daemon_state_keeps_malformed_workflow_org_fail_closed(
+    tmp_path: Path,
+) -> None:
+    runtime = RuntimeDir.init(tmp_path / "rt")
+    org_root = runtime.orgs_dir / "broken"
+    _seed_org(org_root)
+    path = OrgPaths(root=org_root).db_path
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE workflow_cutover_state(foreign_marker TEXT)")
+    conn.execute("INSERT INTO workflow_cutover_state VALUES ('preserve-me')")
+    conn.commit()
+    conn.close()
+
+    state = DaemonState.from_runtime(runtime, Settings())
+    assert "broken" not in state.orgs
+    assert "broken" in state.broken_orgs
+    assert "workflow_schema_object_set_mismatch" in state.broken_orgs["broken"]
+    check = sqlite3.connect(path)
+    assert check.execute(
+        "SELECT foreign_marker FROM workflow_cutover_state"
+    ).fetchall() == [("preserve-me",)]
+    check.close()
 
 
 def test_org_state_two_orgs_independent_dbs(tmp_path: Path) -> None:

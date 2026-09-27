@@ -214,20 +214,24 @@ def _sha256(text: str) -> str:
 _APPROVED_VERDICTS = frozenset({"APPROVE", "PASS"})
 
 
-# The release-expected DB schema digest: the schema a FRESH Database() built
-# from the CURRENT code creates. Any divergence of the live DB from this
-# release schema is an authoritative schema/migration drift signal — the
-# surface the continuation would operate on is not the reviewed release
-# surface, so a schema/migration condition is in flight and the attempt must
-# escalate. Computed once per process and cached.
+# The release-expected ORG DB schema digest: the schema a fresh Database() built
+# from the CURRENT code creates after the canonical org-only workflow installer
+# runs. Generic Database callers remain workflow-free; this isolated reference
+# mirrors the complete surface that OrgState.load attaches to an orchestrator.
+# Any divergence of the live DB from this release schema is an authoritative
+# schema/migration drift signal, so the attempt must escalate. Computed once per
+# process and cached.
 _release_schema_digest_cache: str | None = None
 
 
 def _release_schema_digest() -> str:
-    """Digest of the sqlite_master DDL a fresh Database() creates with the
-    current code (the release-pinned schema surface). Cached after first
-    computation; never raises (returns "unavailable" on any defect, which
-    fails closed as a drift signal)."""
+    """Digest of the complete release-pinned org-database schema surface.
+
+    The temporary generic database receives the same canonical workflow
+    installation as ``OrgState.load`` before hashing.  No persistent generic
+    or runtime-audit database is changed.  Cached after first computation;
+    never raises (``"unavailable"`` fails closed as a drift signal).
+    """
     global _release_schema_digest_cache
     if _release_schema_digest_cache is not None:
         return _release_schema_digest_cache
@@ -235,15 +239,14 @@ def _release_schema_digest() -> str:
         import tempfile
         from pathlib import Path as _Path
         from runtime.infrastructure.database import Database
+        from runtime.infrastructure.workflow_schema import install_or_recover
         with tempfile.TemporaryDirectory() as td:
             fresh = Database(_Path(td) / "fresh-authority-schema.db")
             try:
+                install_or_recover(fresh)
                 _release_schema_digest_cache = _live_schema_digest(fresh)
             finally:
-                try:
-                    fresh._conn.close()
-                except Exception:
-                    pass
+                fresh.close()
     except Exception:
         _release_schema_digest_cache = "unavailable"
     return _release_schema_digest_cache
@@ -263,8 +266,8 @@ def _live_schema_digest(db) -> str:
 
 # ── THR-229 C3a: independent constraint-sensitive v2 schema-integrity seam ──
 #
-# ``_release_schema_digest`` above is the LEGACY v1 behavior and stays exactly
-# as it is: it compares a live DB's raw DDL against a fresh ``Database()`` and
+# ``_release_schema_digest`` above is the LEGACY v1 behavior: it compares a
+# live org DB's raw DDL against the complete canonical org-release layout and
 # treats ANY difference as a drift signal.  A historical database migrated
 # forward by the current source legitimately differs from a fresh one in only
 # two ordered table layouts (``threads`` / ``thread_messages``), so the raw
