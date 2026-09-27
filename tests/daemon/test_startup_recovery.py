@@ -3825,24 +3825,12 @@ def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
     """Regression THR-109: daemon lifespan MUST wire thread queues + main loop
     BEFORE starting task workers.
 
-    This test exercises two complementary verification surfaces:
-
-    **A. Source-order guard (deterministic).** Uses ``inspect.getsource``
-    to verify the two statements inside ``_wire_then_start_workers``
-    appear in the correct order: ``_attach_thread_queue_wiring`` before
-    ``ensure_workers_started``.  This is a pure code-level check that
-    fails immediately if the helper's internal ordering is ever reversed —
-    no runtime race, no sleep, no non-determinism.
-
-    **B. Behavioural regression (runtime, deterministic sync).** Calls the SAME
-    production helper that ``_lifespan`` invokes via a background event loop.
-    A test-local wrapper around the real ``ThreadQueue.put`` records every
-    ``ThreadJob`` and signals a ``threading.Event`` after its ``await``
-    completes, so the test waits on explicit delivery proof — never DB polling
-    or arbitrary sleep.  Real queue workers pick up a pre-seeded terminal task,
-    exercise the exact ``_maybe_post_thread_escalation`` →
-    ``_append_followup_system_and_reinvoke`` code path, and the test asserts
-    the post-fix outcomes.
+    The test calls the SAME production helper that ``_lifespan`` invokes with
+    a real daemon state, worker pool, dispatcher, orchestrator, database,
+    audit logger, and thread queue. Eager task creation plus an observational
+    ``Dispatcher.run_step`` completion barrier makes the real worker attempt
+    finish before the helper can continue. A reversed helper therefore cannot
+    attach the queue in time to rescue the attempt.
 
     With the post-fix helper ordering (wiring before workers):
     - (1) a TASK_FOLLOWUP invocation is minted and its ``ThreadJob`` is
@@ -3854,26 +3842,13 @@ def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
     order in app.py is temporarily reversed (red-side proof, not committed).
     """
     import asyncio
-    import inspect
     import threading
 
-    from runtime.daemon.app import _wire_then_start_workers
+    from runtime.daemon import app as app_module
+    from runtime.daemon.dispatcher import Dispatcher
     from runtime.models import (
         TaskRecord, TaskStatus, ThreadInvocationPurpose, ThreadRecord,
     )
-
-    # ── A. Source-order guard (deterministic) ──
-    src = inspect.getsource(_wire_then_start_workers)
-    wire_idx = src.index("_attach_thread_queue_wiring")
-    workers_idx = src.index("ensure_workers_started")
-    assert wire_idx < workers_idx, (
-        f"_wire_then_start_workers: _attach_thread_queue_wiring "
-        f"(idx {wire_idx}) must precede ensure_workers_started "
-        f"(idx {workers_idx}); ordering is reversed — TASK_FOLLOWUP "
-        f"invocations will strand with enqueue_unavailable"
-    )
-
-    # ── B. Behavioural regression (runtime, deterministic sync) ──
 
     org = daemon_state.orgs["alpha"]
     db = org.db
@@ -3881,22 +3856,41 @@ def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
     audit = orch._audit
     thread_queue = org.thread_queue
 
-    # ── Deterministic delivery signal: wrap ThreadQueue.put ──
-    # A test-local async wrapper around the real ThreadQueue.put that records
-    # the ThreadJob and signals a threading.Event *after* the await completes.
-    # This guarantees the job is actually enqueued in the asyncio.Queue before
-    # the test proceeds — no DB polling, no sleep, no race window.
+    worker_entered = threading.Event()
+    worker_finished = threading.Event()
     delivery_event = threading.Event()
-    delivered_job = None
-    _original_put = thread_queue.put
+    delivered_jobs = []
+    worker_threads = []
 
-    async def _wrapped_put(job):
-        nonlocal delivered_job
-        await _original_put(job)
-        delivered_job = job
+    original_run_step = Dispatcher.run_step
+    original_put = thread_queue.put
+    original_ensure_workers_started = app_module.ensure_workers_started
+
+    def observed_run_step(self, slug, task_id, metadata=None):
+        worker_threads.append(threading.current_thread())
+        worker_entered.set()
+        try:
+            return original_run_step(self, slug, task_id, metadata)
+        finally:
+            worker_finished.set()
+
+    async def observed_put(job):
+        await original_put(job)
+        delivered_jobs.append(job)
         delivery_event.set()
 
-    thread_queue.put = _wrapped_put  # type: ignore[method-assign]
+    def observed_ensure_workers_started(state):
+        original_ensure_workers_started(state)
+        assert worker_entered.wait(timeout=5.0), (
+            "real task worker never entered Dispatcher.run_step"
+        )
+        assert worker_finished.wait(timeout=15.0), (
+            "real task worker never finished Dispatcher.run_step"
+        )
+
+    Dispatcher.run_step = observed_run_step
+    thread_queue.put = observed_put  # type: ignore[method-assign]
+    app_module.ensure_workers_started = observed_ensure_workers_started
 
     # Seed an OPEN thread + dispatched PENDING root task.
     db.insert_thread(ThreadRecord(id="THR-STRT", subject="startup ordering"))
@@ -3917,53 +3911,63 @@ def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
     # Start a real event loop in a background daemon thread.
     # Mirrors the daemon lifespan where FastAPI/uvicorn runs the loop.
     loop = asyncio.new_event_loop()
+    prior_task_factory = loop.get_task_factory()
     bg_thread = threading.Thread(target=loop.run_forever, daemon=True)
     bg_thread.start()
+    start_future = None
+    worker_tasks = []
+    cleanup_pending_tasks = []
 
     try:
-        # Call the same production helper that _lifespan uses.
         async def _start():
-            _wire_then_start_workers(daemon_state, loop)
-        asyncio.run_coroutine_threadsafe(_start(), loop).result(timeout=5.0)
+            loop.set_task_factory(asyncio.eager_task_factory)
+            try:
+                app_module._wire_then_start_workers(daemon_state, loop)
+            finally:
+                loop.set_task_factory(prior_task_factory)
 
-        # Wait for deterministic delivery proof — the wrapped put signals
-        # delivery_event AFTER the real asyncio.Queue.put await completes.
-        # This replaces the flaky DB-polling loop.
-        assert delivery_event.wait(timeout=10.0), (
-            "ThreadJob was never delivered via ThreadQueue.put within 10s; "
-            "thread queue wiring is not in place before workers started — "
-            "TASK_FOLLOWUP invocations will strand with enqueue_unavailable"
-        )
+        start_future = asyncio.run_coroutine_threadsafe(_start(), loop)
+        start_future.result(timeout=20.0)
 
-        # (1) TASK_FOLLOWUP invocation is minted and the delivered ThreadJob
-        #     matches the minted invocation token.
+        assert worker_entered.is_set()
+        assert worker_finished.is_set()
+        assert len(worker_threads) == 1
+
+        # Assert the durable reversal symptom before waiting for delivery. An
+        # exact two-call reversal therefore fails here on real behavior, not
+        # later on a timeout or a source-text check.
         invs = db.list_thread_invocations("THR-STRT")
         followups = [
-            i for i in invs
-            if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP
+            invocation for invocation in invs
+            if invocation.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP
         ]
-        assert len(followups) >= 1, (
-            f"expected \u22651 TASK_FOLLOWUP invocation, got {len(followups)}"
+        assert len(followups) == 1, (
+            f"expected exactly one TASK_FOLLOWUP invocation, got {len(followups)}"
         )
+        audit_rows = db.get_audit_logs("TASK-STRT")
+        enqueue_unavailable = [
+            row for row in audit_rows
+            if row.get("action") == "thread_followup_skipped"
+            and row.get("payload", {}).get("reason") == "enqueue_unavailable"
+        ]
+        assert not enqueue_unavailable, (
+            "real task worker reached its terminal follow-up before thread "
+            "queue wiring; found structured enqueue_unavailable audit: "
+            f"{enqueue_unavailable}"
+        )
+
+        assert delivery_event.wait(timeout=5.0), (
+            "real ThreadQueue.put did not finish for the minted TASK_FOLLOWUP"
+        )
+        assert len(delivered_jobs) == 1
+        delivered_job = delivered_jobs[0]
         assert delivered_job.org_slug == org.slug
         assert delivered_job.invocation_token == followups[0].invocation_token, (
             f"delivered job token {delivered_job.invocation_token} "
             f"!= minted token {followups[0].invocation_token}"
         )
 
-        # (2) No enqueue_unavailable audit row was written.
-        audit_rows = db.get_audit_logs("TASK-STRT")
-        skipped = [
-            r for r in audit_rows
-            if r.get("action") == "thread_followup_skipped"
-            and "enqueue_unavailable" in str(r.get("payload", {}))
-        ]
-        assert not skipped, (
-            f"found enqueue_unavailable audit -- thread queue wiring was "
-            f"not in place before escalation fired: {skipped}"
-        )
-
-        # (3) Normal nearby lifecycle: the task ran through the follow-up path
+        # Normal nearby lifecycle: the task ran through the follow-up path
         # and reached its ordinary terminal outcome.  The test fixture has no
         # runnable executor, so that outcome is FAILED; it must not rely on a
         # retired total-step denial to reach it.
@@ -3978,17 +3982,54 @@ def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
         job = fut.result(timeout=2.0)
         assert job.invocation_token == delivered_job.invocation_token
     finally:
-        # Restore the original put before cleanup.
-        thread_queue.put = _original_put  # type: ignore[method-assign]
-        # Stop workers gracefully before tearing down the loop.
-        async def _stop():
+        Dispatcher.run_step = original_run_step
+        thread_queue.put = original_put  # type: ignore[method-assign]
+        app_module.ensure_workers_started = original_ensure_workers_started
+
+        if start_future is not None and not start_future.done():
+            start_future.cancel()
+
+        async def _cleanup():
+            nonlocal worker_tasks, cleanup_pending_tasks
+            loop.set_task_factory(prior_task_factory)
+            worker_tasks = list(daemon_state.queue._worker_tasks)
             await daemon_state.queue.stop(timeout=2.0)
-        try:
-            asyncio.run_coroutine_threadsafe(_stop(), loop).result(timeout=3.0)
-        except Exception:
-            pass
+            while thread_queue.size:
+                await thread_queue.get()
+            await daemon_state.close_all()
+
+            current = asyncio.current_task()
+            cleanup_pending_tasks = [
+                task for task in asyncio.all_tasks(loop)
+                if task is not current and not task.done()
+            ]
+            for task in cleanup_pending_tasks:
+                task.cancel()
+            if cleanup_pending_tasks:
+                await asyncio.gather(
+                    *cleanup_pending_tasks, return_exceptions=True,
+                )
+            await loop.shutdown_asyncgens()
+            await loop.shutdown_default_executor(timeout=5.0)
+
+        cleanup_future = asyncio.run_coroutine_threadsafe(_cleanup(), loop)
+        cleanup_future.result(timeout=10.0)
         loop.call_soon_threadsafe(loop.stop)
-        bg_thread.join(timeout=2.0)
+        bg_thread.join(timeout=5.0)
+        assert not bg_thread.is_alive(), "test event-loop thread leaked"
+        assert loop.get_task_factory() is prior_task_factory
+        assert all(task.done() for task in worker_tasks), (
+            "real TaskQueue worker survived cleanup"
+        )
+        assert all(task.done() for task in cleanup_pending_tasks), (
+            "test-owned asyncio task survived cleanup"
+        )
+        assert not [task for task in asyncio.all_tasks(loop) if not task.done()]
+        assert all(not thread.is_alive() for thread in worker_threads), (
+            "default-executor worker thread survived cleanup"
+        )
+        loop.close()
+        assert loop.is_closed()
 
 
 # ── Orphaned result local_ci reconstruction ──────────────────────────────
