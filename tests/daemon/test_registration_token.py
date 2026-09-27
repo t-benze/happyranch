@@ -76,6 +76,13 @@ def store(daemon_state):
     return daemon_state.registration_token_store
 
 
+@pytest.fixture
+def conformance_route(runtime, tmp_home):
+    """Real org-scoped conformance route backed by a loaded runtime."""
+    state = DaemonState.from_runtime(runtime, Settings())
+    return create_app(state), state.registration_token_store
+
+
 # ── Token Store unit tests ──────────────────────────────────────────────
 
 
@@ -287,6 +294,109 @@ class TestConformanceStateMachine:
         token, _ = store.mint("alpha", "my-executor", now=now)
         assert store.record_step_arrival(token, "alpha", "workspace_access", now=now)
         assert not store.record_step_arrival(token, "alpha", "workspace_access", now=now + 1)
+
+
+# ── HTTP route tests: POST /orgs/{slug}/executors/conformance-checkin ───
+
+
+class TestConformanceCheckinRoute:
+    """The shipping org route enforces loopback + scoped-token admission."""
+
+    path = "/api/v1/orgs/alpha/executors/conformance-checkin"
+
+    @staticmethod
+    def _workspace_step_arrived(store, token: str) -> bool:
+        challenge = store.get_challenge(token)
+        assert challenge is not None
+        step = next(s for s in challenge.steps if s.step_id == "workspace_access")
+        return step.arrived
+
+    def test_valid_scoped_token_from_non_loopback_is_rejected_without_arrival(
+        self, conformance_route,
+    ):
+        app, store = conformance_route
+        token, _ = store.mint("alpha", "my-executor")
+        client = TestClient(app, client=("198.51.100.23", 50000))
+
+        response = client.post(
+            self.path,
+            headers={"Authorization": f"Bearer {token}"},
+            json={"step_id": "workspace_access"},
+        )
+
+        assert response.status_code == 403
+        assert response.json() == {
+            "detail": {"code": "not_localhost", "peer": "198.51.100.23"}
+        }
+        assert not self._workspace_step_arrived(store, token)
+
+    def test_valid_scoped_token_from_loopback_records_and_returns_step_state(
+        self, conformance_route,
+    ):
+        app, store = conformance_route
+        token, _ = store.mint("alpha", "my-executor")
+        client = TestClient(app, client=("127.0.0.1", 50000))
+
+        response = client.post(
+            self.path,
+            headers={"Authorization": f"Bearer {token}"},
+            json={"step_id": "workspace_access"},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "step_id": "workspace_access",
+            "arrived": True,
+            "pending": ["loopback_reachable", "cli_callback", "emit_envelope"],
+            "all_complete": False,
+        }
+        assert self._workspace_step_arrived(store, token)
+
+    @pytest.mark.parametrize(
+        ("authorization", "detail"),
+        [
+            pytest.param(
+                "master",
+                "Master bearer not accepted on registration route. Regenerate "
+                "the connect prompt from Settings > Executors or onboarding to "
+                "get a valid registration token.",
+                id="master-bearer",
+            ),
+            pytest.param(
+                None,
+                "Missing bearer token. Regenerate the connect prompt from "
+                "Settings > Executors or onboarding and run the full sequence again.",
+                id="missing-authorization",
+            ),
+            pytest.param(
+                "Bearer ordinary-token",
+                "Not a registration token. Regenerate the connect prompt from "
+                "Settings > Executors or onboarding and run the full sequence again.",
+                id="non-registration-bearer",
+            ),
+        ],
+    )
+    def test_loopback_rejects_non_scoped_authorization_without_arrival(
+        self, conformance_route, authorization, detail,
+    ):
+        app, store = conformance_route
+        token, _ = store.mint("alpha", "my-executor")
+        client = TestClient(app, client=("127.0.0.1", 50000))
+        headers = {}
+        if authorization == "master":
+            headers["Authorization"] = f"Bearer {paths_mod.read_token()}"
+        elif authorization is not None:
+            headers["Authorization"] = authorization
+
+        response = client.post(
+            self.path,
+            headers=headers,
+            json={"step_id": "workspace_access"},
+        )
+
+        assert response.status_code == 401
+        assert response.json() == {"detail": detail}
+        assert not self._workspace_step_arrived(store, token)
 
 
 # ── HTTP route tests: POST /auth/registration-token ─────────────────────
