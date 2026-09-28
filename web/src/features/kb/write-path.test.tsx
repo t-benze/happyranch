@@ -1,27 +1,35 @@
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
-import { AppRoutes } from '@/routes';
-import { renderWithProviders } from '@/test/render';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { server } from '@/test/server';
 
 const SLUG = 'hk-macau-tourism';
-const FLAG_ON = import.meta.env.VITE_ENABLE_KB_COMPOSE === 'true';
 
-beforeAll(() => {
-  // The flag is read at module-load time; tests are run with it on via
-  // VITE_ENABLE_KB_COMPOSE=true (set in package.json's test:write-path
-  // script, or by the CI matrix). When unset, the suite is skipped.
-});
-afterAll(() => {
-  // no-op
+beforeEach(() => {
+  // KbPage captures the build flag at module load. Give each case a fresh
+  // route/page/provider graph so the enabled and disabled states cannot leak.
+  vi.resetModules();
 });
 
-(FLAG_ON ? describe : describe.skip)('KB compose write path', () => {
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+async function renderAppWithComposeEnabled(enabled: boolean): Promise<void> {
+  vi.stubEnv('VITE_ENABLE_KB_COMPOSE', enabled ? 'true' : 'false');
+  const [{ AppRoutes }, { renderWithProviders }] = await Promise.all([
+    import('@/routes'),
+    import('@/test/render'),
+  ]);
+  renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+}
+
+describe('KB compose write path', () => {
   test('submits POST /kb and navigates to detail', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     let postedBody: Record<string, unknown> | null = null;
+    let detailRequested = false;
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
@@ -42,8 +50,9 @@ afterAll(() => {
           updated_at: '2026-05-19T12:00:00Z',
         });
       }),
-      http.get(`/api/v1/orgs/${SLUG}/kb/policy/new-rule`, () =>
-        HttpResponse.json({
+      http.get(`/api/v1/orgs/${SLUG}/kb/policy/new-rule`, () => {
+        detailRequested = true;
+        return HttpResponse.json({
           slug: 'policy/new-rule',
           title: 'A new rule',
           type: 'precedent',
@@ -54,11 +63,11 @@ afterAll(() => {
           authored_by: 'founder',
           source_task: null,
           related_entries: [],
-        }),
-      ),
+        });
+      }),
     );
     const user = userEvent.setup();
-    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await renderAppWithComposeEnabled(true);
 
     await user.click(await screen.findByRole('button', { name: /Compose…/ }));
     await user.type(screen.getByLabelText(/^Slug$/i), 'policy/new-rule');
@@ -80,12 +89,13 @@ afterAll(() => {
         agent: 'founder',
       });
     });
-  });
-});
 
-describe('KB compose write path (flag off)', () => {
+    expect(await screen.findByRole('heading', { name: 'A new rule' })).toBeInTheDocument();
+    expect(await screen.findByText('Body here')).toBeInTheDocument();
+    expect(detailRequested).toBe(true);
+  });
+
   test('Compose button is absent when flag is off', async () => {
-    if (FLAG_ON) return;
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get('/api/v1/orgs', () =>
@@ -101,7 +111,7 @@ describe('KB compose write path (flag off)', () => {
         HttpResponse.json({ dreams: [] }),
       ),
     );
-    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await renderAppWithComposeEnabled(false);
     await screen.findByRole('heading', { name: /What the org has learned/ });
     expect(screen.queryByRole('button', { name: /Compose…/ })).toBeNull();
   });
