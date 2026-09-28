@@ -55,30 +55,6 @@ export function statusLabel(status: ScheduleStatus): string {
   return map[status] ?? status
 }
 
-/**
- * Tone classes for schedule status pills.
- *
- * These are Todos-local exact-color matches to the approved THR-105 reference
- * (web/scripts/screenshot-harness/reference/reference-todos-list-light.png).
- * They intentionally do not mutate shared design-system tokens.
- */
-export function statusPillClass(status: ScheduleStatus): string {
-  switch (status) {
-    case 'armed':
-    case 'firing':
-    case 'fired':
-      return 'text-[#2b5c3a] bg-[#e3efe5]'
-    case 'failed':
-    case 'timeout':
-      return 'text-[#575249] bg-[#f3e8d6]'
-    case 'paused':
-    case 'cancelled':
-    case 'expired':
-    default:
-      return 'text-[#575249] bg-[#efece2]'
-  }
-}
-
 /** Groups for the index filter tabs in display order. */
 export type FilterGroup = 'all' | 'active' | 'paused' | 'needs_attention' | 'history'
 

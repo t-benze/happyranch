@@ -2,6 +2,17 @@
 
 ## Settings
 
+Bundled skill sources resolve under the selected package root at
+`runtime/skills/bundled/`, including installed wheels. `Settings.get_bundled_skills_dir`
+uses the single resolver in `runtime/skills/sources.py`; missing sources never
+fall back to another checkout. The retired `protocol_dir` setting remains only
+as an inert default-valued compatibility field on the existing settings response.
+Non-default YAML/environment overrides are rejected with migration guidance:
+publish approved assets in the new release location, then remove the override.
+There is no automatic source migration or canonical byte repair. Remove this
+compatibility field only in a separately versioned settings-contract change
+after deployed override inventory and client migration are complete.
+
 Operational settings are represented by `Settings` in `runtime/config.py`.
 
 Resolution order:
@@ -36,6 +47,21 @@ operators must reload and inspect them before retrying. The response reports
 temporary-artifact state as `absent`, `present`, or `unknown`; cleanup failure
 never fabricates absence or overrides publication. The writer never performs a
 second unaudited replacement as compensation.
+
+**Observed divergence from the "exactly one honest terminal row" description
+above — described, not resolved here.** When the terminal audit insert itself
+fails after a successful atomic replace, the shipped behaviour records the
+durable `daemon_capacity_config_write_authorized` row and *no* terminal row at
+all, returning `config_publication_uncertain`
+(`tests/daemon/test_routes_settings.py::test_daemon_capacity_terminal_success_audit_failure_is_publication_uncertain`
+asserts the audit rows are exactly `["daemon_capacity_config_write_authorized"]`).
+Terminal audit completion is therefore **not guaranteed**, and nothing may
+assert that a rationale "is recorded in the audit entry". This note records the
+divergence between the description and the tested behaviour; it does not change
+backend auditing and does not assert that the two agree. The browser capacity
+panel's copy is qualified accordingly: it states that the reason is *included
+in the save request* and that auditing is addressed org-locally and
+bearer-attributed with terminal completion not guaranteed.
 The shared daemon bearer is required; it proves possession only and cannot be
 attributed to a verified person. Save is next-restart-only and cannot resize
 the startup worker or HostSessionSupervisor snapshots.
@@ -45,6 +71,18 @@ A host cap below the envelope remains valid and warns about intentional
 backpressure; a cap above it warns that unused admission capacity creates no
 additional producers.
 
+**Frontend numeric limitation (NOT a contract change).** The browser editor
+refuses operator input outside `Number.MAX_SAFE_INTEGER` and withholds any
+consumed server numeric that did not survive `JSON.parse` as a safe integer.
+The API contract remains an unbounded positive integer; the browser bound is an
+editor representation limit only. A residual blind spot is retained and
+explicitly not closed: the shared HTTP client parses the response body and
+discards the raw text, so a raw *fractional* token that `JSON.parse` rounds
+into a safe integer (for example `9007199254740990.5` -> `9007199254740990`, or
+`1.0000000000000001` -> `1`) passes the guard undetected. Closing that read
+site needs a raw-text/BigInt-aware parse in the shared transport or a new API
+representation, and is a separate decision.
+
 | Variable | Default | Description |
 | --- | --- | --- |
 | `HAPPYRANCH_CLAUDE_CLI_PATH` | `claude` | Default command metadata for claude (config/docs only — executor launch requires ``executors.json`` pin) |
@@ -52,8 +90,8 @@ additional producers.
 | `HAPPYRANCH_OPENCODE_CLI_PATH` | `opencode` | Default command metadata for opencode (config/docs only — executor launch requires ``executors.json`` pin) |
 | `HAPPYRANCH_PI_CLI_PATH` | `pi` | Default command metadata for pi (config/docs only — executor launch requires ``executors.json`` pin) |
 | `HAPPYRANCH_PERMISSION_MODE` | `auto` | Claude Code permission mode |
-| `HAPPYRANCH_PROTOCOL_DIR` | `protocol` | Protocol docs dirname relative to project root |
-| `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |
+| `HAPPYRANCH_PROTOCOL_DIR` | `protocol` | Retired compatibility value; non-default overrides refuse startup |
+| `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Legacy accepted setting; inert (not an execution limit) |
 | `HAPPYRANCH_QUEUE_WORKERS` | `6` | Daemon-wide `run_step` worker slots; must be greater than 0; restart required |
 | `HAPPYRANCH_HOST_GLOBAL_SESSION_CAP` | `13` | Healthy enforcement-capable daemon-wide host-session admission cap; capability fallbacks remain conservative; restart required |
 | `HAPPYRANCH_SESSION_TIMEOUT_SECONDS` | `1800` | Global agent-session timeout default |
@@ -79,6 +117,14 @@ Keyed by provider string (`claude | codex | opencode | pi | ...`), so saturating
 | `executor_rate_limit_backoff_seconds` | `[5, 15, 45]` | On a rate limit in a **failed** launch (the retry is gated on `rate_limited and not success`, so a successful session is never relaunched) the launch releases its slot, sleeps `backoff[attempt]`, re-acquires, and retries. After the schedule is exhausted the task is marked terminal FAILED under normal failure handling; no daemon successor is spawned. `[]` disables retries. |
 
 Rate-limit detection is normalized: `_run_command` sets `ExecutorResult.rate_limited` from `is_rate_limit_signature(...)` and the classifier prefers that field over its legacy string heuristic. Two additive audit actions surface the activity through the existing `insert_audit_log` (no schema change): `executor_slot_wait` (`{provider, wait_seconds, ceiling}`) when a launch waited for a slot, and `executor_rate_limit_backoff` (`{provider, attempt, backoff_seconds}`) per 429 retry.
+
+The configured schedule remains the default for ordinary invocations. The
+bounded THR-247 Codex completion-recovery path alone opts out per invocation
+at the host-supervisor seam: its first rate-limited provider result is
+finalized and receipted honestly without backoff or re-admission. This does
+not alter global throttle settings, ordinary invocation retries, admission, or
+rate-limit diagnostics; the honest-passthrough fallback likewise uses its
+existing empty executor-throttle backoff for that one provider execution.
 
 The list/dict-shaped keys (`executor_ceiling_overrides`, `executor_rate_limit_backoff_seconds`) are set via `config.yaml`; the scalar keys also accept `HAPPYRANCH_`-prefixed env vars.
 
@@ -325,6 +371,63 @@ before any `ZoneInfo()` call. (Pre-TASK-976 an omitted value defaulted to the
 literal `UTC`; orgs relying on that implicit default now schedule on
 machine-local time — host-local night, as intended.)
 
+## Org Config: Workspace Cleanup
+
+`workspace_cleanup.enabled` is a boolean scheduler switch that defaults to
+`true`; setting it to `false` disables the daemon-managed cleanup scheduler. When
+enabled, the scheduler evaluates the daily local 03:30 occurrence in the org
+timezone, comparing existing occurrences as UTC instants (skipping nonexistent
+spring-forward times and taking the first `fold=0` instance of ambiguous fall-back
+times), with exactly one post-warmup current-window catch-up, no historical backfill
+and no rolling 24-hour or seven-day trigger cooldown.
+`workspace_cleanup.reclamation_actions_enabled` is separately strictly boolean
+and defaults to `false`. When true, the bounded pre-agent reclamation hook may
+select and revalidate finite canonical targets before invoking the existing
+consumer; it acts only on a third-or-later cleanup ordinal whose preclaim owner
+is assigned to a registered in-memory `TeamsRegistry` agent and reconciles to
+the invocation's initial successful claim (the first two runs stay
+report-only), under one shared one-second deadline and at most 23 read/load
+admissions with at most five best-effort consumer calls and no refill or
+recovery. `false` prevents those action admissions and affects later admissions
+only; it cannot revoke an already admitted call. Malformed values retain the
+shared loader's existing error behavior.
+
+The daemon-composed daily brief and manual dispatch both follow the ONE shared
+`workspace-cleanup` TASK system contract (`requires_repo=false`; source
+`runtime/skills/bundled/workspace-cleanup/SKILL.md`), whose exact manual first
+line is `HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)` (an unmarked
+manual request is inventory-only). Its bundled read-only
+`scripts/check_path_use.py` applies the approved THR-259 seq171/seq185
+observation: an authoritative recorded terminal status plus a fresh complete
+same-user process scan replaces separate live-session/task-to-process identity,
+and a fixed login/session daemon (sshd-session, systemd --user, (sd-pam),
+ssh-agent, gpg-agent, gcr-ssh-agent) qualifies only by exact readable process
+name AND exact bounded cgroup role and is deliberately uninspected; any other
+unreadable same-user process is `unknown` and skips.
+
+## Terminal task-worktree reclamation
+
+Terminal task-worktree reclamation has no configuration key or cadence. On the
+approved ordinary `completed`, `failed`, and `cancelled` writer seams, after
+durable terminal state and applicable process/session/control/job teardown, the
+runtime makes one bounded attempt for only the assigned registered agent's
+literal `repos/happyranch/.claude/worktrees/<task-id>` candidate. It requires a
+canonical non-symlink same-device primary and worktree, exact Git registration
+and branch identity, clean status, durable remote containment, no open or
+closed-unmerged PR, no live session/control/PID/cwd/fd reference, no recorded
+`worktree-deferred:` risk, and a shared deadline. Unknown, unavailable,
+malformed, timed-out, dirty, unpublished, live, foreign, or ambiguous evidence
+preserves the worktree.
+
+Successful removal is literal non-force `git worktree remove`; no branch is
+deleted. A failed gate or removal is a typed/logged preservation outcome and
+never changes terminal semantics or schedules a retry. `superseded`,
+`blocked_on_job`, accepted/restart completion-recovery settlement, legacy
+normalization, and historical cleanup remain outside this mechanism. This is
+separate from `workspace_cleanup.enabled` and
+`workspace_cleanup.reclamation_actions_enabled`; neither switch expands or
+disables the terminal hook.
+
 ## Agent Configuration: Single Source of Truth (THR-095)
 
 **Founder-ratified invariant (THR-095 option B):** Every piece of agent
@@ -464,26 +567,23 @@ Contract (founder-approved in THR-028, refined in THR-078):
    decision step. The failed subtask's reason (`note` + completion report /
    error context) is available so the task owner can author an updated brief.
 
-2. **Per-slice retry ceiling (THR-078).** A delegated slot gets exactly one
-   retry: the ceiling is `_SLICE_RETRY_CEILING = 1` — a slice whose
-   `revisit_of_task_id` ancestor (a FAILED child of the same parent) failed
-   again exhausts the ceiling. The ceiling is evaluated per-slice via
-   `_is_slice_retry_exhausted` from the failing child's `revisit_of_task_id`
-   lineage (no schema migration). A later COMPLETED or SUPERSEDED descendant
-   in the same lineage retires earlier FAILED ancestors for ceiling evaluation
-   (THR-183).
+2. **Mechanical retry provenance (THR-078).** A manager may re-dispatch
+   unchanged work or direct revised work with a valid `revisit_of_task_id`
+   link to a FAILED same-parent predecessor. The link is historical
+   provenance, not semantic brief comparison or automatic root escalation.
+   A later COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors
+   from causal selection (THR-183).
 
-3. **Escalation on exhaustion.** When a slice's retry ceiling is exhausted
-   (its 2nd failure), a root parent transitions to `escalated` via
-   `try_escalate()`, carrying the causal terminal event (the current
-   unresolved FAILED leaf) in the escalation reason; a completed-child wake
-   cannot select a stale sibling reason. A non-root parent fails and recurses
-   upward (THR-033 root-only escalation). The parent does NOT cascade-fail —
-   the founder or upstream manager resolves the termination per existing routes.
+3. **Manager ownership on exhaustion.** A retried slice's second failure keeps
+   its durable causal lineage and wakes the owning manager. It is not a runtime
+   escalation or upward cascade. Any later manager-proposed escalation follows
+   the configured THR-181 hook; inactive/static policy is not evaluator
+   CONTINUE, and committed escalations remain human-resolved.
 
-4. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
-   COMPLETED) clears the active chain and hands the parent back to its
-   bounded-wake path (same per-slice ceiling + escalation).
+4. **Chain-leg failure.** A failed chain leg clears the chain and returns a
+   decision owner to bounded wake. Passive pipeline carriers instead fail
+   closed and settle through their outer fan-out barrier with causal-leaf
+   context intact.
 
 5. **Happy path unchanged.** All subtasks COMPLETED → parent enqueued for
    next decision step. REVISE-verdict auto-advance in chains is unchanged.
@@ -495,7 +595,7 @@ Contract (founder-approved in THR-028, refined in THR-078):
 
 Implementation: `runtime/orchestrator/run_step.py` —
 `_enqueue_parent_if_waiting`, `_advance_chain_for_completed_child`,
-`_is_slice_retry_exhausted`, `_SLICE_RETRY_CEILING`. See also
+and the retry-link validation seam. See also
 `docs/agent-guides/features-and-invariants.md#bounded-failure-recovery` and
 `docs/agent-guides/orchestrator-contracts.md`.
 

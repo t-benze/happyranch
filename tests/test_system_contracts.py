@@ -105,12 +105,13 @@ class TestSystemContractDataclass:
 class TestSystemContractsTuple:
     """Verify the 6 system contracts are correctly defined."""
 
-    def test_exactly_seven_contracts(self):
-        assert len(SYSTEM_CONTRACTS) == 7
+    def test_exactly_eight_contracts(self):
+        assert len(SYSTEM_CONTRACTS) == 8
 
-    def test_all_seven_ids(self):
+    def test_all_eight_ids(self):
         ids = {sc.id for sc in SYSTEM_CONTRACTS}
-        assert ids == {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"}
+        assert ids == {"start-task", "jobs", "make-worktree", "thread", "dream",
+                       "todos", "create-skill", "workspace-cleanup"}
 
     def test_no_requires_repo_except_make_worktree_and_create_skill(self):
         for sc in SYSTEM_CONTRACTS:
@@ -133,7 +134,7 @@ class TestSystemContractsTuple:
 
     def test_todos_source_path(self):
         sc = _get("todos")
-        assert sc.source_path == "protocol/skills/todos/SKILL.md"
+        assert sc.source_path == "runtime/skills/bundled/todos/SKILL.md"
 
     def test_todos_skill_source_teaches_recurring_callback_grammar(self):
         """The universal materialized Todos contract has the v2 agent grammar."""
@@ -149,18 +150,6 @@ class TestSystemContractsTuple:
         assert "422 `invalid_fire_at`" in source
         assert "One-shot `fire_at` is past or more than 90 days ahead" in source
         assert "409 `create_failed` with the service diagnostic" in source
-
-    def test_agent_runtime_stale_recurrence_contract_distinguishes_terminal_audits(self):
-        """The governing agent-runtime contract matches the scheduler stale path."""
-        repo_root = Path(__file__).resolve().parents[1]
-        source = (repo_root / "protocol/05b-agent-runtime.md").read_text()
-
-        assert "does not replay or\n   backfill it" in source
-        assert "occurrence_missed`` and re-arms the row only when a\n   future next occurrence exists within any finite review expiry" in source
-        assert "FIRED with ``end_reason=date_ended`` and\n   ``schedule_fired``" in source
-        assert "EXPIRED with ``schedule_expired``" in source
-        assert "FAILED with ``error=recurrence_no_candidate`` and\n   ``schedule_failed``" in source
-        assert "scheduler advances without replay/backfill and emits ``occurrence_missed``" not in source
 
     def test_start_task_contexts(self):
         sc = _get("start-task")
@@ -222,12 +211,19 @@ class TestSystemContractsTuple:
         assert SessionContext.THREAD not in sc.contexts
         assert SessionContext.WAKE not in sc.contexts
 
-    def test_list_system_contracts_returns_all_seven(self):
+    def test_list_system_contracts_returns_all_eight(self):
         result = list_system_contracts()
-        assert len(result) == 7
+        assert len(result) == 8
         assert {sc.id for sc in result} == {
-            "start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill",
+            "start-task", "jobs", "make-worktree", "thread", "dream", "todos",
+            "create-skill", "workspace-cleanup",
         }
+
+    def test_workspace_cleanup_contexts_and_no_repo(self):
+        sc = _get("workspace-cleanup")
+        assert set(sc.contexts) == {SessionContext.TASK}
+        assert sc.requires_repo is False
+        assert sc.source_path == "runtime/skills/bundled/workspace-cleanup/SKILL.md"
 
 
 # ── Context-predicate resolution ──────────────────────────────────────
@@ -292,14 +288,15 @@ class TestResolveSystemContracts:
             SessionContext.TASK, workspace=workspace_with_repos,
         )
         ids = {sc.id for sc in result}
-        assert ids == {"start-task", "jobs", "make-worktree", "thread", "todos", "create-skill"}
+        assert ids == {"start-task", "jobs", "make-worktree", "thread", "todos",
+                       "create-skill", "workspace-cleanup"}
 
     def test_task_context_without_repos_exact_ids(self, workspace_without_repos):
         result = resolve_system_contracts_for_session(
             SessionContext.TASK, workspace=workspace_without_repos,
         )
         ids = {sc.id for sc in result}
-        assert ids == {"start-task", "jobs", "thread", "todos"}
+        assert ids == {"start-task", "jobs", "thread", "todos", "workspace-cleanup"}
 
     # -- THREAD context --
 

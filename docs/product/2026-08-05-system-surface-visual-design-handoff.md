@@ -69,7 +69,7 @@ leaf resolution → routine source → wake evidence. Client-computed display va
 not scheduler authority. Invalid agent/team references must leave the previous valid
 configuration effective and retain the existing config:working_hours audit evidence.
 
-## Desktop and mobile states
+## Desktop scope and states
 
 Desktop is the supported design target. Deliver design frames at 1440×900 in light
 and dark themes for each changed surface, plus the named interaction overlays below.
@@ -86,11 +86,49 @@ navigation, page title, assistant entry) and make the canonical record handoff c
 | 401/403 | Describe session/auth failure or server denial truthfully; do not say a visual “founder-only” gate enforced access. |
 | Recoverable error | Keep context, offer retry/recovery, and never replace a record identifier with fabricated content. |
 
-Mobile is explicitly **not** a responsive-shell deliverable in this pilot. At narrow
-widths, current content must remain operable without horizontal clipping, lost focus,
-or unreachable dialogs/actions; a redesigned drawer, collapsed navigation, or
-mobile-specific IA requires separately approved scope. Any limitation discovered in
-review is recorded as a limitation, not treated as solved by desktop screenshots.
+Founder THR-221 seq214 (“we do not need to support mobile layout”), carried by
+TASK-7076 / TASK-7094, makes this UI-conformance program desktop-only at 1440×900
+in light and dark themes. Mobile acceptance, repair, recapture, backlog, and
+mobile-only blockers are no longer required. Preserve existing responsive
+functionality and automated tests; retain historical mobile failures as failed,
+out-of-scope evidence, never as passes. Desktop state, keyboard/accessibility,
+and interaction-overlay requirements remain in force.
+
+Founder THR-221 seq235/236, carried by TASK-7171 / TASK-7176, narrows
+PR #836 acceptance to Todos semantic-colour convergence at desktop 1440×900:
+list/detail in light/dark. Armed/firing/fired use positive tones; failed/timeout
+use attention; paused/cancelled/expired use neutral. Labels and component
+geometry remain unchanged, only armed/firing have LEDs, and unknown values retain
+the raw label with neutral tone and no LED. List/detail share StatusPill and
+existing theme tokens; the local colour mapper and six obsolete raw-colour
+exceptions are removed without new exemptions.
+
+Acceptance requires production-seam regression evidence for the shared callers,
+current-main integration, full local CI, independent code-review APPROVE and QA
+PASS, and exact-head PR CI (Python 3.14, Web Node 24, Linux/macOS canonical-store
+validation). Task StatusBadge failed retains its independent abandoned/red style;
+thread open/archived, job exits and Dashboard explicit verdict mappings retain
+their behavior. KB types are freeform: future values matching the added schedule
+words inherit their shared tones. TASK-7171's 109-entry census has no matching
+types, which is a snapshot rather than a permanent vocabulary guarantee.
+
+The four accepted normal desktop PNG/raw milestones remain bounded historical
+colour proof after source/build correspondence is reverified. Current-main
+Sidebar integration changes the shell, so those images are not fresh integrated
+shell captures. Historical full acceptance remains 0/4. TASK-7123 adds bounded
+colour/used-font, loading, empty, error→Retry→populated, missing-detail and
+keyboard observations; it does not establish complete pixel/state coverage.
+
+Broader product audit obligations remain separate: post-scroll capture diagnosis,
+B3/B4 reached/restored and induced/restored pixels and clipping, native popup
+pixels, filtered-empty, mutation/conflict/permission/stale/disconnected states,
+complete focus/overlay evidence, and unrelated shell/typography/spacing
+conformance. Their missing evidence and historical failures are retained, never
+relabeled PASS; they are not prerequisites to this bounded colour delivery.
+Any actual defect attributable to PR #836 still blocks its merge, including one
+found in a deferred area. Wider behavioral requirements below remain in force.
+Existing responsive functionality and automated tests remain; mobile is outside
+founder seq214 acceptance scope. No full UI conformance or deployment is claimed.
 
 ## Provenance, authority, and accessibility requirements
 

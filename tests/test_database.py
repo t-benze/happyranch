@@ -1,10 +1,977 @@
+import sqlite3
 import threading
 import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
-from runtime.infrastructure.database import Database, LineageTooDeep
+from runtime.infrastructure.database import (
+    Database,
+    LineageTooDeep,
+    WorkspaceCleanupReclamationSelection,
+)
 from runtime.models import BlockKind, TaskRecord, TaskStatus
+
+
+_CLEANUP_MARKER = "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)"
+
+
+def _cleanup_task(
+    db: Database,
+    task_id: str,
+    *,
+    created_at: datetime,
+    status: TaskStatus,
+    count: int = 0,
+    completed_at: datetime | None = None,
+    parent_task_id: str | None = None,
+    revisit_of_task_id: str | None = None,
+) -> None:
+    db.insert_task(TaskRecord(
+        id=task_id,
+        brief=f"{_CLEANUP_MARKER}\nfixture",
+        assigned_agent="dev_agent",
+        status=status,
+        orchestration_step_count=count,
+        created_at=created_at,
+        updated_at=created_at,
+        completed_at=completed_at,
+        current_session_id=f"session-{task_id}",
+        parent_task_id=parent_task_id,
+        revisit_of_task_id=revisit_of_task_id,
+    ))
+
+
+def _selection_fixture(db: Database, *, targets: int = 1) -> tuple[datetime, list[TaskRecord | None]]:
+    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    for ordinal in (1, 2):
+        _cleanup_task(
+            db, f"TASK-OLDER-{ordinal}", created_at=now - timedelta(days=ordinal),
+            status=TaskStatus.PENDING,
+        )
+    _cleanup_task(
+        db, "TASK-OWNER", created_at=now, status=TaskStatus.IN_PROGRESS, count=1,
+    )
+    db.insert_audit_log(
+        task_id="TASK-OWNER", agent="dev_agent", action="workspace_cleanup_triggered",
+        payload={"run_number": 3, "brief_kind": "cleanup"},
+    )
+    target_rows = []
+    for ordinal in range(targets):
+        target_id = f"TASK-{1000 + ordinal}"
+        completed_at = now - timedelta(days=10 + ordinal)
+        db.insert_task(TaskRecord(
+            id=target_id, brief="ordinary completed task", assigned_agent="dev_agent",
+            status=TaskStatus.COMPLETED, created_at=completed_at - timedelta(hours=1),
+            updated_at=completed_at - timedelta(hours=1), completed_at=completed_at,
+            current_session_id=f"session-{target_id}",
+        ))
+        db.insert_task_result(
+            task_id=target_id, agent="dev_agent", session_id=f"session-{target_id}",
+            output_summary="done", confidence_score=90, status="completed",
+        )
+        target_rows.append(db.get_task(target_id))
+    return now, target_rows
+
+
+def _select(db: Database, tmp_path, admissions=None, *, stale_count: int = 0, claimed_count: int = 1):
+    workspace = tmp_path / "runtime" / "workspaces" / "dev_agent"
+    return db.select_workspace_cleanup_reclamation_candidates(
+        owner_task_id="TASK-OWNER", agent="dev_agent",
+        stale_orchestration_step_count=stale_count, claimed_next_step_count=claimed_count,
+        canonical_workspace=workspace, authoritative_workspace=workspace,
+        admit_observation=admissions,
+    )
+
+
+def test_workspace_cleanup_selection_is_bounded_and_exposes_each_real_read(db, tmp_path) -> None:
+    _selection_fixture(db)
+    statements: list[str] = []
+    admissions: list[str] = []
+    db._conn.set_trace_callback(statements.append)
+    selection = _select(db, tmp_path, lambda name: admissions.append(name) is None or True)
+    db._conn.set_trace_callback(None)
+
+    assert isinstance(selection, WorkspaceCleanupReclamationSelection), admissions
+    assert [candidate.task_id for candidate in selection.candidates] == ["TASK-1000"]
+    assert selection.candidates[0].scratch_path == (
+        tmp_path / "runtime" / "workspaces" / "dev_agent" / ".happyranch" / "task-tmp" / "TASK-1000"
+    )
+    assert selection.read_observations == (
+        "owner", "marker", "history", "newer_owner", "candidates", "graph_tasks", "graph_edges", "result:TASK-1000",
+    )
+    assert len([sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]) == 8
+
+
+def test_workspace_cleanup_selection_refuses_before_later_reads_on_bad_owner_or_marker(db, tmp_path) -> None:
+    _selection_fixture(db)
+    admitted: list[str] = []
+    statements: list[str] = []
+    db._conn.set_trace_callback(statements.append)
+    selection = _select(
+        db, tmp_path, lambda name: admitted.append(name) is None or True, stale_count=1,
+    )
+    db._conn.set_trace_callback(None)
+    # Supplied claim counts are local invocation preconditions: malformed
+    # inputs refuse before either the durable owner read or its admission.
+    assert selection is None
+    assert admitted == []
+    assert not [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]
+
+    db.update_task("TASK-OWNER", orchestration_step_count=2)
+    admitted.clear()
+    assert _select(db, tmp_path, lambda name: admitted.append(name) is None or True) is None
+    assert admitted == ["owner"]
+
+    db.update_task("TASK-OWNER", orchestration_step_count=1)
+    db.insert_audit_log(
+        task_id="TASK-OWNER", agent="foreign", action="workspace_cleanup_triggered",
+        payload={"run_number": 3, "brief_kind": "cleanup"},
+    )
+    admitted.clear()
+    assert _select(db, tmp_path, lambda name: admitted.append(name) is None or True) is None
+    assert admitted == ["owner", "marker"]
+
+
+def test_workspace_cleanup_selection_refuses_sixth_raw_before_age_filter_without_refill(db, tmp_path) -> None:
+    now, _targets = _selection_fixture(db, targets=5)
+    db.insert_task(TaskRecord(
+        id="TASK-NEWER", brief="ordinary completed task", assigned_agent="dev_agent",
+        status=TaskStatus.COMPLETED, created_at=now + timedelta(minutes=1),
+        updated_at=now + timedelta(minutes=1), completed_at=now + timedelta(minutes=1),
+        current_session_id="session-TASK-NEWER",
+    ))
+    # The newer row is raw candidate number six.  It cannot be filtered away
+    # to make the five older roots actionable.
+    value, selects = _selection_sql(db, tmp_path)
+    assert value is None
+    assert len(selects) == 5
+    assert "LIMIT 6" in selects[-1]
+
+
+def test_workspace_cleanup_selection_refuses_newer_marker_and_relevant_foreign_live_graph(db, tmp_path) -> None:
+    now, targets = _selection_fixture(db)
+    _cleanup_task(
+        db, "TASK-LATER", created_at=now + timedelta(minutes=1),
+        status=TaskStatus.IN_PROGRESS, count=1,
+    )
+    db.insert_audit_log(
+        task_id="TASK-LATER", agent="dev_agent", action="workspace_cleanup_triggered",
+        payload={"run_number": 4, "brief_kind": "cleanup"},
+    )
+    assert _select(db, tmp_path) is None
+
+    db.execute("DELETE FROM audit_log WHERE task_id='TASK-LATER'")
+    db.execute("DELETE FROM tasks WHERE id='TASK-LATER'")
+    target = targets[0]
+    assert target is not None
+    db.insert_task(TaskRecord(
+        id="TASK-FOREIGN-LIVE", brief="ordinary", assigned_agent="foreign",
+        status=TaskStatus.PENDING, created_at=now - timedelta(days=11),
+        updated_at=now - timedelta(days=11),
+    ))
+    db.execute(
+        "UPDATE tasks SET parent_task_id='TASK-FOREIGN-LIVE' WHERE id=?",
+        (target.id,),
+    )
+    assert _select(db, tmp_path) is None
+
+
+def test_workspace_cleanup_selection_admission_and_missing_result_stop_later_reads(db, tmp_path) -> None:
+    _selection_fixture(db, targets=2)
+    # Candidate order is oldest completed first, so target 1 is checked first.
+    db.execute("DELETE FROM task_results WHERE task_id='TASK-1001'")
+    admitted: list[str] = []
+    assert _select(db, tmp_path, lambda name: admitted.append(name) is None or True) is None
+    assert admitted[-1] == "result:TASK-1001"
+    assert "result:TASK-1000" not in admitted
+
+    admitted.clear()
+    def stop_at_candidates(name: str) -> bool:
+        admitted.append(name)
+        return name != "candidates"
+
+    assert _select(db, tmp_path, stop_at_candidates) is None
+    # The denied observation is not performed and no later admission is made.
+    assert admitted == ["owner", "marker", "history", "newer_owner", "candidates"]
+
+
+def test_workspace_cleanup_selection_refuses_malformed_and_noncanonical_observations(db, tmp_path) -> None:
+    now, _ = _selection_fixture(db)
+    db.execute("UPDATE tasks SET created_at='!invalid' WHERE id='TASK-OWNER'")
+    assert _select(db, tmp_path) is None
+
+    db.close()
+    db = Database(tmp_path / "selection.sqlite")
+    now, _ = _selection_fixture(db)
+    db.execute("UPDATE tasks SET id='/tmp/escape' WHERE id='TASK-1000'")
+    assert _select(db, tmp_path) is None
+
+
+def test_workspace_cleanup_selection_includes_terminal_cleanup_rows_in_raw_six(db, tmp_path) -> None:
+    now, _ = _selection_fixture(db, targets=4)
+    for task_id in ("TASK-3000", "TASK-3001"):
+        _cleanup_task(db, task_id, created_at=now - timedelta(days=20),
+                      completed_at=now - timedelta(days=20), status=TaskStatus.COMPLETED)
+        db.insert_task_result(task_id=task_id, agent="dev_agent", session_id=f"session-{task_id}",
+                              output_summary="done", confidence_score=90, status="completed")
+    # Owner plus two original older cleanup rows and these two terminal cleanup
+    # rows is a complete ordinal-five history.  Only then can this regression
+    # reach the sixth raw candidate observation it names.
+    db.execute(
+        "UPDATE audit_log SET payload=? WHERE task_id='TASK-OWNER'",
+        ('{"run_number": 5, "brief_kind": "cleanup"}',),
+    )
+    admissions: list[str] = []
+    assert _select(db, tmp_path, lambda name: admissions.append(name) is None or True) is None
+    assert admissions == ["owner", "marker", "history", "newer_owner", "candidates"]
+
+
+def _selection_sql(db: Database, tmp_path, **kwargs):
+    """Run the helper with literal SQLite observation accounting."""
+    statements: list[str] = []
+    db._conn.set_trace_callback(statements.append)
+    try:
+        value = _select(db, tmp_path, **kwargs)
+    finally:
+        db._conn.set_trace_callback(None)
+    selects = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]
+    return value, selects
+
+
+@pytest.mark.parametrize(
+    ("stop", "expected_reads"),
+    [
+        ("owner", 0), ("marker", 1), ("history", 2), ("newer_owner", 3),
+        ("candidates", 4), ("graph_tasks", 5), ("graph_edges", 6),
+        ("result:TASK-1000", 7),
+    ],
+)
+def test_workspace_cleanup_selection_sql_errors_refuse_without_later_reads(
+    db, tmp_path, stop, expected_reads,
+) -> None:
+    _selection_fixture(db)
+    admissions: list[str] = []
+
+    def admit(name: str) -> bool:
+        admissions.append(name)
+        if name == stop:
+            db._conn.set_authorizer(lambda *_: sqlite3.SQLITE_DENY)
+        return True
+
+    try:
+        value, selects = _selection_sql(db, tmp_path, admissions=admit)
+    finally:
+        db._conn.set_authorizer(None)
+    assert value is None
+    assert admissions[-1] == stop
+    assert len(selects) == expected_reads
+
+
+@pytest.mark.parametrize("result_index", range(5))
+def test_workspace_cleanup_selection_each_selected_result_sql_error_stops_sql(
+    db, tmp_path, result_index,
+) -> None:
+    _selection_fixture(db, targets=5)
+    result_names = [f"result:TASK-{1004 - ordinal}" for ordinal in range(5)]
+    stop = result_names[result_index]
+    admissions: list[str] = []
+
+    def admit(name: str) -> bool:
+        admissions.append(name)
+        if name == stop:
+            db._conn.set_authorizer(lambda *_: sqlite3.SQLITE_DENY)
+        return True
+
+    try:
+        value, selects = _selection_sql(db, tmp_path, admissions=admit)
+    finally:
+        db._conn.set_authorizer(None)
+    assert value is None
+    assert admissions[-1] == stop
+    assert len(selects) == 7 + result_index
+
+
+def test_workspace_cleanup_selection_all_twelve_pre_admission_denials_stop_sql(db, tmp_path) -> None:
+    _selection_fixture(db, targets=5)
+    denied_index = []
+    for stop in range(12):
+        admissions: list[str] = []
+
+        def admit(name: str, *, index=stop) -> bool:
+            admissions.append(name)
+            return len(admissions) - 1 != index
+
+        value, selects = _selection_sql(db, tmp_path, admissions=admit)
+        assert value is None
+        assert len(admissions) == stop + 1
+        assert len(selects) == stop
+        denied_index.append(admissions[-1])
+    assert denied_index[:7] == [
+        "owner", "marker", "history", "newer_owner", "candidates", "graph_tasks", "graph_edges",
+    ]
+    assert all(name.startswith("result:TASK-") for name in denied_index[7:])
+
+
+@pytest.mark.parametrize(
+    "malformed_created_at",
+    [
+        "2025-99-99T00:00:00+00:00",
+        "0000-01-01T00:00:00+00:00",
+        "2025-01-01T00:00:00",
+    ],
+)
+def test_workspace_cleanup_selection_refuses_malformed_marker_ordering_before_candidates(
+    db, tmp_path, malformed_created_at,
+) -> None:
+    now, _ = _selection_fixture(db)
+    db.insert_task(TaskRecord(
+        id="TASK-MALFORMED-MARKER", brief="ordinary", assigned_agent="dev_agent",
+        status=TaskStatus.PENDING, created_at=now - timedelta(days=1),
+        updated_at=now - timedelta(days=1),
+    ))
+    db.execute(
+        "UPDATE tasks SET created_at=? WHERE id='TASK-MALFORMED-MARKER'",
+        (malformed_created_at,),
+    )
+    db.insert_audit_log(
+        task_id="TASK-MALFORMED-MARKER", agent="dev_agent",
+        action="workspace_cleanup_triggered",
+        payload={"run_number": 4, "brief_kind": "cleanup"},
+    )
+    value, selects = _selection_sql(db, tmp_path)
+    assert value is None
+    assert len(selects) == 4
+    assert not any("status IN ('completed'" in sql for sql in selects)
+
+
+def test_workspace_cleanup_selection_deep_acyclic_component_is_iterative(db, tmp_path) -> None:
+    """A real 10,000-row graph must not rely on the Python recursion limit."""
+    now, targets = _selection_fixture(db, targets=3)
+    assert all(target is not None for target in targets)
+    chain_rows = [
+        (
+            f"TASK-DEEP-{ordinal}", "ordinary", "pending", "dev_agent",
+            now.isoformat(), now.isoformat(),
+            f"TASK-DEEP-{ordinal + 1}" if ordinal < 9993 else None,
+        )
+        for ordinal in range(9994)
+    ]
+    db._conn.executemany(
+        "INSERT INTO tasks (id,brief,status,assigned_agent,created_at,updated_at,parent_task_id) "
+        "VALUES (?,?,?,?,?,?,?)",
+        chain_rows,
+    )
+    db._conn.commit()
+    db.execute("UPDATE tasks SET parent_task_id='TASK-DEEP-0' WHERE id='TASK-1000'")
+    value, selects = _selection_sql(db, tmp_path)
+    assert value is not None
+    assert len(value.candidates) == 3
+    assert len(selects) == 10
+
+
+def test_workspace_cleanup_selection_five_raw_includes_terminal_cleanup_and_no_refill(db, tmp_path) -> None:
+    now, _ = _selection_fixture(db, targets=3)
+    for task_id in ("TASK-3000", "TASK-3001"):
+        _cleanup_task(
+            db, task_id, created_at=now - timedelta(days=20),
+            completed_at=now - timedelta(days=20), status=TaskStatus.COMPLETED,
+        )
+        db.insert_task_result(
+            task_id=task_id, agent="dev_agent", session_id=f"session-{task_id}",
+            output_summary="done", confidence_score=90, status="completed",
+        )
+    db.execute(
+        "UPDATE audit_log SET payload=? WHERE task_id='TASK-OWNER'",
+        ('{"run_number": 5, "brief_kind": "cleanup"}',),
+    )
+    value, selects = _selection_sql(db, tmp_path)
+    assert value is not None
+    assert len(value.candidates) == 5
+    assert len(selects) == 12
+    # A sixth raw row refuses even when it would be age-rejected; the helper
+    # cannot refill filtered slots with a later page.
+    db.insert_task(TaskRecord(
+        id="TASK-TOO-NEW", brief="ordinary", assigned_agent="dev_agent",
+        status=TaskStatus.COMPLETED, created_at=now + timedelta(days=1),
+        updated_at=now + timedelta(days=1), completed_at=now + timedelta(days=1),
+        current_session_id="session-TASK-TOO-NEW",
+    ))
+    refused, refused_selects = _selection_sql(db, tmp_path)
+    assert refused is None
+    assert len(refused_selects) == 5
+
+
+@pytest.mark.parametrize("count", [1000, 1001])
+def test_workspace_cleanup_selection_history_boundary_is_complete(db, tmp_path, count) -> None:
+    now, _ = _selection_fixture(db)
+    for ordinal in range(3, count):
+        _cleanup_task(
+            db, f"TASK-HISTORY-{ordinal}", created_at=now - timedelta(days=ordinal),
+            status=TaskStatus.PENDING,
+        )
+    db.execute(
+        "UPDATE audit_log SET payload=? WHERE task_id='TASK-OWNER'",
+        (f'{{"run_number": {count}, "brief_kind": "cleanup"}}',),
+    )
+    value, selects = _selection_sql(db, tmp_path)
+    assert (value is not None) is (count == 1000)
+    if count == 1001:
+        assert len(selects) == 3
+
+
+@pytest.mark.parametrize("count", [10000, 10001])
+def test_workspace_cleanup_selection_graph_task_boundary(db, tmp_path, count) -> None:
+    now, _ = _selection_fixture(db)
+    rows = [
+        (f"TASK-UNRELATED-{ordinal}", "ordinary", "broken-unrelated", "foreign", now.isoformat(), now.isoformat())
+        for ordinal in range(count - 4)
+    ]
+    db._conn.executemany(
+        "INSERT INTO tasks (id,brief,status,assigned_agent,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+        rows,
+    )
+    db._conn.commit()
+    value, selects = _selection_sql(db, tmp_path)
+    assert (value is not None) is (count == 10000)
+    if count == 10001:
+        assert len(selects) == 6
+
+
+@pytest.mark.parametrize("count", [20000, 20001])
+def test_workspace_cleanup_selection_edge_boundary_is_explicit_cursor_unit(db, tmp_path, count) -> None:
+    """Synthetic cursor boundary only; real SQL cannot form a valid 20k-edge graph."""
+    now, _ = _selection_fixture(db)
+    db.insert_task(TaskRecord(
+        id="TASK-UNRELATED-EDGE", brief="ordinary", assigned_agent="foreign",
+        status=TaskStatus.PENDING, created_at=now, updated_at=now,
+        parent_task_id="TASK-UNRELATED-EDGE", revisit_of_task_id="TASK-UNRELATED-EDGE",
+    ))
+    original = db._conn
+    actual_sizes: list[int] = []
+
+    class Cursor:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def fetchall(self):
+            return self.rows
+
+    class Connection:
+        def __getattr__(self, key):
+            return getattr(original, key)
+
+        def execute(self, sql, *args):
+            cursor = original.execute(sql, *args)
+            if "SELECT child_id, relative_id FROM (" in sql:
+                rows = cursor.fetchall()
+                actual_sizes.append(len(rows))
+                return Cursor([rows[0]] * count)
+            return cursor
+
+    db._conn = Connection()
+    try:
+        value, selects = _selection_sql(db, tmp_path)
+    finally:
+        db._conn = original
+    assert actual_sizes == [2]
+    assert (value is not None) is (count == 20000)
+    assert len(selects) == (8 if count == 20000 else 7)
+
+
+# The following finite matrix is repository-resident regression coverage for
+# the dormant helper.  It deliberately models the future hook's post-selection
+# config/owner reads without importing or implementing that hook.
+@pytest.fixture
+def cleanup_selection_matrix(tmp_path):
+    database = Database(tmp_path / "cleanup-selection-matrix.sqlite")
+    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+
+    def insert(task_id, *, cleanup=False, agent="dev_agent", status="completed", age=10):
+        when = now - timedelta(days=age)
+        database.insert_task(TaskRecord(
+            id=task_id, brief=_CLEANUP_MARKER if cleanup else "ordinary",
+            assigned_agent=agent, status=TaskStatus(status), created_at=when,
+            updated_at=when, completed_at=when if status == "completed" else None,
+            orchestration_step_count=1 if task_id == "TASK-100" else 0,
+            current_session_id=f"session-{task_id}",
+        ))
+        if status == "completed":
+            database.insert_task_result(
+                task_id=task_id, agent=agent, session_id=f"session-{task_id}",
+                output_summary="done", confidence_score=90, status="completed",
+            )
+
+    insert("TASK-1", cleanup=True, age=20)
+    insert("TASK-2", cleanup=True, age=19)
+    insert("TASK-100", cleanup=True, status="in_progress", age=0)
+    database.insert_audit_log(
+        task_id="TASK-100", agent="dev_agent", action="workspace_cleanup_triggered",
+        payload={"run_number": 3, "brief_kind": "cleanup"},
+    )
+    insert("TASK-10")
+    queries: list[str] = []
+
+    def select(**kwargs):
+        queries.clear()
+        database._conn.set_trace_callback(queries.append)
+        try:
+            options = dict(
+                owner_task_id="TASK-100", agent="dev_agent",
+                stale_orchestration_step_count=0, claimed_next_step_count=1,
+                canonical_workspace=tmp_path / "workspaces" / "dev_agent",
+                authoritative_workspace=tmp_path / "workspaces" / "dev_agent",
+            )
+            options.update(kwargs)
+            return database.select_workspace_cleanup_reclamation_candidates(**options)
+        finally:
+            database._conn.set_trace_callback(None)
+
+    yield database, insert, select, queries, now
+    database.close()
+
+
+@pytest.mark.parametrize("value", [
+    "2025-02-29T00:00:00+00:00", "2025-02-30T00:00:00+00:00",
+    "2025-04-31T00:00:00+00:00",
+    *[
+        f"{date}{separator}{time}"
+        for date in ("2025-01-01", "20250101", "2025-W01-1", "2025W011", "2025-W01", "2025W01")
+        for separator in ("T", " ")
+        for time in ("24:00:00+00:00", "240000+0000")
+    ],
+    "2025-01-01🕛24:00:00+00:00",
+])
+def test_workspace_cleanup_selection_newer_marker_uses_parser_for_invalid_calendar(
+    cleanup_selection_matrix, value,
+) -> None:
+    database, insert, select, queries, _ = cleanup_selection_matrix
+    insert("TASK-200", status="pending")
+    database.execute("UPDATE tasks SET created_at=? WHERE id='TASK-200'", (value,))
+    database.insert_audit_log(task_id="TASK-200", agent="dev_agent",
+        action="workspace_cleanup_triggered", payload={"run_number": 4, "brief_kind": "cleanup"})
+    assert select() is None
+    assert len(queries) == 4
+
+
+@pytest.mark.parametrize(("value", "hour", "minute"), [
+    # These are distinct parser-selected boundaries, not candidate-offset
+    # guesses.  In particular the extended week-without-weekday form chooses
+    # its hyphen at offset 8 when the following digit makes the spelling
+    # ambiguous; its apparent offset-10 ``24`` is the minute field.
+    ("2025-W01-002400+0000", 0, 24),
+    ("2025-W01-012400+0000", 1, 24),
+    ("2025-W01-122400+0000", 12, 24),
+    ("2025-W01-232400+0000", 23, 24),
+    # Fixed examples cover the other actual separator decisions: calendar
+    # extended/basic, week extended/basic with weekday, and Unicode/digit
+    # separators.  The wider existing matrix retains colon/compact and T/space
+    # coverage for all six calendar/week shapes.
+    ("2025-01-01T002400+0000", 0, 24),
+    ("20250101 002400+0000", 0, 24),
+    ("2025-W01-1-002400+0000", 0, 24),
+    ("2025W0112002400+0000", 0, 24),
+    ("2025-01-01🕛002400+0000", 0, 24),
+])
+def test_workspace_cleanup_selection_uses_parser_selected_hour_boundary(
+    cleanup_selection_matrix, value, hour, minute,
+) -> None:
+    database, insert, select, queries, _ = cleanup_selection_matrix
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    assert parsed.tzinfo is not None and (parsed.hour, parsed.minute) == (hour, minute)
+    insert("TASK-200", status="pending")
+    database.execute("UPDATE tasks SET created_at=? WHERE id='TASK-200'", (value,))
+    database.insert_audit_log(task_id="TASK-200", agent="dev_agent",
+        action="workspace_cleanup_triggered", payload={"run_number": 4, "brief_kind": "cleanup"})
+    selection = select()
+    assert selection is not None
+    assert [candidate.task_id for candidate in selection.candidates] == ["TASK-1", "TASK-2", "TASK-10"]
+    assert len(queries) == 10
+
+
+@pytest.mark.parametrize("value", [
+    *[
+        f"{date}{separator}{time}"
+        for date in ("2025-01-01", "20250101", "2025-W01-1", "2025W011", "2025-W01", "2025W01")
+        for separator in ("T", " ")
+        for time in ("00:00:00+00:00", "000000+0000", "23:24:00+00:00", "232400+0000")
+    ],
+    "2025-01-01🕛00:00:00+00:00",
+])
+def test_workspace_cleanup_selection_preserves_valid_raw_hour_formats(
+    cleanup_selection_matrix, value,
+) -> None:
+    database, _, select, queries, _ = cleanup_selection_matrix
+    database.execute("UPDATE tasks SET created_at=? WHERE id='TASK-1'", (value,))
+    database.insert_audit_log(task_id="TASK-1", agent="dev_agent",
+        action="workspace_cleanup_triggered", payload={"run_number": 1, "brief_kind": "report_only"})
+    selection = select()
+    assert selection is not None and len(selection.candidates) == 3
+    assert len(queries) == 10
+
+
+@pytest.mark.parametrize("value", [
+    "2025-01-01T00:00:00+00:00", "2025-01-01T00:00:00.123456+00:00",
+    "2025-01-01T00:00:00.123Z", "2025-01-01 00:00:00+00:00",
+    "2025-01-01T00:00:00+23:00", "20250101T000000+0000",
+    "2025-01-01T00:00:00+00:00:01",
+])
+def test_workspace_cleanup_selection_newer_marker_accepts_all_parser_valid_forms(
+    cleanup_selection_matrix, value,
+) -> None:
+    database, _, select, queries, _ = cleanup_selection_matrix
+    database.execute("UPDATE tasks SET created_at=? WHERE id='TASK-1'", (value,))
+    database.insert_audit_log(task_id="TASK-1", agent="dev_agent",
+        action="workspace_cleanup_triggered", payload={"run_number": 1, "brief_kind": "report_only"})
+    selection = select()
+    assert selection is not None and len(selection.candidates) == 3
+    assert len(queries) == 10
+
+
+def test_workspace_cleanup_selection_marker_blob_refuses_without_later_sql(cleanup_selection_matrix) -> None:
+    database, _, select, queries, _ = cleanup_selection_matrix
+    database.execute("UPDATE audit_log SET payload=?", (b"\x80",))
+    assert select() is None
+    assert len(queries) == 2
+    database.execute("UPDATE audit_log SET payload=?", (b'{"run_number":3,"brief_kind":"cleanup"}',))
+    assert select() is not None
+
+
+@pytest.mark.parametrize("status", ["pending", "in_progress", "escalated", "completed", "failed", "cancelled", "superseded"])
+def test_workspace_cleanup_selection_all_newer_statuses_refuse(cleanup_selection_matrix, status) -> None:
+    database, insert, select, queries, _ = cleanup_selection_matrix
+    insert("TASK-200", cleanup=True, status=status, age=-1)
+    database.insert_audit_log(task_id="TASK-200", agent="dev_agent",
+        action="workspace_cleanup_triggered", payload={"run_number": 4, "brief_kind": "cleanup"})
+    assert select() is None and len(queries) == 4
+
+
+@pytest.mark.parametrize("change", [
+    "missing", "cancelled", "state", "block", "agent", "count", "stale", "claimed", "claimed_zero",
+    "malformed_status", "workspace",
+])
+def test_workspace_cleanup_selection_owner_and_claim_mismatches_stop_at_owner(cleanup_selection_matrix, change) -> None:
+    database, _, select, queries, now = cleanup_selection_matrix
+    kwargs = {}
+    admissions: list[str] = []
+    if change == "missing":
+        database.execute("DELETE FROM tasks WHERE id='TASK-100'")
+    elif change == "cancelled":
+        database.execute("UPDATE tasks SET cancelled_at=? WHERE id='TASK-100'", (now.isoformat(),))
+    elif change == "state":
+        database.execute("UPDATE tasks SET status='pending' WHERE id='TASK-100'")
+    elif change == "block":
+        database.execute("UPDATE tasks SET block_kind='delegated' WHERE id='TASK-100'")
+    elif change == "agent":
+        database.execute("UPDATE tasks SET assigned_agent='foreign' WHERE id='TASK-100'")
+    elif change == "count":
+        database.execute("UPDATE tasks SET orchestration_step_count=2 WHERE id='TASK-100'")
+    elif change == "stale":
+        kwargs["stale_orchestration_step_count"] = 1
+    elif change == "claimed":
+        kwargs["claimed_next_step_count"] = 2
+    elif change == "claimed_zero":
+        kwargs["claimed_next_step_count"] = 0
+    elif change == "malformed_status":
+        database.execute("UPDATE tasks SET status='not-a-status' WHERE id='TASK-100'")
+    else:
+        kwargs["authoritative_workspace"] = Path("/other")
+    expected_queries = 0 if change in {"stale", "claimed", "claimed_zero"} else 1
+    if expected_queries == 0:
+        kwargs["admit_observation"] = lambda name: admissions.append(name) is None or True
+    assert select(**kwargs) is None
+    assert len(queries) == expected_queries
+    assert admissions == []
+
+
+@pytest.mark.parametrize("kind", ["zero", "two", "mixed", "wrong", "list", "bad_json", "bool", "kind", "first", "second"])
+def test_workspace_cleanup_selection_marker_identity_and_ordinal_refuse(cleanup_selection_matrix, kind) -> None:
+    database, _, select, queries, _ = cleanup_selection_matrix
+    if kind == "zero":
+        database.execute("DELETE FROM audit_log")
+    elif kind in {"two", "mixed"}:
+        database.insert_audit_log(task_id="TASK-100", agent="foreign" if kind == "mixed" else "dev_agent",
+            action="workspace_cleanup_triggered", payload={"run_number": 3, "brief_kind": "cleanup"})
+    elif kind == "wrong":
+        database.execute("UPDATE audit_log SET agent='foreign'")
+    else:
+        payload = {"list":"[]", "bad_json":"not-json", "bool":'{"run_number":true,"brief_kind":"cleanup"}',
+                   "kind":'{"run_number":3,"brief_kind":"report"}', "first":'{"run_number":1,"brief_kind":"cleanup"}',
+                   "second":'{"run_number":2,"brief_kind":"cleanup"}'}[kind]
+        database.execute("UPDATE audit_log SET payload=?", (payload,))
+    assert select() is None and len(queries) == 2
+
+
+def test_workspace_cleanup_selection_bytewise_ties_running_exclusion_and_owner_boundary(
+    cleanup_selection_matrix,
+) -> None:
+    database, insert, select, queries, now = cleanup_selection_matrix
+    insert("TASK-9")
+    insert("TASK-RUNNING", status="in_progress")
+    selection = select()
+    assert selection is not None
+    assert [item.task_id for item in selection.candidates] == ["TASK-1", "TASK-2", "TASK-10", "TASK-9"]
+    assert len(queries) == 11
+
+    database.execute("UPDATE tasks SET completed_at=? WHERE id IN ('TASK-9', 'TASK-10')", (now.isoformat(),))
+    selection = select()
+    assert selection is not None
+    # With equal timestamps the bytewise ID remains the boundary: TASK-10 is
+    # older than TASK-100 while TASK-9 is not.
+    assert [item.task_id for item in selection.candidates] == ["TASK-1", "TASK-2", "TASK-10"]
+    assert len(queries) == 10
+
+
+def test_workspace_cleanup_selection_filtered_rows_do_not_refill_or_hide_sixth_raw(
+    cleanup_selection_matrix,
+) -> None:
+    database, insert, select, queries, now = cleanup_selection_matrix
+    database.execute("UPDATE tasks SET status='pending', completed_at=NULL WHERE id IN ('TASK-1', 'TASK-2')")
+    insert("TASK-11", age=21)
+    insert("TASK-12", age=-1)
+    insert("TASK-13", age=-2)
+    insert("TASK-14", age=22)
+    selection = select()
+    assert selection is not None and [item.task_id for item in selection.candidates] == ["TASK-14", "TASK-11", "TASK-10"]
+    assert len(queries) == 10
+    insert("TASK-15", age=-3)
+    assert select() is None
+    assert len(queries) == 5
+
+
+def test_workspace_cleanup_selection_future_hook_budget_model(cleanup_selection_matrix) -> None:
+    database, insert, select, queries, _ = cleanup_selection_matrix
+    database.execute("UPDATE tasks SET status='pending', completed_at=NULL WHERE id IN ('TASK-1', 'TASK-2')")
+    insert("TASK-11", age=21)
+    insert("TASK-12", age=22)
+    insert("TASK-13", age=23)
+    insert("TASK-14", age=24)
+    # Model only: the real hook/config loader/consumer are deliberately not
+    # implemented here.  The helper gets the real admission callback and the
+    # model supplies the initial config plus fresh config/owner observations.
+    total_observations = 1
+    config_loads = 1
+    admissions: list[str] = []
+
+    def admit(name: str) -> bool:
+        nonlocal total_observations
+        if total_observations >= 23:
+            return False
+        admissions.append(name)
+        total_observations += 1
+        return True
+
+    selection = select(admit_observation=admit)
+    assert selection is not None and len(selection.candidates) == 5
+    assert len(queries) == 12
+    database._conn.set_trace_callback(queries.append)
+    calls: list[str] = []
+    try:
+        for candidate in selection.candidates:
+            assert admit("fresh-config")
+            config_loads += 1
+            assert admit("fresh-owner")
+            owner = database.get_task("TASK-100")
+            assert owner is not None and owner.orchestration_step_count == 1
+            calls.append(candidate.task_id)
+        assert len(calls) == 5
+        assert len(queries) == 17
+        assert config_loads == 6
+        assert total_observations == 23
+        before = (len(queries), config_loads, len(admissions), total_observations, len(calls))
+        assert not admit("prospective-read-24")
+        assert before == (len(queries), config_loads, len(admissions), total_observations, len(calls))
+    finally:
+        database._conn.set_trace_callback(None)
+
+
+@pytest.mark.parametrize("column,value", [("created_at", "!bad"), ("created_at", "")])
+def test_workspace_cleanup_selection_rejects_malformed_age_rejected_raw_created_at(
+    cleanup_selection_matrix, column, value,
+) -> None:
+    database, _, select, queries, now = cleanup_selection_matrix
+    database.execute("UPDATE tasks SET completed_at=?, created_at=? WHERE id='TASK-10'", (
+        (now + timedelta(days=1)).isoformat(), value,
+    ))
+    assert select() is None
+    assert len(queries) == 5
+
+
+@pytest.mark.parametrize("mode", ["success", "query_error", "fetch_error", "interrupt", "exit"])
+def test_workspace_cleanup_selection_timestamp_scalar_lifetime_at_newer_owner_boundary(
+    cleanup_selection_matrix, mode,
+) -> None:
+    database, _, select, queries, _ = cleanup_selection_matrix
+    original = database._conn
+    before = (original.row_factory, original.isolation_level, original.total_changes, original.in_transaction)
+    registrations: list[tuple[str, int, bool]] = []
+
+    class Cursor:
+        def fetchall(self):
+            if mode == "interrupt":
+                raise KeyboardInterrupt()
+            if mode == "exit":
+                raise SystemExit()
+            raise sqlite3.OperationalError("fixture fetch failure")
+
+    class Connection:
+        def __getattr__(self, name):
+            return getattr(original, name)
+
+        def create_function(self, name, arity, function):
+            registrations.append((name, arity, function is None))
+            return original.create_function(name, arity, function)
+
+        def execute(self, sql, *args):
+            newer = "FROM audit_log a LEFT JOIN tasks" in sql
+            if newer and mode == "query_error":
+                raise sqlite3.OperationalError("fixture execute failure")
+            cursor = original.execute(sql, *args)
+            if newer and mode in {"fetch_error", "interrupt", "exit"}:
+                cursor.fetchall()
+                return Cursor()
+            return cursor
+
+    proxy = Connection()
+    database._conn = proxy
+    try:
+        if mode in {"interrupt", "exit"}:
+            with pytest.raises(KeyboardInterrupt if mode == "interrupt" else SystemExit):
+                select()
+        else:
+            result = select()
+            assert (result is not None) is (mode == "success")
+        assert len(queries) == (10 if mode == "success" else 3 if mode == "query_error" else 4)
+        assert registrations == [
+            ("_workspace_cleanup_is_aware_datetime", 1, False),
+            ("_workspace_cleanup_is_aware_datetime", 1, True),
+        ]
+        assert database._conn is proxy
+        assert before == (original.row_factory, original.isolation_level, original.total_changes, original.in_transaction)
+        with pytest.raises(sqlite3.OperationalError):
+            original.execute("SELECT _workspace_cleanup_is_aware_datetime('2026-01-01T00:00:00+00:00')").fetchone()
+        assert database.get_task("TASK-100").orchestration_step_count == 1
+    finally:
+        database._conn = original
+
+
+def test_workspace_cleanup_selection_connection_remains_usable_across_threaded_selection(
+    cleanup_selection_matrix,
+) -> None:
+    database, _, select, _, _ = cleanup_selection_matrix
+    original = database._conn
+    before = (original.row_factory, original.isolation_level, original.total_changes, original.in_transaction)
+    result: list[object] = []
+
+    def run_selection() -> None:
+        result.append(select())
+
+    worker = threading.Thread(target=run_selection)
+    worker.start()
+    worker.join(timeout=10)
+    assert not worker.is_alive()
+    assert result and result[0] is not None
+    assert database._conn is original
+    assert before == (original.row_factory, original.isolation_level, original.total_changes, original.in_transaction)
+    assert database.get_task("TASK-100").orchestration_step_count == 1
+
+
+def test_workspace_cleanup_selection_filtered_five_budget_positive(cleanup_selection_matrix) -> None:
+    database, insert, select, queries, now = cleanup_selection_matrix
+    database.execute("UPDATE tasks SET status='pending', completed_at=NULL WHERE id IN ('TASK-1', 'TASK-2')")
+    insert("TASK-11", age=21)
+    insert("TASK-12", age=22)
+    insert("TASK-13", age=23)
+    insert("TASK-14", age=24)
+    selection = select()
+    assert selection is not None and len(selection.candidates) == 5
+    assert len(queries) == 12
+
+
+@pytest.mark.parametrize("variant", ["parent", "revisit", "mixed", "self", "longer", "missing", "owner"])
+def test_workspace_cleanup_selection_relevant_graph_cycles_and_relatives_refuse(cleanup_selection_matrix, variant) -> None:
+    database, insert, select, queries, _ = cleanup_selection_matrix
+    insert("TASK-20", status="pending")
+    insert("TASK-30", status="pending")
+    if variant == "parent":
+        database.execute("UPDATE tasks SET parent_task_id='TASK-20' WHERE id='TASK-10'")
+        database.execute("UPDATE tasks SET parent_task_id='TASK-10' WHERE id='TASK-20'")
+    elif variant == "revisit":
+        database.execute("UPDATE tasks SET revisit_of_task_id='TASK-20' WHERE id='TASK-10'")
+        database.execute("UPDATE tasks SET revisit_of_task_id='TASK-10' WHERE id='TASK-20'")
+    elif variant == "mixed":
+        database.execute("UPDATE tasks SET parent_task_id='TASK-20' WHERE id='TASK-10'")
+        database.execute("UPDATE tasks SET revisit_of_task_id='TASK-10' WHERE id='TASK-20'")
+    elif variant == "self":
+        database.execute("UPDATE tasks SET parent_task_id=id WHERE id='TASK-10'")
+    elif variant == "longer":
+        database.execute("UPDATE tasks SET parent_task_id='TASK-20' WHERE id='TASK-10'")
+        database.execute("UPDATE tasks SET parent_task_id='TASK-30' WHERE id='TASK-20'")
+        database.execute("UPDATE tasks SET parent_task_id='TASK-10' WHERE id='TASK-30'")
+    elif variant == "missing":
+        database.execute("UPDATE tasks SET parent_task_id='TASK-404' WHERE id='TASK-10'")
+    else:
+        database.execute("UPDATE tasks SET parent_task_id='TASK-100' WHERE id='TASK-10'")
+    assert select() is None and len(queries) == 7
+
+
+@pytest.mark.parametrize("change", ["task", "agent", "session", "terminal", "decode"])
+def test_workspace_cleanup_selection_requires_exact_current_terminal_result(cleanup_selection_matrix, change) -> None:
+    database, _, select, queries, _ = cleanup_selection_matrix
+    column, value = {
+        "task": ("task_id", "TASK-404"), "agent": ("agent", "foreign"),
+        "session": ("session_id", "old-session"), "terminal": ("status", "failed"),
+        "decode": ("risks_flagged", "bad-json"),
+    }[change]
+    database.execute(f"UPDATE task_results SET {column}=? WHERE task_id='TASK-1'", (value,))
+    assert select() is None and len(queries) == 8
+
+
+@pytest.mark.parametrize("column,value,late", [
+    ("created_at", "!bad", False), ("created_at", "!bad", True), ("created_at", "", True),
+    ("completed_at", None, False),
+    ("completed_at", "!bad", False), ("completed_at", "2099-bad", True),
+])
+def test_workspace_cleanup_selection_validates_all_raw_candidate_times_before_age_filter(
+    cleanup_selection_matrix, column, value, late,
+) -> None:
+    database, _, select, queries, now = cleanup_selection_matrix
+    if late:
+        database.execute("UPDATE tasks SET completed_at=? WHERE id='TASK-10'", ((now + timedelta(days=1)).isoformat(),))
+    database.execute(f"UPDATE tasks SET {column}=? WHERE id='TASK-10'", (value,))
+    assert select() is None and len(queries) == 5
+
+
+@pytest.mark.parametrize("kind", ["orphan", "duplicate"])
+def test_workspace_cleanup_selection_orphan_and_duplicate_newer_evidence_refuse(cleanup_selection_matrix, kind) -> None:
+    database, insert, select, queries, _ = cleanup_selection_matrix
+    if kind == "orphan":
+        database.insert_audit_log(task_id="TASK-404", agent="dev_agent",
+            action="workspace_cleanup_triggered", payload={"run_number": 4, "brief_kind": "cleanup"})
+    else:
+        insert("TASK-200", cleanup=True, status="pending", age=-1)
+        database.insert_audit_log(task_id="TASK-200", agent="dev_agent",
+            action="workspace_cleanup_triggered", payload={"run_number": 4, "brief_kind": "cleanup"})
+        database.insert_audit_log(task_id="TASK-200", agent="dev_agent",
+            action="workspace_cleanup_triggered", payload={"run_number": 4, "brief_kind": "cleanup"})
+    assert select() is None and len(queries) == 4
+
+
+def test_workspace_cleanup_selection_timestamp_scalar_is_removed_after_success_and_sql_error(cleanup_selection_matrix) -> None:
+    database, _, select, _, _ = cleanup_selection_matrix
+    original = database._conn
+    row_factory, isolation, changes = original.row_factory, original.isolation_level, original.total_changes
+    assert select() is not None
+    with pytest.raises(sqlite3.OperationalError):
+        original.execute("SELECT _workspace_cleanup_is_aware_datetime('2026-01-01T00:00:00+00:00')").fetchone()
+    original.set_authorizer(lambda *_: sqlite3.SQLITE_DENY)
+    try:
+        assert select() is None
+    finally:
+        original.set_authorizer(None)
+    assert database._conn is original
+    assert original.row_factory is row_factory and original.isolation_level == isolation and original.total_changes == changes
 
 
 def test_init_creates_tables(db):
@@ -25,6 +992,324 @@ def test_insert_and_get_task(db):
     assert retrieved.id == "TASK-001"
     assert retrieved.brief == "Add Alipay support"
     assert retrieved.status == TaskStatus.PENDING
+
+
+def _recovery_task(db: Database, task_id: str = "TASK-RECOVERY") -> None:
+    db.insert_task(TaskRecord(
+        id=task_id, brief="recovery", status=TaskStatus.IN_PROGRESS,
+        assigned_agent="dev_agent", current_session_id="origin",
+    ))
+
+
+def test_completion_recovery_claim_requires_current_assigned_origin_and_one_winner(db):
+    """Concurrent same-origin claimers cannot mint two recovery episodes."""
+    _recovery_task(db)
+    gate = threading.Barrier(2, timeout=2)
+    results: list[bool] = []
+
+    def claim() -> None:
+        gate.wait(timeout=2)
+        results.append(db.claim_task_completion_recovery(
+            task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+            recovery_session_id="recovery", provider_session_id="provider",
+            claimed_at="2026-01-01T00:00:00+00:00",
+            expires_at="2999-01-01T00:02:00+00:00",
+        ))
+
+    threads = [threading.Thread(target=claim) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+    assert sorted(results) == [False, True]
+    assert db.execute("SELECT COUNT(*) FROM task_completion_recoveries").fetchone()[0] == 1
+    assert not db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="foreign",
+        recovery_session_id="second", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2999-01-01T00:02:00+00:00",
+    )
+
+
+def test_completion_callback_before_claim_is_the_only_winner(db):
+    """A committed origin callback prevents a later recovery claim."""
+    _recovery_task(db)
+    assert db.admit_task_completion_callback(
+        task_id="TASK-RECOVERY", agent="dev_agent", session_id="origin",
+        output_summary="landed", confidence_score=90,
+    )
+    assert not db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2026-01-01T00:02:00+00:00",
+    )
+    assert len(db.get_task_results("TASK-RECOVERY")) == 1
+
+
+def test_completion_claim_before_waiting_origin_callback_rejects_origin(db):
+    """A durable claim fences an origin callback that was waiting to commit."""
+    _recovery_task(db)
+    assert db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2999-01-01T00:02:00+00:00",
+    )
+    assert not db.admit_task_completion_callback(
+        task_id="TASK-RECOVERY", agent="dev_agent", session_id="origin",
+        output_summary="late", confidence_score=90,
+    )
+    assert db.get_task_results("TASK-RECOVERY") == []
+
+
+def test_completion_callback_and_claim_compete_concurrently_for_one_winner(db):
+    """Real SQLite admission and claim race; neither worker is a sequential probe."""
+    _recovery_task(db)
+    gate = threading.Barrier(2, timeout=2)
+    done = threading.Barrier(2, timeout=2)
+    outcomes: list[tuple[str, bool]] = []
+    errors: list[BaseException] = []
+
+    def callback() -> None:
+        try:
+            gate.wait()
+            outcomes.append(("callback", db.admit_task_completion_callback(
+                task_id="TASK-RECOVERY", agent="dev_agent", session_id="origin",
+                output_summary="raced", confidence_score=90,
+            )))
+            done.wait()
+        except BaseException as exc:  # captured worker failures are test failures
+            errors.append(exc)
+
+    def claim() -> None:
+        try:
+            gate.wait()
+            outcomes.append(("claim", db.claim_task_completion_recovery(
+                task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+                recovery_session_id="recovery", provider_session_id="provider",
+                claimed_at="2026-01-01T00:00:00+00:00", expires_at="2026-01-01T00:02:00+00:00",
+            )))
+            done.wait()
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=callback), threading.Thread(target=claim)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+    assert errors == []
+    assert sorted(won for _kind, won in outcomes) == [False, True]
+    # The durable rows identify the same sole winner observed by the callers.
+    assert bool(db.get_task_results("TASK-RECOVERY")) != bool(
+        db.execute("SELECT COUNT(*) FROM task_completion_recoveries").fetchone()[0]
+    )
+
+
+def test_completion_accepted_identity_survives_reopen_and_expiry_loses(db, monkeypatch):
+    """Acceptance stores an immutable result id independently of settlement."""
+    import runtime.infrastructure.database as database_module
+
+    _recovery_task(db)
+    assert db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2026-01-01T00:02:00+00:00",
+    )
+    db.update_task("TASK-RECOVERY", current_session_id="recovery")
+    monkeypatch.setattr(database_module, "_now", lambda: database_module._parse_dt("2026-01-01T00:01:59+00:00"))
+    assert db.admit_task_completion_callback(
+        task_id="TASK-RECOVERY", agent="dev_agent", session_id="recovery",
+        output_summary="accepted", confidence_score=90,
+    )
+    row = db.execute(
+        "SELECT accepted_result_id, state FROM task_completion_recoveries"
+    ).fetchone()
+    assert row["accepted_result_id"] is not None and row["state"] == "callback_accepted"
+    assert not db.settle_expired_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", session_id="recovery",
+        settled_at="2026-01-01T00:02:01+00:00",
+    )
+    db.close()
+    reopened = Database(db.db_path)
+    try:
+        preserved = reopened.execute(
+            "SELECT accepted_result_id, state FROM task_completion_recoveries"
+        ).fetchone()
+        result = reopened.get_latest_task_result("TASK-RECOVERY", "dev_agent", "recovery")
+        assert preserved["accepted_result_id"] == result["id"]
+        assert preserved["state"] == "callback_accepted"
+    finally:
+        reopened.close()
+
+
+def test_completion_callback_rechecks_injectable_clock_after_db_lock_delay(db, monkeypatch):
+    """A callback queued on the DB lock cannot use its pre-wait time."""
+    import runtime.infrastructure.database as database_module
+
+    _recovery_task(db)
+    assert db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2026-01-01T00:02:00+00:00",
+    )
+    db.update_task("TASK-RECOVERY", current_session_id="recovery")
+    entered = threading.Event()
+    result: list[bool] = []
+
+    def callback() -> None:
+        entered.set()
+        result.append(db.admit_task_completion_callback(
+            task_id="TASK-RECOVERY", agent="dev_agent", session_id="recovery",
+            output_summary="late after lock", confidence_score=90,
+        ))
+
+    with db._lock:
+        worker = threading.Thread(target=callback)
+        worker.start()
+        assert entered.wait(timeout=2)
+        monkeypatch.setattr(
+            database_module, "_now",
+            lambda: database_module._parse_dt("2026-01-01T00:02:01+00:00"),
+        )
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert result == [False]
+    assert db.get_task_results("TASK-RECOVERY") == []
+
+
+def test_completion_callback_rechecks_live_monotonic_deadline_after_db_lock_delay(db, monkeypatch):
+    """A live recovery deadline is checked only after the admission lock wins."""
+    import runtime.infrastructure.database as database_module
+
+    _recovery_task(db)
+    assert db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2999-01-01T00:02:00+00:00",
+    )
+    db.update_task("TASK-RECOVERY", current_session_id="recovery")
+    entered = threading.Event()
+    result: list[bool] = []
+    now = [9.0]
+    monkeypatch.setattr(database_module._time, "monotonic", lambda: now[0])
+
+    def callback() -> None:
+        entered.set()
+        result.append(db.admit_task_completion_callback(
+            task_id="TASK-RECOVERY", agent="dev_agent", session_id="recovery",
+            output_summary="late after lock", confidence_score=90,
+            recovery_deadline_monotonic=10.0,
+        ))
+
+    with db._lock:
+        worker = threading.Thread(target=callback)
+        worker.start()
+        assert entered.wait(timeout=2)
+        now[0] = 10.0
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert result == [False]
+    assert db.get_task_results("TASK-RECOVERY") == []
+
+
+def test_completion_admission_rollback_leaves_no_result_or_accepted_identity(db, monkeypatch):
+    """The ledger cannot claim an accepted callback when result insertion fails."""
+    _recovery_task(db)
+    assert db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2999-01-01T00:02:00+00:00",
+    )
+    db.update_task("TASK-RECOVERY", current_session_id="recovery")
+
+    real_insert = db._insert_task_result
+
+    def fail_after_insert(**kwargs) -> None:
+        real_insert(**kwargs)
+        raise RuntimeError("injected after result insertion")
+
+    monkeypatch.setattr(db, "_insert_task_result", fail_after_insert)
+    with pytest.raises(RuntimeError, match="injected"):
+        db.admit_task_completion_callback(
+            task_id="TASK-RECOVERY", agent="dev_agent", session_id="recovery",
+            output_summary="x", confidence_score=90,
+        )
+    assert db.get_task_results("TASK-RECOVERY") == []
+    row = db.execute(
+        "SELECT state, accepted_result_id, accepted_result_session_id FROM task_completion_recoveries"
+    ).fetchone()
+    assert tuple(row) == ("claimed", None, None)
+
+
+def test_completion_recovery_claim_requires_in_progress_task(db):
+    _recovery_task(db)
+    db.update_task("TASK-RECOVERY", status=TaskStatus.PENDING)
+    assert not db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2026-01-01T00:02:00+00:00",
+    )
+
+
+def test_recovery_publication_cas_never_overwrites_replaced_origin(db):
+    """A claimed recovery is not authority to overwrite a newer binding."""
+    _recovery_task(db)
+    assert db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2026-01-01T00:02:00+00:00",
+    )
+    db.update_task("TASK-RECOVERY", current_session_id="replacement")
+    assert not db.publish_task_completion_recovery_binding(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery",
+    )
+    assert db.get_task("TASK-RECOVERY").current_session_id == "replacement"
+
+
+def test_completion_admission_requires_published_durable_binding(db):
+    _recovery_task(db)
+    assert not db.admit_task_completion_callback(
+        task_id="TASK-RECOVERY", agent="dev_agent", session_id="other",
+        output_summary="late", confidence_score=90,
+    )
+    assert db.get_task_results("TASK-RECOVERY") == []
+
+
+def test_recovery_expiry_settlement_and_acceptance_have_one_durable_winner(db):
+    _recovery_task(db)
+    assert db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2026-01-01T00:02:00+00:00",
+    )
+    db.update_task("TASK-RECOVERY", current_session_id="recovery")
+    assert db.settle_expired_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", session_id="recovery",
+        settled_at="2026-01-01T00:02:00+00:00",
+    )
+    assert not db.admit_task_completion_callback(
+        task_id="TASK-RECOVERY", agent="dev_agent", session_id="recovery",
+        output_summary="too late", confidence_score=90,
+    )
+    assert not db.settle_expired_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", session_id="recovery",
+        settled_at="2026-01-01T00:03:00+00:00",
+    )
+    assert tuple(db.execute(
+        "SELECT state, accepted_result_id FROM task_completion_recoveries"
+    ).fetchone()) == ("expired", None)
 
 
 def test_get_nonexistent_task_returns_none(db):
@@ -2064,6 +3349,525 @@ def test_list_roots_severity_rollup_ignores_revisit_chain(db):
     assert root1._severity_rollup == 'completed'
 
 
+# ── THR-266 / TASK-8671: current-status severity rollup derive (C1-C12) ──
+#
+# The rollup excludes ONLY a historical FAILED descendant whose forward
+# same-parent revisit lineage leaves no unresolved FAILED leaf. Every other
+# status, the root's own severity, all escalations, unrelated active siblings
+# and root-level revisit behavior are preserved. Cases mirror the accepted
+# design `engineering_manager/output/TASK-8671/design-correction/case-design.md`
+# (SHA256 1e0ef4de…b17263).
+
+_ROLLUP_BASE_TIME = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def _insert_rollup_task(
+    db: Database,
+    task_id: str,
+    *,
+    status: TaskStatus,
+    parent: str | None = None,
+    revisit: str | None = None,
+    block_kind: BlockKind | None = None,
+    assigned_agent: str | None = None,
+    created_at: datetime | None = None,
+) -> None:
+    created = created_at or _ROLLUP_BASE_TIME
+    db.insert_task(TaskRecord(
+        id=task_id,
+        brief=f"{task_id} brief",
+        status=status,
+        parent_task_id=parent,
+        revisit_of_task_id=revisit,
+        block_kind=block_kind,
+        assigned_agent=assigned_agent,
+        created_at=created,
+        updated_at=created,
+    ))
+
+
+def _rollup_of(db: Database, root_id: str = "ROOT-1") -> str:
+    roots = {r.id: r for r in db.list_roots()}
+    return roots[root_id]._severity_rollup
+
+
+# C1 — a same-parent linked COMPLETED/SUPERSEDED recovery removes the stale
+# failed subtitle; the root's own in_progress status wins.
+@pytest.mark.parametrize("successor_status", [TaskStatus.COMPLETED, TaskStatus.SUPERSEDED])
+def test_list_roots_rollup_c1_linked_recovery_not_stale_failed(
+    db, successor_status,
+):
+    _insert_rollup_task(
+        db, "ROOT-1", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+    )
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "S1", status=successor_status, parent="ROOT-1", revisit="F1",
+    )
+    assert _rollup_of(db) == "in_progress"
+
+
+# C2 — an active same-parent retry is current recovery; the root's own status
+# controls the exact string and the successor's block_kind never leaks.
+@pytest.mark.parametrize("succ_status,succ_block", [
+    (TaskStatus.PENDING, None),
+    (TaskStatus.IN_PROGRESS, None),
+    (TaskStatus.IN_PROGRESS, BlockKind.DELEGATED),
+    (TaskStatus.IN_PROGRESS, BlockKind.BLOCKED_ON_JOB),
+])
+def test_list_roots_rollup_c2_active_retry_exact_in_progress(
+    db, succ_status, succ_block,
+):
+    _insert_rollup_task(
+        db, "ROOT-1", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+    )
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "S1", status=succ_status, parent="ROOT-1", revisit="F1",
+        block_kind=succ_block,
+    )
+    roots = {r.id: r for r in db.list_roots()}
+    assert roots["ROOT-1"]._severity_rollup == "in_progress"
+    # The successor's block_kind is its own; it must not leak onto the root.
+    assert roots["ROOT-1"].block_kind == BlockKind.DELEGATED
+
+
+# C3 — retry-fails-again restores truthful unresolved failure at the exact
+# final transition. No COMPLETED/SUPERSEDED row is ever flipped to FAILED.
+def test_list_roots_rollup_c3_retry_fails_again_transition(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "F2", status=TaskStatus.FAILED, parent="ROOT-1", revisit="F1",
+    )
+    _insert_rollup_task(
+        db, "F3", status=TaskStatus.IN_PROGRESS, parent="ROOT-1", revisit="F2",
+    )
+    assert _rollup_of(db) == "in_progress"
+    db.update_task("F3", status=TaskStatus.FAILED)
+    assert _rollup_of(db) == "failed"
+    _insert_rollup_task(
+        db, "F4", status=TaskStatus.COMPLETED, parent="ROOT-1", revisit="F3",
+    )
+    assert _rollup_of(db) == "in_progress"
+    # The fixture never flips a terminal row; F3 went non-terminal -> FAILED.
+    assert db.get_task("F4").status == TaskStatus.COMPLETED
+
+
+# C4 — an unresolved failure survives an unrelated newer completed/running
+# sibling, even with the same agent and no revisit link.
+@pytest.mark.parametrize("sibling_status", [TaskStatus.COMPLETED, TaskStatus.IN_PROGRESS])
+def test_list_roots_rollup_c4_unrelated_newer_sibling(db, sibling_status):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(
+        db, "F1", status=TaskStatus.FAILED, parent="ROOT-1",
+        assigned_agent="dev_agent", created_at=_ROLLUP_BASE_TIME,
+    )
+    _insert_rollup_task(
+        db, "N1", status=sibling_status, parent="ROOT-1",
+        assigned_agent="dev_agent",
+        created_at=_ROLLUP_BASE_TIME + timedelta(hours=1),
+    )
+    assert _rollup_of(db) == "failed"
+
+
+# C5 — an independent parallel failed/escalated branch survives another
+# branch's recovery.
+@pytest.mark.parametrize("branch_b_status,expected", [
+    (TaskStatus.FAILED, "failed"),
+    (TaskStatus.ESCALATED, "escalated"),
+])
+def test_list_roots_rollup_c5_parallel_branch_survives(
+    db, branch_b_status, expected,
+):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F_A", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "S_A", status=TaskStatus.COMPLETED, parent="ROOT-1", revisit="F_A",
+    )
+    _insert_rollup_task(
+        db, "B1", status=branch_b_status, parent="ROOT-1",
+    )
+    assert _rollup_of(db) == expected
+
+
+# C5b — an escalated explicitly linked successor contributes escalated.
+def test_list_roots_rollup_c5b_escalated_linked_successor(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "S1", status=TaskStatus.ESCALATED, parent="ROOT-1", revisit="F1",
+    )
+    assert _rollup_of(db) == "escalated"
+
+
+# C6a — observed TASK-8589 shape: a failed manager's COMPLETED parent-task
+# children are never retirement evidence; only its active revisit successor is.
+def test_list_roots_rollup_c6a_observed_8589_shape(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "M1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(db, "M1c1", status=TaskStatus.COMPLETED, parent="M1")
+    _insert_rollup_task(db, "M1c2", status=TaskStatus.COMPLETED, parent="M1")
+    _insert_rollup_task(
+        db, "M1r", status=TaskStatus.IN_PROGRESS, parent="ROOT-1", revisit="M1",
+    )
+    _insert_rollup_task(db, "M1r_child", status=TaskStatus.IN_PROGRESS, parent="M1r")
+    _insert_rollup_task(db, "W", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "Wr1", status=TaskStatus.COMPLETED, parent="ROOT-1", revisit="W",
+    )
+    _insert_rollup_task(
+        db, "Wr2", status=TaskStatus.IN_PROGRESS, parent="ROOT-1", revisit="W",
+    )
+    assert _rollup_of(db) == "in_progress"
+
+
+# C6b — synthetic replacement manager with the required successor step.
+def test_list_roots_rollup_c6b_synthetic_replacement_manager(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "M2", status=TaskStatus.IN_PROGRESS, parent="ROOT-1")
+    _insert_rollup_task(db, "X", status=TaskStatus.FAILED, parent="M2")
+    assert _rollup_of(db) == "failed"
+    _insert_rollup_task(
+        db, "Xr", status=TaskStatus.IN_PROGRESS, parent="M2", revisit="X",
+    )
+    assert _rollup_of(db) == "in_progress"
+    db.update_task("Xr", status=TaskStatus.COMPLETED)
+    assert _rollup_of(db) == "in_progress"
+
+
+# C6c — nested retry-fails-again then completed recovery.
+def test_list_roots_rollup_c6c_nested_retry_fails_again(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "M1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "M1r", status=TaskStatus.FAILED, parent="ROOT-1", revisit="M1",
+    )
+    assert _rollup_of(db) == "failed"
+    _insert_rollup_task(
+        db, "M1r2", status=TaskStatus.COMPLETED, parent="ROOT-1", revisit="M1r",
+    )
+    assert _rollup_of(db) == "in_progress"
+
+
+# C6d — a completed manager revisit does not blanket-retire the old manager's
+# unresolved failed child; its escalation survives; its own link resolves it.
+def test_list_roots_rollup_c6d_unresolved_old_child_boundary(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "M1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(db, "C", status=TaskStatus.FAILED, parent="M1")
+    _insert_rollup_task(
+        db, "M1r", status=TaskStatus.COMPLETED, parent="ROOT-1", revisit="M1",
+    )
+    assert _rollup_of(db) == "failed"
+    _insert_rollup_task(
+        db, "Cr", status=TaskStatus.COMPLETED, parent="M1", revisit="C",
+    )
+    assert _rollup_of(db) == "in_progress"
+
+
+def test_list_roots_rollup_c6d_variant_escalated_old_child(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "M1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(db, "C", status=TaskStatus.ESCALATED, parent="M1")
+    _insert_rollup_task(
+        db, "M1r", status=TaskStatus.COMPLETED, parent="ROOT-1", revisit="M1",
+    )
+    assert _rollup_of(db) == "escalated"
+
+
+# C6e — completed parent-task children alone never retire a failed manager.
+def test_list_roots_rollup_c6e_completed_child_alone_does_not_retire(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "M", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(db, "C", status=TaskStatus.COMPLETED, parent="M")
+    assert _rollup_of(db) == "failed"
+
+
+# C7 — multiple successors of one failed predecessor: a completed successor
+# never erases a still-unresolved failed parallel successor.
+@pytest.mark.parametrize("succ_statuses,expected", [
+    ((TaskStatus.COMPLETED, TaskStatus.FAILED), "failed"),
+    ((TaskStatus.COMPLETED, TaskStatus.IN_PROGRESS), "in_progress"),
+    ((TaskStatus.COMPLETED, TaskStatus.SUPERSEDED), "in_progress"),
+    ((TaskStatus.COMPLETED,), "in_progress"),
+])
+def test_list_roots_rollup_c7_multiple_successors(db, succ_statuses, expected):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    for idx, st in enumerate(succ_statuses, start=1):
+        _insert_rollup_task(
+            db, f"S{idx}", status=st, parent="ROOT-1", revisit="F1",
+        )
+    assert _rollup_of(db) == expected
+
+
+# C7b — no latest-wins tie-break: identical created_at, order-independent; a
+# completed successor retires regardless of age. No timestamp/agent consulted.
+@pytest.mark.parametrize("order", [
+    (TaskStatus.COMPLETED, TaskStatus.FAILED),
+    (TaskStatus.FAILED, TaskStatus.COMPLETED),
+])
+def test_list_roots_rollup_c7b_identical_timestamp(db, order):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(
+        db, "F1", status=TaskStatus.FAILED, parent="ROOT-1",
+        created_at=_ROLLUP_BASE_TIME,
+    )
+    for idx, st in enumerate(order, start=1):
+        _insert_rollup_task(
+            db, f"S{idx}", status=st, parent="ROOT-1", revisit="F1",
+            created_at=_ROLLUP_BASE_TIME,
+        )
+    assert _rollup_of(db) == "failed"
+
+
+def test_list_roots_rollup_c7b_older_completed_successor_retires(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(
+        db, "F1", status=TaskStatus.FAILED, parent="ROOT-1",
+        created_at=_ROLLUP_BASE_TIME + timedelta(hours=1),
+    )
+    _insert_rollup_task(
+        db, "S1", status=TaskStatus.COMPLETED, parent="ROOT-1", revisit="F1",
+        created_at=_ROLLUP_BASE_TIME,
+    )
+    assert _rollup_of(db) == "in_progress"
+
+
+# C8 — cancelled-successor empty-unresolved-leaf effect, parallel mixes,
+# invalid/cross-parent links, cycles, no-child fallback, root-own preservation.
+def test_list_roots_rollup_c8_cancelled_only_successor(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "S1", status=TaskStatus.CANCELLED, parent="ROOT-1", revisit="F1",
+    )
+    assert _rollup_of(db) == "in_progress"
+    # Cancellation is not successful retirement; the row/history is preserved.
+    assert db.get_task("S1").status == TaskStatus.CANCELLED
+    assert db.get_task("F1").status == TaskStatus.FAILED
+
+
+def test_list_roots_rollup_c8_cancelled_plus_failed_parallel(db):
+    """Cancelled and FAILED successors share predecessor F1 (same parent), so
+    the cancellation cannot clear the still-unresolved FAILED successor."""
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "S1", status=TaskStatus.CANCELLED, parent="ROOT-1", revisit="F1",
+    )
+    _insert_rollup_task(
+        db, "F2", status=TaskStatus.FAILED, parent="ROOT-1", revisit="F1",
+    )
+    assert _rollup_of(db) == "failed"
+    # Shared-predecessor topology and the stored rows/links are unchanged.
+    assert db.get_task("F1").status == TaskStatus.FAILED
+    assert db.get_task("F2").status == TaskStatus.FAILED
+    assert db.get_task("S1").status == TaskStatus.CANCELLED
+    assert set(db.get_direct_revisits("F1")) == {"S1", "F2"}
+
+
+def test_list_roots_rollup_c8_cancelled_plus_escalated_parallel(db):
+    """Cancelled and ESCALATED successors share predecessor F1 (same parent);
+    the escalation survives the cancellation."""
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "S1", status=TaskStatus.CANCELLED, parent="ROOT-1", revisit="F1",
+    )
+    _insert_rollup_task(
+        db, "E1", status=TaskStatus.ESCALATED, parent="ROOT-1", revisit="F1",
+    )
+    assert _rollup_of(db) == "escalated"
+    # Shared-predecessor topology and the stored rows/links are unchanged.
+    assert db.get_task("F1").status == TaskStatus.FAILED
+    assert db.get_task("E1").status == TaskStatus.ESCALATED
+    assert db.get_task("S1").status == TaskStatus.CANCELLED
+    assert set(db.get_direct_revisits("F1")) == {"S1", "E1"}
+
+
+def test_list_roots_rollup_c8_cross_parent_link_ignored(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(db, "M1", status=TaskStatus.IN_PROGRESS, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "S1", status=TaskStatus.COMPLETED, parent="M1", revisit="F1",
+    )
+    assert _rollup_of(db) == "failed"
+
+
+def test_list_roots_rollup_c8_invalid_target_ignored(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    _insert_rollup_task(
+        db, "S1", status=TaskStatus.COMPLETED, parent="ROOT-1", revisit="MISSING",
+    )
+    assert _rollup_of(db) == "failed"
+
+
+def test_list_roots_rollup_c8_self_loop_conservative(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(
+        db, "A", status=TaskStatus.FAILED, parent="ROOT-1", revisit="A",
+    )
+    assert _rollup_of(db) == "failed"
+
+
+def test_list_roots_rollup_c8_two_cycle_conservative(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(
+        db, "A", status=TaskStatus.FAILED, parent="ROOT-1", revisit="B",
+    )
+    _insert_rollup_task(
+        db, "B", status=TaskStatus.FAILED, parent="ROOT-1", revisit="A",
+    )
+    assert _rollup_of(db) == "failed"
+
+
+@pytest.mark.parametrize("own_status", [
+    TaskStatus.IN_PROGRESS,
+    TaskStatus.ESCALATED,
+    TaskStatus.COMPLETED,
+    TaskStatus.CANCELLED,
+    TaskStatus.SUPERSEDED,
+])
+def test_list_roots_rollup_c8_no_child_fallback_root_own(db, own_status):
+    _insert_rollup_task(db, "ROOT-1", status=own_status)
+    assert _rollup_of(db) == own_status.value
+
+
+def test_list_roots_rollup_c8_root_own_escalated_survives(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.ESCALATED)
+    _insert_rollup_task(db, "C1", status=TaskStatus.COMPLETED, parent="ROOT-1")
+    assert _rollup_of(db) == "escalated"
+
+
+# C11 — same-root boundary and admissible-link endpoints. Root-level revisit
+# never affects a predecessor root; a successor outside the subtree cannot
+# retire a failed descendant.
+def test_list_roots_rollup_c11_out_of_subtree_successor_ignored(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(db, "F1", status=TaskStatus.FAILED, parent="ROOT-1")
+    # A separate ROOT whose revisit link targets ROOT-1's failed child.
+    _insert_rollup_task(
+        db, "ROOT-2", status=TaskStatus.COMPLETED, revisit="F1",
+    )
+    assert _rollup_of(db, "ROOT-1") == "failed"
+    assert _rollup_of(db, "ROOT-2") == "completed"
+
+
+def test_list_roots_rollup_c11_matching_none_parents_never_admit(db):
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.COMPLETED)
+    _insert_rollup_task(
+        db, "ROOT-2", status=TaskStatus.FAILED, revisit="ROOT-1",
+    )
+    assert _rollup_of(db, "ROOT-1") == "completed"
+    assert _rollup_of(db, "ROOT-2") == "failed"
+
+
+# C12 — malformed cycles and exact finite iterative work bounds without
+# silently truncating severity.
+def test_list_roots_rollup_c12a_deep_1201_revisit_chain(db):
+    """1201 > CPython default recursion limit (~1000): a recursive
+    _collect_leaf implementation would raise RecursionError here."""
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    for i in range(1, 1202):
+        _insert_rollup_task(
+            db, f"F{i}",
+            status=TaskStatus.FAILED if i == 1201 else TaskStatus.COMPLETED,
+            parent="ROOT-1",
+            revisit=(f"F{i - 1}" if i > 1 else None),
+        )
+    desc = db._get_subtree_tasks("ROOT-1")
+    assert len(desc) == 1201
+    assert _rollup_of(db) == "failed"
+
+
+def test_list_roots_rollup_c12b_wide_2048_snapshot_bounds(db):
+    """The complete 2048-node snapshot is resolved; get_children <= D+1 and
+    get_task <= D exactly, with every node/edge examined once."""
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    for i in range(1, 2049):
+        if i == 1:
+            status = TaskStatus.FAILED
+        elif i == 2:
+            status = TaskStatus.IN_PROGRESS
+        else:
+            status = TaskStatus.COMPLETED
+        _insert_rollup_task(
+            db, f"W{i}", status=status, parent="ROOT-1",
+            revisit=(f"W{i - 1}" if i in (3, 5, 7) else None),
+        )
+    calls = {"children": 0, "task": 0}
+    orig_children = db.get_children
+    orig_task = db.get_task
+
+    def counted_children(task_id):
+        calls["children"] += 1
+        return orig_children(task_id)
+
+    def counted_task(task_id):
+        calls["task"] += 1
+        return orig_task(task_id)
+
+    db.get_children = counted_children
+    db.get_task = counted_task
+    try:
+        rollup = _rollup_of(db)
+    finally:
+        del db.get_children
+        del db.get_task
+    assert rollup == "failed"
+    assert calls["children"] == 2049   # D + 1
+    assert calls["task"] == 2048       # D
+
+
+def test_list_roots_rollup_c12c_direct_helper_parent_cycle(db):
+    """An unreachable two-row parent component, supplied directly to the
+    private helper. list_roots can never reach it (roots have NULL parent)."""
+    _insert_rollup_task(db, "A", status=TaskStatus.FAILED, parent="B")
+    _insert_rollup_task(db, "B", status=TaskStatus.FAILED, parent="A")
+    calls = {"children": 0, "task": 0}
+    orig_children = db.get_children
+    orig_task = db.get_task
+
+    def counted_children(task_id):
+        calls["children"] += 1
+        return orig_children(task_id)
+
+    def counted_task(task_id):
+        calls["task"] += 1
+        return orig_task(task_id)
+
+    db.get_children = counted_children
+    db.get_task = counted_task
+    try:
+        result = db._get_subtree_tasks("A")
+    finally:
+        del db.get_children
+        del db.get_task
+    assert [t.id for t in result] == ["B"]
+    assert len(result) == 1
+    assert calls["children"] <= 2
+    assert calls["task"] <= 1
+
+
+def test_list_roots_rollup_c12d_revisit_cycles_keep_failed(db):
+    """A malformed reachable revisit cycle fails conservative (keeps failed)."""
+    _insert_rollup_task(db, "ROOT-1", status=TaskStatus.IN_PROGRESS)
+    _insert_rollup_task(
+        db, "A", status=TaskStatus.FAILED, parent="ROOT-1", revisit="B",
+    )
+    _insert_rollup_task(
+        db, "B", status=TaskStatus.FAILED, parent="ROOT-1", revisit="A",
+    )
+    _insert_rollup_task(
+        db, "C", status=TaskStatus.FAILED, parent="ROOT-1", revisit="C",
+    )
+    assert _rollup_of(db) == "failed"
+
+
 # ── THR-129 lock instrumentation tests ──────────────────────────────────
 
 
@@ -2818,3 +4622,576 @@ def test_get_latest_completion_report_scoped_valid_row_round_trips_structured_fi
     assert report.risks_flagged == ["risk one", "risk two"]
     assert report.waiting_on_job_ids == ["JOB-1"]
     assert report.verdict == "APPROVE"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TASK-8479 C12/C14: complete read-only marker-history reader + latest-five
+# ══════════════════════════════════════════════════════════════════════════
+
+class _ConnProxy:
+    """Delegating sqlite3 connection proxy for page-boundary injections."""
+
+    def __init__(self, real, on_execute=None):
+        self._real = real
+        self._on_execute = on_execute
+
+    @property
+    def in_transaction(self):
+        return self._real.in_transaction
+
+    def execute(self, sql, parameters=()):
+        if self._on_execute is not None:
+            self._on_execute(sql, parameters)
+        return self._real.execute(sql, parameters)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def __setattr__(self, name, value):
+        if name in ("_real", "_on_execute"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._real, name, value)
+
+
+class _FetchFailingCursor:
+    """A cursor whose ``fetchall`` raises (page-boundary fetchall injection)."""
+
+    def __init__(self, message: str):
+        self._message = message
+
+    def fetchall(self):
+        raise sqlite3.OperationalError(self._message)
+
+
+class _ControlConnProxy:
+    """Delegating connection recording transaction control and injecting
+    a page-scoped execute/fetchall failure.
+
+    ``controls`` captures reader-issued BEGIN/COMMIT/ROLLBACK (and the
+    explicit ``commit``/``rollback`` methods) so a test can prove the reader
+    owns exactly one transaction — or borrows the caller's untouched.
+    """
+
+    def __init__(self, real, *, fail_execute_page=None, fail_fetch_page=None):
+        object.__setattr__(self, "_real", real)
+        object.__setattr__(self, "_fail_execute_page", fail_execute_page)
+        object.__setattr__(self, "_fail_fetch_page", fail_fetch_page)
+        object.__setattr__(self, "pages", 0)
+        object.__setattr__(self, "executes", 0)
+        object.__setattr__(self, "controls", [])
+
+    @property
+    def in_transaction(self):
+        return self._real.in_transaction
+
+    def execute(self, sql, params=()):
+        self.executes += 1
+        if sql in ("BEGIN", "COMMIT", "ROLLBACK"):
+            self.controls.append(sql)
+        if sql.startswith("SELECT rowid"):
+            self.pages += 1
+            if (
+                self._fail_execute_page is not None
+                and self.pages == self._fail_execute_page
+            ):
+                raise sqlite3.OperationalError("injected page execute failure")
+            cursor = self._real.execute(sql, params)
+            if (
+                self._fail_fetch_page is not None
+                and self.pages == self._fail_fetch_page
+            ):
+                return _FetchFailingCursor("injected page fetchall failure")
+            return cursor
+        return self._real.execute(sql, params)
+
+    def commit(self):
+        self.controls.append("commit")
+        return self._real.commit()
+
+    def rollback(self):
+        self.controls.append("rollback")
+        return self._real.rollback()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def __setattr__(self, name, value):
+        if name in {
+            "_real", "_fail_execute_page", "_fail_fetch_page",
+            "pages", "executes", "controls",
+        }:
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._real, name, value)
+
+
+def _marker_summary(db: Database, **kwargs):
+    return db.summarize_workspace_cleanup_marker_history(
+        _CLEANUP_MARKER, assigned_agent="dev_agent", **kwargs,
+    )
+
+
+def test_c12a_marker_history_value_and_pagination_contract(
+    db, tmp_path, monkeypatch,
+) -> None:
+    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    for i in range(5):
+        _cleanup_task(
+            db, f"TASK-{i}", created_at=now + timedelta(seconds=i),
+            status=TaskStatus.COMPLETED,
+        )
+    _cleanup_task(
+        db, "TASK-U", created_at=now + timedelta(seconds=10),
+        status=TaskStatus.IN_PROGRESS,
+    )
+    db.insert_task(TaskRecord(
+        id="TASK-OTHER", brief=f"{_CLEANUP_MARKER}\nqa",
+        assigned_agent="qa_engineer", status=TaskStatus.COMPLETED,
+        created_at=now, updated_at=now,
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-MID", brief="text " + _CLEANUP_MARKER,
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=now, updated_at=now,
+    ))
+    expected = (6, now + timedelta(seconds=10), True)
+    for page_size in (1, 2, 1000, 1001):
+        summary = _marker_summary(db, page_size=page_size)
+        assert (
+            summary.count, summary.newest_created_at, summary.has_unfinished,
+        ) == expected, page_size
+
+    empty = db.summarize_workspace_cleanup_marker_history(
+        _CLEANUP_MARKER, assigned_agent="nobody",
+    )
+    assert (empty.count, empty.newest_created_at, empty.has_unfinished) == (
+        0, None, False,
+    )
+
+    # Invalid page_size is rejected as a Python integer contract BEFORE any SQL
+    # or transaction change (no page SELECT, no BEGIN, no commit/rollback).
+    real = db._conn
+    invalid_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", invalid_proxy)
+    for bad in (0, -1, True, 1.5, "1"):
+        with pytest.raises(ValueError):
+            _marker_summary(db, page_size=bad)
+    assert invalid_proxy.executes == 0
+    assert invalid_proxy.pages == 0
+    assert invalid_proxy.controls == []
+    assert real.in_transaction is False
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Naive UTC and a non-UTC offset normalize to their true instants.
+    db.insert_task(TaskRecord(
+        id="TASK-NAIVE", brief=f"{_CLEANUP_MARKER}\nnaive",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=(now + timedelta(seconds=20)).replace(tzinfo=None),
+        updated_at=now,
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-OFFSET", brief=f"{_CLEANUP_MARKER}\noffset",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=datetime(2026, 1, 3, 12, 0, tzinfo=timezone(timedelta(hours=9))),
+        updated_at=now,
+    ))
+    summary = _marker_summary(db)
+    assert summary.count == 8
+    assert summary.newest_created_at == datetime(
+        2026, 1, 3, 3, 0, tzinfo=timezone.utc,   # 12:00+09:00
+    )
+    assert summary.has_unfinished is True
+
+    # A prefix containing LIKE wildcards is matched literally, not as a pattern.
+    escaped = Database(tmp_path / "escaped.sqlite")
+    escaped.insert_task(TaskRecord(
+        id="TASK-LITERAL", brief="A%B_C\\D literal suffix",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=now, updated_at=now,
+    ))
+    escaped.insert_task(TaskRecord(
+        id="TASK-DECOY", brief="AxBxC\\D decoy suffix",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=now, updated_at=now,
+    ))
+    literal = escaped.summarize_workspace_cleanup_marker_history(
+        "A%B_C\\D", assigned_agent="dev_agent",
+    )
+    assert literal.count == 1
+
+    # Equal instants written with different UTC offsets tie at the same instant.
+    tie = Database(tmp_path / "tie.sqlite")
+    occ = datetime(2026, 1, 3, 3, 30, tzinfo=timezone.utc)
+    tie.insert_task(TaskRecord(
+        id="TASK-Z", brief=f"{_CLEANUP_MARKER}\nz",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=occ, updated_at=occ,
+    ))
+    tie.insert_task(TaskRecord(
+        id="TASK-PLUS09", brief=f"{_CLEANUP_MARKER}\nplus09",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=datetime(2026, 1, 3, 12, 30, tzinfo=timezone(timedelta(hours=9))),
+        updated_at=occ,
+    ))
+    tie_summary = _marker_summary(tie)
+    assert tie_summary.count == 2
+    assert tie_summary.newest_created_at == occ
+
+
+def test_c12a_missing_timestamp_fails_closed(db) -> None:
+    """C12a: a marker row whose created_at cannot parse never yields an empty
+    or partial history — the reader propagates the parse failure."""
+    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    _cleanup_task(db, "TASK-A", created_at=now, status=TaskStatus.COMPLETED)
+    db._conn.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, status, created_at, "
+        "updated_at) VALUES ('TASK-EMPTY', ?, 'dev_agent', 'completed', '', ?)",
+        (f"{_CLEANUP_MARKER}\nempty", now.isoformat()),
+    )
+    db._conn.commit()
+    with pytest.raises(ValueError):
+        _marker_summary(db)
+    assert db._conn.in_transaction is False
+
+
+def test_c12b_owned_transaction_success_fetchall_and_parse_failures(
+    db, monkeypatch,
+) -> None:
+    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    _cleanup_task(db, "TASK-A", created_at=now, status=TaskStatus.COMPLETED)
+    _cleanup_task(
+        db, "TASK-B", created_at=now + timedelta(seconds=1),
+        status=TaskStatus.IN_PROGRESS,
+    )
+    snapshot_sql = "SELECT id, status, created_at FROM tasks ORDER BY rowid"
+    real = db._conn
+    assert real.in_transaction is False
+
+    def rows():
+        return [tuple(row) for row in real.execute(snapshot_sql).fetchall()]
+
+    # Success: the reader owns exactly one BEGIN and releases it with ROLLBACK.
+    before_success = rows()
+    success_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", success_proxy)
+    summary = _marker_summary(db, page_size=1)
+    assert (summary.count, summary.newest_created_at, summary.has_unfinished) == (
+        2, now + timedelta(seconds=1), True,
+    )
+    assert success_proxy.controls == ["BEGIN", "rollback"]
+    assert real.in_transaction is False
+    assert rows() == before_success
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Actual second-page cursor.fetchall failure AFTER page one accumulated:
+    # no partial summary escapes and the owned transaction is released, with
+    # every fixture row snapshotted immediately before the operation.
+    before_fetch = rows()
+    fetch_proxy = _ControlConnProxy(real, fail_fetch_page=2)
+    monkeypatch.setattr(db, "_conn", fetch_proxy)
+    with pytest.raises(sqlite3.OperationalError):
+        _marker_summary(db, page_size=1)
+    assert fetch_proxy.pages == 2
+    assert fetch_proxy.controls == ["BEGIN", "rollback"]
+    assert real.in_transaction is False
+    assert rows() == before_fetch
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Restoration after the fetch failure is proven by an instrumented OWNED
+    # read BEFORE the separate parse injection.
+    before_restored = rows()
+    restored_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", restored_proxy)
+    restored = _marker_summary(db, page_size=1)
+    assert (restored.count, restored.newest_created_at, restored.has_unfinished) == (
+        2, now + timedelta(seconds=1), True,
+    )
+    assert restored_proxy.controls == ["BEGIN", "rollback"]
+    assert real.in_transaction is False
+    assert rows() == before_restored
+    monkeypatch.setattr(db, "_conn", real)
+
+    # A malformed created_at only on page two fails closed. All fixture rows,
+    # including the deliberately malformed row, are snapshotted immediately
+    # before the operation and compared unchanged after it.
+    real.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, status, created_at, "
+        "updated_at) VALUES ('TASK-BAD', ?, 'dev_agent', 'completed', "
+        "'not-a-timestamp', ?)",
+        (f"{_CLEANUP_MARKER}\nbad", now.isoformat()),
+    )
+    real.commit()
+    before_parse = rows()
+    parse_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", parse_proxy)
+    with pytest.raises(ValueError):
+        _marker_summary(db, page_size=2)
+    assert parse_proxy.pages == 2
+    assert parse_proxy.controls == ["BEGIN", "rollback"]
+    assert real.in_transaction is False
+    assert rows() == before_parse
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Recovery: repairing the disposable fixture yields the exact complete
+    # summary (count, newest UTC instant, unfinished).
+    real.execute(
+        "UPDATE tasks SET created_at = ? WHERE id = 'TASK-BAD'",
+        (now.isoformat(),),
+    )
+    real.commit()
+    recovered = _marker_summary(db)
+    assert (
+        recovered.count, recovered.newest_created_at, recovered.has_unfinished,
+    ) == (3, now + timedelta(seconds=1), True)
+
+
+def test_c12c_borrowed_transaction_success_fetchall_and_parse_failures(
+    db, monkeypatch,
+) -> None:
+    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    _cleanup_task(db, "TASK-A", created_at=now, status=TaskStatus.COMPLETED)
+    _cleanup_task(
+        db, "TASK-B", created_at=now + timedelta(seconds=1),
+        status=TaskStatus.COMPLETED,
+    )
+    real = db._conn
+    snapshot_sql = "SELECT id, status, created_at FROM tasks ORDER BY rowid"
+
+    def rows():
+        return [tuple(row) for row in real.execute(snapshot_sql).fetchall()]
+
+    before = rows()
+    real.execute("BEGIN")
+    real.execute(
+        "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+        "VALUES ('TASK-SENTINEL', 'dev_agent', 'sentinel', '{}', ?)",
+        (now.isoformat(),),
+    )
+    assert real.in_transaction is True
+
+    def assert_borrowed_state(expected_rows):
+        assert real.in_transaction is True
+        assert real.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE task_id='TASK-SENTINEL'",
+        ).fetchone()[0] == 1
+        with sqlite3.connect(str(db.db_path)) as other:
+            assert other.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE task_id='TASK-SENTINEL'",
+            ).fetchone()[0] == 0
+        assert rows() == expected_rows
+
+    # Success: the reader issues no BEGIN/COMMIT/ROLLBACK and leaves the
+    # caller's transaction, local sentinel and rows untouched.
+    success_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", success_proxy)
+    summary = _marker_summary(db, page_size=1)
+    assert (summary.count, summary.newest_created_at, summary.has_unfinished) == (
+        2, now + timedelta(seconds=1), False,
+    )
+    assert success_proxy.controls == []
+    assert_borrowed_state(before)
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Second-page fetchall failure preserves the caller's transaction too.
+    fetch_proxy = _ControlConnProxy(real, fail_fetch_page=2)
+    monkeypatch.setattr(db, "_conn", fetch_proxy)
+    with pytest.raises(sqlite3.OperationalError):
+        _marker_summary(db, page_size=1)
+    assert fetch_proxy.pages == 2
+    assert fetch_proxy.controls == []
+    assert_borrowed_state(before)
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Restoration after the fetch failure, still inside the caller's
+    # transaction and instrumented to prove the reader owns nothing.
+    post_fetch_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", post_fetch_proxy)
+    post_fetch = _marker_summary(db, page_size=1)
+    assert (
+        post_fetch.count, post_fetch.newest_created_at, post_fetch.has_unfinished,
+    ) == (2, now + timedelta(seconds=1), False)
+    assert post_fetch_proxy.controls == []
+    assert_borrowed_state(before)
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Second-page parse failure likewise. The deliberately malformed row is
+    # written by fixture SQL and stays uncommitted inside the caller's
+    # transaction; all rows are snapshotted immediately before the operation.
+    real.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, status, created_at, "
+        "updated_at) VALUES ('TASK-BAD', ?, 'dev_agent', 'completed', "
+        "'not-a-timestamp', ?)",
+        (f"{_CLEANUP_MARKER}\nbad", now.isoformat()),
+    )
+    before_parse = rows()
+    parse_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", parse_proxy)
+    with pytest.raises(ValueError):
+        _marker_summary(db, page_size=2)
+    assert parse_proxy.pages == 2
+    assert parse_proxy.controls == []
+    assert_borrowed_state(before_parse)
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Repair the malformed row inside the caller's transaction (no reader
+    # commit/rollback for restoration), then assert the exact recovered
+    # summary and the caller state/sentinel BEFORE the caller rolls back.
+    real.execute(
+        "UPDATE tasks SET created_at = ? WHERE id = 'TASK-BAD'",
+        (now.isoformat(),),
+    )
+    before_recovered = rows()
+    recovered_proxy = _ControlConnProxy(real)
+    monkeypatch.setattr(db, "_conn", recovered_proxy)
+    recovered = _marker_summary(db, page_size=2)
+    assert (
+        recovered.count, recovered.newest_created_at, recovered.has_unfinished,
+    ) == (3, now + timedelta(seconds=1), False)
+    assert recovered_proxy.controls == []
+    assert_borrowed_state(before_recovered)
+    monkeypatch.setattr(db, "_conn", real)
+
+    # Caller rollback alone removes its own sentinel and the uncommitted
+    # fixture row; the reader never did.
+    real.rollback()
+    assert real.in_transaction is False
+    assert real.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE task_id='TASK-SENTINEL'",
+    ).fetchone()[0] == 0
+    assert rows() == before
+
+
+def test_c12d_concurrent_append_snapshot_deterministic(db, monkeypatch) -> None:
+    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    _cleanup_task(db, "TASK-A", created_at=now, status=TaskStatus.COMPLETED)
+    _cleanup_task(
+        db, "TASK-B", created_at=now + timedelta(seconds=1),
+        status=TaskStatus.COMPLETED,
+    )
+    real = db._conn
+    state = {"selects": 0, "committed": False}
+
+    def on_execute(sql, params):
+        if sql.startswith("SELECT rowid"):
+            state["selects"] += 1
+            if state["selects"] == 2:  # after page one
+                other = sqlite3.connect(str(db.db_path))
+                try:
+                    stamp = now + timedelta(seconds=100)
+                    other.execute(
+                        "INSERT INTO tasks (id, brief, assigned_agent, status, "
+                        "created_at, updated_at) VALUES ('TASK-NEW', ?, "
+                        "'dev_agent', 'in_progress', ?, ?)",
+                        (f"{_CLEANUP_MARKER}\nnew", stamp.isoformat(), stamp.isoformat()),
+                    )
+                    other.commit()
+                    state["committed"] = True
+                finally:
+                    other.close()
+
+    monkeypatch.setattr(db, "_conn", _ConnProxy(real, on_execute))
+    ongoing = _marker_summary(db, page_size=1)
+    assert ongoing.count == 2  # append invisible in the pinned snapshot
+    assert ongoing.newest_created_at == now + timedelta(seconds=1)
+    assert ongoing.has_unfinished is False
+    assert state["committed"] is True
+    monkeypatch.setattr(db, "_conn", real)
+
+    later = _marker_summary(db, page_size=1)
+    assert later.count == 3
+    assert later.newest_created_at == now + timedelta(seconds=100)
+    assert later.has_unfinished is True
+
+
+def test_c12e_concurrent_update_snapshot_deterministic(db, monkeypatch) -> None:
+    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    for i in range(3):
+        _cleanup_task(
+            db, f"TASK-{i}", created_at=now + timedelta(seconds=i),
+            status=TaskStatus.COMPLETED,
+        )
+    real = db._conn
+    state = {"selects": 0, "committed": False}
+
+    def on_execute(sql, params):
+        if sql.startswith("SELECT rowid"):
+            state["selects"] += 1
+            if state["selects"] == 2:  # page one read; update a later row
+                other = sqlite3.connect(str(db.db_path))
+                try:
+                    stamp = now + timedelta(seconds=500)
+                    other.execute(
+                        "UPDATE tasks SET status='in_progress', created_at=?, "
+                        "updated_at=? WHERE id='TASK-2'",
+                        (stamp.isoformat(), stamp.isoformat()),
+                    )
+                    other.commit()
+                    state["committed"] = True
+                finally:
+                    other.close()
+
+    monkeypatch.setattr(db, "_conn", _ConnProxy(real, on_execute))
+    ongoing = _marker_summary(db, page_size=1)
+    assert ongoing.count == 3
+    assert ongoing.newest_created_at == now + timedelta(seconds=2)
+    assert ongoing.has_unfinished is False
+    assert state["committed"] is True
+    monkeypatch.setattr(db, "_conn", real)
+
+    later = _marker_summary(db, page_size=1)
+    assert later.newest_created_at == now + timedelta(seconds=500)
+    assert later.has_unfinished is True
+
+
+def test_c14_latest_five_exact_ids_and_projection(db) -> None:
+    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    for i in range(6):
+        db.insert_task(TaskRecord(
+            id=f"TASK-{i}", brief=f"{_CLEANUP_MARKER}\nrun {i}",
+            assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+            created_at=now + timedelta(minutes=i),
+            updated_at=now + timedelta(minutes=i),
+        ))
+        db.insert_audit_log(
+            task_id=f"TASK-{i}", agent="dev_agent",
+            action="workspace_cleanup_triggered",
+            payload={"run_number": i + 1, "brief_kind": "cleanup"},
+        )
+    # A duplicate trigger audit for the newest task must not displace another.
+    db.insert_audit_log(
+        task_id="TASK-5", agent="dev_agent",
+        action="workspace_cleanup_triggered",
+        payload={"run_number": 6, "brief_kind": "cleanup"},
+    )
+    # Ordinary non-marker task (no trigger audit) stays excluded.
+    db.insert_task(TaskRecord(
+        id="TASK-ORDINARY", brief="ordinary work",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=now + timedelta(minutes=30),
+        updated_at=now + timedelta(minutes=30),
+    ))
+    # Another agent's triggered task stays excluded.
+    db.insert_task(TaskRecord(
+        id="TASK-FOREIGN", brief=f"{_CLEANUP_MARKER}\nqa",
+        assigned_agent="qa_engineer", status=TaskStatus.COMPLETED,
+        created_at=now + timedelta(minutes=40),
+        updated_at=now + timedelta(minutes=40),
+    ))
+    db.insert_audit_log(
+        task_id="TASK-FOREIGN", agent="qa_engineer",
+        action="workspace_cleanup_triggered", payload={"run_number": 1},
+    )
+    db.insert_task_result(
+        task_id="TASK-5", agent="dev_agent", session_id="sess-5",
+        output_summary="done", confidence_score=90, status="completed",
+    )
+
+    rows = db.list_workspace_cleanup_activity("dev_agent", limit=5)
+    assert [row["task_id"] for row in rows] == [
+        "TASK-5", "TASK-4", "TASK-3", "TASK-2", "TASK-1",
+    ]
+    newest = rows[0]
+    assert newest["status"] == TaskStatus.COMPLETED.value
+    assert newest["result_status"] == "completed"
+    assert newest["output_summary"] == "done"

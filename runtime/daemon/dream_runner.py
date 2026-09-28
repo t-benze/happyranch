@@ -11,6 +11,7 @@ from typing import Awaitable, Callable
 from runtime.config import Settings, settings as global_settings
 from runtime.daemon.thread_runner import _build_executor_for_provider
 from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.orchestrator.executors import _meaningful_stderr
 from runtime.orchestrator.executor_registry import get_registry
 from runtime.models import DreamRecord, DreamStatus
 from runtime.orchestrator.host_supervisor import (
@@ -27,7 +28,6 @@ from runtime.orchestrator.org_config import (
     render_current_time_line,
     resolve_dreaming_timezone_display,
     resolve_managed_skills_index,
-    resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
     format_repo_refresh_note,
@@ -60,7 +60,7 @@ def build_dream_prompt(
     org_config: OrgConfig,
     now: Callable[[], datetime] | None = None,
     managed_skills_index: str = "",
-    protocol_doc_manifest: str = "",
+    repo_refresh_note: str = "",
     active_policy_section: str = "",
 ) -> str:
     """Compose the private dream-session prompt.
@@ -76,13 +76,13 @@ def build_dream_prompt(
     tz, label = resolve_dreaming_timezone_display(org_config)
     current_time = render_current_time_line(tz, label, now)
     skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""
-    docs_block = f"\n{protocol_doc_manifest}\n" if protocol_doc_manifest else ""
+    repo_refresh_block = f"\n{repo_refresh_note}\n" if repo_refresh_note else ""
     return f"""# Private Nightly Dream
 
 You are {dream.agent_name}. This is private reflection for HappyRanch org `{org_slug}`.
 This is not a task or thread. Do not call report-completion.
 
-current_time: {current_time}{skills_block}{docs_block}
+current_time: {current_time}{skills_block}{repo_refresh_block}
 Dream id: {dream.id}
 Window start: {dream.window_start.isoformat() if dream.window_start else "last 24 hours"}
 Window end: {dream.window_end.isoformat()}
@@ -275,10 +275,7 @@ async def run_dream(
     # blocking: offline / dirty / non-ff / timeout are swallowed.
     repo_refresh_results = refresh_workspace_repos(workspace)
 
-    protocol_doc_manifest = "\n".join(filter(None, (
-        resolve_protocol_doc_manifest(settings=settings),
-        format_repo_refresh_note(repo_refresh_results),
-    )))
+    repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 
     # ── Per-retry launch validator ───────────────────────────────
     def _pre_launch_validator():
@@ -292,10 +289,12 @@ async def run_dream(
 
     from runtime.orchestrator.active_authority_policy import resolve_active_team_policy_section
     from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
-    active_policy_section = resolve_active_team_policy_section(
-        store=AuthorityPolicyStore(org_state.db), team=agent_def.team,
+    policy_teams = getattr(org_state, "teams", None)
+    active_policy_section = "" if policy_teams is None else resolve_active_team_policy_section(
+        store=AuthorityPolicyStore(org_state.db), root=org_state.root,
+        teams=policy_teams, team=agent_def.team,
         agent_name=dream.agent_name,
-        eligible=bool(getattr(org_state, "teams", None) and org_state.teams.is_team_manager(dream.agent_name)),
+        eligible=policy_teams.is_team_manager(dream.agent_name),
     )
     prompt = build_dream_prompt(
         org_slug=org_state.slug,
@@ -305,7 +304,7 @@ async def run_dream(
         task_history=_load_task_history(workspace),
         org_config=org_config,
         managed_skills_index=managed_skills_index,
-        protocol_doc_manifest=protocol_doc_manifest,
+        repo_refresh_note=repo_refresh_note,
         active_policy_section=active_policy_section,
     )
 
@@ -480,7 +479,25 @@ async def run_dream(
     # executor output (e.g. Claude's JSON result envelope) over the raw
     # stderr-based error summary so dream failures carry a deterministic
     # reason instead of incidental noise.
-    reason = (getattr(result, "terminal_error", None) or error)
+    terminal_error = str(getattr(result, "terminal_error", "") or "").strip()
+    human_error = str(getattr(result, "human_error", "") or "")
+    stderr = human_error or (
+        "" if getattr(result, "human_error_inspected", False) else _meaningful_stderr(
+            str(getattr(result, "stderr_tail", "") or "")
+        )
+    )
+    notice = str(getattr(result, "terminal_error_notice", "") or "").strip()
+    # Dreams have no diagnostic-tail columns.  Preserve the classified cause,
+    # reset notice, and any meaningful stderr together on their existing
+    # error/reason surfaces; do not replace a real provider error with a token.
+    if terminal_error:
+        reason = stderr[:1000] if stderr else terminal_error
+        if stderr:
+            reason = f"{reason} (terminal_error: {terminal_error})"
+        if notice:
+            reason = f"{reason}; notice: {notice[:1000]}"
+    else:
+        reason = error[:1000]
     if _is_timeout(result):
         # Spec "Failure Handling": timeout is a distinct terminal status; the
         # successful-dream window is not advanced (get_last_successful_dream
@@ -491,7 +508,9 @@ async def run_dream(
             ended_at=datetime.now(timezone.utc),
             error=error,
         )
-        AuditLogger(org_state.db).log_dream_timeout(dream_id, dream.agent_name, reason=error)
+        AuditLogger(org_state.db).log_dream_timeout(
+            dream_id, dream.agent_name, reason=error,
+        )
         return
     org_state.db.update_dream(
         dream_id,

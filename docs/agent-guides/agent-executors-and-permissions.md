@@ -1,32 +1,30 @@
 # Agent Executors And Permissions
 
-> **SUPERSESSION NOTICE (TASK-4009/TASK-4012/TASK-4346):** Skill materialization
-> now uses the **canonical skill store + workspace symlink architecture**
-> (macOS and Linux). The legacy per-session copy model is REMOVED. The executor
-> and daemon share the same OS identity — linked, validated relative skill
-> links live under BOTH ``.claude/skills`` and ``.agents/skills``. Every
-> user-facing and executor-facing guidance surface names both roots.
-> Integrity verification is DETECTION-ONLY with FAIL-CLOSED refusal — NO
-> OS-level security boundary, no automatic repair from same-UID local source.
-> See ``protocol/05b-agent-runtime.md`` § "Canonical skill store + workspace
-> symlinks" for ownership, provenance, link validation, refusal/withdrawal/
-> retention semantics, integrity verification, and the compatibility-fallback
-> boundary. Windows and unknown platforms are NOT supported — explicitly fail
-> closed.
->
-> **INTEGRITY HONESTY NOTICE:** Do NOT call canonical targets immutable,
-> protected, or claim write/chmod/ACL denial. The prompt guard is operational
-> guidance, not enforcement. Integrity verification is DETECTION-ONLY with
-> FAIL-CLOSED refusal — NO automatic repair from same-UID local source. A
-> same-UID process may mutate, race validation, and affect active/overlapping
-> sessions. Manual recovery only: (a) ``set-executor`` for broken links,
-> (b) ``happyranch skills recover <slug> <version> <content_hash>`` for
-> corrupted canonical bytes of the eligible current B2 version. No automatic
-> repair from same-UID local source.
-> Recovery requires that an authoritative re-sync/redeploy of release or
-> custom artifacts has occurred outside the compromised same-owner local
-> source before recovery can safely materialize again. Policy withdrawal
-> and atomic link repair remain safe.
+## Bundled skill sources and canonical delivery
+
+Release-owned instructions and supporting assets live in
+`runtime/skills/bundled/`. `runtime/skills/system_contracts.py` owns the context
+predicates; the managed catalog and eligibility resolver retain their independent
+policy checks. Ordinary prompts advertise eligible skills, not developer docs.
+Skills teach the existing workflows; required runtime checks belong at the
+implemented admission, callback, or transition boundary.
+
+`workspace_adapters.py` resolves sources and constructs the full system-contract
+union before canonical publication. `canonical_store.py` hashes relative member
+paths and bytes, so a source-directory relocation alone does not change package
+identity. The pre-launch/retry validators check the declared member bytes and
+relative links in both `.claude/skills` and `.agents/skills`. Context union never
+withdraws another context's system-contract link; managed/custom policies remain
+withdrawable. A tombstone committed during selection excludes the skill at the
+publication barrier; it does not recall already-running work. Canonical-store,
+production-boundary, and materialization tests own these guarantees.
+
+The daemon and executor share one OS identity. Integrity checks detect mismatches
+and refuse launches; they do not provide OS isolation or close same-UID TOCTOU
+windows. Existing corrupt packages are never rebuilt automatically. Manual
+recovery requires authoritative artifact re-sync first; valid byte integrity is
+required before repairing links. macOS/Linux are supported; other platforms fail
+closed. Relocation preserves historical packages, ledgers, and links.
 
 **Supported host contract:** macOS (darwin) and native Linux use the same
 same-owner POSIX adapter: relative symlinks, same-directory ``os.replace``,
@@ -36,8 +34,6 @@ through the existing named refusal paths. Containers and network filesystems
 are supported only when they preserve those semantics. Windows and unknown
 platforms have no fallback. See the current Linux design in
 ``docs/superpowers/specs/2026-08-22-linux-canonical-store-design.md``.
-
-# Agent Executors And Permissions
 
 **THR-095 (founder ruling option B):** The executor is declared in the
 **org/agents/<name>.md frontmatter** (``AgentDef.executor``) — the single
@@ -51,10 +47,25 @@ profiles are bound in the machine-global runtime store (THR-107 — see below).
 
 | Executor | Bootstrap doc | Skills dir | Permission surface |
 | --- | --- | --- | --- |
-| `claude` | `CLAUDE.md` | `.claude/skills/` | `permissions.allow` in `.claude/settings.json` and `--allowedTools` |
-| `codex` | `AGENTS.md` | `.agents/skills/` | sandbox flags on CLI |
-| `opencode` | `AGENTS.md` | `.agents/skills/` | `opencode.json` `permission.bash` map |
-| `pi` | `AGENTS.md` | `.agents/skills/` | no HappyRanch-managed sandbox |
+| `claude` | `AGENTS.md` + `CLAUDE.md` → `AGENTS.md` | `.claude/skills/` | `permissions.allow` in `.claude/settings.json` and `--allowedTools` |
+| `codex` | `AGENTS.md` + `CLAUDE.md` → `AGENTS.md` | `.agents/skills/` | sandbox flags on CLI |
+| `opencode` | `AGENTS.md` + `CLAUDE.md` → `AGENTS.md` | `.agents/skills/` | `opencode.json` `permission.bash` map |
+| `pi` | `AGENTS.md` + `CLAUDE.md` → `AGENTS.md` | `.agents/skills/` | no HappyRanch-managed sandbox |
+
+**Canonical instruction pair (THR-262 Slice B).** Every built-in generated
+workspace holds one regular `AGENTS.md` plus the raw relative symlink
+`CLAUDE.md -> AGENTS.md` (same directory). Conversion is non-destructive:
+both paths are classified without following links, every required
+collision-safe preservation copy is written and verified before either path
+is mutated, and an external target is never written through. Session launch
+is read-only and refuses every incomplete/non-canonical pair for every
+provider through `WorkspaceNotInitialized` with an actionable
+`happyranch init-agent <agent>` and no executor launch; the operator
+`init-agent` retry completes the pair or stops on a named preserved conflict
+and is idempotent. There is no persistent journal, scheduler, durable receipt
+or automatic reopen recovery; a caught in-process conversion failure restores
+the exact prior state, while abrupt process death leaves the actual on-disk
+state and preservation copies for the explicit retry.
 
 **Per-agent model selection (THR-067):** Each built-in profile carries a verified `model_arg` — the CLI flag the executor uses when the agent has a model set:
 
@@ -74,10 +85,10 @@ When `model` is **unset** (the default for all existing agents), the executor la
 
 Custom/self-registered profiles do not currently support `model_arg` (separate founder-gated track).
 
-Missing values default to `claude`. All executors share `protocol/skills/`.
+Missing values default to `claude`. All executors share `runtime/skills/bundled/`.
 
 **Worktree-root guard.** The ``make-worktree`` skill (injected as a system
-contract per §4.7 of the orchestrator protocol) delivers a stdlib-only guard
+contract by `runtime/skills/system_contracts.py`) delivers a stdlib-only guard
 script (``worktree_guard.py``) alongside its ``SKILL.md``. The guard runs at
 worktree setup and verify points, validates repository/worktree identity
 (same git common directory + registered worktree), records canonical absolute
@@ -94,6 +105,25 @@ skill computes the workspace root as 5 parents above the task worktree
 ``.claude/skills/`` then ``.agents/skills/``, failing loudly if neither
 exists. It is a narrow, non-permission tool with no DB, API, schema, audit,
 auth, notification, or sandbox footprint.
+
+The same skill makes completion ordering explicit: once publication work is
+done, attempt safe worktree cleanup or record
+`worktree-deferred: <specific reason>` in the existing completion risks, then
+make `report-completion` the final action. Cleanup uses literal
+`git worktree remove .claude/worktrees/<task_id>` only after the worktree is
+clean, its commit is durable, it has no open or closed-unmerged PR, and no live
+session/process reference remains. It never uses `--force` and never deletes a
+branch.
+
+Independently, the runtime has a forward-only terminal hook for exact
+`completed`, `failed`, and `cancelled` transitions. It resolves only the
+registered assigned agent's canonical `repos/happyranch` task worktree and
+fails closed across ownership, realpath/device, Git registration/branch,
+cleanliness, remote durability, PR, liveness, recorded-deferral, and deadline
+gates. Each shipping hook makes one attempt after terminal durability and
+applicable teardown; errors and uncertainty preserve. It does not scan or
+schedule cleanup, and it deliberately excludes `superseded`, `blocked_on_job`,
+accepted/restart completion-recovery settlement, and historical residue.
 
 **Custom-adapter profiles** (D7B, ``command_adapter_id: custom-adapter:<id>``)
 route through ``CustomAdapterExecutor`` instead — see
@@ -189,9 +219,8 @@ and creates the receipt-only connection record (it starts zero subprocesses)
 Connected, no PENDING wait, no founder click. Founders can check the same
 terminal outcome from the CLI with
 ``happyranch custom-cli status <profile-name> [--wait]``.
-See ``protocol/05b-agent-runtime.md`` § "Slices 1–3: projection, launch fence,
-UI cutover" (and its `workspace_adapter_id` correction note) for the full
-contract. The PENDING/approve/reject/bind-profile routes below remain as
+The custom CLI routes and conformance tests define the projection and launch
+fences, including the wrapper-declared `workspace_adapter_id`. The PENDING/approve/reject/bind-profile routes below remain as
 operator-only one-time disposition tooling for legacy records — a new
 custom CLI should always use the ordinary Connect
 flow instead.
@@ -477,7 +506,7 @@ registered profiles are **not** agent enrollments. Assigning an agent
 to a registered executor
 is a separate founder gate — see [Switching an Existing Agent's
 Executor](#switching-an-existing-agents-executor) and
-`protocol/skills/manage-agent/SKILL.md`. Registration only adds the profile
+`runtime/skills/bundled/manage-agent/SKILL.md`. Registration only adds the profile
 to the executor registry; the founder must still explicitly assign it to
 individual agents.
 
@@ -498,7 +527,7 @@ opencode: `OpencodeWorkspaceAdapter.write_opencode_json` writes a strict default
 
 Pi: `PiExecutor.run` invokes `pi -p ... --mode json` from the agent workspace. Use external containment when command/tool restriction matters.
 
-Enrolling a worker with a non-default executor: set `"executor": "<profile-name>"` in the `happyranch manage-agent --from-file` payload where the profile name is a registered executor profile (built-in: `codex`, `opencode`, `pi`, or a custom profile registered in the machine-global runtime store). Founder approval bootstraps the right workspace surface. See `protocol/skills/manage-agent/SKILL.md`.
+Enrolling a worker with a non-default executor: set `"executor": "<profile-name>"` in the `happyranch manage-agent --from-file` payload where the profile name is a registered executor profile (built-in: `codex`, `opencode`, `pi`, or a custom profile registered in the machine-global runtime store). Founder approval bootstraps the right workspace surface. See `runtime/skills/bundled/manage-agent/SKILL.md`.
 
 **THR-095:** Repos are configured in the **org/agents/<name>.md frontmatter**
 (``AgentDef.repos``) — the single authoritative store. The workspace
@@ -539,13 +568,31 @@ It reconciles the `.md` frontmatter (atomic rewrite) and the executor
 bootstrap (``ensure_workspace_ready`` with the new provider). An unregistered
 executor is rejected with the list of registered profiles.
 
-Switching **away from Claude** leaves the Claude-only files (`CLAUDE.md`, `.claude/`) behind, because the new adapter writes `AGENTS.md`/`.agents/` and never deletes them. By default the command **warns** that these files are stale and names them; it never auto-deletes. Pass `--clean` to delete them:
+The route rereads the canonical definition after materialization. A concurrent
+executor or model winner returns `409 executor_switch_conflict`; unrelated
+fresh fields are retained, and a disappeared canonical definition returns 404.
+
+**Manage-agent update compensation.** The separate `manage_agent(action=update)`
+executor-change path conditionally restores exact original bytes after its
+session-invalidation failure only while its written revision is still current;
+a newer or missing definition remains authoritative and its stale workspace is
+not restored. This is process-local/no-`await` protection where documented,
+not global workspace-generation fencing or external same-UID/multiprocess
+serialization.
+
+Switching **away from Claude** leaves no stale instruction surface: the shared canonical pair
+(`AGENTS.md` + `CLAUDE.md -> AGENTS.md`) and `.claude/skills` are **preserved**
+for every executor. The only executor-only artifact is `.claude/settings.json`.
+By default the command **warns** that `.claude/settings.json` is stale and
+names it; it never auto-deletes. Pass `--clean` to delete exactly that file
+(and the emptied `.claude/` directory):
 
 ```bash
 happyranch set-executor --org <org> <agent> --executor pi --clean
 ```
 
-(The symmetric case — switching *to* Claude leaves `AGENTS.md`/`.agents/`/`opencode.json` stale — is not yet handled.)
+(The symmetric case — switching *to* Claude — keeps the same shared pair and
+settings file, so there is no separate stale surface.)
 
 **THR-095:** ``happyranch init-agent`` no longer emits ``executor_drift``
 warnings — the .md frontmatter is the single source of truth so there is
@@ -563,6 +610,26 @@ For Claude, allow rules must be generated in two places:
 2. `--allowedTools`, passed by `ClaudeExecutor.run`.
 
 Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in `runtime/orchestrator/workspace_adapters.py`. Do not hand-edit either; `happyranch init-agent` rewrites them.
+
+**Lasting grants and the per-executor effect.** `allow_rules` is the only
+supported lasting-grant channel, and it changes through the team-manager-gated
+`manage-agent` update path (see `runtime/skills/bundled/manage-agent/SKILL.md`):
+a worker cannot re-grant itself, the target must belong to the manager's team,
+`expected_revision` must be a fresh 64-hex revision, and a manager changing its
+own rules (or another manager's) needs a founder escalation. A one-off blocked
+operation instead uses one reviewed bounded **job**
+(`runtime/skills/bundled/jobs/SKILL.md`), which authorizes only that command and
+never expands ongoing permissions.
+
+An `allow_rules` update does **not** produce the same live effect on every
+executor:
+
+| Executor | Effect of an `allow_rules` update |
+| --- | --- |
+| `claude` | `--allowedTools` is rebuilt on every launch by `ClaudeExecutor.run` from `allow_rules_for_agent(..., cli=True)`, so the rule is live on the next session. The `.claude/settings.json` `permissions.allow` list is generated too but is not honoured in headless `-p` mode. |
+| `codex` | The effective surface is the CLI sandbox flag (`CodexExecutor.run`); `allow_rules` is not wired into it. A lasting Codex grant needs a concrete founder escalation to the actual permission-model surface. |
+| `pi` | `PiExecutor` exposes no HappyRanch-managed permission surface; a lasting Pi grant needs a concrete founder escalation, separate from Codex. |
+| `opencode` | The effective surface is the generated `opencode.json` (`OpencodeWorkspaceAdapter.write_opencode_json`). An `allow_rules`-only `manage-agent` update does not re-run the workspace bootstrap (regeneration is gated on a system-prompt or executor change), so the grant is inert until a bootstrap-forcing change or `happyranch init-agent`. This is an open limitation, not repaired here. |
 
 When adding orchestrator capabilities, keep them under the `happyranch` binary so they stay inside the baseline allow rule. Only add a raw-tool prefix when the operation cannot be wrapped in `happyranch`.
 
@@ -597,3 +664,33 @@ implemented in this phase.
 > profile with `command_adapter_id: custom-adapter:<id>`. Recovery uses an
 > existing built-in executor or ordinary re-registration of a valid approved
 > custom-adapter profile; there is no automatic or versioned fallback.
+
+## Shared workspace-cleanup skill (THR-259 / TASK-8667)
+
+The daemon-managed workspace-cleanup scheduler and manual cleanup both deliver
+the ONE shared `workspace-cleanup` TASK system contract
+(`runtime/skills/bundled/workspace-cleanup/SKILL.md`, `requires_repo=false`), so
+no-repo agents receive it too; it materializes into both `.claude/skills` and
+`.agents/skills` like every other release-owned contract. Manual dispatch
+requires the exact first line `HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN
+(manual-dispatch)`; an unmarked manual request is inventory-only, and manual
+runs contribute zero to the first-two report-only ordinal.
+
+Its bundled read-only helper `runtime/skills/bundled/workspace-cleanup/scripts/check_path_use.py`
+implements the founder-approved THR-259 seq171/seq185 observation: an
+authoritative recorded terminal status plus a fresh complete same-user process
+scan replaces separate live-session/task-to-process identity, and a fixed
+login/session daemon qualifies only by an exact readable process name AND its
+exact bounded cgroup role (`sshd-session`, `systemd --user`, `(sd-pam)`,
+`ssh-agent`, `gpg-agent`, `gcr-ssh-agent`/`ssh-agent` alias in
+`gcr-ssh-agent.service`). A qualifying exception is deliberately uninspected —
+unreadable `exe`/namespace is not a veto and is not executable-identity
+authentication; every other unreadable same-user process is `unknown` and skips,
+root is outside the scan, and positive non-exempt use blocks. For a
+`node_modules`/`.venv` cache candidate the helper additionally resolves and
+identity-binds its containing registered worktree, so use anywhere in that
+worktree blocks; an unresolvable containing worktree is `unknown`, never a
+literal-path fallback. A conflicting applicable systemd/unified cgroup path
+never grants an exception. This is a snapshot
+with accepted later-opener/write-interruption residual, never an OS-wide-absence
+or future-non-use guarantee.

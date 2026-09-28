@@ -159,12 +159,12 @@ def test_refresh_workspace_repos_swallows_failure_and_continues(
 
 # ── (c) _run_agent refreshes BEFORE executor.run, every provider ─────────
 
-_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream", "todos"]
+_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "workspace-cleanup"]
 
 
 def _setup_protocol_skills(settings) -> None:
     for sid in _TASK_CONTEXT_CONTRACT_IDS:
-        src = settings.get_protocol_dir() / "skills" / sid
+        src = settings.get_bundled_skills_dir() / sid
         src.mkdir(parents=True, exist_ok=True)
         (src / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {sid}.\n")
 
@@ -177,6 +177,7 @@ def _setup_agent_workspace(runtime, agent: str, provider: str) -> None:
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
     (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+    (ws / "CLAUDE.md").symlink_to("AGENTS.md")
     ad = AgentDef(
         name=agent, team="engineering", role="worker",
         executor=provider, allow_rules=(), repos={},

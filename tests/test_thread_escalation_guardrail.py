@@ -100,14 +100,16 @@ class FakeOrgState:
 
 
 class FakeTeams:
-    """Minimal teams registry — is_team_manager returns True for names in
-    ``managers``."""
+    """Minimal teams registry with one exact Engineering manager tuple."""
 
     def __init__(self, managers: set[str]):
         self._managers = managers
 
     def is_team_manager(self, name: str) -> bool:
         return name in self._managers
+
+    def teams_for_manager(self, name: str) -> tuple[str, ...]:
+        return ("engineering",) if name in self._managers else ()
 
 
 class FakeDB:

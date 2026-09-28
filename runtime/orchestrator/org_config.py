@@ -194,6 +194,9 @@ class OrgConfig:
     # an existing daemon/org config mechanism only — no new public
     # API/CLI/UI surface.
     workspace_cleanup_enabled: bool = True
+    # Reserved for a later reclamation hook. There is no action consumer yet,
+    # so true is inert and does not enable reclamation.
+    workspace_cleanup_reclamation_actions_enabled: bool = False
     # THR-032 Phase 2: char budget for the per-task MEMORY-DIGEST push block.
     # Default ~1500 chars ≈ a dozen pointer lines; set to 0 to disable the
     # digest entirely. Must be >= 0.
@@ -532,92 +535,6 @@ def resolve_managed_skills_index(
         return ""
 
 
-# ── Protocol doc manifest (THR-070) ────────────────────────────────────
-#
-# Renders a minimal one-line-per-doc manifest so agents can Read protocol
-# docs on-demand from the bundled project_root/protocol/ directory instead
-# of the repos/happyranch clone. Each line is "title — one-line purpose."
-# followed by the absolute bundled path for on-demand Read.
-
-
-def _resolve_protocol_doc_src(settings: "Settings | None") -> Path | None:
-    """Source directory for bundled ``protocol/*.md`` docs.
-
-    Returns ``None`` when settings is unavailable so callers can skip the
-    manifest gracefully (empty string).
-    """
-    if settings is None:
-        return None
-    return settings.get_protocol_dir()
-
-
-def resolve_protocol_doc_manifest(
-    *,
-    settings: "Settings | None" = None,
-) -> str:
-    """Render a minimal one-line-per-doc manifest of bundled protocol docs.
-
-    One line per ``.md`` file = title (from the first ``#`` heading) + a short
-    one-line purpose (from the heading prose or a fallback descriptive label)
-    + the absolute bundled path for on-demand Read.
-
-    Returns an empty string when the protocol directory doesn't exist or
-    contains no ``.md`` files.
-
-    This is the sibling to ``resolve_managed_skills_index`` — called at the
-    same 4 session-creation paths. The manifest is injected alongside the
-    skills index so agents discover protocol docs at session-build time.
-    """
-    src = _resolve_protocol_doc_src(settings)
-    if src is None or not src.is_dir():
-        return ""
-
-    md_files = sorted(src.glob("*.md"))
-    if not md_files:
-        return ""
-
-    lines: list[str] = ["## Protocol Docs (bundled, on-demand Read)"]
-    for f in md_files:
-        title, purpose = _parse_md_title_and_purpose(f)
-        abs_path = str(f.resolve())
-        lines.append(f"- **{title}** — {purpose} Read: `{abs_path}`")
-
-    return "\n".join(lines)
-
-
-def _parse_md_title_and_purpose(path: Path) -> tuple[str, str]:
-    """Extract the title (first ``#`` heading) and a one-line purpose from
-    a protocol ``.md`` file.
-
-    Purpose is derived from the first non-empty, non-heading line after the
-    title, truncated to ~100 chars. Falls back to "Protocol reference."
-    when the file can't be parsed.
-    """
-    try:
-        text = path.read_text(encoding="utf-8")
-    except Exception:
-        return path.stem.replace("-", " ").title(), "Protocol reference."
-
-    lines = text.splitlines()
-    title = path.stem.replace("-", " ").title()
-    purpose = "Protocol reference."
-
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("# ") and title == path.stem.replace("-", " ").title():
-            # First h1 is the title
-            title = stripped[2:].strip()
-            continue
-        if stripped and not stripped.startswith("#") and purpose == "Protocol reference.":
-            # First non-heading, non-empty line after the title = purpose
-            purpose = stripped[:120].rstrip()
-            if len(stripped) > 120:
-                purpose += "…"
-            break
-
-    return title, purpose
-
-
 def _validate_window_time(value: object, label: str, path: str) -> str:
     if not isinstance(value, str) or not _HHMM_RE.match(value) or int(value[:2]) > 23:
         raise OrgConfigError(f"{path}: {label} must be HH:MM (hour 00-23)")
@@ -828,8 +745,10 @@ def _parse_workspace_cleanup(block: dict, path: str) -> dict:
     THR-195 / TASK-6036: an enabled-by-default kill switch for the
     daemon-managed workspace cleanup scheduler. ``workspace_cleanup.enabled``
     defaults to True when the block or the key is absent; set it to false to
-    disable the capability for the org. Existing daemon/org config mechanism
-    only (no new public API/CLI/UI surface).
+    disable the capability for the org. The strictly boolean
+    ``reclamation_actions_enabled`` key defaults to False and is reserved for
+    a later hook; it currently has no action consumer. Existing daemon/org
+    config mechanism only (no new public API/CLI/UI surface).
     """
     if not isinstance(block, dict):
         raise OrgConfigError(f"{path}: workspace_cleanup must be a mapping")
@@ -843,6 +762,15 @@ def _parse_workspace_cleanup(block: dict, path: str) -> dict:
                 f"{path}: workspace_cleanup.enabled must be a boolean, got {enabled!r}"
             )
         kwargs["workspace_cleanup_enabled"] = enabled
+
+    if "reclamation_actions_enabled" in block:
+        actions_enabled = block["reclamation_actions_enabled"]
+        if not isinstance(actions_enabled, bool):
+            raise OrgConfigError(
+                f"{path}: workspace_cleanup.reclamation_actions_enabled must be a boolean, "
+                f"got {actions_enabled!r}"
+            )
+        kwargs["workspace_cleanup_reclamation_actions_enabled"] = actions_enabled
 
     return kwargs
 

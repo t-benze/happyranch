@@ -12,7 +12,7 @@
  *
  * Composer: BROADCAST-ONLY ("Message the thread — all participants see it").
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/design-system/primitives/Button';
@@ -32,9 +32,8 @@ import type {
   ThreadAttachment,
   ThreadAttachmentRef,
   ThreadMessage,
-  ThreadRecord,
 } from '@/lib/api/types';
-import { attachmentContentType, safeArtifactName } from '@/lib/threadAttachments';
+import { allocateArtifactName, attachmentContentType } from '@/lib/threadAttachments';
 import type { PendingAttachment } from '@/design-system/patterns/Composer';
 import { useAgentsList } from '@/hooks/agents';
 import { useThreadFreshTokens } from '@/hooks/tokens';
@@ -97,7 +96,8 @@ function threadStatusOrFallback(status: string): 'open' | 'archived' {
  * TaskCard / DashboardPage — no date library added. Pure over an injected
  * `nowMs` so it stays testable. Returns "just now" under a minute (no "ago").
  * `started_at` is always present on the thread-LIST payload (ThreadRecord);
- * per-row participants/preview/count are NOT and stay omitted (honesty fence).
+ * Per-row participant names come from the bounded list projection; previews
+ * and counts remain omitted because the list payload does not back them.
  */
 function relativeStartLabel(iso: string, nowMs: number): string {
   const min = Math.round((nowMs - new Date(iso).getTime()) / 60000);
@@ -254,56 +254,6 @@ function collectThreadArtifacts(messages: ThreadMessage[]): ThreadAttachment[] {
   return [...seen.values()];
 }
 
-/* ------------------------------------------------------------------ */
-/*  THR-209 pin helpers                                                 */
-/* ------------------------------------------------------------------ */
-
-function PinIcon({ pinned }: { pinned: boolean }): JSX.Element {
-  return pinned ? (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M16 3l5 5-3.5 1.5-3 3L13 19l-2-2-4 4-2-2 4-4-2-2 6.5-.5 3-3L16 3z" />
-    </svg>
-  ) : (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <path d="M16 3l5 5-3.5 1.5-3 3L13 19l-2-2-4 4-2-2 4-4-2-2 6.5-.5 3-3L16 3z" />
-    </svg>
-  );
-}
-
-/**
- * THR-209 row pin toggle. A per-row component so each row owns its own
- * ``useSetThreadPinned`` mutation (the provider hooks bind one thread id).
- */
-function RowPinControl({
-  thread,
-  onError,
-}: {
-  thread: ThreadRecord;
-  onError: (message: string) => void;
-}): JSX.Element {
-  const pinMutation = useSetThreadPinned(thread.thread_id);
-  const toggle = () => {
-    onError('');
-    pinMutation
-      .mutateAsync({ pinned: !thread.pinned })
-      .catch(() => onError(S.pinFailed));
-  };
-  return (
-    <button
-      type="button"
-      aria-label={thread.pinned ? S.unpinThread(thread.thread_id) : S.pinThread(thread.thread_id)}
-      title={thread.pinned ? S.unpinAction : S.pinAction}
-      disabled={pinMutation.isPending}
-      onClick={toggle}
-      className={`text-text-muted hover:bg-surface-raised hover:text-text-primary disabled:text-text-disabled shrink-0 rounded p-1.5 transition-colors ${
-        thread.pinned ? 'text-accent' : ''
-      }`}
-    >
-      <PinIcon pinned={thread.pinned} />
-    </button>
-  );
-}
-
 /**
  * THR-209 visible pin-change error banner. aria-live so failures from
  * optimistic mutations are announced; rendered in both the list and detail
@@ -356,10 +306,76 @@ export function ThreadsPage(): JSX.Element {
   const queryClient = useQueryClient();
   const { slug, thread_id: threadId } = useParams<{ slug: string; thread_id: string }>();
   const composerFocusRef = useRef<(() => void) | null>(null);
-
+  const listScrollRef = useRef<HTMLDivElement | null>(null);
+  const listScrollByScopeRef = useRef(new Map<string, number>());
+  const restoredListScopeRef = useRef<string | null>(null);
+  const rowNavigationSavedScopeRef = useRef<string | null>(null);
   // Inbox state — segmented status filter (THREADS-02).
   const [bucket, setBucket] = useState<InboxBucket>('open');
   const [filter, setFilter] = useState('');
+  const scrollKey = `threads:list-scroll:${slug ?? ''}:${bucket}:${filter}`;
+  const setListScrollRef = useCallback((node: HTMLDivElement | null) => {
+    listScrollRef.current = node;
+  }, []);
+  const rememberListScroll = (owner = listScrollRef.current) => {
+    // Route-local, keyed state avoids leaking a position across orgs, buckets,
+    // or search terms while leaving router ownership untouched. The route
+    const scrollTop = owner ? owner.scrollTop : (listScrollByScopeRef.current.get(scrollKey) ?? 0);
+    listScrollByScopeRef.current.set(scrollKey, scrollTop);
+    sessionStorage.setItem(scrollKey, String(scrollTop));
+  };
+  const rememberListScrollSnapshot = () => {
+    // Scope cleanup can run after the descendant has rendered a new scope and
+    // browser layout has clamped its reused node. Prefer a nonzero observed
+    // position, which is authoritative for a real scroll event. A DOM-assisted
+    // initial setup has no scroll event, however, so take one connected-owner
+    // snapshot at the scope boundary rather than silently replacing it with
+    // the map's initial zero.
+    const observed = listScrollByScopeRef.current.get(scrollKey);
+    const owner = listScrollRef.current;
+    const scrollTop = observed ?? (owner?.isConnected ? owner.scrollTop : 0);
+    listScrollByScopeRef.current.set(scrollKey, scrollTop);
+    sessionStorage.setItem(scrollKey, String(scrollTop));
+  };
+  const observeListScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    const scrollTop = event.currentTarget.scrollTop;
+    listScrollByScopeRef.current.set(scrollKey, scrollTop);
+    // Record real user movement while this scope owns the node. A later scope
+    // cleanup must never reinterpret a browser-clamped descendant as this
+    // scope's last position.
+    sessionStorage.setItem(scrollKey, String(scrollTop));
+  };
+  const rememberRowNavigationScroll = () => {
+    // A row activation observes the attached owner before navigation. Its
+    // subsequent route cleanup must not reread a detached/clamped node and
+    // overwrite this authoritative snapshot.
+    rememberListScroll();
+    rowNavigationSavedScopeRef.current = scrollKey;
+  };
+  useEffect(() => {
+    const captureReadyOrgScope = () => {
+      // Sidebar changes retain this route instance. Capture while the outgoing
+      // ready scope still owns the connected list before navigation renders an
+      // uncached org's loading content into the same owner. A pending scope has
+      // not restored yet, so its durable value must remain untouched.
+      if (restoredListScopeRef.current === scrollKey) rememberListScroll();
+    };
+    window.addEventListener('threads:before-org-change', captureReadyOrgScope);
+    return () => window.removeEventListener('threads:before-org-change', captureReadyOrgScope);
+  }, [scrollKey]);
+  const changeBucket = (nextBucket: InboxBucket) => {
+    // Unlike a row activation, a scope control reuses the list owner. Snapshot
+    // it before changing state, while it still represents the outgoing scope.
+    // This must not depend on a synthetic or browser-delivered scroll event.
+    rememberListScroll();
+    setBucket(nextBucket);
+  };
+  const changeFilter = (nextFilter: string) => {
+    // Filter changes are scope transitions too; snapshot the outgoing key
+    // before the reused owner is reset for the incoming filter.
+    rememberListScroll();
+    setFilter(nextFilter);
+  };
   useThreadsInboxSSE();
   const agentsQuery = useAgentsList();
   const agents = useMemo(() => agentsQuery.data?.agents ?? [], [agentsQuery.data]);
@@ -419,14 +435,59 @@ export function ThreadsPage(): JSX.Element {
         t.thread_id.toLowerCase().includes(needle),
     );
   }, [bucket, openQuery.data, archivedQuery.data, filter]);
+  useLayoutEffect(() => {
+    // A detail transition ends this list entry. Returning to the list must
+    // restore its saved offset, while ordinary query updates inside the entry
+    // must leave the live scroll owner alone.
+    if (threadId) {
+      restoredListScopeRef.current = null;
+      rowNavigationSavedScopeRef.current = null;
+      return;
+    }
+    // A scope enters with its ContentWrap already mounted, but restoration
+    // waits for the active bucket's list data. This keeps an initial delayed
+    // response from losing its route-local saved position and makes refetches
+    // (which do not create a new list entry) harmless.
+    if (bucketLoading || restoredListScopeRef.current === scrollKey) return;
+    const stored = sessionStorage.getItem(scrollKey);
+    // A missing key must reset the reused scroll owner. A stored zero is a
+    // valid saved position, so neither case may be treated as "leave it be".
+    const saved = stored === null ? 0 : Number(stored);
+    const target = Number.isFinite(saved) && saved >= 0 ? saved : 0;
+    // This must happen in the layout commit, rather than an animation frame:
+    // a returned list has a newly mounted owner and an unavailable frame must
+    // not turn a durable position into a no-op.
+    if (listScrollRef.current && restoredListScopeRef.current !== scrollKey) {
+      listScrollRef.current.scrollTop = target;
+      listScrollByScopeRef.current.set(scrollKey, target);
+      restoredListScopeRef.current = scrollKey;
+    }
+  }, [threadId, scrollKey, bucketLoading]);
+  useLayoutEffect(() => {
+    // The list ContentWrap is conditional on the detail route. Persist from
+    // its cleanup too, so browser history and the detail's ordinary Back link
+    // have the same route-local restoration point as an anchor activation.
+    // Persist only the position observed while this scope owned the node. A
+    // loading entry has not restored a position yet, so it must not overwrite
+    // its durable value with the browser's initial/clamped zero on teardown.
+    if (threadId) return;
+    return () => {
+      if (
+        restoredListScopeRef.current === scrollKey
+        && rowNavigationSavedScopeRef.current !== scrollKey
+      ) {
+        rememberListScrollSnapshot();
+      }
+    };
+  }, [threadId, scrollKey]);
   // THR-209 msg 9 (TASK-5976): the Pinned section is an OPEN-list concept
   // only. The server returns the open bucket pinned-first, ordered by
   // immutable numeric thread id DESC (THR-10 above THR-2) then unpinned in
   // ordinary order; we split ONLY there for the section header, preserving
   // server order. Archived ('done') and 'all' buckets render ONE flat
-  // ordinary list — pin has zero presentation effect there — while rows in
-  // every bucket keep their per-row pin toggle (a mutation control, not
-  // presentation).
+  // ordinary list — pin has zero presentation effect there. Rows in every
+  // bucket only navigate; pin/unpin mutation controls remain in the detail
+  // toolbar.
   const showPinnedSection = bucket === 'open';
   const pinnedThreads = useMemo(
     () => (showPinnedSection ? threads.filter((t) => t.pinned) : []),
@@ -487,8 +548,8 @@ export function ThreadsPage(): JSX.Element {
   // Send mutation lives at the page level so the Composer pattern is pure.
   const sendFollowUp = useSendFollowUp(threadId ?? '');
   const abortReplies = useAbortReplies(threadId ?? '');
-  // THR-209 rename + pin mutations live at the page level; the detail header
-  // and list rows drive them.
+  // THR-209 rename + pin mutations live at the page level; the detail toolbar
+  // controls drive them.
   const renameMutation = useRenameThread(threadId ?? '');
   const pinMutation = useSetThreadPinned(threadId ?? '');
   const [pinError, setPinError] = useState<string | null>(null);
@@ -525,10 +586,49 @@ export function ThreadsPage(): JSX.Element {
   };
   const [composerError, setComposerError] = useState<string | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  // True for the WHOLE owned run (upload + send + late finalizer), so the
+  // composer disables attach/send/remove from the first click. It is owned
+  // synchronous run state rather than the surviving mutation observer's
+  // `isPending`, whose pending flag would otherwise leak a departed run into
+  // the replacement view (same thread id across orgs keeps one observer).
+  const [submissionPending, setSubmissionPending] = useState(false);
+  // Per-selection upload results/names are retained across a failed attempt so
+  // a retry re-uploads only the selections that do not already have a ref.
+  const attachmentRefsRef = useRef<Map<string, ThreadAttachmentRef>>(new Map());
+  const attachmentNamesRef = useRef<Map<string, string>>(new Map());
+  // Every name this page has allocated. Never reused, so a replacement
+  // selection cannot `ArtifactStore.put`-overwrite an earlier artifact.
+  const allocatedNamesRef = useRef<Set<string>>(new Set());
+  // Ownership generation: a submission may only mutate the view's state while
+  // it is still the origin (no thread switch / unmount in between).
+  const submissionGenRef = useRef(0);
 
   useEffect(() => {
+    // Any destination change — thread AND/OR org, including an org switch that
+    // keeps the same thread id — invalidates in-flight submissions and discards
+    // per-selection upload state so no ref/name can leak into the replacement
+    // view. Keying only on threadId left the same-thread-id org switch unguarded.
+    submissionGenRef.current += 1;
+    attachmentRefsRef.current.clear();
+    attachmentNamesRef.current.clear();
     setPendingAttachments([]);
-  }, [threadId]);
+    setSubmissionPending(false);
+    setComposerError(null);
+  }, [threadId, slug]);
+
+  // Full unmount must also invalidate any in-flight submission's state writes.
+  useEffect(() => () => { submissionGenRef.current += 1; }, []);
+
+  const onAttachmentsChange = useCallback((next: PendingAttachment[]) => {
+    const keep = new Set(next.map((item) => item.id));
+    for (const id of [...attachmentRefsRef.current.keys()]) {
+      if (!keep.has(id)) attachmentRefsRef.current.delete(id);
+    }
+    for (const id of [...attachmentNamesRef.current.keys()]) {
+      if (!keep.has(id)) attachmentNamesRef.current.delete(id);
+    }
+    setPendingAttachments(next);
+  }, []);
 
   // Dialog state
   const [showNew, setShowNew] = useState(false);
@@ -568,40 +668,87 @@ export function ThreadsPage(): JSX.Element {
 
   const onSendFollowUp = async (markdown: string, attachments: PendingAttachment[]) => {
     if (!threadId || !slug) return;
+    // Capture the destination + payload at first submit. A later thread/org
+    // switch must not retarget this submission, and its late results must not
+    // mutate the departee's replacement view.
+    const capturedSlug = slug;
+    const capturedThreadId = threadId;
+    const generation = (submissionGenRef.current += 1);
+    const isCurrent = () => submissionGenRef.current === generation;
+    // Run-owned snapshot of the retained ref/name maps. Every read below uses
+    // this copy only. Composer selection ids restart at `sel-1` on remount, so
+    // reading the shared view maps after an await could otherwise substitute a
+    // replacement view's selection (reviewer reproduction: alpha sent [a, y]).
+    // Writes back to the view maps stay generation-guarded so a departed run
+    // cannot seed the replacement cache.
+    const runRefs = new Map(attachmentRefsRef.current);
+    const runNames = new Map(attachmentNamesRef.current);
+    const reserved = new Set(runNames.values());
     setComposerError(null);
+    setSubmissionPending(true);
+    // Identifies the selection whose upload failed; cleared once uploads
+    // succeed so a later send failure is never blamed on the last file.
+    let failedUpload: PendingAttachment | null = null;
     try {
       const refs: ThreadAttachmentRef[] = [];
-      const generatedNames = new Map<string, number>();
       for (const pending of attachments) {
-        let artifactName = safeArtifactName(threadId, pending.file);
-        const count = (generatedNames.get(artifactName) ?? 0) + 1;
-        generatedNames.set(artifactName, count);
-        if (count > 1) {
-          artifactName = safeArtifactName(threadId, pending.file, count);
+        failedUpload = pending;
+        let ref = runRefs.get(pending.id);
+        if (!ref) {
+          let artifactName = runNames.get(pending.id);
+          if (!artifactName) {
+            artifactName = allocateArtifactName(
+              capturedThreadId,
+              pending.file,
+              reserved,
+              allocatedNamesRef.current,
+            );
+          }
+          runNames.set(pending.id, artifactName);
+          // Only the owning view may publish into the shared cache maps; a
+          // departed submission's allocation must not be adopted by the view
+          // that replaced it.
+          if (isCurrent()) attachmentNamesRef.current.set(pending.id, artifactName);
+          allocatedNamesRef.current.add(artifactName);
+          const uploaded = await artifactsApi.uploadArtifact(capturedSlug, {
+            file: pending.file,
+            name: artifactName,
+            agent: 'founder',
+          });
+          ref = {
+            artifact_name: uploaded.name,
+            display_name: pending.file.name,
+            content_type: attachmentContentType(pending.file),
+          };
+          runRefs.set(pending.id, ref);
+          if (isCurrent()) attachmentRefsRef.current.set(pending.id, ref);
+          reserved.add(uploaded.name);
         }
-        const uploaded = await artifactsApi.uploadArtifact(slug, {
-          file: pending.file,
-          name: artifactName,
-          agent: 'founder',
-        });
-        refs.push({
-          artifact_name: uploaded.name,
-          display_name: pending.file.name,
-          content_type: attachmentContentType(pending.file),
-        });
+        refs.push(ref);
       }
+      failedUpload = null;
       await sendFollowUp.mutateAsync({
         body_markdown: markdown.trim(),
         ...(refs.length ? { attachments: refs } : {}),
-      });
-      setPendingAttachments([]);
+        destination: { slug: capturedSlug, threadId: capturedThreadId },
+      } as Parameters<typeof sendFollowUp.mutateAsync>[0]);
+      if (isCurrent()) {
+        attachmentRefsRef.current.clear();
+        attachmentNamesRef.current.clear();
+        setPendingAttachments([]);
+      }
     } catch (err) {
-      if (err instanceof ApiError) {
-        setComposerError(describeError(err.code, `HTTP ${err.status}`));
-      } else {
-        setComposerError(String(err));
+      if (isCurrent()) {
+        const label = failedUpload ? `${failedUpload.file.name}: ` : '';
+        if (err instanceof ApiError) {
+          setComposerError(label + describeError(err.code, `HTTP ${err.status}`));
+        } else {
+          setComposerError(label + String(err));
+        }
       }
       throw err;
+    } finally {
+      if (isCurrent()) setSubmissionPending(false);
     }
   };
 
@@ -672,7 +819,7 @@ export function ThreadsPage(): JSX.Element {
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Tabs
               value={bucket}
-              onValueChange={(v) => setBucket(v as InboxBucket)}
+              onValueChange={(v) => changeBucket(v as InboxBucket)}
             >
               <TabsList variant="segmented" aria-label="Status filter">
                 {INBOX_BUCKETS.map((b) => {
@@ -697,7 +844,7 @@ export function ThreadsPage(): JSX.Element {
             <Input
               type="text"
               value={filter}
-              onChange={(e) => setFilter(e.target.value)}
+              onChange={(e) => changeFilter(e.target.value)}
               placeholder={S.filterPlaceholder}
               className="text-caption h-7 w-full shrink-0 px-2 py-1 sm:w-44"
               aria-label="Filter threads"
@@ -712,7 +859,7 @@ export function ThreadsPage(): JSX.Element {
             `max-w-content` cap with 26px padding. The flex sizer owns the
             height; ContentWrap owns the scroll. */}
         <div className="min-h-0 flex-1">
-          <ContentWrap>
+          <ContentWrap scrollRef={setListScrollRef} onScroll={observeListScroll}>
           {/* Loading skeleton */}
           {bucketLoading && <InboxSkeleton />}
 
@@ -751,10 +898,10 @@ export function ThreadsPage(): JSX.Element {
               render ONLY in the Open bucket (pinned ranked by numeric thread
               id desc from the server; unpinned in ordinary order). Archived
               and All buckets render one flat ordinary list — pin has zero
-              presentation effect there — while every row keeps its per-row
-              pin toggle and the active query/filter still governs inclusion. */}
+              presentation effect there — and the active query/filter still
+              governs inclusion. Pin controls are detail-only. */}
           {!bucketLoading && !bucketError && threads.length > 0 && (
-            <div className="flex flex-col gap-1">
+            <div className="overflow-hidden rounded-sm border border-border-default divide-y divide-border-default">
               {pinnedThreads.length > 0 && (
                 <h2 className="text-text-muted px-1 pt-2 pb-1 text-xs font-semibold tracking-wider uppercase">
                   {S.pinnedSection}
@@ -780,10 +927,8 @@ export function ThreadsPage(): JSX.Element {
                       </span>
                     }
                     href={path}
-                    onSelect={() => navigate(path)}
-                    pinControl={
-                      <RowPinControl thread={t} onError={setPinError} />
-                    }
+                    onSelect={() => { rememberRowNavigationScroll(); navigate(path); }}
+                    participants={t.participants}
                   />
                 );
               })}
@@ -812,10 +957,8 @@ export function ThreadsPage(): JSX.Element {
                       </span>
                     }
                     href={path}
-                    onSelect={() => navigate(path)}
-                    pinControl={
-                      <RowPinControl thread={t} onError={setPinError} />
-                    }
+                    onSelect={() => { rememberRowNavigationScroll(); navigate(path); }}
+                    participants={t.participants}
                   />
                 );
               })}
@@ -829,9 +972,6 @@ export function ThreadsPage(): JSX.Element {
   return (
     <>
       {threadId ? (
-        // Transcript-focus view (THREADDET-01): the list column collapses and
-        // the detail column (transcript + composer + right rail) takes the full
-        // width. The back link returns to the single-column list.
         <DetailColumn
           loading={activeThread.isLoading}
           errored={activeThread.isError || !activeThread.data}
@@ -861,12 +1001,12 @@ export function ThreadsPage(): JSX.Element {
               threadId={threadId ?? ''}
               orgSlug={slug ?? ''}
               disabled={activeThread.data?.status !== 'open'}
-              pending={sendFollowUp.isPending}
+              pending={submissionPending}
               errorMessage={composerError}
               helper={S.composerHelper}
               onSend={onSendFollowUp}
               attachments={pendingAttachments}
-              onAttachmentsChange={setPendingAttachments}
+              onAttachmentsChange={onAttachmentsChange}
               registerFocus={(focus) => { composerFocusRef.current = focus; }}
               // "Abort reply" lives INSIDE the input pill (THR-099 Phase A).
               // Renders only while replies are in flight; one click aborts EVERY
@@ -1440,8 +1580,8 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
         const variant = messageVariant(m);
         return (
           <div key={`${m.seq}-${m.speaker}-${m.kind}`}>
-            {/* System rows — centered "· system event · broadcast to all"
-                divider (THR-061 a-thread-detail .sys), not a chat bubble.
+            {/* System rows — full-width separator above an inline, wrapping
+                event description and trailing metadata, not a chat bubble.
                 Terminal responder history (incl. a system-row-anchored REPLY
                 range that settled) renders as the same light strip below the
                 divider (TASK-5553): ResponderStatusStrip filters to terminal
@@ -1537,7 +1677,7 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
 }
 
 /* ------------------------------------------------------------------ */
-/*  System divider — centered "· system event · broadcast to all"      */
+/*  System divider — full-width rule above wrapping event text      */
 /* ------------------------------------------------------------------ */
 
 interface SystemDividerProps {
@@ -1549,18 +1689,17 @@ interface SystemDividerProps {
 function SystemDivider({ timestamp, systemPayload, slug }: SystemDividerProps): JSX.Element {
   const description = describeSystem(systemPayload, slug);
   return (
-    <div className="my-1 flex items-center gap-3" title={new Date(timestamp).toLocaleString()}>
-      <span aria-hidden="true" className="bg-border-subtle h-px flex-1" />
-      <span className="text-text-muted text-mono-sm flex min-w-0 items-center gap-1.5 font-mono">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0" aria-hidden="true">
+    <div className="my-1 w-full min-w-0" title={new Date(timestamp).toLocaleString()}>
+      <div aria-hidden="true" className="bg-border-subtle mb-2 h-px w-full" />
+      <div className="text-text-muted text-mono-sm break-words font-mono">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mr-1.5 inline-block align-text-bottom" aria-hidden="true">
           <path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2" />
           <circle cx="9" cy="7" r="3" />
           <path d="M22 21v-2a4 4 0 00-3-3.9" />
         </svg>
-        <span className="text-text-secondary">{description}</span>
-        <span className="text-text-disabled shrink-0 whitespace-nowrap">· {S.systemEventLabel} event · broadcast to all</span>
-      </span>
-      <span aria-hidden="true" className="bg-border-subtle h-px flex-1" />
+        <span className="text-text-secondary whitespace-pre-wrap">{description}</span>{' '}
+        <span className="text-text-disabled">· {S.systemEventLabel} event · broadcast to all</span>
+      </div>
     </div>
   );
 }
@@ -1611,7 +1750,7 @@ function describeSystem(payload: Record<string, unknown> | null, slug?: string):
         ? <Link to={`/orgs/${slug}/tasks/${taskId}`} className="underline">{taskId}</Link>
         : taskId;
       const summary = payload.final_output_summary
-        ? String(payload.final_output_summary).slice(0, 240)
+        ? String(payload.final_output_summary)
         : null;
       return (
         <>
@@ -1647,7 +1786,7 @@ function describeSystem(payload: Record<string, unknown> | null, slug?: string):
       const taskLink = slug && taskId
         ? <Link to={`/orgs/${slug}/tasks/${taskId}`} className="underline">{taskId}</Link>
         : taskId;
-      const reason = payload.reason ? String(payload.reason).slice(0, 240) : null;
+      const reason = payload.reason ? String(payload.reason) : null;
       return (
         <>
           task {taskLink} escalated{reason ? ` · ${reason}` : ''}

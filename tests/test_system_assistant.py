@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -739,7 +740,12 @@ def test_classify_stale_when_required_bootstrap_file_is_symlink(
     status = classify_assistant_state(tmp_path)
 
     assert status.state == AssistantState.STALE_OR_BROKEN
-    assert status.detail == f"assistant bootstrap file {filename} must not be a symlink"
+    if filename == "agent.yaml":
+        assert status.detail == "assistant bootstrap file agent.yaml must not be a symlink"
+    else:
+        # THR-262 Slice B: the instruction pair is validated instead; a
+        # non-canonical symlink is refused through the pair classifier.
+        assert status.detail.startswith("assistant instruction pair is not canonical:")
 
 
 @pytest.mark.parametrize("filename", ["agent.yaml", "AGENTS.md", "CLAUDE.md"])
@@ -761,7 +767,10 @@ def test_classify_stale_when_required_bootstrap_file_is_directory(
     status = classify_assistant_state(tmp_path)
 
     assert status.state == AssistantState.STALE_OR_BROKEN
-    assert status.detail == f"assistant bootstrap file {filename} is not a regular file"
+    if filename == "agent.yaml":
+        assert status.detail == "assistant bootstrap file agent.yaml is not a regular file"
+    else:
+        assert status.detail.startswith("assistant instruction pair is not canonical:")
 
 
 def test_classify_stale_when_learnings_index_is_symlink(
@@ -883,7 +892,7 @@ def test_classify_stale_when_claude_prompt_file_is_missing(
     status = classify_assistant_state(tmp_path)
 
     assert status.state == AssistantState.STALE_OR_BROKEN
-    assert status.detail == "assistant bootstrap file CLAUDE.md is missing"
+    assert status.detail == "assistant instruction pair is not canonical: CLAUDE.md is missing"
 
 
 @pytest.mark.parametrize("executor", ["codex", "opencode", "pi"])
@@ -903,7 +912,7 @@ def test_classify_stale_when_agents_prompt_file_is_missing(
     status = classify_assistant_state(tmp_path)
 
     assert status.state == AssistantState.STALE_OR_BROKEN
-    assert status.detail == "assistant bootstrap file AGENTS.md is missing"
+    assert status.detail == "assistant instruction pair is not canonical: AGENTS.md is missing"
 
 
 def test_classify_stale_when_selected_command_not_found(tmp_path: Path) -> None:
@@ -975,8 +984,10 @@ def test_bootstrap_claude_workspace_writes_claude_surface(tmp_path: Path) -> Non
     bootstrap_assistant_workspace(tmp_path, executor="claude")
 
     workspace = tmp_path / "system" / "assistant" / "workspace"
-    assert (workspace / "CLAUDE.md").exists()
-    assert not (workspace / "AGENTS.md").exists()
+    assert (workspace / "AGENTS.md").is_file()
+    assert not (workspace / "AGENTS.md").is_symlink()
+    assert (workspace / "CLAUDE.md").is_symlink()
+    assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
 
 
 def test_bootstrap_switches_prompt_surface_from_claude_to_codex(
@@ -985,13 +996,17 @@ def test_bootstrap_switches_prompt_surface_from_claude_to_codex(
     bootstrap_assistant_workspace(tmp_path, executor="claude")
     workspace = tmp_path / "system" / "assistant" / "workspace"
 
-    assert (workspace / "CLAUDE.md").exists()
-    assert not (workspace / "AGENTS.md").exists()
+    assert (workspace / "AGENTS.md").is_file()
+    assert not (workspace / "AGENTS.md").is_symlink()
+    assert (workspace / "CLAUDE.md").is_symlink()
+    assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
 
     bootstrap_assistant_workspace(tmp_path, executor="codex")
 
-    assert not (workspace / "CLAUDE.md").exists()
-    assert (workspace / "AGENTS.md").exists()
+    assert (workspace / "AGENTS.md").is_file()
+    assert not (workspace / "AGENTS.md").is_symlink()
+    assert (workspace / "CLAUDE.md").is_symlink()
+    assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
 
 
 def test_bootstrap_accepts_arbitrary_executor_string(tmp_path: Path) -> None:
@@ -1000,9 +1015,11 @@ def test_bootstrap_accepts_arbitrary_executor_string(tmp_path: Path) -> None:
     workspace = system_assistant_paths(tmp_path).workspace
     agent_yaml = yaml.safe_load((workspace / "agent.yaml").read_text())
     assert agent_yaml["executor"] == "my-custom-cli"
-    # Non-claude executors get the AGENTS.md prompt surface.
+    # THR-262 Slice B: every executor gets the canonical pair.
     assert (workspace / "AGENTS.md").is_file()
-    assert not (workspace / "CLAUDE.md").exists()
+    assert not (workspace / "AGENTS.md").is_symlink()
+    assert (workspace / "CLAUDE.md").is_symlink()
+    assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
 
 
 def test_bootstrap_rejects_empty_executor(tmp_path: Path) -> None:
@@ -1242,3 +1259,230 @@ def test_clear_assistant_config_removes_config_file(tmp_path: Path) -> None:
     clear_assistant_config(tmp_path)
     assert not paths.config_path.exists()
     assert load_assistant_config(tmp_path) is None
+
+
+# ── TASK-8744 F1: assistant instruction writers use the shared pair barrier ──
+
+def _assistant_path_state(path: Path):
+    import stat as _stat
+
+    if not os.path.lexists(path):
+        return ("absent", None, None, None)
+    st = os.lstat(path)
+    if _stat.S_ISLNK(st.st_mode):
+        return ("symlink", os.readlink(path), st.st_mode & 0o7777, st.st_uid)
+    if _stat.S_ISREG(st.st_mode):
+        return ("regular", path.read_bytes(), st.st_mode & 0o7777, st.st_uid)
+    return ("other", None, st.st_mode & 0o7777, st.st_uid)
+
+
+def _seed_assistant_workspace(runtime_root: Path) -> Path:
+    paths = system_assistant_paths(runtime_root)
+    paths.workspace.mkdir(parents=True, exist_ok=True)
+    return paths.workspace
+
+
+def test_assistant_registration_preserves_divergent_dual_regular(tmp_path: Path) -> None:
+    """The assistant registration writer must not overwrite divergent regular
+    AGENTS.md and CLAUDE.md bytes without a verified preservation copy."""
+    from runtime.system_assistant import prepare_assistant_registration_workspace
+
+    ws = _seed_assistant_workspace(tmp_path)
+    (ws / "AGENTS.md").write_text("user agents\n")
+    (ws / "CLAUDE.md").write_text("user claude\n")
+
+    prepare_assistant_registration_workspace(tmp_path)
+
+    backups = {
+        p.read_bytes() for p in ws.iterdir() if p.name.endswith(".bak")
+    }
+    assert b"user agents\n" in backups
+    assert b"user claude\n" in backups
+    assert (ws / "AGENTS.md").is_file() and not (ws / "AGENTS.md").is_symlink()
+    assert (ws / "CLAUDE.md").is_symlink()
+    assert os.readlink(ws / "CLAUDE.md") == "AGENTS.md"
+    # No owned temp/staging residue.
+    assert [
+        p.name for p in ws.iterdir()
+        if ".happyranch-" in p.name and not p.name.endswith(".bak")
+    ] == []
+
+
+@pytest.mark.parametrize("executor", ["codex", "claude"])
+def test_assistant_bootstrap_preserves_divergent_dual_regular(
+    tmp_path: Path, executor: str,
+) -> None:
+    ws = _seed_assistant_workspace(tmp_path)
+    (ws / "AGENTS.md").write_text("user agents\n")
+    (ws / "CLAUDE.md").write_text("user claude\n")
+
+    bootstrap_assistant_workspace(tmp_path, executor=executor)
+
+    backups = {
+        p.read_bytes() for p in ws.iterdir() if p.name.endswith(".bak")
+    }
+    assert b"user agents\n" in backups
+    assert b"user claude\n" in backups
+    assert (ws / "AGENTS.md").is_file() and not (ws / "AGENTS.md").is_symlink()
+    assert os.readlink(ws / "CLAUDE.md") == "AGENTS.md"
+
+
+def test_assistant_bootstrap_repeat_is_idempotent(tmp_path: Path) -> None:
+    """A repeat bootstrap of an already-canonical pair writes no new backup or
+    temp and leaves the canonical bytes/link unchanged."""
+    ws = _seed_assistant_workspace(tmp_path)
+    bootstrap_assistant_workspace(tmp_path, executor="codex")
+    agents_before = (ws / "AGENTS.md").read_bytes()
+    link_before = os.readlink(ws / "CLAUDE.md")
+    backups_before = sorted(p.name for p in ws.glob("*.bak"))
+
+    bootstrap_assistant_workspace(tmp_path, executor="codex")
+
+    assert (ws / "AGENTS.md").read_bytes() == agents_before
+    assert os.readlink(ws / "CLAUDE.md") == link_before
+    assert sorted(p.name for p in ws.glob("*.bak")) == backups_before
+
+
+def test_assistant_registration_backup_failure_preserves_originals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An injected preservation-copy failure must leave both originals exactly
+    unchanged and surface the documented assistant error, with no backup/temp."""
+    import runtime.orchestrator.workspace_adapters as wa
+    from runtime.system_assistant import prepare_assistant_registration_workspace
+
+    ws = _seed_assistant_workspace(tmp_path)
+    agents = ws / "AGENTS.md"
+    claude = ws / "CLAUDE.md"
+    agents.write_text("user agents\n")
+    claude.write_text("user claude\n")
+    before_agents = _assistant_path_state(agents)
+    before_claude = _assistant_path_state(claude)
+
+    def failing(path, state):
+        raise OSError("injected backup failure")
+
+    monkeypatch.setattr(wa, "_write_preservation_copy", failing)
+    with pytest.raises(ValueError) as excinfo:
+        prepare_assistant_registration_workspace(tmp_path)
+    assert "preservation copy failed" in str(excinfo.value)
+
+    assert _assistant_path_state(agents) == before_agents
+    assert _assistant_path_state(claude) == before_claude
+    assert not list(ws.glob("*.bak"))
+
+
+@pytest.mark.parametrize("operation", ["registration", "bootstrap"])
+@pytest.mark.parametrize("failure_point", ["stage", "after_both"])
+def test_assistant_instruction_writer_post_barrier_failure_preserves_originals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    operation: str, failure_point: str,
+) -> None:
+    """Registration and bootstrap restore both paths at either live-write
+    failure seam, retain verified copies, and never change a linked inode."""
+    import runtime.orchestrator.workspace_adapters as wa
+    from runtime.system_assistant import prepare_assistant_registration_workspace
+
+    ws = _seed_assistant_workspace(tmp_path)
+    external = tmp_path / "assistant-external.md"
+    external.write_text("user agents\n")
+    external.chmod(0o640)
+    os.link(external, ws / "AGENTS.md")
+    (ws / "CLAUDE.md").write_text("user claude\n")
+    agents_before = _assistant_path_state(ws / "AGENTS.md")
+    claude_before = _assistant_path_state(ws / "CLAUDE.md")
+    external_before = _assistant_path_state(external)
+
+    if failure_point == "stage":
+        def boom(*_a, **_k):
+            raise OSError("injected link staging failure")
+
+        monkeypatch.setattr(wa, "_stage_canonical_claude_link", boom)
+    else:
+        real_link = wa._replace_with_canonical_claude_link
+
+        def link_then_boom(*args, **kwargs):
+            real_link(*args, **kwargs)
+            raise OSError("injected failure after both real instruction writes")
+
+        monkeypatch.setattr(wa, "_replace_with_canonical_claude_link", link_then_boom)
+    with pytest.raises(ValueError):
+        if operation == "registration":
+            prepare_assistant_registration_workspace(tmp_path)
+        else:
+            bootstrap_assistant_workspace(tmp_path, executor="codex")
+
+    assert _assistant_path_state(ws / "AGENTS.md") == agents_before
+    assert _assistant_path_state(ws / "CLAUDE.md") == claude_before
+    assert _assistant_path_state(external) == external_before
+    owned = sorted(p for p in ws.iterdir() if ".happyranch-" in p.name)
+    backups = [p for p in owned if p.name.endswith(".bak")]
+    assert len(backups) == 2, [p.name for p in owned]
+    assert {p.read_bytes() for p in backups} == {
+        b"user agents\n", b"user claude\n",
+    }
+    assert all(_assistant_path_state(p)[0] == "regular" for p in backups)
+    assert [p.name for p in owned if not p.name.endswith(".bak")] == []
+
+
+@pytest.mark.parametrize(
+    "form", ["stale", "broken", "cyclic", "absolute", "external"],
+)
+def test_assistant_registration_refuses_raw_non_canonical_claude_link(
+    tmp_path: Path, form: str,
+) -> None:
+    """The assistant preflight refuses a non-canonical CLAUDE.md symlink with
+    the documented named error, leaving the link and any external target
+    byte/type identical."""
+    from runtime.system_assistant import prepare_assistant_registration_workspace
+
+    ws = _seed_assistant_workspace(tmp_path)
+    agents = ws / "AGENTS.md"
+    claude = ws / "CLAUDE.md"
+    agents.write_text("user agents\n")
+    external = tmp_path / "external_target.md"
+    external.write_text("external bytes\n")
+
+    if form == "stale":
+        (ws / "OTHER.md").write_text("other\n")
+        os.symlink("OTHER.md", claude)
+    elif form == "broken":
+        os.symlink("MISSING.md", claude)
+    elif form == "cyclic":
+        os.symlink("CLAUDE.md", claude)
+    elif form == "absolute":
+        os.symlink(str(agents), claude)
+    elif form == "external":
+        os.symlink(str(external), claude)
+    else:  # pragma: no cover
+        raise AssertionError(form)
+
+    before_claude = _assistant_path_state(claude)
+    external_before = external.read_bytes()
+
+    with pytest.raises(ValueError) as excinfo:
+        prepare_assistant_registration_workspace(tmp_path)
+    assert "CLAUDE.md" in str(excinfo.value)
+
+    assert _assistant_path_state(claude) == before_claude
+    assert external.read_bytes() == external_before
+    assert agents.read_text() == "user agents\n"
+
+
+def test_assistant_registration_accepts_canonical_link_idempotently(
+    tmp_path: Path,
+) -> None:
+    """An already-canonical pair is converged without a preservation copy and
+    keeps the raw relative link."""
+    from runtime.system_assistant import prepare_assistant_registration_workspace
+
+    ws = _seed_assistant_workspace(tmp_path)
+    prepare_assistant_registration_workspace(tmp_path)
+    (ws / "AGENTS.md").write_bytes(b"canonical prompt\n")
+    # CLAUDE.md already resolves to AGENTS.md via the canonical raw link.
+    stat_before = _assistant_path_state(ws / "CLAUDE.md")
+
+    prepare_assistant_registration_workspace(tmp_path)
+
+    assert _assistant_path_state(ws / "CLAUDE.md") == stat_before
+    assert os.readlink(ws / "CLAUDE.md") == "AGENTS.md"

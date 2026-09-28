@@ -33,6 +33,8 @@ export type BlockKind = 'delegated' | 'blocked_on_job' | 'escalated';
 interface StatusBadgeProps {
   status: ThreadStatus | TaskStatus;
   blockKind?: BlockKind | null;
+  /** Opt-in standalone Tasks list appearance; shared defaults stay unchanged. */
+  presentation?: 'tasks';
 }
 
 // Tinted pill tones read from the shared semantic colour vocabulary
@@ -74,15 +76,17 @@ function label(status: ThreadStatus | TaskStatus): string {
   return status;
 }
 
-export function StatusBadge({ status, blockKind }: StatusBadgeProps): JSX.Element {
-  const cls = STATUS_STYLE[status];
+export function StatusBadge({ status, blockKind, presentation }: StatusBadgeProps): JSX.Element {
+  const cls = presentation === 'tasks' && status === 'in_progress' ? TONE_CLASS.info
+    : presentation === 'tasks' && status === 'escalated' ? TONE_CLASS.attention
+    : STATUS_STYLE[status];
   const qualifier = waitingQualifier(status, blockKind);
   // Led dot for live/active states only (matches ds.css .tag led).
   const showDot =
     status === 'in_progress' || status === 'completed' || status === 'pending';
   return (
     <span
-      className={`text-mono-sm inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 font-semibold tabular-nums ${cls}`}
+      className={`text-mono-sm inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 font-semibold tabular-nums ${cls} ${presentation === 'tasks' ? 'tasks-status' : ''}`}
     >
       {showDot && (
         <span className="inline-block h-1.5 w-1.5 rounded-full bg-current opacity-70" aria-hidden />

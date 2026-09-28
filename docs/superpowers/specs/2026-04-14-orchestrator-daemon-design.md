@@ -181,6 +181,20 @@ The `session_id` makes every callback traceable to a specific subprocess. Skills
 
 ### Completion handling
 
+> **Maintained completion API (current).** The `opc` command examples below are
+> historical. Current sessions write an absolute JSON payload and invoke
+> `happyranch report-completion --org <slug> --from-file <absolute-path>`.
+> `task_id`, `session_id`, `agent`, `status`, and `summary` retain their ordinary
+> meanings; a manager also supplies `decision`, while reviewer/QA roles supply
+> their role-defined `verdict`. When injected role guidance identifies a
+> v2-bound manager escalation, the same payload must include the complete
+> structured `manager_self_evaluation` supplied for that launch. The server
+> validates its immutable binding and dual assessment; missing, null, malformed,
+> uncertain, or mismatched evidence fails closed. Neither the CLI nor the skill
+> invents policy text, a clause identifier, a canonical phrase, or a second
+> evaluation. Other callbacks omit the field. Exact retries are idempotent;
+> changed bodies do not replace an accepted result.
+
 Agent calls `opc report-completion --task-id ... --session-id ... --status ... ...` mid-session. The daemon's `SessionTracker` is the source of truth for which sessions exist:
 - No tracker entry for `(task_id, agent)` → `409 unknown_session`. Nothing persisted.
 - Tracker entry exists but `session_id` differs → `409 session_mismatch`. Nothing persisted.

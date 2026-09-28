@@ -17,6 +17,13 @@ describe('StatusBadge — Path B task vocabulary', () => {
     expect(container.querySelector('[aria-hidden]')).toBeNull();
   });
 
+  test('failed tasks retain abandoned red independently of Todo attention tones', () => {
+    const { container } = render(<StatusBadge status="failed" />);
+    expect(screen.getByText('failed')).toHaveClass('text-status-abandoned', 'bg-tier-red-tint');
+    expect(screen.getByText('failed')).not.toHaveClass('text-attention-text', 'bg-attention-soft');
+    expect(container.querySelector('[aria-hidden]')).toBeNull();
+  });
+
   test('cancelled renders a muted terminal token, no led dot', () => {
     const { container } = render(<StatusBadge status="cancelled" />);
     const badge = screen.getByText('cancelled');
@@ -64,5 +71,16 @@ describe('StatusBadge — Path B task vocabulary', () => {
   test('thread archived stays the neutral grey tone', () => {
     render(<StatusBadge status="archived" />);
     expect(screen.getByText('archived')).toHaveClass('text-status-archived');
+  });
+});
+
+describe('Tasks opt-in presentation', () => {
+  test.each(['in_progress', 'escalated'] as const)('%s changes only when opted in', (status) => {
+    const { container } = render(<><StatusBadge status={status} /><StatusBadge status={status} presentation="tasks" /></>);
+    const [normal, tasks] = Array.from(container.children);
+    expect(normal).not.toHaveClass('tasks-status');
+    expect(tasks).toHaveClass('tasks-status', status === 'in_progress' ? 'text-info' : 'text-attention-text');
+    expect(normal).toHaveClass(status === 'in_progress' ? 'text-status-open' : 'text-status-escalated');
+    expect(normal.textContent).toBe(tasks.textContent);
   });
 });

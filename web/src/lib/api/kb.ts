@@ -2,16 +2,25 @@
 import { request } from './client';
 import type { KBEntry } from './types';
 
+export type KBEntrySummary = Pick<KBEntry, 'slug' | 'title' | 'type' | 'topic' | 'tags' | 'updated_at'>;
+
+export interface KBSearchHit {
+  slug: string;
+  title: string;
+  snippet: string;
+  score: number;
+}
+
 export const listKB = (
   slug: string,
   params?: { topic?: string; type?: string },
-): Promise<{ entries: KBEntry[] }> =>
+): Promise<{ entries: KBEntrySummary[] }> =>
   request(`/orgs/${slug}/kb`, { params });
 
 export const searchKB = (
   slug: string,
   params: { q: string; limit?: number },
-): Promise<{ entries: KBEntry[] }> =>
+): Promise<{ hits: KBSearchHit[] }> =>
   request(`/orgs/${slug}/kb/search`, { params });
 
 export const getKBEntry = (slug: string, entrySlug: string): Promise<KBEntry> =>

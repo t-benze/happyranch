@@ -12,7 +12,7 @@ A single runtime container hosts **multiple orgs** under `<runtime>/orgs/<slug>/
 
 ### Manager-driven orchestration
 
-Each org has one or more **team managers** that drive task execution. When you submit a task, the manager analyzes it and decides what to do at each step — handle it directly, delegate to a team member, or escalate to the founder. There are no hardcoded task chains. `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` (default 50) caps runaway loops.
+Each org has one or more **team managers** that drive task execution. When you submit a task, the manager analyzes it and decides what to do at each step — handle it directly, delegate to a team member, or escalate to the founder. There are no hardcoded task chains. The historical orchestration-step count is monotonic telemetry, not an execution limit.
 
 ### Dynamic agents
 
@@ -371,8 +371,10 @@ To enroll an agent with a non-default executor, the manager's `manage-agent` pay
 
 After approval, the requested executor and repos are persisted to the agent's
 `org/agents/<name>.md` frontmatter (`AgentDef`), the declared repos are cloned
-into the workspace, and the workspace is bootstrapped with the matching
-surface (`AGENTS.md` for non-Claude executors, `CLAUDE.md` for Claude).
+into the workspace, and every built-in executor workspace is bootstrapped with
+a regular `AGENTS.md` plus a raw relative `CLAUDE.md -> AGENTS.md` link. Startup
+refuses an incomplete or noncanonical pair before executor launch and directs
+the operator to repair it with `happyranch init-agent <agent>`.
 
 ### Managing the daemon
 
@@ -405,12 +407,13 @@ Operational settings come from two places, highest precedence first:
 
 If a value isn't set in either, the code default applies. The file is optional — if it doesn't exist, defaults are used. Changes take effect on daemon restart. (This is distinct from each org's `<runtime>/orgs/<slug>/org/config.yaml`, which holds per-org settings.) Runtime paths are derived from the runtime container.
 
-The Settings → Daemon / Capacity page lets a local operator holding the shared
-daemon bearer atomically stage only `queue_workers` and
+The Settings → Capacity page lets a local operator holding the shared
+daemon access token atomically stage only `queue_workers` and
 `host_global_session_cap`. It is not a generic YAML editor and never applies or
-restarts the daemon. Bearer authorization cannot be attributed to a verified
+restarts the daemon. The access token cannot be attributed to a verified
 person. Environment values take precedence; when either key is shadowed the UI
-requires explicit acknowledgement that restart alone will not make YAML win.
+requires explicit acknowledgement that the environment setting will still
+override the saved value after a restart.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -419,7 +422,7 @@ requires explicit acknowledgement that restart alone will not make YAML win.
 | `HAPPYRANCH_OPENCODE_CLI_PATH` | `opencode` | Default command name for opencode (metadata only — executor launch requires `executors.json` pin) |
 | `HAPPYRANCH_PI_CLI_PATH` | `pi` | Default command name for pi (metadata only — executor launch requires `executors.json` pin) |
 | `HAPPYRANCH_PERMISSION_MODE` | `auto` | Claude Code permission mode |
-| `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |
+| `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Legacy accepted setting; inert (not an execution limit) |
 | `HAPPYRANCH_QUEUE_WORKERS` | `6` | Task `run_step` slots (daemon-wide, across all orgs). Must be positive. Takes effect on daemon restart. |
 | `HAPPYRANCH_HOST_GLOBAL_SESSION_CAP` | `13` | Healthy enforcement-capable host-session admission cap. Capability fallbacks can reduce the effective cap (macOS/no-enforcement remains 4). Must be positive. Takes effect on daemon restart. |
 | `HAPPYRANCH_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) — global default; see overrides below |
@@ -598,7 +601,7 @@ client only hints field formats. Each save records an audit row.
 
 Each agent runs in its own persistent workspace inside the org directory. After `happyranch init-agent`, each workspace contains:
 
-- `CLAUDE.md` (Claude) or `AGENTS.md` (Codex/opencode/Pi) — agent identity, system prompt, available repos
+- A regular `AGENTS.md` plus a raw relative `CLAUDE.md -> AGENTS.md` link for every built-in executor — agent identity, system prompt, available repos. Startup refuses an incomplete or noncanonical pair before executor launch; repair it with `happyranch init-agent <agent>`.
 - `.claude/settings.json` + `.claude/skills/` (Claude) — permissions and skills
 - `.agents/skills/` (Codex/opencode/Pi) — shared skills tree
 - `opencode.json` (opencode only) — `permission.bash` map

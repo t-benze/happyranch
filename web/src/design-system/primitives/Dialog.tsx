@@ -43,10 +43,21 @@ const DialogOverlay = React.forwardRef<
 ));
 DialogOverlay.displayName = DialogPrimitive.Overlay.displayName;
 
+/**
+ * Optional accessible label for the built-in X close control. Defaults to the
+ * legacy English "Close" so every existing caller keeps its exact prior
+ * behavior; localized callers pass their catalog string. The primitive stays
+ * prop-driven and never imports a locale hook or catalog.
+ */
+export interface DialogContentProps
+  extends React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> {
+  closeLabel?: string;
+}
+
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, ...props }, ref) => (
+  DialogContentProps
+>(({ className, children, closeLabel = 'Close', ...props }, ref) => (
   <DialogPortal>
     <DialogOverlay />
     <DialogPrimitive.Content
@@ -60,7 +71,7 @@ const DialogContent = React.forwardRef<
       {children}
       <DialogPrimitive.Close
         className="text-fg-muted ring-offset-background hover:text-fg focus:ring-ring absolute top-3 right-3 rounded opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-none disabled:pointer-events-none"
-        aria-label="Close"
+        aria-label={closeLabel}
       >
         <X className="h-4 w-4" />
       </DialogPrimitive.Close>

@@ -1255,6 +1255,80 @@ def test_parse_claude_terminal_error_success_ignored():
     assert reason is None
 
 
+def test_parse_claude_terminal_error_observed_session_limit_success_envelope():
+    """The observed Claude 2.1.x API-error result is terminal despite subtype.
+
+    This is deliberately narrower than treating success envelopes or 429s as
+    failures: all typed discriminator fields and the proved session-limit
+    wording are required.
+    """
+    from runtime.orchestrator.executors import _parse_claude_terminal_error
+
+    stdout = json.dumps({
+        "type": "result", "subtype": "success", "is_error": True,
+        "terminal_reason": "api_error", "api_error_status": 429,
+        "result": "You've hit your session limit · resets 12:20am (Asia/Shanghai)",
+    }, ensure_ascii=False)
+    assert _parse_claude_terminal_error(stdout, "") == "session_limit"
+
+
+def test_parse_claude_terminal_error_loads_complete_observed_sanitized_fixture():
+    """The checked-in production-note fixture, not a reconstructed surrogate."""
+    from runtime.orchestrator.executors import _parse_claude_terminal_error
+
+    fixture = Path(__file__).parent / "fixtures" / "claude-task6941-result.sanitized.json"
+    assert _parse_claude_terminal_error(fixture.read_text(), "") == "session_limit"
+
+
+def test_parse_claude_session_limit_notice_rejects_unrelated_legacy_result():
+    """Legacy classification must not promote arbitrary result text to a notice."""
+    from runtime.orchestrator.executors import _parse_claude_session_limit_notice
+
+    stdout = json.dumps({
+        "type": "result", "subtype": "error_during_execution", "is_error": True,
+        "errors": ["session limit reached"], "result": "unrelated raw diagnostic marker",
+    })
+    assert _parse_claude_session_limit_notice(stdout, "") is None
+
+
+@pytest.mark.parametrize("field,value", [
+    ("type", None), ("type", 1), ("subtype", None), ("subtype", 1),
+    ("is_error", None), ("is_error", 1), ("is_error", False),
+    ("terminal_reason", None), ("terminal_reason", 1), ("terminal_reason", "other_error"),
+    ("api_error_status", None), ("api_error_status", True), ("api_error_status", "429"),
+    ("api_error_status", 428), ("api_error_status", 430),
+    ("result", None), ("result", 1), ("result", "API Error: 429 Too Many Requests"),
+])
+def test_parse_claude_terminal_error_observed_success_shape_requires_typed_discriminators(
+    field, value,
+):
+    from runtime.orchestrator.executors import _parse_claude_terminal_error
+
+    envelope = {
+        "type": "result", "subtype": "success", "is_error": True,
+        "terminal_reason": "api_error", "api_error_status": 429,
+        "result": "You've hit your session limit · resets 12:20am (Asia/Shanghai)",
+    }
+    envelope[field] = value
+    assert _parse_claude_terminal_error(json.dumps(envelope), "") is None
+
+
+@pytest.mark.parametrize("field", [
+    "type", "subtype", "is_error", "terminal_reason", "api_error_status", "result",
+])
+def test_parse_claude_terminal_error_observed_success_shape_requires_present_discriminators(field):
+    """Each observed-envelope discriminator must be physically present."""
+    from runtime.orchestrator.executors import _parse_claude_terminal_error
+
+    envelope = {
+        "type": "result", "subtype": "success", "is_error": True,
+        "terminal_reason": "api_error", "api_error_status": 429,
+        "result": "You've hit your session limit · resets 12:20am (Asia/Shanghai)",
+    }
+    del envelope[field]
+    assert _parse_claude_terminal_error(json.dumps(envelope), "") is None
+
+
 def test_parse_claude_terminal_error_empty_stdout_returns_none():
     """Empty stdout → None (fall back to existing error)."""
     from runtime.orchestrator.executors import _parse_claude_terminal_error

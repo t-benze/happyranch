@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import os
 from unittest.mock import patch
+
+import pytest
 
 from fastapi.testclient import TestClient
 
 from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator import prompt_loader
 
 _EH_TASK = "TASK-100"
 _EH_SESSION = "sess-eh-test"
@@ -31,6 +37,222 @@ def test_list_agents_returns_names(tmp_home, app, org_state, auth_headers) -> No
     assert "agents" in body
     names = [a["name"] for a in body["agents"]]
     assert "engineering_head" in names
+
+
+def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
+    app, daemon_state, org_state, auth_headers,
+) -> None:
+    """The activity read uses trigger audits, before its five-row limit."""
+    _seed_active_agent(org_state, "dev_agent")
+    _seed_active_agent(org_state, "qa_engineer")
+    db = org_state.db
+    # Seed directly so this test exercises the projection without invoking a
+    # lifecycle writer.  The same trigger twice must not displace TASK-4.
+    for index in range(1, 7):
+        task_id = f"TASK-{index}"
+        db._conn.execute(
+            "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (task_id, "dev_agent", "failed", "cleanup", f"2026-01-0{index}T00:00:00+00:00", f"2026-01-0{index}T00:00:00+00:00"),
+        )
+        db.insert_audit_log(task_id, "dev_agent", "workspace_cleanup_triggered", None)
+    db.insert_audit_log("TASK-6", "dev_agent", "workspace_cleanup_triggered", None)
+    # Equal run dates use immutable task ID as the stable descending tie-breaker.
+    for task_id in ("TASK-TIE-A", "TASK-TIE-B"):
+        db._conn.execute(
+            "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (task_id, "dev_agent", "completed", "cleanup", "2026-03-01T00:00:00+00:00", "2026-03-01T00:00:00+00:00"),
+        )
+        db.insert_audit_log(task_id, "dev_agent", "workspace_cleanup_triggered", None)
+    db._conn.execute(
+        "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-wrong", "qa_engineer", "completed", "cleanup", "2026-02-01T00:00:00+00:00", "2026-02-01T00:00:00+00:00"),
+    )
+    db.insert_audit_log("TASK-wrong", "dev_agent", "workspace_cleanup_triggered", None)
+    # These newest-looking rows must not qualify: no task, no authoritative
+    # trigger, or a trigger recorded for another agent.
+    db.insert_audit_log("TASK-orphan", "dev_agent", "workspace_cleanup_triggered", None)
+    db._conn.execute(
+        "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-brief-only", "dev_agent", "completed", "workspace cleanup", "2026-04-01T00:00:00+00:00", "2026-04-01T00:00:00+00:00"),
+    )
+    db._conn.execute(
+        "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-wrong-trigger", "dev_agent", "completed", "cleanup", "2026-04-02T00:00:00+00:00", "2026-04-02T00:00:00+00:00"),
+    )
+    db.insert_audit_log("TASK-wrong-trigger", "qa_engineer", "workspace_cleanup_triggered", None)
+    # A second eligible agent contributes its own activity in alpha.  Its
+    # separate HTTP read below prevents this from being merely a foreign-row
+    # negative fixture.
+    db._conn.execute(
+        "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-ALPHA-QA", "qa_engineer", "completed", "cleanup", "2026-04-03T00:00:00+00:00", "2026-04-03T00:00:00+00:00"),
+    )
+    db.insert_audit_log("TASK-ALPHA-QA", "qa_engineer", "workspace_cleanup_triggered", None)
+    # Result selection is scoped to the task and requested agent.  The later
+    # foreign result must not replace the matching result, while null and blank
+    # summaries remain distinct wire values for the presentation layer.
+    db._conn.execute(
+        "INSERT INTO task_results (task_id, agent, session_id, status, output_summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-6", "dev_agent", "sess-6-old", "completed", "older matching summary", "2026-01-06T00:00:00+00:00"),
+    )
+    db._conn.execute(
+        "INSERT INTO task_results (task_id, agent, session_id, status, output_summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-6", "dev_agent", "sess-6-new", "blocked", "latest matching summary", "2026-01-07T00:00:00+00:00"),
+    )
+    db._conn.execute(
+        "INSERT INTO task_results (task_id, agent, session_id, status, output_summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-6", "qa_engineer", "sess-foreign", "completed", "foreign later result", "2026-04-03T00:00:00+00:00"),
+    )
+    db._conn.execute(
+        "INSERT INTO task_results (task_id, agent, session_id, status, output_summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-5", "dev_agent", "sess-5", "completed", None, "2026-01-05T00:00:00+00:00"),
+    )
+    db._conn.execute(
+        "INSERT INTO task_results (task_id, agent, session_id, status, output_summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-4", "dev_agent", "sess-4", "failed", "", "2026-01-04T00:00:00+00:00"),
+    )
+    db._conn.commit()
+    before = db._conn.total_changes
+    response = TestClient(app).get(
+        "/api/v1/orgs/alpha/agents/dev_agent/cleanup-activity", headers=auth_headers,
+    )
+    assert response.status_code == 200
+    assert [row["task_id"] for row in response.json()["activities"]] == [
+        "TASK-TIE-B", "TASK-TIE-A", "TASK-6", "TASK-5", "TASK-4",
+    ]
+    first = response.json()["activities"][2]
+    assert first["status"] == "failed"
+    assert first["result_status"] == "blocked"
+    assert first["output_summary"] == "latest matching summary"
+    assert response.json()["activities"][3] == {
+        "task_id": "TASK-5", "status": "failed", "created_at": "2026-01-05T00:00:00+00:00",
+        "result_status": "completed", "output_summary": None,
+    }
+    assert response.json()["activities"][4]["result_status"] == "failed"
+    assert response.json()["activities"][4]["output_summary"] == ""
+    assert db._conn.total_changes == before
+    alpha_qa_response = TestClient(app).get(
+        "/api/v1/orgs/alpha/agents/qa_engineer/cleanup-activity", headers=auth_headers,
+    )
+    assert alpha_qa_response.status_code == 200
+    assert alpha_qa_response.json()["activities"] == [{
+        "task_id": "TASK-ALPHA-QA", "status": "completed",
+        "created_at": "2026-04-03T00:00:00+00:00",
+        "result_status": None, "output_summary": None,
+    }]
+    assert db._conn.total_changes == before
+
+    # A second loaded org proves the HTTP dependency resolves each org's
+    # database, rather than merely filtering foreign rows in alpha.
+    beta_root = daemon_state.runtime.orgs_dir / "beta"
+    (beta_root / "org" / "agents").mkdir(parents=True)
+    (beta_root / "org" / "teams.yaml").write_text("teams: {}\n")
+    beta = asyncio.run(daemon_state.add_org("beta"))
+    _seed_active_agent(beta, "dev_agent")
+    _seed_active_agent(beta, "qa_engineer")
+    beta.db._conn.execute(
+        "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-BETA", "qa_engineer", "completed", "cleanup", "2026-05-01T00:00:00+00:00", "2026-05-01T00:00:00+00:00"),
+    )
+    beta.db.insert_audit_log("TASK-BETA", "qa_engineer", "workspace_cleanup_triggered", None)
+    beta.db._conn.execute(
+        "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-BETA-DEV", "dev_agent", "failed", "cleanup", "2026-05-02T00:00:00+00:00", "2026-05-02T00:00:00+00:00"),
+    )
+    beta.db.insert_audit_log("TASK-BETA-DEV", "dev_agent", "workspace_cleanup_triggered", None)
+    beta.db._conn.commit()
+    beta_before = beta.db._conn.total_changes
+    beta_response = TestClient(app).get(
+        "/api/v1/orgs/beta/agents/qa_engineer/cleanup-activity", headers=auth_headers,
+    )
+    assert beta_response.status_code == 200
+    assert beta_response.json()["activities"] == [{
+        "task_id": "TASK-BETA", "status": "completed",
+        "created_at": "2026-05-01T00:00:00+00:00",
+        "result_status": None, "output_summary": None,
+    }]
+    assert beta.db._conn.total_changes == beta_before
+    beta_dev_response = TestClient(app).get(
+        "/api/v1/orgs/beta/agents/dev_agent/cleanup-activity", headers=auth_headers,
+    )
+    assert beta_dev_response.status_code == 200
+    assert beta_dev_response.json()["activities"] == [{
+        "task_id": "TASK-BETA-DEV", "status": "failed",
+        "created_at": "2026-05-02T00:00:00+00:00",
+        "result_status": None, "output_summary": None,
+    }]
+    assert beta.db._conn.total_changes == beta_before
+
+
+def test_cleanup_activity_returns_404_for_unknown_agent(app, auth_headers) -> None:
+    response = TestClient(app).get(
+        "/api/v1/orgs/alpha/agents/missing/cleanup-activity", headers=auth_headers,
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"])
+def test_list_agents_accepts_snapshot_universal_newlines(
+    tmp_home, app, org_state, auth_headers, newline,
+) -> None:
+    _seed_active_agent(org_state, "dev_agent", system_prompt="snapshot prompt\n")
+    path = _paths(org_state).agents_dir / "dev_agent.md"
+    raw = path.read_bytes().replace(b"\n", newline)
+    path.write_bytes(raw)
+
+    response = TestClient(app).get("/api/v1/orgs/alpha/agents", headers=auth_headers)
+    assert response.status_code == 200, response.text
+    row = next(item for item in response.json()["agents"] if item["name"] == "dev_agent")
+    assert row["system_prompt"] == "snapshot prompt\n"
+    assert row["revision"] == hashlib.sha256(raw).hexdigest()
+
+
+def test_list_agents_skips_disappearing_entry_and_emits_same_byte_revision(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    _seed_active_agent(org_state, "dev_agent", system_prompt="old snapshot bytes\n")
+    _seed_active_agent(org_state, "payment_agent", system_prompt="gone bytes\n")
+    paths = _paths(org_state)
+    surviving = paths.agents_dir / "dev_agent.md"
+    disappearing = paths.agents_dir / "payment_agent.md"
+    real_parse = prompt_loader.parse_agent_file
+    old_bytes = surviving.read_bytes()
+    _seed_active_agent(org_state, "dev_agent", system_prompt="replacement snapshot bytes\n")
+    replacement_bytes = surviving.read_bytes()
+    surviving.write_bytes(old_bytes)
+
+    def _split_parse_hash_baseline(path):
+        """The pre-fix parse-then-hash shape produces a mismatched row."""
+        parsed = real_parse(path)
+        path.write_bytes(replacement_bytes)
+        return parsed, hashlib.sha256(path.read_bytes()).hexdigest()
+
+    baseline_path = paths.agents_dir / "_baseline" / "dev_agent.md"
+    baseline_path.parent.mkdir()
+    baseline_path.write_bytes(old_bytes)
+    old_agent, old_revision = _split_parse_hash_baseline(baseline_path)
+    assert old_agent.system_prompt == "old snapshot bytes\n"
+    assert old_revision == hashlib.sha256(replacement_bytes).hexdigest()
+    assert old_revision != hashlib.sha256(old_bytes).hexdigest()
+    baseline_path.unlink()
+    baseline_path.parent.rmdir()
+
+    def _disappear_before_parse(path):
+        if path == surviving:
+            path.write_bytes(replacement_bytes)
+        if path == disappearing:
+            path.unlink()
+        return real_parse(path)
+
+    monkeypatch.setattr(prompt_loader, "parse_agent_file", _disappear_before_parse)
+    response = TestClient(app).get("/api/v1/orgs/alpha/agents", headers=auth_headers)
+    assert response.status_code == 200, response.text
+    rows = {row["name"]: row for row in response.json()["agents"]}
+    assert "payment_agent" not in rows
+    raw = (paths.agents_dir / "dev_agent.md").read_bytes()
+    assert raw == replacement_bytes
+    assert rows["dev_agent"]["system_prompt"] == "replacement snapshot bytes\n"
+    assert rows["dev_agent"]["revision"] == hashlib.sha256(raw).hexdigest()
 
 
 def test_list_agents_returns_full_shape(
@@ -297,6 +519,23 @@ def test_learnings_appends_to_file(
     assert "use uv not pip" in (workspace / "learnings.md").read_text()
 
 
+def test_recovery_session_cannot_append_learning_before_file_mutation(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True, exist_ok=True)
+    learnings = workspace / "learnings.md"
+    learnings.write_text("# Learnings: dev_agent\n\n")
+    org_state.sessions.register_recovery_session("TASK-RECOVERY-LEARNING", "dev_agent", "sess-recovery-learning")
+    response = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/dev_agent/learnings", headers=auth_headers,
+        json={"session_id": "sess-recovery-learning", "task_id": "TASK-RECOVERY-LEARNING", "text": "blocked"},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "recovery_purpose_forbidden"
+    assert learnings.read_text() == "# Learnings: dev_agent\n\n"
+
+
 def test_learnings_session_mismatch_409(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
@@ -447,6 +686,178 @@ def test_manage_repo_add_passes_provider_from_agent_def(
     _, kwargs = mock_ctx.ensure_workspace_ready.call_args
     assert kwargs.get("provider") == "codex", (
         f"expected provider='codex', got {kwargs}"
+    )
+
+
+def test_manage_repo_refreshes_bootstrap_inputs_after_clone_winner(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """A real accepted update wins while the shipping clone is suspended."""
+    from runtime.daemon.routes import agents as agents_mod
+    from runtime.orchestrator import prompt_loader
+
+    _write_agent_md(_paths(org_state), _make_agent(
+        "dev_agent", executor="claude", system_prompt="old prompt\n",
+        description="old", model="old-model",
+    ))
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    arrived, release = asyncio.Event(), asyncio.Event()
+    real_to_thread = agents_mod.asyncio.to_thread
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        clone = MockCB.return_value.clone_repo
+
+        async def controlled_to_thread(func, *args, **kwargs):
+            if func is clone:
+                arrived.set()
+                await asyncio.wait_for(release.wait(), timeout=1)
+                return True
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(agents_mod.asyncio, "to_thread", controlled_to_thread)
+
+        async def exercise() -> None:
+            repo_task = asyncio.create_task(agents_mod.manage_repo(
+                "alpha", "dev_agent", agents_mod.ManageRepoBody(
+                    action="add", repo_name="docs", url="https://example.test/docs.git",
+                ), org_state,
+            ))
+            await asyncio.wait_for(arrived.wait(), timeout=1)
+            revision = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
+            assert revision is not None
+            assert await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+                action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
+                expected_revision=revision, system_prompt="winner prompt\n",
+                description="winner", executor="codex", model="winner-model",
+                repos={"winner": "/winner"},
+            ), org_state) == {"ok": True}
+            winning_bytes = (_paths(org_state).agents_dir / "dev_agent.md").read_bytes()
+            release.set()
+            assert await asyncio.wait_for(repo_task, timeout=1) == {"ok": True}
+            assert (_paths(org_state).agents_dir / "dev_agent.md").read_bytes() == winning_bytes
+
+        _activate_eh_session(org_state)
+        asyncio.run(exercise())
+        bootstrap = MockCB.return_value.ensure_workspace_ready.call_args_list[-1]
+        assert bootstrap.args[2] == "winner prompt\n"
+        assert bootstrap.kwargs["provider"] == "codex"
+
+    winner = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert winner is not None
+    assert winner.repos == {"winner": "/winner"}
+    assert winner.description == "winner"
+    assert winner.model == "winner-model"
+    assert len([r for r in org_state.db.get_audit_logs(_EH_TASK) if r["action"] == "agent_managed"]) == 1
+
+
+def test_manage_repo_refuses_missing_canonical_after_suspended_clone(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """Controlled filesystem removal is a negative freshness injection, not a writer."""
+    from runtime.daemon.routes import agents as agents_mod
+
+    _write_agent_md(_paths(org_state), _make_agent("dev_agent", system_prompt="old prompt\n"))
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    arrived, release = asyncio.Event(), asyncio.Event()
+    real_to_thread = agents_mod.asyncio.to_thread
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        clone = MockCB.return_value.clone_repo
+
+        async def controlled_to_thread(func, *args, **kwargs):
+            if func is clone:
+                arrived.set()
+                await asyncio.wait_for(release.wait(), timeout=1)
+                return True
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(agents_mod.asyncio, "to_thread", controlled_to_thread)
+
+        async def exercise() -> None:
+            repo_task = asyncio.create_task(agents_mod.manage_repo(
+                "alpha", "dev_agent", agents_mod.ManageRepoBody(
+                    action="add", repo_name="docs", url="https://example.test/docs.git",
+                ), org_state,
+            ))
+            await asyncio.wait_for(arrived.wait(), timeout=1)
+            (_paths(org_state).agents_dir / "dev_agent.md").unlink()
+            release.set()
+            with pytest.raises(agents_mod.HTTPException) as exc_info:
+                await asyncio.wait_for(repo_task, timeout=1)
+            assert exc_info.value.status_code == 404
+            assert exc_info.value.detail == "agent 'dev_agent' not found"
+
+        asyncio.run(exercise())
+        MockCB.return_value.ensure_workspace_ready.assert_not_called()
+    assert not (_paths(org_state).agents_dir / "dev_agent.md").exists()
+    assert org_state.db.get_audit_logs(_EH_TASK) == []
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_repos"),
+    [
+        ({"action": "add", "repo_name": "new", "url": "https://new.test/repo.git"},
+         {"docs": "/docs", "new": "https://new.test/repo.git"}),
+        ({"action": "update", "repo_name": "docs", "url": "https://new.test/docs.git"},
+         {"docs": "https://new.test/docs.git"}),
+        ({"action": "remove", "repo_name": "docs"}, {}),
+    ],
+)
+def test_manage_repo_preserves_unrelated_agent_fields(
+    tmp_home, app, org_state, auth_headers, payload, expected_repos,
+) -> None:
+    paths = _paths(org_state)
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    _write_agent_md(paths, _make_agent(
+        "dev_agent", executor="codex", system_prompt="prompt\n",
+        description="description", repos={"docs": "/docs"}, model="model",
+    ))
+    before = prompt_loader.load_agent(paths, "dev_agent")
+    assert before is not None
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        response = TestClient(app).post(
+            "/api/v1/orgs/alpha/agents/dev_agent/repos", json=payload, headers=auth_headers,
+        )
+        assert response.status_code == 200, response.text
+
+    after = prompt_loader.load_agent(paths, "dev_agent")
+    assert after is not None
+    assert after.repos == expected_repos
+    assert (after.executor, after.system_prompt, after.description, after.model,
+            after.allow_rules, after.enrolled_by, after.enrolled_at_task) == (
+        before.executor, before.system_prompt, before.description, before.model,
+        before.allow_rules, before.enrolled_by, before.enrolled_at_task,
+    )
+
+
+def test_set_model_set_and_clear_preserve_unrelated_agent_fields(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.daemon.routes import agents as agents_mod
+    from runtime.orchestrator import prompt_loader
+
+    _write_agent_md(_paths(org_state), _make_agent(
+        "dev_agent", executor="codex", system_prompt="prompt\n",
+        description="description", repos={"docs": "/docs"}, model="old",
+    ))
+    before = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert before is not None
+    assert asyncio.run(agents_mod.set_agent_model(
+        "alpha", "dev_agent", agents_mod.SetModelBody(model="new"), org_state,
+    ))["after"] == "new"
+    assert asyncio.run(agents_mod.set_agent_model(
+        "alpha", "dev_agent", agents_mod.SetModelBody(model=None), org_state,
+    ))["after"] is None
+    after = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert after is not None
+    assert (after.executor, after.system_prompt, after.description, after.repos,
+            after.allow_rules, after.enrolled_by, after.enrolled_at_task) == (
+        before.executor, before.system_prompt, before.description, before.repos,
+        before.allow_rules, before.enrolled_by, before.enrolled_at_task,
     )
 
 
@@ -676,6 +1087,36 @@ def test_manage_agent_enroll_creates_pending(
     assert agent.executor == "codex"
 
 
+def test_recovery_manage_agent_is_denied_before_config_or_audit_mutation(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """A valid manager request reaches the purpose gate before any enrollment."""
+    _seed_active_agent(org_state, "engineering_head", role="manager")
+    before_audit = len(org_state.db.get_audit_logs("TASK-RECOVERY-MANAGE"))
+    org_state.sessions.register_recovery_session(
+        "TASK-RECOVERY-MANAGE", "engineering_head", "recovery-manage",
+    )
+    body = {
+        "action": "enroll", "name": "recovery_writer", "team": "engineering",
+        "description": "writes", "system_prompt": "write safely", "executor": "codex",
+        "task_id": "TASK-RECOVERY-MANAGE", "session_id": "recovery-manage",
+    }
+    client = TestClient(app)
+    denied = client.post("/api/v1/orgs/alpha/agents/manage", json=body, headers=auth_headers)
+    assert denied.status_code == 403
+    assert denied.json()["detail"]["code"] == "recovery_purpose_forbidden"
+    assert prompt_loader.load_pending_agent(_paths(org_state), "recovery_writer") is None
+    assert len(org_state.db.get_audit_logs("TASK-RECOVERY-MANAGE")) == before_audit
+
+    _activate_eh_session(org_state)
+    body["name"] = "ordinary_writer"
+    body["task_id"] = _EH_TASK
+    body["session_id"] = _EH_SESSION
+    ordinary = client.post("/api/v1/orgs/alpha/agents/manage", json=body, headers=auth_headers)
+    assert ordinary.status_code == 200, ordinary.text
+    assert prompt_loader.load_pending_agent(_paths(org_state), "ordinary_writer") is not None
+
+
 def test_manage_agent_enroll_persists_description(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
@@ -740,6 +1181,99 @@ def test_manage_agent_enroll_duplicate_returns_409(
         headers=auth_headers,
     )
     assert r.status_code == 409
+
+
+def _pending_agent(name: str, team: str, prompt: str = "prompt\n"):
+    from datetime import datetime, timezone
+    from runtime.orchestrator.agent_def import AgentDef
+
+    return AgentDef(
+        name=name, team=team, role="worker", executor="claude",
+        allow_rules=(), repos={}, enrolled_by="engineering_head",
+        enrolled_at_task=_EH_TASK, enrolled_at=datetime.now(timezone.utc),
+        system_prompt=prompt,
+    )
+
+
+def test_manage_agent_enroll_same_name_waiters_keep_one_pending_winner(
+    tmp_home, org_state,
+) -> None:
+    """Two real route calls queued on the lock cannot overwrite a pending winner."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as agents_mod
+
+    _activate_eh_session(org_state)
+    paths = _paths(org_state)
+    first = agents_mod.ManageAgentBody(
+        action="enroll", name="lock_writer", task_id=_EH_TASK,
+        session_id=_EH_SESSION, description="first", system_prompt="first bytes\n",
+    )
+    second = agents_mod.ManageAgentBody(
+        action="enroll", name="lock_writer", task_id=_EH_TASK,
+        session_id=_EH_SESSION, description="second", system_prompt="second bytes\n",
+    )
+    winner_bytes: list[bytes] = []
+
+    async def exercise() -> None:
+        async with org_state.teams_lock:
+            winner = asyncio.create_task(agents_mod.manage_agent("alpha", first, org_state))
+            loser = asyncio.create_task(agents_mod.manage_agent("alpha", second, org_state))
+            await asyncio.sleep(0)
+        assert await asyncio.wait_for(winner, timeout=1) == {"ok": True, "status": "pending"}
+        winner_bytes.append((paths.pending_agents_dir / "lock_writer.md").read_bytes())
+        with pytest.raises(HTTPException) as raised:
+            await asyncio.wait_for(loser, timeout=1)
+        assert raised.value.status_code == 409
+        assert raised.value.detail == {"code": "agent_name_unavailable", "name": "lock_writer"}
+
+    asyncio.run(exercise())
+    pending_path = paths.pending_agents_dir / "lock_writer.md"
+    assert pending_path.read_bytes() == winner_bytes[0]
+    assert b"first bytes" in winner_bytes[0] and b"second bytes" not in winner_bytes[0]
+    assert "lock_writer" in org_state.teams.all_agents()
+    audits = [row for row in org_state.db.get_audit_logs(_EH_TASK) if row["action"] == "agent_managed"]
+    assert len(audits) == 1
+
+
+@pytest.mark.parametrize("unavailable", ["active", "pending", "terminated"])
+def test_manage_agent_enroll_rechecks_unavailability_after_waiting_for_lock(
+    tmp_home, org_state, unavailable,
+) -> None:
+    """Controlled storage injection proves the final availability check is locked."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as agents_mod
+
+    _activate_eh_session(org_state)
+    paths = _paths(org_state)
+    body = agents_mod.ManageAgentBody(
+        action="enroll", name="late_taken", task_id=_EH_TASK,
+        session_id=_EH_SESSION, description="late", system_prompt="late bytes\n",
+    )
+
+    async def exercise() -> None:
+        async with org_state.teams_lock:
+            waiting = asyncio.create_task(agents_mod.manage_agent("alpha", body, org_state))
+            await asyncio.sleep(0)
+            # This direct fixture injection models the canonical state changed
+            # by another supported writer while this request was lock-queued.
+            if unavailable == "active":
+                _seed_active_agent(org_state, "late_taken", system_prompt="active bytes\n")
+            elif unavailable == "pending":
+                prompt_loader.write_pending_agent(paths, _pending_agent(
+                    "late_taken", "engineering", "pending bytes\n",
+                ))
+            else:
+                terminated = paths.agents_dir / "_terminated" / "late_taken.md"
+                terminated.parent.mkdir(parents=True, exist_ok=True)
+                terminated.write_text("terminated fixture\n")
+        with pytest.raises(HTTPException) as raised:
+            await asyncio.wait_for(waiting, timeout=1)
+        assert raised.value.status_code == 409
+        if unavailable == "terminated":
+            assert raised.value.detail["reason"] == "a terminated agent with this name exists"
+
+    asyncio.run(exercise())
+    assert not (paths.pending_agents_dir / "late_taken.md").exists() or unavailable == "pending"
 
 
 def test_manage_agent_enroll_rejects_invalid_executor_at_boundary(
@@ -825,24 +1359,174 @@ def test_manage_agent_update_changes_prompt(
             json={
                 "action": "update",
                 "name": "dev_agent",
-            "task_id": _EH_TASK,
-            "session_id": _EH_SESSION,
-            "system_prompt": "new prompt",
-            "executor": "codex",
-        },
-        headers=auth_headers,
-    )
+                "task_id": _EH_TASK,
+                "session_id": _EH_SESSION,
+                "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
+                "system_prompt": "new prompt",
+                "executor": "codex",
+            },
+            headers=auth_headers,
+        )
     assert r.status_code == 200
-    from runtime.orchestrator import prompt_loader
     updated = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert updated is not None
     assert "new prompt" in updated.system_prompt
     assert updated.executor == "codex"
 
 
+def test_manage_agent_update_rejects_stale_revision(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", system_prompt="old\n")
+    revision = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
+    assert revision is not None
+    client = TestClient(app)
+    first = client.post("/api/v1/orgs/alpha/agents/manage", json={
+        "action": "update", "name": "dev_agent", "task_id": _EH_TASK,
+        "session_id": _EH_SESSION, "system_prompt": "winner\n",
+        "expected_revision": revision,
+    }, headers=auth_headers)
+    assert first.status_code == 200, first.text
+    stale = client.post("/api/v1/orgs/alpha/agents/manage", json={
+        "action": "update", "name": "dev_agent", "task_id": _EH_TASK,
+        "session_id": _EH_SESSION, "description": "stale loser",
+        "expected_revision": revision,
+    }, headers=auth_headers)
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "stale_agent_revision"
+    winner = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert winner is not None
+    assert winner.system_prompt == "winner\n"
+    assert winner.description is None
+
+
+def test_manage_agent_update_requires_well_formed_revision(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    client = TestClient(app)
+    for revision in (None, "", "not-a-sha", "0" * 63):
+        payload = {
+            "action": "update", "name": "dev_agent", "task_id": _EH_TASK,
+            "session_id": _EH_SESSION, "description": "must not land",
+        }
+        if revision is not None:
+            payload["expected_revision"] = revision
+        response = client.post(
+            "/api/v1/orgs/alpha/agents/manage", json=payload,
+            headers=auth_headers,
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "expected_revision_required"
+
+
+def test_manage_agent_update_rejects_explicit_null_revision(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    response = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "update", "name": "dev_agent", "task_id": _EH_TASK,
+            "session_id": _EH_SESSION, "expected_revision": None,
+            "description": "must not land",
+        }, headers=auth_headers,
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "expected_revision_required"
+
+
+def test_manage_agent_update_rechecks_stale_base_after_teams_lock(
+    tmp_home, org_state,
+) -> None:
+    """A R0 request that waits behind a winner is rejected after lock entry."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as agents_mod
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", system_prompt="R0\n")
+    paths = _paths(org_state)
+    r0 = prompt_loader.agent_revision(paths, "dev_agent")
+    assert r0 is not None
+    body = agents_mod.ManageAgentBody(
+        action="update", name="dev_agent", task_id=_EH_TASK,
+        session_id=_EH_SESSION, expected_revision=r0, system_prompt="loser B\n",
+    )
+
+    async def _exercise() -> None:
+        async with org_state.teams_lock:
+            loser = asyncio.create_task(agents_mod.manage_agent("alpha", body, org_state))
+            await asyncio.sleep(0)
+            _seed_active_agent(org_state, "dev_agent", system_prompt="winner A\n")
+        with pytest.raises(HTTPException) as raised:
+            await loser
+        assert raised.value.status_code == 409
+
+    asyncio.run(_exercise())
+    winner = prompt_loader.load_agent(paths, "dev_agent")
+    assert winner is not None and winner.system_prompt == "winner A\n"
+
+
+def test_manage_agent_whole_prompt_stale_loser_has_no_bootstrap_or_audit(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _activate_eh_session(org_state)
+    original_prompt = "original entry\n"
+    winner_prompt = original_prompt + "entry A\n"
+    stale_loser_prompt = original_prompt + "entry B\n"
+    _seed_active_agent(org_state, "dev_agent", system_prompt=original_prompt)
+    paths = _paths(org_state)
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    r0 = prompt_loader.agent_revision(paths, "dev_agent")
+    assert r0 is not None
+    client = TestClient(app)
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as mock_builder:
+        mock_builder.return_value.ensure_workspace_ready.return_value = None
+        winner = client.post("/api/v1/orgs/alpha/agents/manage", json={
+            "action": "update", "name": "dev_agent", "task_id": _EH_TASK,
+            "session_id": _EH_SESSION, "expected_revision": r0,
+            "system_prompt": winner_prompt,
+        }, headers=auth_headers)
+        assert winner.status_code == 200, winner.text
+        winning_bytes = (paths.agents_dir / "dev_agent.md").read_bytes()
+        audit_after_winner = list(org_state.db.get_audit_logs(_EH_TASK))
+        loser = client.post("/api/v1/orgs/alpha/agents/manage", json={
+            "action": "update", "name": "dev_agent", "task_id": _EH_TASK,
+            "session_id": _EH_SESSION, "expected_revision": r0,
+            "system_prompt": stale_loser_prompt,
+        }, headers=auth_headers)
+        assert loser.status_code == 409
+        mock_builder.return_value.ensure_workspace_ready.assert_called_once()
+    assert (paths.agents_dir / "dev_agent.md").read_bytes() == winning_bytes
+    assert org_state.db.get_audit_logs(_EH_TASK) == audit_after_winner
+    fresh_row = {
+        row["name"]: row
+        for row in client.get(
+            "/api/v1/orgs/alpha/agents", headers=auth_headers,
+        ).json()["agents"]
+    }["dev_agent"]
+    reapplied_prompt = fresh_row["system_prompt"] + "entry B\n"
+    fresh = client.post("/api/v1/orgs/alpha/agents/manage", json={
+        "action": "update", "name": "dev_agent", "task_id": _EH_TASK,
+        "session_id": _EH_SESSION,
+        "expected_revision": fresh_row["revision"],
+        "system_prompt": reapplied_prompt,
+    }, headers=auth_headers)
+    assert fresh.status_code == 200, fresh.text
+    reapplied = prompt_loader.load_agent(paths, "dev_agent")
+    assert reapplied is not None
+    assert reapplied.system_prompt == original_prompt + "entry A\nentry B\n"
+
+
 def test_manage_agent_update_persists_executor_to_workspace(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
+    from runtime.orchestrator import prompt_loader
+
     # Use dev_agent which belongs to engineering team (managed by engineering_head).
     _activate_eh_session(org_state)
     _seed_active_agent(org_state, "dev_agent")
@@ -856,6 +1540,7 @@ def test_manage_agent_update_persists_executor_to_workspace(
             "name": "dev_agent",
             "task_id": _EH_TASK,
             "session_id": _EH_SESSION,
+            "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
             "executor": "codex",
         },
         headers=auth_headers,
@@ -878,6 +1563,7 @@ def test_manage_agent_update_executor_regenerates_bootstrap(
         get_registry,
         ExecutorProfile,
     )
+    from runtime.orchestrator import prompt_loader
 
     _activate_eh_session(org_state)
     _seed_active_agent(org_state, "dev_agent", executor="claude", system_prompt="sys prompt")
@@ -903,9 +1589,10 @@ def test_manage_agent_update_executor_regenerates_bootstrap(
             json={
                 "action": "update",
                 "name": "dev_agent",
-                "task_id": _EH_TASK,
-                "session_id": _EH_SESSION,
-                "executor": "testcustom",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
+            "executor": "testcustom",
             },
             headers=auth_headers,
         )
@@ -1046,6 +1733,123 @@ def test_approve_agent_bootstraps_workspace(
     # The .md frontmatter is the single source of truth.
 
 
+def test_approve_agent_refreshes_bootstrap_inputs_after_clone_winner(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """A real accepted update wins after exact pending-to-active promotion."""
+    from datetime import datetime, timezone
+    from runtime.daemon.routes import agents as agents_mod
+    from runtime.orchestrator.agent_def import AgentDef
+
+    paths = _paths(org_state)
+    pending = AgentDef(
+        name="fresh_approval", team="engineering", role="worker", executor="claude",
+        allow_rules=(), repos={"docs": "https://example.test/docs.git"},
+        enrolled_by="engineering_head", enrolled_at_task=_EH_TASK,
+        enrolled_at=datetime.now(timezone.utc), system_prompt="old prompt\n",
+    )
+    prompt_loader.write_pending_agent(paths, pending)
+    # Normal manage-agent enrollment records the matching roster membership.
+    org_state.teams.add_worker("engineering", "fresh_approval")
+    original_pending_bytes = (paths.pending_agents_dir / "fresh_approval.md").read_bytes()
+    arrived, release = asyncio.Event(), asyncio.Event()
+    real_to_thread = agents_mod.asyncio.to_thread
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as mock_builder:
+        clone = mock_builder.return_value.clone_repo
+
+        async def controlled_to_thread(func, *args, **kwargs):
+            if func is clone:
+                arrived.set()
+                await asyncio.wait_for(release.wait(), timeout=1)
+                return True
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(agents_mod.asyncio, "to_thread", controlled_to_thread)
+
+        async def exercise() -> None:
+            approve = asyncio.create_task(agents_mod.approve_agent(
+                "alpha", "fresh_approval", org_state,
+            ))
+            await asyncio.wait_for(arrived.wait(), timeout=1)
+            assert not (paths.pending_agents_dir / "fresh_approval.md").exists()
+            assert (paths.agents_dir / "fresh_approval.md").read_bytes() == original_pending_bytes
+            _activate_eh_session(org_state)
+            revision = prompt_loader.agent_revision(paths, "fresh_approval")
+            assert revision is not None
+            assert await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+                action="update", name="fresh_approval", task_id=_EH_TASK,
+                session_id=_EH_SESSION, expected_revision=revision,
+                system_prompt="winner prompt\n", executor="codex",
+                description="winner", repos={"winner": "/winner"},
+            ), org_state) == {"ok": True}
+            winning_bytes = (paths.agents_dir / "fresh_approval.md").read_bytes()
+            release.set()
+            assert await asyncio.wait_for(approve, timeout=1) == {"ok": True}
+            assert (paths.agents_dir / "fresh_approval.md").read_bytes() == winning_bytes
+
+        asyncio.run(exercise())
+        bootstrap = mock_builder.return_value.ensure_workspace_ready.call_args
+        assert bootstrap.args[2] == "winner prompt\n"
+        assert bootstrap.kwargs["provider"] == "codex"
+
+    winner = prompt_loader.load_agent(paths, "fresh_approval")
+    assert winner is not None and winner.repos == {"winner": "/winner"}
+    audits = org_state.db.get_audit_logs(_EH_TASK)
+    assert len([row for row in audits if row["action"] == "agent_managed"]) == 1
+
+
+def test_approve_agent_refuses_missing_canonical_after_suspended_clone(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """Controlled removal after promotion cannot trigger stale bootstrap."""
+    from datetime import datetime, timezone
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as agents_mod
+    from runtime.orchestrator.agent_def import AgentDef
+
+    paths = _paths(org_state)
+    prompt_loader.write_pending_agent(paths, AgentDef(
+        name="missing_approval", team="content", role="worker", executor="claude",
+        allow_rules=(), repos={"docs": "https://example.test/docs.git"},
+        enrolled_by="engineering_head", enrolled_at_task=_EH_TASK,
+        enrolled_at=datetime.now(timezone.utc), system_prompt="old prompt\n",
+    ))
+    arrived, release = asyncio.Event(), asyncio.Event()
+    real_to_thread = agents_mod.asyncio.to_thread
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as mock_builder:
+        clone = mock_builder.return_value.clone_repo
+
+        async def controlled_to_thread(func, *args, **kwargs):
+            if func is clone:
+                arrived.set()
+                await asyncio.wait_for(release.wait(), timeout=1)
+                return True
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(agents_mod.asyncio, "to_thread", controlled_to_thread)
+
+        async def exercise() -> None:
+            approve = asyncio.create_task(agents_mod.approve_agent(
+                "alpha", "missing_approval", org_state,
+            ))
+            await asyncio.wait_for(arrived.wait(), timeout=1)
+            (paths.agents_dir / "missing_approval.md").unlink()
+            release.set()
+            with pytest.raises(HTTPException) as raised:
+                await asyncio.wait_for(approve, timeout=1)
+            assert raised.value.status_code == 404
+            assert raised.value.detail == "agent 'missing_approval' not found"
+
+        asyncio.run(exercise())
+        mock_builder.return_value.ensure_workspace_ready.assert_not_called()
+        mock_builder.return_value.create_agent_dirs.assert_not_called()
+
+    assert prompt_loader.load_agent(paths, "missing_approval") is None
+    assert prompt_loader.load_pending_agent(paths, "missing_approval") is None
+
+
 def test_approve_non_pending_returns_409(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
@@ -1106,6 +1910,98 @@ def test_reject_agent_removes_from_teams_yaml(
     # Pending file gone AND team membership removed.
     assert prompt_loader.load_pending_agent(_paths(org_state), "rookie_writer") is None
     assert "rookie_writer" not in org_state.teams.all_agents()
+
+
+def test_reject_agent_refreshes_after_waiting_for_promotion(
+    tmp_home, org_state,
+) -> None:
+    """A promotion that wins while reject waits preserves active bytes and roster."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as agents_mod
+
+    paths = _paths(org_state)
+    prompt_loader.write_pending_agent(paths, _pending_agent(
+        "promoted_writer", "engineering", "pending winner bytes\n",
+    ))
+    org_state.teams.add_worker("engineering", "promoted_writer")
+
+    async def exercise() -> None:
+        async with org_state.teams_lock:
+            reject = asyncio.create_task(agents_mod.reject_agent(
+                "alpha", "promoted_writer", org_state,
+            ))
+            await asyncio.sleep(0)
+            promoted = prompt_loader.approve_agent(paths, "promoted_writer")
+            active_bytes = (paths.agents_dir / "promoted_writer.md").read_bytes()
+        with pytest.raises(HTTPException) as raised:
+            await asyncio.wait_for(reject, timeout=1)
+        assert raised.value.status_code == 409
+        assert (paths.agents_dir / "promoted_writer.md").read_bytes() == active_bytes
+        assert promoted.system_prompt == "pending winner bytes\n"
+
+    asyncio.run(exercise())
+    assert "promoted_writer" in org_state.teams.all_agents()
+    assert prompt_loader.load_pending_agent(paths, "promoted_writer") is None
+
+
+def test_reject_agent_missing_while_waiting_preserves_membership(
+    tmp_home, org_state,
+) -> None:
+    """A missing pending file after lock wait has no stale roster side effect."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as agents_mod
+
+    paths = _paths(org_state)
+    prompt_loader.write_pending_agent(paths, _pending_agent("vanished_writer", "engineering"))
+    org_state.teams.add_worker("engineering", "vanished_writer")
+    org_state.teams.add_worker("engineering", "unrelated_writer")
+
+    async def exercise() -> None:
+        async with org_state.teams_lock:
+            reject = asyncio.create_task(agents_mod.reject_agent(
+                "alpha", "vanished_writer", org_state,
+            ))
+            await asyncio.sleep(0)
+            # Controlled filesystem injection: another actor removed its
+            # pending record before this lock-queued rejection entered.
+            prompt_loader.reject_agent(paths, "vanished_writer")
+        with pytest.raises(HTTPException) as raised:
+            await asyncio.wait_for(reject, timeout=1)
+        assert raised.value.status_code == 404
+
+    asyncio.run(exercise())
+    assert "vanished_writer" in org_state.teams.all_agents()
+    assert "unrelated_writer" in org_state.teams.all_agents()
+
+
+def test_reject_agent_uses_current_pending_team_after_waiting(
+    tmp_home, org_state,
+) -> None:
+    """Controlled pending replacement removes only its fresh current-team entry."""
+    from runtime.daemon.routes import agents as agents_mod
+
+    paths = _paths(org_state)
+    prompt_loader.write_pending_agent(paths, _pending_agent("moved_writer", "engineering"))
+    org_state.teams.add_worker("engineering", "moved_writer")
+    org_state.teams.add_worker("content", "unrelated_writer")
+
+    async def exercise() -> None:
+        async with org_state.teams_lock:
+            reject = asyncio.create_task(agents_mod.reject_agent(
+                "alpha", "moved_writer", org_state,
+            ))
+            await asyncio.sleep(0)
+            # Controlled fixture replacement isolates the stale-team seam;
+            # normal enrollment is now correctly refused for this reuse.
+            prompt_loader.write_pending_agent(paths, _pending_agent("moved_writer", "content"))
+            org_state.teams.add_worker("content", "moved_writer")
+        assert await asyncio.wait_for(reject, timeout=1) == {"ok": True}
+
+    asyncio.run(exercise())
+    assert prompt_loader.load_pending_agent(paths, "moved_writer") is None
+    assert "moved_writer" in org_state.teams.all_agents()
+    assert org_state.teams.team_for_agent("moved_writer") == "engineering"
+    assert "unrelated_writer" in org_state.teams.all_agents()
 
 
 def test_list_enrollments(
@@ -1636,7 +2532,18 @@ def test_init_slice_c_error_when_marker_missing(
          patch("runtime.daemon.routes.agents.materialize_workspace_skills") as mock_mat:
         mock_ctx = MockCB.return_value
         mock_ctx.clone_repo.return_value = True
-        mock_ctx.ensure_workspace_ready.return_value = None
+
+        def _write_pair(*args, **_kwargs):
+            # THR-262 Slice B: produce a valid canonical pair but no skill
+            # marker, so the exact-profile readiness check still fails.
+            ws_arg = args[0]
+            (ws_arg / "AGENTS.md").write_text("canonical bootstrap\n")
+            claude = ws_arg / "CLAUDE.md"
+            if claude.is_symlink() or claude.exists():
+                claude.unlink()
+            os.symlink("AGENTS.md", claude)
+
+        mock_ctx.ensure_workspace_ready.side_effect = _write_pair
         mock_ctx.create_agent_dirs.return_value = None
         mock_mat.return_value = []  # no skill materialization => no claude marker
         events = _stream_init_bulk_events(app, auth_headers)
@@ -1666,9 +2573,16 @@ def test_init_slice_c_error_when_wrong_profile_marker_exists(
         mock_ctx.clone_repo.return_value = True
         mock_ctx.create_agent_dirs.return_value = None
 
-        def _write_wrong_marker(*_args, **_kwargs):
-            # Simulate a bootstrap that produced only the codex marker.
-            (ws / "AGENTS.md").write_text("stale codex bootstrap\n")
+        def _write_wrong_marker(*args, **_kwargs):
+            # Simulate a bootstrap that produced only the codex marker (and a
+            # valid canonical pair, so the pair gate passes) — the claude
+            # skill marker is still missing.
+            ws_arg = args[0]
+            (ws_arg / "AGENTS.md").write_text("stale codex bootstrap\n")
+            claude = ws_arg / "CLAUDE.md"
+            if claude.is_symlink() or claude.exists():
+                claude.unlink()
+            os.symlink("AGENTS.md", claude)
 
         mock_ctx.ensure_workspace_ready.side_effect = _write_wrong_marker
         mock_mat.return_value = []
@@ -2062,6 +2976,402 @@ def test_set_executor_switches_org_and_workspace(
     # the old workspace_executor value for display purposes only.
 
 
+def test_set_executor_refreshes_after_materialization_and_preserves_newer_fields(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """A real accepted update wins while the shipping switch is suspended."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as agents_mod
+    from runtime.orchestrator import prompt_loader
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude", system_prompt="old\n")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+
+    arrived, release = asyncio.Event(), asyncio.Event()
+    real_to_thread = agents_mod.asyncio.to_thread
+
+    async def controlled_to_thread(func, *args, **kwargs):
+        if func is agents_mod._executor_switch_materialize:
+            arrived.set()
+            await release.wait()
+            return []
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(agents_mod.asyncio, "to_thread", controlled_to_thread)
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        async def exercise() -> None:
+            switch = asyncio.create_task(agents_mod.set_agent_executor(
+                "alpha", "dev_agent", agents_mod.SetExecutorBody(executor="pi"), org_state,
+            ))
+            await arrived.wait()
+            revision = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
+            assert revision is not None
+            winner = await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+                action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
+                expected_revision=revision, system_prompt="winner prompt\n",
+                repos={"happyranch": "/winner"}, description="winner description",
+            ), org_state)
+            assert winner == {"ok": True}
+            release.set()
+            assert (await switch)["after"]["org_executor"] == "pi"
+        _activate_eh_session(org_state)
+        asyncio.run(exercise())
+    updated = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert updated is not None
+    assert updated.executor == "pi"
+    assert updated.system_prompt == "winner prompt\n"
+    assert updated.repos == {"happyranch": "/winner"}
+    assert updated.description == "winner description"
+    assert MockCB.return_value.ensure_workspace_ready.call_args.args[2] == "winner prompt\n"
+    winner_audits = org_state.db.get_audit_logs(_EH_TASK)
+    assert len([row for row in winner_audits if row["action"] == "agent_managed"]) == 1
+    switch_audits = org_state.db.get_audit_logs("founder")
+    assert len([row for row in switch_audits if row["action"] == "agent_managed"]) == 1
+
+
+def test_set_executor_rejects_competing_executor_after_materialization(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """A competing accepted executor update wins; stale switch has no audit."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as agents_mod
+    from runtime.orchestrator import prompt_loader
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+
+    arrived, release = asyncio.Event(), asyncio.Event()
+    real_to_thread = agents_mod.asyncio.to_thread
+    async def controlled_to_thread(func, *args, **kwargs):
+        if func is agents_mod._executor_switch_materialize:
+            arrived.set(); await release.wait(); return []
+        return await real_to_thread(func, *args, **kwargs)
+    monkeypatch.setattr(agents_mod.asyncio, "to_thread", controlled_to_thread)
+    _activate_eh_session(org_state)
+    async def exercise() -> None:
+        loser = asyncio.create_task(agents_mod.set_agent_executor(
+            "alpha", "dev_agent", agents_mod.SetExecutorBody(executor="pi"), org_state))
+        await arrived.wait()
+        revision = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
+        assert revision is not None
+        assert await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+            action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
+            expected_revision=revision, executor="codex"), org_state) == {"ok": True}
+        winning_bytes = (_paths(org_state).agents_dir / "dev_agent.md").read_bytes()
+        release.set()
+        with pytest.raises(HTTPException) as raised:
+            await loser
+        assert raised.value.status_code == 409
+        assert raised.value.detail["code"] == "executor_switch_conflict"
+        assert (_paths(org_state).agents_dir / "dev_agent.md").read_bytes() == winning_bytes
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        MockCB.return_value.ensure_workspace_ready.return_value = None
+        asyncio.run(exercise())
+        calls = MockCB.return_value.ensure_workspace_ready.call_args_list
+        assert len(calls) == 1
+        assert calls[0].args[2] == "prompt\n"
+        assert calls[0].kwargs["provider"] == "codex"
+    winner_def = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert winner_def is not None and winner_def.executor == "codex"
+    assert len([r for r in org_state.db.get_audit_logs(_EH_TASK) if r["action"] == "agent_managed"]) == 1
+    assert not org_state.db.get_audit_logs("founder")
+    # The only bootstrap is the accepted winner's update; the rejected loser
+    # must not materialize its stale executor profile.
+    assert not (workspace / "AGENTS.md").exists()
+
+
+def test_set_executor_rejects_model_only_winner_after_materialization(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """A model-only shipping update fences a suspended executor switch."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as agents_mod
+    from runtime.orchestrator import prompt_loader
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude", model="old-model")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    arrived, release = asyncio.Event(), asyncio.Event()
+    real_to_thread = agents_mod.asyncio.to_thread
+
+    async def controlled_to_thread(func, *args, **kwargs):
+        if func is agents_mod._executor_switch_materialize:
+            arrived.set()
+            await release.wait()
+            return []
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(agents_mod.asyncio, "to_thread", controlled_to_thread)
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        async def exercise() -> None:
+            loser = asyncio.create_task(agents_mod.set_agent_executor(
+                "alpha", "dev_agent", agents_mod.SetExecutorBody(executor="pi"), org_state,
+            ))
+            await arrived.wait()
+            assert await agents_mod.set_agent_model(
+                "alpha", "dev_agent", agents_mod.SetModelBody(model="winner-model"), org_state,
+            ) == {"agent": "dev_agent", "before": "old-model", "after": "winner-model"}
+            winning_bytes = (_paths(org_state).agents_dir / "dev_agent.md").read_bytes()
+            release.set()
+            with pytest.raises(HTTPException) as raised:
+                await loser
+            assert raised.value.status_code == 409
+            assert raised.value.detail["code"] == "executor_switch_conflict"
+            assert (_paths(org_state).agents_dir / "dev_agent.md").read_bytes() == winning_bytes
+
+        asyncio.run(exercise())
+        MockCB.return_value.ensure_workspace_ready.assert_not_called()
+    winner = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert winner is not None
+    assert winner.executor == "claude"
+    assert winner.model == "winner-model"
+    audits = org_state.db.get_audit_logs("founder")
+    assert len([row for row in audits if row["action"] == "agent_managed"]) == 1
+
+
+def test_set_executor_rejects_disappeared_agent_after_materialization(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """A removed canonical definition cannot be recreated by a stale switch."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as agents_mod
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    arrived, release = asyncio.Event(), asyncio.Event()
+    real_to_thread = agents_mod.asyncio.to_thread
+
+    async def controlled_to_thread(func, *args, **kwargs):
+        if func is agents_mod._executor_switch_materialize:
+            arrived.set()
+            await release.wait()
+            return []
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(agents_mod.asyncio, "to_thread", controlled_to_thread)
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        async def exercise() -> None:
+            loser = asyncio.create_task(agents_mod.set_agent_executor(
+                "alpha", "dev_agent", agents_mod.SetExecutorBody(executor="pi"), org_state,
+            ))
+            await arrived.wait()
+            (_paths(org_state).agents_dir / "dev_agent.md").unlink()
+            release.set()
+            with pytest.raises(HTTPException) as raised:
+                await loser
+            assert raised.value.status_code == 404
+            assert raised.value.detail["code"] == "agent_not_found"
+
+        asyncio.run(exercise())
+        MockCB.return_value.ensure_workspace_ready.assert_not_called()
+    assert not (_paths(org_state).agents_dir / "dev_agent.md").exists()
+    assert not org_state.db.get_audit_logs("founder")
+
+
+def test_manage_agent_reset_failure_preserves_newer_canonical_bytes(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """A real accepted winner during bootstrap prevents stale compensation."""
+    import logging
+    from fastapi import HTTPException
+    from unittest.mock import Mock
+    from runtime.daemon.routes import agents as agents_mod
+    from runtime.infrastructure import database as db_module
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+
+    arrived, release = asyncio.Event(), asyncio.Event()
+    bootstrap = Mock()
+    real_to_thread = agents_mod.asyncio.to_thread
+    bootstrap_calls = 0
+    async def controlled_to_thread(func, *args, **kwargs):
+        nonlocal bootstrap_calls
+        if func is bootstrap:
+            bootstrap_calls += 1
+            if bootstrap_calls == 1:
+                arrived.set()
+                await release.wait()
+            return None
+        return await real_to_thread(func, *args, **kwargs)
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB, patch.object(
+        db_module.Database, "_reset_thread_sessions_for_agent_uncommitted",
+        side_effect=RuntimeError("injected reset failure"), create=True,
+    ), patch.object(agents_mod.asyncio, "to_thread", controlled_to_thread):
+        MockCB.return_value.ensure_workspace_ready = bootstrap
+        async def exercise() -> None:
+            initial = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
+            assert initial is not None
+            loser = asyncio.create_task(agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+                action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
+                expected_revision=initial, executor="codex"), org_state))
+            await arrived.wait()
+            current = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
+            assert current is not None
+            # The winner is another accepted shipping route call on this loop.
+            assert await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+                action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
+                expected_revision=current, system_prompt="newer winner\n"), org_state) == {"ok": True}
+            winning_bytes = (_paths(org_state).agents_dir / "dev_agent.md").read_bytes()
+            release.set()
+            with pytest.raises(RuntimeError, match="injected reset failure"):
+                await loser
+            assert (_paths(org_state).agents_dir / "dev_agent.md").read_bytes() == winning_bytes
+        asyncio.run(exercise())
+    winner = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert winner is not None
+    assert winner.executor == "codex"
+    assert winner.system_prompt == "newer winner\n"
+    # Reconciliation of the stale prior definition is forbidden on conflict.
+    assert bootstrap_calls == 2
+
+
+@pytest.mark.parametrize(
+    ("failure_kind", "outcome"),
+    [
+        ("reset", "owned"),
+        ("reset", "winner"),
+        ("reset", "missing"),
+        ("audit", "owned"),
+        ("audit", "winner"),
+        ("audit", "missing"),
+    ],
+)
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"])
+def test_manage_agent_compensation_preserves_canonical_ownership_and_sessions(
+    tmp_home, app, org_state, auth_headers, monkeypatch, caplog, failure_kind, outcome, newline,
+) -> None:
+    """Real same-loop failures restore only operation-owned canonical bytes."""
+    import logging
+    from unittest.mock import Mock
+    from runtime.daemon.routes import agents as agents_mod
+    from runtime.infrastructure import database as db_module
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", executor="claude", model="old-model")
+    active_path = _paths(org_state).agents_dir / "dev_agent.md"
+    # Deliberately retain extra valid formatting: compensation must restore
+    # these exact pre-loser bytes, rather than a newly rendered definition.
+    original_bytes = active_path.read_bytes().replace(b"\n", newline)
+    active_path.write_bytes(original_bytes)
+    original = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert original is not None
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    client = TestClient(app)
+    tid = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"], "body_markdown": "m"},
+        headers=auth_headers,
+    ).json()["thread_id"]
+    org_state.db.update_thread_session(
+        tid, "dev_agent", agent_session_id="sess-claude", last_resumed_seq=6,
+    )
+
+    arrived, release = asyncio.Event(), asyncio.Event()
+    bootstrap = Mock()
+    bootstrap_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    real_to_thread = agents_mod.asyncio.to_thread
+
+    async def controlled_to_thread(func, *args, **kwargs):
+        if func is bootstrap:
+            bootstrap_calls.append((args, kwargs))
+            if len(bootstrap_calls) == 1:
+                arrived.set()
+                await asyncio.wait_for(release.wait(), timeout=1)
+            return None
+        return await real_to_thread(func, *args, **kwargs)
+
+    reset_seen = {"value": False}
+    original_audit = db_module.Database.insert_audit_log_uncommitted
+
+    def fail_audit(self, task_id, agent, action, payload=None):
+        if action == "thread_session_invalidated":
+            row = self._conn.execute(
+                "SELECT agent_session_id, last_resumed_seq FROM thread_participants "
+                "WHERE thread_id = ? AND agent_name = ?", (tid, "dev_agent"),
+            ).fetchone()
+            reset_seen["value"] = row is not None and row["agent_session_id"] is None and row["last_resumed_seq"] == 0
+            raise RuntimeError("injected invalidation audit failure")
+        return original_audit(self, task_id, agent, action, payload)
+
+    failure_patch = (
+        patch.object(
+            db_module.Database, "_reset_thread_sessions_for_agent_uncommitted",
+            side_effect=RuntimeError("injected reset failure"),
+        )
+        if failure_kind == "reset"
+        else patch.object(db_module.Database, "insert_audit_log_uncommitted", new=fail_audit)
+    )
+    caplog.set_level(logging.WARNING, logger=agents_mod.__name__)
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB, failure_patch, patch.object(
+        agents_mod.asyncio, "to_thread", controlled_to_thread,
+    ):
+        MockCB.return_value.ensure_workspace_ready = bootstrap
+
+        async def exercise() -> None:
+            initial = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
+            assert initial is not None
+            loser = asyncio.create_task(agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+                action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
+                expected_revision=initial, executor="codex",
+            ), org_state))
+            await asyncio.wait_for(arrived.wait(), timeout=1)
+            if outcome == "winner":
+                current = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
+                assert current is not None
+                assert await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+                    action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
+                    expected_revision=current, system_prompt="winner prompt\n", description="winner metadata",
+                ), org_state) == {"ok": True}
+                winning_bytes = active_path.read_bytes()
+            elif outcome == "missing":
+                active_path.unlink()
+                winning_bytes = None
+            else:
+                winning_bytes = None
+            release.set()
+            with pytest.raises(RuntimeError, match="injected"):
+                await loser
+            if outcome == "owned":
+                assert active_path.read_bytes() == original_bytes
+            elif outcome == "winner":
+                assert active_path.read_bytes() == winning_bytes
+            else:
+                assert not active_path.exists()
+
+        asyncio.run(exercise())
+
+    assert org_state.db.get_thread_session(tid, "dev_agent") == ("sess-claude", 6)
+    invalidations, _ = org_state.db.query_audit_logs(action="thread_session_invalidated", limit=10)
+    assert invalidations == []
+    assert org_state.db._conn.in_transaction is False
+    assert reset_seen["value"] is (failure_kind == "audit")
+    accepted = [row for row in org_state.db.get_audit_logs(_EH_TASK) if row["action"] == "agent_managed"]
+    assert len(accepted) == (1 if outcome == "winner" else 0)
+    if outcome == "owned":
+        assert len(bootstrap_calls) == 2
+        assert bootstrap_calls[-1][0][2] == original.system_prompt
+        assert bootstrap_calls[-1][1]["provider"] == original.executor
+        assert not any("rollback conflict" in record.message for record in caplog.records)
+    elif outcome == "winner":
+        assert len(bootstrap_calls) == 2
+        assert bootstrap_calls[-1][0][2] == "winner prompt\n"
+        assert bootstrap_calls[-1][1]["provider"] == "codex"
+        assert any("rollback conflict for dev_agent" in record.message for record in caplog.records)
+    else:
+        assert len(bootstrap_calls) == 1
+        assert any("rollback conflict for dev_agent" in record.message for record in caplog.records)
+
+
 def test_set_executor_invalid_returns_422_and_no_mutation(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
@@ -2122,10 +3432,11 @@ def test_set_executor_away_from_claude_warns_stale_by_default(
         )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert set(body["stale_files"]) == {"CLAUDE.md", ".claude"}
+    assert set(body["stale_files"]) == {".claude/settings.json"}
     assert body["cleaned"] is False
     assert body["removed"] == []
-    # Nothing deleted without --clean.
+    # Nothing deleted without --clean; the shared canonical compatibility file
+    # and skills root are preserved (THR-262 Slice B).
     assert (workspace / "CLAUDE.md").exists()
     assert (workspace / ".claude").exists()
 
@@ -2150,9 +3461,15 @@ def test_set_executor_clean_deletes_stale_claude_files(
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["cleaned"] is True
-    assert set(body["removed"]) == {"CLAUDE.md", ".claude"}
-    assert not (workspace / "CLAUDE.md").exists()
-    assert not (workspace / ".claude").exists()
+    assert set(body["removed"]) == {".claude/settings.json"}
+    # THR-262 Slice B: the shared canonical instruction pair and
+    # ``.claude/skills`` are preserved; only the executor-only settings file
+    # is cleaned (and the emptied ``.claude`` directory).
+    assert (workspace / "CLAUDE.md").exists()
+    # ``.claude/skills`` (materialized by the switch) survives; only the
+    # executor-only settings file is cleaned.
+    assert not (workspace / ".claude" / "settings.json").exists()
+    assert (workspace / ".claude").exists()
 
 
 def test_set_executor_to_claude_reports_no_stale(
@@ -2339,9 +3656,10 @@ def test_manage_agent_update_set_model(
             json={
                 "action": "update",
                 "name": "dev_agent",
-                "task_id": _EH_TASK,
-                "session_id": _EH_SESSION,
-                "model": "claude-sonnet-4-20250514",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
+            "model": "claude-sonnet-4-20250514",
             },
             headers=auth_headers,
         )
@@ -2374,9 +3692,10 @@ def test_manage_agent_update_clear_model_explicit_null(
             json={
                 "action": "update",
                 "name": "dev_agent",
-                "task_id": _EH_TASK,
-                "session_id": _EH_SESSION,
-                "model": None,
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
+            "model": None,
             },
             headers=auth_headers,
         )
@@ -2416,9 +3735,10 @@ def test_manage_agent_update_changed_executor_omit_model_clears(
             json={
                 "action": "update",
                 "name": "dev_agent",
-                "task_id": _EH_TASK,
-                "session_id": _EH_SESSION,
-                # model omitted entirely
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
+            # model omitted entirely
                 "executor": "codex",
             },
             headers=auth_headers,
@@ -2448,6 +3768,7 @@ def test_manage_agent_update_unchanged_executor_omit_model_preserves(
         json={
             "action": "update", "name": "dev_agent",
             "task_id": _EH_TASK, "session_id": _EH_SESSION,
+            "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
             "executor": "claude",
         },
         headers=auth_headers,
@@ -2474,8 +3795,9 @@ def test_manage_agent_update_changed_executor_explicit_model_sets_new_choice(
             "/api/v1/orgs/alpha/agents/manage",
             json={
                 "action": "update", "name": "dev_agent",
-                "task_id": _EH_TASK, "session_id": _EH_SESSION,
-                "executor": "codex", "model": "new-codex-model",
+            "task_id": _EH_TASK, "session_id": _EH_SESSION,
+            "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
+            "executor": "codex", "model": "new-codex-model",
             },
             headers=auth_headers,
         )
@@ -2884,10 +4206,24 @@ def test_set_executor_drift_tripwire_all_provider_shapes(
 
         violations: list[str] = []
 
+        declared_names = {_Path(rel).name for rel in declared_files}
+
         def _check(p, op):
             s = str(p)
-            if (s == ws_root or s.startswith(ws_root + _os.sep)) and s not in allowed:
-                violations.append(f"{op} {s}")
+            if not (s == ws_root or s.startswith(ws_root + _os.sep)):
+                return
+            if s in allowed:
+                return
+            # Owned collision-reserved staging siblings for a declared
+            # bootstrap-owned file (e.g. ``CLAUDE.md.happyranch-<stamp>.lnk``)
+            # are atomically renamed into place; an unrenamed one is still a
+            # violation. This keeps the tripwire exact for stray paths.
+            parent = _os.path.dirname(s)
+            base = _os.path.basename(s)
+            if parent == ws_root and base.endswith(".lnk") and ".happyranch-" in base:
+                if base.split(".happyranch-", 1)[0] in declared_names:
+                    return
+            violations.append(f"{op} {s}")
 
         real_write_text = _Path.write_text
         real_write_bytes = _Path.write_bytes
@@ -3500,14 +4836,15 @@ def test_set_executor_capture_second_read_fails_closed_before_materialize(
     Regression scenario: a present regular declared file (CLAUDE.md) whose
     bytes the Step-0 preflight gate (_bootstrap_uncapturable_owned_files)
     CAN read, but which the authoritative _BootstrapRollbackJournal.capture
-    cannot read (TOCTOU: read_bytes fails between the two reads). The old
+    cannot read (TOCTOU: the no-follow descriptor capture fails after the
+    preflight read). The old
     ordering ran capture AFTER materialization, recorded the file as
     uncapturable, and proceeded to ensure_workspace_ready — bootstrap could
     overwrite a present file whose original bytes were never captured
     (uncompensatable data-loss path).
 
-    The deterministic per-file call counter forces read #1 (preflight) to
-    succeed and read #2 (authoritative capture) to raise OSError, then
+    The deterministic capture seam lets the preflight read succeed and forces
+    the authoritative no-follow capture to raise OSError, then
     proves the switch fails closed during Step-0 preflight, BEFORE
     _executor_switch_materialize and before every
     filesystem/executor-state/frontmatter/audit mutation:
@@ -3539,17 +4876,20 @@ def test_set_executor_capture_second_read_fails_closed_before_materialize(
     target.write_bytes(original)
 
     target_abspath = _os.path.abspath(str(target))
-    read_counts: dict[str, int] = {}
+    capture_calls: list[str] = []
+    real_capture = agents_mod._BootstrapRollbackJournal._capture_regular_file
 
-    def _read_bytes(self, *a, **k):
-        if _os.path.abspath(str(self)) == target_abspath:
-            read_counts["CLAUDE.md"] = read_counts.get("CLAUDE.md", 0) + 1
-            if read_counts["CLAUDE.md"] == 2:
-                # Authoritative capture read fails; preflight read succeeded.
-                raise OSError("forced capture-read failure on present declared file")
-        return real_read_bytes(self, *a, **k)
+    def _capture_regular_file(cls, fp):
+        if _os.path.abspath(str(fp)) == target_abspath:
+            capture_calls.append("CLAUDE.md")
+            raise OSError("forced capture-read failure on present declared file")
+        return real_capture(fp)
 
-    monkeypatch.setattr(_Path, "read_bytes", _read_bytes)
+    monkeypatch.setattr(
+        agents_mod._BootstrapRollbackJournal,
+        "_capture_regular_file",
+        classmethod(_capture_regular_file),
+    )
 
     frontmatter_path = _paths(org_state).agents_dir / "dev_agent.md"
     frontmatter_before = frontmatter_path.read_text()
@@ -3588,11 +4928,8 @@ def test_set_executor_capture_second_read_fails_closed_before_materialize(
         headers=auth_headers,
     )
 
-    # ── The authoritative capture observed the file at Step 0 (read #2) ──
-    assert read_counts["CLAUDE.md"] >= 2, (
-        f"expected preflight (read 1) + authoritative capture (read 2) "
-        f"to both run, got {read_counts['CLAUDE.md']} reads"
-    )
+    # ── The authoritative no-follow capture observed the file at Step 0 ──
+    assert capture_calls == ["CLAUDE.md"]
 
     # ── FAIL-CLOSED: named preflight rejection BEFORE the first mutation ──
     assert r.status_code == 400, (
@@ -3606,8 +4943,8 @@ def test_set_executor_capture_second_read_fails_closed_before_materialize(
         f"Expected the uncapturable file named in the error, "
         f"got {body['detail']['error']}"
     )
-    assert "read_bytes" in body["detail"]["error"], (
-        f"Expected read_bytes failure named, got {body['detail']['error']}"
+    assert "no-follow content/metadata capture failed" in body["detail"]["error"], (
+        f"Expected no-follow capture failure named, got {body['detail']['error']}"
     )
 
     # ── No materialization, no bootstrap writer, no mutation ──
@@ -3645,7 +4982,7 @@ def test_bootstrap_journal_uncapturable_present_file_is_not_absent(
     tmp_home, monkeypatch,
 ) -> None:
     """THR-190 fix (TASK-5691/TASK-5704): _BootstrapRollbackJournal must
-    keep a present regular file whose read_bytes() raises OSError in a
+    keep a present regular file whose no-follow capture raises OSError in a
     DISTINCT state from an absent file. restore() must never unlink such a
     file (the old code collapsed both into None and deleted it); it reports
     a compensation error instead, and the file survives unchanged."""
@@ -3661,13 +4998,18 @@ def test_bootstrap_journal_uncapturable_present_file_is_not_absent(
     (workspace / "memory").mkdir(parents=True)
 
     real_read_bytes = _Path.read_bytes
+    real_capture = agents_mod._BootstrapRollbackJournal._capture_regular_file
 
-    def _read_bytes(self, *a, **k):
-        if str(self) == str(present):
+    def _capture_regular_file(cls, fp):
+        if str(fp) == str(present):
             raise OSError("forced OSError on present declared file")
-        return real_read_bytes(self, *a, **k)
+        return real_capture(fp)
 
-    monkeypatch.setattr(_Path, "read_bytes", _read_bytes)
+    monkeypatch.setattr(
+        agents_mod._BootstrapRollbackJournal,
+        "_capture_regular_file",
+        classmethod(_capture_regular_file),
+    )
 
     journal = agents_mod._BootstrapRollbackJournal.capture(workspace)
 
@@ -3681,11 +5023,75 @@ def test_bootstrap_journal_uncapturable_present_file_is_not_absent(
     )
 
     errors = journal.restore(workspace)
-    assert any("Uncapturable" in e and "CLAUDE.md" in e for e in errors), errors
+    assert any(
+        "Uncapturable" in e.raw_diagnostic()
+        and "CLAUDE.md" in e.raw_diagnostic()
+        for e in errors
+    ), errors
     # The file survives: not deleted, not overwritten, not treated as absent.
     assert real_read_bytes(present) == original, (
         "journal restore deleted/modified an uncapturable present file"
     )
+
+
+def test_bootstrap_journal_reports_regular_metadata_restore_failure(
+    tmp_path, monkeypatch,
+) -> None:
+    """Metadata reproduction errors remain explicit compensation failures."""
+    import runtime.daemon.routes.agents as agents_mod
+
+    target = tmp_path / "CLAUDE.md"
+    target.write_bytes(b"original\n")
+    target.chmod(0o600)
+    journal = agents_mod._BootstrapRollbackJournal.capture(tmp_path)
+    target.write_bytes(b"changed\n")
+    target.chmod(0o644)
+
+    real_fchmod = os.fchmod
+
+    def _fchmod(fd, mode):
+        if mode == 0o600:
+            raise OSError("forced metadata reproduction failure")
+        return real_fchmod(fd, mode)
+
+    monkeypatch.setattr(os, "fchmod", _fchmod)
+
+    errors = journal.restore(tmp_path)
+
+    assert len(errors) == 1, errors
+    assert errors[0].caller_diagnostic() == "Failed to restore file CLAUDE.md"
+    assert "forced metadata reproduction failure" in errors[0].raw_diagnostic()
+    assert not list(tmp_path.glob(".*.happyranch-restore-*"))
+
+
+def test_bootstrap_compensation_diagnostics_are_structured_and_capped():
+    """Caller diagnostics expose no raw causes and contain at most four items."""
+    from runtime.daemon.routes.agents import (
+        _BOOTSTRAP_OWNED_FILES,
+        _BootstrapCompensationFailure,
+        _BootstrapCompensationOperation,
+        _bounded_bootstrap_compensation_diagnostics,
+    )
+
+    raw_cause = "private bytes\n/private/absolute/path\x1b[31m"
+    failures = [
+        _BootstrapCompensationFailure(
+            _BootstrapCompensationOperation.RESTORE_FILE,
+            relative_path,
+            OSError(raw_cause),
+        )
+        for relative_path in _BOOTSTRAP_OWNED_FILES[:5]
+    ]
+
+    diagnostic = _bounded_bootstrap_compensation_diagnostics(failures)
+
+    assert len(diagnostic.split("; ")) == 4
+    assert diagnostic.endswith("... and 2 more compensation failure(s)")
+    assert "Failed to restore file CLAUDE.md" in diagnostic
+    assert "Failed to restore file AGENTS.md" in diagnostic
+    assert "Failed to restore file .claude/settings.json" in diagnostic
+    assert raw_cause not in diagnostic
+    assert "\n" not in diagnostic and "\x1b" not in diagnostic
 
 
 def test_set_executor_preflight_rejects_symlinked_claude_before_materialization(
@@ -3992,7 +5398,7 @@ def test_set_executor_materialization_real_missing_source_stops_before_build(
     # Use the real protocol skills to build a canonical package for a
     # trusted system contract (start-task) and create symlinks into
     # BOTH .claude/skills and .agents/skills.
-    proto_skills_real = org_state.settings.get_protocol_dir() / "skills"
+    proto_skills_real = org_state.settings.get_bundled_skills_dir()
     if (proto_skills_real / "start-task").is_dir():
         from runtime.orchestrator.workspace_adapters import _compute_dir_hash
         trusted_hash = _compute_dir_hash(proto_skills_real / "start-task")
@@ -4051,7 +5457,7 @@ def test_set_executor_materialization_real_missing_source_stops_before_build(
     import tempfile as _tempfile, shutil as _shutil
     _tmp_proto = tmp_home / "_task4175_proto_skills"
     _shutil.copytree(
-        org_state.settings.get_protocol_dir() / "skills",
+        org_state.settings.get_bundled_skills_dir(),
         _tmp_proto, symlinks=True,
     )
     dream_dir = _tmp_proto / "dream"
@@ -4296,8 +5702,9 @@ def test_manage_agent_update_executor_switch_invalidates_thread_sessions(
         mock_ctx.ensure_workspace_ready.return_value = None
         resp = client.post(
             "/api/v1/orgs/alpha/agents/manage",
-            json={"action": "update", "name": "dev_agent",
+                json={"action": "update", "name": "dev_agent",
                   "task_id": _EH_TASK, "session_id": _EH_SESSION,
+                  "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
                   "executor": "codex"},
             headers=auth_headers,
         )
@@ -4340,8 +5747,9 @@ def test_manage_agent_update_failed_switch_leaves_prior_state_intact(
         mock_ctx.ensure_workspace_ready.side_effect = RuntimeError("boom")
         resp = TestClient(app, raise_server_exceptions=False).post(
             "/api/v1/orgs/alpha/agents/manage",
-            json={"action": "update", "name": "dev_agent",
+                json={"action": "update", "name": "dev_agent",
                   "task_id": _EH_TASK, "session_id": _EH_SESSION,
+                  "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
                   "executor": "codex"},
             headers=auth_headers,
         )
@@ -4382,8 +5790,9 @@ def test_manage_agent_update_same_executor_does_not_invalidate(
         mock_ctx.ensure_workspace_ready.return_value = None
         resp = client.post(
             "/api/v1/orgs/alpha/agents/manage",
-            json={"action": "update", "name": "dev_agent",
+                json={"action": "update", "name": "dev_agent",
                   "task_id": _EH_TASK, "session_id": _EH_SESSION,
+                  "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
                   "executor": "codex"},
             headers=auth_headers,
         )
@@ -4436,8 +5845,9 @@ def test_manage_agent_update_switch_reset_failure_rolls_back_switch(
         mock_ctx.ensure_workspace_ready.return_value = None
         resp = TestClient(app, raise_server_exceptions=False).post(
             "/api/v1/orgs/alpha/agents/manage",
-            json={"action": "update", "name": "dev_agent",
+                json={"action": "update", "name": "dev_agent",
                   "task_id": _EH_TASK, "session_id": _EH_SESSION,
+                  "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
                   "executor": "codex"},
             headers=auth_headers,
         )
@@ -4513,8 +5923,9 @@ def test_manage_agent_update_switch_audit_failure_rolls_back_switch(
         mock_ctx.ensure_workspace_ready.return_value = None
         resp = TestClient(app, raise_server_exceptions=False).post(
             "/api/v1/orgs/alpha/agents/manage",
-            json={"action": "update", "name": "dev_agent",
+                json={"action": "update", "name": "dev_agent",
                   "task_id": _EH_TASK, "session_id": _EH_SESSION,
+                  "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
                   "executor": "codex"},
             headers=auth_headers,
         )
@@ -5123,6 +6534,177 @@ def test_manage_agent_terminate_preflight_archive_collision_keeps_agent_active(
     assert org_state.teams.team_for_agent("dev_agent") == "engineering"
 
 
+@pytest.mark.parametrize(
+    ("fresh_state", "status_code", "code"),
+    [
+        ("missing", 404, None),
+        ("archive_collision", 409, "archive_collision"),
+        ("manager", 409, "manager_terminate_forbidden"),
+        ("workspace_collision", 409, "archive_collision"),
+        ("workspace_file", 500, "workspace_archive_failed"),
+        ("workspace_not_writable", 500, "workspace_archive_failed"),
+        ("workspace_new", 200, None),
+    ],
+)
+def test_manage_agent_terminate_final_lock_preflight_uses_fresh_canonical_state(
+    tmp_home, app, org_state, auth_headers, monkeypatch, fresh_state, status_code, code,
+) -> None:
+    """Final preflight reads facts changed while terminate awaits teams_lock.
+
+    These controlled filesystem changes model states with no shipping writer.
+    They occur only after the shipping terminate coroutine has entered and is
+    awaiting its real lock; the test does not depend on a snapshot-read seam.
+    """
+    from runtime.daemon.routes import agents as agents_mod
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    paths = _paths(org_state)
+    active = paths.agents_dir / "dev_agent.md"
+    workspace = paths.workspaces_dir / "dev_agent"
+    archive = paths.agents_dir / "_terminated" / "dev_agent.md"
+    archived_workspace = paths.workspaces_dir / "_terminated" / "dev_agent"
+    entered_lock = asyncio.Event()
+    actual_lock = org_state.teams_lock
+
+    class ObservedLock:
+        async def __aenter__(self):
+            entered_lock.set()
+            await actual_lock.acquire()
+            return self
+
+        async def __aexit__(self, *_args):
+            actual_lock.release()
+
+    async def exercise() -> dict:
+        org_state.teams_lock = ObservedLock()
+        await actual_lock.acquire()
+        try:
+            terminate = asyncio.create_task(agents_mod.manage_agent(
+                "alpha", agents_mod.ManageAgentBody(
+                    action="terminate", name="dev_agent", task_id=_EH_TASK,
+                    session_id=_EH_SESSION,
+                ), org_state,
+            ))
+            await asyncio.wait_for(entered_lock.wait(), timeout=1)
+            if fresh_state == "missing":
+                active.unlink()
+            elif fresh_state == "archive_collision":
+                archive.parent.mkdir(exist_ok=True)
+                archive.write_bytes(b"occupied archive\n")
+            elif fresh_state == "manager":
+                active.write_bytes(active.read_bytes().replace(b"role: worker", b"role: manager"))
+            elif fresh_state == "workspace_collision":
+                workspace.mkdir(parents=True)
+                archived_workspace.mkdir(parents=True)
+            elif fresh_state == "workspace_file":
+                workspace.parent.mkdir(parents=True, exist_ok=True)
+                workspace.write_bytes(b"not a workspace directory\n")
+            elif fresh_state == "workspace_not_writable":
+                workspace.mkdir(parents=True)
+                monkeypatch.setattr(agents_mod.os, "access", lambda *_args: False)
+            else:
+                workspace.mkdir(parents=True)
+                (workspace / "fresh-marker").write_bytes(b"fresh workspace\n")
+        finally:
+            actual_lock.release()
+        return await asyncio.wait_for(terminate, timeout=1)
+
+    if fresh_state == "workspace_new":
+        assert asyncio.run(exercise()) == {"ok": True, "status": "terminated"}
+        assert archive.exists()
+        assert (archived_workspace / "fresh-marker").read_bytes() == b"fresh workspace\n"
+        return
+
+    with pytest.raises(Exception) as error:
+        asyncio.run(exercise())
+    response = error.value
+    assert response.status_code == status_code
+    if code is not None:
+        assert response.detail["code"] == code
+    assert prompt_loader.load_agent(paths, "dev_agent") is not None or fresh_state == "missing"
+    assert org_state.teams.team_for_agent("dev_agent") == "engineering"
+    if fresh_state == "archive_collision":
+        assert archive.read_bytes() == b"occupied archive\n"
+    elif fresh_state == "workspace_collision":
+        assert workspace.is_dir() and archived_workspace.is_dir()
+    elif fresh_state == "workspace_file":
+        assert workspace.read_bytes() == b"not a workspace directory\n"
+    elif fresh_state == "workspace_not_writable":
+        assert workspace.is_dir() and not archived_workspace.exists()
+    assert not org_state.db.get_audit_logs(_EH_TASK)
+
+
+def test_manage_agent_terminate_archives_worker_bytes_accepted_while_waiting_for_lock(
+    tmp_home, org_state,
+) -> None:
+    """A real winner queued first owns the lock; terminate archives its bytes."""
+    from dataclasses import replace
+    from runtime.daemon.routes import agents as agents_mod
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", system_prompt="old worker\n")
+    paths = _paths(org_state)
+    before = prompt_loader.load_agent(paths, "dev_agent")
+    assert before is not None
+    winning_bytes = prompt_loader.render_agent_text(
+        replace(before, system_prompt="fresh worker bytes\n"),
+    ).encode()
+
+    async def exercise() -> None:
+        revision = prompt_loader.agent_revision(paths, "dev_agent")
+        assert revision is not None
+        actual_lock = org_state.teams_lock
+        winner_waiting = asyncio.Event()
+        terminate_waiting = asyncio.Event()
+        entries = 0
+
+        class ObservedLock:
+            async def __aenter__(self):
+                nonlocal entries
+                entries += 1
+                (winner_waiting if entries == 1 else terminate_waiting).set()
+                await actual_lock.acquire()
+                return self
+
+            async def __aexit__(self, *_args):
+                actual_lock.release()
+
+        org_state.teams_lock = ObservedLock()
+        await actual_lock.acquire()
+        try:
+            winner = asyncio.create_task(agents_mod.manage_agent(
+                "alpha", agents_mod.ManageAgentBody(
+                    action="update", name="dev_agent", task_id=_EH_TASK,
+                    session_id=_EH_SESSION, expected_revision=revision,
+                    system_prompt="fresh worker bytes\n",
+                ), org_state,
+            ))
+            await asyncio.wait_for(winner_waiting.wait(), timeout=1)
+            terminate = asyncio.create_task(agents_mod.manage_agent(
+                "alpha", agents_mod.ManageAgentBody(
+                    action="terminate", name="dev_agent", task_id=_EH_TASK,
+                    session_id=_EH_SESSION,
+                ), org_state,
+            ))
+            await asyncio.wait_for(terminate_waiting.wait(), timeout=1)
+        finally:
+            actual_lock.release()
+        assert await asyncio.wait_for(winner, timeout=1) == {"ok": True}
+        assert await asyncio.wait_for(terminate, timeout=1) == {"ok": True, "status": "terminated"}
+
+    asyncio.run(exercise())
+    active = paths.agents_dir / "dev_agent.md"
+    archived = paths.agents_dir / "_terminated" / "dev_agent.md"
+    assert not active.exists()
+    assert archived.read_bytes() == winning_bytes
+    archived_agent = prompt_loader.load_terminated_agent(paths, "dev_agent")
+    assert archived_agent is not None
+    assert archived_agent.system_prompt == "fresh worker bytes\n"
+    actions = [row["action"] for row in org_state.db.get_audit_logs(_EH_TASK)]
+    assert actions == ["agent_managed", "agent_managed"]
+
+
 def test_manage_agent_terminate_workspace_move_failure_rolls_back(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
@@ -5177,6 +6759,113 @@ def test_manage_agent_terminate_workspace_move_failure_rolls_back(
     assert workspace.exists()
     assert (workspace / "marker.txt").read_text() == "keep me"
     assert org_state.teams.team_for_agent("dev_agent") == "engineering"
+    assert not org_state.db.get_audit_logs(_EH_TASK)
+
+
+@pytest.mark.parametrize("outcome", ["owned", "winner", "changed_archive", "missing_archive"])
+def test_manage_agent_terminate_workspace_failure_restores_only_owned_canonical_archive(
+    tmp_home, app, org_state, auth_headers, outcome, caplog,
+) -> None:
+    """The no-await early compensation never resurrects stale bytes."""
+    import logging
+    from runtime.daemon.routes import agents as agents_mod
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    paths = _paths(org_state)
+    active = paths.agents_dir / "dev_agent.md"
+    original = active.read_bytes() + b"\n"
+    active.write_bytes(original)
+    workspace = paths.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    terminated = paths.agents_dir / "_terminated" / "dev_agent.md"
+
+    def fail_move(_src, _dst) -> None:
+        if outcome == "winner":
+            active.write_bytes(b"winner active\n")
+        elif outcome == "changed_archive":
+            terminated.write_bytes(b"changed archive\n")
+        elif outcome == "missing_archive":
+            terminated.unlink()
+        raise OSError("injected workspace move failure")
+
+    caplog.set_level(logging.WARNING, logger=agents_mod.__name__)
+    with patch("runtime.daemon.routes.agents._move_dir_atomically", side_effect=fail_move):
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={"action": "terminate", "name": "dev_agent", "task_id": _EH_TASK,
+                  "session_id": _EH_SESSION}, headers=auth_headers,
+        )
+    assert response.status_code == 500
+    if outcome == "owned":
+        assert active.read_bytes() == original
+        assert not terminated.exists()
+    elif outcome == "winner":
+        assert active.read_bytes() == b"winner active\n"
+        assert terminated.read_bytes() == original
+    elif outcome == "changed_archive":
+        assert not active.exists()
+        assert terminated.read_bytes() == b"changed archive\n"
+    else:
+        assert not active.exists()
+        assert not terminated.exists()
+    if outcome != "owned":
+        assert any("workspace rollback conflict" in row.message for row in caplog.records)
+
+
+@pytest.mark.parametrize("outcome", ["owned", "winner", "changed_archive", "missing_archive"])
+def test_manage_agent_terminate_cleanup_failure_restores_only_owned_canonical_archive(
+    tmp_home, app, org_state, auth_headers, outcome, caplog,
+) -> None:
+    """Late cleanup compensation applies the same exact-byte ownership rule."""
+    import logging
+    from runtime.daemon.routes import agents as agents_mod
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    paths = _paths(org_state)
+    active = paths.agents_dir / "dev_agent.md"
+    original = active.read_bytes() + b"\n"
+    active.write_bytes(original)
+    workspace = paths.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "marker").write_text("workspace")
+    terminated = paths.agents_dir / "_terminated" / "dev_agent.md"
+
+    def fail_cleanup(*_args, **_kwargs) -> None:
+        if outcome == "winner":
+            active.write_bytes(b"winner active\n")
+        elif outcome == "changed_archive":
+            terminated.write_bytes(b"changed archive\n")
+        elif outcome == "missing_archive":
+            terminated.unlink()
+        raise RuntimeError("injected cleanup failure")
+
+    caplog.set_level(logging.WARNING, logger=agents_mod.__name__)
+    with patch.object(org_state.db, "terminate_agent_cleanups", side_effect=fail_cleanup):
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={"action": "terminate", "name": "dev_agent", "task_id": _EH_TASK,
+                  "session_id": _EH_SESSION}, headers=auth_headers,
+        )
+    assert response.status_code == 500
+    assert response.json()["detail"]["code"] == "terminate_cleanup_failed"
+    assert workspace.exists() and (workspace / "marker").read_text() == "workspace"
+    assert org_state.teams.team_for_agent("dev_agent") == "engineering"
+    if outcome == "owned":
+        assert active.read_bytes() == original
+        assert not terminated.exists()
+    elif outcome == "winner":
+        assert active.read_bytes() == b"winner active\n"
+        assert terminated.read_bytes() == original
+    elif outcome == "changed_archive":
+        assert not active.exists()
+        assert terminated.read_bytes() == b"changed archive\n"
+    else:
+        assert not active.exists()
+        assert not terminated.exists()
+    if outcome != "owned":
+        assert any("cleanup rollback conflict" in row.message for row in caplog.records)
 
 
 def test_manage_agent_terminate_cleanup_failure_rolls_back_everything(
@@ -5521,3 +7210,1252 @@ def test_run_step_fails_terminated_agent_without_executor(
     failed = org_state.db.get_task("TASK-TERM")
     assert failed.status == TaskStatus.FAILED
     assert "terminated" in failed.note.lower()
+
+
+# ── THR-262 Slice B: bounded journal link capture/restore + preflight ───
+
+
+def test_bootstrap_journal_captures_and_restores_canonical_link(tmp_path):
+    from runtime.daemon.routes.agents import _BootstrapRollbackJournal
+
+    (tmp_path / "AGENTS.md").write_text("canonical\n")
+    os.symlink("AGENTS.md", tmp_path / "CLAUDE.md")
+    journal = _BootstrapRollbackJournal.capture(tmp_path)
+    # Simulate a bootstrap that replaced the link with a regular file.
+    (tmp_path / "CLAUDE.md").unlink()
+    (tmp_path / "CLAUDE.md").write_text("clobbered\n")
+    errors = journal.restore(tmp_path)
+    assert errors == []
+    assert os.readlink(tmp_path / "CLAUDE.md") == "AGENTS.md"
+    assert (tmp_path / "AGENTS.md").read_text() == "canonical\n"
+
+
+def test_bootstrap_unsupported_owned_paths_accepts_canonical_link(tmp_path):
+    from runtime.daemon.routes.agents import _bootstrap_unsupported_owned_paths
+
+    (tmp_path / "AGENTS.md").write_text("canonical\n")
+    os.symlink("AGENTS.md", tmp_path / "CLAUDE.md")
+    assert _bootstrap_unsupported_owned_paths(tmp_path) == []
+
+
+def test_bootstrap_unsupported_owned_paths_rejects_foreign_claude_link(tmp_path):
+    from runtime.daemon.routes.agents import _bootstrap_unsupported_owned_paths
+
+    (tmp_path / "AGENTS.md").write_text("canonical\n")
+    (tmp_path / "OTHER.md").write_text("other\n")
+    os.symlink("OTHER.md", tmp_path / "CLAUDE.md")
+    assert "CLAUDE.md" in _bootstrap_unsupported_owned_paths(tmp_path)
+
+
+def test_bootstrap_unsupported_owned_paths_rejects_agents_symlink(tmp_path):
+    from runtime.daemon.routes.agents import _bootstrap_unsupported_owned_paths
+
+    (tmp_path / "AGENTS-real.md").write_text("canonical\n")
+    os.symlink("AGENTS-real.md", tmp_path / "AGENTS.md")
+    os.symlink("AGENTS.md", tmp_path / "CLAUDE.md")
+    unsupported = _bootstrap_unsupported_owned_paths(tmp_path)
+    assert "AGENTS.md" in unsupported
+
+
+# ── THR-262 Slice B: real owned-process SIGKILL/reopen B0-B8 matrix ──────
+#
+# A real disposable child process runs the executor switch and SIGKILLs itself
+# at exactly one named Step 0-5 boundary. The parent observes the durable
+# on-disk pair/backups/temps, the read-only startup pair verdict, and the
+# explicit operator retry. Caught-exception injection is a separate case and is
+# never substituted for this process-death proof.
+
+_KILL_INCOMPLETE = ("B0", "B1", "B2", "B3")
+
+
+def _sigkill_self() -> None:
+    os.kill(os.getpid(), 9)
+
+
+def _install_boundary_kill(boundary: str, agent_name: str) -> None:
+    import pathlib
+
+    import runtime.daemon.routes.agents as agents_mod
+    import runtime.orchestrator.workspace_adapters as wa_mod
+
+    if boundary == "B0":  # before Step 1 (Step-0 preflight/capture ran)
+        agents_mod._executor_switch_materialize = lambda *a, **k: _sigkill_self()
+    elif boundary == "B1":  # during Step 1 union materialization
+        real_repair = wa_mod.SymlinkMaterializer.repair_workspace_skills
+
+        def first_root_then_kill(self, expected_specs, workspace, skills_subdir):
+            result = real_repair(self, expected_specs, workspace, skills_subdir)
+            assert skills_subdir == ".claude/skills"
+            _sigkill_self()
+            return result  # pragma: no cover - SIGKILL never returns
+
+        wa_mod.SymlinkMaterializer.repair_workspace_skills = first_root_then_kill
+    elif boundary == "B2":  # inside Step 2, before the first instruction write
+        agents_mod.ContextBuilder.ensure_workspace_ready = (
+            lambda *a, **k: _sigkill_self()
+        )
+    elif boundary == "B3":  # between the two instruction-path writes
+        real_atomic = wa_mod._atomic_write_regular
+
+        def atomic_then_kill(path, data, mode=0o644):
+            real_atomic(path, data, mode)
+            if path.name == "AGENTS.md":
+                _sigkill_self()
+
+        wa_mod._atomic_write_regular = atomic_then_kill
+    elif boundary == "B4":  # immediately after both instruction writes
+        real_pair = wa_mod.write_canonical_instruction_pair
+
+        def pair_then_kill(workspace, content):
+            real_pair(workspace, content)
+            _sigkill_self()
+
+        wa_mod.write_canonical_instruction_pair = pair_then_kill
+    elif boundary == "B5":  # after Step 2 returns, before Step 3 begins
+        real_ready = agents_mod.ContextBuilder.ensure_workspace_ready
+
+        def ready_then_kill(self, *a, **k):
+            real_ready(self, *a, **k)
+            _sigkill_self()
+
+        agents_mod.ContextBuilder.ensure_workspace_ready = ready_then_kill
+    elif boundary == "B6":  # during Step 3 os.replace
+        real_replace = os.replace
+
+        def replace_then_kill(*args, **kwargs):
+            dst = args[1] if len(args) > 1 else kwargs.get("dst")
+            if dst is not None and str(dst).endswith(f"{agent_name}.md"):
+                _sigkill_self()
+            return real_replace(*args, **kwargs)
+
+        os.replace = replace_then_kill
+    elif boundary == "B7":  # during Step 4 --clean of executor-only files
+        real_unlink = pathlib.Path.unlink
+
+        def unlink_then_kill(self, *a, **k):
+            if self.name == "settings.json":
+                _sigkill_self()
+            return real_unlink(self, *a, **k)
+
+        pathlib.Path.unlink = unlink_then_kill
+    elif boundary == "B8":  # after Step 4, before the audit row
+        def audit_then_kill(self, *a, **k):
+            _sigkill_self()
+
+        agents_mod.AuditLogger.log_agent_managed = audit_then_kill
+    else:  # pragma: no cover
+        raise AssertionError(f"unknown boundary {boundary}")
+
+
+def _seed_incomplete_pair_workspace(org_state, *, external=None):
+    """Active claude agent whose pair is incomplete (CLAUDE.md absent)."""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    agents = workspace / "AGENTS.md"
+    if external is None:
+        agents.write_bytes(b"# pre-existing claude content\n")
+    else:
+        external.write_bytes(b"# pre-existing claude content\n")
+        os.link(external, agents)
+    agents.chmod(0o640)
+    (workspace / ".claude").mkdir(parents=True, exist_ok=True)
+    (workspace / ".claude" / "settings.json").write_text('{"old": true}')
+    return workspace
+
+
+def _run_init_retry(app, auth_headers, agent_name: str) -> list[dict]:
+    import json as _json
+
+    events: list[dict] = []
+    client = TestClient(app)
+    with client.stream(
+        "POST", "/api/v1/orgs/alpha/agents/init",
+        json={"agent": agent_name}, headers=auth_headers,
+    ) as r:
+        assert r.status_code == 200, r.text
+        for line in r.iter_lines():
+            if line.startswith("data:"):
+                events.append(_json.loads(line[len("data:"):].strip()))
+    return events
+
+
+def _disk_artifacts(workspace):
+    return sorted(p.name for p in workspace.iterdir())
+
+
+def _audit_agent_managed(org_state) -> list:
+    return [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+
+
+def _reopen_daemon(daemon_state, runtime):
+    """Tear down the live app/runtime/DB handles and construct a genuinely fresh
+    daemon/runtime/app from the same persisted org root and SQLite DB."""
+    from runtime.config import Settings
+    from runtime.daemon.app import create_app
+    from runtime.daemon.state import DaemonState
+    from runtime.runtime import RuntimeDir
+
+    for org in list(daemon_state.orgs.values()):
+        org.close()
+    daemon_state.orgs.clear()
+    store = getattr(daemon_state, "direct_connect_authority_store", None)
+    if store is not None:
+        store.close()
+        daemon_state.direct_connect_authority_store = None
+    fresh_state = DaemonState.from_runtime(RuntimeDir(runtime.root), Settings())
+    fresh_app = create_app(fresh_state)
+    return fresh_state, fresh_app
+
+
+def _startup_pair_gate(orch, agent_name, monkeypatch):
+    """Invoke the REAL ``Orchestrator._run_agent`` startup seam with a launch
+    spy. Returns ``(refusal_message_or_None, spy)``. The readiness marker is
+    satisfied so the assertion isolates the canonical instruction-pair gate."""
+    from unittest.mock import MagicMock
+
+    from runtime.orchestrator.executors import ExecutorResult
+    from runtime.orchestrator.orchestrator import WorkspaceNotInitialized
+
+    monkeypatch.setattr(orch, "_readiness_marker", lambda ws, p: ws / "AGENTS.md")
+    monkeypatch.setattr(orch, "_build_session_id", lambda: "sess-8753")
+    # Use the legacy uncontained launch body so the launch spy is invoked
+    # synchronously; the containment supervisor is unrelated to the pair gate.
+    monkeypatch.setattr(orch, "_host_supervisor", None)
+    task_id = orch.create_task("ping")
+    spy = MagicMock()
+    spy.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="sess-8753",
+    )
+    with patch.object(orch, "_build_executor", return_value=spy):
+        try:
+            orch._run_agent(task_id, agent_name, "any prompt")
+        except WorkspaceNotInitialized as exc:
+            return str(exc), spy
+    return None, spy
+
+
+def _instruction_path_state(path):
+    import stat as _stat
+
+    if not os.path.lexists(path):
+        return ("absent", None, None, None)
+    st = os.lstat(path)
+    if _stat.S_ISLNK(st.st_mode):
+        return ("symlink", os.readlink(path), st.st_mode & 0o7777, st.st_uid)
+    if _stat.S_ISREG(st.st_mode):
+        return ("regular", path.read_bytes(), st.st_mode & 0o7777, st.st_uid)
+    return ("other", None, st.st_mode & 0o7777, st.st_uid)
+
+
+def _owned_temp_residue(workspace):
+    names = []
+    for root in (workspace, workspace / ".claude", workspace / ".agents"):
+        if not root.is_dir():
+            continue
+        for p in root.iterdir():
+            if ".happyranch-" in p.name and not p.name.endswith(".bak"):
+                names.append(str(p.relative_to(workspace)))
+    return sorted(names)
+
+
+def _expected_codex_instruction_bytes(org_state, workspace) -> bytes:
+    """Build the exact Step-2 instruction payload without touching disk."""
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
+    adapter = CodexWorkspaceAdapter(
+        org_state.settings, OrgPaths(root=org_state.root), slug=org_state.slug,
+    )
+    with patch(
+        "runtime.orchestrator.workspace_adapters.write_canonical_instruction_pair",
+    ) as pair_writer:
+        adapter.write_agents_md(workspace, "dev_agent", "prompt\n")
+    assert pair_writer.call_count == 1
+    return pair_writer.call_args.args[1].encode()
+
+
+def _expected_system_contract_ids(workspace) -> set[str]:
+    expected: set[str] = set()
+    for context in ("task", "thread", "wake", "dream", "schedule", "bootstrap"):
+        expected |= _system_contract_ids_for_context(context, workspace)
+    return expected
+
+
+def _assert_exact_skill_root(org_state, workspace, root_name, *, present) -> None:
+    """Assert exact root membership, raw links, and source/canonical integrity."""
+    from runtime.orchestrator.workspace_adapters import _compute_dir_hash
+    from runtime.skills.canonical_store import CanonicalSkillStore
+
+    root = workspace / root_name
+    if not present:
+        assert not os.path.lexists(root), (root_name, _disk_artifacts(workspace))
+        return
+
+    expected_ids = _expected_system_contract_ids(workspace)
+    assert root.is_dir() and not root.is_symlink(), root
+    assert {entry.name for entry in root.iterdir()} == expected_ids
+    store = CanonicalSkillStore(settings=org_state.settings)
+    sources = org_state.settings.get_bundled_skills_dir()
+    for skill_id in sorted(expected_ids):
+        source = sources / skill_id
+        content_hash = _compute_dir_hash(source)
+        target = store.canonical_path(skill_id, "system", content_hash)
+        link = root / skill_id
+        assert link.is_symlink(), link
+        assert os.readlink(link) == os.path.relpath(target, link.parent)
+        assert link.resolve() == target.resolve()
+        assert _compute_dir_hash(link.resolve()) == content_hash
+
+
+def _assert_owned_inventory(workspace, *, expect_agents_backup: bool) -> None:
+    assert _owned_temp_residue(workspace) == []
+    owned = sorted(
+        p for p in workspace.iterdir() if ".happyranch-" in p.name
+    )
+    backups = [p for p in owned if p.name.endswith(".bak")]
+    assert len(backups) == (1 if expect_agents_backup else 0), [p.name for p in owned]
+    if backups:
+        assert backups[0].name.startswith("AGENTS.md.happyranch-")
+        assert _instruction_path_state(backups[0]) == (
+            "regular", b"# pre-existing claude content\n", 0o640, os.getuid(),
+        )
+
+
+@pytest.mark.parametrize("boundary", ["B0", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8"])
+def test_executor_switch_abrupt_death_b0_b8_retains_state_then_retry(
+    tmp_home, app, org_state, auth_headers, daemon_state, runtime, boundary,
+    monkeypatch,
+):
+    """THR-262 Slice B / founder seq59 C9: a REAL owned disposable process is
+    SIGKILLed at each named Step 0-5 boundary; the original app/runtime/DB
+    handles are then torn down and a genuinely fresh daemon/runtime/app is
+    constructed from the same persisted org root and SQLite DB. Reopen performs
+    no automatic restore and writes no persistent recovery record. The REAL
+    ``Orchestrator._run_agent`` startup seam (launch spy) refuses incomplete or
+    non-canonical pairs with an actionable ``init-agent`` message and zero
+    executor launch, while valid pairs proceed. The operator ``init-agent``
+    retry then reaches a terminal done/all_done result and a second retry is
+    idempotent."""
+    from runtime.orchestrator.workspace_adapters import instruction_pair_refusal
+
+    external = tmp_home / "external_sentinel.md"
+    workspace = _seed_incomplete_pair_workspace(org_state, external=external)
+    external_hash = hashlib.sha256(external.read_bytes()).hexdigest()
+    agents_path = workspace / "AGENTS.md"
+    original_agents = _instruction_path_state(agents_path)
+    original_claude = _instruction_path_state(workspace / "CLAUDE.md")
+    audit_before = _audit_agent_managed(org_state)
+    authoritative_before = prompt_loader.load_agent(
+        OrgPaths(root=org_state.root), "dev_agent",
+    ).executor
+    assert authoritative_before == "claude"
+
+    pid = os.fork()
+    if pid == 0:  # pragma: no cover - child process
+        try:
+            _install_boundary_kill(boundary, "dev_agent")
+            TestClient(app).put(
+                "/api/v1/orgs/alpha/agents/dev_agent/executor",
+                json={"executor": "codex", "clean": True},
+                headers=auth_headers,
+            )
+        except BaseException:
+            os._exit(3)
+        os._exit(0)
+    _, status = os.waitpid(pid, 0)
+    assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == 9, (
+        f"{boundary}: child not SIGKILLed, status={status}, "
+        f"artifacts={_disk_artifacts(workspace)}"
+    )
+
+    # ── Genuine reopen: close live handles, rebuild from persisted state ──
+    fresh_state, fresh_app = _reopen_daemon(daemon_state, runtime)
+    fresh_org = fresh_state.orgs["alpha"]
+    assert fresh_org.db is not org_state.db
+    canonical_agents = (
+        "regular", _expected_codex_instruction_bytes(fresh_org, workspace),
+        original_agents[2], original_agents[3],
+    )
+    canonical_claude = ("symlink", "AGENTS.md", 0o777, os.getuid())
+
+    # ── No persistent recovery record / journal / receipt ──
+    for name in _disk_artifacts(workspace):
+        lowered = name.lower()
+        assert "journal" not in lowered, f"{boundary}: persistent journal {name}"
+        assert "receipt" not in lowered, f"{boundary}: durable receipt {name}"
+        assert "recovery" not in lowered, f"{boundary}: recovery record {name}"
+    for root in (fresh_org.root, runtime.root):
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            lowered = path.name.lower()
+            assert "recovery" not in lowered, f"{boundary}: recovery record {path}"
+            assert "journal" not in lowered, f"{boundary}: journal {path}"
+
+    # ── Exact on-disk instruction state (bytes/type/raw link/mode/uid) ──
+    agents_state = _instruction_path_state(agents_path)
+    claude_state = _instruction_path_state(workspace / "CLAUDE.md")
+    expected_pairs = {
+        "B0": (original_agents, original_claude),
+        "B1": (original_agents, original_claude),
+        "B2": (original_agents, original_claude),
+        "B3": (canonical_agents, original_claude),
+        "B4": (canonical_agents, canonical_claude),
+        "B5": (canonical_agents, canonical_claude),
+        "B6": (canonical_agents, canonical_claude),
+        "B7": (canonical_agents, canonical_claude),
+        "B8": (canonical_agents, canonical_claude),
+    }
+    expected_pair = expected_pairs[boundary]
+    assert (agents_state, claude_state) == expected_pair, {
+        "boundary": boundary,
+        "actual_agents": (
+            agents_state[0], hashlib.sha256(agents_state[1]).hexdigest()
+            if isinstance(agents_state[1], bytes) else agents_state[1],
+            agents_state[2], agents_state[3],
+        ),
+        "expected_agents": (
+            expected_pair[0][0], hashlib.sha256(expected_pair[0][1]).hexdigest()
+            if isinstance(expected_pair[0][1], bytes) else expected_pair[0][1],
+            expected_pair[0][2], expected_pair[0][3],
+        ),
+        "actual_claude": claude_state,
+        "expected_claude": expected_pair[1],
+    }
+
+    verdict = instruction_pair_refusal(workspace)
+    if boundary in _KILL_INCOMPLETE:
+        assert verdict is not None, (
+            f"{boundary}: expected an incomplete pair refusal, got {verdict!r}"
+        )
+    else:
+        assert verdict is None, f"{boundary}: expected a valid pair, got {verdict!r}"
+        assert (agents_state, claude_state) == (
+            canonical_agents, canonical_claude,
+        )
+
+    # ── Complete owned temp/backup inventory ──
+    _assert_owned_inventory(
+        workspace, expect_agents_backup=boundary not in ("B0", "B1", "B2"),
+    )
+
+    # ── Both skill roots stay symmetric (union-before-reconcile) ──
+    expected_roots = {
+        "B0": (False, False),
+        "B1": (True, False),
+        "B2": (True, True),
+        "B3": (True, True),
+        "B4": (True, True),
+        "B5": (True, True),
+        "B6": (True, True),
+        "B7": (True, True),
+        "B8": (True, True),
+    }[boundary]
+    _assert_exact_skill_root(
+        fresh_org, workspace, ".claude/skills", present=expected_roots[0],
+    )
+    _assert_exact_skill_root(
+        fresh_org, workspace, ".agents/skills", present=expected_roots[1],
+    )
+
+    # ── External sentinel unchanged ──
+    assert hashlib.sha256(external.read_bytes()).hexdigest() == external_hash
+
+    # ── Authoritative executor frontmatter + no fabricated audit row ──
+    authoritative = prompt_loader.load_agent(
+        OrgPaths(root=fresh_org.root), "dev_agent",
+    ).executor
+    expected_executor = {
+        "B0": "claude", "B1": "claude", "B2": "claude",
+        "B3": "claude", "B4": "claude", "B5": "claude",
+        "B6": "claude", "B7": "codex", "B8": "codex",
+    }[boundary]
+    assert authoritative == expected_executor, (
+        f"{boundary}: authoritative executor {authoritative!r}"
+    )
+    assert _audit_agent_managed(fresh_org) == audit_before, (
+        f"{boundary}: an agent_managed audit row was written"
+    )
+
+    # ── REAL startup seam: refusal for incomplete pairs, launch for valid ──
+    refusal, spy = _startup_pair_gate(fresh_org.orchestrator, "dev_agent", monkeypatch)
+    if boundary in _KILL_INCOMPLETE:
+        assert refusal is not None, f"{boundary}: startup did not refuse"
+        assert "init-agent" in refusal and "dev_agent" in refusal, refusal
+        spy.run.assert_not_called()
+    else:
+        assert refusal is None, f"{boundary}: unexpected refusal {refusal!r}"
+        assert spy.run.call_count == 1, (
+            f"{boundary}: valid pair did not reach executor launch"
+        )
+
+    # ── Operator init-agent retry to a terminal done/all_done result ──
+    events = _run_init_retry(fresh_app, auth_headers, "dev_agent")
+    phases = [e.get("phase") for e in events]
+    assert "done" in phases, f"{boundary}: retry did not report done: {events}"
+    assert "all_done" in phases, f"{boundary}: retry did not report all_done: {events}"
+    assert instruction_pair_refusal(workspace) is None, (
+        f"{boundary}: init-agent retry did not complete the pair"
+    )
+    assert agents_path.is_file() and not agents_path.is_symlink()
+    assert (workspace / "CLAUDE.md").is_symlink()
+    assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
+    # Retry never rewrites the authoritative executor setting.
+    after_retry = prompt_loader.load_agent(
+        OrgPaths(root=fresh_org.root), "dev_agent",
+    ).executor
+    assert after_retry == authoritative
+
+    _assert_exact_skill_root(
+        fresh_org, workspace, ".claude/skills", present=True,
+    )
+    _assert_exact_skill_root(
+        fresh_org, workspace, ".agents/skills", present=True,
+    )
+
+    # ── Second retry is idempotent (pair and preservation copies stable) ──
+    after_first = agents_path.read_bytes()
+    link_first = os.readlink(workspace / "CLAUDE.md")
+    backups_first = sorted(p.name for p in workspace.glob("*.bak"))
+    _run_init_retry(fresh_app, auth_headers, "dev_agent")
+    assert agents_path.read_bytes() == after_first, (
+        f"{boundary}: second retry rewrote AGENTS.md"
+    )
+    assert os.readlink(workspace / "CLAUDE.md") == link_first
+    assert sorted(p.name for p in workspace.glob("*.bak")) == backups_first, (
+        f"{boundary}: second retry created an extra preservation copy"
+    )
+    assert instruction_pair_refusal(workspace) is None
+    assert hashlib.sha256(external.read_bytes()).hexdigest() == external_hash
+
+
+
+def test_init_agent_retry_stops_on_preserved_conflict_zero_mutation(
+    tmp_home, app, org_state, auth_headers,
+):
+    """THR-262 Slice B / founder seq59 C9: when the pair cannot be converged
+    safely (a directory at an instruction path), the explicit ``init-agent``
+    retry stops on a named preserved conflict, emits a per-agent error (never
+    ``done``/``all_done``), and leaves the pair and every unrelated byte
+    unchanged with no backup/temp residue."""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "AGENTS.md").write_text("# original agents\n")
+    (workspace / "CLAUDE.md").mkdir()
+    sentinel = workspace / "unrelated.txt"
+    sentinel.write_text("unrelated\n")
+
+    events = _run_init_retry(app, auth_headers, "dev_agent")
+
+    phases = [e.get("phase") for e in events]
+    assert "done" not in phases, phases
+    assert "all_done" not in phases, phases
+    error = next(e for e in events if e.get("phase") == "error")
+    assert "instruction pair conflict" in error["detail"], error
+    assert "CLAUDE.md" in error["detail"], error
+
+    assert (workspace / "AGENTS.md").read_text() == "# original agents\n"
+    assert (workspace / "CLAUDE.md").is_dir()
+    assert sentinel.read_text() == "unrelated\n"
+    assert not list(workspace.glob("*.bak"))
+    assert not list(workspace.glob("*.tmp"))
+
+
+# ── TASK-8744 F3: distinct parametrized caught-exception B1-B8 matrix ───────
+#
+# Each boundary injects a plain in-process exception at the SAME seam the
+# SIGKILL matrix uses. Unlike the process-death proof, the route's own
+# bounded rollback runs; B1-B5 must restore the exact prior instruction pair
+# and executor, and B6-B8 must surface an honest non-success without residue.
+# This is deliberately separate from (and never substitutes for) the real
+# SIGKILL/reopen proof above.
+
+_CAUGHT_ROLLBACK = ("B1", "B2", "B3", "B4", "B5")
+
+
+def _install_boundary_exception(boundary, agent_name, monkeypatch):
+    import pathlib
+
+    import runtime.daemon.routes.agents as agents_mod
+    import runtime.orchestrator.workspace_adapters as wa
+
+    if boundary == "B1":
+        monkeypatch.setattr(
+            agents_mod,
+            "_executor_switch_materialize",
+            lambda *a, **k: ["injected union materialization failure"],
+        )
+    elif boundary == "B2":
+        def boom(self, *a, **k):
+            raise RuntimeError("injected pre-write bootstrap failure")
+
+        monkeypatch.setattr(
+            agents_mod.ContextBuilder, "ensure_workspace_ready", boom,
+        )
+    elif boundary == "B3":
+        real_atomic = wa._atomic_write_regular
+
+        def atomic_boom(path, data, mode=0o644):
+            result = real_atomic(path, data, mode)
+            if path.name == "AGENTS.md":
+                raise OSError("injected failure after real AGENTS write")
+            return result
+
+        monkeypatch.setattr(wa, "_atomic_write_regular", atomic_boom)
+    elif boundary == "B4":
+        real_link = wa._replace_with_canonical_claude_link
+
+        def link_then_boom(*a, **k):
+            result = real_link(*a, **k)
+            raise RuntimeError("injected failure after both real instruction writes")
+
+        monkeypatch.setattr(wa, "_replace_with_canonical_claude_link", link_then_boom)
+    elif boundary == "B5":
+        real_ready = agents_mod.ContextBuilder.ensure_workspace_ready
+
+        def ready_then_raise(self, *a, **k):
+            real_ready(self, *a, **k)
+            raise RuntimeError("injected post-pair bootstrap failure")
+
+        monkeypatch.setattr(
+            agents_mod.ContextBuilder, "ensure_workspace_ready",
+            ready_then_raise,
+        )
+    elif boundary == "B6":
+        real_replace = os.replace
+
+        def replace_boom(src, dst, *a, **k):
+            if str(dst).endswith(f"{agent_name}.md"):
+                raise OSError("injected frontmatter replace failure")
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr(os, "replace", replace_boom)
+    elif boundary == "B7":
+        real_unlink = pathlib.Path.unlink
+
+        def unlink_boom(self, *a, **k):
+            if self.name == "settings.json":
+                raise OSError("injected clean unlink failure")
+            return real_unlink(self, *a, **k)
+
+        monkeypatch.setattr(pathlib.Path, "unlink", unlink_boom)
+    elif boundary == "B8":
+        def audit_boom(self, *a, **k):
+            raise RuntimeError("injected audit failure")
+
+        monkeypatch.setattr(agents_mod.AuditLogger, "log_agent_managed", audit_boom)
+    else:  # pragma: no cover
+        raise AssertionError(f"unknown boundary {boundary}")
+
+
+@pytest.mark.parametrize("boundary", ["B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8"])
+def test_executor_switch_caught_exception_b1_b8_rolls_back_in_process(
+    tmp_home, app, org_state, auth_headers, boundary, monkeypatch,
+):
+    external = tmp_home / "caught_external_sentinel.md"
+    workspace = _seed_incomplete_pair_workspace(org_state, external=external)
+    external_hash = hashlib.sha256(external.read_bytes()).hexdigest()
+    agents_path = workspace / "AGENTS.md"
+    claude_path = workspace / "CLAUDE.md"
+    agents_before = _instruction_path_state(agents_path)
+    claude_before = _instruction_path_state(claude_path)
+    audit_before = _audit_agent_managed(org_state)
+
+    _install_boundary_exception(boundary, "dev_agent", monkeypatch)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    r = client.put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex", "clean": True},
+        headers=auth_headers,
+    )
+
+    assert r.status_code != 200, (
+        f"{boundary}: caught failure unexpectedly succeeded: {r.text}"
+    )
+    if boundary in _CAUGHT_ROLLBACK:
+        assert r.status_code == 400, (boundary, r.status_code, r.text)
+        code = r.json()["detail"]["code"]
+        assert code in (
+            "executor_materialization_failed", "executor_bootstrap_failed",
+        ), (boundary, code)
+    else:
+        assert r.status_code >= 500, (boundary, r.status_code, r.text)
+
+    # ── Authoritative executor frontmatter ──
+    authoritative = prompt_loader.load_agent(
+        OrgPaths(root=org_state.root), "dev_agent",
+    ).executor
+    if boundary in _CAUGHT_ROLLBACK or boundary == "B6":
+        assert authoritative == "claude", (boundary, authoritative)
+    else:
+        assert authoritative == "codex", (boundary, authoritative)
+
+    # ── Boundary-specific exact pair state ──
+    if boundary in _CAUGHT_ROLLBACK:
+        expected_pair = (agents_before, claude_before)
+    else:
+        expected_pair = (
+            (
+                "regular", _expected_codex_instruction_bytes(org_state, workspace),
+                agents_before[2], agents_before[3],
+            ),
+            ("symlink", "AGENTS.md", 0o777, os.getuid()),
+        )
+    assert (
+        _instruction_path_state(agents_path),
+        _instruction_path_state(claude_path),
+    ) == expected_pair, f"{boundary}: instruction pair state mismatch"
+
+    # B1/B2 fail before the pair writer; B3-B8 crossed the preservation
+    # barrier and therefore retain exactly one collision-safe AGENTS copy.
+    _assert_owned_inventory(
+        workspace, expect_agents_backup=boundary not in ("B1", "B2"),
+    )
+
+    # B1 is injected before union materialization; B2-B8 retain the exact
+    # complete both-root union produced by Step 1.
+    _assert_exact_skill_root(
+        org_state, workspace, ".claude/skills", present=boundary != "B1",
+    )
+    _assert_exact_skill_root(
+        org_state, workspace, ".agents/skills", present=boundary != "B1",
+    )
+
+    # ── No fabricated audit row; no owned temp residue; external unchanged ──
+    assert _audit_agent_managed(org_state) == audit_before, (
+        f"{boundary}: an agent_managed audit row was written"
+    )
+    assert hashlib.sha256(external.read_bytes()).hexdigest() == external_hash
+
+
+def test_executor_switch_caught_b5_restores_divergent_regular_pair_metadata(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+):
+    """A real post-pair bootstrap failure restores both regular pre-states.
+
+    The general B1-B8 matrix starts with an absent CLAUDE.md.  This adverse B5
+    case exercises the other admitted pre-state: two divergent regular
+    instruction files whose bytes, modes, and owners must all survive the
+    route's caught-failure compensation exactly.
+    """
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / ".claude").mkdir(parents=True)
+    settings = workspace / ".claude" / "settings.json"
+    settings.write_bytes(b'{"old": true}\n')
+
+    # Keep an external hard-link sentinel for the AGENTS.md inode.  The pair
+    # writer and rollback must use atomic replacement, never write through
+    # this shared inode or otherwise alter the external target.
+    external = tmp_home / "caught_b5_external_sentinel.md"
+    external.write_bytes(b"# divergent original AGENTS instructions\n")
+    agents_path = workspace / "AGENTS.md"
+    os.link(external, agents_path)
+    agents_path.chmod(0o640)
+    claude_path = workspace / "CLAUDE.md"
+    claude_path.write_bytes(b"# divergent original CLAUDE instructions\n")
+    claude_path.chmod(0o600)
+
+    expected_uid = os.getuid()
+    agents_before = _instruction_path_state(agents_path)
+    claude_before = _instruction_path_state(claude_path)
+    external_before = _instruction_path_state(external)
+    settings_before = _instruction_path_state(settings)
+    assert agents_before == (
+        "regular", b"# divergent original AGENTS instructions\n",
+        0o640, expected_uid,
+    )
+    assert claude_before == (
+        "regular", b"# divergent original CLAUDE instructions\n",
+        0o600, expected_uid,
+    )
+    assert external_before == agents_before
+    assert _owned_temp_residue(workspace) == []
+    assert not list(workspace.glob("*.bak"))
+    assert not os.path.lexists(workspace / ".claude" / "skills")
+    assert not os.path.lexists(workspace / ".agents" / "skills")
+    audit_before = _audit_agent_managed(org_state)
+
+    _install_boundary_exception("B5", "dev_agent", monkeypatch)
+
+    r = TestClient(app, raise_server_exceptions=False).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex", "clean": True},
+        headers=auth_headers,
+    )
+
+    assert r.status_code == 400, (r.status_code, r.text)
+    detail = r.json()["detail"]
+    assert detail["code"] == "executor_bootstrap_failed"
+    assert "Any partial bootstrap files have been cleaned up." in detail["message"]
+    assert "cleanup/restore was incomplete" not in detail["message"].lower()
+    assert _instruction_path_state(agents_path) == agents_before
+    assert _instruction_path_state(claude_path) == claude_before
+    assert _instruction_path_state(external) == external_before
+    assert _instruction_path_state(settings) == settings_before
+    assert prompt_loader.load_agent(
+        OrgPaths(root=org_state.root), "dev_agent",
+    ).executor == "claude"
+    assert _audit_agent_managed(org_state) == audit_before
+    assert _owned_temp_residue(workspace) == []
+
+    backups = sorted(workspace.glob("*.happyranch-*.bak"))
+    assert len(backups) == 2, [p.name for p in backups]
+    backup_states = {
+        p.name.split(".happyranch-", 1)[0]: _instruction_path_state(p)
+        for p in backups
+    }
+    assert backup_states == {
+        "AGENTS.md": agents_before,
+        "CLAUDE.md": claude_before,
+    }
+    _assert_exact_skill_root(
+        org_state, workspace, ".claude/skills", present=True,
+    )
+    _assert_exact_skill_root(
+        org_state, workspace, ".agents/skills", present=True,
+    )
+
+
+def test_executor_switch_caught_b5_surfaces_incomplete_metadata_compensation(
+    tmp_home, app, org_state, auth_headers, monkeypatch, caplog,
+):
+    """The real route reports a bounded, truthful failed-compensation result.
+
+    A post-pair B5 failure first mutates the divergent regular instruction
+    pair through the shipping writer.  The real rollback then restores
+    AGENTS.md but cannot reproduce CLAUDE.md's captured mode because fchmod is
+    forced to fail.  The caller must see both the original bootstrap failure
+    and the bounded compensation failure, without a false cleanup-success
+    claim, while every unaffected invariant remains exact.
+    """
+    import logging
+
+    import runtime.daemon.routes.agents as agents_mod
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / ".claude").mkdir(parents=True)
+    settings = workspace / ".claude" / "settings.json"
+    settings.write_bytes(b'{"old": true}\n')
+
+    external = tmp_home / "caught_b5_compensation_external_sentinel.md"
+    external.write_bytes(b"# original AGENTS instructions\n")
+    agents_path = workspace / "AGENTS.md"
+    os.link(external, agents_path)
+    agents_path.chmod(0o640)
+    claude_path = workspace / "CLAUDE.md"
+    claude_path.write_bytes(b"# original CLAUDE instructions\n")
+    claude_path.chmod(0o600)
+
+    agents_before = _instruction_path_state(agents_path)
+    claude_before = _instruction_path_state(claude_path)
+    external_before = _instruction_path_state(external)
+    settings_before = _instruction_path_state(settings)
+    audit_before = _audit_agent_managed(org_state)
+    assert agents_before == (
+        "regular", b"# original AGENTS instructions\n", 0o640, os.getuid(),
+    )
+    assert claude_before == (
+        "regular", b"# original CLAUDE instructions\n", 0o600, os.getuid(),
+    )
+
+    _install_boundary_exception("B5", "dev_agent", monkeypatch)
+    real_fchmod = os.fchmod
+    long_unsafe_reason = (
+        "forced metadata reproduction failure\n\x1b[31m" + "X" * 2000
+    )
+
+    def _fchmod(fd, mode):
+        if mode == 0o600:
+            raise OSError(long_unsafe_reason)
+        return real_fchmod(fd, mode)
+
+    monkeypatch.setattr(os, "fchmod", _fchmod)
+    caplog.set_level(logging.ERROR, logger=agents_mod.__name__)
+
+    r = TestClient(app, raise_server_exceptions=False).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex", "clean": True},
+        headers=auth_headers,
+    )
+
+    assert r.status_code == 400, (r.status_code, r.text)
+    detail = r.json()["detail"]
+    assert set(detail) == {"code", "error", "message"}
+    assert detail["code"] == "executor_bootstrap_failed"
+    assert "injected post-pair bootstrap failure" in detail["error"]
+    assert "Failed to restore file CLAUDE.md" in detail["error"]
+    assert "forced metadata reproduction failure" not in detail["error"]
+    assert "cleanup/restore was incomplete" in detail["message"].lower()
+    assert "Failed to restore file CLAUDE.md" in detail["message"]
+    assert "Resolve the bootstrap error before retrying." in detail["message"]
+    assert (
+        "Any partial bootstrap files have been cleaned up."
+        not in detail["message"]
+    )
+    assert "\n" not in detail["error"] and "\x1b" not in detail["error"]
+    assert "\n" not in detail["message"] and "\x1b" not in detail["message"]
+    assert len(detail["error"]) <= 1200
+    assert len(detail["message"]) <= 1600
+    assert "X" * 1000 not in detail["error"]
+    assert "X" * 1000 not in detail["message"]
+    raw_log = "\n".join(record.getMessage() for record in caplog.records)
+    assert "forced metadata reproduction failure" in raw_log
+    assert "\x1b[31m" in raw_log
+    assert "X" * 2000 in raw_log
+
+    # Rollback is honestly partial: AGENTS.md and every unaffected owned file
+    # are exact, while CLAUDE.md remains the canonical link created by the real
+    # pair writer because its regular-file metadata could not be reproduced.
+    assert _instruction_path_state(agents_path) == agents_before
+    assert _instruction_path_state(claude_path) == (
+        "symlink", "AGENTS.md", 0o777, os.getuid(),
+    )
+    assert _instruction_path_state(external) == external_before
+    assert _instruction_path_state(settings) == settings_before
+    assert prompt_loader.load_agent(
+        OrgPaths(root=org_state.root), "dev_agent",
+    ).executor == "claude"
+    assert _audit_agent_managed(org_state) == audit_before
+    assert _owned_temp_residue(workspace) == []
+
+    backups = sorted(workspace.glob("*.happyranch-*.bak"))
+    assert len(backups) == 2, [p.name for p in backups]
+    assert {
+        p.name.split(".happyranch-", 1)[0]: _instruction_path_state(p)
+        for p in backups
+    } == {
+        "AGENTS.md": agents_before,
+        "CLAUDE.md": claude_before,
+    }
+    _assert_exact_skill_root(
+        org_state, workspace, ".claude/skills", present=True,
+    )
+    _assert_exact_skill_root(
+        org_state, workspace, ".agents/skills", present=True,
+    )
+
+
+def test_executor_switch_caught_b5_verification_mismatch_is_caller_safe(
+    tmp_home, app, org_state, auth_headers, monkeypatch, caplog,
+):
+    """Final restore verification detail stays in operator logs only.
+
+    This exercises the real route after the pair writer and B5 bootstrap
+    failure.  The replacement succeeds, but the resulting regular file is
+    made to differ before the journal's final verification.  That raw
+    verification exception contains both captured states, including their
+    bytes; callers must receive only the stable rollback operation and the
+    declared owned relative name.
+    """
+    import logging
+    from pathlib import Path as _Path
+
+    import runtime.daemon.routes.agents as agents_mod
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / ".claude").mkdir(parents=True)
+    settings = workspace / ".claude" / "settings.json"
+    settings.write_bytes(b'{"old": true}\n')
+
+    workspace_path_sentinel = str(
+        workspace / "TASK8871_PRIVATE_WORKSPACE_PATH"
+    ).encode()
+    temp_path_sentinel = str(
+        tmp_home / "TASK8871_PRIVATE_TEMP_PATH"
+    ).encode()
+    sensitive_prior = b"TASK8871_SENSITIVE_PRIOR_INSTRUCTION_BYTES"
+    restored_bytes = b"TASK8871_MISMATCHED_RESTORED_BYTES"
+    prior_claude = b"|".join(
+        (sensitive_prior, workspace_path_sentinel, temp_path_sentinel),
+    ) + b"\n"
+    mismatched_claude = b"|".join(
+        (restored_bytes, workspace_path_sentinel, temp_path_sentinel),
+    ) + b"\n"
+
+    external = tmp_home / "caught_b5_verify_external_sentinel.md"
+    external.write_bytes(b"# original AGENTS instructions\n")
+    agents_path = workspace / "AGENTS.md"
+    os.link(external, agents_path)
+    agents_path.chmod(0o640)
+    claude_path = workspace / "CLAUDE.md"
+    claude_path.write_bytes(prior_claude)
+    claude_path.chmod(0o600)
+
+    agents_before = _instruction_path_state(agents_path)
+    claude_before = _instruction_path_state(claude_path)
+    external_before = _instruction_path_state(external)
+    settings_before = _instruction_path_state(settings)
+    frontmatter_path = org_state.root / "org" / "agents" / "dev_agent.md"
+    frontmatter_before = frontmatter_path.read_bytes()
+    agent_yaml_before = (workspace / "agent.yaml").read_bytes()
+    audit_before = _audit_agent_managed(org_state)
+    assert _owned_temp_residue(workspace) == []
+    assert not list(workspace.glob("*.bak"))
+
+    _install_boundary_exception("B5", "dev_agent", monkeypatch)
+    real_replace = os.replace
+
+    def _replace_then_diverge(src, dst, *args, **kwargs):
+        real_replace(src, dst, *args, **kwargs)
+        if args or kwargs:
+            return
+        src_path = _Path(src)
+        dst_path = _Path(dst)
+        if (
+            dst_path == claude_path
+            and src_path.name.startswith(".CLAUDE.md.happyranch-restore-")
+        ):
+            dst_path.write_bytes(mismatched_claude)
+            dst_path.chmod(0o600)
+
+    monkeypatch.setattr(os, "replace", _replace_then_diverge)
+    caplog.set_level(logging.ERROR, logger=agents_mod.__name__)
+
+    r = TestClient(app, raise_server_exceptions=False).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex", "clean": True},
+        headers=auth_headers,
+    )
+
+    assert r.status_code == 400, (r.status_code, r.text)
+    detail = r.json()["detail"]
+    assert set(detail) == {"code", "error", "message"}
+    assert detail["code"] == "executor_bootstrap_failed"
+    assert "injected post-pair bootstrap failure" in detail["error"]
+    assert "cleanup/restore was incomplete" in detail["message"].lower()
+    assert "Any partial bootstrap files have been cleaned up." not in detail["message"]
+    assert "Failed to restore file CLAUDE.md" in detail["error"]
+    assert "Failed to restore file CLAUDE.md" in detail["message"]
+
+    caller_diagnostics = detail["error"].split(
+        "rollback compensation incomplete: ", 1,
+    )[1]
+    assert len(caller_diagnostics.split("; ")) <= 4
+    for field in (detail["error"], detail["message"]):
+        assert "\n" not in field and "\r" not in field
+        assert sensitive_prior.decode() not in field
+        assert restored_bytes.decode() not in field
+        assert workspace_path_sentinel.decode() not in field
+        assert temp_path_sentinel.decode() not in field
+        assert "_RegularFileState" not in field
+        assert "data=" not in field
+        assert "regular-file metadata/content verification failed:" not in field
+
+    # Operators retain the complete raw exception in daemon logs.
+    assert "regular-file metadata/content verification failed:" in caplog.text
+    assert "_RegularFileState(data=" in caplog.text
+    assert sensitive_prior.decode() in caplog.text
+    assert restored_bytes.decode() in caplog.text
+    assert workspace_path_sentinel.decode() in caplog.text
+    assert temp_path_sentinel.decode() in caplog.text
+
+    # The reported incomplete rollback matches the final disk state exactly.
+    assert _instruction_path_state(agents_path) == agents_before
+    assert _instruction_path_state(claude_path) == (
+        "regular", mismatched_claude, 0o600, os.getuid(),
+    )
+    assert _instruction_path_state(external) == external_before
+    assert _instruction_path_state(settings) == settings_before
+    assert (workspace / "agent.yaml").read_bytes() == agent_yaml_before
+    assert frontmatter_path.read_bytes() == frontmatter_before
+    assert prompt_loader.load_agent(
+        OrgPaths(root=org_state.root), "dev_agent",
+    ).executor == "claude"
+    assert _audit_agent_managed(org_state) == audit_before
+    assert _owned_temp_residue(workspace) == []
+
+    backups = sorted(workspace.glob("*.happyranch-*.bak"))
+    assert len(backups) == 2, [p.name for p in backups]
+    assert {
+        p.name.split(".happyranch-", 1)[0]: _instruction_path_state(p)
+        for p in backups
+    } == {
+        "AGENTS.md": agents_before,
+        "CLAUDE.md": claude_before,
+    }
+    _assert_exact_skill_root(
+        org_state, workspace, ".claude/skills", present=True,
+    )
+    _assert_exact_skill_root(
+        org_state, workspace, ".agents/skills", present=True,
+    )
+
+
+def test_executor_switch_inner_pair_compensation_failure_is_caller_safe(
+    tmp_home, app, org_state, auth_headers, monkeypatch, caplog,
+):
+    """The shipping route never returns raw shared-writer rollback detail.
+
+    This reaches the real canonical-pair writer, observes its actual AGENTS.md
+    replacement, fails the CLAUDE.md link operation, and then fails both the
+    writer's inner AGENTS.md restore and the route journal's outer restore.
+    The final disk state is therefore honestly partial, while callers receive
+    only stable operation classifications and owned relative names.  Raw
+    primary/inner/outer causes remain available in daemon logs.
+    """
+    import logging
+
+    import runtime.daemon.routes.agents as agents_mod
+    import runtime.orchestrator.workspace_adapters as wa_mod
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+    (workspace / ".claude").mkdir(parents=True)
+    settings = workspace / ".claude" / "settings.json"
+    settings.write_bytes(b'{"old": true}\n')
+
+    sensitive_prior = b"TASK8963_SENSITIVE_PRIOR_INSTRUCTION_BYTES"
+    private_sentinel = "TASK8963_PRIVATE_PAIR_ROLLBACK_SENTINEL"
+    absolute_sentinel = str(workspace / "TASK8963_PRIVATE_ABSOLUTE_PATH")
+    repr_sentinel = f"_InstructionPathState(data={sensitive_prior!r})"
+    raw_inner = " | ".join((private_sentinel, absolute_sentinel, repr_sentinel))
+    raw_primary = f"TASK8963_RAW_LINK_FAILURE | {absolute_sentinel}"
+    raw_outer = f"TASK8963_RAW_OUTER_RESTORE_FAILURE | {absolute_sentinel}"
+
+    external = tmp_home / "inner_pair_compensation_external_sentinel.md"
+    external.write_bytes(sensitive_prior + b"\n")
+    agents_path = workspace / "AGENTS.md"
+    os.link(external, agents_path)
+    agents_path.chmod(0o640)
+    claude_path = workspace / "CLAUDE.md"
+    claude_path.write_bytes(b"# original CLAUDE instructions\n")
+    claude_path.chmod(0o600)
+
+    agents_before = _instruction_path_state(agents_path)
+    claude_before = _instruction_path_state(claude_path)
+    external_before = _instruction_path_state(external)
+    settings_before = _instruction_path_state(settings)
+    frontmatter_path = org_state.root / "org" / "agents" / "dev_agent.md"
+    frontmatter_before = frontmatter_path.read_bytes()
+    agent_yaml_before = (workspace / "agent.yaml").read_bytes()
+    audit_before = _audit_agent_managed(org_state)
+    assert _owned_temp_residue(workspace) == []
+    assert not list(workspace.glob("*.bak"))
+
+    actual_agents_writes: list[tuple] = []
+
+    def _fail_link_after_agents_write(claude):
+        state = _instruction_path_state(agents_path)
+        assert state[0] == "regular"
+        assert state != agents_before
+        actual_agents_writes.append(state)
+        raise OSError(raw_primary)
+
+    real_inner_restore = wa_mod._restore_instruction_path
+
+    def _fail_inner_agents_restore(path, state):
+        if path == agents_path:
+            raise OSError(raw_inner)
+        return real_inner_restore(path, state)
+
+    real_outer_restore = agents_mod._BootstrapRollbackJournal._restore_regular_file
+
+    def _fail_outer_agents_restore(cls, path, original):
+        if path == agents_path:
+            raise OSError(raw_outer)
+        return real_outer_restore(path, original)
+
+    monkeypatch.setattr(
+        wa_mod, "_replace_with_canonical_claude_link",
+        _fail_link_after_agents_write,
+    )
+    monkeypatch.setattr(wa_mod, "_restore_instruction_path", _fail_inner_agents_restore)
+    monkeypatch.setattr(
+        agents_mod._BootstrapRollbackJournal,
+        "_restore_regular_file",
+        classmethod(_fail_outer_agents_restore),
+    )
+    caplog.set_level(logging.ERROR, logger=agents_mod.__name__)
+
+    r = TestClient(app, raise_server_exceptions=False).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex", "clean": True},
+        headers=auth_headers,
+    )
+
+    assert r.status_code == 400, (r.status_code, r.text)
+    detail = r.json()["detail"]
+    assert set(detail) == {"code", "error", "message"}
+    assert detail["code"] == "executor_bootstrap_failed"
+    assert "instruction pair conflict at CLAUDE.md: link creation failed" in detail["error"]
+    assert "Failed to restore instruction path AGENTS.md" in detail["error"]
+    assert "Failed to restore file AGENTS.md" in detail["error"]
+    assert "cleanup/restore was incomplete" in detail["message"].lower()
+    assert "Any partial bootstrap files have been cleaned up." not in detail["message"]
+
+    for field in (detail["error"], detail["message"]):
+        assert sensitive_prior.decode() not in field
+        assert private_sentinel not in field
+        assert absolute_sentinel not in field
+        assert repr_sentinel not in field
+        assert "_InstructionPathState" not in field
+        assert "data=" not in field
+        assert raw_primary not in field
+        assert raw_inner not in field
+        assert raw_outer not in field
+        assert "pair rollback failed" not in field
+        assert "\n" not in field and "\r" not in field and "\x1b" not in field
+
+    raw_log = "\n".join(record.getMessage() for record in caplog.records)
+    assert raw_primary in raw_log
+    assert raw_inner in raw_log
+    assert raw_outer in raw_log
+    assert private_sentinel in raw_log
+    assert absolute_sentinel in raw_log
+    assert repr_sentinel in raw_log
+
+    # The route truthfully reports incomplete cleanup: AGENTS.md is the real
+    # generated regular file from the failed attempt, while every unaffected
+    # path and all durable state remain exact.
+    assert len(actual_agents_writes) == 1
+    assert _instruction_path_state(agents_path) == actual_agents_writes[0]
+    assert _instruction_path_state(agents_path) != agents_before
+    assert _instruction_path_state(claude_path) == claude_before
+    assert _instruction_path_state(external) == external_before
+    assert _instruction_path_state(settings) == settings_before
+    assert (workspace / "agent.yaml").read_bytes() == agent_yaml_before
+    assert frontmatter_path.read_bytes() == frontmatter_before
+    assert prompt_loader.load_agent(
+        OrgPaths(root=org_state.root), "dev_agent",
+    ).executor == "claude"
+    assert _audit_agent_managed(org_state) == audit_before
+    assert _owned_temp_residue(workspace) == []
+
+    backups = sorted(workspace.glob("*.happyranch-*.bak"))
+    assert len(backups) == 2, [p.name for p in backups]
+    assert {
+        p.name.split(".happyranch-", 1)[0]: _instruction_path_state(p)
+        for p in backups
+    } == {
+        "AGENTS.md": agents_before,
+        "CLAUDE.md": claude_before,
+    }
+    _assert_exact_skill_root(
+        org_state, workspace, ".claude/skills", present=True,
+    )
+    _assert_exact_skill_root(
+        org_state, workspace, ".agents/skills", present=True,
+    )

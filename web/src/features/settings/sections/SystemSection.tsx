@@ -13,7 +13,6 @@
  *   Settings singleton loaded once at import → RESTART REQUIRED. ✓
  * - session_timeout_seconds (system default): module-global Settings singleton
  *   → RESTART REQUIRED. ✓
- * - max_orchestration_steps: module-global → RESTART REQUIRED. ✓
  * - queue_workers: module-global → RESTART REQUIRED. ✓
  * - protocol_dir: module-global → RESTART REQUIRED. ✓
  */
@@ -29,7 +28,6 @@ const ROWS: { key: keyof SystemSettings; label: string }[] = [
   { key: 'opencode_cli_path', label: 'OpenCode CLI name / default command' },
   { key: 'pi_cli_path', label: 'Pi CLI name / default command' },
   { key: 'session_timeout_seconds', label: 'Session timeout (s)' },
-  { key: 'max_orchestration_steps', label: 'Max orchestration steps' },
   { key: 'queue_workers', label: 'Queue workers' },
   { key: 'protocol_dir', label: 'Protocol dir' },
 ];

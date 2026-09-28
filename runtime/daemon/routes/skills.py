@@ -635,10 +635,11 @@ def _validate_skill_package(
     (a) parses / well-formed — skill_md is non-empty string
     (b) required metadata present — id, slug, name, version must all be
         non-empty strings
-    (c) SKILL.md present — either heading-first (column-zero Markdown
-        ATX heading: 1–6 ``#`` markers followed by whitespace or
-        end-of-line) or YAML-frontmatter-first with a Markdown body
-        heading (the same ATX boundary)
+    (c) supported authoring contract — YAML frontmatter is REQUIRED at
+        column zero: a YAML mapping carrying the closed five-key
+        allowlist and the required ``name``/``description`` fields. The
+        body-heading requirement is retired, so a headingless body
+        (including an empty body) is accepted
     (d) references + assets resolve — if provided, must be dicts of
         string→string
     (e) NO bundled-slug collision — custom slug must not collide with
@@ -655,12 +656,15 @@ def _validate_skill_package(
     reason_codes: list[str] = []
 
     # (a)+(c) well-formed + supported authoring contract — one canonical
-    # shape validator shared by every custom-skill authoring route: either a
-    # column-zero Markdown ATX heading (1–6 hashes + whitespace/EOL,
-    # heading-first) or YAML frontmatter (valid opening/closing fences, a
-    # YAML mapping, then a Markdown body heading under the same ATX boundary).
-    from runtime.skills.skill_md import skill_md_contract_violations
-    for code, message in skill_md_contract_violations(skill_md):
+    # validator shared by every custom-skill authoring route. THR-262 requires
+    # YAML frontmatter (the body-heading grammar is retired for new writes),
+    # enforces the closed five-key admission allowlist and requires the
+    # frontmatter `name` to equal the logical slug.
+    from runtime.skills.skill_md import (
+        parse_skill_frontmatter,
+        skill_md_contract_violations,
+    )
+    for code, message in skill_md_contract_violations(skill_md, expected_slug=slug):
         errors.append(message)
         reason_codes.append(code)
 
@@ -732,6 +736,14 @@ def _validate_skill_package(
         "ok": len(errors) == 0,
         "errors": errors,
         "reason_codes": reason_codes,
+        # The single parsed frontmatter channel (THR-262).
+        # ``parse_skill_frontmatter`` returns the mapping for every
+        # structurally usable document — including one that carries
+        # field/admission findings — so that mapping remains available for
+        # description projection and divergence comparison. ``None`` is
+        # returned only for structural errors (empty/no opening fence,
+        # unclosed, malformed, non-mapping or duplicate top-level key).
+        "frontmatter": parse_skill_frontmatter(skill_md),
     }
 
 

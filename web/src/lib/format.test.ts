@@ -50,3 +50,24 @@ describe('formatCount — exact, grouped integer counter', () => {
     expect(formatCount(126_335_691)).toBe('126,335,691');
   });
 });
+
+describe('formatCount — optional explicit locale (THR-118 W1)', () => {
+  test('the omitted-argument legacy behaviour is retained byte-for-byte', () => {
+    // No production caller is migrated: omitting the locale still delegates to
+    // the host default, exactly as before this change.
+    for (const n of [0, 7, 1000, 1234567, 126_335_691]) {
+      expect(formatCount(n)).toBe(n.toLocaleString());
+    }
+  });
+
+  test('an explicit locale is honored instead of the host Intl default', () => {
+    expect(formatCount(1000, 'en')).toBe('1,000');
+    expect(formatCount(1234567, 'en')).toBe('1,234,567');
+    expect(formatCount(126_335_691, 'en')).toBe('126,335,691');
+  });
+
+  test('a non-English explicit locale yields that locale, not English', () => {
+    expect(formatCount(1234567, 'de-DE')).toBe('1.234.567');
+    expect(formatCount(1234567, 'de-DE')).not.toBe(formatCount(1234567, 'en'));
+  });
+});

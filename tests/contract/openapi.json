@@ -588,6 +588,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/agents/{agent_name}/cleanup-activity": {
+      "GET": {
+        "params": [
+          [
+            "agent_name",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/agents/{agent_name}/executor": {
       "PUT": {
         "params": [
@@ -1038,6 +1060,86 @@
       }
     },
     "/api/v1/orgs/{slug}/agents/{agent_name}/team-escalation-policy/releases": {
+      "POST": {
+        "params": [
+          [
+            "agent_name",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "201",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/agents/{agent_name}/team-escalation-policy/v2/activations": {
+      "POST": {
+        "params": [
+          [
+            "agent_name",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/agents/{agent_name}/team-escalation-policy/v2/history": {
+      "GET": {
+        "params": [
+          [
+            "agent_name",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "cursor",
+            "query"
+          ],
+          [
+            "limit",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/agents/{agent_name}/team-escalation-policy/v2/releases": {
       "POST": {
         "params": [
           [
@@ -3027,6 +3129,7 @@
         ],
         "responses": [
           "200",
+          "410",
           "422"
         ]
       }
@@ -3549,6 +3652,7 @@
         ],
         "responses": [
           "200",
+          "410",
           "422"
         ]
       }

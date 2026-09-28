@@ -23,6 +23,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ConnectFlow, FailedConnectionClearedBody } from './ConnectFlow';
+import { I18nTestBoundary } from '@/test/render';
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -40,7 +41,9 @@ function renderConnect(): QueryClient {
   const qc = makeClient();
   render(
     <QueryClientProvider client={qc}>
-      <ConnectFlow connectedSubtitle={() => 'Your CLI is connected.'} />
+      <I18nTestBoundary>
+        <ConnectFlow connectedSubtitle={() => 'Your CLI is connected.'} />
+      </I18nTestBoundary>
     </QueryClientProvider>,
   );
   return qc;
@@ -536,11 +539,13 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     ['preserved_unsafe', /could not safely prove it matched/i],
   ] as const)('reports the %s wrapper cleanup result', (wrapperStatus, message) => {
     render(
-      <FailedConnectionClearedBody
-        name="my-cli"
-        wrapperStatus={wrapperStatus}
-        onReconnect={vi.fn()}
-      />,
+      <I18nTestBoundary>
+        <FailedConnectionClearedBody
+          name="my-cli"
+          wrapperStatus={wrapperStatus}
+          onReconnect={vi.fn()}
+        />
+      </I18nTestBoundary>,
     );
     expect(screen.getByText(message)).toBeInTheDocument();
   });

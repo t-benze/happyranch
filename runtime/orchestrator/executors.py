@@ -71,6 +71,14 @@ class ExecutorResult:
     # ``error`` (THR-116).  Examples: ``session_limit``,
     # ``transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR``.
     terminal_error: str | None = None
+    # Reporting-only metadata selected from complete producer streams before
+    # diagnostic tails are truncated. It never drives classification or retry.
+    human_error: str | None = None
+    # ``True`` distinguishes a complete stderr inspection that found no human
+    # cause from legacy/external results that provide no selection metadata.
+    # Reporting consumers must not re-classify a truncated tail in the former.
+    human_error_inspected: bool = False
+    terminal_error_notice: str | None = None
     # Closed, structured THR-200 outcome seam. Breaker consumers use only
     # these values and ``provider_launched``; error/stdout/stderr remain
     # diagnostic evidence and are never parsed for breaker accounting.
@@ -94,7 +102,7 @@ _TAIL_BYTES = 2000
 # Popen with a normalized, actionable category instead of letting execve raise
 # E2BIG mid-launch. The prompt is NEVER truncated, and the guard is purely a
 # transport check: encoded byte size is transport-only — it must never be
-# interpreted as a cost or reset policy (see protocol/05b-agent-runtime.md;
+# interpreted as a cost or reset policy (see docs/agent-guides/agent-executors-and-permissions.md;
 # future cost policy should use turn count or cumulative session tokens).
 _PROMPT_TRANSPORT_TOO_LARGE = "prompt_transport_too_large"
 
@@ -259,7 +267,7 @@ def _resolve_binary(executor_name: str) -> str:
 # (agent executor, custom adapter, job script) runs an editable install
 # or `uv sync`. Stripped from the child environment so the shared venv
 # is never accidentally mutated from a disposable worktree.
-# See protocol/05b-agent-runtime.md § "Spawn-Environment Invariant".
+# See docs/agent-guides/agent-executors-and-permissions.md § "Spawn-Environment Invariant".
 _ENV_VARS_TO_STRIP: frozenset[str] = frozenset({
     "VIRTUAL_ENV",             # standard venv activation; directs pip/uv
     "UV_PROJECT_ENVIRONMENT",   # uv project environment target override
@@ -518,6 +526,21 @@ def _parse_codex_session_id(stdout: str) -> str | None:
     return None
 
 
+def _parse_claude_session_limit_notice(stdout: str, stderr: str) -> str | None:
+    """Return the validated session-limit notice, never arbitrary stdout."""
+    if _parse_claude_terminal_error(stdout, stderr) != "session_limit":
+        return None
+    try:
+        obj = json.loads(stdout.strip())
+    except json.JSONDecodeError:
+        return None
+    result = obj.get("result") if isinstance(obj, dict) else None
+    if not isinstance(result, str):
+        return None
+    normalized = result.casefold()
+    return result if "session limit" in normalized and "reset" in normalized else None
+
+
 def _parse_pi_session_id(stdout: str) -> str | None:
     """Extract the session header ``id`` from Pi's `--mode json` event stream.
 
@@ -585,11 +608,13 @@ def _parse_claude_terminal_error(stdout: str, stderr: str) -> str | None:
     the structured reason so dream-runner failures carry a classified reason
     instead of incidental stderr noise.
 
-    Only the single documented in-repo terminal failure envelope shape is
-    validated: ``{"type": "result", "subtype": "error_during_execution",
-    "is_error": true, ...}`` (tests/test_headless_assistant.py
-    CLAUDE_RESULT_ERROR fixture).  Every other shape — ``subtype:
-    success``, non-``result`` event types, ``error_max_turns``,
+    Two proven terminal failure shapes are validated: the documented
+    ``{"type": "result", "subtype": "error_during_execution",
+    "is_error": true, ...}`` envelope and the observed Claude API session
+    limit envelope, whose ``subtype`` is ``success`` but which has exact
+    typed API-error discriminators and the specific session-limit notice.
+    Every other shape — other ``subtype: success`` envelopes, non-``result``
+    event types, ``error_max_turns``,
     ``error_lookalike``, ``error_unknown``, ``error/errors`` outside a
     terminal result envelope, arbitrary ``error_*`` subtypes, missing
     ``is_error: true``, malformed/non-dict JSON, and no-structured-output —
@@ -614,24 +639,31 @@ def _parse_claude_terminal_error(stdout: str, stderr: str) -> str | None:
     if obj.get("type") != "result":
         return None
 
-    # Only parse the single documented terminal failure subtype —
-    # {type: result, subtype: success, ...} and every other error_*
-    # subtype (error_max_turns, error_lookalike, error_unknown, ...)
-    # must NOT produce a classified terminal error; they return None
-    # so the existing stderr-first raw error fallback wins.
+    # Preserve the narrow original failure subtype. The only exception is the
+    # observed Claude result envelope below: it reports subtype=success while
+    # explicitly declaring an API error and the account session cap.
     subtype = obj.get("subtype")
-    if not isinstance(subtype, str) or subtype != "error_during_execution":
+    if not isinstance(subtype, str) or obj.get("is_error") is not True:
         return None
 
-    # Require is_error: true — the documented terminal failure envelope
-    # (CLAUDE_RESULT_ERROR in test_headless_assistant.py) carries this
-    # marker.  Envelopes without it are incomplete and fall back to the
-    # raw error.
-    if obj.get("is_error") is not True:
+    result = obj.get("result")
+    if subtype == "success":
+        # This is intentionally not a generic 429/success parser. TASK-6941
+        # captured this complete shape on the normal JSON-result path.
+        if (
+            obj.get("terminal_reason") == "api_error"
+            and type(obj.get("api_error_status")) is int
+            and obj["api_error_status"] == 429
+            and isinstance(result, str)
+            and "you've hit your session limit" in result.lower()
+            and "resets" in result.lower()
+        ):
+            return "session_limit"
+        return None
+    if subtype != "error_during_execution":
         return None
 
     # ── Inspect result / errors for known terminal classifications ──
-    result = obj.get("result")
     if isinstance(result, str) and result:
         result_lower = result.lower()
         if "certificate" in result_lower:
@@ -898,7 +930,6 @@ _BENIGN_LAUNCHER_STDERR_LINES = (
     re.compile(r"^Set hasTrustDialogAccepted to true to trust this workspace\.?$"),
 )
 
-
 def _meaningful_stderr(text: str) -> str:
     """Remove only complete, known-benign launcher/Claude warning lines."""
     return "\n".join(
@@ -906,6 +937,12 @@ def _meaningful_stderr(text: str) -> str:
         if line.strip()
         and not any(pattern.fullmatch(line.strip()) for pattern in _BENIGN_LAUNCHER_STDERR_LINES)
     ).strip()
+
+
+def _selected_human_error(text: str) -> str:
+    """Select the first meaningful complete stderr line before tailing."""
+    meaningful = _meaningful_stderr(text)
+    return next((line.strip() for line in meaningful.splitlines() if line.strip()), "")
 
 
 def _run_command(
@@ -920,11 +957,13 @@ def _run_command(
     provider: str = "claude",
     on_throttle_event: "OnThrottleEvent | None" = None,
     error_parser: Callable[[str, str], "str | None"] | None = None,
+    terminal_error_notice_parser: Callable[[str, str], "str | None"] | None = None,
     strict_envelope_validator: Callable[[str], "str | None"] | None = None,
     pre_launch_validator: Callable[[], None] | None = None,
     org_slug: str | None = None,
     running: "RunningHandle | None" = None,
     throttle_backoff_seconds: Sequence[float] | None = None,
+    recovery_deadline_monotonic: float | None = None,
 ) -> ExecutorResult:
     """Run one agent subprocess under the per-provider throttle (issue #85).
 
@@ -1012,11 +1051,26 @@ def _run_command(
             # identity. Raises PlatformIsolationError on unsupported platform
             # — fail-closed before any subprocess.
             isolation = detect_platform_isolation()
+            launch_env = _callee_env(org_slug=org_slug, workspace=workspace)
+            # A completion-recovery deadline is absolute and server-owned.
+            # Check it at the actual self-launch boundary, after throttle,
+            # validation, isolation lookup, and environment preparation.
+            if (
+                recovery_deadline_monotonic is not None
+                and time.monotonic() >= recovery_deadline_monotonic
+            ):
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    error="completion recovery live budget expired before provider launch",
+                    failure_category="pre_launch",
+                )
             try:
                 proc = isolation.launch_executor(
                     cmd,
                     cwd=workspace,
-                    env=_callee_env(org_slug=org_slug, workspace=workspace),
+                    env=launch_env,
                     stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -1032,8 +1086,30 @@ def _run_command(
                 )
             if on_started is not None:
                 on_started(proc.pid)
+        communicate_timeout: float = timeout_seconds
+        if recovery_deadline_monotonic is not None:
+            # Launch/on_started can consume the remaining budget. Never round
+            # a fractional remainder upward. If it is gone, retain launch
+            # evidence and execute existing process cleanup before returning.
+            communicate_timeout = recovery_deadline_monotonic - time.monotonic()
+            if communicate_timeout <= 0:
+                try:
+                    proc.kill()
+                finally:
+                    try:
+                        proc.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    error="completion recovery live budget expired after provider launch",
+                    failure_category="provider_timeout",
+                    provider_launched=True,
+                )
         try:
-            stdout, stderr = proc.communicate(input=input_text, timeout=timeout_seconds)
+            stdout, stderr = proc.communicate(input=input_text, timeout=communicate_timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
             # Drain pipes so we don't leak FDs on the retry-free path.
@@ -1045,7 +1121,7 @@ def _run_command(
                 success=False,
                 duration_seconds=int(time.monotonic() - start_time),
                 session_id=sid,
-                error=f"Session timed out after {timeout_seconds} seconds",
+                error=f"Session timed out after {communicate_timeout} seconds",
                 failure_category="provider_timeout",
                 provider_launched=True,
             )
@@ -1080,12 +1156,19 @@ def _run_command(
             # so callers like dream_runner can persist a deterministic reason
             # instead of incidental stderr noise.
             terminal_error = None
+            terminal_error_notice = None
             if error_parser is not None:
                 try:
                     terminal_error = error_parser(full_stdout, full_stderr)
                 except Exception as exc:
                     logger.warning("error parser raised: %s", exc)
                     terminal_error = None
+            if terminal_error_notice_parser is not None:
+                try:
+                    terminal_error_notice = terminal_error_notice_parser(full_stdout, full_stderr)
+                except Exception as exc:
+                    logger.warning("terminal notice parser raised: %s", exc)
+                    terminal_error_notice = None
             return ExecutorResult(
                 success=False,
                 duration_seconds=int(time.monotonic() - start_time),
@@ -1096,6 +1179,9 @@ def _run_command(
                 error=f"Command exited with code {proc.returncode}{error_summary}",
                 rate_limited=rate_limited,
                 terminal_error=terminal_error,
+                human_error=_selected_human_error(full_stderr) or None,
+                human_error_inspected=True,
+                terminal_error_notice=terminal_error_notice,
                 failure_category="provider_nonzero",
                 provider_launched=True,
             )
@@ -1347,6 +1433,7 @@ class ClaudeExecutor:
             provider="claude",
             on_throttle_event=on_throttle_event,
             error_parser=_parse_claude_terminal_error,
+            terminal_error_notice_parser=_parse_claude_session_limit_notice,
             pre_launch_validator=pre_launch_validator,
             org_slug=org_slug,
             running=running,
@@ -1486,6 +1573,7 @@ class CodexExecutor:
         org_slug: str | None = None,
         running: "RunningHandle | None" = None,
         throttle_backoff_seconds: Sequence[float] | None = None,
+        recovery_deadline_monotonic: float | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = self._build_argv(model=model, resume_session_id=resume_session_id)
@@ -1504,6 +1592,7 @@ class CodexExecutor:
             org_slug=org_slug,
             running=running,
             throttle_backoff_seconds=throttle_backoff_seconds,
+            recovery_deadline_monotonic=recovery_deadline_monotonic,
         )
 
     def build_launch_spec(

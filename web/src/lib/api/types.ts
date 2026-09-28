@@ -83,6 +83,14 @@ export interface TaskRecord {
   [extra: string]: unknown;
 }
 
+export interface CleanupActivity {
+  task_id: string;
+  status: TaskStatus;
+  created_at: string;
+  result_status: TaskStatus | null;
+  output_summary: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Task attachments (THR-109)
 // ---------------------------------------------------------------------------
@@ -256,6 +264,8 @@ export interface ThreadRecord {
    *  the wire (THR-209 msg 9: pinned ranking uses the immutable numeric
    *  thread ID, not activity). */
   last_activity_at: string | null;
+  /** Current participant names, projected only on bounded list rows. */
+  participants: string[];
 }
 
 export interface ThreadDetailResponse extends ThreadRecord {
@@ -508,6 +518,8 @@ export interface AgentSummary {
   // Phase 2: additive read-only fields (D6)
   repos: Record<string, string>;
   system_prompt: string;
+  /** Exact-content revision for a whole-definition update. */
+  revision?: string | null;
 }
 
 export interface AgentEnrollment {
@@ -737,7 +749,6 @@ export interface SystemSettings {
   opencode_cli_path: SystemSettingEntry;
   pi_cli_path: SystemSettingEntry;
   session_timeout_seconds: SystemSettingEntry;
-  max_orchestration_steps: SystemSettingEntry;
   queue_workers: SystemSettingEntry;
   host_global_session_cap: SystemSettingEntry;
   protocol_dir: SystemSettingEntry;

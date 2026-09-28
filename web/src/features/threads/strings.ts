@@ -61,8 +61,6 @@ export const THREADS_STRINGS = {
   pinAction: 'Pin',
   unpinAction: 'Unpin',
   pinFailed: 'Pin change failed — restored to previous state.',
-  pinThread: (id: string) => `Pin thread ${id}`,
-  unpinThread: (id: string) => `Unpin thread ${id}`,
   resumeAction: 'Resume',
 
   /* System card labels */

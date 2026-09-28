@@ -1452,17 +1452,17 @@ def test_verify_passes_when_leading_dash_tracked_staged_is_unchanged(
 
 
 def test_guard_copies_are_byte_identical():
-    """runtime/tools/worktree_guard.py and protocol/skills/make-worktree/
+    """runtime/tools/worktree_guard.py and runtime/skills/bundled/make-worktree/
     worktree_guard.py must be byte-identical.
 
-    The protocol/skills/ copy is the one injected into agent workspaces.
+    The runtime/skills/bundled/ copy is the one injected into agent workspaces.
     The runtime/tools/ copy is the tested, importable version. They must
     stay in sync.
     """
     repo_root = Path(__file__).resolve().parents[1]
     runtime_copy = repo_root / "runtime" / "tools" / "worktree_guard.py"
     protocol_copy = (
-        repo_root / "protocol" / "skills" / "make-worktree" / "worktree_guard.py"
+        repo_root / "runtime" / "skills" / "bundled" / "make-worktree" / "worktree_guard.py"
     )
     assert runtime_copy.is_file(), f"Missing: {runtime_copy}"
     assert protocol_copy.is_file(), f"Missing: {protocol_copy}"

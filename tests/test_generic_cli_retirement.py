@@ -78,37 +78,6 @@ def test_builtin_catalog_parity_after_retirement():
     assert ExecutorRegistry().list_profile_names() == ["claude", "codex", "opencode", "pi"]
 
 
-def test_canonical_execution_model_has_only_registered_custom_adapter_contract():
-    protocol = (
-        REPOSITORY_ROOT / "protocol" / "05b-agent-runtime.md"
-    ).read_text()
-    section = protocol.split("### Per-agent executor selection", 1)[1].split(
-        "**Per-agent model override", 1
-    )[0]
-    section = " ".join(section.split())
-
-    required = (
-        "command_adapter_id: custom-adapter:<id>",
-        "founder-approved adapter",
-        "server-authoritative eligibility",
-        "SHA-256 checks",
-        "direct-connect flow",
-        "There is no automatic or versioned fallback",
-        "reassignment to a built-in executor",
-        "re-registration of a valid approved custom-adapter profile",
-    )
-    forbidden = (
-        "Any agentic CLI",
-        "argv templates",
-        "builds per-profile subprocess launches generically",
-        "founder-minted scoped token",
-        "four-step conformance challenge",
-    )
-
-    assert all(fragment in section for fragment in required)
-    assert all(fragment not in section for fragment in forbidden)
-
-
 def test_all_canonical_current_docs_reject_retired_generic_profile_promises():
     root = REPOSITORY_ROOT
     surfaces = {
@@ -116,9 +85,8 @@ def test_all_canonical_current_docs_reject_retired_generic_profile_promises():
         "executor guide": (
             root / "docs" / "agent-guides" / "agent-executors-and-permissions.md"
         ).read_text(),
-        "runtime protocol": (root / "protocol" / "05b-agent-runtime.md").read_text(),
         "bundled manage-agent skill": (
-            root / "protocol" / "skills" / "manage-agent" / "SKILL.md"
+            root / "runtime" / "skills" / "bundled" / "manage-agent" / "SKILL.md"
         ).read_text(),
         "runtime manage-agent skill": (
             root / "runtime" / "skills" / "manage-agent" / "SKILL.md"
@@ -183,7 +151,6 @@ def test_repository_rejects_stale_custom_profile_registration_workflow():
     current_surfaces = (
         root / "README.md",
         root / "docs" / "agent-guides" / "agent-executors-and-permissions.md",
-        root / "protocol" / "05b-agent-runtime.md",
         root / "runtime" / "orchestrator" / "runtime_executor_store.py",
         root / "web" / "src",
     )

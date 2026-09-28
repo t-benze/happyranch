@@ -15,18 +15,16 @@ Agents operate autonomously within authority defined by their org. The system en
 
 A single runtime container hosts multiple orgs under `<runtime>/orgs/<slug>/`. Each org has its own org content, SQLite DB, workspaces, KB, threads, jobs, and artifacts. One daemon serves all orgs concurrently.
 
-## Design Documents
+## Current behavior and navigation
 
-Read these before changing behavior:
+Implementation, request models, OpenAPI, and behavior tests own runtime rules.
+The six guides in this directory explain the corresponding code surfaces; use
+CLAUDE.md's "Read When Touching" table to select one. Historical designs in
+`docs/superpowers/specs/` do not override implemented behavior.
 
-- `protocol/00-completion-contract.md` - completion-report format, manager decision schema, agent callback list.
-- `protocol/05-runtime-blueprint.md` - index for runtime docs.
-- `protocol/05b-agent-runtime.md` - executor model, memory architecture, lifecycle and scheduling.
-- `protocol/05c-orchestrator.md` - orchestrator responsibilities, permissions, task state machine.
-- `protocol/05e-dashboard.md` - dashboard layout, API endpoints, implementation order.
-- `protocol/06-knowledge-base.md` - shared KB rules.
-
-`05c-orchestrator.md` and `05e-dashboard.md` are org-agnostic and use placeholder team names. Org-specific charter, teams, and prompts live in `<runtime>/orgs/<slug>/org/`.
+Bundled instructions live in `runtime/skills/bundled/`. They teach agents to use
+implemented workflows; a prose instruction alone does not enforce a requirement.
+Ordinary agent sessions discover eligible skills, not a protocol-document index.
 
 ## Tech Stack
 
@@ -50,30 +48,52 @@ Tracked source is split by product surface:
 |   |-- thread_forward.py
 |   `-- client/client.py
 |-- runtime/                     # Python runtime package shipped by pyproject
-|   |-- config.py, models.py, runtime.py
+|   |-- config.py, models.py, runtime.py, system_assistant.py
+|   |-- adapters/                # Claude, Codex, opencode, and Pi adapters
 |   |-- daemon/                  # FastAPI app, routes, queue, sessions, jobs/thread runners
 |   |-- infrastructure/          # SQLite, audit, KB, learnings, threads, artifacts
 |   |-- orchestrator/            # task state machine, executors, prompts, teams, workspaces, chains
-|   `-- tools/                   # reserved runtime tooling package
+|   |-- platform/                # process/session backends and platform enforcement
+|   |-- portability/             # org portability classification helpers
+|   |-- remote_access/           # managed remote-access client and packaging support
+|   |-- remote_jobs/             # pure v1 remote-job contracts; no transport/controller yet
+|   |-- skills/                  # bundled contracts, managed catalog packages, and skill machinery
+|   |   |-- bundled/             # release-owned instructions and supporting assets
+|   |   `-- <managed-slug>/      # catalog package when skill.yaml is present
+|   `-- tools/                   # runtime tooling
 |-- web/                         # React SPA; build output goes to web/dist/
 |   |-- src/                     # features, hooks, design-system, host, lib/api, mocks, tests
 |   |-- public/                  # static brand assets
 |   `-- scripts/                 # web-local build/design-system helpers
-|-- protocol/                    # kernel docs 00/05*/06 and agent workspace skills
-|   `-- skills/                  # start-task, make-worktree, manage-repo, manage-agent, dispatch, jobs, thread, review
+|-- app/                         # macOS app and Linux connector/sidecar sources
+|-- deploy/remote-access/        # remote-access deployment assets and runbook
+|-- labs/tenant_isolation/       # isolated tenant-isolation research harness
+|-- packaging/                   # daemon packaging/build entrypoints
+|-- scripts/                     # daemon/web helpers, local CI, and migrations
+|   `-- migrations/              # forward-only DB/filesystem migration scripts
 |-- skills/happyranch/           # founder-facing CLI skill and shell helper
 |-- docs/
 |   |-- agent-guides/            # on-demand agent/developer reference
-|   |-- product/                 # product notes
-|   |-- setup/
-|   `-- superpowers/{plans,specs}/
+|   |-- adr/                     # architecture decision records
+|   |-- design-overhaul/         # dated product/design project artifacts
+|   |-- manual/                  # documentation-site source
+|   |-- operations/              # operator runbooks and release checklists
+|   |-- product/                 # product notes and PRDs
+|   |-- superpowers/{plans,specs}/ # historical plans and indexed design history
+|   `-- local-ci.md, jenkins-jobs.md # supported development/CI operations
 |-- examples/orgs/hk-macau-tourism/  # canonical sample org tree
-|-- scripts/                     # daemon/web helpers and one-off migrations
-|   `-- migrations/              # forward-only DB/filesystem migration scripts
-`-- tests/                       # root tests plus client/, daemon/, infrastructure/, integration/, orchestrator/, contract/
+|-- org/config.yaml              # shipped eligibility-policy guard/fixture used by tests
+`-- tests/                       # Python unit, contract, daemon, integration, and fixture coverage
 ```
 
 `pyproject.toml` packages `runtime` and `cli`; imports in tests and app code should use those packages. Do not treat top-level `src/` as canonical source unless tracked `.py` files are added there and packaging/imports are updated.
+
+The tracked root `org/config.yaml` has one narrow in-repo role:
+`tests/test_skill_cutover_completeness.py` reads the real file as the shipped
+skill-eligibility-policy guard and fixture. It is not packaged as a top-level
+org by `pyproject.toml`. Deployed org content lives under
+`<runtime>/orgs/<slug>/org/`, while the canonical bootstrap example remains
+`examples/orgs/hk-macau-tourism/`.
 
 ## Runtime Container
 
@@ -90,7 +110,7 @@ Runtime container shape:
     |-- org/                           # editable org content
     |   |-- charter.md, escalation-rules.md, teams.yaml, config.yaml
     |   `-- agents/                    # active `<name>.md` + `_pending/<name>.md`
-    |-- workspaces/<agent>/            # agent.yaml (legacy, THR-095), CLAUDE.md|AGENTS.md, .claude|.agents, repos, memory/, task_history.md
+    |-- workspaces/<agent>/            # agent.yaml (legacy, THR-095), regular AGENTS.md + raw relative CLAUDE.md -> AGENTS.md, .claude|.agents, repos, memory/, task_history.md
     |-- kb/                            # per-org KB
     |-- threads/                       # THR-NNN.md
     |-- jobs/                          # JOB-NNN.{out,err,script}

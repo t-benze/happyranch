@@ -12,7 +12,7 @@
  * Error (retry). Candidate mutations invalidate both KB and dreams
  * queries so the pending queue stays consistent.
  */
-import { Link } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   Drawer,
@@ -59,6 +59,7 @@ export function KbEntryDetailPane({
   onCandidateResolved,
 }: KbEntryDetailPaneProps): JSX.Element {
   const queryClient = useQueryClient();
+  const { slug: orgSlug } = useParams<{ slug: string }>();
   const kbRoutes = useKbRoutes();
   const tasksRoutes = useTasksRoutes();
 
@@ -167,7 +168,7 @@ export function KbEntryDetailPane({
                 variant="outline"
                 onClick={() =>
                   queryClient.invalidateQueries({
-                    queryKey: ['kb-entry', undefined, entrySlug],
+                    queryKey: ['kb-entry', orgSlug, entrySlug],
                   })
                 }
               >

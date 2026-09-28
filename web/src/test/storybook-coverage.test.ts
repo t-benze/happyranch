@@ -171,6 +171,6 @@ describe('Storybook design-system coverage', () => {
     }
     const rows = reusableComponents.map(({ name }) => ledgerEntry(name));
     expect(rows.filter((row) => ledgerMapping(row)).length).toBe(41);
-    expect(rows.filter((row) => row.includes('[excluded:')).length).toBe(3);
+    expect(rows.filter((row) => row.includes('[excluded:')).length).toBe(2);
   });
 });

@@ -233,11 +233,11 @@ export type AddKBEntryResult = Awaited<ReturnType<typeof kbApi.addKBEntry>>;
 export interface KbApi {
   useKBList: (params?: {
     type?: string;
-  }) => QueryLike<{ entries: KBEntry[] }>;
+  }) => QueryLike<Awaited<ReturnType<typeof kbApi.listKB>>> & { isFetching?: boolean };
   useKBSearch: (
     q: string,
     params?: { limit?: number },
-  ) => QueryLike<{ entries: KBEntry[] }>;
+  ) => QueryLike<Awaited<ReturnType<typeof kbApi.searchKB>>> & { isFetching?: boolean };
   useKBEntry: (entrySlug: string | undefined) => QueryLike<KBEntry>;
   useKBStats: () => QueryLike<{ entries: import('@/lib/api/kb').KBViewStat[] }>;
   /** Mutation is wired only under the real provider; mocks no-op. */
@@ -274,8 +274,8 @@ export interface DreamsRoutes {
 }
 
 // ---------------------------------------------------------------------------
-// OrgsApi — minimal read-only surface so the TopBar org dropdown works
-// under both providers without TopBar reaching into `@/lib/api` itself.
+// OrgsApi — minimal read-only surface for shell org navigation under both
+// providers without the shell reaching into `@/lib/api` itself.
 // ---------------------------------------------------------------------------
 
 export interface OrgsApi {
@@ -362,6 +362,9 @@ export interface AgentsApi {
   useAgentTasks: (
     agentName: string | undefined,
   ) => QueryLike<{ tasks: TaskRecord[] }>;
+  useCleanupActivity: (agentName: string | undefined) => QueryLike<{ activities: import('@/lib/api/types').CleanupActivity[] }> & {
+    refetch: () => Promise<unknown>;
+  };
 
   useCreateAgent: () => MutationLike<CreateAgentArgs, CreateAgentResult>;
   useApproveAgent: () => MutationLike<ApproveAgentArgs, ApproveAgentResult>;
@@ -396,12 +399,25 @@ export interface AuthorityPolicyApi {
     import('@/lib/api/authorityPolicy').CreateAuthorityPolicyReleaseResponse
   >;
   useActivateTeamEscalationPolicyRelease: () => MutationLike<
-    { agentName: string; body: { release_id: string; expected_previous_epoch: number; request_id: string;
-      action: 'activate' | 'reactivate_rollback'; acknowledge_shared_credential_attribution: true } },
+    { agentName: string; body: import('@/lib/api/authorityPolicy').ActivateAuthorityPolicyReleaseRequest },
     unknown
+  >;
+  /** v2 paired save+activate; the two texts travel together. */
+  useCreateTeamEscalationPolicyV2Release: () => MutationLike<
+    { agentName: string; body: import('@/lib/api/authorityPolicy').V2PairedControlRequest },
+    import('@/lib/api/authorityPolicy').V2AuthorityPolicyControlResponse
+  >;
+  /** v2 select/rollback of an already-saved immutable release. */
+  useActivateTeamEscalationPolicyV2Release: () => MutationLike<
+    { agentName: string; body: import('@/lib/api/authorityPolicy').V2ActivationControlRequest },
+    import('@/lib/api/authorityPolicy').V2AuthorityPolicyControlResponse
   >;
   useTeamEscalationPolicyHistory: (agent: { name: string; team: string; role: string } | undefined) =>
     InfiniteQueryLike<import('@/lib/api/authorityPolicy').AuthorityPolicyHistoryResponse>;
+  useTeamEscalationPolicyV2History: (agent: { name: string; team: string; role: string } | undefined) =>
+    InfiniteQueryLike<import('@/lib/api/authorityPolicy').AuthorityPolicyV2HistoryResponse> & {
+      refetch: () => Promise<unknown>;
+    };
   useTeamEscalationPolicyOutcomes: (agent: { name: string; team: string; role: string } | undefined) =>
     InfiniteQueryLike<import('@/lib/api/authorityPolicy').AuthorityPolicyOutcomesResponse>;
 }
@@ -410,6 +426,7 @@ export interface AgentsRoutes {
   inbox: () => string;
   pending: () => string;
   detail: (agentName: string) => string;
+  policy: (agentName: string) => string;
   inboxForOrg: (slug: string) => string;
 }
 
@@ -557,8 +574,14 @@ export interface SettingsApi {
     import('@/lib/api/types').OrgSettingsPatch,
     import('@/lib/api/types').SettingsSnapshot
   >;
-  useDaemonCapacity: () => QueryLike<import('@/lib/api/types').DaemonCapacitySnapshot>;
-  useUpdateDaemonCapacity: () => MutationLike<
+  /** Capacity slot only: `QueryLike` plus refresh/receipt/ordering metadata
+   *  (TASK-8537 G1). `QueryLike` itself is deliberately NOT widened. */
+  useDaemonCapacity: () => import('./_capacity-ordering').CapacityQueryLike<
+    import('@/lib/api/types').DaemonCapacitySnapshot
+  >;
+  /** Capacity slot only: `MutationLike` plus the settlement each request
+   *  produced (C3). `MutationLike` itself is deliberately NOT widened. */
+  useUpdateDaemonCapacity: () => import('./_capacity-ordering').CapacityMutationLike<
     import('@/lib/api/types').DaemonCapacityWrite,
     import('@/lib/api/types').DaemonCapacitySnapshot
   >;
@@ -594,7 +617,7 @@ export interface ThreadRoutes {
   /** Inbox URL for the active context. */
   inbox: () => string;
   /**
-   * Inbox URL when switching to a specific org. Used by the TopBar org
+   * Inbox URL when switching to a specific org. Used by shell org
    * dropdown so the user lands in the right place regardless of which
    * provider is mounted. Under the real provider this is
    * `/orgs/<slug>/threads`; under the prototype it stays inside the

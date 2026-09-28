@@ -2,41 +2,171 @@
 
 This file serves two purposes. The **Feature Modules Overview** below is an orientation map of the product's feature modules — each module is one short paragraph (what it does) plus a pointer to its authoritative spec or implementation. The per-surface sections after it are the original feature-specific traps, to be read only when touching the relevant surface; the overview points down to those sections where one exists rather than restating them.
 
-For current behavior always prefer `protocol/`, `docs/agent-guides/`, tests, the OpenAPI snapshot, and implementation over the design specs — `docs/superpowers/specs/` is append-only design history unless `docs/superpowers/specs/README.md` marks a spec `current`.
+For current behavior use implementation, tests, and the OpenAPI snapshot; `docs/agent-guides/` explains those sources. Prefer them over the design specs — `docs/superpowers/specs/` is append-only design history unless `docs/superpowers/specs/README.md` marks a spec `current`.
 
 ## Feature Modules Overview
+
+### Implemented boundaries for retained features
+
+KB input validation, duplicate detection, author stamps, and deletion checks live
+in `runtime/daemon/routes/kb.py` and `runtime/infrastructure/kb_store.py`; their
+route/store tests exercise the accepted and rejected operations. Long-lived,
+cross-agent relevance and preferring supersession are editorial guidance in task
+and reflection skills, not a server semantic-admission guarantee.
+
+KB tags are projected as strings: the current writer/API contract emits a list,
+while a legacy scalar frontmatter value is one tag (never an iterable of
+characters). Missing, empty, or unsupported tag shapes project as no tags. The
+Knowledge index is `/orgs/:slug/kb`; detail selection is only the explicit
+`/orgs/:slug/kb/:entrySlug/...` route segment, so an enclosing router wildcard
+must never open a detail drawer on the index. Detail Retry invalidates the
+active org-and-entry query so the same slug can recover without navigation.
+Escape or outside dismissal clears the selected URL; late responses must not
+reopen the drawer. The shared drawer currently has no close-button control.
+
+KB search consumes the server's `hits[{slug,title,snippet,score}]` in ranked order.
+The UI joins the existing unfiltered list summaries by slug for type, whole tags,
+and update time; it never casts a hit to a full entry or invents missing metadata.
+Cards show the hit title/snippet. Type and tag facets intersect after the join,
+preserving rank. Pending input/search or metadata refresh hides stale results;
+metadata errors or missing hit metadata show the existing recoverable Knowledge
+error, never successful-empty. Retry refreshes search and list metadata. Clearing
+search restores the list immediately, and old query settlements cannot replace
+the current query. Narrow 390px clipping remains an existing desktop-only
+limitation; shared App/Drawer layout is unchanged.
+
+
+Generic remote jobs remain dormant. `runtime/remote_jobs/` provides contextual
+v1 models and canonical validation. `remote_job_schema.py` installs the six
+runner/workspace/attempt/receipt/observation/frame domain tables, enrollment
+challenges, certificate expiry, migration markers, and nullable local-job linkage.
+The identity migration validates exact shapes and empty legacy runner graphs;
+existing local-job semantics are preserved. Model/migration tests provide the
+contract; no production runner authentication, transport, or execution is implied.
+
+`task_scratch_reclamation.py` is invoked only by the bounded pre-agent
+`run_step` hook. Its private `collect_revalidate_seal_consume_disposable` seam retains each
+bounded E1/C1/E2/C2/seal/E3/C3/E4 collector admission, compares stable typed
+lifecycle/session/PID-start and complete public/private coverage projections
+(including bucket classification/accounting and dominance, but not timestamps), and
+binds C3's canonical workspace/root/manifest/census projection to its
+successfully sealed stack-local row. It returns `None` before action on changed,
+malformed/private-identity/boot-mismatched, unavailable, deadline-exhausted, or
+finite-cap-exhausted observations; an executor partial failure claims zero and
+leaves the remainder for a fresh refusal. It neither activates cleanup nor excludes future
+writers or hostile same-UID swaps. Its assertion
+shapes do not establish lifecycle/liveness provenance; Git evidence and ambiguous
+identity/device evidence refuse reclamation. POSIX pathname removal does not
+guarantee survival of hostile same-UID replacement in the final check/syscall
+window. The scheduler remains a trigger/marker producer only; this cleanup adds
+no scheduler activation, legacy-backlog eligibility, or unbounded deletion.
+
+`Database.select_workspace_cleanup_reclamation_candidates` is likewise a
+read-only planning helper called only by the `run_step` hook. It first rejects supplied
+claim-count inputs other than initial `0 -> 1` before admission or SQL, then
+uses a fresh durable owner read to validate a valid supplied pair before the
+bounded marker/history,
+newer-owner, six-raw-candidate, graph, and exact-result reads. It exposes each
+read admission to the pre-agent `run_step` hook and returns `None` on every malformed,
+oversized, related-live, inconsistent, or unavailable SQL/decode observation. It neither reads config
+nor imports or invokes the reclamation consumer, writes an audit, or grants an
+action permit. The helper performs seven base SQL observations plus at most
+five exact result reads; the hook's initial config read and five fresh
+config/owner pairs make the complete admission model 23 reads. A fifth consumer
+admission at read 23 is allowed; prospective read 24 refuses before another
+load. These admissions bound later work rather than preempting an in-flight SQL
+or OS operation, and the six raw rows are never refilled after age filtering.
+Persisted ISO ordering accepts parser-valid aware forms but explicitly refuses
+the parser-selected raw hour-24 field on every supported interpreter across
+calendar and ISO-week extended/basic forms (including parser-supported
+one-character separators). The narrow boundary check follows the standard
+parser's one date/time boundary; it does not mistake an overlapping ISO-week
+minute field for hour 24, while a runtime parser's next-day normalization still
+cannot change selector ordering.
+
+### Task-scratch report-only observations
+
+`task_scratch_report.py` consumes the existing lifecycle/process and coverage
+collectors after `_launch_agent_with_scratch` returns and `_run_agent` resets
+scratch context. Ordinary settlement can follow this observation: a still
+nonterminal task retains its scratch. The existing due `_tick_org` reaches the
+same coordinator through `trigger_cleanup`, off the event loop and before the
+unchanged atomic cleanup-task allocation block. No new scheduler, threshold,
+cooldown, counter, history reset, receipt, API or UI is introduced.
+
+The coordinator appends `task_scratch_report` to the existing audit log with the
+actual candidate task ID. Read these rows through the existing audit reader or
+`happyranch audit --org <slug> <task-id> --json`. Each append has a unique
+observation ID, caller source and producer observation ID, timestamps, boot,
+identity digest, provenance and freshness limits. `would_reclaim` means only a
+report/no-op; actual reclaimed bytes and inodes are always zero. Missing or
+partial measurements are absent/null, distinct from a complete measured zero.
+Coverage failures preserve applicable lifecycle/process retention reasons.
+Publication and observer failures cannot change the producer result.
+
+Literal no-follow workspace/parent/root/manifest observations bracket collection;
+changed identity, boot mismatch or stale/unordered observations fail closed.
+Supplied coverage is recollected because a relative path alone does not correlate
+its candidate identity. The observer has a 12-second admission deadline, a
+30-second observer-local startup warmup, at most 64 candidates per discovery
+pass (this bound is per discovery pass, not a cadence gate) and 256 inspected
+discovery entries (including rejected names). The legacy report observation labels
+`source="weekly"` and `observation_id="weekly"` are preserved historical identity
+strings; they are not a cadence gate and do not change the daily scheduler cadence. Unattributable discovery
+caps/unavailability produce bounded operational warnings, never fabricated task
+IDs. Candidate failures are isolated. A blocking admitted OS/DB read cannot be
+preempted; these bounds govern further work, not a hard syscall timeout.
+
+The evidence collector observes full durable task/revisit/job/result records,
+advisory sessions, and bounded Linux boot/PID/root/cwd/open-fd references. Terminal
+flags and cleared trackers are not process-exit evidence. Partial, missing,
+capped, warmup, changing, timed-out or unavailable evidence prevents eligibility;
+independently complete process counts remain truthful even when lifecycle or
+session state requires retention. The coverage collector compares two finite
+boot-bound snapshots of the fixed workspace partition, with allocated bytes and
+entries (hardlinks count per observed entry). Each source operation has shared
+bounds and deadline admission; missing optional parents are not invented as
+residual partitions. Repositories, special entries, malformed literal parents,
+unknown, zero, incomplete or nonready coverage cannot authorize eligibility.
+
+The collectors are now observed by these report-only production callers. The
+reclamation hook separately makes its own fresh bounded consumer admission;
+report-only observations neither seal an executable ledger nor authorize that
+action. Legacy,
+shared `/tmp` and pre-contract roots remain ineligible. Portable observations
+cannot exclude future writers or a hostile same-UID race.
 
 ### Orchestration core
 
 - **Orchestrator & task state machine.** The daemon-side loop that advances each task one step at a time, drives manager-decision turns, spawns children, and records terminal state. Spec `docs/superpowers/specs/2026-04-14-orchestrator-daemon-design.md`; current contract `docs/agent-guides/orchestrator-contracts.md`; impl `runtime/orchestrator/run_step.py`, `runtime/orchestrator/orchestrator.py`.
-- **Task-owner decision loop & completion contract.** Task owners (task_type='task') end every turn with a `decision` (`delegate`/`fanout`/`done`/`escalate`; the `parallel` alias is accepted for `fanout`); subtask agents report a plain completion. **Only root tasks (`parent_task_id is None`) escalate to the founder; a non-root task that would escalate (via `decision:escalate` or by exceeding the step budget) instead fails and hands back to its parent, and bounded failure-recovery carries it up (THR-033 Change A).** Contract `protocol/00-completion-contract.md`; guide `docs/agent-guides/orchestrator-contracts.md`; impl in `runtime/orchestrator/run_step.py`.
+- **Task-owner decision loop & completion contract.** Task owners (task_type='task') end every turn with a `decision` (`delegate`/`fanout`/`done`/`escalate`; the `parallel` alias is accepted for `fanout`); subtask agents report a plain completion. **Only root tasks (`parent_task_id is None`) escalate to the founder; a non-root task that would escalate via `decision:escalate` instead fails and hands back to its parent, and bounded failure-recovery carries it up (THR-033 Change A).** `orchestration_step_count` remains monotonic telemetry and never independently escalates or fails a task. Contract and guide `docs/agent-guides/orchestrator-contracts.md`; implementation in `runtime/orchestrator/run_step.py`.
 - **Inline delegation chains.** A task owner can declare a multi-leg subtask chain inline via `then: [...]`; the orchestrator auto-advances routine legs on matching verdict without consuming orchestration steps. Spec `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md` (current); impl `runtime/orchestrator/chain.py`.
 - **Task status model.** The canonical task status vocabulary and transition rules (`pending`, `in_progress`, `escalated`, `completed`, `failed`, `cancelled`, `superseded`). Under THR-037 Change B (Path B) a parent waiting on its children/jobs is `in_progress` with the reason in `block_kind`; the await-founder state is the top-level `escalated`; `cancelled` is a founder-initiated terminal. Specs `docs/superpowers/specs/2026-04-19-task-status-redesign.md` + `docs/superpowers/specs/2026-06-27-task-status-pathB-stored-design.md` (current); current vocabulary `docs/agent-guides/orchestrator-contracts.md`.
 - **Subtask / composite tasks.** Subtask agents spawn bounded subtasks under a parent task, for decomposing a single delegation into iterative steps. Spec `docs/superpowers/specs/2026-06-03-subtask-composite-task-design.md`; impl in `runtime/orchestrator/run_step.py`.
 - **Revisit.** `happyranch revisit <task-id>` spawns a fresh root task inheriting brief and team from a terminal predecessor; old lineage freezes. Specs `docs/superpowers/specs/2026-04-21-opc-revisit-design.md`, `docs/superpowers/specs/2026-04-23-revisit-root-link-design.md`. See [Revisit](#revisit) below for traps.
 - **Session-timeout auto-route (RETIRED — TASK-3604).** Automatic daemon successor creation on opaque agent failures has been removed per founder direction. Opaque failures now end FAILED and hand to the existing parent/founder recovery paths (bounded manager-wake, escalation, explicit founder revisit). Legacy `auto_revisit_of` audit rows remain readable for historical compatibility. Original spec `docs/superpowers/specs/2026-05-25-session-timeout-auto-route-design.md` (retired).
 - **Cancel (race + actor attribution).** Founder/agent task cancellation with race-safe state handling and audit attribution of who cancelled. Specs `docs/superpowers/specs/2026-05-26-cancel-race-design.md`, `docs/superpowers/specs/2026-06-06-cancel-actor-attribution-design.md`; impl in task routes and run-step helpers.
-- **Bounded failure-recovery (TASK-573 / THR-078 / THR-183).** When a subtask fails, the parent task is re-enqueued for a bounded manager-wake decision step (not cascade-failed). Each delegated slot gets exactly one retry: the current unresolved FAILED leaf of a slice's `revisit_of_task_id` lineage exhausts the slot on its second failure and triggers root-only escalation via `is_root(parent)+try_escalate`; a later COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors so a completed-child wake cannot select a stale reason. Other child failures give the parent a bounded manager wake. Retry is determined via the failing child's `revisit_of_task_id` lineage within the parent (no sibling counting, no schema migration). Failed chain legs also wake the parent instead of cascading. Happy path (all subtasks COMPLETED) and REVISE-verdict auto-advance are unchanged. Threads: THR-028, THR-078. Implementation: `runtime/orchestrator/run_step.py:_enqueue_parent_if_waiting`, `_is_slice_retry_exhausted`. See [Bounded failure-recovery](#bounded-failure-recovery).
+- **Bounded failure-recovery (TASK-573 / THR-078 / THR-183).** When a subtask fails, the parent task is re-enqueued for a bounded manager-wake decision step (not cascade-failed). A linked historical failure remains durable causal context for the owning manager, never a runtime retry-ceiling escalation or upward cascade. A later COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors so a completed-child wake cannot select a stale reason. A manager may mechanically re-dispatch unchanged work or direct revised work with a valid predecessor link; the daemon neither compares briefs nor creates retry/successor loops. A manager may explicitly propose escalation through the configured THR-181 path; inactive/static policy is not evaluator CONTINUE, and committed escalations remain human-resolved. Passive pipeline carriers fail closed through their outer barrier with causal-leaf context, while fanout-dispatched `task` managers decide locally. Parent-wake deduplication is an in-memory, pending-only `TaskQueue.enqueue_if_absent` contract: a per-task reservation is claimed under the queue lock, generation-aware publication runs outside that lock, and the reservation is always released. Concurrent bounded producers lose to a reservation or pending item; refusal/failure permits a future wake, dequeue permits a later legitimate wake, unrelated FIFO entries are preserved, and ordinary task enqueue is not coalesced. Startup tests join every owned cleanup worker before another sweep, shared runner restoration, or queue assertions because durable settlement is not cleanup completion. Implementation: `runtime/orchestrator/run_step.py:_enqueue_parent_if_waiting`, `runtime/daemon/__main__.py:_sweep_on_startup`, and `runtime/daemon/queue.py:TaskQueue.enqueue_if_absent`. See [Bounded failure-recovery](#bounded-failure-recovery).
 
 ### Agent runtime & executors
 
-- **Agent executors & permissions.** Pluggable executors (Claude, Codex, opencode, Pi) with per-executor sandbox/allow-rule generation and workspace bootstrap. Spec `docs/superpowers/specs/2026-04-20-multi-executor-design.md`; contract `protocol/05b-agent-runtime.md`; guide `docs/agent-guides/agent-executors-and-permissions.md`; impl `runtime/orchestrator/executors.py`.
-- **Manage-agent (enrollment).** Enroll, update, or terminate an agent; enrollment is founder-gated. Spec `docs/superpowers/specs/2026-04-17-manage-agent-design.md`; skill `protocol/skills/manage-agent/SKILL.md`; route `runtime/daemon/routes/agents.py`.
+- **Agent executors & permissions.** Pluggable executors (Claude, Codex, opencode, Pi) with per-executor sandbox/allow-rule generation and workspace bootstrap. Spec `docs/superpowers/specs/2026-04-20-multi-executor-design.md`; contract `docs/agent-guides/agent-executors-and-permissions.md`; guide `docs/agent-guides/agent-executors-and-permissions.md`; impl `runtime/orchestrator/executors.py`.
+- **Manage-agent (enrollment).** Enroll, update, or terminate an agent; enrollment is founder-gated. Spec `docs/superpowers/specs/2026-04-17-manage-agent-design.md`; skill `runtime/skills/bundled/manage-agent/SKILL.md`; route `runtime/daemon/routes/agents.py`.
 - **Manage-repo.** Add, remove, or update a repository in an agent's `org/agents/<name>.md` frontmatter. Spec `docs/superpowers/specs/2026-04-17-manage-repo-design.md`; CLI `happyranch manage-repo`.
-- **Founder-facing executor-switch.** `happyranch set-executor` switches an existing agent's executor end-to-end in the org `.md` frontmatter and executor bootstrap (THR-095: agent.yaml is no longer synced). A real executor change clears the old executor-specific `model`; an idempotent request preserves it. Switching away from a provider leaves stale config files behind (CLAUDE.md, .claude/) and WARNs by default; cleanup requires an explicit `--clean` flag. CLI-only — no web surface. Keep this distinct from the **system assistant self-registration** (`happyranch assistant register`), which is the assistant's own executor declaration. Commit cf4c9e0; impl `cli/commands/agents.py`, `runtime/daemon/routes/agents.py`.
+- **Founder-facing executor-switch.** `happyranch set-executor` switches an existing agent's executor end-to-end in the org `.md` frontmatter and executor bootstrap (THR-095: agent.yaml is no longer synced). A real executor change clears the old executor-specific `model`; an idempotent request preserves it. The shared canonical instruction pair (`AGENTS.md` + `CLAUDE.md -> AGENTS.md`) and `.claude/skills` are preserved across a switch; only the executor-only `.claude/settings.json` is stale and WARNs by default; cleanup requires an explicit `--clean` flag. CLI-only — no web surface. Keep this distinct from the **system assistant self-registration** (`happyranch assistant register`), which is the assistant's own executor declaration. Commit cf4c9e0; impl `cli/commands/agents.py`, `runtime/daemon/routes/agents.py`.
 - **Per-agent memory.** Each agent keeps durable `MEM-NNN` learnings plus task recall. Specs `docs/superpowers/specs/2026-04-18-agent-memory-design.md` (superseded), `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`; impl `runtime/infrastructure/learnings_store.py`. See [Per-Agent Learnings](#per-agent-learnings) below for traps.
 - **System assistant.** A founder-facing assistant surface reached via the **Cmd-K dock** (global &#8984;K A-mode structured chat dock mounted in the AppShell) and the **CLI** (`happyranch assistant status|init|register`). Onboarding is by **self-registration** (unchanged). The dock uses a JSON-framed WebSocket for structured conversations. **Action chips:** (a) *reference-existing* chips (Approve JOB-083, Open THR-021, Show diff, any TASK/JOB/THR/KB id) deep-link/navigate to the existing object's approval or detail surface — no POST, no self-approval; (b) *propose-new-action* chips (a chip proposing a gated op that does NOT yet exist as an object, e.g. "propose merging PR X") MUST create a PENDING `review_required` job through the EXISTING jobs gate (the already-authenticated assistant WS carries the structured frame; the daemon-side handler submits the job through the existing jobs mechanism). The assistant NEVER self-approves or self-executes a privileged op. Impl `runtime/daemon/routes/assistant_a_mode.py` (A-mode WS), `runtime/daemon/headless_assistant.py` (headless adapters), `web/src/features/system-assistant/AssistantDockHost.tsx` (⌘K dock).
-- **Jobs.** Background subprocesses run by the daemon, with two policy flags (`review_required`, `persistent`) and founder-review gating. Spec `docs/superpowers/specs/2026-05-26-jobs-design.md` (current); skill `protocol/skills/jobs/SKILL.md`; impl `runtime/daemon/routes/jobs.py`, `runtime/daemon/jobs_runner.py`. (Jobs absorbed the earlier "agent script requests" feature, `docs/superpowers/specs/2026-05-23-agent-script-requests-design.md`, now superseded.) See [Jobs](#jobs) below for traps.
+- **Jobs.** Background subprocesses run by the daemon, with two policy flags (`review_required`, `persistent`) and founder-review gating. Spec `docs/superpowers/specs/2026-05-26-jobs-design.md` (current); skill `runtime/skills/bundled/jobs/SKILL.md`; impl `runtime/daemon/routes/jobs.py`, `runtime/daemon/jobs_runner.py`. (Jobs absorbed the earlier "agent script requests" feature, `docs/superpowers/specs/2026-05-23-agent-script-requests-design.md`, now superseded.) See [Jobs](#jobs) below for traps.
 - **Task blocked by job.** A task can self-block on one or more jobs via `tasks.blocked_on_job_ids`; it auto-resumes when all are terminal. Spec `docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md`. See [Task Blocked By Job](#task-blocked-by-job) below for traps.
-- **PR CI wait / guarded merge.** PR-producing engineering tasks use the jobs + `blocked_on_job_ids` path to wait for GitHub CI outside the agent session. Two CLI entrypoints (`python -m runtime.daemon.pr_ci_waiter` and `python -m runtime.daemon.pr_ci_merge`) wired to real `gh` provide the polling and guarded-merge mechanisms. The poll job (submitted through the existing jobs path with `review_required=false`) polls checks for a pinned PR head SHA, handles no-checks-yet settling, detects stale heads and timeouts, and prints a structured verdict JSON. The poll job performs NO merge. On resume, the task owner triggers `guarded_merge` as a short daemon-run step; it re-enforces all guards (review APPROVE + QA PASS + CI PASS + unchanged SHA + mergeable CLEAN) before merge. No new daemon route, no new task state, and no raw `gh pr merge` permission broadening. Current contract: `protocol/00-completion-contract.md` (including the **Merge-evidence contract** — the canonical vocabulary `APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL` and the structured-vs-prose extraction rules: a NON-NULL structured `verdict` is primary; serialized `null`, the durable recall producer's representation of legacy/no-structured rows, uses the strict annotated-prose fallback); implementation: `runtime/daemon/pr_ci_waiter.py`, `runtime/daemon/pr_ci_merge.py`.
+- **PR CI wait / guarded merge.** PR-producing engineering tasks use the jobs + `blocked_on_job_ids` path to wait for GitHub CI outside the agent session. Two CLI entrypoints (`python -m runtime.daemon.pr_ci_waiter` and `python -m runtime.daemon.pr_ci_merge`) wired to real `gh` provide the polling and guarded-merge mechanisms. The poll job (submitted through the existing jobs path with `review_required=false`) polls checks for a pinned PR head SHA, handles no-checks-yet settling, detects stale heads and timeouts, and prints a structured verdict JSON. The poll job performs NO merge. On resume, the task owner triggers `guarded_merge` as a short daemon-run step; it re-enforces all guards (review APPROVE + QA PASS + CI PASS + unchanged SHA + mergeable CLEAN) before merge. No new daemon route, no new task state, and no raw `gh pr merge` permission broadening. Current contract: `docs/agent-guides/orchestrator-contracts.md` (including the **Merge-evidence contract** — the canonical vocabulary `APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL` and the structured-vs-prose extraction rules: a NON-NULL structured `verdict` is primary; serialized `null`, the durable recall producer's representation of legacy/no-structured rows, uses the strict annotated-prose fallback); implementation: `runtime/daemon/pr_ci_waiter.py`, `runtime/daemon/pr_ci_merge.py`.
 
 ### Collaboration surfaces
 
 - **Threads.** Founder-visible coordination and cross-team handoff conversations with per-thread recipient-set routing (THR-198): mention routing and the strict mention-led exchange are **UNCONDITIONAL** (founder ruling TASK-6027) — valid current-participant @-mentions narrow conversational REPLY wakes to exactly that set (speaker excluded), zero valid mentions broadcast to participants (there is no disabled-thread state and no routing/exchange switch, route, CLI verb, UI control, or config key: the per-thread mention-routing setting, the proposed `reply_exchange_enabled`, and the org kill switch were all removed; the shipped `mention_routing_enabled` column is inert legacy compatibility storage only — never read to alter behavior, never exposed on the wire), priority/fallback is present (frozen priority cohorts, 5-minute grace, 4-hour fail-open), and TASK_FOLLOWUP/BOOTSTRAP wakes are isolated and never mention-routed; dispatch from a thread is self-only. Threads carry composer attribution (`composed_by`, `composed_from_task_id`, `composed_from_dream_id`) — the dream marker identifies dream-originated founder threads. Specs `docs/superpowers/specs/2026-05-13-threads-design.md` and successors (broadcast-only, agent-initiated, markdown composer, task-followup, escalation surfacing, working indicator, close-out removal/resume, file attachments); impl `runtime/infrastructure/thread_store.py`, `runtime/daemon/thread_runner.py`. See [Thread Broadcast Routing](#thread-broadcast-routing), [Thread Agent-Session Resume](#thread-agent-session-resume), and [Thread Task Followup](#thread-task-followup) below for traps.
-- **Thread rename + pin (THR-209 Phase 1).** Founder-only thread-organization controls. Rename edits the durable `subject` (`POST /threads/{id}/rename`; trim, non-empty, ≤120 chars, duplicates allowed, last successful save wins); pin/unpin is durable founder-workspace presentation state stored in an additive nullable `threads.pinned_at` column (`POST /threads/{id}/pin`, strict bool). **Invariants:** both are presentation/organization controls — they never create a thread message, never send a notification, never touch participants/unread, and never change activity timestamps (`started_at`/`archived_at`); identity (`id`, URL, participants, routing, lifecycle) is immutable under rename/pin. Pinned threads rank above unpinned (Pinned section) in **open-thread views only**, ordered by immutable numeric thread ID descending (THR-10 above THR-2, never activity/lexicographic); ordinary (unpinned) order is unchanged; archived/closed views have **zero pin presentation** (one ordinary list, no pinned/unpinned split, no pin rank) while the durable pin state is retained for reopen/restore, and the status-less query/"all" merge are ordinary views too; pin state lives on the thread row, so deleting a thread removes its pin state automatically. The web optimistic cache reorders open lists under the same numeric rule immediately (before response/refetch) and archived/status-less caches never reorder — no client/server semantic divergence (TASK-5987). Audit rows `thread_renamed` / `thread_pinned` / `thread_unpinned` use the existing `audit_log.task_id` = THR-* scope convention and never appear as thread messages. Each mutation is ONE rollback-safe transaction under the org `db_lock` (`rename_thread_with_audit` / `set_thread_pinned_with_audit` in `runtime/infrastructure/database.py`): authoritative old-value read + idempotence decision + `subject`/`pinned_at` write + audit row commit atomically; on audit failure everything rolls back (no durable unaudited transition, error response). Concurrent renames are last-successful-save-wins with a truthful sequential old→new audit chain; concurrent same/opposite-state pins emit exactly the audit rows for the durable transitions (true no-ops unaudited). Spec `docs/superpowers/specs/2026-08-25-thread-rename-and-pinning-design.md`; routes `runtime/daemon/routes/threads.py`; wire adds `pinned`/`pinned_at`/`last_activity_at` to thread rows; web UI `web/src/features/threads/ThreadsPage.tsx` (Pinned section, inline rename, row/header/overflow pin controls).
+- **Thread rename + pin (THR-209 Phase 1).** Founder-only thread-organization controls. Rename edits the durable `subject` (`POST /threads/{id}/rename`; trim, non-empty, ≤120 chars, duplicates allowed, last successful save wins); pin/unpin is durable founder-workspace presentation state stored in an additive nullable `threads.pinned_at` column (`POST /threads/{id}/pin`, strict bool). **Invariants:** both are presentation/organization controls — they never create a thread message, never send a notification, never touch participants/unread, and never change activity timestamps (`started_at`/`archived_at`); identity (`id`, URL, participants, routing, lifecycle) is immutable under rename/pin. Pinned threads rank above unpinned (Pinned section) in **open-thread views only**, ordered by immutable numeric thread ID descending (THR-10 above THR-2, never activity/lexicographic); ordinary (unpinned) order is unchanged; archived/closed views have **zero pin presentation** (one ordinary list, no pinned/unpinned split, no pin rank) while the durable pin state is retained for reopen/restore, and the status-less query/"all" merge are ordinary views too; pin state lives on the thread row, so deleting a thread removes its pin state automatically. List rows are navigation-only; Pin/Unpin remains in the thread detail header. The web optimistic cache reorders open lists under the same numeric rule immediately (before response/refetch) and archived/status-less caches never reorder — no client/server semantic divergence (TASK-5987). Audit rows `thread_renamed` / `thread_pinned` / `thread_unpinned` use the existing `audit_log.task_id` = THR-* scope convention and never appear as thread messages. Each mutation is ONE rollback-safe transaction under the org `db_lock` (`rename_thread_with_audit` / `set_thread_pinned_with_audit` in `runtime/infrastructure/database.py`): authoritative old-value read + idempotence decision + `subject`/`pinned_at` write + audit row commit atomically; on audit failure everything rolls back (no durable unaudited transition, error response). Concurrent renames are last-successful-save-wins with a truthful sequential old→new audit chain; concurrent same/opposite-state pins emit exactly the audit rows for the durable transitions (true no-ops unaudited). Spec `docs/superpowers/specs/2026-08-25-thread-rename-and-pinning-design.md`; routes `runtime/daemon/routes/threads.py`; wire adds `pinned`/`pinned_at`/`last_activity_at` to thread rows; web UI `web/src/features/threads/ThreadsPage.tsx` (Pinned section, inline rename, detail-header pin controls).
 - **Thread escalation surfacing.** When a thread-dispatched task escalates to `escalated`, the runtime injects a `task_escalated` system message into the originating thread and re-invokes the dispatching manager for a founder-facing followup — mirroring the terminal task-followup. Rendered in both web (ThreadsPage.tsx `task_escalated` case) and CLI (`thread forward`). Spec `docs/superpowers/specs/2026-06-06-thread-escalation-surfacing-design.md`; impl `runtime/orchestrator/run_step.py`, `runtime/daemon/thread_runner.py`.
-- **Tasks surface.** Org-wide work list (not a kanban) with roots-only default view, group-by segmented control (Status / Agent / Thread), severity rollup per root reflecting the worst status of its subtree (DERIVE over `parent_task_id` children — no schema change; `GET /orgs/{slug}/tasks/roots`). Bidirectional lineage inline (\u2190 supersedes / \u2192 revisits) backed by `revisit_of_task_id` + `get_direct_revisits()`. Task detail pane with connected vertical chain timeline (`walk_revisit_chain()`), blocked node naming its blocker, property rail, append activity log, and raw monospace brief with "Show full" toggle. State vocabulary: Loading (skeleton rows by group), Empty per group, Error-with-retry. Keyboard: \u2191/\u2193 move selection, Enter opens, Esc clears. Spec `docs/design-overhaul/product_lead-2026-06-17-design-overhaul-PRD-final.md` (\u00a74.3); web `web/src/features/tasks/TasksPage.tsx`, `TaskDetailPane.tsx`; route `runtime/daemon/routes/tasks.py` (`/tasks/roots`).
-- **Knowledge base.** Per-org shared, durable cross-agent knowledge (rules, references, founder rulings); orgs do not share a KB. Contract `protocol/06-knowledge-base.md`; impl `runtime/infrastructure/kb_store.py`, `runtime/daemon/routes/kb.py`. See [Knowledge Base](#knowledge-base) below for traps.
+- **Tasks surface.** Org-wide work list (not a kanban) with roots-only default view, group-by segmented control (Status / Agent / Thread), severity rollup per root reflecting the worst **current** status of its subtree (DERIVE over `parent_task_id` children — no schema change; `GET /orgs/{slug}/tasks/roots`). A historical FAILED descendant whose forward same-parent `revisit_of_task_id` lineage leaves no unresolved FAILED leaf (a COMPLETED/SUPERSEDED/active/cancelled successor, or a malformed cycle handled conservatively) does not dominate; only a FAILED descendant contribution is curated, while every other status, the root's own severity and all escalations are preserved, and root-level revisit links are never followed. See [Bounded failure-recovery](#bounded-failure-recovery). `Waiting on you` is a separate exact-`status=escalated` roots traversal, not an inferred ordinary-page/severity-rollup count or ordinary filter projection; it task-id-deduplicates and becomes exact only after cursor exhaustion. When non-empty it renders as the FIRST ordinary-styled group inside the shared list shell (same `tasks-group` wrapper, group heading and raised rows-card as every status group) directly after the task column header and above the status groups — never a separate outer card — and it is absent (no group, heading or empty card) when empty and attention is not loading/errored. A failed attention refresh or continuation retains known rows/count with a visible error state, and continuation retry uses that stream's cursor. Its page-local Waiting controls wrap within the group at narrow widths without changing the shared Button primitive, and a non-empty escalated group may coexist with ordinary loading/error/empty states without hiding the shell or contradicting visible rows. Bidirectional lineage inline (\u2190 supersedes / \u2192 revisits) backed by `revisit_of_task_id` + `get_direct_revisits()`. Task detail pane with connected vertical chain timeline (`walk_revisit_chain()`), blocked node naming its blocker, property rail, append activity log, and raw monospace brief with "Show full" toggle. State vocabulary: Loading (skeleton rows by group), Empty per group, Error-with-retry. Keyboard: \u2191/\u2193 move selection, Enter opens, Esc clears. Spec `docs/design-overhaul/product_lead-2026-06-17-design-overhaul-PRD-final.md` (\u00a74.3); web `web/src/features/tasks/TasksPage.tsx`, `TaskDetailPane.tsx`; route `runtime/daemon/routes/tasks.py` (`/tasks/roots`).
+- **Knowledge base.** Per-org shared, durable cross-agent knowledge (rules, references, founder rulings); orgs do not share a KB. Contract `docs/agent-guides/features-and-invariants.md`; impl `runtime/infrastructure/kb_store.py`, `runtime/daemon/routes/kb.py`. See [Knowledge Base](#knowledge-base) below for traps.
 - **KB view tracking.** Agent-CLI KB entry read counting scoped to agent consults only (founder ruling THR-009). Distinguished from web reads via `X-HappyRanch-Surface: cli` request header (a source label, not auth). Read surface is CLI-only: `happyranch kb stats` renders a table ordered by view count; no web surface. Spec `docs/superpowers/specs/2026-06-10-kb-view-tracking-design.md`; impl `cli/commands/kb.py`, `runtime/daemon/routes/kb.py`, `runtime/infrastructure/database.py` (`kb_views` table).
 - **Shared artifacts.** Per-org opaque file blobs produced by one agent and visible to all agents in the org. Impl `runtime/infrastructure/artifact_store.py`, `runtime/daemon/routes/artifacts.py`; CLI `happyranch artifacts {put,list,get}`. See [Shared Artifacts](#shared-artifacts) below for traps.
 
@@ -109,9 +239,27 @@ Per-org KB entries live under `<runtime>/orgs/<slug>/kb/`. Orgs do not share a K
 
 The dedicated `kb precedent` route was removed. Founder rulings flow through `happyranch kb add` with `source_task: <task-id>` in frontmatter.
 
-Implementation: `runtime/infrastructure/kb_store.py` and `runtime/daemon/routes/kb.py`. Full rules: `protocol/06-knowledge-base.md`.
+Implementation: `runtime/infrastructure/kb_store.py` and `runtime/daemon/routes/kb.py`. Full rules: `docs/agent-guides/features-and-invariants.md`.
 
 ## Per-Agent Learnings
+
+### Memory telemetry guard (THR-091, TASK-7767)
+
+`AuditLogger.compute_memory_telemetry_report` and `happyranch memory report`
+currently report `insufficient_instrumentation`. Current audit rows have no
+versioned, production-canary-accepted epoch and no independently demonstrated
+automatic transport, so counts, elapsed time, manually attributed reads, and
+diagnostic ratios are observation-only and must never select tuning. This guard
+does not start collection or change memory get/search behavior, audit rows, or
+ranking. The frozen next-phase measurement definitions are in
+`docs/superpowers/specs/2026-09-11-memory-telemetry-corrective-guard.md`.
+Fail-closed output explicitly marks thresholds as not met and collection as not
+started; malformed diagnostic rows also remain ineligible rather than being
+credited or crashing the report.
+The report-local backend and CLI validators intentionally remain separate.
+Observation-only malformed read/search diagnostic parity and the full
+controlled-clock whole-report matrix are frozen acceptance obligations for the
+versioned reporting implementation; this guard does not claim either as passed.
 
 Per-agent memory lives under `<runtime>/orgs/<slug>/workspaces/<agent>/memory/`, one `MEM-NNN-<slug>.md` per entry. CLI: `happyranch memory list|get|search|add|update|promote|reindex`.
 
@@ -194,36 +342,32 @@ Contract (founder-approved in THR-028; refined in THR-078):
    decision step. The failed subtask's reason (`note` + completion report /
    error context) is available so the task owner can author an updated brief.
 
-2. **Per-slice retry ceiling.** Each delegated slot gets exactly one retry
-   (THR-078, `_SLICE_RETRY_CEILING = 1`). A second failure of the **same**
-   retried slice exhausts the slot and escalates. Determination uses existing
-   `revisit_of_task_id` lineage within the same parent — the orchestrator
-   walks the revisit chain backward looking for a FAILED ancestor with
-   `parent_task_id == parent.id` (`_is_slice_retry_exhausted`). A later
-   COMPLETED or SUPERSEDED descendant in the lineage retires earlier FAILED
-   ancestors for ceiling evaluation (THR-183). No schema migration, no sibling
-   counting.
+2. **Mechanical retry provenance.** A manager may re-dispatch unchanged work
+   or direct revised work with a valid `revisit_of_task_id` link to a FAILED
+   same-parent predecessor. The link records lineage; it does not classify a
+   brief, authorize root escalation, or cause daemon retry/successor creation.
+   A later COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors
+   from causal selection (THR-183). No schema migration or sibling counting.
 
-3. **Root-only escalation on exhaustion.** When the per-slice ceiling is
-   exhausted (the retried slice's second failure), the parent transitions to
-   `escalated` via `try_escalate()` — **only if `is_root(parent)`** (THR-033
-   Change A) — carrying the causal terminal event (the current unresolved
-   FAILED leaf) in the escalation reason, not a stale sibling. A non-root
-   parent would fail and route upward instead.
+3. **Manager ownership on exhaustion.** A retried slice's second failure
+   retains its durable causal lineage and wakes its owning manager. It is not
+   a runtime escalation or upward cascade; a later manager-proposed escalation
+   uses the configured THR-181 hook, and committed escalations remain
+   human-resolved.
 
-4. **Other child failures → bounded manager wake.** A child failure that is
-   **not** a retry of a previously-FAILED slice does not count toward the
-   ceiling; the parent wakes for a fresh decision step. Multiple independent
-   slice failures each produce their own wake, but each distinct slice
-   exhausts independently only after its own retry fails.
+4. **Other child failures → bounded manager wake.** Every unresolved child
+   failure preserves its causal lineage and wakes the owning manager for a
+   fresh decision step. Multiple independent failures remain distinct durable
+   context; they do not activate a runtime ceiling, reset, or upward route.
 
 5. **Fan-out join context.** On a fan-out parent, per-slice terminal context
    (including the exhausted-slice trigger) is injected via
    `_inject_fanout_join_context`, giving the task owner per-slice detail.
 
 6. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
-   COMPLETED) clears the active chain and hands the parent back to the
-   bounded-wake path (same per-slice ceiling + escalation).
+   COMPLETED) clears the active chain and hands the actual decision owner back
+   to the bounded-wake path. Passive pipeline carriers instead fail closed
+   through their outer fanout barrier with causal-leaf context.
 
 7. **Happy path unchanged.** All subtasks COMPLETED → parent enqueued for
    next decision step. REVISE-verdict auto-advance in chains is unchanged.
@@ -234,20 +378,13 @@ Contract (founder-approved in THR-028; refined in THR-078):
 
 Traps:
 
-- `_SLICE_RETRY_CEILING = 1`: exactly one retry after a slice's first failure;
-  the same slice's second failure escalates. `_FAILURE_ROUND_BOUND = 2` is
-  kept as a doc-only reference (`protocol/05c`).
-- Retry detection: `_is_slice_retry_exhausted` walks the child's
-  `revisit_of_task_id` chain; only FAILED ancestors with the same
-  `parent_task_id` count toward the ceiling, and a COMPLETED/SUPERSEDED
-  ancestor retires earlier FAILED ancestors for ceiling evaluation
-  (THR-183). A retry of a previously COMPLETED slice is a fresh dispatch,
-  not an escalation trigger.
-- Root-only escalation: `is_root(parent)` guard before `try_escalate`; the
-  escalation reason names the current unresolved FAILED leaf, not a stale
-  sibling. Non-root parents on exhaustion fail and route upward (THR-033
-  Change A).
-- Escalation clears any active chain/fanout before escalating.
+- Retry links are mechanical provenance: unchanged-assignment re-execution
+  and manager-directed revised work both require a valid predecessor link;
+  neither is a semantic brief comparison or automatic escalation trigger.
+- A manager may propose escalation through the configured THR-181 hook; a
+  committed escalation remains human-resolved. The causal reason names the
+  current unresolved FAILED leaf rather than a stale sibling. Non-root owners
+  do not route failure upward merely because a linked retry failed.
 - Chain-advance branch handles FAILED subtasks as well as COMPLETED:
   FAILED subtasks clear the chain and fall through to sibling-check +
   bounded-wake.
@@ -260,7 +397,7 @@ Every `kind=message` thread row is a **conversational arrival** for its recipien
 Traps:
 
 - Broadcast is unconditional; declines are silent.
-- Decline-by-default doctrine is prompt-injected for `REPLY`, not in `protocol/skills/thread/SKILL.md`.
+- Decline-by-default doctrine is prompt-injected for `REPLY`, not in `runtime/skills/bundled/thread/SKILL.md`.
 - Agent replies no longer enforce a hard `turn_cap` ceiling; turn count is still tracked and displayed but cap enforcement was removed per THR-046.
 - **Coalescing (GH-688 Phase 1).** A burst creates at most one unstarted `REPLY` per pair; new queue tokens are enqueued only after the arrival transaction commits. An arrival while queued or running only advances `required_through_seq`. A successful reply/decline acknowledges **only the claimed coverage** (the immutable `running_through_seq` snapshot at claim); arrivals during the run yield exactly one post-settlement follow-on. Failure/timeout never hot-loop: the range stays unacknowledged, projects `retry_required`, and the next conversational arrival covers the retained plus new range.
 - **Runner claim (GH-688 Phase 1).** A conversational `REPLY` must pass the durable queued→running CAS (`claim_conversational_reply`) before any prompt materialization or provider work; a stale/duplicate queue notification no-ops there. The per-`(thread, agent)` in-memory lock remains for process-local serialization only — it is not the durability mechanism. The prompt explicitly states the claimed inclusive `[running_from_seq, running_through_seq]` range and renders each required message in order.
@@ -276,8 +413,14 @@ Traps:
 Failed thread turns persist additive, capped ``stdout_tail`` and ``stderr_tail``
 audit diagnostics. The displayed reason may prefer a structured Claude terminal
 failure only when stderr consists solely of known workspace-trust warning lines;
-the raw tails still drive exact eviction and other classifiers. Session-limit
-terminal output is not a short-backoff automatic retry signal.
+task failure notes also name the proven Claude API-error/session-limit result
+shape while retaining its bounded reset notice on existing task/thread/dream
+surfaces. This is not a comprehensive redaction guarantee. Meaningful stderr, including trust-warning
+lookalikes, remains the human cause; the structured reason/reset notice is
+supplementary when stderr is absent or exclusively exact known-benign lines.
+The raw tails still drive exact
+eviction and other classifiers. Session-limit terminal output is not a
+short-backoff automatic retry signal.
 
 Claude-backed thread participants reuse their Claude session across turns. State lives on `thread_participants.agent_session_id` and `last_resumed_seq`. Plan: `docs/superpowers/plans/2026-06-02-thread-claude-session-resume.md`.
 
@@ -383,6 +526,49 @@ Traps:
 - Doctrine is system-prompt-injected through `_thread_talk_dispatch_doctrine_section()`.
 - Shared error hint `SELF_DISPATCH_HINT` lives in `runtime/daemon/routes/_doctrine.py`.
 
+## Thread Composer Attachments
+
+The web thread composer (`web/src/design-system/patterns/Composer.tsx`), the thread detail page
+(`web/src/features/threads/ThreadsPage.tsx`) and the new-thread dialog
+(`web/src/shared/threads/NewThreadDialog.tsx`) upload each selected file to the org-shared
+`POST /api/v1/orgs/{slug}/artifacts` (multipart) **before** sending/composing, then pass the returned
+`artifact_name` refs on `POST /threads/{id}/send` (JSON) or `POST /threads`. The CLI/agent thread-scoped
+`/threads/{id}/attachments` store is unchanged; the browser keeps using shared artifacts.
+
+Traps:
+
+- Each selection carries a stable, non-metadata id (`createSelectionIdFactory`). Two identical `File`
+  objects (or the same File selected twice) are distinct selections with distinct chip keys, and removing
+  one never removes the other.
+- A partially failed attempt retains each already-uploaded selection's ref by selection id, so a retry
+  re-uploads only the selections without a ref and preserves the send order. Removing a failed or
+  completed selection invalidates only that selection's cached ref. Each submission reads a run-owned
+  snapshot of those ref/name caches, so a departed run cannot observe a replacement view's selections
+  even though `Composer` selection ids restart at `sel-1` on remount.
+- Each selection's artifact name is reserved once (`allocateArtifactName`) and reused verbatim, and the
+  page never reuses a name it has already allocated. The allocator searches upward past the former
+  1000-index ceiling until it finds a free candidate, so it never returns an occupied name; without this, a
+  same-second retry could regenerate a retained name and `ArtifactStore.put` would replace the retained
+  artifact's bytes.
+- `Composer.submit` has a synchronous in-flight latch and the pages own the run's pending presentation, so
+  a double-click / Enter+Send during a held upload produces exactly one submission and disables
+  attach/send/remove until it settles. The latch is released on failure and reset when the destination
+  changes, so a submission left in flight by a departed view cannot block the replacement view's first
+  submit. Pending is the run's own state, not the surviving mutation observer's `isPending`, so a held send
+  (or compose) in a departed org/thread — including the same thread id in another org — cannot disable the
+  replacement view.
+- Each submission captures its destination `(orgSlug, threadId/dialog, payload)` at first submit; uploads,
+  the send and the new-thread compose use that snapshot, and late results only mutate the originating view
+  while it is still mounted and active. The destination is an ORG-scoped generation, not just a thread id:
+  an org switch that keeps the same thread id, an A→B→A return to the same thread, and a full unmount are
+  all departures, so a stale success cannot clear the replacement view's draft, chips, error, latch or
+  dialog and cannot retarget an in-flight compose.
+- Failures surface on the existing single error line. Attachment/artifact error codes are mapped in
+  `web/src/lib/threadErrors.ts`, and a confirmed send failure is never labelled as the last file's upload
+  failure.
+- Caps are unchanged: `MAX_THREAD_ATTACHMENTS = 5` (`runtime/daemon/routes/threads.py`) and the 10 MiB
+  artifact cap (`runtime/infrastructure/artifact_store.py`). No drag-and-drop or size/state chip was added.
+
 ## Jobs
 
 Per-org jobs use a SQLite table and files at `<runtime>/orgs/<slug>/jobs/JOB-NNN.{out,err,script}`. Spec: `docs/superpowers/specs/2026-05-26-jobs-design.md`.
@@ -436,3 +622,17 @@ later obligation.
 ## Feishu Notifications (REMOVED)
 
 Feishu was removed in TASK-302 (THR-022). The web UI and threads are the sole control path for dispatch / revisit / resolve-escalation. Legacy `feishu_notifications` config blocks are tolerated on load but ignored. Database correlation tables (`escalation_notifications`, `processed_event_ids`) remain dormant in place.
+
+## Retired autonomous thread continuation
+
+Both served resolution contracts — `POST /tasks/{task_id}/resolve-escalation`
+and `POST /threads/{thread_id}/resolve-escalation` — return the stable `410`
+error code `retired_autonomous_continuation` when a former THR-166 envelope is
+present. Presence includes null, empty, malformed, and otherwise valid values
+for `policy_id`, `policy_version`, `policy_provenance`,
+`continuation_class`, `attestation_checks`, or `evidence`; the task route also
+rejects the former autonomous identity markers `invocation_token` and
+`dispatcher`. Rejection happens before actor fallback, invocation consumption,
+or the shared human resolver. A field-free agent thread `continue` is also
+retired. Ordinary human task resolution and thread `supersede` remain
+unchanged.

@@ -335,8 +335,16 @@ function DreamCandidateRow({
 /* ------------------------------------------------------------------ */
 
 export function KbPage(): JSX.Element {
-  const params = useParams<{ '*'?: string; slug?: string }>();
-  const openSlug = params['*'] && params['*'].length > 0 ? params['*'] : undefined;
+  // Read only this route's explicit entry segment. App mounts AppRoutes below
+  // an outer `*` route, whose inherited splat is the complete location even
+  // on the KB index; using it here would open a bogus detail drawer.
+  const { entrySlug, '*': entryPath } = useParams<{
+    entrySlug?: string;
+    '*'?: string;
+  }>();
+  const openSlug = entrySlug
+    ? [entrySlug, entryPath].filter(Boolean).join('/')
+    : undefined;
   const navigate = useNavigate();
   const [folder, setFolder] = useState<string | null>(null);
   // Dedicated Candidates view: when true (and not searching) the main area
@@ -360,7 +368,8 @@ export function KbPage(): JSX.Element {
     return () => clearTimeout(id);
   }, [searchInput]);
 
-  const isSearching = debouncedQ.length > 0;
+  const isSearching = searchInput.trim().length > 0;
+  const searchDebouncing = searchInput.trim() !== debouncedQ;
 
   // Fetch live KB entries, filtered by type (folder)
   const listQuery = useKBList(folder ? { type: folder } : undefined);
@@ -387,12 +396,22 @@ export function KbPage(): JSX.Element {
     return map;
   }, [statsQuery.data?.entries]);
 
+  // Search hits carry ranking/title/snippet only. Join the existing unfiltered
+  // metadata by slug without manufacturing detail fields or dropping misses.
+  const searchEntries = useMemo(() => {
+    if (!searchQuery.data || !railListQuery.data) return undefined;
+    const metadata = new Map(railListQuery.data.entries.map((entry) => [entry.slug, entry]));
+    const entries = [];
+    for (const hit of searchQuery.data.hits) {
+      const entry = metadata.get(hit.slug);
+      if (!entry) return undefined;
+      entries.push({ ...entry, title: hit.title, snippet: hit.snippet });
+    }
+    return entries;
+  }, [searchQuery.data, railListQuery.data]);
   const rawEntries = useMemo(
-    () =>
-      isSearching
-        ? (searchQuery.data?.entries ?? [])
-        : (listQuery.data?.entries ?? []),
-    [isSearching, searchQuery.data?.entries, listQuery.data?.entries],
+    () => isSearching ? (searchEntries ?? []) : (listQuery.data?.entries ?? []),
+    [isSearching, searchEntries, listQuery.data?.entries],
   );
 
   // When searching, /kb/search returns matches across ALL types — apply
@@ -472,7 +491,14 @@ export function KbPage(): JSX.Element {
       .map(([tag]) => tag);
   }, [railEntries]);
 
-  const loading = listQuery.isLoading || dreamsQuery.isLoading;
+  // Do not present cached/refetching metadata or a prior debounced query as
+  // a completed current search. A missing join is recoverable, never empty.
+  const loading = isSearching
+    ? searchDebouncing || searchQuery.isLoading || !!searchQuery.isFetching ||
+      railListQuery.isLoading || !!railListQuery.isFetching
+    : listQuery.isLoading || dreamsQuery.isLoading;
+  const searchFailed = searchQuery.isError || railListQuery.isError ||
+    (!loading && searchEntries === undefined);
 
   // Handle candidate select
   const handleCandidateSelect = (candidate: DreamKbCandidate) => {
@@ -599,7 +625,7 @@ export function KbPage(): JSX.Element {
           <ContentWrap>
         {loading ? (
           <LoadingSkeleton />
-        ) : (isSearching ? searchQuery.isError : listQuery.isError) ? (
+        ) : (isSearching ? searchFailed : listQuery.isError) ? (
           <div className="text-center space-y-3">
             <p className="text-feedback-danger text-sm">
               Could not load Knowledge
@@ -665,6 +691,7 @@ export function KbPage(): JSX.Element {
                   <li key={entry.slug}>
                     <KbEntryCard
                       entry={entry}
+                      snippet={isSearching ? searchEntries?.find((match) => match.slug === entry.slug)?.snippet : undefined}
                       to={routes.detail(entry.slug)}
                       active={openSlug === entry.slug}
                       density={density}

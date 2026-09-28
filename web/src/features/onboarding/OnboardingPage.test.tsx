@@ -5,6 +5,7 @@ import type { UserEvent } from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { OnboardingPage } from './OnboardingPage';
+import { I18nTestBoundary } from '@/test/render';
 import {
   health as healthApi,
   orgs as orgsApi,
@@ -16,9 +17,11 @@ function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/onboarding']}>
-        <OnboardingPage />
-      </MemoryRouter>
+      <I18nTestBoundary>
+        <MemoryRouter initialEntries={['/onboarding']}>
+          <OnboardingPage />
+        </MemoryRouter>
+      </I18nTestBoundary>
     </QueryClientProvider>,
   );
 }

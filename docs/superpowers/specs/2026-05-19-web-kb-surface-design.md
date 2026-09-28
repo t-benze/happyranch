@@ -189,3 +189,16 @@ M web/UI_SPEC.md
 - Inline editing or `Compose…`-from-task-detail shortcut.
 - KB index regeneration UI (`POST /kb/reindex` button).
 - Audit/talks/dashboard deep-links into KB (lands when those surfaces ship).
+
+## Implemented search-contract restoration (THR-252, 2026-09-11)
+
+KB search consumes the server's `hits[{slug,title,snippet,score}]` in ranked order.
+The UI joins the existing unfiltered list summaries by slug for type, whole tags,
+and update time; it never casts a hit to a full entry or invents missing metadata.
+Cards show the hit title/snippet. Type and tag facets intersect after the join,
+preserving rank. Pending input/search or metadata refresh hides stale results;
+metadata errors or missing hit metadata show the existing recoverable Knowledge
+error, never successful-empty. Retry refreshes search and list metadata. Clearing
+search restores the list immediately, and old query settlements cannot replace
+the current query. Narrow 390px clipping remains an existing desktop-only
+limitation; shared App/Drawer layout is unchanged.

@@ -52,7 +52,7 @@ function emptySummary(): DashboardSummaryResponse {
 }
 
 /**
- * Seed the surrounding routes that AppShell + TopBar query on mount.
+ * Seed the surrounding routes that AppShell navigation queries on mount.
  * MSW is configured with `onUnhandledRequest: 'error'`, so every call the
  * app makes must be answered — even ones not under test.
  */

@@ -3,14 +3,15 @@
  * IANA-timezone rendering, outbound-edit-body correctness, exact provenance
  * URLs, mutation success/failure, and 409 conflict.
  */
-import { screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, it, expect, beforeEach } from 'vitest'
 import { AppRoutes } from '@/routes'
 import { renderWithProviders } from '@/test/render'
 import { server } from '@/test/server'
-import type { ScheduleRecord } from '@/lib/api/types'
+import type { ScheduleRecord, ScheduleStatus } from '@/lib/api/types'
+import { StatusPill } from './components/StatusPill'
 
 /* ---------------------------------------------------------------- */
 /*  Fixtures                                                        */
@@ -1302,19 +1303,109 @@ describe('strings — status labels and grouping', () => {
     expect(mod.statusLabel('timeout')).toBe('Timed out')
   })
 
-  it('statusPillClass returns Todos-local reference colors', async () => {
-    const mod = await import('./strings')
-    expect(mod.statusPillClass('armed')).toContain('text-[#2b5c3a]')
-    expect(mod.statusPillClass('armed')).toContain('bg-[#e3efe5]')
-    expect(mod.statusPillClass('firing')).toContain('text-[#2b5c3a]')
-    expect(mod.statusPillClass('fired')).toContain('text-[#2b5c3a]')
-    expect(mod.statusPillClass('failed')).toContain('text-[#575249]')
-    expect(mod.statusPillClass('failed')).toContain('bg-[#f3e8d6]')
-    expect(mod.statusPillClass('timeout')).toContain('bg-[#f3e8d6]')
-    expect(mod.statusPillClass('paused')).toContain('text-[#575249]')
-    expect(mod.statusPillClass('paused')).toContain('bg-[#efece2]')
-    expect(mod.statusPillClass('cancelled')).toContain('bg-[#efece2]')
-    expect(mod.statusPillClass('expired')).toContain('bg-[#efece2]')
+  /**
+   * Every pill INSTANCE, not the first match. `ALL_SCHEDULES` contains two
+   * `armed` rows, so `Armed` renders twice on the list route; asserting only
+   * the first match would let a second, differently-toned pill ship unnoticed.
+   */
+  const TONE_EXPECTATIONS = [
+    { label: 'Armed', tone: 'positive', instances: 2, led: true },
+    { label: 'Firing now', tone: 'positive', instances: 1, led: true },
+    { label: 'Completed', tone: 'positive', instances: 1, led: false },
+    { label: 'Needs attention', tone: 'attention', instances: 1, led: false },
+    { label: 'Timed out', tone: 'attention', instances: 1, led: false },
+    { label: 'Paused', tone: 'neutral', instances: 1, led: false },
+    { label: 'Cancelled', tone: 'neutral', instances: 1, led: false },
+    { label: 'Review expired', tone: 'neutral', instances: 1, led: false },
+  ] as const
+
+  /** Approved THR-105 pill geometry — preserved by the tone convergence. */
+  const PILL_GEOMETRY = [
+    'text-overline',
+    'inline-flex',
+    'items-center',
+    'gap-1.5',
+    'rounded-full',
+    'px-2.5',
+    'py-0.5',
+    'leading-snug',
+    'font-semibold',
+  ] as const
+
+  function statusPills(label: string): HTMLElement[] {
+    return screen
+      .getAllByText(label)
+      .filter((node) => node.classList.contains('rounded-full'))
+  }
+
+  it('shipping StatusPill renders EVERY status instance through shared semantic tones', async () => {
+    const { TONE_CLASS } = await import('@/design-system/patterns/semanticTone')
+    mockSchedules(ALL_SCHEDULES)
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
+    await screen.findByText('Send the weekly market update')
+
+    for (const { label, tone, instances } of TONE_EXPECTATIONS) {
+      const pills = statusPills(label)
+      expect(pills).toHaveLength(instances)
+      for (const pill of pills) {
+        for (const cls of TONE_CLASS[tone].split(' ')) expect(pill).toHaveClass(cls)
+      }
+    }
+  })
+
+  it('shipping StatusPill preserves the approved pill geometry and armed/firing LEDs', async () => {
+    mockSchedules(ALL_SCHEDULES)
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
+    await screen.findByText('Send the weekly market update')
+
+    for (const { label, instances, led } of TONE_EXPECTATIONS) {
+      const pills = statusPills(label)
+      expect(pills).toHaveLength(instances)
+      for (const pill of pills) {
+        for (const cls of PILL_GEOMETRY) expect(pill).toHaveClass(cls)
+        // LED = the leading bg-current dot, armed/firing only.
+        const dot = pill.querySelector('span[aria-hidden="true"].bg-current')
+        if (led) expect(dot).not.toBeNull()
+        else expect(dot).toBeNull()
+      }
+    }
+  })
+
+  it('shipping StatusPill no longer emits any Todos-local raw colour class', async () => {
+    mockSchedules(ALL_SCHEDULES)
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
+    await screen.findByText('Send the weekly market update')
+
+    for (const { label } of TONE_EXPECTATIONS) {
+      for (const pill of statusPills(label)) {
+        expect(pill.className).not.toMatch(/(text|bg)-\[#[0-9a-f]{3,8}\]/i)
+      }
+    }
+  })
+
+  it('the detail route pill uses the same shared tone as the list pill', async () => {
+    const { TONE_CLASS } = await import('@/design-system/patterns/semanticTone')
+    sessionStorage.setItem('happyranch.token', 'mock-token')
+    mockDetail(FAILED)
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${ORG_SLUG}/todos/${FAILED.schedule_id}`,
+    })
+    await waitForDetailHeading('Sync the customer changelog')
+    const detailPills = statusPills('Needs attention')
+    expect(detailPills.length).toBeGreaterThan(0)
+    for (const pill of detailPills) {
+      for (const cls of TONE_CLASS.attention.split(' ')) expect(pill).toHaveClass(cls)
+      for (const cls of PILL_GEOMETRY) expect(pill).toHaveClass(cls)
+    }
+  })
+
+  it('shipping StatusPill renders an unknown status with the neutral fallback', async () => {
+    const { TONE_CLASS } = await import('@/design-system/patterns/semanticTone')
+    render(<StatusPill status={'unknown' as ScheduleStatus} />)
+    const pill = screen.getByText('unknown')
+    for (const cls of TONE_CLASS.neutral.split(' ')) expect(pill).toHaveClass(cls)
+    for (const cls of PILL_GEOMETRY) expect(pill).toHaveClass(cls)
+    expect(pill.querySelector('span[aria-hidden="true"].bg-current')).toBeNull()
   })
 
   it('SECTION_ORDER covers all statuses', async () => {

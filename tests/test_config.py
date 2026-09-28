@@ -42,6 +42,28 @@ def test_env_var_overrides_config_yaml(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert Settings().queue_workers == 11
 
 
+@pytest.mark.parametrize(
+    ("yaml_value", "env_value", "expected"),
+    [(3, None, 3), (3, "500", 500)],
+)
+def test_legacy_orchestration_step_setting_remains_loadable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    yaml_value: int,
+    env_value: str | None,
+    expected: int,
+) -> None:
+    """Old YAML/env inputs still parse; admission tests prove they are inert."""
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+    monkeypatch.delenv("HAPPYRANCH_MAX_ORCHESTRATION_STEPS", raising=False)
+    (tmp_path / "config.yaml").write_text(
+        f"max_orchestration_steps: {yaml_value}\n"
+    )
+    if env_value is not None:
+        monkeypatch.setenv("HAPPYRANCH_MAX_ORCHESTRATION_STEPS", env_value)
+    assert Settings().max_orchestration_steps == expected
+
+
 def test_queue_workers_must_be_positive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
     monkeypatch.delenv("HAPPYRANCH_QUEUE_WORKERS", raising=False)

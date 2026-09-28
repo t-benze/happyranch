@@ -6,7 +6,6 @@ from runtime.models import StepRecord
 def build_capabilities_prompt(
     agents: list[dict],
     step_number: int,
-    max_steps: int,
     prior_steps: list[StepRecord] | None = None,
     manager_name: str = "team_manager",
     self_only: bool = False,
@@ -61,7 +60,7 @@ def build_capabilities_prompt(
             "If you need parallel work, delegate sequentially or escalate to "
             "your parent.\n",
             "### Constraints\n",
-            f"- This is step {step_number} of maximum {max_steps}",
+            f"- This is orchestration step {step_number}.",
             "- Org-specific authority limits come from your role_guidance / "
             "system prompt — escalate anything outside them.",
         ]
@@ -115,7 +114,8 @@ def build_capabilities_prompt(
         "",
         "Omitting `revisit_of_task_id` when there is a FAILED child for that",
         "agent is a HARD REJECT — the delegate will be denied and you will be",
-        "asked to retry with the field set. This prevents silent ceiling resets.\n",
+        "asked to retry with the field set. This preserves durable lineage; "
+        "the manager, not the runtime, decides revised work or any escalation.\n",
         "Or, to declare a multi-leg workflow chain (auto-advances without consuming",
         "orchestration steps):",
         "",
@@ -129,7 +129,7 @@ def build_capabilities_prompt(
         "",
         "Each leg in `then` has `agent`, `prompt`, and optional `expect_verdict`.",
         "The orchestrator auto-advances on verdict match; mismatches, blocked subtasks,",
-        "or final-leg matches wake you. Full shape: `protocol/00-completion-contract.md`.\n",
+        "or final-leg matches wake you. Full shape: the **start-task** skill.\n",
         "### Reviewer legs (HARD REJECT)\n",
         "Reviewer identities are configured per-org, not hardcoded: any chain leg whose",
         "`agent` is one of this org's configured reviewer agents"
@@ -244,7 +244,7 @@ def build_capabilities_prompt(
         "This is a side-channel capability, not one of the decision shapes above — "
         "your `decision` field must be one of delegate/done/escalate/fanout.\n",
         "### Constraints\n",
-        f"- This is step {step_number} of maximum {max_steps}",
+        f"- This is orchestration step {step_number}.",
         "- Org-specific authority limits (budget, jurisdictional, content)"
         " come from your role_guidance / system prompt — not this capabilities"
         " block. Escalate to the founder anything outside the bounds your"

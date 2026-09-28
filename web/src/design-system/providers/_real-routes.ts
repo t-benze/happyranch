@@ -5,7 +5,7 @@
  * inside `routes.tsx`). Called by compositions through
  * `@/hooks/threads.useThreadRoutes()`.
  *
- * Uses the **optional** slug variant so layout chrome (`TopBar`) can call us
+ * Uses the **optional** slug variant so layout chrome can call us
  * from above the `<OrgProvider>` boundary — e.g. on the `/` index route
  * before redirect — without throwing. When no slug is in scope, `inbox` and
  * `detail` return `'#'`, which renders the NavLink as inert.
@@ -50,6 +50,8 @@ export function useRealAgentsRoutes(): AgentsRoutes {
     pending: () => (slug ? `/orgs/${slug}/agents?view=pending` : '#'),
     detail: (agentName: string) =>
       slug ? `/orgs/${slug}/agents/${agentName}` : '#',
+    policy: (agentName: string) =>
+      slug ? `/orgs/${slug}/agents/${agentName}/team-escalation-policy` : '#',
     inboxForOrg: (target: string) => `/orgs/${target}/agents`,
   };
 }

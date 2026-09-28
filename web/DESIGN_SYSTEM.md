@@ -10,9 +10,20 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   lockup. Its explicit light/dark values are held to at least 4.5:1 against
   the live Sidebar (`bg-bg-subtle`) and Onboarding (`bg-surface-canvas`)
   backgrounds; it is intentionally distinct from the generic UI accent.
-  Components and stories consume semantic utilities; the branch-aware check in
-  `scripts/verify-design-system.sh` rejects newly added CSS-like hex values
-  elsewhere without confusing issue references such as `#302` for colors.
+  Components and stories consume semantic utilities. The deterministic
+  full-production-tree check in `scripts/verify-design-system.sh` rejects raw
+  hex, actual default Tailwind palette scales and special colour utilities,
+  arbitrary Tailwind colour values,
+  CSS `rgb()`/`rgba()`/`hsl()`/`hsla()`/`oklch()`/`oklab()`/`color()` values,
+  and complete named CSS colour values outside that authority. Supported
+  colour functions are balanced and may contain nested channel functions such
+  as `var()`. It recognizes only
+  colour-capable utilities, properties, and JSX attributes, so issue references,
+  entities, non-colour arbitrary utilities, and token utilities are not hits.
+  The exact path/line/column/value/reason baseline is shrinking: moving,
+  changing, duplicating, adding, or deleting a listed occurrence fails until
+  the baseline is deliberately reconciled in review. A baseline row records
+  temporary residue; it does not create visual or token authority.
 - Primitives wrap basic interaction and Radix behavior. Patterns combine them
   into reusable product language. Layouts own reusable geometry.
 - Components are pure props-in/events-out unless a documented role requires an
@@ -86,7 +97,7 @@ and retry is local state, so Storybook remains daemon-isolated.
 
 ## Coverage ledger
 
-**44 reusable components: 41 story-covered, 3 justified exclusions.** Stories
+**43 reusable components: 41 story-covered, 2 justified exclusions.** Stories
 preserve the former catalogue's descriptions, examples, variants, and token
 visibility through titles, docs, controls, and representative renders.
 
@@ -106,14 +117,14 @@ visibility through titles, docs, controls, and representative renders.
 | `AgentChip` | [source:patterns/AgentChip.tsx#AgentChip] [story:patterns/AgentChip.coverage.stories.tsx#Coverage] Patterns / Agent Chip Roles | founder, manager, worker | `components.agent_chip` |
 | `AuditRow` | [source:patterns/AuditRow.tsx#AuditRow] [story:patterns/AuditRow.coverage.stories.tsx#Coverage] Patterns / Audit Row Density | complete audit/job fixtures; comfortable, compact, expandable | `components.audit_row` |
 | `CommandPalette` | [source:patterns/CommandPalette.tsx#CommandPalette] [story:patterns/CommandPalette.coverage.stories.tsx#Coverage] Patterns / Command Palette Populated | open, populated, searchable | `components.dialog` |
-| `Composer` | [source:patterns/Composer.tsx#Composer] [story:patterns/Composer.coverage.stories.tsx#Coverage] Patterns / Composer States | ready, abort, error/draft; 18px local-extension shell | input/button, `--radius-lg` |
+| `Composer` | [source:patterns/Composer.tsx#Composer] [story:patterns/Composer.coverage.stories.tsx#Coverage] Patterns / Composer States | ready, abort, error/draft as rendered by the linked story; upload-pending and the lifecycle capabilities (synchronous submit latch, attach/send/remove disabled while pending, one stable identity per file selection so duplicates stay distinct, draft/chip clearing only while the originating destination is still active) are tested in the attachment suites, not story states; 18px local-extension shell | input/button, `--radius-lg` |
 | `CrescentMoonBadge` | [source:patterns/CrescentMoonBadge.tsx#CrescentMoonBadge] [story:patterns/CrescentMoonBadge.coverage.stories.tsx#Coverage] Patterns / Crescent Moon Badge State | present | `components.badge` |
 | `EmptyState` | [source:patterns/EmptyState.tsx#EmptyState] [story:patterns/EmptyState.coverage.stories.tsx#Coverage] Patterns / Empty State With Action | empty with CTA | `components.empty_state` |
 | `FilterSidebar` | [source:patterns/FilterSidebar.tsx#FilterSidebar] [story:patterns/FilterSidebar.coverage.stories.tsx#Coverage] Patterns / Filter Sidebar Interaction | all/selected, counts | `components.filter_sidebar` |
 | `FormField` | [source:patterns/FormField.tsx#FormField] [story:patterns/FormField.coverage.stories.tsx#Coverage] Patterns / Form Field States | normal, error | input/label tokens |
 | `HelpSheet` | [source:patterns/HelpSheet.tsx#HelpSheet] [story:patterns/HelpSheet.coverage.stories.tsx#Coverage] Patterns / Help Sheet Interaction | open shortcuts | dialog/kbd tokens |
 | `IdBadge` | [source:patterns/IdBadge.tsx#IdBadge] [story:patterns/IdBadge.coverage.stories.tsx#Coverage] Patterns / Id Badge Kinds | thread, task | `components.badge` |
-| `InboxRow` | [source:patterns/InboxRow.tsx#InboxRow] [story:patterns/InboxRow.coverage.stories.tsx#Coverage] Patterns / Inbox Row States | default/thread × active/open/archived; 8px interactive shell, nested pills preserved | `components.inbox_row`, `--radius-sm` |
+| `InboxRow` | [source:patterns/InboxRow.tsx#InboxRow] [story:patterns/InboxRow.coverage.stories.tsx#Coverage] Patterns / Inbox Row States | default/thread × active/open/archived; default rows retain the 8px bordered interactive shell, while grouped thread rows are flush and their enclosing list owns the border/dividers; nested pills preserved | `components.inbox_row`, `--radius-sm` |
 | `KbdChip` | [source:patterns/KbdChip.tsx#KbdChip] [story:patterns/KbdChip.coverage.stories.tsx#Coverage] Patterns / Kbd Chip Combinations | key, chord | `components.kbd_chip` |
 | `Markdown` | [source:patterns/Markdown.tsx#Markdown] [story:patterns/Markdown.coverage.stories.tsx#Coverage] Patterns / Markdown Content | heading/list/emphasis/code | typography/code |
 | `MentionAutocomplete` | [source:patterns/MentionAutocomplete.tsx#MentionAutocomplete] [story:patterns/MentionAutocomplete.coverage.stories.tsx#Coverage] Patterns / Mention Autocomplete Populated | populated portal/listbox | surface/border |
@@ -132,7 +143,6 @@ visibility through titles, docs, controls, and representative renders.
 | `AppBar` | [excluded:AppBar] Reads live shell/org/navigation contexts and hosts product commands; AppShell/route tests cover it. | shell context in tests | topbar/grid |
 | `ErrorBoundary` | [excluded:ErrorBoundary] Lifecycle capture/reset is not a static catalogue unit; component and route tests cover error/recovery. | normal/error/reset in tests | feedback |
 | `Sidebar` | [source:layouts/AppShell/Sidebar.tsx#Sidebar] [story:layouts/AppShell/Sidebar.coverage.stories.tsx#Coverage] Layouts / Sidebar Branches | disabled navigation and footer account; focused enabled-navigation story | sidebar/grid |
-| `TopBar` | [excluded:TopBar] Reads prototype/org route state; prototype/AppShell tests cover its complete shell contract. | shell context in tests | topbar/grid |
 | `ContentWrap` | [source:layouts/ContentWrap/ContentWrap.tsx#ContentWrap] [story:layouts/ContentWrap/ContentWrap.coverage.stories.tsx#Coverage] Layouts / Content Wrap Responsive | bounded responsive content | layout content/wrap |
 | `DashboardLayout` | [source:layouts/DashboardLayout.tsx#DashboardLayout] [story:layouts/DashboardLayout.coverage.stories.tsx#Coverage] Layouts / Dashboard Layout Populated | four populated slots | layout grid |
 | `ThreadsLayout` | [source:layouts/ThreadsLayout.tsx#ThreadsLayout] [story:layouts/ThreadsLayout.coverage.stories.tsx#Coverage] Layouts / Threads Layout Populated | inbox/detail columns | threads grid |
@@ -144,7 +154,7 @@ visibility through titles, docs, controls, and representative renders.
 | Interaction | Applicable: portal/menu/select/tabs/filter/composer/mention stories are safe locally. |
 | Loading | Applicable only to Mermaid's local render transition; backend loading is N/A to pure units. |
 | Empty | Applicable to EmptyState and blank input examples. |
-| Error | Applicable to FormField validation and Composer draft-preserving error. |
+| Error | Applicable to FormField validation and Composer draft-preserving errors (send, upload and mapped artifact error codes). |
 | Populated | Applicable across all three layers. |
 | Auth | N/A: reusable units do not own authentication; context consumers are excluded and app-tested. |
 | Permission | N/A: feature/shell owners authorize before passing props; context consumers are excluded. |
@@ -152,7 +162,7 @@ visibility through titles, docs, controls, and representative renders.
 ## Deterministic verification and acceptance
 
 `scripts/verify-design-system.sh` runs typecheck, lint, unit coverage, the static
-Storybook build, and no-new-raw-hex enforcement. `scripts/local_ci.sh web|all` and the
+Storybook build, and full-tree raw-colour enforcement. `scripts/local_ci.sh web|all` and the
 GitHub Web gate explicitly run SPA and Storybook builds once each. Storybook is
 not a product prebuild hook, preventing duplicate builds.
 

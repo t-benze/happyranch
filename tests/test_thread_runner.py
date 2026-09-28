@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 from datetime import datetime, timezone
 
 from runtime.config import Settings
 from runtime.daemon.thread_runner import (
+    _executor_error_detail,
     _render_message,
     build_thread_delta_prompt,
     build_thread_prompt,
@@ -24,6 +28,7 @@ from runtime.models import (
     TokenUsage,
 )
 from runtime.orchestrator.org_config import OrgConfig
+from runtime.orchestrator.executors import ClaudeExecutor
 
 
 @pytest.fixture(autouse=True)
@@ -143,6 +148,21 @@ class FakeOrgState:
         self.db = db
         self.root = root
         self.slug = "test"
+
+
+def test_executor_error_detail_uses_selected_full_stream_cause_and_notice():
+    """Thread failure reasons retain the selected cause, not a truncated tail."""
+    result = FakeExecutorResult(False, error="Command exited with code 1: tail-only")
+    result.human_error = "API Error: 529 Overloaded"
+    result.stderr_tail = "ust this workspace."
+    result.terminal_error = "session_limit"
+    result.terminal_error_notice = "You've hit your session limit · resets 12:20am"
+
+    detail = _executor_error_detail(result, 1)
+
+    assert detail.startswith("API Error: 529 Overloaded")
+    assert "resets 12:20am" in detail
+    assert "tail-only" not in detail
 
 
 def _seed_queued_reply(db, thread_id, agent_name, triggering_seq):
@@ -409,9 +429,12 @@ async def test_no_callback_failure_surfaces_executor_error(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_no_callback_failure_preserves_claude_diagnostics_in_audit_reason(
-    tmp_path, monkeypatch,
+@patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
+@patch("runtime.orchestrator.executors.subprocess")
+async def test_no_callback_failure_keeps_inspected_empty_stderr_separate_from_audit_tails(
+    mock_subprocess, _mock_resolve_binary, tmp_path, monkeypatch,
 ):
+    """The complete fixture reaches thread failure/audit persistence via ClaudeExecutor."""
     db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.add_thread_participant("THR-001", "alice", added_by="founder")
@@ -426,27 +449,24 @@ async def test_no_callback_failure_preserves_claude_diagnostics_in_audit_reason(
 
     import runtime.daemon.thread_runner as runner_mod
 
-    class _FailExec:
-        def __init__(self, **kwargs):
-            pass
-
-        def run(self, **kwargs):
-            result = FakeExecutorResult(
-                success=False,
-                error=(
-                    "Command exited with code 1: "
-                    f"{CLAUDE_CREDIT_EXHAUSTED_RESULT}"
-                ),
-            )
-            result.returncode = 1
-            result.stdout_tail = "structured stdout"
-            result.stderr_tail = "raw stderr warning"
-            return result
+    fixture = Path(__file__).parent / "fixtures" / "claude-task6941-result.sanitized.json"
+    payload = json.loads(fixture.read_text())
+    # The reset appears before this long later property, beyond stdout_tail.
+    payload["later_diagnostic"] = "x" * 3000
+    proc = MagicMock(pid=4242, returncode=1)
+    proc.communicate.return_value = (
+        json.dumps(payload),
+        "Set hasTrustDialogAccepted to true to trust this workspace.\n" * 50,
+    )
+    mock_subprocess.Popen.return_value = proc
 
     monkeypatch.setattr(
         runner_mod,
         "_build_executor_for_provider",
-        lambda provider, settings, paths: _FailExec(),
+        lambda provider, settings, paths: ClaudeExecutor(
+            claude_cli_path="claude", permission_mode="auto",
+            settings=settings, paths=paths,
+        ),
     )
 
     await run_invocation(
@@ -457,21 +477,22 @@ async def test_no_callback_failure_preserves_claude_diagnostics_in_audit_reason(
 
     inv_after = db.get_invocation_any_status(inv.invocation_token)
     assert inv_after.decline_reason is not None
-    assert len(inv_after.decline_reason) > 300
-    for diagnostic in (
-        '"api_error_status":429',
-        '"terminal_reason":"credit_exhausted"',
-        '"result":"Your account has insufficient credits',
-    ):
-        assert diagnostic in inv_after.decline_reason
+    assert inv_after.decline_reason.endswith(
+        "session_limit; notice: You've hit your session limit · resets 12:20am (Asia/Shanghai)"
+    )
+    assert "this workspace has not been trusted" not in inv_after.decline_reason
+    assert '"api_error_status":429' not in inv_after.decline_reason
 
     audit_row = next(
         row for row in db.get_audit_logs("THR-001")
         if row["action"] == "thread_invocation_failed"
     )
     assert audit_row["payload"]["reason"] == inv_after.decline_reason
-    assert audit_row["payload"]["stdout_tail"] == "structured stdout"
-    assert audit_row["payload"]["stderr_tail"] == "raw stderr warning"
+    # The later property evicts the structured result from the raw tail; the
+    # persisted reason above still has the separately selected validated notice.
+    assert '"terminal_reason": "api_error"' not in audit_row["payload"]["stdout_tail"]
+    assert audit_row["payload"]["stderr_tail"].startswith("ust this workspace.")
+    assert "Set hasTrustDialogAccepted" in audit_row["payload"]["stderr_tail"]
 
 
 @pytest.mark.asyncio

@@ -107,7 +107,7 @@ _KNOWN_WAITER_FAILURE_VERDICTS: set[str] = {
 }
 
 
-# ── merge-evidence extraction vocabulary (protocol/00-completion-contract.md) ──
+# ── merge-evidence extraction vocabulary (docs/agent-guides/orchestrator-contracts.md) ──
 
 # Canonical verdict tokens shared by every review/QA producer surface.  This
 # is the FULL shared vocabulary — never narrowed to the passing tokens: the
@@ -437,7 +437,7 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
     completion-report output.  Returns the verdict string, or raises
     RuntimeError on failure.
 
-    Extraction contract (canonical: ``protocol/00-completion-contract.md``
+    Extraction contract (canonical: ``docs/agent-guides/orchestrator-contracts.md``
     "Merge-evidence contract"; supersedes KB ``guarded-merge-verdict-extraction``):
 
     1. **Canonical vocabulary.**  Every extracted token — structured or

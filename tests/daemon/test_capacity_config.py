@@ -53,6 +53,58 @@ def test_no_file_and_empty_mapping_are_safe(monkeypatch, tmp_path):
     assert empty["revision"] != missing["revision"]
 
 
+def test_capacity_guidance_and_provenance_are_plain_language(monkeypatch, tmp_path):
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+    running = Settings(queue_workers=6, host_global_session_cap=13)
+    snap = snapshot(tmp_path / "config.yaml", running, capability_reason="healthy")
+    assert snap["running_provenance"] == "Resolved when the HappyRanch service started"
+    assert snap["guidance"]["queue_workers"] == (
+        "Suggested starting range: 4–6. Adjust based on task wait times. "
+        "This is guidance, not a required range."
+    )
+    assert snap["guidance"]["host_global_session_cap"] == (
+        "Suggested starting range: 11–13. This applies to HappyRanch supervised sessions, "
+        "not every process on the machine. The range is not enforced."
+    )
+    assert snap["guidance"]["enforced"] is False
+
+
+def test_warning_relation_copy_is_derived_from_structured_values(monkeypatch, tmp_path):
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+    running = Settings(queue_workers=4, host_global_session_cap=6)
+    path = tmp_path / "config.yaml"
+
+    path.write_text("queue_workers: 4\nhost_global_session_cap: 6\n")
+    below = snapshot(path, running, capability_reason="healthy")
+    assert below["producer_envelope"] == 11
+    assert below["warnings"] == [
+        "The overall session limit (6) is lower than the total worker slots (11). "
+        "Under high demand, some sessions may wait. You can still save this setting."
+    ]
+
+    path.write_text("queue_workers: 4\nhost_global_session_cap: 20\n")
+    above = snapshot(path, running, capability_reason="healthy")
+    assert above["warnings"] == [
+        "The overall session limit (20) is higher than the total worker slots (11). "
+        "Raising this limit alone does not add worker slots."
+    ]
+
+    path.write_text("queue_workers: 4\nhost_global_session_cap: 11\n")
+    equal = snapshot(path, running, capability_reason="healthy")
+    assert equal["warnings"] == []
+
+
+def test_environment_warning_copy_is_plain_language(monkeypatch, tmp_path):
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+    monkeypatch.setenv("HAPPYRANCH_QUEUE_WORKERS", "2")
+    snap = snapshot(tmp_path / "config.yaml", Settings(), capability_reason="healthy")
+    assert snap["environment_shadowed"] == ["queue_workers"]
+    assert snap["environment_warning"] == (
+        "An environment setting takes priority over the saved configuration. "
+        "Restarting HappyRanch will not make the saved value take effect."
+    )
+
+
 @pytest.mark.parametrize("text,code", [("[1, 2]\n", "config_not_mapping"), ("{bad", "config_parse_failed")])
 def test_malformed_or_non_mapping_fail_closed(monkeypatch, tmp_path, text, code):
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))

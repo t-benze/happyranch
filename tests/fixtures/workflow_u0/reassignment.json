@@ -1,0 +1,1 @@
+{"scenario":"reassignment","ancestors":["TASK-301","TASK-302"],"facts":{"maker":"maker-c","revision":"r2","digest":"d-r2","authority":"current","reassigned_from":"reviewer-a","reassigned_to":"reviewer-b","historical_makers":["maker-a","maker-c"]}}

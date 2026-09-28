@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import {
   Navigate,
   Outlet,
@@ -8,11 +9,13 @@ import {
   useSearchParams,
 } from 'react-router-dom';
 import { AppBar } from '@/design-system/layouts/AppShell/AppBar';
-import { ErrorBoundary } from '@/design-system/layouts/AppShell/ErrorBoundary';
+import { ErrorBoundary, type ErrorBoundaryCopy } from '@/design-system/layouts/AppShell/ErrorBoundary';
 import { Sidebar } from '@/design-system/layouts/AppShell/Sidebar';
+import { useTranslation } from '@/hooks/i18n';
 import { useOrgsList } from '@/hooks/orgs';
 import { OrgProvider } from '@/lib/orgSlug';
 import { AgentsPage } from '@/features/agents/AgentsPage';
+import { TeamEscalationPolicyPage } from '@/features/agents/TeamEscalationPolicyPage';
 import { ArtifactsPage } from '@/features/artifacts/ArtifactsPage';
 import { JobsPage } from '@/features/jobs/JobsPage';
 import { JobDetailPage } from '@/features/jobs/JobDetailPage';
@@ -44,14 +47,40 @@ import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
 
 function RootRedirect(): JSX.Element {
   const orgsQuery = useOrgsList();
+  const { t } = useTranslation();
   if (orgsQuery.isLoading) {
-    return <div className="text-fg-muted p-6">Loading…</div>;
+    return <div className="text-fg-muted p-6">{t('shell.loading')}</div>;
   }
   const first = orgsQuery.data?.orgs[0]?.slug;
   if (!first) {
     return <Navigate to="/onboarding" replace />;
   }
   return <Navigate to={`/orgs/${first}/dashboard`} replace />;
+}
+
+/**
+ * Localized boundary for the routed content. The class boundary keeps its
+ * captured error across a locale switch; only the surrounding app-owned copy
+ * is re-supplied here.
+ */
+function AppShellErrorBoundary({
+  resetKey,
+  children,
+}: {
+  resetKey: string;
+  children: ReactNode;
+}): JSX.Element {
+  const { t } = useTranslation();
+  const copy: ErrorBoundaryCopy = {
+    title: t('shell.error.title'),
+    body: t('shell.error.body'),
+    retry: t('shell.error.retry'),
+  };
+  return (
+    <ErrorBoundary resetKey={resetKey} copy={copy}>
+      {children}
+    </ErrorBoundary>
+  );
 }
 
 function OrgLayout(): JSX.Element {
@@ -68,11 +97,11 @@ function AppShell(): JSX.Element {
     <div className="flex h-full flex-row">
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
-        <AppBar />
+        <AppBar presentation={/^\/orgs\/[^/]+\/tasks\/?$/.test(location.pathname) ? 'tasks' : undefined} />
         <main className="flex-1 overflow-hidden">
-          <ErrorBoundary resetKey={location.pathname}>
+          <AppShellErrorBoundary resetKey={location.pathname}>
             <Outlet />
-          </ErrorBoundary>
+          </AppShellErrorBoundary>
         </main>
       </div>
       <CommandPaletteHost />
@@ -85,7 +114,7 @@ function AppShell(): JSX.Element {
 export function AppRoutes(): JSX.Element {
   return (
     <Routes>
-      {/* Prototype routes mount OUTSIDE AppShell so the TopBar + nav inside
+      {/* Prototype routes mount OUTSIDE AppShell so the shell primitives inside
           `PrototypesLayout` run under `<PrototypeProvider>`'s QueryClient
           and OrgSlugContext — keeping mock-only behaviour fully isolated
           from the daemon-backed routes. */}
@@ -106,7 +135,7 @@ export function AppRoutes(): JSX.Element {
           <Route path="todos" element={<TodosPage />} />
           <Route path="todos/:scheduleId" element={<TodosPage />} />
           <Route path="kb" element={<KbPage />} />
-          <Route path="kb/*" element={<KbPage />} />
+          <Route path="kb/:entrySlug/*" element={<KbPage />} />
 
           <Route path="audit" element={<AuditPage />} />
           <Route path="skills" element={<SkillsPage />} />
@@ -119,6 +148,7 @@ export function AppRoutes(): JSX.Element {
           <Route path="skills/:skillId" element={<SkillDetailPage />} />
           <Route path="agents" element={<AgentsPage />} />
           <Route path="agents/:agent_name" element={<AgentsPage />} />
+          <Route path="agents/:agent_name/team-escalation-policy" element={<TeamEscalationPolicyPage />} />
           <Route path="jobs" element={<JobsPage />} />
           <Route path="jobs/:job_id" element={<JobDetailPage />} />
           <Route path="health" element={<HealthPage />} />
@@ -177,9 +207,16 @@ function SpendRedirect(): JSX.Element {
 }
 
 function NotFound(): JSX.Element {
+  const { t, render } = useTranslation();
   return (
     <div className="text-fg-muted p-6">
-      Not found. <a href="/" className="text-accent hover:underline">Go home</a>.
+      {render('shell.notFound.body', {
+        link: (
+          <a href="/" className="text-accent hover:underline">
+            {t('shell.notFound.goHome')}
+          </a>
+        ),
+      })}
     </div>
   );
 }

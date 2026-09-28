@@ -47,6 +47,7 @@ def _enforce_session_or_bearer(
     task_id: str | None,
     session_id: str | None,
     org,
+    allow_recovery_read: bool = False,
 ) -> None:
     """Authorize a dual-auth call against a JobRecord.
 
@@ -76,6 +77,12 @@ def _enforce_session_or_bearer(
         raise HTTPException(
             status_code=409, detail={"code": "session_mismatch"},
         )
+    if org.sessions.is_recovery_session(task_id, record.agent_name, session_id):
+        # Recovery is purpose-bound: it may inspect only the exact task's jobs,
+        # never mutate them. Ordinary same-agent cross-task access is legacy
+        # behavior and deliberately remains outside this extra restriction.
+        if not allow_recovery_read or record.task_id != task_id:
+            raise HTTPException(status_code=403, detail={"code": "recovery_purpose_forbidden"})
 
 _MAX_SCRIPT_BYTES = 65536
 _MAX_TITLE_LEN = 200
@@ -221,6 +228,8 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
             status_code=409,
             detail={"code": "session_mismatch", "active": active_sid, "got": body.session_id},
         )
+    if org.sessions.is_recovery_session(body.task_id, agent, body.session_id):
+        raise HTTPException(status_code=403, detail={"code": "recovery_purpose_forbidden"})
     scope_id = body.task_id
 
     # 4. Title.
@@ -477,7 +486,7 @@ async def get_job_route(
         raise HTTPException(status_code=404, detail={"code": "unknown_job", "job_id": job_id})
     _enforce_session_or_bearer(
         record, has_bearer=has_bearer,
-        task_id=task_id, session_id=session_id, org=org,
+        task_id=task_id, session_id=session_id, org=org, allow_recovery_read=True,
     )
     return record.model_dump()
 
@@ -508,7 +517,7 @@ async def tail_job(
         )
     _enforce_session_or_bearer(
         record, has_bearer=has_bearer,
-        task_id=task_id, session_id=session_id, org=org,
+        task_id=task_id, session_id=session_id, org=org, allow_recovery_read=True,
     )
     path = record.stdout_path if stream == "stdout" else record.stderr_path
     if not path or not Path(path).exists():
@@ -599,7 +608,7 @@ async def wait_job(
         )
     _enforce_session_or_bearer(
         record, has_bearer=has_bearer,
-        task_id=task_id, session_id=session_id, org=org,
+        task_id=task_id, session_id=session_id, org=org, allow_recovery_read=True,
     )
     if record.status in _TERMINAL_SR_STATUSES:
         return record.model_dump() | {"timed_out": False}

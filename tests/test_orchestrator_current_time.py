@@ -20,14 +20,14 @@ from runtime.orchestrator.teams import TeamsRegistry
 _FROZEN = datetime(2026, 6, 27, 4, 47, tzinfo=timezone.utc)  # 12:47 in +08:00
 
 # System-contract IDs for "task" context with repos.
-_TASK_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]
+_TASK_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]
 
 
 @pytest.fixture(autouse=True)
 def _ensure_protocol_skills(test_settings):
-    """TASK-2511: pre-create protocol/skills/ source dirs."""
+    """TASK-2511: pre-create runtime/skills/bundled/ source dirs."""
     for sid in _TASK_CONTRACT_IDS:
-        src = test_settings.get_protocol_dir() / "skills" / sid
+        src = test_settings.get_bundled_skills_dir() / sid
         src.mkdir(parents=True, exist_ok=True)
         (src / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {sid}.\n")
 
@@ -208,6 +208,10 @@ class TestRunAgentMemoryDigest:
         ws = test_runtime.workspaces_dir / agent
         ws.mkdir(parents=True, exist_ok=True)
         (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
+        # THR-262 Slice B: the canonical instruction pair (regular AGENTS.md +
+        # raw relative CLAUDE.md -> AGENTS.md) is required before launch.
+        (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+        (ws / "CLAUDE.md").symlink_to("AGENTS.md")
         # Also create agent.yaml and repos so materialization can proceed.
         (ws / "agent.yaml").write_text("executor: claude\n")
         (ws / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)

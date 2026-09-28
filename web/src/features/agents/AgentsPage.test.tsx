@@ -2,15 +2,20 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { QueryClient } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
-import { MemoryRouter } from 'react-router-dom';
-import { beforeEach, describe, expect, test } from 'vitest';
+import { createMemoryRouter, Link, MemoryRouter, RouterProvider, useNavigate } from 'react-router-dom';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { AppProvider } from '@/design-system/providers/AppProvider';
 import { AppRoutes } from '@/routes';
-import { renderWithProviders } from '@/test/render';
+import { I18nTestBoundary, renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 import type { JobRecord } from '@/lib/api/types';
 
 const SLUG = 'hk-macau-tourism';
+const NativeRequest = globalThis.Request;
+
+afterEach(() => {
+  globalThis.Request = NativeRequest;
+});
 
 const AGENTS_PAYLOAD = {
   agents: [
@@ -47,7 +52,7 @@ function stubBaseHandlers() {
       HttpResponse.json({}),
     ),
     http.get(`/api/v1/orgs/${SLUG}/teams`, () =>
-      HttpResponse.json({ teams: [] }),
+      HttpResponse.json({ teams: [{ name: 'engineering', manager: 'engineering_manager' }] }),
     ),
     // Executor prereqs — required by AgentDetailPane's useExecutorOptions
     http.get('/api/v1/health/prereqs', () =>
@@ -84,6 +89,39 @@ function stubDetailHandlers(agentTasks: unknown[] = []) {
 function mountAt(route: string) {
   sessionStorage.setItem('happyranch.token', 'tok');
   return renderWithProviders(<AppRoutes />, { route });
+}
+
+function PolicyNavigationControls(): JSX.Element {
+  const navigate = useNavigate();
+  return <div className="sr-only">
+    <Link to={`/orgs/${SLUG}/dashboard`}>Test destination</Link>
+    <button onClick={() => navigate(-1)}>Test browser back</button>
+    <button onClick={() => navigate(1)}>Test browser forward</button>
+    <button onClick={() => navigate(0)}>Test browser refresh</button>
+  </div>;
+}
+
+function mountPolicyRoute(entries: string[], initialIndex = entries.length - 1) {
+  // React Router's data-memory history creates a Request with jsdom's
+  // AbortSignal, which Node's undici Request rejects. Navigation loaders are
+  // not used in this app, so omit that test-environment-only signal.
+  globalThis.Request = class RouterTestRequest extends NativeRequest {
+    constructor(input: RequestInfo | URL, init?: RequestInit) {
+      super(input, init ? { ...init, signal: undefined } : init);
+    }
+  };
+  sessionStorage.setItem('happyranch.token', 'tok');
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const router = createMemoryRouter([{
+    path: '*',
+    element: <AppProvider client={client}><PolicyNavigationControls /><I18nTestBoundary><AppRoutes /></I18nTestBoundary></AppProvider>,
+  }], { initialEntries: entries, initialIndex });
+  const view = render(<RouterProvider router={router} />);
+  return { ...view, client };
+}
+
+function policyCacheEntries(client: QueryClient) {
+  return client.getQueryCache().getAll().filter((query) => String(query.queryKey[0]).startsWith('team-escalation-policy'));
 }
 
 describe('AgentsPage — two-pane roster list', () => {
@@ -231,6 +269,39 @@ describe('AgentsPage — two-pane roster list', () => {
 });
 
 describe('AgentDetailPane — editable fields', () => {
+  test('eligible manager detail shows only compact active status and dedicated-page control', async () => {
+    stubBaseHandlers(); stubDetailHandlers();
+    const manager = { ...AGENTS_PAYLOAD.agents[0], name: 'engineering_manager' };
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [manager] })),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`, () => HttpResponse.json({
+        team: 'engineering', target_manager: 'engineering_manager', can_mutate: true,
+        family: 'legacy_v1', contract_version: 'v1',
+        selector_id: 'APS-0000000000000000000000000000000000000000000000000000000000000000',
+        selector_epoch: 1,
+        bootstrap_template: { title: 'Canonical policy', normative_text: 'Policy', clauses: [], continuation_phrase: 'routine same-root follow-through of the already-completed slice' },
+        v2_starter: { policy_id: 'team-8c85b6639e62e10b-dual-text', title: 'Engineering escalation policy', what_to_escalate: 'Escalate starter.', what_not_to_escalate: 'Continue starter.' },
+        active: {
+          family: 'legacy_v1', activation_id: 'act-legacy-1', epoch: 4, action: 'activate',
+          created_at: '2026-09-01T00:00:00Z',
+          actor_attribution: 'shared local operator credential',
+          release: {
+            id: 'rel-legacy-2', policy_id: 'engineering-escalation', version: 2,
+            title: 'Canonical policy', normative_text: 'Policy', clauses: [],
+            continuation_phrase: 'routine same-root follow-through of the already-completed slice',
+            digest: 'abcdef1234567890', created_at: '2026-09-01T00:00:00Z',
+            actor_attribution: 'shared local operator credential',
+          },
+        },
+      })),
+    );
+    mountAt(`/orgs/${SLUG}/agents/engineering_manager`);
+    expect(await screen.findByText(/Active legacy v2 · epoch 4 · abcdef123456/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open team escalation policy' })).toHaveAttribute('href', `/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`);
+    expect(screen.queryByLabelText('Title')).not.toBeInTheDocument();
+    expect(screen.queryByText('Immutable release history')).not.toBeInTheDocument();
+  });
+
   test('omits the team policy card from a worker detail pane', async () => {
     stubBaseHandlers();
     stubDetailHandlers();
@@ -1166,7 +1237,9 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     render(
       <MemoryRouter initialEntries={[`/orgs/${SLUG}/agents/claude_agent`]}>
         <AppProvider client={qc}>
-          <AppRoutes />
+          <I18nTestBoundary>
+            <AppRoutes />
+          </I18nTestBoundary>
         </AppProvider>
       </MemoryRouter>,
     );
@@ -1392,6 +1465,277 @@ describe('AgentsPage — route collision regression', () => {
   });
 });
 
+describe('Team escalation policy dedicated route', () => {
+  const manager = {
+    name: 'engineering_manager', team: 'engineering', role: 'manager',
+    executor: 'codex', model: null, description: 'Owns engineering.', repos: {}, system_prompt: 'Manager.',
+  };
+  const policyResponse = {
+    team: 'engineering', target_manager: 'engineering_manager', can_mutate: true,
+    family: 'empty',
+    selector_id: 'APS-0000000000000000000000000000000000000000000000000000000000000000',
+    selector_epoch: 0,
+    bootstrap_required: true,
+    bootstrap_template: { title: 'Canonical policy', normative_text: 'Policy', clauses: [], continuation_phrase: 'routine same-root follow-through of the already-completed slice' },
+    v2_starter: { policy_id: 'team-8c85b6639e62e10b-dual-text', title: 'Engineering escalation policy', what_to_escalate: 'Escalate starter.', what_not_to_escalate: 'Continue starter.' },
+  };
+
+  function stubPolicy() {
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`, () => HttpResponse.json(policyResponse)),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/history`, () => HttpResponse.json({ items: [], next_cursor: null })),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/v2/history`, () => HttpResponse.json({ items: [], next_cursor: null })),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/outcomes`, () => HttpResponse.json({ items: [], next_cursor: null })),
+    );
+  }
+
+  test('eligible deep link resolves after roster eligibility and provides context/back link', async () => {
+    stubBaseHandlers();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [manager] })),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`, () => HttpResponse.json(policyResponse)),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/history`, () => HttpResponse.json({ items: [], next_cursor: null })),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/outcomes`, () => HttpResponse.json({ items: [], next_cursor: null })),
+    );
+    mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`]);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Team escalation policy' })).toBeInTheDocument();
+    expect(screen.getAllByRole('main')).toHaveLength(1);
+    expect(screen.getByText('Engineering · Engineering Manager')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Back to Engineering Manager/ })).toHaveAttribute('href', `/orgs/${SLUG}/agents/engineering_manager`);
+    expect(await screen.findByLabelText('What to escalate')).toBeInTheDocument();
+    expect(screen.getByLabelText('What not to escalate')).toBeInTheDocument();
+  });
+
+  test('registered Content manager gets the same direct route with dynamic copy and server starter', async () => {
+    stubBaseHandlers();
+    const contentManager = { ...manager, name: 'content_manager', team: 'content',
+      description: 'Owns content.' };
+    const contentPolicy = { ...policyResponse, team: 'content',
+      target_manager: 'content_manager', bootstrap_template: null,
+      v2_starter: { ...policyResponse.v2_starter,
+        policy_id: 'team-ed7002b439e9ac84-dual-text',
+        title: 'Content escalation policy',
+        what_to_escalate: 'Content server escalate bytes.',
+        what_not_to_escalate: 'Content server continue bytes.' } };
+    let policyRequests = 0;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/teams`, () => HttpResponse.json({
+        teams: [
+          { name: 'engineering', manager: 'engineering_manager' },
+          { name: 'content', manager: 'content_manager' },
+        ],
+      })),
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [contentManager] })),
+      http.get(`/api/v1/orgs/${SLUG}/agents/content_manager/team-escalation-policy`, () => {
+        policyRequests += 1;
+        return HttpResponse.json(contentPolicy);
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/agents/content_manager/team-escalation-policy/v2/history`, () =>
+        HttpResponse.json({ items: [], next_cursor: null })),
+    );
+
+    mountPolicyRoute([`/orgs/${SLUG}/agents/content_manager/team-escalation-policy`]);
+
+    expect(await screen.findByText('Content · Content Manager')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Back to Content Manager/ })).toHaveAttribute(
+      'href', `/orgs/${SLUG}/agents/content_manager`,
+    );
+    expect(await screen.findByLabelText('What to escalate')).toHaveValue(
+      contentPolicy.v2_starter.what_to_escalate,
+    );
+    expect(screen.getByLabelText('What not to escalate')).toHaveValue(
+      contentPolicy.v2_starter.what_not_to_escalate,
+    );
+    expect(policyRequests).toBe(1);
+  });
+
+  test('legacy projection fetches only immutable dual-text history and renders no removed legacy sections', async () => {
+    stubBaseHandlers();
+    let legacyHistoryRequests = 0;
+    let outcomeRequests = 0;
+    let v2HistoryRequests = 0;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [manager] })),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`, () => HttpResponse.json({
+        ...policyResponse, family: 'legacy_v1', contract_version: 'v1', selector_epoch: 1,
+        active: { family: 'legacy_v1', activation_id: 'APA-legacy', epoch: 1,
+          action: 'bootstrap', created_at: '2026-09-01T00:00:00Z',
+          actor_attribution: 'shared local operator credential',
+          release: { id: 'APR-legacy', policy_id: 'engineering/pre-escalation-authority',
+            version: 1, title: 'Canonical policy', normative_text: 'Policy', clauses: [],
+            continuation_phrase: 'routine same-root follow-through of the already-completed slice',
+            digest: 'a'.repeat(64), created_at: '2026-09-01T00:00:00Z',
+            actor_attribution: 'shared local operator credential' },
+        },
+      })),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/history`, () => {
+        legacyHistoryRequests += 1; return HttpResponse.json({ items: [], next_cursor: null });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/outcomes`, () => {
+        outcomeRequests += 1; return HttpResponse.json({ items: [], next_cursor: null });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/v2/history`, () => {
+        v2HistoryRequests += 1; return HttpResponse.json({ items: [], next_cursor: null });
+      }),
+    );
+    mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`]);
+    expect(await screen.findByText('Immutable dual-text history')).toBeInTheDocument();
+    await waitFor(() => expect(v2HistoryRequests).toBe(1));
+    expect(legacyHistoryRequests).toBe(0);
+    expect(outcomeRequests).toBe(0);
+    expect(screen.queryByText('Legacy policy history (read-only)')).not.toBeInTheDocument();
+    expect(screen.queryByText('Legacy manager self-evaluation outcomes (read-only)')).not.toBeInTheDocument();
+  });
+
+  test('eligible manager exercises the shipping navigate(0) browser-refresh path without a replacement router', async () => {
+    stubBaseHandlers();
+    let rosterRequests = 0;
+    let policyRequests = 0;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () => {
+        rosterRequests += 1;
+        return HttpResponse.json({ agents: [manager] });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`, () => {
+        policyRequests += 1;
+        return HttpResponse.json(policyResponse);
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/history`, () => HttpResponse.json({ items: [], next_cursor: null })),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/v2/history`, () => HttpResponse.json({ items: [], next_cursor: null })),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/outcomes`, () => HttpResponse.json({ items: [], next_cursor: null })),
+    );
+    const user = userEvent.setup();
+    mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`]);
+    expect((await screen.findByLabelText('What to escalate') as HTMLTextAreaElement).value).toBe(policyResponse.v2_starter.what_to_escalate);
+    expect(rosterRequests).toBe(1);
+    expect(policyRequests).toBe(1);
+
+    await user.click(screen.getByRole('button', { name: 'Test browser refresh' }));
+
+    // In a real browser navigate(0) reloads the document. Memory history keeps
+    // the mounted document, so this assertion deliberately proves the shipping
+    // refresh call path without substituting an unmount or replacement router.
+    expect(rosterRequests).toBe(1);
+    expect(policyRequests).toBe(1);
+    expect(screen.getByRole('heading', { level: 1, name: 'Team escalation policy' })).toBeInTheDocument();
+    expect((screen.getByLabelText('What to escalate') as HTMLTextAreaElement).value).toBe(policyResponse.v2_starter.what_to_escalate);
+  });
+
+  test('shipping back Link cancel preserves the exact dirty draft; confirm discards and navigates', async () => {
+    stubBaseHandlers();
+    server.use(http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [manager] })));
+    stubPolicy();
+    const user = userEvent.setup();
+    mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`]);
+    const whatTo = await screen.findByRole('textbox', { name: 'What to escalate' });
+    await user.clear(whatTo);
+    await user.type(whatTo, 'Exact retained draft');
+    await user.click(screen.getByRole('link', { name: /Back to Engineering Manager/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'Discard unsaved policy changes?' });
+    await user.click(within(dialog).getByRole('button', { name: 'Stay on page' }));
+    expect(screen.getByRole('textbox', { name: 'What to escalate' })).toHaveValue('Exact retained draft');
+    expect(screen.getByRole('heading', { level: 1, name: 'Team escalation policy' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('link', { name: /Back to Engineering Manager/ }));
+    await user.click(await screen.findByRole('button', { name: 'Discard and continue' }));
+    await waitFor(() => expect(screen.queryByRole('heading', { level: 1, name: 'Team escalation policy' })).not.toBeInTheDocument());
+    expect(screen.queryByDisplayValue('Exact retained draft')).not.toBeInTheDocument();
+  });
+
+  test('memory history back cancel preserves draft and confirm completes the original POP; forward restores route cleanly', async () => {
+    stubBaseHandlers();
+    server.use(http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [manager] })));
+    stubDetailHandlers();
+    stubPolicy();
+    const user = userEvent.setup();
+    mountPolicyRoute([
+      `/orgs/${SLUG}/agents/engineering_manager`,
+      `/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`,
+    ]);
+    const whatTo = await screen.findByRole('textbox', { name: 'What to escalate' });
+    await user.clear(whatTo);
+    await user.type(whatTo, 'History-retained draft');
+    await user.click(screen.getByRole('button', { name: 'Test browser back' }));
+    await user.click(await screen.findByRole('button', { name: 'Stay on page' }));
+    expect(screen.getByRole('textbox', { name: 'What to escalate' })).toHaveValue('History-retained draft');
+    await user.click(screen.getByRole('button', { name: 'Test browser back' }));
+    await user.click(await screen.findByRole('button', { name: 'Discard and continue' }));
+    await waitFor(() => expect(screen.queryByRole('heading', { level: 1, name: 'Team escalation policy' })).not.toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Test browser forward' }));
+    expect((await screen.findByRole('textbox', { name: 'What to escalate' }) as HTMLTextAreaElement).value).toBe(policyResponse.v2_starter.what_to_escalate);
+  });
+
+  test('refresh/hard unload is guarded separately while dirty', async () => {
+    stubBaseHandlers();
+    server.use(http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [manager] })));
+    stubPolicy();
+    const user = userEvent.setup();
+    mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`]);
+    const whatTo = await screen.findByRole('textbox', { name: 'What to escalate' });
+    await user.type(whatTo, ' dirty');
+    const unload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(true);
+  });
+
+  test('worker deep link fails closed without any policy request or policy wording', async () => {
+    stubBaseHandlers();
+    let policyRequests = 0;
+    server.use(
+      http.all(`/api/v1/orgs/${SLUG}/agents/:agentName/team-escalation-policy*`, () => { policyRequests += 1; return new HttpResponse(null, { status: 500 }); }),
+    );
+    mountPolicyRoute([`/orgs/${SLUG}/agents/support_agent/team-escalation-policy`]);
+    expect(await screen.findByText(/Not found/)).toBeInTheDocument();
+    expect(screen.queryByText(/team escalation policy/i)).not.toBeInTheDocument();
+    expect(policyRequests).toBe(0);
+  });
+
+  test.each([
+    ['worker', [{ ...manager, name: 'engineering_manager', role: 'worker' }]],
+    ['other manager', [{ ...manager, name: 'engineering_manager', team: 'support' }]],
+    ['unknown target', [manager]],
+    ['stale or deleted manager', []],
+  ])('%s direct link has no request binding, cache entry/data, policy DOM, or payload', async (kind, roster) => {
+    stubBaseHandlers();
+    const target = kind === 'unknown target' ? 'missing_manager' : 'engineering_manager';
+    server.use(http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: roster })));
+    let networkRequests = 0;
+    server.use(http.all(`/api/v1/orgs/${SLUG}/agents/:agentName/team-escalation-policy*`, () => {
+      networkRequests += 1;
+      return new HttpResponse(null, { status: 500 });
+    }));
+    const { client } = mountPolicyRoute([`/orgs/${SLUG}/agents/${target}/team-escalation-policy`]);
+    expect(await screen.findByText(/Not found/)).toBeInTheDocument();
+    expect(networkRequests).toBe(0);
+    expect(policyCacheEntries(client)).toEqual([]);
+    expect(document.body).not.toHaveTextContent(/team escalation policy|canonical policy|shared local operator|save immutable|activate/i);
+  });
+
+  test('unresolved and errored rosters expose no policy request, cache key/data, DOM, or payload', async () => {
+    stubBaseHandlers();
+    let resolveRoster!: (value: Response) => void;
+    let policyRequests = 0;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () => new Promise<Response>((resolve) => { resolveRoster = resolve; })),
+      http.all(`/api/v1/orgs/${SLUG}/agents/:agentName/team-escalation-policy*`, () => {
+        policyRequests += 1;
+        return HttpResponse.json(policyResponse);
+      }),
+    );
+    const first = mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`]);
+    expect(await screen.findByText('Loading agent…')).toBeInTheDocument();
+    expect(policyRequests).toBe(0);
+    expect(policyCacheEntries(first.client)).toEqual([]);
+    expect(document.body).not.toHaveTextContent(/team escalation policy|canonical policy|shared local operator|save immutable|activate/i);
+
+    resolveRoster(new Response(null, { status: 503 }));
+    expect(await screen.findByText(/Not found/)).toBeInTheDocument();
+    expect(policyRequests).toBe(0);
+    expect(policyCacheEntries(first.client)).toEqual([]);
+    expect(document.body).not.toHaveTextContent(/team escalation policy|canonical policy|shared local operator|save immutable|activate/i);
+  });
+});
+
 describe('AgentsPage — pending tab', () => {
   test('lists pending enrollments and approves one', async () => {
     let approveCalled = false;
@@ -1569,6 +1913,163 @@ describe('AgentDetailPane — recent jobs cross-link', () => {
       expect(screen.getByText('manager')).toBeInTheDocument(),
     );
     expect(screen.queryByText(/Recent jobs/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('AgentDetailPane — cleanup activity', () => {
+  test('renders an agent-scoped task link, distinct statuses, and an unavailable summary', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_head/cleanup-activity`, () =>
+        HttpResponse.json({ activities: [{
+          task_id: 'TASK-CLEANUP-6', status: 'failed', result_status: 'blocked',
+          created_at: '2026-05-20T08:00:00Z', output_summary: '   ',
+        }] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+
+    await waitFor(() => expect(screen.getByText(/Cleanup activity/i)).toBeInTheDocument());
+    const link = await screen.findByRole('link', { name: 'TASK-CLEANUP-6' });
+    expect(link).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-CLEANUP-6`);
+    expect(screen.getByText(/Task: failed.*Result: blocked/)).toBeInTheDocument();
+    expect(screen.getByText('Summary unavailable')).toBeInTheDocument();
+  });
+
+  test('renders a populated hostile, long summary literally after loading', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+    const summary = '<cleanup> ' + 'bounded evidence '.repeat(40);
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_head/cleanup-activity`, async () => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return HttpResponse.json({ activities: [{
+          task_id: 'TASK-CLEANUP-LONG', status: 'failed', result_status: 'blocked',
+          created_at: '2026-05-20T08:00:00Z', output_summary: summary,
+        }] });
+      }),
+    );
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+
+    expect(await screen.findByText(/Loading cleanup activity/i)).toBeInTheDocument();
+    expect(await screen.findByText(summary.trim())).toBeInTheDocument();
+    expect(screen.queryByText('cleanup', { selector: 'cleanup' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'TASK-CLEANUP-LONG' }))
+      .toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-CLEANUP-LONG`);
+  });
+
+  test('shows an error and retries the cleanup activity request', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+    let attempts = 0;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_head/cleanup-activity`, () => {
+        attempts += 1;
+        return attempts === 1
+          ? HttpResponse.json({ detail: 'unavailable' }, { status: 500 })
+          : HttpResponse.json({ activities: [] });
+      }),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+
+    await screen.findByText('Failed to load cleanup activity.');
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await screen.findByText('No cleanup activity for this agent.');
+    expect(attempts).toBe(2);
+  });
+
+  test('retained pane ignores a late previous-agent response before Enter activates the current task', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+    let resolvePrevious!: () => void;
+    let observePreviousRequest!: () => void;
+    const previous = new Promise<void>((resolve) => { resolvePrevious = resolve; });
+    const previousRequest = new Promise<void>((resolve) => { observePreviousRequest = resolve; });
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_head/cleanup-activity`, async () => {
+        observePreviousRequest();
+        await previous;
+        return HttpResponse.json({ activities: [{ task_id: 'TASK-OLD', status: 'failed', result_status: null, created_at: '2026-05-20T08:00:00Z', output_summary: 'old owner' }] });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/agents/support_agent/cleanup-activity`, () =>
+        HttpResponse.json({ activities: [{ task_id: 'TASK-CURRENT', status: 'completed', result_status: 'completed', created_at: '2026-05-21T08:00:00Z', output_summary: 'current owner' }] }),
+      ),
+    );
+    const user = userEvent.setup();
+    const { client } = mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_head`]);
+    await screen.findByText(/Loading cleanup activity/i);
+    await previousRequest;
+    await user.click(await screen.findByRole('button', { name: /support_agent/i }));
+    const task = await screen.findByRole('link', { name: 'TASK-CURRENT' });
+    resolvePrevious();
+    await act(async () => { await previous; });
+    await waitFor(() => {
+      const oldQuery = client.getQueryCache().find({ queryKey: ['cleanup-activity', SLUG, 'engineering_head'] });
+      expect(oldQuery?.state.fetchStatus).toBe('idle');
+      expect(oldQuery?.state.status).toBe('success');
+      expect(oldQuery?.state.data).toEqual(expect.objectContaining({ activities: [expect.objectContaining({ task_id: 'TASK-OLD' })] }));
+    });
+    expect(screen.queryByText('old owner')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'TASK-CURRENT' })).toBeInTheDocument();
+    task.focus();
+    await user.keyboard('{Enter}');
+    expect(await screen.findByRole('heading', { name: 'TASK-CURRENT' })).toBeInTheDocument();
+  });
+
+  test('retained pane ignores a late same-agent response after an org switch', async () => {
+    const OTHER = 'other-org';
+    stubBaseHandlers();
+    stubDetailHandlers();
+    let resolveOld!: () => void;
+    let observeOldRequest!: () => void;
+    const old = new Promise<void>((resolve) => { resolveOld = resolve; });
+    const oldRequest = new Promise<void>((resolve) => { observeOldRequest = resolve; });
+    const otherAgents = { agents: [AGENTS_PAYLOAD.agents[0]] };
+    server.use(
+      http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }, { slug: OTHER, root: '/y' }] })),
+      http.get(`/api/v1/orgs/${OTHER}/agents`, () => HttpResponse.json(otherAgents)),
+      http.get(`/api/v1/orgs/${OTHER}/settings`, () => HttpResponse.json({})),
+      http.get(`/api/v1/orgs/${OTHER}/teams`, () => HttpResponse.json({ teams: [] })),
+      http.get(`/api/v1/orgs/${OTHER}/tasks`, () => HttpResponse.json({ tasks: [] })),
+      http.get(`/api/v1/orgs/${OTHER}/jobs/`, () => HttpResponse.json({ jobs: [] })),
+      http.get(`/api/v1/orgs/${OTHER}/agents/engineering_head/memory/entries/`, () => HttpResponse.json({ entries: [] })),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_head/cleanup-activity`, async () => {
+        observeOldRequest();
+        await old;
+        return HttpResponse.json({ activities: [{ task_id: 'TASK-OLD-ORG', status: 'failed', result_status: null, created_at: '2026-05-20T08:00:00Z', output_summary: 'old org' }] });
+      }),
+      http.get(`/api/v1/orgs/${OTHER}/agents/engineering_head/cleanup-activity`, () =>
+        HttpResponse.json({ activities: [{ task_id: 'TASK-NEW-ORG', status: 'completed', result_status: 'completed', created_at: '2026-05-21T08:00:00Z', output_summary: 'new org' }] }),
+      ),
+    );
+    const user = userEvent.setup();
+    const { client } = mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_head`]);
+    await screen.findByText(/Loading cleanup activity/i);
+    await oldRequest;
+    // Radix Select consults this browser API during its real pointer path;
+    // JSDOM omits it, so provide the harmless false response on this trigger.
+    const orgSwitcher = screen.getByLabelText('Active org');
+    Object.defineProperty(orgSwitcher, 'hasPointerCapture', { value: () => false });
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: () => {} });
+    await user.click(orgSwitcher);
+    await user.click(await screen.findByRole('option', { name: OTHER }));
+    const task = await screen.findByRole('link', { name: 'TASK-NEW-ORG' });
+    expect(task).toHaveAttribute('href', `/orgs/${OTHER}/tasks/TASK-NEW-ORG`);
+    resolveOld();
+    await act(async () => { await old; });
+    await waitFor(() => {
+      const oldQuery = client.getQueryCache().find({ queryKey: ['cleanup-activity', SLUG, 'engineering_head'] });
+      expect(oldQuery?.state.fetchStatus).toBe('idle');
+      expect(oldQuery?.state.status).toBe('success');
+      expect(oldQuery?.state.data).toEqual(expect.objectContaining({ activities: [expect.objectContaining({ task_id: 'TASK-OLD-ORG' })] }));
+    });
+    expect(screen.queryByText('old org')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'TASK-NEW-ORG' })).toBeInTheDocument();
+    task.focus();
+    await user.keyboard('{Enter}');
+    expect(await screen.findByRole('heading', { name: 'TASK-NEW-ORG' })).toBeInTheDocument();
   });
 });
 

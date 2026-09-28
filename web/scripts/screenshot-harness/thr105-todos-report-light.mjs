@@ -157,12 +157,12 @@ from the diff count with deterministic exact bounds.</p>
   </thead>
   <tbody>
     <tr><td>Eyebrow font</td><td>IBM Plex Mono (approved seq177 exception)</td><td>Existing <code>font-mono</code> stack; no asset/dependency/shared-token change</td></tr>
-    <tr><td>Status-pill armed/firing/fired bg</td><td><code>#e3efe5</code></td><td><code>#e3efe5</code></td></tr>
-    <tr><td>Status-pill armed/firing/fired text</td><td><code>#2b5c3a</code></td><td><code>#2b5c3a</code></td></tr>
-    <tr><td>Status-pill failed/timeout bg</td><td><code>#f3e8d6</code></td><td><code>#f3e8d6</code></td></tr>
-    <tr><td>Status-pill failed/timeout text</td><td><code>#575249</code></td><td><code>#575249</code></td></tr>
-    <tr><td>Status-pill paused/cancelled/expired bg</td><td><code>#efece2</code></td><td><code>#efece2</code></td></tr>
-    <tr><td>Status-pill paused/cancelled/expired text</td><td><code>#575249</code></td><td><code>#575249</code></td></tr>
+    <tr class="variance"><td>Status-pill armed/firing/fired bg</td><td><code>#e3efe5</code></td><td>Shared <code>semanticTone</code> positive fill token <code>bg-tier-green-tint</code> (superseded — see V4)</td></tr>
+    <tr class="variance"><td>Status-pill armed/firing/fired text</td><td><code>#2b5c3a</code></td><td>Shared <code>semanticTone</code> positive text token <code>text-status-open</code> (superseded — see V4)</td></tr>
+    <tr class="variance"><td>Status-pill failed/timeout bg</td><td><code>#f3e8d6</code></td><td>Shared <code>semanticTone</code> attention fill token <code>bg-attention-soft</code> (superseded — see V4)</td></tr>
+    <tr class="variance"><td>Status-pill failed/timeout text</td><td><code>#575249</code></td><td>Shared <code>semanticTone</code> attention text token <code>text-attention-text</code> (superseded — see V4)</td></tr>
+    <tr class="variance"><td>Status-pill paused/cancelled/expired bg</td><td><code>#efece2</code></td><td>Shared <code>semanticTone</code> neutral treatment <code>bg-transparent</code> + <code>border-border-default</code> (superseded — see V4)</td></tr>
+    <tr class="variance"><td>Status-pill paused/cancelled/expired text</td><td><code>#575249</code></td><td>Shared <code>semanticTone</code> neutral text token <code>text-status-archived</code> (superseded — see V4)</td></tr>
   </tbody>
 </table>
 
@@ -175,7 +175,7 @@ from the diff count with deterministic exact bounds.</p>
     <tr class="variance"><td>V1</td><td>Eyebrow label font-family</td><td>Reference IBM Plex Mono; build uses existing <code>font-mono</code> stack</td><td>Approved exception per founder ruling seq177 — no asset/dependency/shared-token change</td></tr>
     <tr class="variance"><td>V2</td><td>Page H1 size/weight/tracking</td><td>Reference 33px/500/−0.66px; build uses shared text-display token</td><td>Blocked — requires shared design-system display token change</td></tr>
     <tr class="variance"><td>V3</td><td>Filter-tab / status-pill padding</td><td>1–2px off multiple axes</td><td>Residual; Todos-local adjustment possible but not part of this bounded correction</td></tr>
-    <tr class="variance"><td>V4</td><td>Status-pill exact colors</td><td>Reference hex values match Todos-local <code>statusPillClass</code> mappings</td><td>Conforms — Todos-local exact colors; no shared token change</td></tr>
+    <tr class="variance"><td>V4</td><td>Status-pill exact colors</td><td>Reference hex values are no longer a local implementation contract</td><td>Superseded — status colours now follow shared <code>semanticTone</code> tokens; approved pill geometry remains unchanged</td></tr>
     <tr class="variance"><td>V5</td><td>Detail-page composition</td><td>Structural (next-fire banner, schedule card, activity placement, blockquote)</td><td>Residual; blocked by V8 (missing schema field for distinct H1/normalized-commitment text); structural redesign alone cannot reach reference</td></tr>
     <tr><td>V6</td><td>Edit-dialog button label</td><td>Reference "Edit"; build already uses "Edit"</td><td>Closed</td></tr>
     <tr><td>V7</td><td>Row/detail schedule-description phrasing</td><td>Reference status-aware; build already status-aware</td><td>Closed</td></tr>

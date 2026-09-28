@@ -88,6 +88,124 @@ def test_kb_search_ranks_title_hits(tmp_home, app, org_state, auth_headers):
     assert hits[0]["slug"] == "alipay-refund-endpoint"
 
 
+def test_kb_routes_real_tag_matrix_and_dto_contracts(tmp_home, app, org_state, auth_headers):
+    """Exercise parser projections through the shipping list/detail/reindex routes."""
+    store = KBStore(org_state.root / "kb")
+    cases = [
+        ("array", "tags: [policy, finance]", ["policy", "finance"]),
+        ("scalar", "tags: whole scalar", ["whole scalar"]),
+        ("delimiter", "tags: policy, finance", ["policy, finance"]),
+        ("empty-array", "tags: []", []),
+        ("absent", None, []),
+        ("null-tags", "tags: null", []),
+        ("empty", "tags: ''", []),
+        ("numeric", "tags: 42", []),
+        ("boolean", "tags: true", []),
+        ("mapping", "tags: {unexpected: mapping}", []),
+        ("mixed", "tags: [string, 7]", []),
+    ]
+    sources: dict[str, bytes] = {}
+    for slug, tags_line, _expected_tags in cases:
+        tags = f"{tags_line}\n" if tags_line else ""
+        source = (
+            f"---\nslug: {slug}\ntitle: {slug} title\ntype: reference\ntopic: matrix\n"
+            f"{tags}---\n\n# {slug}\n"
+        )
+        store.path_for(slug).write_text(source)
+        sources[slug] = source.encode()
+    scalar_source = (
+        "---\nslug: scalar-search\ntitle: Unrelated title\ntype: reference\n"
+        "topic: unrelated\ntags: policy, finance\n---\n\nNo query in this body.\n"
+    )
+    store.path_for("scalar-search").write_text(scalar_source)
+    sources["scalar-search"] = scalar_source.encode()
+
+    client = TestClient(app)
+    expected = {slug: tags for slug, _raw, tags in cases} | {"scalar-search": ["policy, finance"]}
+    for phase in ("before", "after"):
+        listed = client.get("/api/v1/orgs/alpha/kb", headers=auth_headers)
+        assert listed.status_code == 200
+        entries = {entry["slug"]: entry for entry in listed.json()["entries"]}
+        for slug, expected_tags in expected.items():
+            assert set(entries[slug]) == {"slug", "title", "type", "topic", "tags", "updated_at"}
+            assert entries[slug]["tags"] == expected_tags
+            detail = client.get(f"/api/v1/orgs/alpha/kb/{slug}", headers=auth_headers)
+            assert detail.status_code == 200
+            assert detail.json()["tags"] == expected_tags
+        if phase == "before":
+            reindex = client.post("/api/v1/orgs/alpha/kb/reindex", headers=auth_headers)
+            assert reindex.status_code == 200
+            assert reindex.json() == {"ok": True}
+
+    search = client.get(
+        "/api/v1/orgs/alpha/kb/search?q=policy%2C%20finance", headers=auth_headers,
+    )
+    assert search.status_code == 200
+    assert search.json() == {"hits": [
+        {
+            "slug": "delimiter", "title": "delimiter title",
+            "snippet": "topic=matrix tags=['policy, finance']", "score": 2,
+        },
+        {
+            "slug": "scalar-search", "title": "Unrelated title",
+            "snippet": "topic=unrelated tags=['policy, finance']", "score": 2,
+        },
+    ]}
+    assert all(path.read_bytes() == sources[slug] for slug, path in (
+        (slug, store.path_for(slug)) for slug in sources
+    ))
+
+
+def test_kb_duplicate_route_is_tag_sensitive_without_emitting_tags(
+    tmp_home, app, org_state, auth_headers,
+):
+    store = KBStore(org_state.root / "kb")
+    sources = {
+        "array-duplicate": (
+        "---\nslug: array-duplicate\ntitle: Entirely unrelated heading\ntype: reference\n"
+        "topic: unrelated\ntags: [policy, finance]\n---\n\nNo query in this body.\n"
+        ).encode(),
+        "scalar-duplicate": (
+        "---\nslug: scalar-duplicate\ntitle: Another unrelated heading\ntype: reference\n"
+        "topic: unrelated\ntags: policy, finance\n---\n\nNo query in this body.\n"
+        ).encode(),
+    }
+    for slug, source in sources.items():
+        store.path_for(slug).write_bytes(source)
+    client = TestClient(app)
+    expected_tags = {"array-duplicate": ["policy", "finance"], "scalar-duplicate": ["policy, finance"]}
+    for phase in ("before", "after"):
+        listed = client.get("/api/v1/orgs/alpha/kb", headers=auth_headers)
+        assert listed.status_code == 200
+        entries = {entry["slug"]: entry for entry in listed.json()["entries"]}
+        for slug, tags in expected_tags.items():
+            assert entries[slug]["tags"] == tags
+            detail = client.get(f"/api/v1/orgs/alpha/kb/{slug}", headers=auth_headers)
+            assert detail.status_code == 200
+            assert detail.json()["tags"] == tags
+        if phase == "before":
+            assert client.post("/api/v1/orgs/alpha/kb/reindex", headers=auth_headers).json() == {"ok": True}
+    included = client.post(
+        "/api/v1/orgs/alpha/kb",
+        json=_add_body(
+            slug="included", title="Completely different title", topic="other",
+            tags=["policy", "finance"], body="No overlap in title or body.\n",
+        ), headers=auth_headers,
+    )
+    assert included.status_code == 409
+    candidate = included.json()["detail"]["candidates"]
+    assert candidate == [{"slug": "array-duplicate", "title": "Entirely unrelated heading", "similarity": 0.346}]
+    excluded = client.post(
+        "/api/v1/orgs/alpha/kb",
+        json=_add_body(
+            slug="excluded", title="Still completely distinct", topic="other",
+            tags=["policy, finance"], body="No overlap in title or body.\n",
+        ), headers=auth_headers,
+    )
+    assert excluded.status_code == 200, excluded.text
+    assert all(store.path_for(slug).read_bytes() == source for slug, source in sources.items())
+
+
 def test_kb_routes_reject_when_idle(tmp_home, app_idle, auth_headers):
     client = TestClient(app_idle)
     r = client.get("/api/v1/orgs/alpha/kb", headers=auth_headers)

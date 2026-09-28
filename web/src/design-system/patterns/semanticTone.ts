@@ -15,7 +15,7 @@
  *   2. semantic value → tone. Covers the vocabulary the design mockups name:
  *      kb type (sop/reference/ruling), thread state (open/archived), and
  *      job/audit/dashboard outcomes (exit codes, done/merged/superseded/
- *      accepted). Unknown values fall back to `neutral` — an explicit,
+ *      accepted), and all Todos schedule states. Unknown values fall back to `neutral` — an explicit,
  *      safe grey default.
  *
  * Pure data + pure functions: no React, no hooks, no `.tsx` — so it carries no
@@ -50,6 +50,15 @@ const VALUE_TONE: Record<string, Tone> = {
   merged: 'info',
   superseded: 'neutral',
   accepted: 'positive',
+  // Todos schedule status
+  armed: 'positive',
+  firing: 'positive',
+  fired: 'positive',
+  failed: 'attention',
+  timeout: 'attention',
+  paused: 'neutral',
+  cancelled: 'neutral',
+  expired: 'neutral',
 };
 
 /**

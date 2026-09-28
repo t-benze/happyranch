@@ -1249,7 +1249,7 @@ class TestGuardedMergeLegacyEvidenceRejection:
 class TestGuardedMergeMergeEvidenceContract:
     """Guarded-merge integration for the canonical merge-evidence contract.
 
-    The contract is canonical in protocol/00-completion-contract.md
+    The contract is canonical in docs/agent-guides/orchestrator-contracts.md
     ("Merge-evidence contract", THR-204): a NON-NULL structured `verdict` is
     primary and must be a canonical token; serialized `null` (the durable
     producer's representation of absence — `get_recall_payload` always emits

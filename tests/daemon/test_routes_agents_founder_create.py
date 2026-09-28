@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from fastapi.testclient import TestClient
+from unittest.mock import patch
 
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator import prompt_loader
@@ -178,6 +180,109 @@ def test_audit_row_written_with_founder_actor(client_with_runtime) -> None:
     # `log_agent_managed` writes the actor into the audit_log.agent column
     # (see infrastructure/audit_logger.py:534).
     assert last["agent"] == "founder"
+
+
+def test_founder_create_refreshes_bootstrap_inputs_after_clone_winner(
+    client_with_runtime, monkeypatch,
+) -> None:
+    """A real accepted update wins while founder-create cloning is suspended."""
+    from runtime.daemon.routes import agents as agents_mod
+
+    _, org = client_with_runtime
+    paths = OrgPaths(root=org.root)
+    arrived, release = asyncio.Event(), asyncio.Event()
+    real_to_thread = agents_mod.asyncio.to_thread
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as mock_builder:
+        clone = mock_builder.return_value.clone_repo
+
+        async def controlled_to_thread(func, *args, **kwargs):
+            if func is clone:
+                arrived.set()
+                await asyncio.wait_for(release.wait(), timeout=1)
+                return True
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(agents_mod.asyncio, "to_thread", controlled_to_thread)
+
+        async def exercise() -> None:
+            create = asyncio.create_task(agents_mod.founder_create_agent(
+                "alpha", agents_mod.FounderCreateAgentBody(
+                    **_base_worker("fresh_founder"), repos={"docs": "https://example.test/docs.git"},
+                ), org,
+            ))
+            await asyncio.wait_for(arrived.wait(), timeout=1)
+            org.sessions.set_active("TASK-100", "engineering_head", "sess-eh-test")
+            revision = prompt_loader.agent_revision(paths, "fresh_founder")
+            assert revision is not None
+            assert await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+                action="update", name="fresh_founder", task_id="TASK-100",
+                session_id="sess-eh-test", expected_revision=revision,
+                system_prompt="winner prompt\n", executor="codex",
+                description="winner", repos={"winner": "/winner"},
+            ), org) == {"ok": True}
+            winning_bytes = (paths.agents_dir / "fresh_founder.md").read_bytes()
+            release.set()
+            assert await asyncio.wait_for(create, timeout=1) == {
+                "name": "fresh_founder", "team": "engineering", "role": "worker",
+            }
+            assert (paths.agents_dir / "fresh_founder.md").read_bytes() == winning_bytes
+
+        asyncio.run(exercise())
+        bootstrap = mock_builder.return_value.ensure_workspace_ready.call_args
+        assert bootstrap.args[2] == "winner prompt\n"
+        assert bootstrap.kwargs["provider"] == "codex"
+
+    winner = prompt_loader.load_agent(paths, "fresh_founder")
+    assert winner is not None and winner.repos == {"winner": "/winner"}
+    audits = org.db.get_audit_logs("TASK-100")
+    assert len([row for row in audits if row["action"] == "agent_managed"]) == 1
+
+
+def test_founder_create_refuses_missing_canonical_after_suspended_clone(
+    client_with_runtime, monkeypatch,
+) -> None:
+    """Controlled removal is a negative injection, not a supported writer."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as agents_mod
+
+    _, org = client_with_runtime
+    paths = OrgPaths(root=org.root)
+    arrived, release = asyncio.Event(), asyncio.Event()
+    real_to_thread = agents_mod.asyncio.to_thread
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as mock_builder:
+        clone = mock_builder.return_value.clone_repo
+
+        async def controlled_to_thread(func, *args, **kwargs):
+            if func is clone:
+                arrived.set()
+                await asyncio.wait_for(release.wait(), timeout=1)
+                return True
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(agents_mod.asyncio, "to_thread", controlled_to_thread)
+
+        async def exercise() -> None:
+            create = asyncio.create_task(agents_mod.founder_create_agent(
+                "alpha", agents_mod.FounderCreateAgentBody(
+                    **_base_worker("missing_founder"), repos={"docs": "https://example.test/docs.git"},
+                ), org,
+            ))
+            await asyncio.wait_for(arrived.wait(), timeout=1)
+            (paths.agents_dir / "missing_founder.md").unlink()
+            release.set()
+            with pytest.raises(HTTPException) as raised:
+                await asyncio.wait_for(create, timeout=1)
+            assert raised.value.status_code == 404
+            assert raised.value.detail == "agent 'missing_founder' not found"
+
+        asyncio.run(exercise())
+        mock_builder.return_value.ensure_workspace_ready.assert_not_called()
+        mock_builder.return_value.create_agent_dirs.assert_not_called()
+
+    assert prompt_loader.load_agent(paths, "missing_founder") is None
+    assert not org.db.get_audit_logs("founder")
 
 
 import os

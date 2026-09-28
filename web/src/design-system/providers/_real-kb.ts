@@ -62,8 +62,8 @@ function useAddKBEntry(): MutationLike<AddKBEntryArgs, AddKBEntryResult> {
 }
 
 export const realKbApi: KbApi = {
-  useKBList: useKBList as KbApi['useKBList'],
-  useKBSearch: useKBSearch as KbApi['useKBSearch'],
+  useKBList,
+  useKBSearch,
   useKBEntry: useKBEntry as KbApi['useKBEntry'],
   useKBStats,
   useAddKBEntry,

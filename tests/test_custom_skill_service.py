@@ -40,3 +40,24 @@ def test_rule_replacement_supersedes_prior_set_and_records_one_audit_event():
                           newly_visible=[], newly_hidden=["dev"])
     assert conn.execute("SELECT count(*) FROM custom_skill_eligibility_rules WHERE superseded_at IS NULL").fetchone()[0] == 1
     assert conn.execute("SELECT count(*) FROM custom_skill_eligibility_events").fetchone()[0] == 2
+
+
+def test_create_version_threads_thr262_marker_and_keeps_legacy_default():
+    conn = _db()
+    new = service.create_version(
+        conn, skill_id="custom:marker", skill_md="---\nname: marker\n---\n",
+        actor_kind="human", actor="founder", artifact_key="marker",
+        validation={"ok": True, "errors": []}, validator_version="THR-262/1.0.0",
+    )
+    assert conn.execute(
+        "SELECT validator_version FROM custom_skill_versions WHERE id=?", (new[0],)
+    ).fetchone()[0] == "THR-262/1.0.0"
+    legacy_default = service.create_version(
+        conn, skill_id="custom:marker", skill_md="# legacy\n",
+        actor_kind="human", actor="founder", artifact_key="legacy",
+        validation={"ok": False, "errors": ["old"]},
+    )
+    assert conn.execute(
+        "SELECT validator_version FROM custom_skill_versions WHERE id=?",
+        (legacy_default[0],),
+    ).fetchone()[0] == "THR-055/1.0.0"

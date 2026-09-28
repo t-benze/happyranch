@@ -135,12 +135,13 @@ def snapshot(
     pending = next_start != running_pair
     return {
         "running_at_daemon_start": running_pair,
-        "running_provenance": "startup-resolved settings snapshot",
+        "running_provenance": "Resolved when the HappyRanch service started",
         "persisted_yaml": persisted,
         "next_start": next_start,
         "environment_shadowed": shadowed,
         "environment_warning": (
-            "Environment overrides win over YAML; restart alone will not make YAML win."
+            "An environment setting takes priority over the saved configuration. "
+            "Restarting HappyRanch will not make the saved value take effect."
             if shadowed else None
         ),
         "producer_envelope": capacity_context["producer_envelope"],
@@ -151,8 +152,8 @@ def snapshot(
         "restart_required": pending,
         "restart_pending": pending,
         "guidance": {
-            "queue_workers": "Empirical starting guidance: 4–6; tune from queue delay and receipts.",
-            "host_global_session_cap": "Empirical starting guidance: 11–13; not an aggregate host bound.",
+            "queue_workers": "Suggested starting range: 4–6. Adjust based on task wait times. This is guidance, not a required range.",
+            "host_global_session_cap": "Suggested starting range: 11–13. This applies to HappyRanch supervised sessions, not every process on the machine. The range is not enforced.",
             "enforced": False,
         },
         "authorization": "Local operator; daemon bearer required. Bearer authorization cannot be attributed to a verified person.",
@@ -165,13 +166,13 @@ def snapshot(
 def _capacity_warnings(cap: int, envelope: int) -> list[str]:
     if cap < envelope:
         return [
-            f"Intentional backpressure: host cap {cap} is below producer envelope {envelope}; "
-            "some producer slots cannot run concurrently. Saving remains permitted."
+            f"The overall session limit ({cap}) is lower than the total worker slots ({envelope}). "
+            "Under high demand, some sessions may wait. You can still save this setting."
         ]
     if cap > envelope:
         return [
-            f"Host cap {cap} is above producer envelope {envelope}; unused admission capacity "
-            "does not create additional producers."
+            f"The overall session limit ({cap}) is higher than the total worker slots ({envelope}). "
+            "Raising this limit alone does not add worker slots."
         ]
     return []
 
@@ -412,7 +413,7 @@ def save(
                 "capacity configuration was published, but its terminal audit receipt could not be persisted; reload and inspect before retrying",
                 artifact_state="absent",
             ) from exc
-        result["message"] = "Saved for next daemon restart; no running capacity was changed."
+        result["message"] = "Saving does not change running sessions."
         transaction.advance(_PublicationState.SNAPSHOT_COMPLETE, _PublicationState.RETURNED)
         return result
 

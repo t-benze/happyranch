@@ -23,11 +23,7 @@ import { useMemo, useState, useCallback, useRef } from 'react';
 import { useUsageByAgent, useUsageByThread, useUsageByModel } from '@/hooks/usage';
 import { useAgentsList } from '@/hooks/agents';
 import { cn } from '@/lib/utils';
-// classifyModel is the single canonical model-label renderer; Usage and
-// Dashboard must never disagree. Moving it out of @/features/dashboard
-// would be a cosmetic refactor that adds no safety value.
-// eslint-disable-next-line no-restricted-imports
-import { classifyModel } from '@/features/dashboard/topTokens';
+import { classifyModel } from '@/lib/modelClassification';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { Button } from '@/design-system/primitives/Button';
 import { PageHeader } from '@/design-system/patterns/PageHeader';
@@ -585,9 +581,8 @@ interface TopThreadRow {
   cacheReadTokens: number;
 }
 
-/** Rank threads by totalTokens DESC, slice to top N. Uses the shared
- *  classifyModel helper from @/features/dashboard/topTokens so Usage and the
- *  dashboard never disagree about a row's model label. */
+/** Rank threads by totalTokens DESC, slice to top N. Uses the neutral shared
+ *  classifier so Usage and the dashboard never disagree about model labels. */
 function rankTopThreads(rollup: TokenUsageRollup[], topN: number): TopThreadRow[] {
   return rollup
     .map((r): TopThreadRow => ({

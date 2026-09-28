@@ -77,11 +77,11 @@ class TestUnifiedMaterializationPreservesSystemContracts:
 
     @pytest.fixture(autouse=True)
     def _set_skills_src(self, monkeypatch):
-        """Point _SKILLS_SRC at the real protocol/skills for system contract resolution."""
+        """Point _SKILLS_SRC at the real runtime/skills/bundled for system contract resolution."""
         import runtime.orchestrator.workspace_adapters as wa
         from pathlib import Path
         repo_root = Path(__file__).resolve().parent.parent
-        monkeypatch.setattr(wa, "_SKILLS_SRC", repo_root / "protocol" / "skills")
+        monkeypatch.setattr(wa, "_SKILLS_SRC", repo_root / "runtime" / "skills" / "bundled")
 
     def test_system_contracts_survive_after_managed_reconciliation(
         self, tmp_path: Path, test_settings: Settings,
@@ -146,11 +146,11 @@ class TestUnifiedMaterializationPreservesSystemContracts:
         claude_start_task = workspace / ".claude" / "skills" / "start-task"
         # start-task does NOT require repos, so it should always be materialized
         # for task context. However, if the source tree at _SKILLS_SRC doesn't
-        # have the skill directory, it won't appear. The real protocol/skills
+        # have the skill directory, it won't appear. The real runtime/skills/bundled
         # must be available.
         if not claude_start_task.exists():
             # The skill source wasn't found — this is expected in isolated
-            # test environments where protocol/skills is not under tmp_path.
+            # test environments where runtime/skills/bundled is not under tmp_path.
             # This test documents the expected behavior: when the source
             # IS available, the symlink MUST exist.
             claude_root = workspace / ".claude" / "skills"
@@ -187,6 +187,50 @@ class TestUnifiedMaterializationPreservesSystemContracts:
 
         # Should not crash — bootstrap is a valid ordinary context
 
+    def test_manage_agent_release_skill_delivers_revision_bound_update_guidance(
+        self, tmp_path: Path,
+    ) -> None:
+        """Both shipping roots receive the revision-present release package."""
+        repo_root = Path(__file__).resolve().parent.parent
+        settings = Settings(project_root=repo_root)
+        org_root = tmp_path / "org"
+        (org_root / "org").mkdir(parents=True)
+        (org_root / "org" / "config.yaml").write_text(json.dumps({
+            "skills": {
+                "agents": {
+                    "engineering_manager": {
+                        "allow": ["hr:manage-agent"], "deny": [],
+                    },
+                },
+            },
+        }))
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        specs = materialize_workspace_skills(
+            workspace, settings,
+            slug="delivery-fixture", context="task", provider="codex",
+            agent_name="engineering_manager", team="engineering",
+            skills_root=repo_root / "runtime" / "skills", org_root=org_root,
+        )
+
+        assert any(spec["slug"] == "manage-agent" for spec in specs)
+        intended = (repo_root / "runtime" / "skills" / "manage-agent" / "SKILL.md").read_bytes()
+        for provider_root in (".claude", ".agents"):
+            delivered = (workspace / provider_root / "skills" / "manage-agent" / "SKILL.md").read_bytes()
+            assert delivered == intended
+            assert b"expected_revision_required" in delivered
+            assert b"stale_agent_revision" in delivered
+            assert b"Never fetch a newer revision merely to bless" in delivered
+
+            update_example = re.search(
+                rb"\*\*Update an existing agent:\*\*\s*```json\s*(\{.*?\})\s*```",
+                delivered, re.DOTALL,
+            )
+            assert update_example is not None
+            example = json.loads(update_example.group(1))
+            assert example["expected_revision"] == "<revision from this agent's GET /agents row>"
+
 
 # ── Finding 5: Cutover completeness ───────────────────────────────────
 
@@ -221,8 +265,8 @@ class TestCutoverCompleteness:
 
         # Create system-contract source dirs so materialize_workspace_skills
         # can resolve them (required by the fail-closed source-existence check).
-        proto_skills = tmp_path / "protocol" / "skills"
-        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos"):
+        proto_skills = tmp_path / "runtime" / "skills" / "bundled"
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "workspace-cleanup"):
             (proto_skills / sid).mkdir(parents=True, exist_ok=True)
             (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {{ORG_SLUG}}.\n")
 
@@ -239,7 +283,7 @@ class TestCutoverCompleteness:
         if claude.is_dir():
             # Skills were materialized — verify canonical delivery.
             # Each skill should be a symlink (or directory), not a
-            # wholesale copy of the entire protocol/skills/ tree.
+            # wholesale copy of the entire runtime/skills/bundled/ tree.
             children = list(claude.iterdir())
             # The start-task skill should be present.
             start_task = claude / "start-task" / "SKILL.md"
@@ -341,8 +385,8 @@ class TestOrgSlugRemediation:
 
         # Create system-contract source dirs so materialize_workspace_skills
         # can resolve them (required by the fail-closed source-existence check).
-        proto_skills = tmp_path / "protocol" / "skills"
-        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos"):
+        proto_skills = tmp_path / "runtime" / "skills" / "bundled"
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "workspace-cleanup"):
             (proto_skills / sid).mkdir(parents=True, exist_ok=True)
             (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {{ORG_SLUG}}.\n")
 

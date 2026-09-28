@@ -24,89 +24,82 @@ import tseslint from "typescript-eslint";
 import react from "eslint-plugin-react";
 import reactHooks from "eslint-plugin-react-hooks";
 import tailwind from "eslint-plugin-tailwindcss";
+import path from "node:path";
 
-const frozenFeatureArbitraryValues = [
-  {
-    file: "src/features/dreams/DreamsPage.tsx",
-    value: "text-[10px]",
-    count: 1,
-    reason: "Known live status-pill residue; replacement is owned by the approved text-scale cleanup.",
-  },
-  {
-    file: "src/features/dreams/DreamDetailPane.tsx",
-    value: "text-[10px]",
-    count: 1,
-    reason: "Known live status-pill residue; replacement is owned by the approved text-scale cleanup.",
-  },
-  {
-    file: "src/features/work-hours-config/WakesView.tsx",
-    value: "text-[10px]",
-    count: 1,
-    reason: "Known live status-pill residue; replacement is owned by the approved text-scale cleanup.",
-  },
-  {
-    file: "src/features/schedule/SchedulePage.tsx",
-    value: "text-[10px]",
-    count: 1,
-    reason: "Known retired-source residue; removal is owned by the approved retirement cleanup.",
-  },
-];
+const FEATURE_MARKER = `${path.sep}src${path.sep}features${path.sep}`;
 
-const localBaselinePlugin = {
+function featureDomainForPath(filePath) {
+  const normalized = path.resolve(filePath);
+  const markerIndex = normalized.lastIndexOf(FEATURE_MARKER);
+  if (markerIndex === -1) return null;
+  return normalized
+    .slice(markerIndex + FEATURE_MARKER.length)
+    .split(path.sep)[0] || null;
+}
+
+function importedFeatureDomain(importerPath, specifier, cwd) {
+  if (specifier.startsWith("@/features/")) {
+    return featureDomainForPath(
+      path.resolve(cwd, "src", specifier.slice("@/".length)),
+    );
+  }
+  if (specifier.startsWith(".")) {
+    return featureDomainForPath(path.resolve(path.dirname(importerPath), specifier));
+  }
+  return null;
+}
+
+const featureBoundariesPlugin = {
   rules: {
-    "baselined-no-arbitrary-value": {
-      meta: {
-        ...tailwind.rules["no-arbitrary-value"].meta,
-        schema: [{
-          type: "object",
-          required: ["value"],
-          properties: { value: { type: "string" } },
-          additionalProperties: false,
-        }],
-      },
-      create(context) {
-        const [{ value }] = context.options;
-        const filteredContext = Object.create(context);
-        Object.defineProperty(filteredContext, "report", {
-          value(descriptor) {
-            if (descriptor.data?.classname !== value) {
-              context.report(descriptor);
-            }
-          },
-        });
-        return tailwind.rules["no-arbitrary-value"].create(filteredContext);
-      },
-    },
-    "frozen-tailwind-arbitrary-baseline": {
+    "no-cross-feature-imports": {
       meta: {
         type: "problem",
-        schema: [{
-          type: "object",
-          required: ["value", "count", "reason"],
-          properties: {
-            value: { type: "string" },
-            count: { type: "integer", minimum: 0 },
-            reason: { type: "string", minLength: 1 },
-          },
-          additionalProperties: false,
-        }],
+        docs: {
+          description: "prevent static imports and re-exports across feature domains",
+        },
+        schema: [],
         messages: {
-          changed: "Frozen arbitrary-value baseline for '{{value}}' expected {{expected}} occurrence(s), found {{actual}}. {{reason}}",
+          crossFeature:
+            "Cross-feature static dependency forbidden: {{importer}} -> {{target}}. Share through @/lib, @/shared, @/design-system, or @/hooks.",
         },
       },
       create(context) {
-        const [{ value, count, reason }] = context.options;
+        const importerPath = context.filename;
+        const importerDomain = featureDomainForPath(importerPath);
+        if (importerDomain == null) return {};
+
+        function checkSource(sourceNode) {
+          const specifier = sourceNode?.value;
+          if (typeof specifier !== "string") return;
+          const targetDomain = importedFeatureDomain(
+            importerPath,
+            specifier,
+            context.cwd,
+          );
+          if (targetDomain == null || targetDomain === importerDomain) return;
+          const importer = path
+            .relative(context.cwd, importerPath)
+            .split(path.sep)
+            .join("/");
+          context.report({
+            node: sourceNode,
+            messageId: "crossFeature",
+            data: { importer, target: specifier },
+          });
+        }
+
         return {
-          Program(node) {
-            const source = context.sourceCode.text;
-            const actual = source.split(value).length - 1;
-            if (actual !== count) {
-              context.report({
-                node,
-                messageId: "changed",
-                data: { value, expected: count, actual, reason },
-              });
-            }
+          ImportDeclaration(node) {
+            checkSource(node.source);
+          },
+          ExportNamedDeclaration(node) {
+            checkSource(node.source);
+          },
+          ExportAllDeclaration(node) {
+            checkSource(node.source);
+          },
+          TSImportEqualsDeclaration(node) {
+            checkSource(node.moduleReference?.expression);
           },
         };
       },
@@ -190,7 +183,11 @@ export default tseslint.config(
   // source of truth).
   {
     files: ["src/features/**/*.{ts,tsx}"],
+    plugins: {
+      "feature-boundaries": featureBoundariesPlugin,
+    },
     rules: {
+      "feature-boundaries/no-cross-feature-imports": "error",
       "no-restricted-imports": ["error", {
         patterns: [
           {
@@ -295,18 +292,4 @@ export default tseslint.config(
       "tailwindcss/no-arbitrary-value": "error",
     },
   },
-
-  // Keep the instrument green while four pre-existing text-scale residues are
-  // removed by their separately approved cleanup. Each exception is bound to
-  // one exact file/value/count: additions fail, and deletions deliberately make
-  // the baseline stale so this list must strictly shrink with the cleanup.
-  ...frozenFeatureArbitraryValues.map(({ file, value, count, reason }) => ({
-    files: [file],
-    plugins: { local: localBaselinePlugin },
-    rules: {
-      "tailwindcss/no-arbitrary-value": "off",
-      "local/baselined-no-arbitrary-value": ["error", { value }],
-      "local/frozen-tailwind-arbitrary-baseline": ["error", { value, count, reason }],
-    },
-  })),
 );

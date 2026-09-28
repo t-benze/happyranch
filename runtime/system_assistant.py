@@ -5,6 +5,7 @@ from enum import StrEnum
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path
+import os
 import shutil
 
 import yaml
@@ -116,8 +117,36 @@ def _managed_dir_invalid_detail(paths: SystemAssistantPaths) -> str | None:
     return _managed_dir_detail(paths, require_exists=True)
 
 
-def _bootstrap_file_invalid_detail(path: Path, filename: str) -> str | None:
+def _is_canonical_claude_instruction_link(path: Path) -> bool:
+    """True when *path* is the raw relative ``CLAUDE.md -> AGENTS.md`` link.
+
+    THR-262 Slice B: the assistant instruction pair admits exactly this one
+    same-workspace relative link whose target is a regular file; the generic
+    symlink rejection for every other path is unchanged.
+    """
+    import stat as _stat
+
+    target = path.parent / "AGENTS.md"
+    try:
+        if os.readlink(path) != "AGENTS.md":
+            return False
+        if not _stat.S_ISREG(os.lstat(target).st_mode):
+            return False
+        return os.path.realpath(path) == os.path.realpath(target)
+    except OSError:
+        return False
+
+
+def _bootstrap_file_invalid_detail(
+    path: Path, filename: str, *, allow_canonical_link: bool = False,
+) -> str | None:
     if path.is_symlink():
+        if (
+            allow_canonical_link
+            and filename == "CLAUDE.md"
+            and _is_canonical_claude_instruction_link(path)
+        ):
+            return None
         return f"assistant bootstrap file {filename} must not be a symlink"
     if not path.exists():
         return f"assistant bootstrap file {filename} is missing"
@@ -251,17 +280,18 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
                 else agent_invalid_detail
             ),
         )
-    expected = "CLAUDE.md" if config.selected_executor == "claude" else "AGENTS.md"
-    prompt_invalid_detail = _bootstrap_file_invalid_detail(
-        paths.workspace / expected,
-        expected,
-    )
-    if prompt_invalid_detail is not None:
+    # THR-262 Slice B: validate the canonical instruction pair for BOTH
+    # executor families — regular AGENTS.md plus a raw relative
+    # CLAUDE.md -> AGENTS.md resolving to it.
+    from runtime.orchestrator.workspace_adapters import instruction_pair_refusal
+
+    pair_refusal = instruction_pair_refusal(paths.workspace)
+    if pair_refusal is not None:
         return AssistantStatus(
             state=AssistantState.STALE_OR_BROKEN,
             selected_executor=config.selected_executor,
             workspace_path=config.workspace_path,
-            detail=prompt_invalid_detail,
+            detail=f"assistant instruction pair is not canonical: {pair_refusal}",
         )
     learnings_index_invalid_detail = _learnings_index_invalid_detail(
         paths.learnings_dir / "_index.md",
@@ -313,7 +343,7 @@ Authority boundary:
 
 Knowledge:
 - Start with `happyranch/README.md` in this workspace.
-- Use the copied HappyRanch guides under `happyranch/docs/`, `happyranch/protocol/`,
+- Use the copied HappyRanch guides under `happyranch/docs/`, `happyranch/runtime/skills/bundled/`,
   and `happyranch/skills/` as your local source of truth.
 - Prefer `happyranch` CLI commands when inspecting or changing a runtime.
 """
@@ -339,6 +369,29 @@ Steps:
 After registration succeeds, this file is replaced with your operating
 instructions.
 """
+
+
+def _write_assistant_instruction_pair(workspace: Path, prompt: str) -> None:
+    """Converge the assistant instruction pair through the shared writer.
+
+    THR-262 Slice B: both assistant registration and bootstrap must use the
+    already-approved canonical instruction-pair classifier/writer so divergent
+    regular ``AGENTS.md``/``CLAUDE.md`` bytes are never overwritten or unlinked
+    without a verified preservation copy, links are never written through, and
+    the pair-wide preservation barrier precedes either mutation. The shared
+    writer's ``InstructionPairConflict`` is surfaced as ``ValueError`` so the
+    assistant routes keep their documented ``assistant_workspace_invalid``
+    error contract.
+    """
+    from runtime.orchestrator.workspace_adapters import (
+        InstructionPairConflict,
+        write_canonical_instruction_pair,
+    )
+
+    try:
+        write_canonical_instruction_pair(workspace, prompt)
+    except InstructionPairConflict as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def prepare_assistant_registration_workspace(runtime_root: Path) -> None:
@@ -373,8 +426,7 @@ def prepare_assistant_registration_workspace(runtime_root: Path) -> None:
         "assistant workspace is not a directory",
     )
     prompt = _registration_prompt()
-    (paths.workspace / "CLAUDE.md").write_text(prompt)
-    (paths.workspace / "AGENTS.md").write_text(prompt)
+    _write_assistant_instruction_pair(paths.workspace, prompt)
 
 
 def clear_assistant_config(runtime_root: Path) -> None:
@@ -390,7 +442,9 @@ def _reject_symlink(path: Path, detail: str) -> None:
 
 
 def _reject_existing_invalid_bootstrap_file(path: Path, filename: str) -> None:
-    invalid_detail = _bootstrap_file_invalid_detail(path, filename)
+    invalid_detail = _bootstrap_file_invalid_detail(
+        path, filename, allow_canonical_link=(filename == "CLAUDE.md"),
+    )
     if invalid_detail is None or invalid_detail.endswith(" is missing"):
         return
     raise ValueError(invalid_detail)
@@ -416,20 +470,14 @@ _KNOWLEDGE_SOURCES = [
         "docs/agent-guides/features-and-invariants.md",
         "docs/agent-guides/features-and-invariants.md",
     ),
-    ("protocol/00-completion-contract.md", "protocol/00-completion-contract.md"),
-    ("protocol/05-runtime-blueprint.md", "protocol/05-runtime-blueprint.md"),
-    ("protocol/05b-agent-runtime.md", "protocol/05b-agent-runtime.md"),
-    ("protocol/05c-orchestrator.md", "protocol/05c-orchestrator.md"),
-    ("protocol/06-knowledge-base.md", "protocol/06-knowledge-base.md"),
-    ("protocol/skills/reflection/SKILL.md", "protocol/skills/reflection/SKILL.md"),
-    ("protocol/skills/jobs/SKILL.md", "protocol/skills/jobs/SKILL.md"),
     ("skills/happyranch/SKILL.md", "skills/happyranch/SKILL.md"),
 ]
 _KNOWLEDGE_PACKAGE = "runtime.system_knowledge"
+_BUNDLED_KNOWLEDGE_SKILLS = ("reflection", "jobs")
 _SOURCE_ROOT_MARKERS = (
     "pyproject.toml",
     "docs/agent-guides/runtime-and-configuration.md",
-    "protocol/05-runtime-blueprint.md",
+    "runtime/config.py",
 )
 
 
@@ -518,13 +566,21 @@ def _write_knowledge_pack(paths: SystemAssistantPaths) -> None:
     root = _knowledge_source_root()
     copied: list[str] = []
     missing: list[str] = []
-    for source_rel, dest_rel in _KNOWLEDGE_SOURCES:
-        source = root / source_rel
+    from runtime.skills.sources import bundled_skills_dir
+
+    # Reference copies come from the same release-owned assets as org skills.
+    # Do not package a second source tree or use assistant copies for launches.
+    sources = [(root / source_rel, dest_rel) for source_rel, dest_rel in _KNOWLEDGE_SOURCES]
+    sources.extend(
+        (bundled_skills_dir() / slug / "SKILL.md", f"runtime/skills/bundled/{slug}/SKILL.md")
+        for slug in _BUNDLED_KNOWLEDGE_SKILLS
+    )
+    for source, dest_rel in sources:
         destination = paths.knowledge_dir / dest_rel
         if _copy_knowledge_file(source, destination, base=paths.knowledge_dir):
             copied.append(dest_rel)
         else:
-            missing.append(source_rel)
+            missing.append(dest_rel)
     index = "\n".join(
         [
             "# HappyRanch System Assistant Knowledge",
@@ -546,7 +602,7 @@ def _write_knowledge_pack(paths: SystemAssistantPaths) -> None:
             "- `docs/agent-guides/runtime-and-configuration.md`",
             "- `docs/agent-guides/web-and-cli.md`",
             "- `docs/agent-guides/agent-executors-and-permissions.md`",
-            "- `protocol/05-runtime-blueprint.md`",
+            "- `docs/agent-guides/project-layout.md`",
             "- `skills/happyranch/SKILL.md`",
             "",
             "Copied files:",
@@ -647,11 +703,4 @@ def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
     if not (paths.learnings_dir / "_index.md").exists():
         (paths.learnings_dir / "_index.md").write_text("# Learnings: system_assistant\n\n")
     prompt = _assistant_prompt()
-    claude_path = paths.workspace / "CLAUDE.md"
-    agents_path = paths.workspace / "AGENTS.md"
-    if selected_executor == "claude":
-        agents_path.unlink(missing_ok=True)
-        claude_path.write_text(prompt)
-    else:
-        claude_path.unlink(missing_ok=True)
-        agents_path.write_text(prompt)
+    _write_assistant_instruction_pair(paths.workspace, prompt)

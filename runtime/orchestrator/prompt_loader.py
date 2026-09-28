@@ -6,6 +6,7 @@ Reads agents from <runtime>/org/agents/<name>.md (active),
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 from pathlib import Path
@@ -15,6 +16,7 @@ from runtime.orchestrator.agent_def import (
     AgentDef,
     AgentParseError,
     parse_agent_file,
+    parse_agent_text,
     render_agent_text,
 )
 
@@ -23,6 +25,8 @@ __all__ = [
     "AgentDef",
     "AgentParseError",
     "load_agent",
+    "load_agent_with_revision",
+    "load_agent_snapshot",
     "list_agents",
     "list_pending",
     "load_pending_agent",
@@ -58,10 +62,43 @@ def load_agent(paths: OrgPaths, name: str) -> AgentDef | None:
 
     Pending agents are NOT returned by this function — use load_pending_agent.
     """
+    loaded = load_agent_with_revision(paths, name)
+    return loaded[0] if loaded is not None else None
+
+
+def load_agent_with_revision(
+    paths: OrgPaths, name: str,
+) -> tuple[AgentDef, str] | None:
+    """Load an active definition and its hash from the same byte snapshot."""
+    snapshot = load_agent_snapshot(paths, name)
+    return snapshot[:2] if snapshot is not None else None
+
+
+def load_agent_snapshot(
+    paths: OrgPaths, name: str,
+) -> tuple[AgentDef, str, bytes] | None:
+    """Load an active definition, revision, and exact canonical bytes together."""
     path = _agent_path(paths, name, pending=False)
-    if not path.exists():
+    try:
+        contents = path.read_bytes()
+    except FileNotFoundError:
         return None
-    return parse_agent_file(path)
+    return (
+        # Match Path.read_text() universal-newline parsing without rereading or
+        # changing the exact bytes used for the revision and compensation.
+        parse_agent_text(
+            contents.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n"),
+            expected_name=name,
+        ),
+        hashlib.sha256(contents).hexdigest(),
+        contents,
+    )
+
+
+def agent_revision(paths: OrgPaths, name: str) -> str | None:
+    """Return the exact-content revision for an active agent definition."""
+    loaded = load_agent_with_revision(paths, name)
+    return loaded[1] if loaded is not None else None
 
 
 def load_pending_agent(paths: OrgPaths, name: str) -> AgentDef | None:
@@ -77,7 +114,13 @@ def _list_dir(directory: Path) -> list[AgentDef]:
     out: list[AgentDef] = []
     for entry in sorted(directory.iterdir()):
         if entry.is_file() and entry.suffix == ".md" and not entry.name.startswith("."):
-            out.append(parse_agent_file(entry))
+            # A canonical entry can disappear after is_file() but before its
+            # parser opens it.  Omit that transient roster entry instead of
+            # failing the whole list response.
+            try:
+                out.append(parse_agent_file(entry))
+            except FileNotFoundError:
+                continue
     return out
 
 

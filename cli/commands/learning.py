@@ -364,11 +364,93 @@ def _compute_report(
     """
     from datetime import datetime, timezone
 
+    def fail_closed(report: dict) -> dict:
+        """Keep current diagnostic arithmetic observation-only (TASK-7767)."""
+        reason = (
+            "Current telemetry epoch is unversioned and invalid; collection has "
+            "not started. Independent transport and deployed-canary health "
+            "evidence are required before tuning can be evaluated."
+        )
+        observation = dict(report.get("observation_period", {}))
+        observation.update({
+            "status": "insufficient_instrumentation",
+            "reason": reason,
+            "thresholds_met": False,
+            "days_met": False,
+            "sessions_met": False,
+            "diagnostics_valid_for_collection": False,
+            "diagnostic_note": "Counts and elapsed time are observation-only.",
+            "trigger": "Canary-gated collection has NOT started.",
+        })
+        report["observation_period"] = observation
+        report["decision"] = "insufficient_instrumentation"
+        report["decision_detail"] = reason
+        return report
+
+    def valid_rows(rows: list[dict], *, event: str) -> bool:
+        """Reject malformed diagnostic inputs before they reach set arithmetic."""
+        for row in rows:
+            if not isinstance(row, dict):
+                return False
+            payload = row.get("payload", {})
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except (TypeError, ValueError):
+                    return False
+            if not isinstance(payload, dict):
+                return False
+            timestamp = row.get("timestamp")
+            if not isinstance(timestamp, str):
+                return False
+            try:
+                parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            except ValueError:
+                return False
+            if parsed.tzinfo is None:
+                return False
+            if event == "impression":
+                if not isinstance(payload.get("session_id"), str):
+                    return False
+                if not isinstance(payload.get("agent", row.get("agent", "")), str):
+                    return False
+                if not isinstance(row.get("task_id", ""), str):
+                    return False
+                digest_ids = payload.get("digest_ids")
+                if not isinstance(digest_ids, list) or not all(isinstance(mid, str) for mid in digest_ids):
+                    return False
+            elif event == "read":
+                if not all(isinstance(payload.get(key), str)
+                           for key in ("id", "source", "session_id", "task_id")):
+                    return False
+                if not isinstance(row.get("agent"), str) or not isinstance(row.get("task_id"), str):
+                    return False
+                payload_agent = payload.get("agent", row["agent"])
+                if not isinstance(payload_agent, str):
+                    return False
+            else:
+                if not all(isinstance(payload.get(key), str) for key in ("session_id", "task_id")):
+                    return False
+                if not isinstance(row.get("agent"), str) or not isinstance(row.get("task_id"), str):
+                    return False
+                memory_ids = payload.get("memory_ids")
+                if not isinstance(memory_ids, list) or not all(isinstance(mid, str) for mid in memory_ids):
+                    return False
+                if any(not isinstance(payload.get(key), int) or isinstance(payload.get(key), bool)
+                       for key in ("hit_count", "kb_hit_count")):
+                    return False
+        return True
+
     if current_time is None:
         current_time = datetime.now(timezone.utc)
 
+    if (not valid_rows(impression_rows, event="impression")
+            or not valid_rows(read_rows, event="read")
+            or not valid_rows(search_rows, event="search")):
+        return fail_closed({"observation_period": {}, "aggregate": {}, "by_role": {}, "decision": "insufficient_sample"})
+
     if not impression_rows:
-        return {
+        return fail_closed({
             "observation_period": {
                 "status": "insufficient_sample",
                 "reason": "No memory_digest_impression rows found —"
@@ -379,7 +461,7 @@ def _compute_report(
             "aggregate": {},
             "by_role": {},
             "decision": "insufficient_sample",
-        }
+        })
 
     # Parse impressions
     impressions: list[dict] = []
@@ -404,7 +486,7 @@ def _compute_report(
             })
 
     if not impressions:
-        return {
+        return fail_closed({
             "observation_period": {
                 "status": "insufficient_sample",
                 "reason": "No non-empty correlated digest impressions found.",
@@ -414,7 +496,7 @@ def _compute_report(
             "aggregate": {},
             "by_role": {},
             "decision": "insufficient_sample",
-        }
+        })
 
     # Observation period
     first_ts_str = impressions[0]["timestamp"]
@@ -457,7 +539,7 @@ def _compute_report(
     }
 
     if not (met_days and met_sessions):
-        return {
+        return fail_closed({
             "observation_period": {
                 **observation,
                 "status": "insufficient_sample",
@@ -469,7 +551,7 @@ def _compute_report(
             "aggregate": {},
             "by_role": {},
             "decision": "insufficient_sample",
-        }
+        })
 
     # Session digest maps.
     # Build validated (agent, task_id, session_id) tuples from trusted
@@ -728,7 +810,7 @@ def _compute_report(
             f"{len(unknown_agents)} agent(s) have unknown roles"
             f" and are excluded from role decisions: {unknown_agents}"
         )
-    return result
+    return fail_closed(result)
 
 
 def _print_report(report: dict) -> None:
@@ -746,7 +828,7 @@ def _print_report(report: dict) -> None:
     print()
 
     if obs.get("status") != "thresholds_met":
-        print(f"DECISION: insufficient_sample")
+        print(f"DECISION: {report.get('decision', 'unknown')}")
         print(f"  {obs.get('reason', '')}")
         return
 
@@ -924,4 +1006,3 @@ def register(sub) -> None:
     # one-cycle deprecation alias dispatching to the same handlers.
     _register_group(sub, "memory", deprecated=False)
     _register_group(sub, "learning", deprecated=True)
-

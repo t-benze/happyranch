@@ -2,7 +2,7 @@
 
 ``build_schedule_prompt`` is the pure, unit-testable prompt composition (mirroring
 ``build_wake_prompt``). The schedule prompt is composed HERE in the daemon runner
-— no ``protocol/`` edit is needed to ship the mechanism.
+— behavior is implemented here, independently of documentation.
 ``run_schedule`` is the executor-backed invocation (mirroring ``run_wake``): it
 loads the schedule, runs one executor session whose only job is to self-dispatch
 via ``schedules spawn``, records token usage under ``scope_type="schedule"``, and
@@ -36,7 +36,6 @@ from runtime.orchestrator.org_config import (
     render_current_time_line,
     resolve_managed_skills_index,
     resolve_org_timezone_display,
-    resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
     format_repo_refresh_note,
@@ -98,7 +97,7 @@ def build_schedule_prompt(
     org_config: OrgConfig,
     now: Callable[[], datetime] | None = None,
     managed_skills_index: str = "",
-    protocol_doc_manifest: str = "",
+    repo_refresh_note: str = "",
     active_policy_section: str = "",
 ) -> str:
     """Compose the schedule-fire prompt.
@@ -114,7 +113,7 @@ def build_schedule_prompt(
     tz, label = resolve_org_timezone_display(org_config)
     current_time = render_current_time_line(tz, label, now)
     skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""
-    docs_block = f"\n{protocol_doc_manifest}\n" if protocol_doc_manifest else ""
+    repo_refresh_block = f"\n{repo_refresh_note}\n" if repo_refresh_note else ""
 
     recurrence_str = ""
     if recurrence:
@@ -129,7 +128,7 @@ This is a SCHEDULE FIRE: a scheduled trigger to dispatch ONE root task from the
 stored normalized_brief. It is NOT the work itself. The real work happens in the
 root task you spawn — do not perform it here.
 
-current_time: {current_time}{skills_block}{docs_block}
+current_time: {current_time}{skills_block}{repo_refresh_block}
 Schedule: {schedule_id}
 Kind: {kind}  Fire-at (UTC): {fire_at_iso}{recurrence_str}
 Timezone: {timezone}
@@ -257,10 +256,7 @@ async def run_schedule(
     # blocking: offline / dirty / non-ff / timeout are swallowed.
     repo_refresh_results = refresh_workspace_repos(workspace)
 
-    protocol_doc_manifest = "\n".join(filter(None, (
-        resolve_protocol_doc_manifest(settings=settings),
-        format_repo_refresh_note(repo_refresh_results),
-    )))
+    repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 
     # ── Per-retry launch validator ───────────────────────────────
     def _pre_launch_validator():
@@ -274,10 +270,12 @@ async def run_schedule(
 
     from runtime.orchestrator.active_authority_policy import resolve_active_team_policy_section
     from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
-    active_policy_section = resolve_active_team_policy_section(
-        store=AuthorityPolicyStore(org_state.db), team=agent_def.team,
+    policy_teams = getattr(org_state, "teams", None)
+    active_policy_section = "" if policy_teams is None else resolve_active_team_policy_section(
+        store=AuthorityPolicyStore(org_state.db), root=org_state.root,
+        teams=policy_teams, team=agent_def.team,
         agent_name=record.agent_name,
-        eligible=bool(getattr(org_state, "teams", None) and org_state.teams.is_team_manager(record.agent_name)),
+        eligible=policy_teams.is_team_manager(record.agent_name),
     )
     prompt = build_schedule_prompt(
         org_slug=org_state.slug,
@@ -292,7 +290,7 @@ async def run_schedule(
         timezone=record.timezone,
         org_config=org_config,
         managed_skills_index=managed_skills_index,
-        protocol_doc_manifest=protocol_doc_manifest,
+        repo_refresh_note=repo_refresh_note,
         active_policy_section=active_policy_section,
     )
 

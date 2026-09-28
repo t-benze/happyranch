@@ -49,7 +49,7 @@ def _seed_active_agent_for_system_contract_materialization(tmp_path):
 
 
 def _make_skill_dir(src_root: Path, skill_id: str) -> Path:
-    """Create a minimal protocol/skills/<id>/ tree with a SKILL.md."""
+    """Create a minimal runtime/skills/bundled/<id>/ tree with a SKILL.md."""
     d = src_root / skill_id
     d.mkdir(parents=True)
     (d / "SKILL.md").write_text(f"# {skill_id}\n\nSkill body for {skill_id}.\n")
@@ -57,7 +57,7 @@ def _make_skill_dir(src_root: Path, skill_id: str) -> Path:
 
 
 def _make_all_system_contract_dirs(src_root: Path) -> set[str]:
-    """Create all 6 system-contract protocol/skills/<id>/ dirs."""
+    """Create all 6 system-contract runtime/skills/bundled/<id>/ dirs."""
     ids = set()
     for sc in SYSTEM_CONTRACTS:
         _make_skill_dir(src_root, sc.id)
@@ -150,7 +150,7 @@ class TestEnsureMaterializedSuccess:
         (workspace / "repos" / "test" / ".git").mkdir(parents=True)
 
         settings = Settings(project_root=tmp_path)
-        src_root = settings.get_protocol_dir() / "skills"
+        src_root = settings.get_bundled_skills_dir()
         _make_all_system_contract_dirs(src_root)
 
         ensure_system_contracts_materialized(
@@ -172,7 +172,7 @@ class TestEnsureMaterializedSuccess:
         (workspace / "repos" / "test" / ".git").mkdir(parents=True)
 
         settings = Settings(project_root=tmp_path)
-        src_root = settings.get_protocol_dir() / "skills"
+        src_root = settings.get_bundled_skills_dir()
         _make_all_system_contract_dirs(src_root)
 
         ensure_system_contracts_materialized(
@@ -193,7 +193,7 @@ class TestEnsureMaterializedSuccess:
         (workspace / "repos" / "test" / ".git").mkdir(parents=True)
 
         settings = Settings(project_root=tmp_path)
-        src_root = settings.get_protocol_dir() / "skills"
+        src_root = settings.get_bundled_skills_dir()
         _make_all_system_contract_dirs(src_root)
 
         ensure_system_contracts_materialized(
@@ -214,7 +214,7 @@ class TestEnsureMaterializedSuccess:
         (workspace / "repos" / "test" / ".git").mkdir(parents=True)
 
         settings = Settings(project_root=tmp_path)
-        src_root = settings.get_protocol_dir() / "skills"
+        src_root = settings.get_bundled_skills_dir()
         _make_all_system_contract_dirs(src_root)
 
         ensure_system_contracts_materialized(
@@ -235,7 +235,7 @@ class TestEnsureMaterializedSuccess:
         # No repos/ dir — make-worktree should be omitted
 
         settings = Settings(project_root=tmp_path)
-        src_root = settings.get_protocol_dir() / "skills"
+        src_root = settings.get_bundled_skills_dir()
         _make_all_system_contract_dirs(src_root)
 
         ensure_system_contracts_materialized(
@@ -256,7 +256,7 @@ class TestEnsureMaterializedFailure:
     """Post-redeploy scenario: empty workspace → explicit error, never Errno 2."""
 
     def test_empty_skills_task_context_raises_explicit_error(self, tmp_path):
-        """Simulating post-redeploy with EMPTY protocol/skills/ — raises
+        """Simulating post-redeploy with EMPTY runtime/skills/bundled/ — raises
         SystemContractMaterializationError, never bare Errno 2."""
         from runtime.orchestrator.workspace_adapters import (
             SystemContractMaterializationError,
@@ -266,9 +266,9 @@ class TestEnsureMaterializedFailure:
         workspace.mkdir()
         (workspace / "repos" / "test" / ".git").mkdir(parents=True)
 
-        # protocol/skills/ dir exists but is empty — post-redeploy state
+        # runtime/skills/bundled/ dir exists but is empty — post-redeploy state
         settings = Settings(project_root=tmp_path)
-        src_root = settings.get_protocol_dir() / "skills"
+        src_root = settings.get_bundled_skills_dir()
         src_root.mkdir(parents=True, exist_ok=True)
 
         with pytest.raises(SystemContractMaterializationError) as exc_info:
@@ -291,7 +291,7 @@ class TestEnsureMaterializedFailure:
         (workspace / "repos" / "test" / ".git").mkdir(parents=True)
 
         settings = Settings(project_root=tmp_path)
-        (settings.get_protocol_dir() / "skills").mkdir(parents=True, exist_ok=True)
+        (settings.get_bundled_skills_dir()).mkdir(parents=True, exist_ok=True)
 
         with pytest.raises(SystemContractMaterializationError) as exc_info:
             ensure_system_contracts_materialized(
@@ -312,7 +312,7 @@ class TestEnsureMaterializedFailure:
         (workspace / "repos" / "test" / ".git").mkdir(parents=True)
 
         settings = Settings(project_root=tmp_path)
-        (settings.get_protocol_dir() / "skills").mkdir(parents=True, exist_ok=True)
+        (settings.get_bundled_skills_dir()).mkdir(parents=True, exist_ok=True)
 
         with pytest.raises(SystemContractMaterializationError) as exc_info:
             ensure_system_contracts_materialized(
@@ -333,7 +333,7 @@ class TestEnsureMaterializedFailure:
         (workspace / "repos" / "test" / ".git").mkdir(parents=True)
 
         settings = Settings(project_root=tmp_path)
-        (settings.get_protocol_dir() / "skills").mkdir(parents=True, exist_ok=True)
+        (settings.get_bundled_skills_dir()).mkdir(parents=True, exist_ok=True)
 
         with pytest.raises(SystemContractMaterializationError) as exc_info:
             ensure_system_contracts_materialized(
@@ -354,7 +354,7 @@ class TestEnsureMaterializedFailure:
         (workspace / "repos" / "test" / ".git").mkdir(parents=True)
 
         settings = Settings(project_root=tmp_path)
-        src_root = settings.get_protocol_dir() / "skills"
+        src_root = settings.get_bundled_skills_dir()
         # Only create jobs — start-task and thread are missing
         _make_skill_dir(src_root, "jobs")
 
@@ -379,7 +379,7 @@ class TestEnsureMaterializedFailure:
         workspace.mkdir(exist_ok=True)
 
         settings = Settings(project_root=tmp_path)
-        src_root = settings.get_protocol_dir() / "skills"
+        src_root = settings.get_bundled_skills_dir()
         # Create the source dirs but then sabotage the workspace after injection
         # by ensuring inject_system_contracts sees a valid source but the
         # verification catches missing output
@@ -416,19 +416,6 @@ class TestCopySkillsTreeAtomicity:
     The canonical store + symlink model provides atomicity through the POSIX
     os.symlink() / os.unlink() atomicity guarantee: a reader either sees the
     old symlink target or the new one. No half-written file state exists."""
-
-    def test_atomic_replace_no_half_deleted_state(self, tmp_path):
-        """Canonical symlink model provides native atomicity.
-
-        The POSIX os.symlink()/os.unlink() operations are already atomic
-        at the filesystem level. A reader resolving a symlink always sees
-        either the old complete canonical target or the new one — never a
-        partial or half-deleted state. This is a stronger guarantee than
-        the previous tmp-rename-rmtree approach.
-        """
-        # This test is satisfied by POSIX semantics of the canonical model.
-        # The SymlinkMaterializer replaces symlinks atomically via unlink+create.
-        pass
 
     def test_concurrent_read_never_reads_stale_incomplete_content(self, tmp_path):
         """Concurrent read during canonical materialization always reads complete.
@@ -580,7 +567,7 @@ class TestInjectionOnDiskVerification:
         (workspace / "repos" / "test" / ".git").mkdir(parents=True)
 
         settings = Settings(project_root=tmp_path)
-        src_root = settings.get_protocol_dir() / "skills"
+        src_root = settings.get_bundled_skills_dir()
         _make_all_system_contract_dirs(src_root)
 
         inject_system_contracts(
@@ -603,7 +590,7 @@ class TestInjectionOnDiskVerification:
         (workspace / "repos" / "test" / ".git").mkdir(parents=True)
 
         settings = Settings(project_root=tmp_path)
-        src_root = settings.get_protocol_dir() / "skills"
+        src_root = settings.get_bundled_skills_dir()
         _make_all_system_contract_dirs(src_root)
 
         inject_system_contracts(
@@ -659,8 +646,8 @@ class TestConcurrentMaterialization:
         import threading
         from runtime.orchestrator.workspace_adapters import materialize_workspace_skills
 
-        src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "thread", "dream", "todos", "create-skill"]:
+        src = tmp_path / "runtime" / "skills" / "bundled"
+        for sid in ["start-task", "jobs", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -728,11 +715,11 @@ class TestConcurrentMaterialization:
         import threading
         import runtime.orchestrator.workspace_adapters as wa
 
-        src = tmp_path / "protocol" / "skills"
+        src = tmp_path / "runtime" / "skills" / "bundled"
         # All 6 system contracts must be present now that
         # _materialize_unified_canonical unions across all ordinary
         # contexts (dream is DREAM-only but still in the union).
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -815,13 +802,13 @@ class TestConcurrentMaterialization:
         self, tmp_path, monkeypatch,
     ):
         """Empty source directory should not cause FileNotFoundError leak.
-        With the fail-closed source-existence check, empty protocol/skills/
+        With the fail-closed source-existence check, empty runtime/skills/bundled/
         produces a named SystemContractMaterializationError."""
         from runtime.orchestrator.workspace_adapters import (
             materialize_workspace_skills,
             SystemContractMaterializationError,
         )
-        src = tmp_path / "protocol" / "skills"
+        src = tmp_path / "runtime" / "skills" / "bundled"
         src.mkdir(parents=True)  # empty dir
         monkeypatch.setattr("runtime.orchestrator.workspace_adapters._SKILLS_SRC", src)
         workspace = tmp_path / "workspace"
@@ -835,7 +822,7 @@ class TestConcurrentMaterialization:
             )
             raise AssertionError("Expected SystemContractMaterializationError, got no error")
         except SystemContractMaterializationError:
-            pass  # expected — empty protocol/skills/ fails with named error
+            pass  # expected — empty runtime/skills/bundled/ fails with named error
         except FileNotFoundError as e:
             raise AssertionError(f"Bare FileNotFoundError leaked: {e}") from e
 
@@ -864,8 +851,8 @@ class TestConcurrentMaterialization:
         settings = Settings(project_root=tmp_path)
 
         # Create source skills so the adapter has something to copy
-        src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
+        src = tmp_path / "runtime" / "skills" / "bundled"
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\n")
@@ -923,7 +910,7 @@ class TestConcurrentMaterialization:
             slug="test", context="task", provider="claude",
             agent_name="dev_agent", team="engineering", skills_root=src,
         )
-        for sid in ["start-task", "jobs", "create-skill"]:
+        for sid in ["start-task", "jobs", "create-skill", "workspace-cleanup"]:
             skill_file = workspace / ".claude" / "skills" / sid / "SKILL.md"
             assert skill_file.exists(), f"Missing {skill_file}"
 
@@ -959,8 +946,8 @@ class TestConcurrentMaterialization:
         from runtime.models import TaskStatus
 
         # ── Create source skills ──
-        src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
+        src = tmp_path / "runtime" / "skills" / "bundled"
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\nskill content\n")
@@ -1070,8 +1057,8 @@ class TestCrossContextSystemContractRetention:
         from runtime.skills.canonical_store import CanonicalSkillStore
 
         # ── Create all 5 system-contract source dirs ──
-        src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
+        src = tmp_path / "runtime" / "skills" / "bundled"
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -1091,7 +1078,7 @@ class TestCrossContextSystemContractRetention:
             team="engineering", skills_root=src,
         )
         # start-task + jobs + make-worktree + thread should all be symlinks
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "create-skill"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "create-skill", "workspace-cleanup"]:
             # Determine expected content hash from specs_1
             spec = next(s for s in specs_1 if s["slug"] == sid)
             expected_target = store.canonical_path(
@@ -1118,7 +1105,7 @@ class TestCrossContextSystemContractRetention:
         )
         # start-task MUST survive — it's in the union even though
         # thread context alone doesn't include it.
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "create-skill"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "create-skill", "workspace-cleanup"]:
             spec = next(s for s in specs_1 if s["slug"] == sid)
             expected_target = store.canonical_path(
                 sid, spec["version"], spec["content_hash"],
@@ -1142,7 +1129,7 @@ class TestCrossContextSystemContractRetention:
             team="engineering", skills_root=src,
         )
         # All four contracts remain as correct symlinks
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "create-skill"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "create-skill", "workspace-cleanup"]:
             spec = next(s for s in specs_1 if s["slug"] == sid)
             expected_target = store.canonical_path(
                 sid, spec["version"], spec["content_hash"],
@@ -1193,8 +1180,8 @@ class TestCrossContextSystemContractRetention:
         )
         from runtime.skills.canonical_store import CanonicalSkillStore
 
-        src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
+        src = tmp_path / "runtime" / "skills" / "bundled"
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -1293,8 +1280,8 @@ class TestCrossContextSystemContractRetention:
             validate_workspace_skills_integrity,
         )
 
-        src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
+        src = tmp_path / "runtime" / "skills" / "bundled"
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -1349,8 +1336,8 @@ class TestCrossContextSystemContractRetention:
         )
 
         # ── System-contract source dirs (all 5 required for union) ──
-        src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
+        src = tmp_path / "runtime" / "skills" / "bundled"
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -1475,8 +1462,8 @@ class TestUnknownContextNoOp:
             materialize_workspace_skills,
         )
 
-        src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
+        src = tmp_path / "runtime" / "skills" / "bundled"
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -1518,8 +1505,8 @@ class TestUnknownContextNoOp:
             materialize_workspace_skills,
         )
 
-        src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
+        src = tmp_path / "runtime" / "skills" / "bundled"
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -1555,8 +1542,8 @@ class TestUnknownContextNoOp:
         )
         from runtime.skills.canonical_store import CanonicalSkillStore
 
-        src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
+        src = tmp_path / "runtime" / "skills" / "bundled"
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -1632,8 +1619,8 @@ class TestUnknownContextNoOp:
             materialize_workspace_skills,
         )
 
-        src = tmp_path / "protocol" / "skills"
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
+        src = tmp_path / "runtime" / "skills" / "bundled"
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]:
             d = src / sid
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(f"# {sid}\ncontent for {sid}\n")
@@ -1681,7 +1668,7 @@ def test_persistent_verification_contract_ships_in_all_session_contexts(
     from runtime.orchestrator.workspace_adapters import materialize_workspace_skills
 
     project_root = Path(__file__).resolve().parents[1]
-    monkeypatch.setattr(wa, "_SKILLS_SRC", project_root / "protocol" / "skills")
+    monkeypatch.setattr(wa, "_SKILLS_SRC", project_root / "runtime" / "skills" / "bundled")
     settings = Settings(project_root=tmp_path)
 
     for context in ("task", "thread", "wake", "dream", "schedule", "bootstrap"):

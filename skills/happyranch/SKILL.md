@@ -115,7 +115,7 @@ scripts/happyranch manage-repo update --agent dev_agent --repo-name docs --url h
 
 ## Knowledge Base
 
-Per-org entries under `<runtime>/orgs/<slug>/kb/` — each org has its own KB; orgs do not share. Full rules: `protocol/06-knowledge-base.md`.
+Per-org entries under `<runtime>/orgs/<slug>/kb/` — each org has its own KB; orgs do not share. Full rules: `docs/agent-guides/features-and-invariants.md`.
 
 ```bash
 # Read (safe, any agent / any caller)
@@ -294,7 +294,7 @@ scripts/happyranch orgs unload <slug>                                    # drops
 Per-org content lives under `<runtime>/orgs/<slug>/`:
 
 - `org/{charter.md, escalation-rules.md, teams.yaml, config.yaml, agents/*.md}` — editable org definition
-- `workspaces/<agent>/` — one workspace per approved agent (CLAUDE.md or AGENTS.md, repos, learnings)
+- `workspaces/<agent>/` — one workspace per approved agent (regular AGENTS.md plus raw relative CLAUDE.md -> AGENTS.md, repos, learnings)
 - `kb/`, `threads/` — per-org content stores
 - `happyranch.db` — per-org SQLite
 

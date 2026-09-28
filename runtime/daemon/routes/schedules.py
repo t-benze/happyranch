@@ -157,6 +157,8 @@ def create_schedule(
                 "got": body.session_id,
             },
         )
+    if org.sessions.is_recovery_session(body.task_id, body.agent, body.session_id):
+        raise HTTPException(status_code=403, detail={"code": "recovery_purpose_forbidden"})
 
     # ── resolve team ──
     registry = org.teams

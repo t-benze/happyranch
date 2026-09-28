@@ -1,12 +1,12 @@
 /**
  * StatusPill — schedule-status badge for the Todos surface.
  *
- * Uses Todos-local exact-color matches to the approved THR-105 reference
- * (web/scripts/screenshot-harness/reference/reference-todos-list-light.png)
- * without mutating shared design-system tokens.
+ * Uses the shared semantic-tone vocabulary while retaining the approved Todos
+ * pill geometry and armed/firing LED behavior.
  */
 import type { ScheduleStatus } from '@/lib/api/types'
-import { statusLabel, statusPillClass } from '../strings'
+import { toneClass } from '@/design-system/patterns/semanticTone'
+import { statusLabel } from '../strings'
 
 interface StatusPillProps {
   status: ScheduleStatus
@@ -15,7 +15,7 @@ interface StatusPillProps {
 const LED_STATUSES: Set<ScheduleStatus> = new Set(['armed', 'firing'])
 
 export function StatusPill({ status }: StatusPillProps): JSX.Element {
-  const cls = statusPillClass(status)
+  const cls = toneClass(status)
   const label = statusLabel(status)
   const showLed = LED_STATUSES.has(status)
   return (

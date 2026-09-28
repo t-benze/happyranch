@@ -1465,3 +1465,108 @@ def test_review_required_job_notifies(
     # Exactly one notify call, tagged with kind="job_request".
     assert len(calls) == 1, f"expected exactly one notify call, got {calls!r}"
     assert calls[0]["kind"] == "job_request"
+
+
+def test_recovery_job_routes_allow_exact_reads_but_forbid_stop_before_effects(
+    client_with_runtime, client_no_bearer, monkeypatch,
+):
+    """The recovery purpose permits owned inspection, never a kill or audit."""
+    from types import SimpleNamespace
+    from runtime.daemon.jobs_runner import _INFLIGHT
+    from runtime.models import JobInterpreter, JobRecord, JobStatus
+
+    client, org = client_with_runtime
+    task_id, session_id = _make_active_session(org)
+    org.sessions.register_recovery_session(task_id, "engineering_head", session_id)
+    completed_id = org.db.next_job_id()
+    org.db.insert_job(JobRecord(
+        id=completed_id, task_id=task_id, agent_name="engineering_head",
+        title="completed", rationale="test", script_text="true",
+        interpreter=JobInterpreter.BASH, status=JobStatus.COMPLETED,
+        created_at="2026-09-11T00:00:00Z",
+    ))
+    params = {"task_id": task_id, "session_id": session_id}
+    assert client_no_bearer.get(f"/api/v1/orgs/alpha/jobs/{completed_id}", params=params).status_code == 200
+    assert client_no_bearer.get(f"/api/v1/orgs/alpha/jobs/{completed_id}/tail", params=params).status_code == 200
+    assert client_no_bearer.post(
+        f"/api/v1/orgs/alpha/jobs/{completed_id}/wait", params=params,
+    ).status_code == 200
+
+    running_id = org.db.next_job_id()
+    org.db.insert_job(JobRecord(
+        id=running_id, task_id=task_id, agent_name="engineering_head",
+        title="running", rationale="test", script_text="sleep 1",
+        interpreter=JobInterpreter.BASH, status=JobStatus.RUNNING,
+        created_at="2026-09-11T00:00:00Z",
+    ))
+    kills: list[int] = []
+    _INFLIGHT[running_id] = SimpleNamespace(pid=12345)
+    monkeypatch.setattr("os.killpg", lambda pid, _signal: kills.append(pid))
+    try:
+        denied = client_no_bearer.post(f"/api/v1/orgs/alpha/jobs/{running_id}/stop", params=params)
+        assert denied.status_code == 403
+        assert denied.json()["detail"]["code"] == "recovery_purpose_forbidden"
+        assert kills == []
+        assert not [e for e in org.db.get_audit_logs(task_id) if e["action"] == "job_stopped"]
+        assert client.post(f"/api/v1/orgs/alpha/jobs/{running_id}/stop").status_code == 200
+        assert kills == [12345]
+    finally:
+        _INFLIGHT.pop(running_id, None)
+
+
+def test_recovery_job_submit_is_denied_without_job_or_audit_mutation(client_with_runtime):
+    client, org = client_with_runtime
+    task_id, session_id = _make_active_session(org)
+    org.sessions.register_recovery_session(task_id, "engineering_head", session_id)
+    before_jobs = org.db._conn.execute("SELECT count(*) FROM jobs").fetchone()[0]
+    before_audit = len(org.db.get_audit_logs(task_id))
+    response = client.post("/api/v1/orgs/alpha/jobs/submit", json={
+        "task_id": task_id, "session_id": session_id, "title": "blocked",
+        "rationale": "test", "script": "true", "interpreter": "bash",
+    })
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "recovery_purpose_forbidden"
+    assert org.db._conn.execute("SELECT count(*) FROM jobs").fetchone()[0] == before_jobs
+    assert len(org.db.get_audit_logs(task_id)) == before_audit
+
+
+def test_ordinary_same_agent_other_task_job_read_remains_allowed(
+    client_with_runtime, client_no_bearer,
+):
+    """The exact-task requirement applies only to a recovery binding."""
+    client, org = client_with_runtime
+    owned_task, owned_session = _make_active_session(org)
+    job_id = _submit_pending_for_session(client, org, owned_task, owned_session)
+    other_task, other_session = _make_active_session(org)
+
+    response = client_no_bearer.get(
+        f"/api/v1/orgs/alpha/jobs/{job_id}",
+        params={"task_id": other_task, "session_id": other_session},
+    )
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize("path", ["", "/tail", "/wait"])
+def test_recovery_job_reads_reject_foreign_other_task_and_missing_without_output(
+    client_with_runtime, client_no_bearer, path,
+):
+    client, org = client_with_runtime
+    recovery_task, recovery_session = _make_active_session(org, agent="engineering_head")
+    org.sessions.register_recovery_session(recovery_task, "engineering_head", recovery_session)
+    foreign_task, foreign_session = _make_active_session(org, agent="content_manager")
+    foreign_job = _submit_pending_for_session(client, org, foreign_task, foreign_session)
+    other_task, _other_session = _make_active_session(org, agent="engineering_head")
+    own_other_job = _submit_pending_for_session(client, org, other_task, _other_session)
+    params = {"task_id": recovery_task, "session_id": recovery_session}
+    method = client_no_bearer.post if path == "/wait" else client_no_bearer.get
+    for job_id, expected_status, expected_code in (
+        (foreign_job, 409, "session_mismatch"),
+        (own_other_job, 403, "recovery_purpose_forbidden"),
+    ):
+        response = method(f"/api/v1/orgs/alpha/jobs/{job_id}{path}", params=params)
+        assert response.status_code == expected_status, response.text
+        assert response.json()["detail"]["code"] == expected_code
+        assert "stdout" not in response.text and "stderr" not in response.text
+    missing = method(f"/api/v1/orgs/alpha/jobs/JOB-DOES-NOT-EXIST{path}", params=params)
+    assert missing.status_code == 404
+    assert missing.json()["detail"]["code"] == "unknown_job"
