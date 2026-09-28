@@ -9,6 +9,14 @@ GitHub CI runs the full Python 3.12/3.13/3.14 matrix. Nightly integration
 remains a separate job. A local pass is feedforward signal, not a substitute
 for the named hosted checks.
 
+The HappyRanch Linux daemon host is a special operational boundary: founder
+THR-211 seq270/271 prohibits every integration-marked test there, including
+direct pytest, `scripts/local_ci.sh integration`, and job-mediated runs.
+Trigger `.github/workflows/nightly-integration.yml` with `workflow_dispatch`
+on the candidate branch instead. The other local commands in this guide remain
+available; Mac integration verification uses the separately authorized
+disposable container-VM path.
+
 ## Prerequisites
 
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/)
@@ -120,6 +128,14 @@ isolated daemon (via HAPPYRANCH_DAEMON_HOME). The target is explicit — it is *
 included in the `all` default. Like `python`, it receives a fresh per-run
 `--basetemp` under the effective `TMPDIR` that is removed when the invocation
 ends (see "Per-run pytest scratch lifecycle").
+
+The hosted nightly publishes JUnit XML, the pytest log, and a Markdown
+summary artifact on every outcome. Its Actions job summary reports
+collected/passed/failed/skipped counts and failed test IDs. A failed scheduled
+run opens or comments on the single open issue labelled
+`nightly-integration-failure`; manually dispatched runs do not create or update
+that issue. This repository-local issue flow uses only the workflow token and
+does not send email, Feishu, Slack, webhook, or other external notifications.
 
 ## Git hooks
 

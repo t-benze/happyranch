@@ -168,25 +168,6 @@ def test_u0_hosted_source_contract_rejects_unknown_source_pair(
         _u0_hosted_source_contract()
 
 
-@pytest.fixture(autouse=True)
-def _canonical_pair_for_contained_launches(monkeypatch: pytest.MonkeyPatch) -> None:
-    from tests.daemon import test_task_producer_containment as containment
-
-    original_make_orch = containment._make_orch
-
-    def make_orch_with_pair(*args, **kwargs):
-        result = original_make_orch(*args, **kwargs)
-        paths = result[0]._paths
-        for agent_name in ("engineering_head", "dev_agent"):
-            workspace = paths.workspaces_dir / agent_name
-            workspace.mkdir(parents=True, exist_ok=True)
-            (workspace / "AGENTS.md").write_text("# Test agent instructions\n")
-            (workspace / "CLAUDE.md").symlink_to("AGENTS.md")
-        return result
-
-    monkeypatch.setattr(containment, "_make_orch", make_orch_with_pair)
-
-
 @dataclasses.dataclass(frozen=True)
 class _U0TypedJson:
     """Private comparison form that preserves JSON scalar type fidelity."""
