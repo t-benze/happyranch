@@ -528,8 +528,10 @@ candidate, isolated, isolation_dir, containing, snapshot_path, started = map(
 uid = os.getuid()
 cap = 200000
 
-# Refuse before mutation on a platform that cannot keep traversal rooted in
-# already opened, no-follow directory descriptors.
+# The caller has already moved the candidate into private isolation. If the
+# platform cannot keep traversal rooted in opened, no-follow directory
+# descriptors, refuse before recursive deletion; the caller then attempts a
+# restoration that can fail and leave the candidate isolated.
 required = (os.open, os.stat, os.unlink, os.rmdir)
 if (not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW")
         or os.listdir not in os.supports_fd
@@ -1331,8 +1333,11 @@ run_cleanup_candidate() {
   inode/tree/owner/device and the protected-set identity against the complete
   action snapshot, then open and recursively remove only that isolated object
   through authenticated no-follow directory descriptors. A replacement before
-  descriptor admission refuses without deletion; unsupported descriptor-
-  relative primitives refuse before mutation. The cache must be
+  descriptor admission refuses without deletion. Descriptor-relative primitive
+  support is checked only after the candidate has been moved into private
+  isolation: an unsupported platform refuses before recursive deletion, then
+  the caller attempts restoration. Restoration may fail and leave the candidate
+  in isolation; the refusal never emits `removed_cache`. The cache must be
   inside a registered, non-primary linked worktree of your own workspace, and
   removal is allowed only when its
   immediate parent has the accepted lock/manifest, the owning task has been
