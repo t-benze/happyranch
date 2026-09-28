@@ -3167,15 +3167,21 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         assert all(both_launched_snapshot["results"][child] == [] for child in children)
         assert held_spawn["active_fanout"] == both_launched_snapshot["active_fanout"]
         # Launch adds only each child's source-owned scratch manifest/lock and
-        # live session/control; attachment and canonical/team/archive bytes
-        # remain in the same identity/path domain through this boundary.
+        # live session/control; the remaining files are the exact
+        # ContextBuilder-provisioned workspace shape.  Attachment and
+        # canonical/team/archive bytes remain in the same identity/path domain
+        # through this boundary.
         for surface in ("attachments", "canonical_agents", "archived_agents",
                         "archived_workspaces", "teams_bytes"):
             assert both_launched_snapshot[surface] == held_spawn[surface]
         assert both_launched_snapshot["controls"][parent_id] is False
         assert all(both_launched_snapshot["controls"][child] is True for child in children)
         assert set(both_launched_snapshot["workspaces"]["dev_agent"]) == {
-            "AGENTS.md", "CLAUDE.md", "agent.yaml", "task_history.md",
+            ".claude/settings.json",
+            "AGENTS.md",
+            "CLAUDE.md",
+            "memory/_index.md",
+            "task_history.md",
         } | {
             item for child in children
             for item in (f".happyranch/task-scratch-manifests/{child}.json",
