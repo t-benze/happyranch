@@ -30,6 +30,34 @@ _ASSISTANT_SYSTEM_SKILLS = {
 }
 
 
+def _snapshot_assistant_tree(runtime_root: Path) -> dict[str, tuple[object, ...]]:
+    """Capture paths, bytes, modes, and raw link targets without following links."""
+    root = system_assistant_paths(runtime_root).root
+    snapshot: dict[str, tuple[object, ...]] = {}
+
+    def visit(path: Path) -> None:
+        if not os.path.lexists(path):
+            return
+        stat_result = os.lstat(path)
+        relative = "." if path == root else str(path.relative_to(root))
+        mode = stat_result.st_mode & 0o7777
+        if path.is_symlink():
+            snapshot[relative] = ("symlink", os.readlink(path), mode)
+            return
+        if path.is_dir():
+            snapshot[relative] = ("directory", mode)
+            for child in sorted(path.iterdir(), key=lambda item: item.name):
+                visit(child)
+            return
+        if path.is_file():
+            snapshot[relative] = ("file", path.read_bytes(), mode)
+            return
+        snapshot[relative] = ("other", stat_result.st_mode)
+
+    visit(root)
+    return snapshot
+
+
 def _assert_assistant_system_skill_links(workspace: Path) -> dict[str, str]:
     raw_targets: dict[str, str] = {}
     for skills_root in (
@@ -1375,19 +1403,19 @@ def test_assistant_bootstrap_repeat_is_idempotent(tmp_path: Path) -> None:
     assert _assert_assistant_system_skill_links(ws) == skills_before
 
 
-def test_assistant_bootstrap_repairs_wrong_canonical_skill_target(
+def test_assistant_bootstrap_refuses_wrong_canonical_skill_target_without_changes(
     tmp_path: Path,
 ) -> None:
-    bootstrap_assistant_workspace(tmp_path, executor="codex")
     workspace = system_assistant_paths(tmp_path).workspace
     wrong = workspace / ".agents/skills/jobs"
-    wrong.unlink()
+    wrong.parent.mkdir(parents=True)
     wrong.symlink_to("../../outside-canonical-package")
+    before = _snapshot_assistant_tree(tmp_path)
 
-    bootstrap_assistant_workspace(tmp_path, executor="codex")
+    with pytest.raises(ValueError, match="assistant skill materialization failed"):
+        bootstrap_assistant_workspace(tmp_path, executor="codex")
 
-    _assert_assistant_system_skill_links(workspace)
-    assert os.readlink(wrong) != "../../outside-canonical-package"
+    assert _snapshot_assistant_tree(tmp_path) == before
 
 
 def test_assistant_bootstrap_refuses_unsafe_skill_entry_without_other_root_links(
@@ -1397,22 +1425,98 @@ def test_assistant_bootstrap_refuses_unsafe_skill_entry_without_other_root_links
     unsafe = workspace / ".claude/skills/jobs"
     unsafe.mkdir(parents=True)
     (unsafe / "keep.txt").write_text("operator data\n")
+    before = _snapshot_assistant_tree(tmp_path)
 
     with pytest.raises(ValueError, match="assistant skill materialization failed"):
         bootstrap_assistant_workspace(tmp_path, executor="codex")
 
-    assert (unsafe / "keep.txt").read_text() == "operator data\n"
-    assert not (workspace / ".agents/skills").exists()
+    assert _snapshot_assistant_tree(tmp_path) == before
+
+
+def test_assistant_bootstrap_refuses_second_root_unsafe_entry_without_changes(
+    tmp_path: Path,
+) -> None:
+    workspace = system_assistant_paths(tmp_path).workspace
+    unsafe = workspace / ".agents/skills/jobs"
+    unsafe.mkdir(parents=True)
+    (unsafe / "keep.txt").write_text("operator data\n")
+    before = _snapshot_assistant_tree(tmp_path)
+
+    with pytest.raises(ValueError, match="assistant skill materialization failed"):
+        bootstrap_assistant_workspace(tmp_path, executor="codex")
+
+    assert _snapshot_assistant_tree(tmp_path) == before
+
+
+def test_assistant_bootstrap_refusal_preserves_preexisting_operator_content(
+    tmp_path: Path,
+) -> None:
+    paths = system_assistant_paths(tmp_path)
+    paths.knowledge_dir.mkdir(parents=True)
+    paths.learnings_dir.mkdir()
+    paths.logs_dir.mkdir()
+    (paths.workspace / "agent.yaml").write_text("operator agent metadata\n")
+    (paths.workspace / "AGENTS.md").write_text("operator instructions\n")
+    (paths.workspace / "CLAUDE.md").symlink_to("AGENTS.md")
+    (paths.workspace / "assistant-metadata.json").write_text("operator metadata\n")
+    (paths.knowledge_dir / "founder-note.md").write_text("operator knowledge\n")
+    (paths.learnings_dir / "_index.md").write_text("operator learnings\n")
+    (paths.logs_dir / "session.log").write_text("operator logs\n")
+    paths.config_path.write_text("operator config\n")
+    unsafe = paths.workspace / ".claude/skills/jobs"
+    unsafe.mkdir(parents=True)
+    (unsafe / "keep.txt").write_text("operator skill data\n")
+    before = _snapshot_assistant_tree(tmp_path)
+
+    with pytest.raises(ValueError, match="assistant skill materialization failed"):
+        bootstrap_assistant_workspace(tmp_path, executor="codex")
+
+    assert _snapshot_assistant_tree(tmp_path) == before
+
+
+def test_assistant_bootstrap_rolls_back_only_call_created_skill_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from runtime.skills.symlink_materializer import (
+        SymlinkMaterializationError,
+        SymlinkMaterializer,
+    )
+
+    real_materialize = SymlinkMaterializer.materialize_skill
+
+    def fail_after_first_root(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if kwargs.get("skills_subdir") == ".agents/skills" and kwargs.get(
+            "skill_slug"
+        ) == "jobs":
+            raise SymlinkMaterializationError(
+                "injected_failure", "refuse after earlier links were published",
+            )
+        return real_materialize(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        SymlinkMaterializer,
+        "materialize_skill",
+        fail_after_first_root,
+    )
+    before = _snapshot_assistant_tree(tmp_path)
+
+    with pytest.raises(ValueError, match="assistant skill materialization failed"):
+        bootstrap_assistant_workspace(tmp_path, executor="codex")
+
+    assert _snapshot_assistant_tree(tmp_path) == before
 
 
 @pytest.mark.parametrize("corruption", ["content", "tree"])
 def test_assistant_bootstrap_refuses_corrupt_canonical_skill_package(
     tmp_path: Path, corruption: str,
 ) -> None:
-    bootstrap_assistant_workspace(tmp_path, executor="codex")
-    workspace = system_assistant_paths(tmp_path).workspace
-    links_before = _assert_assistant_system_skill_links(workspace)
-    package_file = (workspace / ".agents/skills/jobs/SKILL.md").resolve(strict=True)
+    seed_root = tmp_path / "seed-runtime"
+    bootstrap_assistant_workspace(seed_root, executor="codex")
+    seed_workspace = system_assistant_paths(seed_root).workspace
+    package_file = (seed_workspace / ".agents/skills/jobs/SKILL.md").resolve(
+        strict=True
+    )
     package_root = package_file.parent
     package_root.chmod(0o755)
     if corruption == "content":
@@ -1421,8 +1525,11 @@ def test_assistant_bootstrap_refuses_corrupt_canonical_skill_package(
     else:
         (package_root / "unexpected.txt").write_text("unexpected tree member\n")
 
+    runtime_root = tmp_path / "refused-runtime"
+    before = _snapshot_assistant_tree(runtime_root)
+
     with pytest.raises(ValueError, match="assistant skill materialization failed"):
-        bootstrap_assistant_workspace(tmp_path, executor="codex")
+        bootstrap_assistant_workspace(runtime_root, executor="codex")
 
     if corruption == "content":
         assert package_file.read_text() == "corrupt canonical bytes\n"
@@ -1430,7 +1537,7 @@ def test_assistant_bootstrap_refuses_corrupt_canonical_skill_package(
         assert (package_root / "unexpected.txt").read_text() == (
             "unexpected tree member\n"
         )
-    assert _assert_assistant_system_skill_links(workspace) == links_before
+    assert _snapshot_assistant_tree(runtime_root) == before
 
 
 def test_assistant_registration_backup_failure_preserves_originals(

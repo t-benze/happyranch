@@ -322,8 +322,12 @@ runtime-global assistant has no repository or org custom-skill context, so the
 exact set is `dream`, `jobs`, `start-task`, `thread`, `todos`, and
 `workspace-cleanup`. Repeated repair preserves the instruction pair, config,
 knowledge, learnings, logs, and other assistant workspace content. Existing
-corrupt canonical packages or unsafe skill entries fail closed; bootstrap does
-not reconstruct corrupt packages or recursively remove operator content.
+corrupt canonical packages and unsafe, non-link, or wrong-target skill entries
+are detected by a read-only preflight before any workspace write. Refusal leaves
+both skill roots, instructions, metadata, knowledge, learnings, logs, and config
+unchanged. A later materializer-only failure removes only links and empty parent
+directories that were absent before that call; bootstrap never reconstructs a
+corrupt package or rewrites/removes pre-existing operator content on refusal.
 
 entry keyed by the profile name before launch (THR-107 seq155). Custom-adapter
 profiles (``command_adapter_id: custom-adapter:<id>``) are an exception — they

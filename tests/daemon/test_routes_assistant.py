@@ -31,6 +31,34 @@ _ASSISTANT_SYSTEM_SKILLS = {
 }
 
 
+def _snapshot_assistant_tree(runtime_root: Path) -> dict[str, tuple[object, ...]]:
+    """Capture every assistant path without following workspace symlinks."""
+    root = system_assistant_paths(runtime_root).root
+    snapshot: dict[str, tuple[object, ...]] = {}
+
+    def visit(path: Path) -> None:
+        if not os.path.lexists(path):
+            return
+        stat_result = os.lstat(path)
+        relative = "." if path == root else str(path.relative_to(root))
+        mode = stat_result.st_mode & 0o7777
+        if path.is_symlink():
+            snapshot[relative] = ("symlink", os.readlink(path), mode)
+            return
+        if path.is_dir():
+            snapshot[relative] = ("directory", mode)
+            for child in sorted(path.iterdir(), key=lambda item: item.name):
+                visit(child)
+            return
+        if path.is_file():
+            snapshot[relative] = ("file", path.read_bytes(), mode)
+            return
+        snapshot[relative] = ("other", stat_result.st_mode)
+
+    visit(root)
+    return snapshot
+
+
 def _assistant_skill_targets(workspace: Path) -> dict[str, str]:
     targets: dict[str, str] = {}
     for skills_root in (
@@ -214,6 +242,8 @@ def test_assistant_register_refuses_unsafe_skill_entry_without_partial_success(
     unsafe = paths.workspace / ".claude/skills/jobs"
     unsafe.mkdir(parents=True)
     (unsafe / "keep.txt").write_text("operator data\n")
+    (paths.workspace / "operator-note.txt").write_text("preserve me\n")
+    before = _snapshot_assistant_tree(runtime.root)
 
     response = client.post(
         "/api/v1/assistant/register",
@@ -226,9 +256,7 @@ def test_assistant_register_refuses_unsafe_skill_entry_without_partial_success(
 
     assert response.status_code == 409, response.text
     assert response.json()["detail"]["code"] == "assistant_workspace_invalid"
-    assert (unsafe / "keep.txt").read_text() == "operator data\n"
-    assert not paths.config_path.exists()
-    assert not (paths.workspace / ".agents/skills").exists()
+    assert _snapshot_assistant_tree(runtime.root) == before
 
 
 def test_assistant_init_prepares_registration_workspace(client: TestClient) -> None:
@@ -397,12 +425,11 @@ def test_assistant_sequence_keeps_canonical_pair(
     assert status.json()["state"] == AssistantState.CONFIGURED
     assert status.json()["selected_executor"] == executor
 
-    # Repair, then repeat repair: both idempotent, pair preserved.
+    # Repair, then repeat repair: both idempotent, pair preserved. The second
+    # pass recreates one missing link through the supported repair path.
     for attempt in range(2):
         if attempt == 1:
-            wrong = paths.workspace / ".agents/skills/jobs"
-            wrong.unlink()
-            wrong.symlink_to("../../outside-canonical-package")
+            (paths.workspace / ".agents/skills/jobs").unlink()
         repaired = client.post("/api/v1/assistant/repair")
         assert repaired.status_code == 200, repaired.text
         assert repaired.json()["state"] == AssistantState.CONFIGURED

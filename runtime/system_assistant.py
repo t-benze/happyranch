@@ -474,6 +474,17 @@ _KNOWLEDGE_SOURCES = [
 ]
 _KNOWLEDGE_PACKAGE = "runtime.system_knowledge"
 _BUNDLED_KNOWLEDGE_SKILLS = ("reflection", "jobs")
+_ASSISTANT_SKILL_CONTEXTS = (
+    "task",
+    "thread",
+    "wake",
+    "dream",
+    "schedule",
+    "bootstrap",
+)
+_ASSISTANT_SKILL_SLUGS = frozenset(
+    {"dream", "jobs", "start-task", "thread", "todos", "workspace-cleanup"}
+)
 _SOURCE_ROOT_MARKERS = (
     "pyproject.toml",
     "docs/agent-guides/runtime-and-configuration.md",
@@ -621,6 +632,213 @@ def _write_knowledge_pack(paths: SystemAssistantPaths) -> None:
     )
 
 
+def _preflight_assistant_skills(workspace: Path, settings: object) -> None:
+    """Read-only validation before assistant workspace bootstrap writes.
+
+    The shared materializer intentionally permits intermediate repairs when a
+    later entry refuses. The assistant bootstrap has a stronger transaction
+    boundary: inspect the complete six-skill set, both discovery roots, and
+    every already-published canonical package before changing the workspace.
+    """
+    from runtime.orchestrator.workspace_adapters import (
+        _compute_dir_hash,
+        _preflight_system_contract_sources,
+        _resolve_skills_src,
+    )
+    from runtime.platform.isolation import (
+        PlatformIsolationError,
+        detect_platform_isolation,
+    )
+    from runtime.skills.canonical_store import (
+        CanonicalSkillStore,
+        CanonicalStoreError,
+        _get_canonical_store_root,
+    )
+    from runtime.skills.symlink_materializer import SymlinkMaterializationError
+    from runtime.skills.system_contracts import (
+        SessionContext,
+        resolve_system_contracts_for_session,
+    )
+
+    contracts_by_id: dict[str, object] = {}
+    for context_name in _ASSISTANT_SKILL_CONTEXTS:
+        context = SessionContext(context_name)
+        for contract in resolve_system_contracts_for_session(
+            context, workspace=workspace,
+        ):
+            contracts_by_id.setdefault(contract.id, contract)
+
+    actual_slugs = frozenset(contracts_by_id)
+    if actual_slugs != _ASSISTANT_SKILL_SLUGS:
+        raise SymlinkMaterializationError(
+            "assistant_skill_set_mismatch",
+            "Assistant system-contract union must be exactly "
+            f"{sorted(_ASSISTANT_SKILL_SLUGS)}; got {sorted(actual_slugs)}",
+        )
+
+    source_root = _resolve_skills_src(settings)
+    _preflight_system_contract_sources(
+        set(actual_slugs),
+        source_root,
+        workspace=workspace,
+        provider="system-assistant",
+    )
+    specs: list[dict[str, str]] = []
+    for slug in sorted(actual_slugs):
+        content_hash = _compute_dir_hash(source_root / slug)
+        specs.append(
+            {"slug": slug, "version": "system", "content_hash": content_hash}
+        )
+
+    canonical_root = _get_canonical_store_root(settings)
+    if canonical_root.exists():
+        store = CanonicalSkillStore(root=canonical_root)
+        for spec in specs:
+            package_path = store.canonical_path(
+                spec["slug"], spec["version"], spec["content_hash"],
+            )
+            if not os.path.lexists(package_path):
+                continue
+            store.verify_package(
+                spec["slug"], spec["version"], spec["content_hash"],
+            )
+            actual_hash = store.compute_tree_hash(
+                spec["slug"], spec["version"], spec["content_hash"],
+            )
+            if actual_hash != spec["content_hash"]:
+                raise CanonicalStoreError(
+                    "content_corruption",
+                    f"Canonical package {spec['slug']}@system content mismatch "
+                    f"(expected {spec['content_hash'][:16]}... "
+                    f"got {actual_hash[:16]}...). No automatic repair from "
+                    "same-UID local source.",
+                )
+
+    isolation = detect_platform_isolation()
+    expected_by_slug = {spec["slug"]: spec for spec in specs}
+    for skills_subdir in (".claude/skills", ".agents/skills"):
+        skills_dir = workspace / skills_subdir
+        try:
+            directory_fd = isolation.admit_skills_directory(
+                skills_dir, workspace_root=workspace,
+            )
+        except PlatformIsolationError as exc:
+            raise SymlinkMaterializationError(
+                getattr(exc, "code", None) or "escaped_parent",
+                f"Workspace skills root {skills_dir} refused: {exc}",
+            ) from exc
+        if directory_fd is None:
+            continue
+        try:
+            with os.scandir(directory_fd) as iterator:
+                entries = {
+                    entry.name: (
+                        entry.is_symlink(),
+                        entry.is_dir(follow_symlinks=False),
+                    )
+                    for entry in iterator
+                }
+        finally:
+            os.close(directory_fd)
+
+        unexpected = sorted(set(entries) - set(expected_by_slug))
+        if unexpected:
+            raise SymlinkMaterializationError(
+                "unexpected_skill_entry",
+                f"Unexpected entries in {skills_dir}: {unexpected}",
+            )
+
+        for slug, (is_symlink, is_directory) in sorted(entries.items()):
+            link_path = skills_dir / slug
+            if not is_symlink:
+                code = (
+                    "ordinary_dir_at_link_path"
+                    if is_directory
+                    else "non_link_at_link_path"
+                )
+                raise SymlinkMaterializationError(
+                    code,
+                    f"Expected symlink at {link_path} but found a non-link entry",
+                )
+            spec = expected_by_slug[slug]
+            expected_target = (
+                canonical_root
+                / slug
+                / spec["version"]
+                / spec["content_hash"][:16]
+            )
+            raw_target = Path(os.readlink(link_path))
+            if raw_target.is_absolute() or not isolation.verify_workspace_link(
+                link_path,
+                expected_target,
+                canonical_root,
+            ):
+                raise SymlinkMaterializationError(
+                    "wrong_target",
+                    f"Workspace link {link_path} does not point to "
+                    f"{expected_target}",
+                )
+
+
+def _assistant_skill_rollback_plan(
+    paths: SystemAssistantPaths,
+) -> tuple[list[Path], list[Path]]:
+    """Record only absent skill paths/directories this call may create."""
+    links = [
+        paths.workspace / subdir / slug
+        for subdir in (".claude/skills", ".agents/skills")
+        for slug in sorted(_ASSISTANT_SKILL_SLUGS)
+    ]
+    directories = [
+        paths.root.parent,
+        paths.root,
+        paths.workspace,
+        paths.workspace / ".claude",
+        paths.workspace / ".claude/skills",
+        paths.workspace / ".agents",
+        paths.workspace / ".agents/skills",
+    ]
+    return (
+        [path for path in links if not os.path.lexists(path)],
+        [path for path in directories if not os.path.lexists(path)],
+    )
+
+
+def _rollback_created_assistant_skill_paths(
+    links: list[Path], directories: list[Path],
+) -> None:
+    """Remove only skill links/directories proven absent before this call."""
+    failures: list[str] = []
+    for link in links:
+        if not os.path.lexists(link):
+            continue
+        if link.is_symlink():
+            try:
+                link.unlink()
+            except OSError as exc:
+                failures.append(f"{link}: {exc}")
+        else:
+            failures.append(f"{link}: created path is not a symlink")
+    for directory in sorted(
+        directories,
+        key=lambda path: len(path.parts),
+        reverse=True,
+    ):
+        if not os.path.lexists(directory):
+            continue
+        if directory.is_symlink() or not directory.is_dir():
+            failures.append(f"{directory}: created path is not a directory")
+            continue
+        try:
+            directory.rmdir()
+        except OSError as exc:
+            failures.append(f"{directory}: {exc}")
+    if failures:
+        raise ValueError(
+            "assistant skill materialization rollback failed: " + "; ".join(failures)
+        )
+
+
 def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
     selected_executor = _validate_executor(executor)
     paths = system_assistant_paths(runtime_root)
@@ -639,6 +857,9 @@ def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
         "assistant learnings directory must not be a symlink",
     )
     _reject_symlink(paths.logs_dir, "assistant logs directory must not be a symlink")
+    managed_detail = _managed_dir_existing_invalid_detail(paths)
+    if managed_detail is not None:
+        raise ValueError(managed_detail)
     _reject_existing_invalid_bootstrap_file(
         paths.workspace / "agent.yaml",
         "agent.yaml",
@@ -664,6 +885,54 @@ def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
         and knowledge_index_invalid_detail != "assistant knowledge index is missing"
     ):
         raise ValueError(knowledge_index_invalid_detail)
+
+    from runtime.config import Settings
+    from runtime.orchestrator.workspace_adapters import (
+        SystemContractMaterializationError,
+        materialize_workspace_skills_union,
+    )
+    from runtime.skills.canonical_store import CanonicalStoreError
+    from runtime.skills.symlink_materializer import SymlinkMaterializationError
+
+    settings = Settings()
+    try:
+        _preflight_assistant_skills(paths.workspace, settings)
+    except (
+        CanonicalStoreError,
+        SymlinkMaterializationError,
+        SystemContractMaterializationError,
+    ) as exc:
+        raise ValueError(f"assistant skill materialization failed: {exc}") from exc
+
+    rollback_links, rollback_directories = _assistant_skill_rollback_plan(paths)
+    try:
+        materialize_workspace_skills_union(
+            paths.workspace,
+            settings,
+            slug="system-assistant",
+            contexts=list(_ASSISTANT_SKILL_CONTEXTS),
+            provider=selected_executor,
+            agent_name="system_assistant",
+            team="",
+            # The runtime-global assistant has no managed catalog or org
+            # database. Only the canonical system-contract union is eligible.
+            skills_root=paths.root / ".no-managed-skills",
+        )
+    except (
+        CanonicalStoreError,
+        SymlinkMaterializationError,
+        SystemContractMaterializationError,
+    ) as exc:
+        try:
+            _rollback_created_assistant_skill_paths(
+                rollback_links, rollback_directories,
+            )
+        except ValueError as rollback_exc:
+            raise ValueError(
+                f"assistant skill materialization failed: {exc}; {rollback_exc}"
+            ) from exc
+        raise ValueError(f"assistant skill materialization failed: {exc}") from exc
+
     _ensure_managed_dir(
         paths.root.parent,
         "assistant system directory must not be a symlink",
@@ -704,39 +973,3 @@ def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
         (paths.learnings_dir / "_index.md").write_text("# Learnings: system_assistant\n\n")
     prompt = _assistant_prompt()
     _write_assistant_instruction_pair(paths.workspace, prompt)
-
-    from runtime.config import Settings
-    from runtime.orchestrator.workspace_adapters import (
-        SystemContractMaterializationError,
-        materialize_workspace_skills_union,
-    )
-    from runtime.skills.canonical_store import CanonicalStoreError
-    from runtime.skills.symlink_materializer import SymlinkMaterializationError
-
-    settings = Settings()
-    try:
-        materialize_workspace_skills_union(
-            paths.workspace,
-            settings,
-            slug="system-assistant",
-            contexts=[
-                "task",
-                "thread",
-                "wake",
-                "dream",
-                "schedule",
-                "bootstrap",
-            ],
-            provider=selected_executor,
-            agent_name="system_assistant",
-            team="",
-            # The runtime-global assistant has no managed catalog or org
-            # database. Only the canonical system-contract union is eligible.
-            skills_root=paths.root / ".no-managed-skills",
-        )
-    except (
-        CanonicalStoreError,
-        SymlinkMaterializationError,
-        SystemContractMaterializationError,
-    ) as exc:
-        raise ValueError(f"assistant skill materialization failed: {exc}") from exc
