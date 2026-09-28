@@ -225,8 +225,9 @@ def test_materializes_into_both_provider_roots_for_no_repo_workspace(tmp_path):
 # Per the controlling repair brief, an unknown REAL scan is a refusal test and
 # never a positive control. On a sandboxed host whose PID1 is not the host init
 # the shipped helper correctly returns ``unknown``; the positive removal control
-# is therefore the separate non-elevated host witness, while these tests prove
-# that every refusal branch (including an unknown scan) issues no mutation.
+# is therefore the separate non-elevated host witness. These tests prove
+# mutation-free refusal for gates that return before the literal action begins;
+# they do not extend that promise to failures detected after action has started.
 
 PROC_BEGIN = "<!-- procedure-commands:begin -->"
 PROC_END = "<!-- procedure-commands:end -->"
@@ -1084,7 +1085,7 @@ def test_action_boundary_cache_replacement_refuses_and_preserves_both_paths(
     assert (cache.parent / "node_modules.before" / "original").read_text() == "keep\n"
 
 
-def test_final_deletion_dispatch_swap_refuses_and_preserves_both_objects(
+def test_pre_descriptor_admission_root_swap_refuses_and_preserves_both_objects(
         tmp_path, body):
     fx = _build_procedure_fixture(tmp_path)
     cache = fx["eligible"] / "node_modules"

@@ -251,10 +251,13 @@ gate exit 0 permits the non-force action.
 ## Delivered procedure (executable control flow)
 
 This is the exact sequence to execute: authoritative joins first, then every
-gate, then — only if all of them passed — the literal non-force action. A
-refusal performs **no** mutation. Source this block and call
-`run_cleanup_candidate <candidate> <containing>`; it prints a JSON receipt and
-returns `0` only when the literal action ran, `2` on any refusal.
+gate, then — only if all of them passed — the literal non-force action. Every
+refusal raised by those joins or gates before the literal action begins performs
+no mutation. A failure/refusal detected after the literal action starts returns
+`2` and never emits `removed_cache`, but may already have partially mutated the
+candidate; see the accepted same-user entry-swapping residual above. Source this
+block and call `run_cleanup_candidate <candidate> <containing>`; it prints a JSON
+receipt and returns `0` only when the literal action ran, `2` on any refusal.
 
 <!-- procedure-commands:begin -->
 ```bash
