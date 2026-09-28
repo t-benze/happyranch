@@ -159,6 +159,12 @@ It returns exactly one of `clear_observation`, `blocked`, or `unknown`
 This is a **snapshot** with a disclosed later-opener/write-interruption and
 data-loss residual risk. It is not a claim of OS-wide absence or future
 non-use, and it is not executable-identity authentication.
+Deliberate same-user entry swapping inside an already validated cache or
+worktree during removal is an accepted residual outside this accident-prevention
+threat model because `unlink`/`rmdir` do not follow links outside the target; all
+nested-mount, cross-device, non-owned, protected-descendant, symlink, identity,
+pathname, action-time, and other accidental or ambiguous drift refusals remain
+mandatory.
 
 ## Eligibility gates (literal commands)
 
