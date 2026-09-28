@@ -14,7 +14,7 @@ def test_summary_reports_counts_and_failed_test_ids(tmp_path: Path) -> None:
     junit = tmp_path / "integration.xml"
     junit.write_text(
         """<?xml version="1.0" encoding="utf-8"?>
-<testsuites tests="5" failures="1" errors="1" skipped="1" time="2.5">
+<testsuites name="pytest tests">
   <testsuite name="pytest" tests="5" failures="1" errors="1" skipped="1">
     <testcase classname="tests.integration.test_ok" name="test_pass" file="tests/integration/test_ok.py" />
     <testcase classname="tests.integration.test_bad" name="test_failure[x]" file="tests/integration/test_bad.py"><failure>no</failure></testcase>

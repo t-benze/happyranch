@@ -34,6 +34,17 @@ def _integer_attribute(element: ET.Element, name: str) -> int:
     return value
 
 
+def _test_suites(root: ET.Element) -> list[ET.Element]:
+    if root.tag == "testsuite":
+        return [root]
+    if root.tag == "testsuites":
+        suites = list(root.findall("testsuite"))
+        if suites:
+            return suites
+        raise ValueError("JUnit testsuites root contains no testsuite elements")
+    raise ValueError(f"unexpected JUnit root element {root.tag!r}")
+
+
 def _failed_test_id(testcase: ET.Element) -> str:
     name = testcase.get("name") or "<unnamed>"
     source = testcase.get("file") or testcase.get("classname") or "<unknown>"
@@ -42,10 +53,11 @@ def _failed_test_id(testcase: ET.Element) -> str:
 
 def parse_junit(path: Path) -> tuple[TestCounts, list[str]]:
     root = ET.parse(path).getroot()
-    collected = _integer_attribute(root, "tests")
-    failures = _integer_attribute(root, "failures")
-    errors = _integer_attribute(root, "errors")
-    skipped = _integer_attribute(root, "skipped")
+    suites = _test_suites(root)
+    collected = sum(_integer_attribute(suite, "tests") for suite in suites)
+    failures = sum(_integer_attribute(suite, "failures") for suite in suites)
+    errors = sum(_integer_attribute(suite, "errors") for suite in suites)
+    skipped = sum(_integer_attribute(suite, "skipped") for suite in suites)
     failed = failures + errors
     passed = collected - failed - skipped
     if passed < 0:
