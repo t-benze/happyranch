@@ -2198,9 +2198,14 @@ def test_packaged_preflight_accepts_real_systemd_0440_staging(
         raising=False,
     )
 
-    assert connector_cli_main([
-        "credential-capability", "--name", name, "--unit", unit,
-    ]) == 0
+    try:
+        assert connector_cli_main([
+            "credential-capability", "--name", name, "--unit", unit,
+        ]) == 0
+    finally:
+        # Restore fixture ownership permissions after observing the real 0500
+        # capability boundary so pytest can remove its task-owned basetemp.
+        staged.chmod(0o700)
 
 
 @pytest.mark.parametrize(
