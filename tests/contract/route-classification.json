@@ -175,6 +175,7 @@
     "GET /api/v1/orgs/{slug}/threads/{thread_id}/attachments": "thread-scoped attachments — agent/CLI facing",
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/attachments": "thread-scoped attachments — agent/CLI facing",
     "POST /api/v1/orgs/{slug}/jobs/submit": "agent callback (matches /report-completion pattern)",
+    "GET /api/v1/orgs/{slug}/jobs/{job_id}/receipt": "live-session-bound agent/CLI job-evidence receipt; no browser consumer and never remotely allowed",
     "POST /api/v1/orgs/{slug}/artifacts": "agent-facing v1; also founder artifacts UI upload",
     "GET /api/v1/orgs/{slug}/artifacts": "agent-facing v1; also founder artifacts UI list",
     "GET /api/v1/orgs/{slug}/artifacts/{name}": "agent-facing v1; also founder artifacts UI download",
