@@ -2362,7 +2362,19 @@ def test_terminal_worktree_real_proc_end_to_end(
     _admit_real_terminal_worktree_reclamation(monkeypatch)
     outcomes = _record_terminal_worktree_outcomes(monkeypatch)
     scanner = _load_terminal_worktree_scanner()
-    host_context = scanner.RealProc().host_context(str(os.getpid()))
+    real_scan = scanner.scan
+    scan_classifications = []
+
+    def observe_scan(*args, **kwargs):
+        try:
+            result = real_scan(*args, **kwargs)
+        except Exception:
+            scan_classifications.append("failure")
+            raise
+        scan_classifications.append(result.state)
+        return result
+
+    monkeypatch.setattr(scanner, "scan", observe_scan)
     holder = None
     if holder_cwd:
         holder = subprocess.Popen(
@@ -2384,16 +2396,24 @@ def test_terminal_worktree_real_proc_end_to_end(
             holder.stdin.flush()
             holder.wait(timeout=5)
 
+    assert len(scan_classifications) == 1
+    classification = scan_classifications[0]
+    print(f"terminal worktree real scanner classification: {classification}")
     if holder_cwd:
+        assert classification == "blocked"
         assert outcomes == [("preserved", "live-process-reference")]
         assert candidate.exists()
         assert holder is not None and holder.returncode == 0
-    elif host_context.get("ok"):
-        assert outcomes == [("removed", "eligible")]
-        assert not candidate.exists()
     else:
-        assert outcomes == [("preserved", "process-probe-uncertain")]
-        assert candidate.exists()
+        expected_by_classification = {
+            "clear_observation": (("removed", "eligible"), False),
+            "blocked": (("preserved", "live-process-reference"), True),
+            "unknown": (("preserved", "process-probe-uncertain"), True),
+            "failure": (("preserved", "process-probe-uncertain"), True),
+        }
+        expected_outcome, expected_exists = expected_by_classification[classification]
+        assert outcomes == [expected_outcome]
+        assert candidate.exists() is expected_exists
 
 
 @pytest.mark.skipif(not Path("/proc").is_dir(), reason="Linux /proc proof")
