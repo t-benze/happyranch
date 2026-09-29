@@ -167,6 +167,8 @@ def test_effectiveness_contract_names_remote_and_merged_preservation(body):
     normalized = " ".join(body.split())
     assert "owning-task remote branch" in normalized
     assert "head contains (is equal to or descends from) the candidate `HEAD`" in normalized
+    assert "When the owning live remote branch exists, it is authoritative" in normalized
+    assert "refuse without consulting owning-task or any-task merged-PR alternatives" in normalized
     assert "confirmed merged PR" in normalized
     assert "may not preserve the original commit topology" in normalized
     assert "closed-unmerged" in normalized
@@ -607,7 +609,7 @@ def _write_stubs(bin_dir: Path) -> None:
         "case \"$*\" in *\" ls-remote --exit-code origin \"*)\n"
         "  case \"${WC_REMOTE_SCENARIO:-missing}\" in\n"
         "    success) printf '%s\\trefs/heads/%s\\n' \"$WC_HEAD\" \"$WC_BRANCH\"; exit 0 ;;\n"
-        "    target) printf '%s\\trefs/heads/%s\\n' \"$WC_TARGET_SHA\" \"$WC_BRANCH\"; exit 0 ;;\n"
+        "    target) printf '%s\\trefs/heads/%s\\n' \"$WC_REMOTE_TARGET_SHA\" \"$WC_BRANCH\"; exit 0 ;;\n"
         "    mismatch) printf '%040d\\trefs/heads/%s\\n' 0 \"$WC_BRANCH\"; exit 0 ;;\n"
         "    malformed) echo malformed; exit 0 ;;\n"
         "    fail) exit 71 ;;\n"
@@ -635,6 +637,7 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
                    other_pr_scenario: str = "merged",
                    repo_scenario: str = "main",
                    target_sha: str | None = None,
+                   remote_target_sha: str | None = None,
                    compare_scenario: str = "diverged",
                    tasks_fail: bool = False,
                    action_drift: str = "", rm_scenario: str = "normal",
@@ -727,6 +730,7 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
         "WC_REPO_COUNT": str(tmp_path / "repo-count"),
         "WC_REMOTE_SCENARIO": remote_scenario,
         "WC_TARGET_SHA": target_sha or ("1" * 40),
+        "WC_REMOTE_TARGET_SHA": remote_target_sha or target_sha or ("1" * 40),
         "WC_COMPARE_SCENARIO": compare_scenario,
         "WC_COMPARE_COUNT": str(tmp_path / "compare-count"),
         "WC_BRANCH": f"task/{containing.name}",
@@ -1481,6 +1485,83 @@ def test_preservation_by_other_task_merged_pr_with_independent_containment(
     assert result["gh_log"].count("search/issues") == 4
     assert result["gh_log"].count("/pulls/90") == 4
     assert result["gh_log"].count("/compare/") == 4
+
+
+@pytest.mark.parametrize("own_branch_relation", ["diverged", "behind"])
+def test_live_own_branch_noncontainment_refuses_before_any_task_pr_fallback(
+        tmp_path, body, own_branch_relation):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    (fx["eligible"] / "candidate.txt").write_text("candidate\n")
+    _git("add", "-A", cwd=fx["eligible"])
+    _git("commit", "-m", "candidate", cwd=fx["eligible"])
+    candidate_head = _git(
+        "rev-parse", "HEAD", cwd=fx["eligible"],
+    ).stdout.strip()
+    if own_branch_relation == "diverged":
+        (fx["primary"] / "divergent.txt").write_text("divergent\n")
+        _git("add", "-A", cwd=fx["primary"])
+        _git("commit", "-m", "divergent own branch", cwd=fx["primary"])
+        own_branch_head = _git(
+            "rev-parse", "HEAD", cwd=fx["primary"],
+        ).stdout.strip()
+    else:
+        own_branch_head = _git(
+            "rev-parse", "origin/main", cwd=fx["eligible"],
+        ).stdout.strip()
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map, audit_trigger=occurrences,
+        scan_state="clear_observation", remote_scenario="target",
+        remote_target_sha=own_branch_head, pr_scenario="none",
+        search_scenario="merged", other_pr_scenario="merged",
+        repo_scenario="main", target_sha=candidate_head,
+        compare_scenario="identical",
+    )
+    assert result["rc"] == 2, result
+    assert "worktree remove" not in result["git_log"]
+    assert "search/issues" not in result["gh_log"]
+    assert "/pulls/" not in result["gh_log"]
+    assert "/compare/" not in result["gh_log"]
+    assert fx["eligible"].exists()
+
+
+def test_live_own_branch_containment_error_refuses_before_pr_fallback(
+        tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    (fx["eligible"] / "candidate.txt").write_text("candidate\n")
+    _git("add", "-A", cwd=fx["eligible"])
+    _git("commit", "-m", "candidate", cwd=fx["eligible"])
+    candidate_head = _git(
+        "rev-parse", "HEAD", cwd=fx["eligible"],
+    ).stdout.strip()
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map, audit_trigger=occurrences,
+        scan_state="clear_observation", remote_scenario="target",
+        remote_target_sha=candidate_head, pr_scenario="none",
+        search_scenario="merged", other_pr_scenario="merged",
+        repo_scenario="main", target_sha=candidate_head,
+        compare_scenario="identical",
+        git_fail_match=(
+            f"merge-base --is-ancestor {candidate_head} {candidate_head}"
+        ),
+    )
+    assert result["rc"] == 2, result
+    assert "worktree remove" not in result["git_log"]
+    assert "search/issues" not in result["gh_log"]
+    assert "/pulls/" not in result["gh_log"]
+    assert "/compare/" not in result["gh_log"]
+    assert fx["eligible"].exists()
 
 
 @pytest.mark.parametrize("other_pr", ["open", "closed", "nondefault"])

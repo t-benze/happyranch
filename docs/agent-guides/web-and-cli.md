@@ -38,7 +38,9 @@ stale, spoofed, truncated, or incomplete structured receipt. `jobs submit
 receipt containing stored execution identity and complete output accounting.
 An owning origin task branch whose head equals or descends from the candidate,
 an owning-task merged PR, and a containing any-task merged PR can preserve a
-clean candidate in addition to the accepted durable ref. The any-task route
+clean candidate in addition to the accepted durable ref. An existing owning
+branch is authoritative: non-containment or failed containment evidence refuses
+without merged-PR fallback. The any-task route
 uses complete stable double-read discovery, then separately confirms
 merged/default-branch state and candidate-to-PR-head containment; discovery
 alone and other-task unmerged PRs never count, while owning-branch unmerged

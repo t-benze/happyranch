@@ -83,7 +83,10 @@ accepted durable ref (normally `origin/main`); a freshly verified owning-task
 remote branch on `origin` whose head contains (is equal to or descends from)
 the candidate `HEAD`; a confirmed merged PR for that same task branch whose
 head contains the candidate `HEAD`; or a merged PR from any task whose head is
-independently confirmed to contain the candidate `HEAD`. The any-task proof
+independently confirmed to contain the candidate `HEAD`. When the owning live
+remote branch exists, it is authoritative: if its head does not contain the
+candidate `HEAD`, or its containment evidence fails, refuse without consulting
+owning-task or any-task merged-PR alternatives. The any-task proof
 requires complete, non-truncated, double-read discovery; a stable closed PR
 projection with `MERGED`, non-empty `mergedAt`, and base equal to the
 double-read repository default branch; and a stable complete compare proving

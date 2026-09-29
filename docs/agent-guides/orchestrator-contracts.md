@@ -56,7 +56,9 @@ completely paginated and repeated; open, closed-unmerged, duplicate, changing,
 conflicting, or malformed rows refuse.
 Durable preservation may be the accepted ref, an owning origin task branch
 whose head equals or descends from the candidate, an owning-task merged PR, or
-an any-task merged PR whose head independently contains the candidate. The
+an any-task merged PR whose head independently contains the candidate. An
+existing owning branch is authoritative: non-containment or failed containment
+evidence refuses without merged-PR fallback. The
 any-task route requires complete stable double-read discovery, `MERGED` plus
 non-empty `mergedAt`, base equal to the double-read default branch, and a
 complete stable compare; discovery alone and other-task unmerged PRs never

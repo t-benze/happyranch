@@ -751,9 +751,14 @@ print(rows[0][0])' "$remote_rows" "$branch")" || return 1
   elif [ "$remote_rc" -ne 2 ]; then
     return 1
   fi
-  [ "$durable_ref" -eq 1 ] || \
-    { [ -n "$remote_target" ] && _wc_target_contains_head "$head" "$remote_target" remote "$repo_slug"; } || \
-    { [ -n "$merged_target" ] && _wc_target_contains_head "$head" "$merged_target" merged "$repo_slug"; } || \
+  if [ "$durable_ref" -eq 1 ]; then
+    return 0
+  fi
+  if [ -n "$remote_target" ]; then
+    _wc_target_contains_head "$head" "$remote_target" remote "$repo_slug"
+    return $?
+  fi
+  { [ -n "$merged_target" ] && _wc_target_contains_head "$head" "$merged_target" merged "$repo_slug"; } || \
     _wc_any_merged_pr_contains_head "$head" "$repo_slug"
 }
 

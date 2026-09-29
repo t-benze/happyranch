@@ -428,7 +428,9 @@ repeated, with every open, closed-unmerged, duplicate, changing, conflicting,
 or malformed result refusing. Preservation accepts the existing durable ref,
 an owning origin task branch whose head equals or descends from the candidate,
 an owning-task merged PR, or an any-task merged PR whose confirmed head
-contains the candidate. The last route requires complete stable double-read
+contains the candidate. An existing owning branch is authoritative:
+non-containment or failed containment evidence refuses without merged-PR
+fallback. The last route requires complete stable double-read
 discovery, merged/default-branch confirmation, and a separate complete stable
 compare; discovery alone and other-task unmerged PRs never count, while an
 owning-branch unmerged PR still refuses. Merged integration may not preserve

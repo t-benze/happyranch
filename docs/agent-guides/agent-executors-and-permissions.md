@@ -127,7 +127,9 @@ make `report-completion` the final action. Cleanup uses literal
 clean, its commit is durable through the accepted ref, an equal/descendant own
 origin branch, an own merged PR, or a fully confirmed containing any-task
 merged PR, it has no owning-branch open or closed-unmerged PR, and no live
-session/process reference remains. Any-task discovery is complete and
+session/process reference remains. An existing owning branch is authoritative:
+non-containment or failed containment evidence refuses without merged-PR
+fallback. Any-task discovery is complete and
 double-read, then independently confirms merged/default-branch state and
 candidate-to-PR-head containment; another task's unmerged PR never counts. It
 never uses `--force` and never deletes a branch.
@@ -731,7 +733,9 @@ twice; any open, closed-unmerged, duplicate, changing, conflicting, or malformed
 row refuses. A clean whole worktree may prove preservation through the accepted
 durable ref, an owning origin task branch whose head equals or descends from
 the candidate, an owning-task merged PR, or an any-task merged PR whose
-confirmed head contains the candidate. The any-task route requires complete
+confirmed head contains the candidate. An existing owning branch is
+authoritative: non-containment or failed containment evidence refuses without
+merged-PR fallback. The any-task route requires complete
 stable double-read discovery, merged/default-branch confirmation, and an
 independent complete stable compare; discovery alone and other-task unmerged
 PRs never count, while owning-branch unmerged evidence still refuses. A merged
