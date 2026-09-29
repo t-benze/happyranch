@@ -146,7 +146,9 @@ def _sweep_on_startup(
     from runtime.orchestrator.authority import (
         refuse_authority_policy_v2_pre_final_on_startup,
     )
-    v2_pre_final_roots = refuse_authority_policy_v2_pre_final_on_startup(db)
+    v2_pre_final_roots = refuse_authority_policy_v2_pre_final_on_startup(
+        db, orchestrator=orchestrator,
+    )
     v2_discovery_unavailable = v2_pre_final_roots is None
 
     # Accepted recovery callbacks whose effects committed just before a crash

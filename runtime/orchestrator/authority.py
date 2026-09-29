@@ -2176,7 +2176,9 @@ _V2_INTERRUPTED_STAGE_REFUSAL = {
 }
 
 
-def refuse_authority_policy_v2_pre_final_on_startup(db) -> set[str] | None:
+def refuse_authority_policy_v2_pre_final_on_startup(
+    db, orchestrator: "Orchestrator | None" = None,
+) -> set[str] | None:
     """Discover and refuse interrupted pre-final v2 attempts before recovery.
 
     The returned roots own a pre-final obligation for this sweep and must not
@@ -2185,6 +2187,12 @@ def refuse_authority_policy_v2_pre_final_on_startup(db) -> set[str] | None:
     fail closed for every task-recovery branch in that startup pass.  A
     same-current-boot live owner is deliberately included in the fence but the
     Database writer returns ``housekeeping_pending`` without stealing it.
+
+    Only the caller that receives the just-committed ``refused`` outcome owns
+    the ordinary post-commit founder surfacing tail.  An authenticated replay
+    returns ``already_refused`` and therefore emits no second notification or
+    thread follow-up.  Production startup supplies ``orchestrator``; the
+    optional form preserves database-only test harnesses.
     """
     from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 
@@ -2212,13 +2220,41 @@ def refuse_authority_policy_v2_pre_final_on_startup(db) -> set[str] | None:
                     target.stage, "interrupted_pre_final",
                 )
             )
-            store.finalize_v2_attempt_refusal(
+            outcome = store.finalize_v2_attempt_refusal(
                 root_task_id=target.root_task_id,
                 manager_agent=target.manager_agent,
                 manager_session_id=target.manager_session_id,
                 result_id=target.result_id,
                 refusal_code=refusal_code,
             )
+            if outcome.status == "refused" and orchestrator is not None:
+                result = db.get_latest_task_result(
+                    target.root_task_id,
+                    target.manager_agent,
+                    target.manager_session_id,
+                )
+                last_summary = (
+                    result.get("output_summary", "")
+                    if result is not None and result.get("id") == target.result_id
+                    else ""
+                )
+                orchestrator.notify_escalated(
+                    task_id=target.root_task_id,
+                    agent=target.manager_agent,
+                    reason="authority_v2_refusal",
+                    last_summary=last_summary or "",
+                )
+                # Import lazily to preserve the authority/run_step module
+                # boundary.  The refusal transaction committed before this
+                # external projection is attempted.
+                from runtime.orchestrator.run_step import (
+                    _maybe_post_thread_escalation,
+                )
+                _maybe_post_thread_escalation(
+                    orchestrator,
+                    target.root_task_id,
+                    reason="authority_v2_refusal",
+                )
         except Exception:
             # The prior J/R/stage residue remains the retry obligation.  The
             # root stays fenced from every later startup effect in this pass.

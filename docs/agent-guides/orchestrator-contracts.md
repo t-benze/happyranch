@@ -1241,9 +1241,14 @@ before forgetting the live owner (`schema_drift` and `evidence_drift` map to
 `interrupted_pre_final`). Historical terminal recovery receipts do not claim a
 new ordinary result, but an unrelated live receipt remains a fence. A committed
 `v2_refused` root uses the normal post-commit notification and thread-follow-up
-tail without a second escalation write. A `v2_pending` outcome instead proceeds
-through the ordinary escalation CAS so it cannot leave a result-bearing root
-permanently `in_progress`.
+tail without a second escalation write. Startup passes its orchestrator into
+pre-final refusal discovery and runs that tail only for the database writer's
+newly committed `refused` outcome, after commit; authenticated
+`already_refused` replay, `owner_lost` and pending outcomes do not surface.
+Thus a second startup adds no notification, thread follow-up or audit while the
+pre-final root remains fenced from every later startup recovery branch. A
+`v2_pending` outcome instead proceeds through the ordinary escalation CAS so it
+cannot leave a result-bearing root permanently `in_progress`.
 
 The persisted orchestration-step audit is the consumer idempotency key on every
 entry, including startup and zombie recovery even if a caller omits the

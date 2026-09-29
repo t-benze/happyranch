@@ -28,9 +28,14 @@ same closed refusal-category mapping used by the hook. Refusal finalization may
 ignore unrelated terminal recovery receipts as historical evidence; a live or
 ambiguous unrelated receipt still fails closed. A committed refusal owns the
 single root escalation write and then uses the ordinary notification/thread
-tail. If refusal remains pending, the ordinary escalation CAS supplies the
-terminal root transition and surfacing instead. Neither branch may leave the
-root indefinitely `in_progress`.
+tail. Startup gives refusal discovery the existing orchestrator and surfaces
+only the writer's newly committed `refused` outcome, after that transaction
+returns. An authenticated `already_refused` replay, `owner_lost` disposition or
+pending outcome emits no notification or thread follow-up; the fenced-root skip
+for accepted recovery, pid failure and Pending enqueue is unchanged. If refusal
+remains pending in the ordinary completion consumer, its escalation CAS supplies
+the terminal root transition and surfacing instead. Neither branch may leave
+the root indefinitely `in_progress`.
 
 Every completion-consumer entry checks the persisted orchestration-step audit
 before appending a decision audit. Startup, zombie, accepted-recovery and
