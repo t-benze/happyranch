@@ -28,7 +28,7 @@ def _workflow_snapshot(path: Path) -> tuple[object, ...]:
         objects = tuple(
             conn.execute(
                 "SELECT type,name,tbl_name,sql FROM sqlite_schema "
-                "WHERE type IN ('table','index','trigger') "
+                "WHERE type IN ('table','index','trigger','view') "
                 "AND (name LIKE 'workflow_%' OR tbl_name LIKE 'workflow_%') "
                 "ORDER BY type,name,tbl_name"
             )
@@ -298,6 +298,55 @@ def test_partial_or_extra_workflow_layout_is_never_adopted(
         install_or_recover(db)
     db.close()
     assert _workflow_snapshot(path) == before
+
+
+@pytest.mark.parametrize(
+    "ddl",
+    [
+        pytest.param(
+            "CREATE VIEW workflow_unknown_view AS "
+            "SELECT version FROM workflow_adapter_versions",
+            id="workflow-named-view",
+        ),
+        pytest.param(
+            "CREATE INDEX foreign_unknown_index "
+            "ON workflow_adapter_versions(version)",
+            id="foreign-named-index-on-workflow-table",
+        ),
+        pytest.param(
+            "CREATE TRIGGER foreign_unknown_trigger "
+            "AFTER INSERT ON workflow_adapter_versions "
+            "BEGIN SELECT NEW.version; END",
+            id="foreign-named-trigger-on-workflow-table",
+        ),
+    ],
+)
+def test_unknown_workflow_owned_object_refuses_two_cold_reopens_without_writes(
+    tmp_path: Path,
+    ddl: str,
+) -> None:
+    path = tmp_path / "unknown-object.db"
+    installed = Database(path)
+    install_or_recover(installed)
+    installed.close()
+
+    conn = sqlite3.connect(path)
+    conn.execute(ddl)
+    conn.commit()
+    conn.close()
+    before_bytes = path.read_bytes()
+    before_rows_and_objects = _workflow_snapshot(path)
+
+    for _ in range(2):
+        reopened = Database(path)
+        with pytest.raises(
+            ValueError,
+            match="workflow_schema_object_set_mismatch",
+        ):
+            install_or_recover(reopened)
+        reopened.close()
+        assert path.read_bytes() == before_bytes
+        assert _workflow_snapshot(path) == before_rows_and_objects
 
 
 def test_generic_runtime_audit_database_is_not_implicitly_installed(

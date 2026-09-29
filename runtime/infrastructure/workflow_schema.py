@@ -174,7 +174,7 @@ def _layout(conn: sqlite3.Connection) -> tuple[object, ...]:
         for row in conn.execute(
             """SELECT type,name,tbl_name,sql
                FROM sqlite_schema
-               WHERE type IN ('table','index','trigger')
+               WHERE type IN ('table','index','trigger','view')
                  AND (name LIKE 'workflow_%' OR tbl_name LIKE 'workflow_%')
                ORDER BY type,name,tbl_name"""
         )
