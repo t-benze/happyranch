@@ -18,25 +18,6 @@ from runtime.orchestrator import prompt_loader
 from runtime.orchestrator.chain import build_prior_leg_context
 
 
-@pytest.fixture(autouse=True)
-def _canonical_pair_for_contained_launches(monkeypatch: pytest.MonkeyPatch) -> None:
-    from tests.daemon import test_task_producer_containment as containment
-
-    original_make_orch = containment._make_orch
-
-    def make_orch_with_pair(*args, **kwargs):
-        result = original_make_orch(*args, **kwargs)
-        paths = result[0]._paths
-        for agent_name in ("engineering_head", "dev_agent"):
-            workspace = paths.workspaces_dir / agent_name
-            workspace.mkdir(parents=True, exist_ok=True)
-            (workspace / "AGENTS.md").write_text("# Test agent instructions\n")
-            (workspace / "CLAUDE.md").symlink_to("AGENTS.md")
-        return result
-
-    monkeypatch.setattr(containment, "_make_orch", make_orch_with_pair)
-
-
 @dataclasses.dataclass(frozen=True)
 class _U0TypedJson:
     """Private comparison form that preserves JSON scalar type fidelity."""
@@ -3032,15 +3013,21 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         assert all(both_launched_snapshot["results"][child] == [] for child in children)
         assert held_spawn["active_fanout"] == both_launched_snapshot["active_fanout"]
         # Launch adds only each child's source-owned scratch manifest/lock and
-        # live session/control; attachment and canonical/team/archive bytes
-        # remain in the same identity/path domain through this boundary.
+        # live session/control; the remaining files are the exact
+        # ContextBuilder-provisioned workspace shape.  Attachment and
+        # canonical/team/archive bytes remain in the same identity/path domain
+        # through this boundary.
         for surface in ("attachments", "canonical_agents", "archived_agents",
                         "archived_workspaces", "teams_bytes"):
             assert both_launched_snapshot[surface] == held_spawn[surface]
         assert both_launched_snapshot["controls"][parent_id] is False
         assert all(both_launched_snapshot["controls"][child] is True for child in children)
         assert set(both_launched_snapshot["workspaces"]["dev_agent"]) == {
-            "AGENTS.md", "CLAUDE.md", "agent.yaml", "task_history.md",
+            ".claude/settings.json",
+            "AGENTS.md",
+            "CLAUDE.md",
+            "memory/_index.md",
+            "task_history.md",
         } | {
             item for child in children
             for item in (f".happyranch/task-scratch-manifests/{child}.json",
