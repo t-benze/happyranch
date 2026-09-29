@@ -81,11 +81,19 @@ preserved, with no open or closed-unmerged PR for its branch, and no protection,
 may be considered. Durable preservation is exactly one of: the existing
 accepted durable ref (normally `origin/main`); a freshly verified owning-task
 remote branch on `origin` whose head contains (is equal to or descends from)
-the candidate `HEAD`; or one unambiguous confirmed merged PR for that same task
-branch whose head contains the candidate `HEAD`. Missing, stale, unfetchable,
-diverged, conflicting, or malformed remote/PR evidence refuses. A confirmed
-merged PR preserves the integrated content but may not preserve the original
-commit topology. Refuse
+the candidate `HEAD`; a confirmed merged PR for that same task branch whose
+head contains the candidate `HEAD`; or a merged PR from any task whose head is
+independently confirmed to contain the candidate `HEAD`. The any-task proof
+requires complete, non-truncated, double-read discovery; a stable closed PR
+projection with `MERGED`, non-empty `mergedAt`, and base equal to the
+double-read repository default branch; and a stable complete compare proving
+the candidate is equal to or an ancestor of the PR head. Discovery alone never
+counts. Another task's open or closed-unmerged PR never preserves; an owning
+branch's open or closed-unmerged PR remains a refusal even if a different
+merged PR contains the candidate. Missing, stale, unfetchable, truncated,
+diverged, conflicting, changing, or malformed remote/PR evidence refuses. A
+confirmed merged PR preserves the integrated content but may not preserve the
+original commit topology. Refuse
 cross-owner, protected, symlink/shared/unknown, dirty whole worktrees,
 local-only or unreachable commits, and insufficient age. Never rewrite, move,
 archive, bundle, tag, quarantine, or repair preserved work.

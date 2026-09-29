@@ -36,10 +36,13 @@ stale, spoofed, truncated, or incomplete structured receipt. `jobs submit
 --json` returns the authenticated submission identity; `jobs show --json` and
 `jobs output --json` require the current task/session and return the same closed
 receipt containing stored execution identity and complete output accounting.
-Fresh exact origin task branches and confirmed merged PRs can preserve a clean
-candidate in addition to the accepted durable ref; the PR query is completely
-paginated and repeated, and any open, closed-unmerged, duplicated, changing, or
-malformed row refuses. Merged integration does not promise original commit
+An owning origin task branch whose head equals or descends from the candidate,
+an owning-task merged PR, and a containing any-task merged PR can preserve a
+clean candidate in addition to the accepted durable ref. The any-task route
+uses complete stable double-read discovery, then separately confirms
+merged/default-branch state and candidate-to-PR-head containment; discovery
+alone and other-task unmerged PRs never count, while owning-branch unmerged
+evidence still refuses. Merged integration does not promise original commit
 topology. Dirty whole worktrees are never removed, while a literal root
 dependency cache can qualify under the separate 24-hour cache gates without
 changing tracked source bytes or Git status. The removable worktree must be at
@@ -49,6 +52,14 @@ and at action time; nested mounts, cross-device or foreign-owned entries,
 protected descendants, incomplete evidence, and identity drift refuse. A
 success receipt requires measured root-plus-descendant bytes, actual candidate
 absence, and unchanged protected-path identities.
+
+The independent forward-only terminal task-worktree hook has no Web/CLI or
+configuration surface. Its final process gate loads this same bundled scanner
+by explicit file path inside the existing task worker thread: root-owned
+processes are out of scope, only exact name-plus-expected-cgroup helpers are
+exempt, any other unreadable same-user process is uncertain, and a positive
+reference preserves. The hook retains one five-second total deadline and one
+literal non-force removal attempt.
 
 ## Web UI
 
