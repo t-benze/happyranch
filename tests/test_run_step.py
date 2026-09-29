@@ -2352,12 +2352,17 @@ def test_terminal_worktree_real_proc_end_to_end(
     runtime, db, monkeypatch, holder_cwd,
 ):
     """Exercise the un-stubbed production process scan on disposable worktrees."""
-    from runtime.orchestrator.run_step import _fail
+    from runtime.orchestrator.run_step import (
+        _fail,
+        _load_terminal_worktree_scanner,
+    )
 
     task_id = f"TASK-REAL-SCANNER-{'HELD' if holder_cwd else 'CLEAR'}"
     orch, _primary, candidate = _terminal_worktree(runtime, db, task_id)
     _admit_real_terminal_worktree_reclamation(monkeypatch)
     outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+    scanner = _load_terminal_worktree_scanner()
+    host_context = scanner.RealProc().host_context(str(os.getpid()))
     holder = None
     if holder_cwd:
         holder = subprocess.Popen(
@@ -2383,9 +2388,12 @@ def test_terminal_worktree_real_proc_end_to_end(
         assert outcomes == [("preserved", "live-process-reference")]
         assert candidate.exists()
         assert holder is not None and holder.returncode == 0
-    else:
+    elif host_context.get("ok"):
         assert outcomes == [("removed", "eligible")]
         assert not candidate.exists()
+    else:
+        assert outcomes == [("preserved", "process-probe-uncertain")]
+        assert candidate.exists()
 
 
 @pytest.mark.skipif(not Path("/proc").is_dir(), reason="Linux /proc proof")
