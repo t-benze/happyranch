@@ -24,10 +24,12 @@ founder THR-243 seq42, never PASS.
 from __future__ import annotations
 
 import types
+from pathlib import Path
 
 import pytest
 
 from runtime.infrastructure.database import Database
+from runtime.infrastructure.workflow_schema import install_or_recover
 from runtime.models import TaskRecord, TaskStatus
 from runtime.orchestrator.authority import (
     ENQUEUE_DISPATCH_ORDINARY,
@@ -62,6 +64,12 @@ from tests.test_authority_v2_publication_bookkeeping import (
 )
 
 CHILD_ID = "TASK-C3D4A-CHILD"
+
+
+def _open_live_org_database(path: Path) -> Database:
+    db = Database(path)
+    install_or_recover(db)
+    return db
 
 
 class _StubOrg:
@@ -479,6 +487,8 @@ def _bootstrap_two_org_daemon_state(tmp_path, monkeypatch):
                 description="Isolated fixture",
             )
             (paths.agents_dir / f"{name}.md").write_text(render_agent_text(agent))
+        live_db = _open_live_org_database(paths.db_path)
+        live_db.close()
 
     home = tmp_path / "daemon-home"
     home.mkdir(parents=True, exist_ok=True)

@@ -12,6 +12,7 @@ import pytest
 
 from runtime.daemon.agent_config import set_executor, write_default_agent_config
 from runtime.infrastructure.database import Database
+from runtime.infrastructure.workflow_schema import install_or_recover
 from runtime.models import (
     TaskRecord,
     TaskStatus,
@@ -48,12 +49,18 @@ def _seed_active_agents_for_orchestrator(test_runtime):
 @pytest.fixture
 def orchestrator(test_settings, test_runtime):
     test_runtime.root.mkdir(parents=True, exist_ok=True)
-    db = Database(test_runtime.db_path)
+    db = _open_live_org_database(test_runtime.db_path)
     teams = TeamsRegistry.load(test_runtime.root)
     return Orchestrator(
         db=db, settings=test_settings,
         paths=test_runtime, slug="test", teams=teams,
     )
+
+
+def _open_live_org_database(path: Path) -> Database:
+    db = Database(path)
+    install_or_recover(db)
+    return db
 
 
 _DEFAULT_AGENTS = ["engineering_head", "product_manager", "dev_agent", "payment_agent"]

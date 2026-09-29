@@ -488,9 +488,12 @@ def _v2_apply_migrated_substitutions(conn, fresh: dict) -> dict:
 def _v2_build_reference_inventories() -> list[dict] | None:
     """Build the accepted reference inventories fresh from current source.
 
-    Returns ``[fresh, migrated]`` — the two and only two accepted ordered
-    representations — or ``None`` when the reference cannot be constructed
-    (fail closed).  The evaluated candidate database is never consulted.
+    Returns the fresh and migrated generic representations, followed by those
+    same two representations with the complete canonical U1A workflow layout.
+    The workflow namespace is therefore either wholly absent or wholly
+    canonical; non-workflow objects remain exact in all four references.
+    Returns ``None`` when any reference cannot be constructed (fail closed).
+    The evaluated candidate database is never consulted.
     """
     global _V2_SCHEMA_REFERENCE_CACHE
     if _V2_SCHEMA_REFERENCE_CACHE is not None:
@@ -499,6 +502,7 @@ def _v2_build_reference_inventories() -> list[dict] | None:
         import tempfile
         from pathlib import Path as _Path
         from runtime.infrastructure.database import Database
+        from runtime.infrastructure.workflow_schema import install_or_recover
 
         with tempfile.TemporaryDirectory() as td:
             reference = Database(_Path(td) / "v2-schema-reference.db")
@@ -511,7 +515,27 @@ def _v2_build_reference_inventories() -> list[dict] | None:
                     reference._conn.close()
                 except Exception:
                     pass
-        _V2_SCHEMA_REFERENCE_CACHE = [fresh, migrated]
+            workflow_reference = Database(
+                _Path(td) / "v2-workflow-schema-reference.db"
+            )
+            try:
+                install_or_recover(workflow_reference)
+                workflow_conn = workflow_reference._conn
+                workflow_fresh = _v2_capture_inventory(workflow_conn)
+                workflow_migrated = _v2_apply_migrated_substitutions(
+                    workflow_conn, workflow_fresh,
+                )
+            finally:
+                try:
+                    workflow_reference._conn.close()
+                except Exception:
+                    pass
+        _V2_SCHEMA_REFERENCE_CACHE = [
+            fresh,
+            migrated,
+            workflow_fresh,
+            workflow_migrated,
+        ]
     except Exception:
         return None
     return _V2_SCHEMA_REFERENCE_CACHE

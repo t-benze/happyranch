@@ -146,6 +146,44 @@ def test_org_state_load_refuses_on_team_drift(tmp_path: Path) -> None:
     assert "family_operations" in str(exc_info.value)
 
 
+def test_org_state_load_closes_new_database_on_team_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later consistency failure releases the handle opened by load."""
+    from runtime.daemon import org_state
+
+    org_root = tmp_path / "rt" / "orgs" / "family"
+    _seed_org(org_root)
+    paths = OrgPaths(root=org_root)
+    manager = AgentDef(
+        name="family_manager",
+        team="family_operations",
+        role="manager",
+        executor="claude",
+        allow_rules=(),
+        repos={},
+        enrolled_by="founder",
+        enrolled_at_task=None,
+        enrolled_at=datetime(2026, 5, 27, tzinfo=timezone.utc),
+        system_prompt="You are the Family Manager.\n",
+        description="Manages family ops",
+    )
+    (paths.agents_dir / "family_manager.md").write_text(render_agent_text(manager))
+
+    closed: list[Path] = []
+    real_close = org_state.Database.close
+
+    def close_and_record(db: Database) -> None:
+        closed.append(db.path)
+        real_close(db)
+
+    monkeypatch.setattr(org_state.Database, "close", close_and_record)
+
+    with pytest.raises(OrgConsistencyError, match="family_operations"):
+        OrgState.load(slug="family", root=org_root, settings=Settings())
+    assert closed == [paths.db_path]
+
+
 # ── THR-107: legacy per-org executor_profiles block no longer registers ──
 
 def _make_org_config(org_root: Path, body: str) -> None:

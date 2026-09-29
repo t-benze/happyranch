@@ -192,50 +192,50 @@ class OrgState:
         db = Database(paths.db_path)
         try:
             install_or_recover(db)
+            teams = TeamsRegistry.load(root)
+            # THR-095: one-shot seed — copy the 4 web-writable knobs from
+            # config.yaml into the org_settings DB table exactly once per org.
+            # Idempotent (sentinel); runs on every daemon startup but is a no-op
+            # after the first run.
+            try:
+                from runtime.orchestrator.org_config import (
+                    backfill_reviewer_agents_setting,
+                    seed_org_settings_from_config,
+                )
+                seed_org_settings_from_config(paths, db)
+                # THR-175: reviewer_agents is a 5th knob orgs seeded before this
+                # change never received.  Backfill is idempotent (row-absent) and
+                # never overwrites an explicit setting.
+                backfill_reviewer_agents_setting(paths, db)
+            except Exception as exc:
+                logger.warning(
+                    "org %r: org_settings seed skipped (non-fatal): %s", slug, exc
+                )
+
+            # Refuse to attach if agent files and teams.yaml disagree. Raises
+            # OrgConsistencyError on drift; DaemonState.from_runtime catches
+            # per-org so one broken org cannot crash daemon startup, while
+            # add_org propagates so explicit founder actions fail loudly.
+            validate_team_membership(paths, teams)
+            orchestrator = Orchestrator(
+                db=db,
+                settings=settings,
+                paths=paths,
+                slug=slug,
+                teams=teams,
+                authority_evaluator=_build_authority_evaluator(),
+            )
+            return cls(
+                slug=slug,
+                root=root,
+                db=db,
+                teams=teams,
+                settings=settings,
+                orchestrator=orchestrator,
+            )
         except Exception:
             db.close()
             raise
-        teams = TeamsRegistry.load(root)
-        # THR-095: one-shot seed — copy the 4 web-writable knobs from
-        # config.yaml into the org_settings DB table exactly once per org.
-        # Idempotent (sentinel); runs on every daemon startup but is a no-op
-        # after the first run.
-        try:
-            from runtime.orchestrator.org_config import (
-                backfill_reviewer_agents_setting,
-                seed_org_settings_from_config,
-            )
-            seed_org_settings_from_config(paths, db)
-            # THR-175: reviewer_agents is a 5th knob orgs seeded before this
-            # change never received.  Backfill is idempotent (row-absent) and
-            # never overwrites an explicit setting.
-            backfill_reviewer_agents_setting(paths, db)
-        except Exception as exc:
-            logger.warning(
-                "org %r: org_settings seed skipped (non-fatal): %s", slug, exc
-            )
-
-        # Refuse to attach if agent files and teams.yaml disagree. Raises
-        # OrgConsistencyError on drift; DaemonState.from_runtime catches
-        # per-org so one broken org cannot crash daemon startup, while
-        # add_org propagates so explicit founder actions fail loudly.
-        validate_team_membership(paths, teams)
-        orchestrator = Orchestrator(
-            db=db,
-            settings=settings,
-            paths=paths,
-            slug=slug,
-            teams=teams,
-            authority_evaluator=_build_authority_evaluator(),
-        )
-        return cls(
-            slug=slug,
-            root=root,
-            db=db,
-            teams=teams,
-            settings=settings,
-            orchestrator=orchestrator,
-        )
 
     def close(self) -> None:
         self.db.close()

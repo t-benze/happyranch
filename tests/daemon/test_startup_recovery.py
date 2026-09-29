@@ -15,11 +15,18 @@ from runtime.config import Settings
 from runtime.daemon.__main__ import _sweep_on_startup
 from runtime.daemon.queue import TaskQueue
 from runtime.infrastructure.database import Database
+from runtime.infrastructure.workflow_schema import install_or_recover
 from runtime.models import BlockKind, TaskRecord, TaskStatus, ThreadInvocationPurpose, ThreadRecord, ThreadStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.teams import TeamsRegistry
 from runtime.runtime import RuntimeDir
+
+
+def _open_live_org_database(path: Path) -> Database:
+    db = Database(path)
+    install_or_recover(db)
+    return db
 
 
 @contextmanager
@@ -205,7 +212,7 @@ def test_accepted_recovery_continue_settles_exact_receipt_once_across_restart(tm
     assert db.execute("SELECT state FROM task_completion_recoveries WHERE task_id=?", (task_id,)).fetchone()["state"] == "callback_consumed"
     path = db.path
     db.close()
-    reopened = Database(path)
+    reopened = _open_live_org_database(path)
     orch._db, orch._audit = reopened, AuditLogger(reopened)
     _sweep_on_startup(reopened, queue, "test", orch)
     _sweep_on_startup(reopened, queue, "test", orch)
@@ -319,7 +326,7 @@ def test_accepted_recovery_root_escalation_final_owner_fence(tmp_path, winner_ki
     ).fetchone())
     path = db.path
     db.close()
-    reopened = Database(path)
+    reopened = _open_live_org_database(path)
     orch._db, orch._audit = reopened, AuditLogger(reopened)
     _sweep_on_startup(reopened, queue, "test", orch)
     _sweep_on_startup(reopened, queue, "test", orch)
@@ -485,7 +492,7 @@ def test_nonroot_manager_recovery_postcommit_cleanup_reenters_on_restart(tmp_pat
     assert db.get_job("JOB-OWNED").status.value == "running"
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     orch._audit = AuditLogger(reopened)
     with mock.patch("runtime.orchestrator.authority.run_authority_hook") as authority:
@@ -571,7 +578,7 @@ def test_nonroot_manager_recovery_transaction_abort_rolls_back_then_startup_sett
     assert rolled_back["accepted_result_id"] == accepted["id"]
     assert db.execute("SELECT id FROM task_results WHERE id=?", (accepted["id"],)).fetchone()["id"] == accepted["id"]
     db.execute(f"DROP TRIGGER abort_nonroot_{point}")
-    path = db.path; db.close(); reopened = Database(path); orch._db = reopened; orch._audit = AuditLogger(reopened)
+    path = db.path; db.close(); reopened = _open_live_org_database(path); orch._db = reopened; orch._audit = AuditLogger(reopened)
     with mock.patch("runtime.orchestrator.authority.run_authority_hook") as authority:
         _sweep_on_startup(reopened, queue, "test", orch)
         _sweep_on_startup(reopened, queue, "test", orch)
@@ -827,7 +834,7 @@ def test_root_recovery_escalation_transaction_rolls_back_then_restart_settles_on
 
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     orch._audit = AuditLogger(reopened)
     _sweep_on_startup(reopened, queue, "test", orch)
@@ -921,7 +928,7 @@ def test_accepted_manager_done_recovery_reuses_its_step_audit_after_crash(
     assert len([r for r in db.get_audit_logs(task_id) if r["action"] == "orchestration_step"]) == 1
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     from runtime.infrastructure.audit_logger import AuditLogger
     orch._audit = AuditLogger(reopened)
@@ -1064,7 +1071,7 @@ def test_manager_done_postcommit_cleanup_pending_restarts_once(
         db_path = db.path
         assert db.get_job("JOB-OWNED").status.value == "running"
         db.close()
-        reopened = Database(db_path)
+        reopened = _open_live_org_database(db_path)
         orch._db = reopened
         orch._audit = AuditLogger(reopened)
         assert reopened.get_job("JOB-OWNED").status.value == "running"
@@ -1393,7 +1400,7 @@ def _seed_org(tmp_path: Path, slug: str = "test") -> Database:
     org_root.mkdir(parents=True)
     (org_root / "org").mkdir()
     (org_root / "org" / "teams.yaml").write_text("teams: {}\n")
-    return Database(org_root / "happyranch.db")
+    return _open_live_org_database(org_root / "happyranch.db")
 
 
 def _seed_org_with_orch(
@@ -1414,7 +1421,7 @@ def _seed_org_with_orch(
         "    manager: engineering_head\n"
         "    workers: [dev_agent]\n"
     )
-    db = Database(paths.db_path)
+    db = _open_live_org_database(paths.db_path)
     queue = TaskQueue()
     orch = Orchestrator(
         db=db, settings=Settings(), paths=paths, slug=slug,
@@ -1466,7 +1473,7 @@ def test_accepted_recovery_reentry_after_effects_is_consumed_without_duplicate_a
             )
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     from runtime.infrastructure.audit_logger import AuditLogger
     orch._audit = AuditLogger(reopened)
@@ -1557,7 +1564,7 @@ def test_accepted_leaf_completion_recovery_is_atomic_and_preserves_exact_verdict
     db_path = db.path
     db.close()
 
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     reopened.execute("DROP TRIGGER " + {
         "terminal": "abort_leaf_terminal",
         "before_ledger": "abort_leaf_before_ledger",
@@ -1659,7 +1666,7 @@ def test_accepted_leaf_recovery_loses_to_winner_at_consume_transaction_boundary(
         assert cleanup_calls == [] and winner_control_calls == []
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     _sweep_on_startup(reopened, queue, "test", orch)
     _sweep_on_startup(reopened, queue, "test", orch)
@@ -1699,7 +1706,7 @@ def test_completed_leaf_postcommit_restart_cleans_only_owned_job_and_wakes_once(
     with mock.patch("runtime.orchestrator.run_step._kill_jobs_for_terminating_task", side_effect=RuntimeError("after commit")):
         with pytest.raises(RuntimeError, match="after commit"):
             _consume_accepted_completion_recovery(orch, "TASK-LEAF", completion_report_from_result_row("TASK-LEAF", accepted, fallback_agent="dev_agent"), agent="dev_agent", session_id="recovery-TASK-LEAF", result_row_id=accepted["id"])
-    path = db.path; db.close(); reopened = Database(path); orch._db = reopened
+    path = db.path; db.close(); reopened = _open_live_org_database(path); orch._db = reopened
     from runtime.infrastructure.audit_logger import AuditLogger
     orch._audit = AuditLogger(reopened)
     with _capture_joined_cleanup_threads() as (
@@ -2217,7 +2224,7 @@ def test_accepted_blocked_recovery_restart_consumes_once_then_resumes_owned_job(
 
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     from runtime.infrastructure.audit_logger import AuditLogger
     orch._audit = AuditLogger(reopened)
@@ -2276,7 +2283,7 @@ def test_sweep_restart_settles_unaccepted_recovery_before_pid_liveness_and_recon
     db.update_task("TASK-REC", executor_pid=executor_pid)
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
 
     from runtime.orchestrator.run_step import _kill_jobs_for_terminating_task
@@ -2363,7 +2370,7 @@ def test_sweep_restart_settlement_reenters_after_cleanup_interrupt_and_lifespan_
     )
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
 
     with mock.patch(
@@ -2378,7 +2385,7 @@ def test_sweep_restart_settlement_reenters_after_cleanup_interrupt_and_lifespan_
     assert queue._queue.empty()
     reopened.close()
 
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     with mock.patch("os.kill") as kill:
         _sweep_on_startup(reopened, queue, "test", orch)
@@ -2419,7 +2426,7 @@ def test_restart_settlement_rolls_back_task_ledger_and_job_together(tmp_path):
         _sweep_on_startup(db, queue, "test", orch)
     db.close()
 
-    reopened = Database(db.path)
+    reopened = _open_live_org_database(db.path)
     orch._db = reopened
     assert reopened.get_task("TASK-REC").status is TaskStatus.IN_PROGRESS
     assert reopened.get_job("JOB-REC").status.value == "running"
@@ -4509,7 +4516,7 @@ def test_shipping_startup_invocation_commit_serializes_owned_job_backstop(
     # startup-governed pending receipt from an unrelated terminal receipt.
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     owned = reopened.get_job("JOB-OWNED")
     other_job = reopened.get_job("JOB-OTHER")
     assert owned is not None and owned.reason == "task_ended"

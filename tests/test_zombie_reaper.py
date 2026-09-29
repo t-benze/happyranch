@@ -22,6 +22,7 @@ from runtime.daemon.zombie_reaper import (
     _sweep_org_zombies,
 )
 from runtime.infrastructure.database import Database
+from runtime.infrastructure.workflow_schema import install_or_recover
 from runtime.models import BlockKind, TaskRecord, TaskStatus, ThreadRecord
 
 # ---------------------------------------------------------------------------
@@ -37,6 +38,12 @@ def _ago(seconds: int) -> datetime:
 
 
 ZOMBIE_PID = 99999  # guaranteed-non-existent pid
+
+
+def _open_live_org_database(path: Path) -> Database:
+    db = Database(path)
+    install_or_recover(db)
+    return db
 
 
 def _seed_zombie_authority_result(tmp_path, *, self_evaluation="valid"):
@@ -64,7 +71,7 @@ def _seed_zombie_authority_result(tmp_path, *, self_evaluation="valid"):
         "teams:\n  engineering:\n    manager: engineering_manager\n"
         "    workers: [dev_agent]\n"
     )
-    db = Database(paths.db_path)
+    db = _open_live_org_database(paths.db_path)
     orch = Orchestrator(
         db=db, settings=Settings(), paths=paths, slug="test",
         teams=TeamsRegistry.load(paths.root),
@@ -287,7 +294,7 @@ def test_zombie_consumer_rejects_thread_originated_manager_supersession(
     paths.teams_config_path.write_text(
         "teams:\n  engineering:\n    manager: engineering_head\n    workers: [dev_agent]\n"
     )
-    db = Database(paths.db_path)
+    db = _open_live_org_database(paths.db_path)
     db.insert_task(TaskRecord(
         id="T-ZOMBIE-SUP", brief="original", team="engineering",
         assigned_agent="engineering_head", status=TaskStatus.IN_PROGRESS,
