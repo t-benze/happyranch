@@ -12,6 +12,26 @@ from tests.workflows.test_template_store import VALID_DEFINITION
 
 
 BASE = "/api/v1/orgs/alpha/workflows/templates"
+_TEMPLATE_TABLES = (
+    "workflow_template_drafts",
+    "workflow_template_versions",
+    "workflow_template_identities",
+    "workflow_template_identity_versions",
+    "workflow_template_publish_operations",
+)
+_PROTECTED_TABLES = (
+    *_TEMPLATE_TABLES,
+    "workflow_cutover_state",
+    "workflow_cutover_events",
+    "workflow_activations",
+    "workflow_activation_operations",
+    "workflow_instances",
+    "workflow_dispatch_operations",
+    "workflow_dispatch_outbox",
+    "workflow_authority_pointers",
+    "tasks",
+    "audit_log",
+)
 
 
 def _active_session(org, agent: str) -> str:
@@ -42,12 +62,15 @@ def _body(**updates) -> dict:
 def _counts(org) -> tuple[int, ...]:
     return tuple(
         org.db._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        for table in (
-            "workflow_template_drafts", "workflow_template_versions",
-            "workflow_template_identities", "workflow_template_identity_versions",
-            "workflow_template_publish_operations",
-        )
+        for table in _TEMPLATE_TABLES
     )
+
+
+def _rows(org) -> dict[str, tuple[tuple, ...]]:
+    return {
+        table: tuple(map(tuple, org.db._conn.execute(f"SELECT * FROM {table}")))
+        for table in _PROTECTED_TABLES
+    }
 
 
 def _agent_client(client: TestClient) -> TestClient:
@@ -212,3 +235,29 @@ def test_malformed_requests_use_stable_invalid_request_code(
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "invalid_request"
     assert _counts(org) == (0, 0, 0, 0, 0)
+
+
+@pytest.mark.parametrize(
+    "schema_version",
+    [True, False, 1.0, "1"],
+    ids=["boolean-true", "boolean-false", "float", "numeric-string"],
+)
+def test_schema_version_requires_exact_integer_one_without_residue(
+    client_with_runtime, schema_version: object,
+) -> None:
+    founder_client, org = client_with_runtime
+    session_id = _active_session(org, "engineering_head")
+    body = _body()
+    body["definition"]["schema_version"] = schema_version
+    before_counts = _counts(org)
+    before_rows = _rows(org)
+
+    response = _agent_client(founder_client).post(
+        f"{BASE}/publish", params={"session_id": session_id}, json=body,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_template_definition"
+    assert before_counts == (0, 0, 0, 0, 0)
+    assert _counts(org) == before_counts
+    assert _rows(org) == before_rows

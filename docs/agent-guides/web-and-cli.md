@@ -510,7 +510,8 @@ command uses the existing daemon bearer. The payload contains
 `operation_key`, `template_name`, `expected_current_version`, `definition`,
 and (Founder only) `team_slug`; publisher, principal, namespace, org, task and
 session claims are rejected. `--from-file` must be absolute. The closed
-definition is `kind=product-design`, schema version 1, a Product Lead agent
+definition is `kind=product-design`, with `schema_version` set to the genuine
+JSON integer `1` (not a boolean, float, string or null), a Product Lead agent
 author of an immutable PRD revision, Founder/implementer/tester reviewers, all
 three required on the current revision, and request-changes returning to the
 author. A non-empty description is the only variable descriptive field;

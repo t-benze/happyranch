@@ -38,6 +38,27 @@ VALID_DEFINITION = {
     "request_changes": {"action": "return-to-author"},
 }
 
+_TEMPLATE_TABLES = (
+    "workflow_template_drafts",
+    "workflow_template_versions",
+    "workflow_template_identities",
+    "workflow_template_identity_versions",
+    "workflow_template_publish_operations",
+)
+_PROTECTED_TABLES = (
+    *_TEMPLATE_TABLES,
+    "workflow_cutover_state",
+    "workflow_cutover_events",
+    "workflow_activations",
+    "workflow_activation_operations",
+    "workflow_instances",
+    "workflow_dispatch_operations",
+    "workflow_dispatch_outbox",
+    "workflow_authority_pointers",
+    "tasks",
+    "audit_log",
+)
+
 
 def _org(tmp_path: Path) -> OrgState:
     root = tmp_path / "org"
@@ -76,13 +97,14 @@ def _publish(store: WorkflowTemplateStore, *, key: str = "op-1", expected: int =
 def _counts(org: OrgState) -> dict[str, int]:
     return {
         table: org.db._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        for table in (
-            "workflow_template_drafts",
-            "workflow_template_versions",
-            "workflow_template_identities",
-            "workflow_template_identity_versions",
-            "workflow_template_publish_operations",
-        )
+        for table in _TEMPLATE_TABLES
+    }
+
+
+def _rows(org: OrgState) -> dict[str, tuple[tuple, ...]]:
+    return {
+        table: tuple(map(tuple, org.db._conn.execute(f"SELECT * FROM {table}")))
+        for table in _PROTECTED_TABLES
     }
 
 
@@ -247,6 +269,29 @@ def test_definition_is_closed_product_design_data(tmp_path: Path, mutate) -> Non
         _publish(WorkflowTemplateStore(org.db), definition=definition)
     assert exc.value.code == "invalid_template_definition"
     assert _counts(org) == {table: 0 for table in _counts(org)}
+
+
+@pytest.mark.parametrize(
+    "schema_version",
+    [True, False, 1.0, "1"],
+    ids=["boolean-true", "boolean-false", "float", "numeric-string"],
+)
+def test_schema_version_requires_exact_integer_one_without_residue(
+    tmp_path: Path, schema_version: object,
+) -> None:
+    org = _org(tmp_path)
+    definition = copy.deepcopy(VALID_DEFINITION)
+    definition["schema_version"] = schema_version
+    before_counts = _counts(org)
+    before_rows = _rows(org)
+
+    with pytest.raises(WorkflowTemplateError) as exc:
+        _publish(WorkflowTemplateStore(org.db), definition=definition)
+
+    assert exc.value.code == "invalid_template_definition"
+    assert before_counts == {table: 0 for table in _TEMPLATE_TABLES}
+    assert _counts(org) == before_counts
+    assert _rows(org) == before_rows
 
 
 @pytest.mark.parametrize(

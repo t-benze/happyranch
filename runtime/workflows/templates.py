@@ -155,7 +155,11 @@ def _validate_definition(definition: object) -> bytes:
             "approval", "request_changes",
         },
     )
-    if root["kind"] != "product-design" or root["schema_version"] != 1:
+    if (
+        root["kind"] != "product-design"
+        or type(root["schema_version"]) is not int
+        or root["schema_version"] != 1
+    ):
         raise WorkflowTemplateError("invalid_template_definition")
     if (
         not isinstance(root["description"], str)
