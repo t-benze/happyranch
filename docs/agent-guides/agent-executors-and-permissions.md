@@ -124,9 +124,15 @@ done, attempt safe worktree cleanup or record
 `worktree-deferred: <specific reason>` in the existing completion risks, then
 make `report-completion` the final action. Cleanup uses literal
 `git worktree remove .claude/worktrees/<task_id>` only after the worktree is
-clean, its commit is durable, it has no open or closed-unmerged PR, and no live
-session/process reference remains. It never uses `--force` and never deletes a
-branch.
+clean, its commit is durable through the accepted ref, an equal/descendant own
+origin branch, an own merged PR, or a fully confirmed containing any-task
+merged PR, it has no owning-branch open or closed-unmerged PR, and no live
+session/process reference remains. An existing owning branch is authoritative:
+non-containment or failed containment evidence refuses without merged-PR
+fallback. Any-task discovery is complete and
+double-read, then independently confirms merged/default-branch state and
+candidate-to-PR-head containment; another task's unmerged PR never counts. It
+never uses `--force` and never deletes a branch.
 
 Independently, the runtime has a forward-only terminal hook for exact
 `completed`, `failed`, and `cancelled` transitions. It resolves only the
@@ -134,9 +140,15 @@ registered assigned agent's canonical `repos/happyranch` task worktree and
 fails closed across ownership, realpath/device, Git registration/branch,
 cleanliness, remote durability, PR, liveness, recorded-deferral, and deadline
 gates. Each shipping hook makes one attempt after terminal durability and
-applicable teardown; errors and uncertainty preserve. It does not scan or
-schedule cleanup, and it deliberately excludes `superseded`, `blocked_on_job`,
-accepted/restart completion-recovery settlement, and historical residue.
+applicable teardown; errors and uncertainty preserve. Its process gate loads
+the bundled `workspace-cleanup` scanner by explicit path and applies the same
+exact name-plus-expected-cgroup helper exemptions: root-owned processes are out
+of scope, any other unreadable same-user process is uncertain, and a positive
+reference preserves. The call runs in the existing task worker thread under
+the unchanged five-second total hook deadline. It does not scan other
+worktrees or schedule cleanup, and it deliberately excludes `superseded`,
+`blocked_on_job`, accepted/restart completion-recovery settlement, and
+historical residue.
 
 **Custom-adapter profiles** (D7B, ``command_adapter_id: custom-adapter:<id>``)
 route through ``CustomAdapterExecutor`` instead — see
@@ -718,10 +730,17 @@ history is completely keyset-paged, so unrelated audit volume cannot veto a
 candidate, while missing, changing, conflicting, malformed, or incomplete
 relevant evidence still refuses. PR evidence is completely paginated and read
 twice; any open, closed-unmerged, duplicate, changing, conflicting, or malformed
-row refuses. A clean whole worktree may prove preservation
-through the accepted durable ref, a freshly verified exact origin task branch,
-or a confirmed merged PR; a merged PR preserves integrated content but may not
-preserve original commit topology. A dirty worktree remains ineligible for
+row refuses. A clean whole worktree may prove preservation through the accepted
+durable ref, an owning origin task branch whose head equals or descends from
+the candidate, an owning-task merged PR, or an any-task merged PR whose
+confirmed head contains the candidate. An existing owning branch is
+authoritative: non-containment or failed containment evidence refuses without
+merged-PR fallback. The any-task route requires complete
+stable double-read discovery, merged/default-branch confirmation, and an
+independent complete stable compare; discovery alone and other-task unmerged
+PRs never count, while owning-branch unmerged evidence still refuses. A merged
+PR preserves integrated content but may not preserve original commit topology.
+A dirty worktree remains ineligible for
 whole removal, but its literal root `.venv` or `node_modules` may be removed
 after the same gates and 24-hour floor, with tracked source bytes and Git status
 proved unchanged. The containing worktree must have the owning primary's exact

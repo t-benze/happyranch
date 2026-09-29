@@ -425,10 +425,16 @@ complete output totals, and scanner coverage; direct in-session fallback is
 forbidden. Candidate-related task and trigger evidence uses complete paging
 rather than an org-wide history cap. PR evidence is completely paginated and
 repeated, with every open, closed-unmerged, duplicate, changing, conflicting,
-or malformed result refusing. Preservation accepts
-the existing durable ref, a freshly verified matching origin task branch, or a
-confirmed merged PR; merged integration may not preserve original commit
-topology. Dirty whole worktrees remain protected, with the sole narrow exception
+or malformed result refusing. Preservation accepts the existing durable ref,
+an owning origin task branch whose head equals or descends from the candidate,
+an owning-task merged PR, or an any-task merged PR whose confirmed head
+contains the candidate. An existing owning branch is authoritative:
+non-containment or failed containment evidence refuses without merged-PR
+fallback. The last route requires complete stable double-read
+discovery, merged/default-branch confirmation, and a separate complete stable
+compare; discovery alone and other-task unmerged PRs never count, while an
+owning-branch unmerged PR still refuses. Merged integration may not preserve
+original commit topology. Dirty whole worktrees remain protected, with the sole narrow exception
 of a literal root `.venv`/`node_modules` cache whose removal leaves tracked
 source bytes and Git status unchanged.
 The containing worktree must be at the owning primary's exact registered
@@ -447,10 +453,18 @@ runtime makes one bounded attempt for only the assigned registered agent's
 literal `repos/happyranch/.claude/worktrees/<task-id>` candidate. It requires a
 canonical non-symlink same-device primary and worktree, exact Git registration
 and branch identity, clean status, durable remote containment, no open or
-closed-unmerged PR, no live session/control/PID/cwd/fd reference, no recorded
+closed-unmerged PR, no live session/control/PID or shared-scanner process reference, no recorded
 `worktree-deferred:` risk, and a shared deadline. Unknown, unavailable,
 malformed, timed-out, dirty, unpublished, live, foreign, or ambiguous evidence
 preserves the worktree.
+
+The process gate loads the bundled `workspace-cleanup` scanner by explicit file
+path, so its seq171/seq185 exact name-plus-expected-cgroup exception table is
+the single source for both paths. Root-owned processes are out of scope; any
+other unreadable same-user process is uncertain; a positive
+cwd/root/exe/maps/fd reference is live. `run_step` already executes in the
+queue's worker thread, and the terminal hook retains one five-second total
+deadline.
 
 Successful removal is literal non-force `git worktree remove`; no branch is
 deleted. A failed gate or removal is a typed/logged preservation outcome and

@@ -17,14 +17,18 @@ escalated}.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import os
 import stat
 import subprocess
+import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import ModuleType
 from typing import TYPE_CHECKING, Callable, NamedTuple
 
 from runtime.models import BlockKind, TaskStatus
@@ -55,8 +59,15 @@ _TERMINAL_WORKTREE_STATUSES = frozenset({
 })
 _TERMINAL_WORKTREE_TIMEOUT_SECONDS = 5.0
 _TERMINAL_WORKTREE_OUTPUT_LIMIT = 1_000_000
-_TERMINAL_WORKTREE_MAX_PROCESSES = 32_768
-_TERMINAL_WORKTREE_MAX_FDS = 131_072
+_TERMINAL_WORKTREE_SCANNER_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "skills/bundled/workspace-cleanup/scripts/check_path_use.py"
+)
+_TERMINAL_WORKTREE_SCANNER_MODULE_NAME = (
+    "_happyranch_terminal_worktree_check_path_use"
+)
+_TERMINAL_WORKTREE_SCANNER_MODULE: ModuleType | None = None
+_TERMINAL_WORKTREE_SCANNER_LOCK = threading.Lock()
 
 
 class TerminalWorktreeReclaimOutcome(NamedTuple):
@@ -96,79 +107,54 @@ def _terminal_worktree_path_has_symlink(path: Path) -> bool:
     return False
 
 
-def _terminal_worktree_path_contains(root: Path, target: str) -> bool:
-    if target.endswith(" (deleted)"):
-        target = target[:-10]
-    if not os.path.isabs(target):
-        return False
-    try:
-        return os.path.commonpath((str(root), os.path.normpath(target))) == str(root)
-    except (OSError, ValueError):
-        return False
+def _load_terminal_worktree_scanner() -> ModuleType:
+    """Load the bundled scanner by path as the single process-rule source."""
+    global _TERMINAL_WORKTREE_SCANNER_MODULE
+    if _TERMINAL_WORKTREE_SCANNER_MODULE is not None:
+        return _TERMINAL_WORKTREE_SCANNER_MODULE
+    with _TERMINAL_WORKTREE_SCANNER_LOCK:
+        if _TERMINAL_WORKTREE_SCANNER_MODULE is not None:
+            return _TERMINAL_WORKTREE_SCANNER_MODULE
+        spec = importlib.util.spec_from_file_location(
+            _TERMINAL_WORKTREE_SCANNER_MODULE_NAME,
+            _TERMINAL_WORKTREE_SCANNER_PATH,
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError("bundled workspace-cleanup scanner is unavailable")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            if sys.modules.get(spec.name) is module:
+                sys.modules.pop(spec.name, None)
+            raise
+        _TERMINAL_WORKTREE_SCANNER_MODULE = module
+        return module
 
 
 def _terminal_worktree_process_reference(
     candidate: Path, deadline: float,
 ) -> str | None:
-    """Return a preservation reason for a live/uncertain same-UID /proc ref."""
-    proc = Path("/proc")
-    if not proc.is_dir():
-        return "process-probe-unavailable"
+    """Map the shared same-user scanner outcome to terminal-hook reasons."""
     try:
-        entries = [entry for entry in proc.iterdir() if entry.name.isdigit()]
-    except OSError:
-        return "process-probe-unavailable"
-    if len(entries) > _TERMINAL_WORKTREE_MAX_PROCESSES:
-        return "process-probe-truncated"
-
-    uid = os.getuid()
-    observed_fds = 0
-    for entry in entries:
+        scanner = _load_terminal_worktree_scanner()
+        bounds = scanner.Bounds(
+            deadline_seconds=_terminal_worktree_remaining(deadline),
+        )
+        result = scanner.scan(candidate, bounds=bounds)
         _terminal_worktree_remaining(deadline)
-        try:
-            owner = entry.stat(follow_symlinks=False).st_uid
-        except FileNotFoundError:
-            continue
-        except OSError:
-            return "process-probe-uncertain"
-        if owner != uid:
-            continue
-
-        try:
-            cwd_target = os.readlink(entry / "cwd")
-        except FileNotFoundError:
-            continue
-        except OSError:
-            if not entry.exists():
-                continue
-            return "process-probe-uncertain"
-        if _terminal_worktree_path_contains(candidate, cwd_target):
-            return "live-process-reference"
-
-        try:
-            with os.scandir(entry / "fd") as fds:
-                for fd in fds:
-                    _terminal_worktree_remaining(deadline)
-                    observed_fds += 1
-                    if observed_fds > _TERMINAL_WORKTREE_MAX_FDS:
-                        return "process-probe-truncated"
-                    try:
-                        fd_target = os.readlink(fd.path)
-                    except FileNotFoundError:
-                        continue
-                    except OSError:
-                        if not entry.exists():
-                            break
-                        return "process-probe-uncertain"
-                    if _terminal_worktree_path_contains(candidate, fd_target):
-                        return "live-process-reference"
-        except FileNotFoundError:
-            continue
-        except OSError:
-            if not entry.exists():
-                continue
-            return "process-probe-uncertain"
-    return None
+    except Exception:
+        logger.warning(
+            "terminal worktree shared process scanner failed closed",
+            exc_info=True,
+        )
+        return "process-probe-uncertain"
+    if result.state == "clear_observation":
+        return None
+    if result.state == "blocked":
+        return "live-process-reference"
+    return "process-probe-uncertain"
 
 
 def _reclaim_terminal_task_worktree(

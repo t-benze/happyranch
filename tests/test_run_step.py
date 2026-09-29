@@ -2,10 +2,12 @@
 a task one subprocess call at a time under the new async execution model."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -120,6 +122,88 @@ def _admit_terminal_worktree(monkeypatch) -> None:
         run_step_module,
         "_terminal_worktree_process_reference",
         lambda candidate, deadline: None,
+    )
+
+
+def _load_terminal_worktree_scanner_for_test():
+    helper = (
+        Path(__file__).resolve().parents[1]
+        / "runtime/skills/bundled/workspace-cleanup/scripts/check_path_use.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "test_run_step_check_path_use", helper,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_TERMINAL_SCANNER = _load_terminal_worktree_scanner_for_test()
+
+
+def _scanner_process(
+    pid: str,
+    *,
+    uid: int,
+    comm: str = "bash",
+    cgroup: str = "",
+    ppid: str = "1",
+    cwd: str = "/tmp",
+    fds: dict[str, str] | None = None,
+) -> dict:
+    return {
+        "pid": pid,
+        "uid": [uid, uid, uid, uid],
+        "comm": comm,
+        "ppid": ppid,
+        "exe": None,
+        "exe_stat": None,
+        "cwd": cwd,
+        "root": "/",
+        "maps": [],
+        "fds": dict(fds or {}),
+        "threads": {},
+        "cgroup": cgroup,
+        "ns": {
+            "pid": "pid:[4026]",
+            "mnt": "mnt:[4026]",
+            "user": "user:[4026531837]",
+        },
+        "starttime": 100,
+    }
+
+
+def _install_terminal_scanner_fixture(monkeypatch, population, *, deny=()) -> None:
+    """Drive run_step through the real bundled scan() with deterministic /proc."""
+    from runtime.orchestrator import run_step as run_step_module
+
+    scanner = _TERMINAL_SCANNER
+    uid = os.getuid()
+
+    class Adapter:
+        Bounds = scanner.Bounds
+
+        @staticmethod
+        def scan(target, *, bounds):
+            target = str(target)
+            target_stat = os.stat(target)
+            proc = scanner.FakeProc(
+                population(target),
+                deny=deny,
+                stat_map={target: (target_stat.st_dev, target_stat.st_ino)},
+            )
+            return scanner.scan(
+                target,
+                proc=proc,
+                self_pid="9999",
+                agent_uid=uid,
+                bounds=bounds,
+            )
+
+    monkeypatch.setattr(
+        run_step_module, "_load_terminal_worktree_scanner", lambda: Adapter,
     )
 
 
@@ -2129,6 +2213,207 @@ def test_terminal_worktree_live_process_reference_is_one_shot(
     assert outcomes == [("preserved", "live-process-reference")]
     assert probes == ["probe"]
     assert candidate.exists()
+
+
+def test_terminal_worktree_real_scanner_exempts_host_helpers_and_removes(
+    runtime, db, monkeypatch,
+):
+    """TASK-9125 host shape clears through the shared seq171/seq185 scanner."""
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = "TASK-SCANNER-EXEMPT"
+    orch, primary, candidate = _terminal_worktree(runtime, db, task_id)
+    _admit_real_terminal_worktree_reclamation(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+    uid = os.getuid()
+    user_slice = f"/user.slice/user-{uid}.slice"
+    user_service = f"{user_slice}/user@{uid}.service"
+    app = f"{user_service}/app.slice"
+
+    def population(_target):
+        return {
+            "1": _scanner_process("1", uid=0, comm="systemd", cgroup="/init.scope"),
+            "600": _scanner_process(
+                "600", uid=uid, comm="systemd",
+                cgroup=f"{user_service}/init.scope",
+            ),
+            "601": _scanner_process(
+                "601", uid=uid, comm="(sd-pam)", ppid="600",
+                cgroup=f"{user_service}/init.scope",
+            ),
+            "602": _scanner_process(
+                "602", uid=uid, comm="ssh-agent",
+                cgroup=f"{app}/ssh-agent.service",
+            ),
+            "603": _scanner_process(
+                "603", uid=uid, comm="ssh-agent",
+                cgroup=f"{app}/gcr-ssh-agent.service",
+            ),
+            "604": _scanner_process(
+                "604", uid=uid, comm="gpg-agent",
+                cgroup=f"{app}/gpg-agent.service",
+            ),
+            "605": _scanner_process(
+                "605", uid=uid, comm="sshd-session",
+                cgroup=f"{user_slice}/session-8.scope",
+            ),
+            "9999": _scanner_process("9999", uid=uid, comm="scanner"),
+        }
+
+    unreadable = [
+        (pid, rel)
+        for pid in ("1", "600", "601", "602", "603", "604", "605")
+        for rel in ("exe", "cwd", "root", "maps", "fd", "task", "ns/mnt", "ns/user")
+    ]
+    _install_terminal_scanner_fixture(
+        monkeypatch, population, deny=unreadable,
+    )
+
+    _fail(orch, task_id, note="failed")
+
+    assert outcomes == [("removed", "eligible")]
+    assert not candidate.exists()
+    assert _git(
+        primary, "show-ref", "--verify", f"refs/heads/task/{task_id}",
+    ).returncode == 0
+
+
+def test_terminal_worktree_scanner_failure_maps_to_existing_uncertain_reason(
+    tmp_path, monkeypatch,
+):
+    from runtime.orchestrator import run_step as run_step_module
+
+    monkeypatch.setattr(
+        run_step_module,
+        "_load_terminal_worktree_scanner",
+        lambda: (_ for _ in ()).throw(OSError("scanner unavailable")),
+    )
+
+    assert run_step_module._terminal_worktree_process_reference(
+        tmp_path, time.monotonic() + 5,
+    ) == "process-probe-uncertain"
+
+
+@pytest.mark.parametrize(
+    "shape,expected_reason",
+    [
+        ("unreadable-member", "process-probe-uncertain"),
+        ("name-only", "process-probe-uncertain"),
+        ("cgroup-only", "process-probe-uncertain"),
+        ("cwd-reference", "live-process-reference"),
+        ("fd-reference", "live-process-reference"),
+    ],
+)
+def test_terminal_worktree_real_scanner_preserves_non_exempt_risks(
+    runtime, db, monkeypatch, shape, expected_reason,
+):
+    """Unreadable/lookalike members fail closed; positive refs always block."""
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = f"TASK-SCANNER-{shape.upper()}"
+    orch, primary, candidate = _terminal_worktree(runtime, db, task_id)
+    _admit_real_terminal_worktree_reclamation(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+    uid = os.getuid()
+    app = f"/user.slice/user-{uid}.slice/user@{uid}.service/app.slice"
+
+    def population(target):
+        kwargs = {"uid": uid, "comm": "bash"}
+        if shape == "name-only":
+            kwargs["comm"] = "ssh-agent"
+        elif shape == "cgroup-only":
+            kwargs["cgroup"] = f"{app}/ssh-agent.service"
+        elif shape == "cwd-reference":
+            kwargs["cwd"] = target
+        elif shape == "fd-reference":
+            kwargs["fds"] = {"3": str(Path(target) / "tracked.txt")}
+        return {
+            "700": _scanner_process("700", **kwargs),
+            "9999": _scanner_process("9999", uid=uid, comm="scanner"),
+        }
+
+    deny = [("700", "cwd")] if shape in {
+        "unreadable-member", "name-only", "cgroup-only",
+    } else []
+    _install_terminal_scanner_fixture(monkeypatch, population, deny=deny)
+
+    _fail(orch, task_id, note="failed")
+
+    assert outcomes == [("preserved", expected_reason)]
+    assert candidate.exists()
+    assert str(candidate) in _git(
+        primary, "worktree", "list", "--porcelain",
+    ).stdout
+
+
+@pytest.mark.skipif(not Path("/proc").is_dir(), reason="Linux /proc is absent")
+@pytest.mark.parametrize("holder_cwd", [False, True], ids=["clear", "cwd-reference"])
+def test_terminal_worktree_real_proc_end_to_end(
+    runtime, db, monkeypatch, holder_cwd,
+):
+    """Exercise the un-stubbed production process scan on disposable worktrees."""
+    from runtime.orchestrator.run_step import (
+        _fail,
+        _load_terminal_worktree_scanner,
+    )
+
+    task_id = f"TASK-REAL-SCANNER-{'HELD' if holder_cwd else 'CLEAR'}"
+    orch, _primary, candidate = _terminal_worktree(runtime, db, task_id)
+    _admit_real_terminal_worktree_reclamation(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+    scanner = _load_terminal_worktree_scanner()
+    real_scan = scanner.scan
+    scan_classifications = []
+
+    def observe_scan(*args, **kwargs):
+        try:
+            result = real_scan(*args, **kwargs)
+        except Exception:
+            scan_classifications.append("failure")
+            raise
+        scan_classifications.append(result.state)
+        return result
+
+    monkeypatch.setattr(scanner, "scan", observe_scan)
+    holder = None
+    if holder_cwd:
+        holder = subprocess.Popen(
+            [sys.executable, "-c", "print('ready', flush=True); input()"],
+            cwd=candidate,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "ready"
+    try:
+        _fail(orch, task_id, note="failed")
+    finally:
+        if holder is not None and holder.poll() is None:
+            assert holder.stdin is not None
+            holder.stdin.write("\n")
+            holder.stdin.flush()
+            holder.wait(timeout=5)
+
+    assert len(scan_classifications) == 1
+    classification = scan_classifications[0]
+    print(f"terminal worktree real scanner classification: {classification}")
+    if holder_cwd:
+        assert classification == "blocked"
+        assert outcomes == [("preserved", "live-process-reference")]
+        assert candidate.exists()
+        assert holder is not None and holder.returncode == 0
+    else:
+        expected_by_classification = {
+            "clear_observation": (("removed", "eligible"), False),
+            "blocked": (("preserved", "live-process-reference"), True),
+            "unknown": (("preserved", "process-probe-uncertain"), True),
+            "failure": (("preserved", "process-probe-uncertain"), True),
+        }
+        expected_outcome, expected_exists = expected_by_classification[classification]
+        assert outcomes == [expected_outcome]
+        assert candidate.exists() is expected_exists
 
 
 @pytest.mark.skipif(not Path("/proc").is_dir(), reason="Linux /proc proof")

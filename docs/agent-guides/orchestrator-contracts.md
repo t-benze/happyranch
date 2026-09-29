@@ -54,9 +54,16 @@ it has no direct fallback. Complete candidate-specific task and filtered-trigger
 paging replaces the former org-wide capped-history veto. PR evidence is also
 completely paginated and repeated; open, closed-unmerged, duplicate, changing,
 conflicting, or malformed rows refuse.
-Durable preservation may be the accepted ref, a freshly verified exact origin
-task branch, or a confirmed merged PR (which preserves integrated content but
-may not preserve original commit topology). Whole-worktree removal still
+Durable preservation may be the accepted ref, an owning origin task branch
+whose head equals or descends from the candidate, an owning-task merged PR, or
+an any-task merged PR whose head independently contains the candidate. An
+existing owning branch is authoritative: non-containment or failed containment
+evidence refuses without merged-PR fallback. The
+any-task route requires complete stable double-read discovery, `MERGED` plus
+non-empty `mergedAt`, base equal to the double-read default branch, and a
+complete stable compare; discovery alone and other-task unmerged PRs never
+count. An owning branch's open or closed-unmerged PR remains a refusal. Merged
+integration may not preserve original commit topology. Whole-worktree removal still
 requires cleanliness; only a literal root dependency cache may be removed from
 an otherwise dirty worktree, after all cache gates, without changing tracked
 source bytes or Git status.
@@ -92,10 +99,17 @@ The only candidate is the registered assigned agent's literal
 primary. Registered-agent ownership, unchanged non-symlink same-device paths,
 exact worktree registration and `task/<task-id>` branch, clean status, a HEAD
 contained by a durable remote ref, no open or closed-unmerged pull request, no
-live session/control/PID/cwd/fd reference, no latest applicable
+live session/control/PID or shared-scanner process reference, no latest applicable
 `worktree-deferred:` risk, and the shared deadline must all be proven. Any
 error, timeout, malformed response, missing or ambiguous identity, dirty or
 unpublished state, or live reference yields a typed logged preservation result.
+The process gate loads the bundled `workspace-cleanup` `check_path_use.py` by
+its explicit file path and uses its exact seq171/seq185 same-user rule as the
+single source: root-owned processes are out of scope; only exact
+name-plus-expected-cgroup helpers are exempt; another unreadable same-user
+process is uncertain; and a positive cwd/root/exe/maps/fd reference is live.
+The synchronous hook runs inside the queue's existing `run_in_executor` worker
+thread and retains the one five-second total deadline.
 Success runs literal non-force `git worktree remove <path>` and never deletes a
 branch. The helper changes no task, result, parent, or audit state; signals no
 process; enqueues nothing; raises nothing into terminal semantics; and schedules
