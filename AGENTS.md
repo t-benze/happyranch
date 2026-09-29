@@ -220,4 +220,6 @@ retire historical failed ancestors.
 
 Run focused behavior tests for every changed domain. Before committing, run `git diff --check`, `git diff --stat`, and inspect the final diff. Compare it against the latest scope summary and explain any unexpected changes.
 
+For every new or changed test, follow `runtime/skills/bundled/test-authoring-gate/SKILL.md` and put its four answers and attributable proof in the PR body.
+
 Stop and escalate before touching permission-model generation, auth or credentials, schema migrations or overloaded-column semantics, v0/v1 compatibility, or other high-risk or load-bearing work.
