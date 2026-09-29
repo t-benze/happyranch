@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from runtime.daemon.agent_config import set_executor, write_default_agent_config
 from runtime.infrastructure.database import Database
+from runtime.infrastructure.workflow_schema import install_or_recover
 from runtime.models import (
     TaskRecord,
     TaskStatus,
@@ -48,12 +48,18 @@ def _seed_active_agents_for_orchestrator(test_runtime):
 @pytest.fixture
 def orchestrator(test_settings, test_runtime):
     test_runtime.root.mkdir(parents=True, exist_ok=True)
-    db = Database(test_runtime.db_path)
+    db = _open_live_org_database(test_runtime.db_path)
     teams = TeamsRegistry.load(test_runtime.root)
     return Orchestrator(
         db=db, settings=test_settings,
         paths=test_runtime, slug="test", teams=teams,
     )
+
+
+def _open_live_org_database(path: Path) -> Database:
+    db = Database(path)
+    install_or_recover(db)
+    return db
 
 
 _DEFAULT_AGENTS = ["engineering_head", "product_manager", "dev_agent", "payment_agent"]
@@ -98,12 +104,18 @@ def _setup_workspaces(runtime, agents: list[str] | None = None):
         # directory at the link path would cause ordinary_dir_at_link_path.
 
 
+def _write_residual_agent_yaml(workspace: Path, executor: str) -> None:
+    """Seed the retired workspace config shape used by compatibility fixtures."""
+    (workspace / "agent.yaml").write_text(
+        f"executor: {executor}\nrepos: {{}}\n",
+    )
+
+
 def _setup_codex_workspace(runtime, agent: str) -> None:
     ws = runtime.workspaces_dir / agent
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
-    write_default_agent_config(ws)
-    set_executor(ws, "codex")
+    _write_residual_agent_yaml(ws, "codex")
     _seed_instruction_pair(ws, f"# Agent: {agent}\n")
     # THR-095: executor is now read from org/agents/<name>.md (single source),
     # not agent.yaml. Write the .md with the matching executor.
@@ -122,8 +134,7 @@ def _setup_opencode_workspace(runtime, agent: str) -> None:
     ws = runtime.workspaces_dir / agent
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
-    write_default_agent_config(ws)
-    set_executor(ws, "opencode")
+    _write_residual_agent_yaml(ws, "opencode")
     _seed_instruction_pair(ws, f"# Agent: {agent}\n")
     # THR-095: executor is now read from org/agents/<name>.md (single source)
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
@@ -141,8 +152,7 @@ def _setup_pi_workspace(runtime, agent: str) -> None:
     ws = runtime.workspaces_dir / agent
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
-    write_default_agent_config(ws)
-    set_executor(ws, "pi")
+    _write_residual_agent_yaml(ws, "pi")
     _seed_instruction_pair(ws, f"# Agent: {agent}\n")
     # THR-095: executor is now read from org/agents/<name>.md (single source)
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
@@ -2195,7 +2205,7 @@ def _setup_provider_workspace(runtime, agent: str, provider: str) -> None:
     """Seed an active workspace + agent frontmatter for ``provider``."""
     _setup_codex_workspace(runtime, agent)
     ws = runtime.workspaces_dir / agent
-    set_executor(ws, provider)
+    _write_residual_agent_yaml(ws, provider)
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     ad = AgentDef(
         name=agent, team="engineering", role="manager",

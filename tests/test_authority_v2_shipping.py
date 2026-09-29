@@ -52,6 +52,8 @@ import pytest
 import uvicorn
 
 from runtime.daemon.app import create_app
+from runtime.infrastructure.database import Database
+from runtime.infrastructure.workflow_schema import install_or_recover
 from runtime.models import (
     AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
     BlockKind,
@@ -86,6 +88,12 @@ _HELD_LOOPS = (
     ("runtime.daemon.direct_connect_projection_sweep", "direct_connect_projection_sweep_loop"),
     ("runtime.daemon.workspace_cleanup_scheduler", "workspace_cleanup_scheduler_loop"),
 )
+
+
+def _open_live_org_database(path: Path) -> Database:
+    db = Database(path)
+    install_or_recover(db)
+    return db
 
 
 # --------------------------------------------------------------------------
@@ -350,6 +358,10 @@ class _ShippingFixture:
 
             for root in self.org_roots.values():
                 reconstruct_historical_database(OrgPaths(root=root).db_path)
+
+        for root in self.org_roots.values():
+            live_db = _open_live_org_database(OrgPaths(root=root).db_path)
+            live_db.close()
 
         paths_mod.ensure_daemon_home()
         token = paths_mod.ensure_token()
@@ -3763,10 +3775,8 @@ def _reopen_owned_db(db, *, origin_boot_id: str, expect_envelope_id: str):
     process/boot context through normal isolated fixture wiring, and proves the
     committed durable state reconstructs from the NEW connection.
     """
-    from runtime.infrastructure.database import Database
-
     old_conn = db._conn
-    reopened = Database(db.db_path)
+    reopened = _open_live_org_database(db.db_path)
     assert reopened is not db
     assert reopened.db_path == db.db_path
     assert reopened._conn is not old_conn

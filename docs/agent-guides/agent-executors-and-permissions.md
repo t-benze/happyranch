@@ -707,3 +707,27 @@ literal-path fallback. A conflicting applicable systemd/unified cgroup path
 never grants an exception. This is a snapshot
 with accepted later-opener/write-interruption residual, never an OS-wide-absence
 or future-non-use guarantee.
+
+Both manual and daily procedures invoke that helper only through the supported
+task-bound host-visible HappyRanch jobs path and consume a closed-schema,
+non-truncated receipt that binds the authenticated task/session to the actual
+job, agent, stored command, interpreter, resolved cwd, timestamps, terminal
+status/exit/reason, complete output byte totals, and scanner result; there is no
+direct in-session fallback. Candidate-specific assigned-task and filtered-trigger
+history is completely keyset-paged, so unrelated audit volume cannot veto a
+candidate, while missing, changing, conflicting, malformed, or incomplete
+relevant evidence still refuses. PR evidence is completely paginated and read
+twice; any open, closed-unmerged, duplicate, changing, conflicting, or malformed
+row refuses. A clean whole worktree may prove preservation
+through the accepted durable ref, a freshly verified exact origin task branch,
+or a confirmed merged PR; a merged PR preserves integrated content but may not
+preserve original commit topology. A dirty worktree remains ineligible for
+whole removal, but its literal root `.venv` or `node_modules` may be removed
+after the same gates and 24-hour floor, with tracked source bytes and Git status
+proved unchanged. The containing worktree must have the owning primary's exact
+registered `.claude/worktrees/<TASK>` path and `task/<TASK>` branch. A complete
+no-follow `lstat` walk of the candidate runs before and again at action time;
+nested mounts, cross-device or foreign-owned entries, protected descendants,
+unreadable/capped/changing evidence, or identity drift refuse. Measurement
+includes the root inode, and success requires literal absence plus unchanged
+protected-path identities.

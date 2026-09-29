@@ -160,6 +160,91 @@ def test_manager_policy_identity_connected_launch_completion_hook(
     assert len(org.db.list_authority_candidates_for_root(task_id)) == 1
 
 
+def test_authority_release_schema_reference_matches_canonical_org(
+    tmp_path, monkeypatch,
+) -> None:
+    from runtime.infrastructure.database import Database
+    from runtime.infrastructure.workflow_schema import install_or_recover
+    from runtime.orchestrator import authority
+
+    org_db = Database(tmp_path / "canonical-org.db")
+    try:
+        install_or_recover(org_db)
+        monkeypatch.setattr(authority, "_release_schema_digest_cache", None)
+        assert authority._release_schema_digest() == authority._live_schema_digest(org_db)
+    finally:
+        org_db.close()
+
+
+def test_authority_release_schema_reference_leaves_generic_database_unchanged(
+    tmp_path, monkeypatch,
+) -> None:
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator import authority
+
+    generic = Database(tmp_path / "generic.db")
+    try:
+        before = authority._live_schema_digest(generic)
+        monkeypatch.setattr(authority, "_release_schema_digest_cache", None)
+        assert authority._release_schema_digest() != before
+        assert authority._live_schema_digest(generic) == before
+        assert generic.execute(
+            "SELECT name FROM sqlite_schema "
+            "WHERE name LIKE 'workflow\\_%' ESCAPE '\\'"
+        ).fetchall() == []
+    finally:
+        generic.close()
+
+
+def test_authority_release_schema_reference_leaves_runtime_audit_free(
+    tmp_path, monkeypatch,
+) -> None:
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator import authority
+
+    audit = Database(tmp_path / "runtime-audit.db")
+    try:
+        before = authority._live_schema_digest(audit)
+        monkeypatch.setattr(authority, "_release_schema_digest_cache", None)
+        authority._release_schema_digest()
+        assert authority._live_schema_digest(audit) == before
+        assert audit.execute(
+            "SELECT name FROM sqlite_schema "
+            "WHERE name LIKE 'workflow\\_%' ESCAPE '\\'"
+        ).fetchall() == []
+    finally:
+        audit.close()
+
+
+@pytest.mark.parametrize(
+    "drift_sql",
+    [
+        "CREATE TABLE drift_sentinel (id INTEGER PRIMARY KEY)",
+        "CREATE INDEX drift_extra_idx ON workflow_instances(status)",
+        "DROP INDEX workflow_instances_root_idx",
+        "DROP INDEX workflow_admission_records_namespace_generation_idx",
+    ],
+)
+def test_authority_org_reference_rejects_complete_schema_drift(
+    tmp_path, monkeypatch, drift_sql,
+) -> None:
+    from runtime.infrastructure.database import Database
+    from runtime.infrastructure.workflow_schema import install_or_recover
+    from runtime.orchestrator import authority
+
+    org_db = Database(tmp_path / "drifted-org.db")
+    try:
+        install_or_recover(org_db)
+        monkeypatch.setattr(authority, "_release_schema_digest_cache", None)
+        release_digest = authority._release_schema_digest()
+        org_db.execute(drift_sql)
+        org_db._conn.commit()
+        assert authority._live_schema_digest(org_db) != release_digest
+        assert authority._release_schema_digest() == release_digest
+    finally:
+        org_db.close()
+
+
 def test_submit_task_idle_returns_409(tmp_home, app_idle, auth_headers) -> None:
     r = TestClient(app_idle).post(
         "/api/v1/orgs/alpha/tasks",

@@ -463,7 +463,7 @@ org pointer alone.
 | `runtime/skills/custom/service.py:93 current_rules` / `:97 replace_rules` | direct callers skill eligibility routes (`runtime/daemon/routes/custom_skills.py`) | `custom_skill_eligibility_rules` rows (org DB) | resolver policy cache | **skill** eligibility only, not agent/team/policy/executor authority | `runtime/skills/eligibility.py`; `resolver.py` | supersession update + eligibility event insert | none for Phase1 authority | irrelevant: custom-skill eligibility is a separate policy domain and does not change the Phase1 org authority/input contract |
 | `runtime/skills/skill_md.py:83 skill_md_contract_violations` | direct callers skill create/validate paths | none (validation only) | none | none | skill authoring | pure validation | none | irrelevant: static SKILL.md contract validation only |
 | `runtime/skills/canonical_store.py` / `symlink_materializer.py` / `exposure.py` (skill delivery) | session launch materialization (`routes/agents.py` executor switch, task launch seams) | canonical package files + workspace symlinks; ledger | process/resolver caches | none for agent/team/policy authority; may affect delivered skill set | launch materialization; `validate_workspace_skills_integrity` | verify/refuse fail-closed; no authority generation | none unless a skill input changes agent eligibility, which none currently does | irrelevant: skill delivery/materialization is not an org authority-eligibility input in Phase1 |
-| `runtime/daemon/agent_config.py:56 set_executor` / `:66 set_model` (legacy workspace `agent.yaml`) | no supported live caller found (rg: `grep -rn "set_executor\|set_model" runtime --include=*.py` matched only the definitions and the `load_agent_config` reader at `routes/agents.py:1651`) | would write `<workspace>/agent.yaml` | none | none — workspace `agent.yaml` is no longer authoritative (THR-095) | `load_agent_config` is used only for the one-shot migration and `before_ws` diagnostics (`routes/agents.py:1651`) | none | none | explicitly unsupported/fenced: legacy workspace `agent.yaml` writer with no supported live caller; `org/agents/<name>.md` is authoritative |
+| Removed legacy workspace `agent.yaml` writers (`write_default_agent_config`, `set_executor`, `set_model`, `add_repo`, `remove_repo`, `update_repo_url`) | removed after all supported writes moved to AgentDef frontmatter (THR-095 / THR-274) | none | none | none — workspace `agent.yaml` is no longer authoritative (THR-095) | `load_agent_config` remains only for the one-shot migration and `before_ws` diagnostics | none | none | removed: `org/agents/<name>.md` is authoritative |
 | `runtime/daemon/agent_config.py:113 migrate_agent_yaml_to_frontmatter` | direct caller `runtime/daemon/app.py:142` (one-shot startup migration) | rewrites `org/agents/<name>.md` frontmatter | none | executor/repo identity migration | `prompt_loader.load_agent` | idempotent one-shot; runs before org attach | `WorkflowAuthorityCoordinator.publish_generation(org)` if it changes authority (proposed, unimplemented) | participating |
 
 ### Indirect writers
@@ -1203,11 +1203,17 @@ Evidence remains **UNACCEPTED / D5 NOT READY**.
 
 ## 2026-09-24 F6 compatibility, cutover, recovery ownership and template CAS (TASK-8859)
 
-This is the active F6 proposal and isolated executable proof. It supersedes
-earlier statements that F6 itself is pending; every production delta below is
-still protected and unimplemented. No runtime module imports this helper or
-DDL, no migration is installed, no old binary has been changed, and no
-production compatibility approval follows from the evidence.
+This is the active F6 contract and evidence lineage. U1A now provides the
+production foundation: the complete inert version-1 layout, exact initial
+compatibility marker/event, and full-layout reopen validator are implemented
+in `runtime/infrastructure/workflow_schema.py` and invoked only by
+`OrgState.load`. U1A does not enable workflow behavior. U1B implements only
+inert immutable template authoring/versioning through the existing U1A tables,
+verified manager-session or Founder-bearer route, and CLI/API reads. Every
+later delta below — activation, authority coordination, dispatch/recovery,
+cutover transitions and workflow execution/operator UI — remains unimplemented.
+No old binary has been changed and no later production compatibility approval
+follows from U1A.
 
 ### One template identity and activation model
 
@@ -1248,19 +1254,40 @@ version publication remains permitted while new runs are disabled because it
 creates no execution; activation/template-start and F5 request admission are
 fenced.
 
+**U1B shipping status (TASK-9100).** `runtime/workflows/templates.py` owns the
+store and closed `product-design` data validation. A current active manager is
+resolved from the existing task/session binding and unique live `teams.yaml`
+registration, revalidated after `BEGIN IMMEDIATE`, and may publish only to
+`org/<org>/team/<its-team>`; Founder uses the existing bearer and an existing
+team. The server derives namespace, stable principal, publisher provenance,
+canonical UTF-8 JSON bytes, SHA-256 digest, pins, IDs, timestamp and version.
+The route/CLI expose publish/list/show with stable error codes and exact stored
+bytes (base64 plus canonical JSON), digest, version and provenance. U1B never
+writes cutover, activation, instance, task, outbox, authority or audit scope
+state. U2-U6, including activation and execution, remain unimplemented.
+
 ### Additive install and cutover owner
 
-Proposed production ownership is
+U1A production ownership is
 `runtime/infrastructure/workflow_schema.py:install_or_recover` plus
-`WorkflowCompatibilityStore`, called by `Database.__init__` only after all
-currently required preflight/migration owners and before `OrgState.load`
-attaches the org. The isolated `install_workflow_adapter` owns one
+`WorkflowCompatibilityStore`, called explicitly by `OrgState.load` immediately
+after `Database(paths.db_path)` completes all required generic
+preflight/migration owners and before teams/settings/orchestrator loading or
+org attachment. It is never called by `Database.__init__`; therefore
+`runtime-audit.db` and every other generic Database instance remain untouched.
+The legacy authority hook's org-release reference is the sole isolated
+exception: it creates a private temporary generic Database, applies this same
+canonical installer, and hashes the complete resulting `sqlite_master`
+surface. The live-org comparison remains full and fail-closed; no workflow
+object is filtered, substituted or whitelisted, and no persistent generic or
+runtime-audit store is modified.
+The Database-owned workflow transaction holds the existing RLock and one
 `BEGIN IMMEDIATE`; either every additive workflow table, version row, cutover
 row and first event commits, or zero `workflow_%` residue exists. It never
 repairs a partial, conflicting, newer or unknown layout and never runs a DROP,
 table rebuild, legacy UPDATE, backup restore or destructive rollback.
 On reopen it derives the complete canonical SQLite layout from the exact
-supplied DDL and compares every workflow table, column/default/key, CHECK,
+embedded DDL and compares every workflow table, column/default/key, CHECK,
 UNIQUE, foreign key, explicit/automatic index and trigger before reading the
 marker. A full table-name set is insufficient. Missing, added or conflicting
 layout refuses read-only; an exact valid layout reopens unchanged repeatedly.
@@ -1271,12 +1298,14 @@ The adapter schema-version discriminator is exactly
 `workflow_cutover_state.recovery_owner` is exactly
 `workflow_cutover_reconciler`. Its row is `(schema_version=1, state,
 recovery_owner, generation, operation_key, disable_reason)`, and its immutable
-event sequence records every transition. The legal states are:
+event sequence records every transition. The later accepted state vocabulary is:
 
 `installed_legacy_only -> enable_requested -> compatibility_verified -> enabled`
 
-Install never enables work. `enable_requested` requires a separately authorized
-operation. Cold recovery may advance only that already-authorized request,
+U1A installs and accepts only `installed_legacy_only` generation 1. It neither
+implements nor accepts a cutover transition. Future `enable_requested`
+requires a separately authorized implementation and operation. That later
+cold recovery may advance only an already-authorized request,
 committing compatibility verification before enabled. Reopen and repeated
 recovery are state-idempotent. Interruption before the install commit leaves no
 workflow tables; interruption after any committed enable stage resumes forward
@@ -1398,12 +1427,14 @@ distributed atomic commit, same-UID exclusion, or old-binary cooperation.
 
 ### Protected production decisions and delivery units
 
-F6 recommends acceptance of the following exact choices but approves none:
+At F6 evidence time, the following rows were recommendations. Founder approval
+and bounded delivery have since shipped U1A and authorized U1B; the remaining
+rows are still recommendations only:
 
 | Delta | Recommendation / owner | Dependency | Estimate | Required implementation/review/QA proof |
 | --- | --- | --- | --- | --- |
-| Additive schema installer and singleton cutover marker in `runtime/infrastructure/workflow_schema.py` | accept; backend owner | exact migration number and Founder schema/compatibility approval | 2–3 engineer-days | fresh/current/v0/v1 installed fixtures, every transaction/interruption boundary, foreign/integrity checks, immutable legacy bytes |
-| D1 template store in `runtime/workflows/templates.py:WorkflowTemplateStore.publish_version` | accept stable org/team/name plus immutable monotonic bodies/CAS; backend owner | D1 publisher authority plus naming/reservation disposition | 2–3 days | replay/conflict/stale/two-writer tests, canonical digest vectors, namespace authorization and route/API parity |
+| Additive schema installer and singleton initial cutover marker in `runtime/infrastructure/workflow_schema.py` | U1A production candidate implemented; backend owner | Founder THR-139 seq270-273 plus U1A charter resolution | implemented in U1A | fresh/current/v0/v1 shipping-seam fixtures, pre-commit interruption, repeated/two-cold reopen, canonical layout/marker/event refusal, runtime-audit exclusion, immutable legacy bytes |
+| D1 template store in `runtime/workflows/templates.py:WorkflowTemplateStore.publish_version` | U1B implemented: stable org/team/name plus immutable monotonic bodies/CAS; backend owner | Founder THR-139 seq49/53 and seq270-273; U1B charter | implemented in U1B | replay/conflict/stale/duplicate/two-writer tests, canonical digest vectors, namespace authorization and route/CLI/API parity |
 | Separate activation CAS in `WorkflowTemplateStore.activate` | accept exact version+authority pin; backend owner | D2 activation authority and F4 ready generation | 1–2 days | publish-does-not-retarget, restart/reassignment pin, stale/current reactivation races |
 | Recovery routing in `runtime/workflows/recovery.py:WorkflowRecoveryRouter` and startup join before `_sweep_on_startup` enqueue | accept bridge-derived exclusive owner; runtime owner | F5 task insertion bridge and startup integration approval | 2–3 days | real legacy/workflow task schedules, boot/reaper/cancel/parent-wake routing, one launch/effect, malformed/missing ownership fail-closed |
 | Disable/drain coordinator and pending/error projection | accept marker fence and state matrix above; runtime/API owner | F5 outbox, supervised cancellation and operator disposition policy | 2–3 days | real queue/claim/host/callback restarts, every state projection, no uncertain-as-complete/retry, CLI/UI parity |
@@ -1417,12 +1448,15 @@ concurrent publishers/recovery claimants, activation pinning, every drain state,
 downgrade refusal and public pending/error behavior. Exact current production
 symbols and hashes are recorded in TASK-8859 Native Impact Evidence.
 
-F4-D remains pending for production schema/coordinator, supported-writer
-pre-fences, route barriers and startup republish. F5 remains delivered only as
+U1A additive schema/initial compatibility installation is implemented as a
+candidate; it does not implement the F4 coordinator. F4-D remains pending for
+supported-writer pre-fences, route barriers and startup republish. F5 remains delivered only as
 an isolated request/task/outbox/uncertain-launch contract; its six production
 deltas remain protected. F6 now supplies the recommended compatibility/cutover
-decision and proof, but all production implementation, D1/D2 authority,
-naming-reservation policy, review and QA gates remain pending. Comparative study
+decision and proof. U1B ships D1 authoring only; every post-install cutover
+transition, D2 activation authority, naming-reservation policy, U2-U6 production
+implementation, and the applicable independent review/QA/CI gates remain
+pending. Comparative study
 is **NOT RUN** and off the critical path; exhaustive Phase2 fanout, general
 fork/join, pipeline carriers and coding migration remain out of scope. Evidence
 remains **UNACCEPTED / D5 NOT READY** until independent gates and Founder

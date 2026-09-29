@@ -1966,6 +1966,40 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/jobs/{job_id}/receipt": {
+      "GET": {
+        "params": [
+          [
+            "job_id",
+            "path"
+          ],
+          [
+            "max_bytes",
+            "query"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "stream",
+            "query"
+          ],
+          [
+            "task_id",
+            "query"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/jobs/{job_id}/reject": {
       "POST": {
         "params": [
@@ -3912,6 +3946,80 @@
           ],
           [
             "work_hour_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/templates": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "team_slug",
+            "query"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/templates/publish": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "201",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/templates/{team_slug}/{template_name}/{version}": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "team_slug",
+            "path"
+          ],
+          [
+            "template_name",
+            "path"
+          ],
+          [
+            "version",
             "path"
           ]
         ],

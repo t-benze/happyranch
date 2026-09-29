@@ -147,7 +147,7 @@ def _assert_refused(
 
 
 # --------------------------------------------------------------------------
-# Reference independence and the two accepted layouts
+# Reference independence and two ownership layouts (four inventories)
 # --------------------------------------------------------------------------
 
 
@@ -182,8 +182,42 @@ def test_reference_accepts_fresh_and_migrated_with_distinct_raw_digests(tmp_path
 
 def test_reference_construction_is_independent_of_the_candidate(tmp_path):
     references = authority._v2_build_reference_inventories()
-    assert references is not None and len(references) == 2
+    assert references is not None and len(references) == 4
     snapshot = json.dumps(references, sort_keys=True)
+
+    def workflow_projection(inventory):
+        return {
+            kind: {
+                name: metadata
+                for name, metadata in inventory[kind].items()
+                if name.startswith("workflow_")
+                or metadata.get("tbl", "").startswith("workflow_")
+            }
+            for kind in ("tables", "indexes", "triggers", "views")
+        }
+
+    empty_workflow = {
+        kind: {} for kind in ("tables", "indexes", "triggers", "views")
+    }
+    assert [workflow_projection(item) for item in references[:2]] == [
+        empty_workflow,
+        empty_workflow,
+    ]
+
+    from runtime.infrastructure.workflow_schema import install_or_recover
+
+    canonical = _pristine(tmp_path, "canonical-workflow.db")
+    try:
+        install_or_recover(canonical)
+        canonical_workflow = workflow_projection(
+            authority._v2_capture_inventory(canonical._conn)
+        )
+    finally:
+        canonical._conn.close()
+    assert [workflow_projection(item) for item in references[2:]] == [
+        canonical_workflow,
+        canonical_workflow,
+    ]
 
     # A wildly different candidate must not change the reference.
     bad = _pristine(tmp_path, "bad.db")
@@ -1220,5 +1254,133 @@ def test_legacy_v1_digest_helpers_unchanged_by_the_coherent_view(tmp_path):
         assert db._conn.in_transaction is False
         release = authority._release_schema_digest()
         assert isinstance(release, str) and len(release) == 64
+    finally:
+        db._conn.close()
+
+
+# --------------------------------------------------------------------------
+# THR-139 U1A / seq307 workflow-namespace ownership controls
+# --------------------------------------------------------------------------
+
+
+def _install_u1a_workflow_layout(db: Database) -> None:
+    from runtime.infrastructure.workflow_schema import install_or_recover
+
+    install_or_recover(db)
+
+
+def test_v2_schema_integrity_accepts_workflow_absent_org(tmp_path, monkeypatch):
+    monkeypatch.setattr(authority, "_V2_SCHEMA_REFERENCE_CACHE", None)
+    db = _pristine(tmp_path, "workflow-absent.db")
+    try:
+        outcome = _capture(db)
+        assert outcome.evidence is not None, outcome.diagnostic
+        assert recheck_authority_policy_v2_schema_integrity(outcome.evidence, db)
+    finally:
+        db._conn.close()
+
+
+def test_v2_schema_integrity_accepts_canonical_u1a_org(tmp_path, monkeypatch):
+    monkeypatch.setattr(authority, "_V2_SCHEMA_REFERENCE_CACHE", None)
+    db = _pristine(tmp_path, "workflow-canonical.db")
+    try:
+        _install_u1a_workflow_layout(db)
+        outcome = _capture(db)
+        assert outcome.evidence is not None, outcome.diagnostic
+        assert recheck_authority_policy_v2_schema_integrity(outcome.evidence, db)
+    finally:
+        db._conn.close()
+
+
+def test_v2_schema_integrity_refuses_partial_workflow_layout(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(authority, "_V2_SCHEMA_REFERENCE_CACHE", None)
+    db = _pristine(tmp_path, "workflow-partial.db")
+    try:
+        _install_u1a_workflow_layout(db)
+        db._conn.execute("DROP INDEX workflow_requests_round_idx")
+        db._conn.commit()
+
+        outcome = _capture(db)
+        assert outcome.evidence is None
+        assert outcome.diagnostic == {
+            "code": "missing_object",
+            "kind": "indexes",
+            "object": "workflow_requests_round_idx",
+            "v2": False,
+        }
+    finally:
+        db._conn.close()
+
+
+def test_v2_schema_integrity_refuses_malformed_workflow_layout(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(authority, "_V2_SCHEMA_REFERENCE_CACHE", None)
+    db = _pristine(tmp_path, "workflow-malformed.db")
+    try:
+        _install_u1a_workflow_layout(db)
+        original = _table_sql(db, "workflow_adapter_versions")
+        _rebuild_table(
+            db,
+            "workflow_adapter_versions",
+            original.replace("CHECK(version=1)", "CHECK(version IN (1,2))"),
+        )
+
+        outcome = _capture(db)
+        assert outcome.evidence is None
+        assert outcome.diagnostic == {
+            "code": "table_sql_mismatch",
+            "kind": "table",
+            "object": "workflow_adapter_versions",
+            "v2": False,
+        }
+    finally:
+        db._conn.close()
+
+
+def test_v2_schema_integrity_refuses_unknown_workflow_object(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(authority, "_V2_SCHEMA_REFERENCE_CACHE", None)
+    db = _pristine(tmp_path, "workflow-extra.db")
+    try:
+        _install_u1a_workflow_layout(db)
+        db._conn.execute(
+            "CREATE TABLE workflow_unknown_extension (id TEXT PRIMARY KEY)"
+        )
+        db._conn.commit()
+
+        outcome = _capture(db)
+        assert outcome.evidence is None
+        assert outcome.diagnostic == {
+            "code": "unexpected_object",
+            "kind": "tables",
+            "object": "workflow_unknown_extension",
+            "v2": False,
+        }
+    finally:
+        db._conn.close()
+
+
+def test_v2_schema_integrity_refuses_non_workflow_drift_on_canonical_u1a_org(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(authority, "_V2_SCHEMA_REFERENCE_CACHE", None)
+    db = _pristine(tmp_path, "workflow-with-generic-drift.db")
+    try:
+        _install_u1a_workflow_layout(db)
+        db._conn.execute("CREATE TABLE unrelated_schema_drift (id INTEGER)")
+        db._conn.commit()
+
+        outcome = _capture(db)
+        assert outcome.evidence is None
+        assert outcome.diagnostic == {
+            "code": "unexpected_object",
+            "kind": "tables",
+            "object": "unrelated_schema_drift",
+            "v2": False,
+        }
     finally:
         db._conn.close()

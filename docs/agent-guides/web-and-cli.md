@@ -29,6 +29,27 @@ read-only `scripts/check_path_use.py` returns only `clear_observation`,
 process name AND bounded cgroup role for fixed daemons; any other unreadable
 same-user process is `unknown`).
 
+Cleanup history reads use the backward-compatible `tasks --agent --all-pages
+--json` and `audit --all-pages --json` surfaces to exhaust candidate-specific
+keyset pages. Scanner execution is job-only and fail-closed on any non-exact,
+stale, spoofed, truncated, or incomplete structured receipt. `jobs submit
+--json` returns the authenticated submission identity; `jobs show --json` and
+`jobs output --json` require the current task/session and return the same closed
+receipt containing stored execution identity and complete output accounting.
+Fresh exact origin task branches and confirmed merged PRs can preserve a clean
+candidate in addition to the accepted durable ref; the PR query is completely
+paginated and repeated, and any open, closed-unmerged, duplicated, changing, or
+malformed row refuses. Merged integration does not promise original commit
+topology. Dirty whole worktrees are never removed, while a literal root
+dependency cache can qualify under the separate 24-hour cache gates without
+changing tracked source bytes or Git status. The removable worktree must be at
+its owning primary checkout's exact registered `.claude/worktrees/<TASK>` path.
+The literal root and descendants are walked without following symlinks before
+and at action time; nested mounts, cross-device or foreign-owned entries,
+protected descendants, incomplete evidence, and identity drift refuse. A
+success receipt requires measured root-plus-descendant bytes, actual candidate
+absence, and unchanged protected-path identities.
+
 ## Web UI
 
 ### Dashboard projection
@@ -472,6 +493,44 @@ as `expected_revision` (or `--expected-revision` for the direct CLI form).
 The daemon returns 422 for missing, null, or malformed revisions and 409 for a
 stale base. On 409, reread and deliberately reapply the intended field change;
 do not pair older composed content with a newer roster revision.
+
+### Workflow template authoring (U1B)
+
+U1B publishes inert immutable `product-design` template definitions; it does
+not activate or execute them. An active, uniquely registered team manager uses
+its verified task/session binding, and the server derives its organization,
+principal and `org/<org>/team/<manager-team>` namespace:
+
+```bash
+happyranch workflows templates publish --org <org> --from-file /absolute/template.json --session-id <session-id>
+```
+
+Founder omits `--session-id`, supplies `team_slug` in the JSON payload, and the
+command uses the existing daemon bearer. The payload contains
+`operation_key`, `template_name`, `expected_current_version`, `definition`,
+and (Founder only) `team_slug`; publisher, principal, namespace, org, task and
+session claims are rejected. `--from-file` must be absolute. The closed
+definition is `kind=product-design`, with `schema_version` set to the genuine
+JSON integer `1` (not a boolean, float, string or null), a Product Lead agent
+author of an immutable PRD revision, Founder/implementer/tester reviewers, all
+three required on the current revision, and request-changes returning to the
+author. A non-empty description is the only variable descriptive field;
+unknown fields and kinds fail closed.
+
+Founder reads exact immutable versions with:
+
+```bash
+happyranch workflows templates list --org <org> --team <team> [--json]
+happyranch workflows templates show --org <org> <team> <template-name> <version> [--json]
+```
+
+The matching APIs are `POST /api/v1/orgs/{slug}/workflows/templates/publish`,
+`GET /api/v1/orgs/{slug}/workflows/templates?team_slug=...`, and
+`GET /api/v1/orgs/{slug}/workflows/templates/{team_slug}/{template_name}/{version}`.
+Responses return canonical JSON, base64 of the same UTF-8 bytes, SHA-256,
+version/pins/timestamp and authenticated publisher provenance. Conflict,
+stale-CAS, duplicate-content and authorization errors retain stable
+machine-readable `detail.code` values; refusals leave no template residue.
 
 Slug resolution for per-org commands: explicit `--org <slug>` > `HAPPYRANCH_ORG_SLUG` > auto-infer only when exactly one org exists > error. Container-level commands take no `--org`.
 

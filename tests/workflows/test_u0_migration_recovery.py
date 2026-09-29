@@ -12,6 +12,9 @@ from pathlib import Path
 import pytest
 
 from runtime.infrastructure.database import Database
+from runtime.infrastructure.workflow_schema import (
+    install_or_recover as install_production_workflow_schema,
+)
 from tests.workflows import u0_evidence_helpers
 from tests.workflows.u0_evidence_helpers import (
     ProfileOperationInterrupted,
@@ -195,7 +198,8 @@ def _legacy_snapshot(path: Path) -> dict[str, tuple[str, list[tuple[object, ...]
     try:
         tables = conn.execute(
             "SELECT name,sql FROM sqlite_master WHERE type='table' "
-            "AND name NOT LIKE 'workflow_%' AND name NOT LIKE 'sqlite_%' "
+            "AND name NOT LIKE 'workflow\\_%' ESCAPE '\\' "
+            "AND name NOT LIKE 'sqlite_%' "
             "ORDER BY name"
         ).fetchall()
         return {
@@ -333,7 +337,8 @@ def _complete_join_state(path: Path) -> dict[str, list[tuple[object, ...]]]:
         tables = [
             row[0]
             for row in check.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'workflow_%' ORDER BY name"
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE 'workflow\\_%' ESCAPE '\\' ORDER BY name"
             )
         ]
         return {table: check.execute(f"SELECT * FROM {table}").fetchall() for table in tables}
@@ -3228,7 +3233,8 @@ def test_proposed_f6_schema_vocabulary_matches_the_active_delivery_contract() ->
     assert "`workflow_cutover_state.recovery_owner`" in spec
     assert "`workflow_cutover_reconciler`" in spec
     assert "`runtime/infrastructure/workflow_schema.py:install_or_recover`" in spec
-    assert "`WorkflowCompatibilityStore`, called by `Database.__init__`" in spec
+    assert "`WorkflowCompatibilityStore`, called explicitly by `OrgState.load`" in spec
+    assert "It is never called by `Database.__init__`" in spec
     assert "Database.initialize" not in spec
     assert Database.__init__.__name__ == "__init__"
     assert install_workflow_adapter.__name__ == "install_workflow_adapter"
@@ -3321,13 +3327,17 @@ def test_proposed_f6_additive_install_preserves_fresh_current_and_executed_histo
             "teams.yaml": (root / "org" / "teams.yaml").read_bytes(),
         }
 
+    # Exercise the shipping order: existing Database preflight/migrations
+    # complete first, then the explicit org-load U1A installer owns only its
+    # additive workflow transaction.
+    db = Database(path)
     legacy_before = _legacy_snapshot(path)
-    conn = _adapter(path)
-    assert conn.execute(
+    assert install_production_workflow_schema(db) == "installed_legacy_only"
+    assert tuple(db.execute(
         "SELECT schema_version,state,recovery_owner FROM workflow_cutover_state"
-    ).fetchone() == (1, "installed_legacy_only", "workflow_cutover_reconciler")
-    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
-    conn.close()
+    ).fetchone()) == (1, "installed_legacy_only", "workflow_cutover_reconciler")
+    assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+    db.close()
     assert _legacy_snapshot(path) == legacy_before
     if layout == "v0":
         assert legacy_before["audit_log"][1][0][1:4] == (
@@ -3444,7 +3454,8 @@ def test_proposed_f6_install_and_cutover_interruptions_recover_once_and_twice_co
         raw.close()
         check = sqlite3.connect(path)
         assert check.execute(
-            "SELECT name FROM sqlite_master WHERE name LIKE 'workflow_%'"
+            "SELECT name FROM sqlite_master "
+            "WHERE name LIKE 'workflow\\_%' ESCAPE '\\'"
         ).fetchall() == []
         check.close()
         conn = _adapter(path)

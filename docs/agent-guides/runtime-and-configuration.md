@@ -418,6 +418,26 @@ ssh-agent, gpg-agent, gcr-ssh-agent) qualifies only by exact readable process
 name AND exact bounded cgroup role and is deliberately uninspected; any other
 unreadable same-user process is `unknown` and skips.
 
+The shared procedure executes that scanner only through a task-bound,
+host-visible HappyRanch job and validates a closed-schema, non-truncated receipt
+binding task/session, actual job, stored execution identity, terminal result,
+complete output totals, and scanner coverage; direct in-session fallback is
+forbidden. Candidate-related task and trigger evidence uses complete paging
+rather than an org-wide history cap. PR evidence is completely paginated and
+repeated, with every open, closed-unmerged, duplicate, changing, conflicting,
+or malformed result refusing. Preservation accepts
+the existing durable ref, a freshly verified matching origin task branch, or a
+confirmed merged PR; merged integration may not preserve original commit
+topology. Dirty whole worktrees remain protected, with the sole narrow exception
+of a literal root `.venv`/`node_modules` cache whose removal leaves tracked
+source bytes and Git status unchanged.
+The containing worktree must be at the owning primary's exact registered
+`.claude/worktrees/<TASK>` location on `task/<TASK>`. A complete no-follow
+`lstat` walk before and at action time refuses nested mounts, cross-device or
+foreign-owned entries, protected descendants, incomplete evidence, and drift.
+Root-plus-descendant byte accounting precedes action; a success receipt requires
+literal absence and unchanged protected-path identities.
+
 ## Terminal task-worktree reclamation
 
 Terminal task-worktree reclamation has no configuration key or cadence. On the
@@ -463,8 +483,8 @@ are now read and written **exclusively** through ``AgentDef``:
 The workspace ``agent.yaml`` file is **no longer read or written** by any
 org-agent path. A one-shot startup migration (``migrate_agent_yaml_to_frontmatter``,
 idempotent, runs on every daemon start) copies any residual ``agent.yaml``
-values into their owning ``.md`` exactly once, then the ``agent.yaml`` is
-left untouched. The system assistant (``runtime/system_assistant.py``) is a
+values into their owning ``.md`` exactly once, then deletes ``agent.yaml`` and
+writes the ``.agent_yaml_consumed`` sentinel. The system assistant (``runtime/system_assistant.py``) is a
 **separate subsystem** and writes its own ``agent.yaml`` directly — it has no
 ``org/agents/`` file and is unaffected.
 
@@ -627,6 +647,9 @@ happyranch web [--no-open]
 The full founder-facing CLI is documented in `skills/happyranch/SKILL.md`.
 
 ## Running Tests
+
+For where new test files belong, see the forward-only
+[test-placement rule](project-layout.md#test-placement).
 
 ```bash
 uv run pytest tests/ -v -n 4              # unit tests only (default; -n 4 = pytest-xdist parallel)
