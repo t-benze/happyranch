@@ -37,6 +37,7 @@ from cli.commands import (
     skills,
     tasks,
     threads,
+    workflows,
     work_hours,
 )
 from cli.commands.dreams import (  # noqa: F401
@@ -177,6 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
     executors.register(sub)
     executor_binaries.register(sub)
     threads.register(sub)
+    workflows.register(sub)
 
     return parser
 

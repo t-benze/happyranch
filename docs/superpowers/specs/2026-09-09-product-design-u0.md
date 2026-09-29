@@ -1203,13 +1203,15 @@ Evidence remains **UNACCEPTED / D5 NOT READY**.
 
 ## 2026-09-24 F6 compatibility, cutover, recovery ownership and template CAS (TASK-8859)
 
-This is the active F6 contract and evidence lineage. U1A now has an authorized
-production candidate: the complete inert version-1 layout, exact initial
+This is the active F6 contract and evidence lineage. U1A now provides the
+production foundation: the complete inert version-1 layout, exact initial
 compatibility marker/event, and full-layout reopen validator are implemented
 in `runtime/infrastructure/workflow_schema.py` and invoked only by
-`OrgState.load`. U1A does not enable workflow behavior. Every later delta below
-— template operations, activation, authority coordination, dispatch/recovery,
-cutover transitions, routes and operator projection — remains unimplemented.
+`OrgState.load`. U1A does not enable workflow behavior. U1B implements only
+inert immutable template authoring/versioning through the existing U1A tables,
+verified manager-session or Founder-bearer route, and CLI/API reads. Every
+later delta below — activation, authority coordination, dispatch/recovery,
+cutover transitions and workflow execution/operator UI — remains unimplemented.
 No old binary has been changed and no later production compatibility approval
 follows from U1A.
 
@@ -1251,6 +1253,18 @@ with the current activation revision may append v2 and supersede v1. Template
 version publication remains permitted while new runs are disabled because it
 creates no execution; activation/template-start and F5 request admission are
 fenced.
+
+**U1B shipping status (TASK-9100).** `runtime/workflows/templates.py` owns the
+store and closed `product-design` data validation. A current active manager is
+resolved from the existing task/session binding and unique live `teams.yaml`
+registration, revalidated after `BEGIN IMMEDIATE`, and may publish only to
+`org/<org>/team/<its-team>`; Founder uses the existing bearer and an existing
+team. The server derives namespace, stable principal, publisher provenance,
+canonical UTF-8 JSON bytes, SHA-256 digest, pins, IDs, timestamp and version.
+The route/CLI expose publish/list/show with stable error codes and exact stored
+bytes (base64 plus canonical JSON), digest, version and provenance. U1B never
+writes cutover, activation, instance, task, outbox, authority or audit scope
+state. U2-U6, including activation and execution, remain unimplemented.
 
 ### Additive install and cutover owner
 
@@ -1413,12 +1427,14 @@ distributed atomic commit, same-UID exclusion, or old-binary cooperation.
 
 ### Protected production decisions and delivery units
 
-F6 recommends acceptance of the following exact choices but approves none:
+At F6 evidence time, the following rows were recommendations. Founder approval
+and bounded delivery have since shipped U1A and authorized U1B; the remaining
+rows are still recommendations only:
 
 | Delta | Recommendation / owner | Dependency | Estimate | Required implementation/review/QA proof |
 | --- | --- | --- | --- | --- |
 | Additive schema installer and singleton initial cutover marker in `runtime/infrastructure/workflow_schema.py` | U1A production candidate implemented; backend owner | Founder THR-139 seq270-273 plus U1A charter resolution | implemented in U1A | fresh/current/v0/v1 shipping-seam fixtures, pre-commit interruption, repeated/two-cold reopen, canonical layout/marker/event refusal, runtime-audit exclusion, immutable legacy bytes |
-| D1 template store in `runtime/workflows/templates.py:WorkflowTemplateStore.publish_version` | accept stable org/team/name plus immutable monotonic bodies/CAS; backend owner | D1 publisher authority plus naming/reservation disposition | 2–3 days | replay/conflict/stale/two-writer tests, canonical digest vectors, namespace authorization and route/API parity |
+| D1 template store in `runtime/workflows/templates.py:WorkflowTemplateStore.publish_version` | U1B implemented: stable org/team/name plus immutable monotonic bodies/CAS; backend owner | Founder THR-139 seq49/53 and seq270-273; U1B charter | implemented in U1B | replay/conflict/stale/duplicate/two-writer tests, canonical digest vectors, namespace authorization and route/CLI/API parity |
 | Separate activation CAS in `WorkflowTemplateStore.activate` | accept exact version+authority pin; backend owner | D2 activation authority and F4 ready generation | 1–2 days | publish-does-not-retarget, restart/reassignment pin, stale/current reactivation races |
 | Recovery routing in `runtime/workflows/recovery.py:WorkflowRecoveryRouter` and startup join before `_sweep_on_startup` enqueue | accept bridge-derived exclusive owner; runtime owner | F5 task insertion bridge and startup integration approval | 2–3 days | real legacy/workflow task schedules, boot/reaper/cancel/parent-wake routing, one launch/effect, malformed/missing ownership fail-closed |
 | Disable/drain coordinator and pending/error projection | accept marker fence and state matrix above; runtime/API owner | F5 outbox, supervised cancellation and operator disposition policy | 2–3 days | real queue/claim/host/callback restarts, every state projection, no uncertain-as-complete/retry, CLI/UI parity |
@@ -1437,9 +1453,10 @@ candidate; it does not implement the F4 coordinator. F4-D remains pending for
 supported-writer pre-fences, route barriers and startup republish. F5 remains delivered only as
 an isolated request/task/outbox/uncertain-launch contract; its six production
 deltas remain protected. F6 now supplies the recommended compatibility/cutover
-decision and proof, but every post-install cutover transition, D1/D2 authority,
-naming-reservation policy, later production implementation, and U1A independent
-review/QA/CI gates remain pending. Comparative study
+decision and proof. U1B ships D1 authoring only; every post-install cutover
+transition, D2 activation authority, naming-reservation policy, U2-U6 production
+implementation, and the applicable independent review/QA/CI gates remain
+pending. Comparative study
 is **NOT RUN** and off the critical path; exhaustive Phase2 fanout, general
 fork/join, pipeline carriers and coding migration remain out of scope. Evidence
 remains **UNACCEPTED / D5 NOT READY** until independent gates and Founder
