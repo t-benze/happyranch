@@ -557,10 +557,11 @@ PY
 
 _wc_target_contains_head() {
   local head="$1" target="$2" label="$3" repo_slug="$4"
+  local force_github="${5:-0}"
   local first="$WC_TMP/compare-$label-first.json"
   local second="$WC_TMP/compare-$label-second.json"
   python3 -c 'import re,sys; raise SystemExit(0 if re.fullmatch(r"[0-9a-f]{40}",sys.argv[1]) else 1)' "$target" || return 1
-  if git -C "$CONTAINING" cat-file -e "$target^{commit}" 2>/dev/null; then
+  if [ "$force_github" != "1" ] && git -C "$CONTAINING" cat-file -e "$target^{commit}" 2>/dev/null; then
     git -C "$CONTAINING" merge-base --is-ancestor "$head" "$target" 2>/dev/null
     return $?
   fi
@@ -584,6 +585,99 @@ a=read(sys.argv[1]); b=read(sys.argv[2]); head=sys.argv[3]; target=sys.argv[4]
 if a!=b or a["behind_by"]!=0 or a["total_commits"]!=a["commit_count"] or a["base_oid"]!=head or a["merge_base_oid"]!=head or a["target_oid"]!=target: raise SystemExit(3)
 if a["status"]=="identical" and (a["ahead_by"]!=0 or head!=target): raise SystemExit(3)
 if a["status"]=="ahead" and (a["ahead_by"]<1 or head==target): raise SystemExit(3)' "$first" "$second" "$head" "$target"
+}
+
+_wc_any_merged_pr_contains_head() {
+  local head="$1" repo_slug="$2"
+  local search_first="$WC_TMP/search-prs-first.jsonl"
+  local search_second="$WC_TMP/search-prs-second.jsonl"
+  local repo_first="$WC_TMP/repository-first.json"
+  local repo_second="$WC_TMP/repository-second.json"
+  local candidates default_branch targets number detail_first detail_second target
+  local query="repo:$repo_slug type:pr $head"
+  gh api -X GET search/issues --paginate -f q="$query" -f per_page=100 \
+    --jq '{total_count: .total_count, incomplete_results: .incomplete_results, items: [.items[] | {number: .number, pull_request_url: .pull_request.url}]}' \
+    > "$search_first" 2>/dev/null || return 1
+  gh api -X GET search/issues --paginate -f q="$query" -f per_page=100 \
+    --jq '{total_count: .total_count, incomplete_results: .incomplete_results, items: [.items[] | {number: .number, pull_request_url: .pull_request.url}]}' \
+    > "$search_second" 2>/dev/null || return 1
+  candidates="$(python3 -c 'import json,sys
+def read(path,slug):
+ pages=[]
+ for line in open(path):
+  if not line.strip(): continue
+  page=json.loads(line)
+  if not isinstance(page,dict) or set(page)!={"total_count","incomplete_results","items"}: raise SystemExit(2)
+  total=page["total_count"]; incomplete=page["incomplete_results"]; items=page["items"]
+  if isinstance(total,bool) or not isinstance(total,int) or total<0: raise SystemExit(2)
+  if incomplete is not False or not isinstance(items,list) or len(items)>100: raise SystemExit(2)
+  pages.append((total,items))
+ if not pages or len({page[0] for page in pages})!=1: raise SystemExit(2)
+ rows=[]; seen=set(); expected=pages[0][0]
+ for _,items in pages:
+  for row in items:
+   if not isinstance(row,dict) or set(row)!={"number","pull_request_url"}: raise SystemExit(2)
+   number=row["number"]
+   if isinstance(number,bool) or not isinstance(number,int) or number<=0 or number in seen: raise SystemExit(2)
+   if row["pull_request_url"]!=f"https://api.github.com/repos/{slug}/pulls/{number}": raise SystemExit(2)
+   seen.add(number); rows.append(number)
+ if len(rows)!=expected: raise SystemExit(2)
+ return rows
+a=read(sys.argv[1],sys.argv[3]); b=read(sys.argv[2],sys.argv[3])
+if a!=b: raise SystemExit(3)
+print("\n".join(map(str,a)))' "$search_first" "$search_second" "$repo_slug")" || return 1
+  [ -n "$candidates" ] || return 1
+  gh api "repos/$repo_slug" --jq '{default_branch: .default_branch}' \
+    > "$repo_first" 2>/dev/null || return 1
+  gh api "repos/$repo_slug" --jq '{default_branch: .default_branch}' \
+    > "$repo_second" 2>/dev/null || return 1
+  default_branch="$(python3 -c 'import json,sys
+def read(path):
+ d=json.load(open(path))
+ if not isinstance(d,dict) or set(d)!={"default_branch"}: raise SystemExit(2)
+ value=d["default_branch"]
+ if not isinstance(value,str) or not value or len(value)>255 or any(ord(c)<32 for c in value): raise SystemExit(2)
+ return value
+a=read(sys.argv[1]); b=read(sys.argv[2])
+if a!=b: raise SystemExit(3)
+print(a)' "$repo_first" "$repo_second")" || return 1
+  targets="$WC_TMP/search-pr-targets.txt"
+  : > "$targets" || return 1
+  while IFS= read -r number; do
+    [ -n "$number" ] || return 1
+    detail_first="$WC_TMP/search-pr-$number-first.json"
+    detail_second="$WC_TMP/search-pr-$number-second.json"
+    gh api "repos/$repo_slug/pulls/$number" \
+      --jq '{number: .number, state: (if .merged == true then "MERGED" else (.state | ascii_upcase) end), mergedAt: .merged_at, headRefOid: .head.sha, baseRefName: .base.ref}' \
+      > "$detail_first" 2>/dev/null || return 1
+    gh api "repos/$repo_slug/pulls/$number" \
+      --jq '{number: .number, state: (if .merged == true then "MERGED" else (.state | ascii_upcase) end), mergedAt: .merged_at, headRefOid: .head.sha, baseRefName: .base.ref}' \
+      > "$detail_second" 2>/dev/null || return 1
+    target="$(python3 -c 'import json,re,sys
+def read(path,number):
+ d=json.load(open(path))
+ if not isinstance(d,dict) or set(d)!={"number","state","mergedAt","headRefOid","baseRefName"}: raise SystemExit(2)
+ if d["number"]!=number or d["state"] not in ("OPEN","CLOSED","MERGED"): raise SystemExit(2)
+ if not isinstance(d["headRefOid"],str) or not re.fullmatch(r"[0-9a-f]{40}",d["headRefOid"]): raise SystemExit(2)
+ if not isinstance(d["baseRefName"],str) or not d["baseRefName"]: raise SystemExit(2)
+ if d["state"]=="MERGED":
+  if not isinstance(d["mergedAt"],str) or not d["mergedAt"]: raise SystemExit(2)
+ elif d["mergedAt"] is not None: raise SystemExit(2)
+ return d
+number=int(sys.argv[3]); a=read(sys.argv[1],number); b=read(sys.argv[2],number)
+if a!=b: raise SystemExit(3)
+if a["state"]=="MERGED" and a["baseRefName"]==sys.argv[4]: print(a["headRefOid"])' "$detail_first" "$detail_second" "$number" "$default_branch")" || return 1
+    if [ -n "$target" ]; then
+      printf '%s %s\n' "$number" "$target" >> "$targets" || return 1
+    fi
+  done <<EOF
+$candidates
+EOF
+  [ -s "$targets" ] || return 1
+  while read -r number target; do
+    [ -n "$number" ] && [ -n "$target" ] || return 1
+    _wc_target_contains_head "$head" "$target" "search-pr-$number" "$repo_slug" 1 || return 1
+  done < "$targets"
 }
 
 _wc_git_preserved() {
@@ -659,7 +753,8 @@ print(rows[0][0])' "$remote_rows" "$branch")" || return 1
   fi
   [ "$durable_ref" -eq 1 ] || \
     { [ -n "$remote_target" ] && _wc_target_contains_head "$head" "$remote_target" remote "$repo_slug"; } || \
-    { [ -n "$merged_target" ] && _wc_target_contains_head "$head" "$merged_target" merged "$repo_slug"; }
+    { [ -n "$merged_target" ] && _wc_target_contains_head "$head" "$merged_target" merged "$repo_slug"; } || \
+    _wc_any_merged_pr_contains_head "$head" "$repo_slug"
 }
 
 _wc_scan_job() {

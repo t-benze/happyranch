@@ -360,6 +360,9 @@ def test_r5_preservation_gate_calls_fresh_remote_and_all_pr_states(body):
     assert "gh api graphql --paginate --slurp" in procedure
     assert "totalCount" in procedure and "pageInfo" in procedure
     assert "mergedAt" in procedure and "headRefOid" in procedure
+    assert "search/issues --paginate" in procedure
+    assert "incomplete_results" in procedure and "total_count" in procedure
+    assert "_wc_any_merged_pr_contains_head" in procedure
 
 
 def _git(*args, cwd=None):
@@ -464,17 +467,53 @@ def _write_stubs(bin_dir: Path) -> None:
         "#!/bin/sh\n"
         "echo \"gh $*\" >> \"$GH_LOG\"\n"
         "[ \"${WC_GH_FAIL:-0}\" = \"1\" ] && exit 71\n"
-        "if [ \"$1\" = api ] && [ \"$2\" != graphql ]; then\n"
+        "case \" $* \" in *\" search/issues \"*)\n"
+        "  n=$(cat \"$WC_SEARCH_COUNT\"); n=$((n+1)); echo \"$n\" > \"$WC_SEARCH_COUNT\"\n"
+        "  [ \"$WC_SEARCH_SCENARIO\" = fail ] && exit 71\n"
+        "  exec python3 -c 'import json,os\n"
+        "scenario=os.environ[\"WC_SEARCH_SCENARIO\"]; n=int(open(os.environ[\"WC_SEARCH_COUNT\"]).read()); slug=\"demo/fixture\"\n"
+        "if scenario==\"malformed\": print(\"{}\"); raise SystemExit\n"
+        "number=91 if scenario==\"changing\" and n%2==0 else 90\n"
+        "items=[] if scenario==\"none\" else [{\"number\":number,\"pull_request_url\":f\"https://api.github.com/repos/{slug}/pulls/{number}\"}]\n"
+        "if scenario==\"duplicate\": items=items+items\n"
+        "total=(len(items)+1 if scenario==\"truncated\" else len(items)); incomplete=scenario==\"incomplete\"\n"
+        "print(json.dumps({\"total_count\":total,\"incomplete_results\":incomplete,\"items\":items},sort_keys=True))' ;;\n"
+        "esac\n"
+        "case \"$2\" in repos/*/pulls/*)\n"
+        "  n=$(cat \"$WC_PR_DETAIL_COUNT\"); n=$((n+1)); echo \"$n\" > \"$WC_PR_DETAIL_COUNT\"\n"
+        "  [ \"$WC_OTHER_PR_SCENARIO\" = fail ] && exit 71\n"
+        "  exec python3 -c 'import json,os,sys\n"
+        "scenario=os.environ[\"WC_OTHER_PR_SCENARIO\"]; n=int(open(os.environ[\"WC_PR_DETAIL_COUNT\"]).read()); number=int(sys.argv[1].rsplit(\"/\",1)[1])\n"
+        "if scenario==\"malformed\": print(json.dumps({\"number\":number})); raise SystemExit\n"
+        "state=\"MERGED\"; merged=\"2026-01-01T00:00:00Z\"; base=\"main\"; oid=os.environ[\"WC_TARGET_SHA\"]\n"
+        "if scenario==\"open\": state,merged=\"OPEN\",None\n"
+        "elif scenario==\"closed\": state,merged=\"CLOSED\",None\n"
+        "elif scenario==\"nondefault\": base=\"release\"\n"
+        "elif scenario==\"bad_merged_at\": merged=None\n"
+        "elif scenario==\"bad_oid\": oid=\"not-an-oid\"\n"
+        "elif scenario==\"changing\" and n%2==0: oid=\"2\"*40\n"
+        "print(json.dumps({\"number\":number,\"state\":state,\"mergedAt\":merged,\"headRefOid\":oid,\"baseRefName\":base},sort_keys=True))' \"$2\" ;;\n"
+        "esac\n"
+        "case \"$2\" in repos/*/compare/*)\n"
         "  n=$(cat \"$WC_COMPARE_COUNT\"); n=$((n+1)); echo \"$n\" > \"$WC_COMPARE_COUNT\"\n"
         "  [ \"$WC_COMPARE_SCENARIO\" = fail ] && exit 71\n"
         "  exec python3 -c 'import json,os\n"
         "scenario=os.environ[\"WC_COMPARE_SCENARIO\"]; n=int(open(os.environ[\"WC_COMPARE_COUNT\"]).read()); head=os.environ[\"WC_HEAD\"]; target=os.environ[\"WC_TARGET_SHA\"]\n"
         "if scenario==\"malformed\": print(json.dumps({\"status\":\"ahead\"})); raise SystemExit\n"
-        "status=\"ahead\" if scenario in (\"ahead\",\"changing\",\"truncated\") else (\"identical\" if scenario==\"identical\" else \"diverged\")\n"
+        "status=\"ahead\" if scenario in (\"ahead\",\"changing\",\"truncated\") else (\"identical\" if scenario==\"identical\" else (\"behind\" if scenario==\"behind\" else \"diverged\"))\n"
         "if scenario==\"changing\" and n>1: status=\"behind\"\n"
         "count=1 if status==\"ahead\" else 0; total=2 if scenario==\"truncated\" else count; d={\"status\":status,\"ahead_by\":count,\"behind_by\":0 if status in (\"ahead\",\"identical\") else 1,\"total_commits\":total,\"commit_count\":count,\"base_oid\":head,\"merge_base_oid\":head if status in (\"ahead\",\"identical\") else \"0\"*40,\"target_oid\":target}\n"
-        "print(json.dumps(d,sort_keys=True))'\n"
-        "fi\n"
+        "print(json.dumps(d,sort_keys=True))' ;;\n"
+        "esac\n"
+        "case \"$2\" in repos/*)\n"
+        "  n=$(cat \"$WC_REPO_COUNT\"); n=$((n+1)); echo \"$n\" > \"$WC_REPO_COUNT\"\n"
+        "  [ \"$WC_REPO_SCENARIO\" = fail ] && exit 71\n"
+        "  exec python3 -c 'import json,os\n"
+        "scenario=os.environ[\"WC_REPO_SCENARIO\"]; n=int(open(os.environ[\"WC_REPO_COUNT\"]).read())\n"
+        "if scenario==\"malformed\": print(\"{}\"); raise SystemExit\n"
+        "branch=\"release\" if scenario==\"changing\" and n%2==0 else \"main\"\n"
+        "print(json.dumps({\"default_branch\":branch},sort_keys=True))' ;;\n"
+        "esac\n"
         "[ \"$1\" = api ] && [ \"$2\" = graphql ] || { echo 'expected graphql or compare' >&2; exit 1; }\n"
         "exec python3 -c 'import json,os\n"
         "scenario=os.environ.get(\"WC_PR_SCENARIO\",\"none\"); branch=os.environ[\"WC_BRANCH\"]; head=os.environ[\"WC_HEAD\"]\n"
@@ -592,6 +631,9 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
                    job_scenario: str | None = None,
                    remote_scenario: str = "missing",
                    pr_scenario: str | None = None,
+                   search_scenario: str = "none",
+                   other_pr_scenario: str = "merged",
+                   repo_scenario: str = "main",
                    target_sha: str | None = None,
                    compare_scenario: str = "diverged",
                    tasks_fail: bool = False,
@@ -627,6 +669,9 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
     (tmp_path / "tasks-count").write_text("0\n")
     (tmp_path / "trigger-count").write_text("0\n")
     (tmp_path / "compare-count").write_text("0\n")
+    (tmp_path / "search-count").write_text("0\n")
+    (tmp_path / "pr-detail-count").write_text("0\n")
+    (tmp_path / "repo-count").write_text("0\n")
     fixture_skill = tmp_path / "shipped-skill"
     (fixture_skill / "scripts").mkdir(parents=True, exist_ok=True)
     (fixture_skill / "SKILL.md").write_text(body)
@@ -674,6 +719,12 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
             "86400" if candidate.name in ("node_modules", ".venv") else "604800"
         ),
         "WC_PR_SCENARIO": pr_scenario or ("open" if open_pr else "none"),
+        "WC_SEARCH_SCENARIO": search_scenario,
+        "WC_SEARCH_COUNT": str(tmp_path / "search-count"),
+        "WC_OTHER_PR_SCENARIO": other_pr_scenario,
+        "WC_PR_DETAIL_COUNT": str(tmp_path / "pr-detail-count"),
+        "WC_REPO_SCENARIO": repo_scenario,
+        "WC_REPO_COUNT": str(tmp_path / "repo-count"),
         "WC_REMOTE_SCENARIO": remote_scenario,
         "WC_TARGET_SHA": target_sha or ("1" * 40),
         "WC_COMPARE_SCENARIO": compare_scenario,
@@ -1381,6 +1432,128 @@ def test_preservation_refuses_bad_remote_or_pr_evidence(
     )
     assert result["rc"] == 2, result
     assert "worktree remove" not in result["git_log"]
+    assert fx["eligible"].exists()
+
+
+def _run_other_task_pr_preservation(tmp_path, body, **kwargs):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    (fx["eligible"] / "fix-forward.txt").write_text("candidate\n")
+    _git("add", "-A", cwd=fx["eligible"])
+    _git("commit", "-m", "fix-forward candidate", cwd=fx["eligible"])
+    task_map, occurrences = _complete_cleanup_evidence()
+    options = {
+        "marker": MANUAL_FIRST_LINE,
+        "candidate": fx["eligible"],
+        "containing": fx["eligible"],
+        "task_map": task_map,
+        "audit_trigger": occurrences,
+        "scan_state": "clear_observation",
+        "remote_scenario": "missing",
+        "pr_scenario": "none",
+        "search_scenario": "merged",
+        "other_pr_scenario": "merged",
+        "repo_scenario": "main",
+        "target_sha": "1" * 40,
+        "compare_scenario": "ahead",
+    }
+    options.update(kwargs)
+    if options["target_sha"] == "candidate":
+        options["target_sha"] = _git(
+            "rev-parse", "HEAD", cwd=fx["eligible"],
+        ).stdout.strip()
+    return fx, _run_procedure(tmp_path, body, fx, bin_dir, **options)
+
+
+@pytest.mark.parametrize(
+    "compare,target", [("ahead", "1" * 40), ("identical", "candidate")],
+)
+def test_preservation_by_other_task_merged_pr_with_independent_containment(
+        tmp_path, body, compare, target):
+    fx, result = _run_other_task_pr_preservation(
+        tmp_path, body, compare_scenario=compare, target_sha=target,
+    )
+    assert result["rc"] == 0, result
+    assert result["git_log"].count("worktree remove") == 1
+    assert not fx["eligible"].exists()
+    assert result["gh_log"].count("search/issues") == 4
+    assert result["gh_log"].count("/pulls/90") == 4
+    assert result["gh_log"].count("/compare/") == 4
+
+
+@pytest.mark.parametrize("other_pr", ["open", "closed", "nondefault"])
+def test_other_task_unmerged_or_nondefault_pr_never_preserves(
+        tmp_path, body, other_pr):
+    fx, result = _run_other_task_pr_preservation(
+        tmp_path, body, other_pr_scenario=other_pr,
+    )
+    assert result["rc"] == 2, result
+    assert "worktree remove" not in result["git_log"]
+    assert fx["eligible"].exists()
+
+
+@pytest.mark.parametrize(
+    "search", ["incomplete", "truncated", "duplicate", "changing",
+               "malformed", "fail"],
+)
+def test_other_task_pr_discovery_refuses_incomplete_or_ambiguous_evidence(
+        tmp_path, body, search):
+    fx, result = _run_other_task_pr_preservation(
+        tmp_path, body, search_scenario=search,
+    )
+    assert result["rc"] == 2, result
+    assert "worktree remove" not in result["git_log"]
+    assert fx["eligible"].exists()
+
+
+@pytest.mark.parametrize(
+    "field,scenario",
+    [
+        ("other_pr_scenario", "malformed"),
+        ("other_pr_scenario", "changing"),
+        ("other_pr_scenario", "fail"),
+        ("other_pr_scenario", "bad_merged_at"),
+        ("other_pr_scenario", "bad_oid"),
+        ("repo_scenario", "malformed"),
+        ("repo_scenario", "changing"),
+        ("repo_scenario", "fail"),
+    ],
+)
+def test_other_task_pr_confirmation_refuses_malformed_changing_or_failed_reads(
+        tmp_path, body, field, scenario):
+    fx, result = _run_other_task_pr_preservation(
+        tmp_path, body, **{field: scenario},
+    )
+    assert result["rc"] == 2, result
+    assert "worktree remove" not in result["git_log"]
+    assert fx["eligible"].exists()
+
+
+@pytest.mark.parametrize(
+    "compare",
+    ["fail", "malformed", "changing", "truncated", "diverged", "behind"],
+)
+def test_other_task_pr_confirmation_refuses_unproven_compare(
+        tmp_path, body, compare):
+    fx, result = _run_other_task_pr_preservation(
+        tmp_path, body, compare_scenario=compare,
+    )
+    assert result["rc"] == 2, result
+    assert "worktree remove" not in result["git_log"]
+    assert fx["eligible"].exists()
+
+
+@pytest.mark.parametrize("own_pr", ["open", "closed"])
+def test_own_branch_unmerged_pr_still_blocks_other_task_merged_pr(
+        tmp_path, body, own_pr):
+    fx, result = _run_other_task_pr_preservation(
+        tmp_path, body, pr_scenario=own_pr,
+    )
+    assert result["rc"] == 2, result
+    assert "worktree remove" not in result["git_log"]
+    assert "search/issues" not in result["gh_log"]
     assert fx["eligible"].exists()
 
 
