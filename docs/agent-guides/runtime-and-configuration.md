@@ -483,8 +483,8 @@ are now read and written **exclusively** through ``AgentDef``:
 The workspace ``agent.yaml`` file is **no longer read or written** by any
 org-agent path. A one-shot startup migration (``migrate_agent_yaml_to_frontmatter``,
 idempotent, runs on every daemon start) copies any residual ``agent.yaml``
-values into their owning ``.md`` exactly once, then the ``agent.yaml`` is
-left untouched. The system assistant (``runtime/system_assistant.py``) is a
+values into their owning ``.md`` exactly once, then deletes ``agent.yaml`` and
+writes the ``.agent_yaml_consumed`` sentinel. The system assistant (``runtime/system_assistant.py``) is a
 **separate subsystem** and writes its own ``agent.yaml`` directly — it has no
 ``org/agents/`` file and is unaffected.
 
