@@ -189,7 +189,8 @@ def test_authority_release_schema_reference_leaves_generic_database_unchanged(
         assert authority._release_schema_digest() != before
         assert authority._live_schema_digest(generic) == before
         assert generic.execute(
-            "SELECT name FROM sqlite_schema WHERE name LIKE 'workflow_%'"
+            "SELECT name FROM sqlite_schema "
+            "WHERE name LIKE 'workflow\\_%' ESCAPE '\\'"
         ).fetchall() == []
     finally:
         generic.close()
@@ -208,7 +209,8 @@ def test_authority_release_schema_reference_leaves_runtime_audit_free(
         authority._release_schema_digest()
         assert authority._live_schema_digest(audit) == before
         assert audit.execute(
-            "SELECT name FROM sqlite_schema WHERE name LIKE 'workflow_%'"
+            "SELECT name FROM sqlite_schema "
+            "WHERE name LIKE 'workflow\\_%' ESCAPE '\\'"
         ).fetchall() == []
     finally:
         audit.close()

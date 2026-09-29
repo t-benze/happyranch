@@ -198,7 +198,8 @@ def _legacy_snapshot(path: Path) -> dict[str, tuple[str, list[tuple[object, ...]
     try:
         tables = conn.execute(
             "SELECT name,sql FROM sqlite_master WHERE type='table' "
-            "AND name NOT LIKE 'workflow_%' AND name NOT LIKE 'sqlite_%' "
+            "AND name NOT LIKE 'workflow\\_%' ESCAPE '\\' "
+            "AND name NOT LIKE 'sqlite_%' "
             "ORDER BY name"
         ).fetchall()
         return {
@@ -336,7 +337,8 @@ def _complete_join_state(path: Path) -> dict[str, list[tuple[object, ...]]]:
         tables = [
             row[0]
             for row in check.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'workflow_%' ORDER BY name"
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE 'workflow\\_%' ESCAPE '\\' ORDER BY name"
             )
         ]
         return {table: check.execute(f"SELECT * FROM {table}").fetchall() for table in tables}
@@ -3452,7 +3454,8 @@ def test_proposed_f6_install_and_cutover_interruptions_recover_once_and_twice_co
         raw.close()
         check = sqlite3.connect(path)
         assert check.execute(
-            "SELECT name FROM sqlite_master WHERE name LIKE 'workflow_%'"
+            "SELECT name FROM sqlite_master "
+            "WHERE name LIKE 'workflow\\_%' ESCAPE '\\'"
         ).fetchall() == []
         check.close()
         conn = _adapter(path)

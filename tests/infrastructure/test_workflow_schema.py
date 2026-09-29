@@ -6,12 +6,16 @@ from pathlib import Path
 
 import pytest
 
+from runtime.config import Settings
+from runtime.daemon import org_state
+from runtime.daemon.org_state import OrgState
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.workflow_schema import (
     CANONICAL_WORKFLOW_DDL,
     WorkflowCompatibilityStore,
     install_or_recover,
 )
+from runtime.orchestrator._paths import OrgPaths
 
 
 FIXTURE = (
@@ -29,7 +33,8 @@ def _workflow_snapshot(path: Path) -> tuple[object, ...]:
             conn.execute(
                 "SELECT type,name,tbl_name,sql FROM sqlite_schema "
                 "WHERE type IN ('table','index','trigger','view') "
-                "AND (name LIKE 'workflow_%' OR tbl_name LIKE 'workflow_%') "
+                "AND (name LIKE 'workflow\\_%' ESCAPE '\\' "
+                "OR tbl_name LIKE 'workflow\\_%' ESCAPE '\\') "
                 "ORDER BY type,name,tbl_name"
             )
         )
@@ -38,7 +43,7 @@ def _workflow_snapshot(path: Path) -> tuple[object, ...]:
             row[0]
             for row in conn.execute(
                 "SELECT name FROM sqlite_schema WHERE type='table' "
-                "AND name LIKE 'workflow_%' ORDER BY name"
+                "AND name LIKE 'workflow\\_%' ESCAPE '\\' ORDER BY name"
             )
         )
         for table in tables:
@@ -65,6 +70,53 @@ def _materialize_layout(path: Path, ddl: str) -> None:
         conn.close()
 
 
+def _seed_org_root(root: Path) -> None:
+    (root / "org" / "agents").mkdir(parents=True)
+    (root / "org" / "teams.yaml").write_text("teams: {}\n")
+    for name in ("workspaces", "kb", "threads", "artifacts"):
+        (root / name).mkdir()
+
+
+def _near_prefix_snapshot(path: Path) -> tuple[object, ...]:
+    raw = path.read_bytes()
+    conn = sqlite3.connect(path)
+    try:
+        objects = tuple(
+            conn.execute(
+                "SELECT type,name,tbl_name,sql FROM sqlite_schema "
+                "WHERE name IN ('workflowXlegacy','workflowXidx','workflowXtrigger') "
+                "OR tbl_name='workflowXlegacy' ORDER BY type,name,tbl_name"
+            )
+        )
+        rows = tuple(conn.execute("SELECT id,value FROM workflowXlegacy ORDER BY id"))
+        return raw, objects, rows
+    finally:
+        conn.close()
+
+
+def _literal_prefix_control_snapshot(
+    path: Path,
+    table_name: str,
+) -> tuple[object, ...]:
+    raw = path.read_bytes()
+    conn = sqlite3.connect(path)
+    try:
+        objects = tuple(
+            conn.execute(
+                "SELECT type,name,tbl_name,sql FROM sqlite_schema "
+                "WHERE name=? OR tbl_name=? ORDER BY type,name,tbl_name",
+                (table_name, table_name),
+            )
+        )
+        quoted_table = table_name.replace('"', '""')
+        rows = tuple(
+            conn.execute(f'SELECT id,value FROM "{quoted_table}" ORDER BY id')
+        )
+        return raw, objects, rows
+    finally:
+        conn.close()
+
+
 def test_production_ddl_is_byte_identical_to_accepted_fixture() -> None:
     assert CANONICAL_WORKFLOW_DDL == FIXTURE.read_text()
 
@@ -77,7 +129,7 @@ def test_install_is_complete_and_records_only_initial_legacy_state(
         assert install_or_recover(db) == "installed_legacy_only"
         tables = db.execute(
             "SELECT name FROM sqlite_schema WHERE type='table' "
-            "AND name LIKE 'workflow_%' ORDER BY name"
+            "AND name LIKE 'workflow\\_%' ESCAPE '\\' ORDER BY name"
         ).fetchall()
         assert len(tables) == 44
         assert [tuple(row) for row in db.execute(
@@ -150,7 +202,7 @@ def test_install_is_invisible_before_commit_and_complete_after_return(
                     row[0]
                     for row in reader.execute(
                         "SELECT name FROM sqlite_schema WHERE type='table' "
-                        "AND name LIKE 'workflow_%' ORDER BY name"
+                        "AND name LIKE 'workflow\\_%' ESCAPE '\\' ORDER BY name"
                     )
                 )
             )
@@ -347,6 +399,98 @@ def test_unknown_workflow_owned_object_refuses_two_cold_reopens_without_writes(
         reopened.close()
         assert path.read_bytes() == before_bytes
         assert _workflow_snapshot(path) == before_rows_and_objects
+
+
+def test_near_prefix_objects_survive_two_org_state_cold_reopens_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "runtime" / "orgs" / "near-prefix"
+    _seed_org_root(root)
+    installed = OrgState.load(slug="near-prefix", root=root, settings=Settings())
+    installed.close()
+    path = OrgPaths(root=root).db_path
+
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE workflowXlegacy "
+        "(id INTEGER PRIMARY KEY, value TEXT NOT NULL)"
+    )
+    conn.execute("CREATE INDEX workflowXidx ON workflowXlegacy(value)")
+    conn.execute(
+        "CREATE TRIGGER workflowXtrigger AFTER INSERT ON workflowXlegacy "
+        "BEGIN SELECT NEW.value; END"
+    )
+    conn.execute("INSERT INTO workflowXlegacy VALUES (1,'preserve-me')")
+    conn.commit()
+    conn.close()
+    before = _near_prefix_snapshot(path)
+
+    outcomes: list[str] = []
+    real_install_or_recover = install_or_recover
+
+    def observe_install_or_recover(db: Database) -> str:
+        outcome = real_install_or_recover(db)
+        outcomes.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(org_state, "install_or_recover", observe_install_or_recover)
+    for _ in range(2):
+        reopened = OrgState.load(
+            slug="near-prefix",
+            root=root,
+            settings=Settings(),
+        )
+        reopened.close()
+        assert outcomes[-1] == "reopened"
+        assert _near_prefix_snapshot(path) == before
+
+    assert outcomes == ["reopened", "reopened"]
+
+
+@pytest.mark.parametrize(
+    ("table_name", "row_value"),
+    [
+        pytest.param("workflow_extra", "lowercase-owned", id="literal-prefix"),
+        pytest.param("WORKFLOW_extra2", "case-owned", id="case-variant-prefix"),
+    ],
+)
+def test_literal_workflow_prefix_case_variants_refuse_without_writes(
+    tmp_path: Path,
+    table_name: str,
+    row_value: str,
+) -> None:
+    root = tmp_path / "runtime" / "orgs" / "literal-prefix"
+    _seed_org_root(root)
+    installed = OrgState.load(slug="literal-prefix", root=root, settings=Settings())
+    installed.close()
+    path = OrgPaths(root=root).db_path
+
+    conn = sqlite3.connect(path)
+    quoted_table = table_name.replace('"', '""')
+    conn.execute(
+        f'CREATE TABLE "{quoted_table}" '
+        "(id INTEGER PRIMARY KEY, value TEXT NOT NULL)"
+    )
+    conn.execute(
+        f'INSERT INTO "{quoted_table}" VALUES (?,?)',
+        (1, row_value),
+    )
+    conn.commit()
+    conn.close()
+    before = _literal_prefix_control_snapshot(path, table_name)
+
+    for _ in range(2):
+        with pytest.raises(
+            ValueError,
+            match="workflow_schema_object_set_mismatch",
+        ):
+            OrgState.load(
+                slug="literal-prefix",
+                root=root,
+                settings=Settings(),
+            )
+        assert _literal_prefix_control_snapshot(path, table_name) == before
 
 
 def test_generic_runtime_audit_database_is_not_implicitly_installed(
