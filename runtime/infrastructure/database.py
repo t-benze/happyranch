@@ -161,6 +161,33 @@ from runtime.daemon.thread_mentions import (
 )
 
 
+# Closed translation between the precise pre-final stage vocabulary and the
+# terminal refusal-housekeeping vocabulary.  Both the stage writer (which must
+# persist the obligation before dropping its live owner) and the hook consumer
+# use this one table.
+_AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING = {
+    "owner_lost": "owner_lost",
+    "cancelled": "cancelled",
+    "claim_failed": "claim_failed",
+    "claim_audit_missing": "claim_audit_missing",
+    "evaluation_failed": "evaluation_failed",
+    "evaluation_audit_missing": "evaluation_audit_missing",
+    "evaluation_missing": "evaluation_audit_missing",
+    "consume_failed": "consume_failed",
+    "consume_audit_missing": "consume_audit_missing",
+    "final_commit_failed": "final_commit_failed",
+    "identity_mismatch": "identity_mismatch",
+    "decision_dispatch_interrupted": "decision_dispatch_interrupted",
+    "transaction_owned": "identity_mismatch",
+    "evidence_drift": "identity_mismatch",
+    "schema_drift": "identity_mismatch",
+    "already_claimed": "interrupted_pre_final",
+    "already_audited": "interrupted_pre_final",
+    "already_evaluated": "interrupted_pre_final",
+    "already_consumed": "interrupted_pre_final",
+}
+
+
 def _parse_dt(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
@@ -7420,7 +7447,17 @@ class Database:
         only for a closed refusal code on an unfinalized attempt, and never
         fabricates task/receipt ownership.
         """
-        if code not in AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES:
+        # Stage writers expose a more precise closed refusal vocabulary than
+        # terminal housekeeping. Persist the same lossy mapping consumed by
+        # run_authority_hook before the live owner is forgotten; otherwise a
+        # schema/evidence refusal leaves no durable authority for the later
+        # finalizer and the task remains a recoverable zombie forever.
+        housekeeping_code = (
+            _AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING.get(
+                code, "interrupted_pre_final",
+            )
+        )
+        if housekeeping_code not in AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES:
             return
         if self._v2_process_boot_id is None:
             return
@@ -7462,7 +7499,7 @@ class Database:
                     json.dumps({
                         "attempt_id": attempt_id,
                         "result_id": row["result_id"],
-                        "refusal_code": code,
+                        "refusal_code": housekeeping_code,
                         "origin_boot_id": row["origin_boot_id"],
                         "owner_attempt_id": row["owner_attempt_id"],
                     }),
@@ -9737,21 +9774,29 @@ class Database:
                 self._conn.rollback()
                 return _pending("identity_mismatch")
 
-            # Optional exact Q: match by the exact recovery session identity.
+            # Optional exact Q: match only this attempt's exact recovery-session
+            # identity.  A task may legitimately retain settled receipts from
+            # prior generations; those rows are historical evidence, not a
+            # claim that the current ordinary result is recovery-owned.
             receipts = self._conn.execute(
                 "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
                 (root_task_id, manager_agent),
             ).fetchall()
-            exact_receipt = None
-            for receipt in receipts:
-                if receipt["recovery_session_id"] == manager_session_id:
-                    if exact_receipt is not None:
-                        self._conn.rollback()
-                        return _pending("identity_mismatch")
-                    exact_receipt = receipt
-            if receipts and exact_receipt is None:
-                # An unrelated/mismatched receipt must never be labelled
-                # ordinary/absent or settled as a replacement.
+            matching_receipts = [
+                receipt for receipt in receipts
+                if receipt["recovery_session_id"] == manager_session_id
+            ]
+            if len(matching_receipts) > 1:
+                self._conn.rollback()
+                return _pending("identity_mismatch")
+            exact_receipt = matching_receipts[0] if matching_receipts else None
+            if any(
+                receipt["recovery_session_id"] != manager_session_id
+                and receipt["state"] in ("claimed", "callback_accepted")
+                for receipt in receipts
+            ):
+                # A different still-live recovery obligation is not ordinary
+                # absence and must never be settled as this attempt's receipt.
                 self._conn.rollback()
                 return _pending("identity_mismatch")
             if exact_receipt is not None:

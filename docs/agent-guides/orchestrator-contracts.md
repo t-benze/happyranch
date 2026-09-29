@@ -1225,6 +1225,34 @@ fall back to legacy mutation. Focused coverage lives in
 complete parity sweep, main convergence and final review/QA/CI remain later
 units.
 
+Issue #918 tightens that contract without changing the schema. The integrity
+reference conditionally removes `agent_enrollments` from comparison only after
+its complete metadata exactly matches one layout genuinely shipped by the
+seven-, eight- or nine-column historical constructors and their deterministic
+`ADD COLUMN executor` / `ADD COLUMN allow_rules` upgrade orders. A changed
+constraint/default/order, explicit extra index, mutated autoindex metadata or
+any unrelated unexpected object remains visible to the ordinary fail-closed
+diagnostic. The raw candidate inventory and digest still include the historical
+table, so recheck remains bound to the exact captured database.
+
+Pre-final stage refusal now records the closed terminal-housekeeping category
+before forgetting the live owner (`schema_drift` and `evidence_drift` map to
+`identity_mismatch`; duplicate-stage categories map to
+`interrupted_pre_final`). Historical terminal recovery receipts do not claim a
+new ordinary result, but an unrelated live receipt remains a fence. A committed
+`v2_refused` root uses the normal post-commit notification and thread-follow-up
+tail without a second escalation write. A `v2_pending` outcome instead proceeds
+through the ordinary escalation CAS so it cannot leave a result-bearing root
+permanently `in_progress`.
+
+The persisted orchestration-step audit is the consumer idempotency key on every
+entry, including startup and zombie recovery even if a caller omits the
+`recovery_reentry` hint; the zombie caller supplies that hint explicitly as
+well. Replaying a persisted result therefore cannot append another
+`orchestration_step`, escalate/notify/follow up twice, remint v2 evidence,
+create a child or enqueue work. See
+`docs/superpowers/specs/2026-09-29-authority-v2-schema-refusal-recovery.md`.
+
 Checkpoint C3d4a (same unmerged draft PR) adds the common DB-aware TASK enqueue
 boundary and converges the direct producers onto it.
 `Database.classify_authority_policy_v2_root_dispatch_for_enqueue` is a narrow

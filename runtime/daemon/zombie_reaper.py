@@ -301,6 +301,7 @@ def _consume_zombie_fingerprint(
     _consume_completion_report(
         orchestrator, task_id, orphaned_report,
         result_row_id=fingerprint.get("id"),
+        recovery_reentry=True,
         reclaim_terminal_worktree=False,
     )
 

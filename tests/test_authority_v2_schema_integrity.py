@@ -146,9 +146,196 @@ def _assert_refused(
         assert diagnostic["v2"] is v2, diagnostic
 
 
+_HISTORICAL_AGENT_ENROLLMENTS_SEVEN_SQL = """\
+CREATE TABLE agent_enrollments (
+                name TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                system_prompt TEXT NOT NULL,
+                repos TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
+_HISTORICAL_AGENT_ENROLLMENTS_EIGHT_SQL = """\
+CREATE TABLE agent_enrollments (
+                name TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                system_prompt TEXT NOT NULL,
+                repos TEXT NOT NULL DEFAULT '{}',
+                executor TEXT NOT NULL DEFAULT 'claude',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
+_HISTORICAL_AGENT_ENROLLMENTS_SQL = """\
+CREATE TABLE agent_enrollments (
+                name TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                system_prompt TEXT NOT NULL,
+                repos TEXT NOT NULL DEFAULT '{}',
+                executor TEXT NOT NULL DEFAULT 'claude',
+                allow_rules TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
+_ADD_EXECUTOR = (
+    "ALTER TABLE agent_enrollments ADD COLUMN executor TEXT NOT NULL "
+    "DEFAULT 'claude'"
+)
+_ADD_ALLOW_RULES = (
+    "ALTER TABLE agent_enrollments ADD COLUMN allow_rules TEXT NOT NULL "
+    "DEFAULT '[]'"
+)
+_HISTORICAL_AGENT_ENROLLMENTS_SCRIPTS = (
+    (_HISTORICAL_AGENT_ENROLLMENTS_SEVEN_SQL,),
+    (_HISTORICAL_AGENT_ENROLLMENTS_SEVEN_SQL, _ADD_EXECUTOR),
+    (
+        _HISTORICAL_AGENT_ENROLLMENTS_SEVEN_SQL,
+        _ADD_EXECUTOR,
+        _ADD_ALLOW_RULES,
+    ),
+    (_HISTORICAL_AGENT_ENROLLMENTS_EIGHT_SQL,),
+    (_HISTORICAL_AGENT_ENROLLMENTS_EIGHT_SQL, _ADD_ALLOW_RULES),
+    (_HISTORICAL_AGENT_ENROLLMENTS_SQL,),
+)
+
+
+def _add_historical_agent_enrollments(db: Database) -> None:
+    db._conn.execute(_HISTORICAL_AGENT_ENROLLMENTS_SQL)
+    db._conn.commit()
+
+
 # --------------------------------------------------------------------------
 # Reference independence and two ownership layouts (four inventories)
 # --------------------------------------------------------------------------
+
+
+def test_exact_historical_agent_enrollments_layout_is_accepted(tmp_path):
+    db = _pristine(tmp_path)
+    try:
+        _add_historical_agent_enrollments(db)
+        outcome = _capture(db)
+        assert outcome.evidence is not None, outcome.diagnostic
+        assert recheck_authority_policy_v2_schema_integrity(outcome.evidence, db)
+        table = authority._v2_capture_inventory(db._conn)["tables"][
+            "agent_enrollments"
+        ]
+        assert table["sql"] == _HISTORICAL_AGENT_ENROLLMENTS_SQL
+        assert set(table["indexes"]) == {"sqlite_autoindex_agent_enrollments_1"}
+    finally:
+        db._conn.close()
+
+
+@pytest.mark.parametrize(
+    "statements",
+    _HISTORICAL_AGENT_ENROLLMENTS_SCRIPTS,
+    ids=(
+        "seven-column-constructor",
+        "seven-plus-executor",
+        "seven-plus-executor-plus-allow-rules",
+        "eight-column-constructor",
+        "eight-plus-allow-rules",
+        "nine-column-constructor",
+    ),
+)
+def test_every_shipped_historical_agent_enrollments_layout_is_accepted(
+    tmp_path, statements,
+):
+    db = _pristine(tmp_path)
+    try:
+        for statement in statements:
+            db._conn.execute(statement)
+        db._conn.commit()
+        outcome = _capture(db)
+        assert outcome.evidence is not None, outcome.diagnostic
+        assert recheck_authority_policy_v2_schema_integrity(outcome.evidence, db)
+    finally:
+        db._conn.close()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "ALTER TABLE agent_enrollments ADD COLUMN unexpected TEXT",
+        "CREATE INDEX unexpected_agent_enrollments_status "
+        "ON agent_enrollments(status)",
+    ],
+)
+def test_mutated_historical_agent_enrollments_layout_is_refused(
+    tmp_path, mutation,
+):
+    db = _pristine(tmp_path)
+    try:
+        _add_historical_agent_enrollments(db)
+        db._conn.execute(mutation)
+        db._conn.commit()
+        outcome = _capture(db)
+        _assert_refused(
+            outcome,
+            objects={"agent_enrollments", "unexpected_agent_enrollments_status"},
+            codes={
+                "table_sql_mismatch",
+                "table_column_layout_mismatch",
+                "unexpected_object",
+            },
+        )
+    finally:
+        db._conn.close()
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        (
+            "executor TEXT NOT NULL DEFAULT 'claude'",
+            "executor TEXT NOT NULL DEFAULT 'codex'",
+        ),
+        ("description TEXT NOT NULL", "description TEXT"),
+    ],
+    ids=("changed-default", "dropped-not-null"),
+)
+def test_constraint_mutated_historical_agent_enrollments_is_refused(
+    tmp_path, old, new,
+):
+    db = _pristine(tmp_path)
+    try:
+        _add_historical_agent_enrollments(db)
+        _rebuild_table(
+            db,
+            "agent_enrollments",
+            _HISTORICAL_AGENT_ENROLLMENTS_SQL.replace(old, new),
+        )
+        outcome = _capture(db)
+        _assert_refused(
+            outcome,
+            objects={"agent_enrollments"},
+            codes={
+                "unexpected_object",
+                "table_sql_mismatch",
+                "table_column_layout_mismatch",
+            },
+        )
+    finally:
+        db._conn.close()
+
+
+def test_unrelated_unexpected_table_remains_refused_with_historical_layout(
+    tmp_path,
+):
+    db = _pristine(tmp_path)
+    try:
+        _add_historical_agent_enrollments(db)
+        db._conn.execute("CREATE TABLE unrelated_unexpected(id INTEGER PRIMARY KEY)")
+        db._conn.commit()
+        outcome = _capture(db)
+        _assert_refused(
+            outcome,
+            objects={"unrelated_unexpected"},
+            codes={"unexpected_object"},
+        )
+    finally:
+        db._conn.close()
 
 
 def test_reference_accepts_fresh_and_migrated_with_distinct_raw_digests(tmp_path):
