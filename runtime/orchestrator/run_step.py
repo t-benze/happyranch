@@ -1638,7 +1638,13 @@ def _consume_completion_report_body(
     # provenance, safe to read post-claim.
     if task.task_type == "task":
         decision = orch._parse_next_step(report)
-        if recovery_reentry and db.has_orchestration_step_audit(
+        # A persisted orchestration step number is the durable idempotency key
+        # for every consumer entry, not only callers that happened to label
+        # themselves as recovery.  Startup and zombie recovery rebuild the
+        # same report row but historically did not both propagate
+        # ``recovery_reentry``; never append a second decision audit for the
+        # already-recorded step.
+        if db.has_orchestration_step_audit(
             task_id=task_id, step_number=next_count,
         ):
             _step_audit_id = None
@@ -1747,18 +1753,26 @@ def _consume_completion_report_body(
             # returned to pending for its next manager decision step and was
             # re-enqueued. The escalation is NOT committed.
             return
-        if hook_outcome in ("v2_continued", "v2_refused", "v2_pending"):
-            # THR-229 C3d5a: a session whose authenticated launch binding
-            # selected the v2 family is served entirely by the accepted
-            # pre-final/final v2 path.  ``v2_continued`` committed the final
-            # continuation (post-final settlement/publication may still be
-            # pending); ``v2_refused`` committed durable refusal housekeeping;
-            # ``v2_pending`` could not safely finalize and refusal itself did
-            # not commit, leaving a bounded housekeeping obligation with the
-            # prior state intact.  In every case the ordinary root escalation,
-            # audit and notification path must NOT run, and no ordinary enqueue
-            # fallback is authorized.
+        if hook_outcome == "v2_continued":
+            # The v2 final continuation committed (post-final settlement or
+            # publication may still be pending); no ordinary escalation runs.
             return
+        if hook_outcome == "v2_refused":
+            # Refusal housekeeping atomically committed the ESCALATED task and
+            # its single escalation audit.  Surface that committed transition
+            # through the ordinary post-commit notification/thread tail; do not
+            # run try_escalate again and therefore never mint a second audit.
+            orch.notify_escalated(
+                task_id=task_id, agent=agent, reason=reason,
+                last_summary=getattr(report, "output_summary", "") or "",
+            )
+            _maybe_post_thread_escalation(orch, task_id, reason=reason)
+            return
+        # A bounded v2_pending outcome means refusal housekeeping did not
+        # commit.  Failing closed must still terminate and surface the root, so
+        # continue through the ordinary exactly-once escalation CAS below.  A
+        # later refusal-housekeeping discovery may close the retained attempt;
+        # it cannot re-run this consumer once the task is already escalated.
         # Atomic CAS: transition to ESCALATED only if not cancelled
         # or terminal. Closes the post-_is_already_terminal race (Codex P2 on
         # PR #34) by serializing against /cancel via the Database RLock.

@@ -84,13 +84,17 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import sqlite3
 import subprocess
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 from pydantic import BaseModel, Field, field_validator
 
-from runtime.infrastructure.database import _authority_claim_key
+from runtime.infrastructure.database import (
+    _AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING,
+    _authority_claim_key,
+)
 from runtime.models import (
     AuthorityDisposition,
     AuthorityDispositionCode,
@@ -465,6 +469,109 @@ def _v2_capture_inventory(conn) -> dict:
     }
 
 
+_V2_HISTORICAL_AGENT_ENROLLMENTS_VARIANTS: tuple[dict, ...] | None = None
+
+
+def _v2_historical_agent_enrollments_variants() -> tuple[dict, ...]:
+    """Return only the exact ``agent_enrollments`` layouts shipped in history.
+
+    The constructors at ``fa3efce7``, ``31eef07a`` and ``e2ed0010`` shipped
+    seven-, eight- and nine-column definitions.  The latter two releases also
+    upgraded older tables with the exact ``ADD COLUMN`` statements below, so
+    SQLite could retain either constructor order or either deterministic
+    appended-column order.  Build the table/xinfo/FK/autoindex metadata with
+    SQLite itself, independently of the candidate; do not learn or normalize a
+    candidate definition.
+    """
+    global _V2_HISTORICAL_AGENT_ENROLLMENTS_VARIANTS
+    if _V2_HISTORICAL_AGENT_ENROLLMENTS_VARIANTS is not None:
+        return _V2_HISTORICAL_AGENT_ENROLLMENTS_VARIANTS
+
+    seven = """\
+CREATE TABLE agent_enrollments (
+                name TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                system_prompt TEXT NOT NULL,
+                repos TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
+    eight = """\
+CREATE TABLE agent_enrollments (
+                name TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                system_prompt TEXT NOT NULL,
+                repos TEXT NOT NULL DEFAULT '{}',
+                executor TEXT NOT NULL DEFAULT 'claude',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
+    nine = """\
+CREATE TABLE agent_enrollments (
+                name TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                system_prompt TEXT NOT NULL,
+                repos TEXT NOT NULL DEFAULT '{}',
+                executor TEXT NOT NULL DEFAULT 'claude',
+                allow_rules TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
+    add_executor = (
+        "ALTER TABLE agent_enrollments ADD COLUMN executor TEXT NOT NULL "
+        "DEFAULT 'claude'"
+    )
+    add_allow_rules = (
+        "ALTER TABLE agent_enrollments ADD COLUMN allow_rules TEXT NOT NULL "
+        "DEFAULT '[]'"
+    )
+    scripts = (
+        (seven,),
+        (seven, add_executor),
+        (seven, add_executor, add_allow_rules),
+        (eight,),
+        (eight, add_allow_rules),
+        (nine,),
+    )
+    variants: list[dict] = []
+    seen: set[str] = set()
+    for statements in scripts:
+        conn = sqlite3.connect(":memory:")
+        try:
+            for statement in statements:
+                conn.execute(statement)
+            table = _v2_capture_inventory(conn)["tables"]["agent_enrollments"]
+        finally:
+            conn.close()
+        key = json.dumps(table, sort_keys=True, separators=(",", ":"))
+        if key not in seen:
+            seen.add(key)
+            variants.append(table)
+    _V2_HISTORICAL_AGENT_ENROLLMENTS_VARIANTS = tuple(variants)
+    return _V2_HISTORICAL_AGENT_ENROLLMENTS_VARIANTS
+
+
+def _v2_schema_comparison_candidate(candidate: dict) -> dict:
+    """Remove one independently proven exact historical enrollment table.
+
+    Every other object remains in the complete candidate inventory.  A changed
+    SQL string, column constraint/order, FK, primary-key autoindex metadata, or
+    any explicit extra index fails to match and therefore remains visible to
+    the ordinary fail-closed mismatch diagnostics.
+    """
+    enrollment = candidate["tables"].get("agent_enrollments")
+    if enrollment not in _v2_historical_agent_enrollments_variants():
+        return candidate
+    comparison = {
+        kind: dict(objects) for kind, objects in candidate.items()
+    }
+    comparison["tables"].pop("agent_enrollments")
+    return comparison
+
+
 def _v2_apply_migrated_substitutions(conn, fresh: dict) -> dict:
     """Apply ONLY the two accepted migrated table substitutions to the fresh
     reference connection, then re-capture.  SQLite itself derives the ordered
@@ -671,11 +778,14 @@ def capture_authority_policy_v2_schema_integrity(
     try:
         with db.coherent_read_view() as conn:
             candidate = _v2_capture_inventory(conn)
+            comparison_candidate = _v2_schema_comparison_candidate(candidate)
             if not any(
-                not _v2_inventory_mismatches(reference, candidate)
+                not _v2_inventory_mismatches(reference, comparison_candidate)
                 for reference in references
             ):
-                mismatches = _v2_closest_mismatches(references, candidate)
+                mismatches = _v2_closest_mismatches(
+                    references, comparison_candidate,
+                )
                 diagnostic = mismatches[0] if mismatches else {
                     "code": "inventory_mismatch", "kind": "inventory",
                     "object": None, "v2": False,
@@ -2039,25 +2149,9 @@ def _is_successor_root(db, task_id: str) -> bool:
 # code into the terminal housekeeping refusal vocabulary.  The mapping is
 # total (any unmapped code fails closed to the generic pre-final interruption)
 # and never accepts caller prose.
-_V2_STAGE_REFUSAL_TO_HOUSEKEEPING = {
-    "owner_lost": "owner_lost",
-    "cancelled": "cancelled",
-    "claim_failed": "claim_failed",
-    "claim_audit_missing": "claim_audit_missing",
-    "evaluation_failed": "evaluation_failed",
-    "evaluation_audit_missing": "evaluation_audit_missing",
-    "evaluation_missing": "evaluation_audit_missing",
-    "consume_failed": "consume_failed",
-    "final_commit_failed": "final_commit_failed",
-    "identity_mismatch": "identity_mismatch",
-    "transaction_owned": "identity_mismatch",
-    "evidence_drift": "identity_mismatch",
-    "schema_drift": "identity_mismatch",
-    "already_claimed": "interrupted_pre_final",
-    "already_audited": "interrupted_pre_final",
-    "already_evaluated": "interrupted_pre_final",
-    "already_consumed": "interrupted_pre_final",
-}
+_V2_STAGE_REFUSAL_TO_HOUSEKEEPING = (
+    _AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING
+)
 
 # The accepted pre-final stage sequence with the exact expected success status
 # of each Database-owned writer.  The writers themselves refuse any skipped or
@@ -2082,7 +2176,9 @@ _V2_INTERRUPTED_STAGE_REFUSAL = {
 }
 
 
-def refuse_authority_policy_v2_pre_final_on_startup(db) -> set[str] | None:
+def refuse_authority_policy_v2_pre_final_on_startup(
+    db, orchestrator: "Orchestrator | None" = None,
+) -> set[str] | None:
     """Discover and refuse interrupted pre-final v2 attempts before recovery.
 
     The returned roots own a pre-final obligation for this sweep and must not
@@ -2091,6 +2187,12 @@ def refuse_authority_policy_v2_pre_final_on_startup(db) -> set[str] | None:
     fail closed for every task-recovery branch in that startup pass.  A
     same-current-boot live owner is deliberately included in the fence but the
     Database writer returns ``housekeeping_pending`` without stealing it.
+
+    Only the caller that receives the just-committed ``refused`` outcome owns
+    the ordinary post-commit founder surfacing tail.  An authenticated replay
+    returns ``already_refused`` and therefore emits no second notification or
+    thread follow-up.  Production startup supplies ``orchestrator``; the
+    optional form preserves database-only test harnesses.
     """
     from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 
@@ -2118,13 +2220,41 @@ def refuse_authority_policy_v2_pre_final_on_startup(db) -> set[str] | None:
                     target.stage, "interrupted_pre_final",
                 )
             )
-            store.finalize_v2_attempt_refusal(
+            outcome = store.finalize_v2_attempt_refusal(
                 root_task_id=target.root_task_id,
                 manager_agent=target.manager_agent,
                 manager_session_id=target.manager_session_id,
                 result_id=target.result_id,
                 refusal_code=refusal_code,
             )
+            if outcome.status == "refused" and orchestrator is not None:
+                result = db.get_latest_task_result(
+                    target.root_task_id,
+                    target.manager_agent,
+                    target.manager_session_id,
+                )
+                last_summary = (
+                    result.get("output_summary", "")
+                    if result is not None and result.get("id") == target.result_id
+                    else ""
+                )
+                orchestrator.notify_escalated(
+                    task_id=target.root_task_id,
+                    agent=target.manager_agent,
+                    reason="authority_v2_refusal",
+                    last_summary=last_summary or "",
+                )
+                # Import lazily to preserve the authority/run_step module
+                # boundary.  The refusal transaction committed before this
+                # external projection is attempted.
+                from runtime.orchestrator.run_step import (
+                    _maybe_post_thread_escalation,
+                )
+                _maybe_post_thread_escalation(
+                    orchestrator,
+                    target.root_task_id,
+                    reason="authority_v2_refusal",
+                )
         except Exception:
             # The prior J/R/stage residue remains the retry obligation.  The
             # root stays fenced from every later startup effect in this pass.
