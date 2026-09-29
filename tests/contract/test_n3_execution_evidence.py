@@ -36,6 +36,13 @@ def test_validator_accepts_complete_exact_subject_artifact():
     evidence.validate(valid_artifact(), expected_subject="a" * 40, expected_run="run-unique")
 
 
+def test_validator_accepts_harness_expected_negative_leg_diagnostic_id():
+    doc = valid_artifact()
+    doc["diagnostics"][0]["id"] = "run-unique:negative-leg-expected:credential_input"
+    doc["digest"] = evidence._digest(doc)
+    evidence.validate(doc, expected_subject="a" * 40, expected_run="run-unique")
+
+
 @pytest.mark.parametrize("mutation", ["pre_assertion", "noop", "missing", "duplicate", "unknown", "partial", "forged", "skip", "fake", "prose"])
 def test_validator_rejects_malformed_or_tautological_execution_artifact(mutation):
     doc = valid_artifact()

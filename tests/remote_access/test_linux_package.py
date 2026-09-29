@@ -492,9 +492,13 @@ def _run_real_systemd_failure_snapshot(tmp_path: Path, *, malformed: bool = Fals
     snapshot_helpers = "safe_systemctl_value() {" + harness.split("safe_systemctl_value() {", 1)[1].split("\ncleanup() {", 1)[0]
     fake_bin = tmp_path / "bin"; fake_bin.mkdir()
     (fake_bin / "journalctl").write_text("""#!/usr/bin/env python3
-import json, time
-print(json.dumps({"MESSAGE": "diagnostic_receipt=" + json.dumps({"category": "network_join", "phase": "peer_establishment", "actor": "tsnet-sidecar", "unit": "happyranch-tsnet-sidecar.service", "outcome": "failed", "terminal": True, "assertion": {"status": "completed"}}), "_SYSTEMD_UNIT": "happyranch-tsnet-sidecar.service", "_SYSTEMD_INVOCATION_ID": "12345678-1234-1234-1234-123456789abc", "_BOOT_ID": open("/proc/sys/kernel/random/boot_id").read().strip(), "__REALTIME_TIMESTAMP": str(int(time.time() * 1_000_000))}, separators=(",", ":")))
-print("not-json SECRET_CANARY")
+import json, sys, time
+boot = open("/proc/sys/kernel/random/boot_id").read().strip()
+if any(argument == "JOB_TYPE=start" for argument in sys.argv):
+    print(json.dumps({"UNIT": "happyranch-connector.service", "JOB_ID": "42", "JOB_TYPE": "start", "JOB_RESULT": "failed", "_BOOT_ID": boot, "__REALTIME_TIMESTAMP": str(int(time.time() * 1_000_000))}, separators=(",", ":")))
+else:
+    print(json.dumps({"MESSAGE": "diagnostic_receipt=" + json.dumps({"category": "network_join", "phase": "peer_establishment", "actor": "tsnet-sidecar", "unit": "happyranch-tsnet-sidecar.service", "outcome": "failed", "terminal": True, "assertion": {"status": "completed"}}), "_SYSTEMD_UNIT": "happyranch-tsnet-sidecar.service", "_SYSTEMD_INVOCATION_ID": "12345678-1234-1234-1234-123456789abc", "_BOOT_ID": boot, "__REALTIME_TIMESTAMP": str(int(time.time() * 1_000_000))}, separators=(",", ":")))
+    print("not-json SECRET_CANARY")
 """)
     (fake_bin / "journalctl").chmod(0o700)
     script = f'''set -euo pipefail
@@ -536,19 +540,162 @@ def test_real_systemd_failure_snapshot_executes_shipping_source_and_is_secret_fr
         "active": "failed", "sub": "failed", "result": "exit-code",
         "exec_main_status": "37", "exec_start_pre_status": "unknown",
     }
-    assert snapshot["jobs"] == [{"id": 42, "unit": "happyranch-connector.service", "state": "running"}]
+    assert snapshot["jobs"] == [{"id": 42, "unit": "happyranch-connector.service", "type": "start", "result": "failed"}]
     assert snapshot["credential_presence"] == {
         "source": False, "held_source": False, "consumed_marker": False,
         "transient_dropin": False, "staged_directory": False,
     }
-    assert snapshot["collection"]["source"] == "systemctl-and-attributed-sidecar-journal"
-    assert snapshot["collection"]["window_seconds"] == 8
-    assert snapshot["collection"]["output_cap_bytes"] == 8192
+    assert snapshot["collection"]["source"] == "systemctl-and-attributed-systemd-journals"
+    assert snapshot["collection"]["window_seconds"] == 45
+    assert snapshot["collection"]["output_cap_bytes"] == 19968
+    assert snapshot["collection"]["budget_model"] == "reserved-sections"
     assert snapshot["diagnostic_receipts"] == [{"category": "network_join", "phase": "peer_establishment"}]
     assert snapshot["observation_loss"]["diagnostic_receipts"] == ["parse_loss"]
-    # The raw ExecStartPre command is deliberately rejected as parse loss;
-    # absence of a retained value is never represented as a clean observation.
-    assert {value for key, value in snapshot["observation_loss"].items() if key != "diagnostic_receipts"} == {"parse_loss"}
+    assert snapshot["observation_loss"]["happyranch-connector.service.exec_start_pre_status"] == "not_collected"
+    assert "jobs" not in snapshot["observation_loss"]
+
+
+def test_real_systemd_labels_deliberate_negative_credential_leg_as_expected() -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    assert 'negative_leg_diagnostic_id="$run_id:negative-leg-expected:credential_input"' in harness
+    assert 'expectation=expected category=credential_input' in harness
+    assert 'diagnostic credential_input input_acquisition systemd happyranch-tsnet-sidecar.service "$negative_leg_diagnostic_id"' in harness
+
+
+def _run_seq305_failure_snapshot(
+    tmp_path: Path,
+    *,
+    sidecar_mode: str = "observed",
+    jobs_mode: str = "observed",
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    """Drive the shipped capture function with the run-36435811326 failure shape."""
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    snapshot_helpers = "safe_systemctl_value() {" + harness.split("safe_systemctl_value() {", 1)[1].split("\ncleanup() {", 1)[0]
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    event_log = tmp_path / "events.log"
+    boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip().replace("-", "")
+    invocation = "12345678123412341234123456789abc"
+    receipt = json.dumps({
+        "MESSAGE": "diagnostic_receipt=" + json.dumps({
+            "category": "network_join", "phase": "peer_establishment", "actor": "tsnet-sidecar",
+            "unit": "happyranch-tsnet-sidecar.service", "outcome": "failed", "terminal": True,
+            "assertion": {"status": "completed"},
+        }),
+        "_SYSTEMD_UNIT": "happyranch-tsnet-sidecar.service", "_SYSTEMD_INVOCATION_ID": invocation,
+        "_BOOT_ID": boot, "__REALTIME_TIMESTAMP": "1700000000000000",
+    }, separators=(",", ":"))
+    job = json.dumps({
+        "UNIT": "happyranch-tsnet-sidecar.service", "JOB_ID": "71", "JOB_TYPE": "start",
+        "JOB_RESULT": "failed", "_BOOT_ID": boot, "__REALTIME_TIMESTAMP": "1700000000000000",
+    }, separators=(",", ":"))
+    dependency = json.dumps({
+        "UNIT": "happyranch-managed.target", "JOB_ID": "72", "JOB_TYPE": "start",
+        "JOB_RESULT": "dependency", "_BOOT_ID": boot, "__REALTIME_TIMESTAMP": "1700000000000000",
+    }, separators=(",", ":"))
+    (fake_bin / "date").write_text("#!/bin/bash\nprintf '1700000000000000000\\n'\n")
+    (fake_bin / "systemctl").write_text("""#!/bin/bash
+set -u
+if [[ $1 != show ]]; then exit 97; fi
+unit=$2; property=$4
+printf 'show:%s:%s\n' "$unit" "$property" >>"$EVENT_LOG"
+if [[ $property == InvocationID ]]; then printf '%s\n' "$INVOCATION"; exit 0; fi
+if [[ $unit == happyranch-tsnet-sidecar.service && $property == ActiveState ]]; then
+  case "$SIDECAR_MODE" in
+    observed) echo failed;; timeout) exit 124;; query_error) printf '%s\n' TOKEN_CANARY; exit 7;;
+    truncation) printf 'TOKEN_CANARY%0200d\n' 0;; malformed) echo TOKEN_CANARY;; empty) exit 0;;
+  esac
+  exit 0
+fi
+if [[ $unit == happyranch-tsnet-sidecar.service ]]; then
+  case "$property" in SubState) echo failed;; Result) echo exit-code;; ExecMainStatus) echo 203;; *) echo TOKEN_CANARY;; esac
+  exit 0
+fi
+# Reproduce the runner: connector/target observations are lossy and oversized.
+case "$property" in SubState) echo start-pre;; *) printf 'TOKEN_CANARY%0200d\n' 0;; esac
+""")
+    (fake_bin / "journalctl").write_text("""#!/bin/bash
+set -u
+if [[ " $* " == *" JOB_TYPE=start "* ]]; then
+  printf 'journal:jobs\n' >>"$EVENT_LOG"
+  case "$JOBS_MODE" in
+    observed) printf '%s\n%s\n' "$JOB" "$DEPENDENCY";; timeout) exit 124;;
+    query_error) printf '%s\n' TOKEN_CANARY; exit 7;; truncation) printf 'TOKEN_CANARY%09000d\n' 0;;
+    malformed) printf '%s\n' 'not-json TOKEN_CANARY';; empty) exit 0;;
+  esac
+else
+  printf 'journal:receipt\n' >>"$EVENT_LOG"
+  printf '%s\n' "$RECEIPT"
+fi
+""")
+    for executable in fake_bin.iterdir():
+        executable.chmod(0o700)
+    script = f'''set -euo pipefail
+diagnostics={tmp_path!s}; mkdir -p "$diagnostics"
+capture_window_since_us=1699999999999999
+sudo() {{ printf 'presence:%s\n' "$*" >>"$EVENT_LOG"; return 1; }}
+timeout() {{ while [[ $1 == --* || $1 =~ ^[0-9]+$ ]]; do shift; done; "$@"; }}
+failure_capture_driver={Path("app/linux/package/n3_failure_capture.py").resolve()!s}
+run_id=seq305-red-green
+{snapshot_helpers}
+capture_failure_snapshot first-positive-start-failure
+cat "$diagnostics/first-positive-start-failure.json"
+'''
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False, env=os.environ | {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}", "EVENT_LOG": str(event_log), "INVOCATION": invocation,
+        "BOOT": boot, "RECEIPT": receipt, "JOB": job, "DEPENDENCY": dependency,
+        "SIDECAR_MODE": sidecar_mode, "JOBS_MODE": jobs_mode, "N3_UNIT_ROOT": str(tmp_path),
+    })
+    return result, event_log
+
+
+def test_seq305_run_failure_shape_captures_sidecar_failed_jobs_and_receipt_before_lossy_units(tmp_path: Path) -> None:
+    result, event_log = _run_seq305_failure_snapshot(tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "TOKEN_CANARY" not in result.stdout + result.stderr
+    snapshot = json.loads(result.stdout)
+    assert snapshot["units"]["happyranch-tsnet-sidecar.service"] == {
+        "active": "failed", "sub": "failed", "result": "exit-code", "exec_main_status": "203",
+        "exec_start_pre_status": "unknown",
+    }
+    assert snapshot["jobs"] == [
+        {"id": 71, "unit": "happyranch-tsnet-sidecar.service", "type": "start", "result": "failed"},
+        {"id": 72, "unit": "happyranch-managed.target", "type": "start", "result": "dependency"},
+    ]
+    assert snapshot["diagnostic_receipts"] == [{"category": "network_join", "phase": "peer_establishment"}]
+    events = event_log.read_text().splitlines()
+    sidecar_last = max(
+        index for index, event in enumerate(events)
+        if event.startswith("show:happyranch-tsnet-sidecar.service:") and not event.endswith(":InvocationID")
+    )
+    jobs_index = events.index("journal:jobs")
+    receipt_index = events.index("journal:receipt")
+    later_first = min(index for index, event in enumerate(events) if event.startswith(("show:happyranch-connector.service:", "show:happyranch-managed.target:", "presence:")))
+    assert sidecar_last < jobs_index < receipt_index < later_first
+    assert not any(event.endswith(":ExecStartPre") for event in events)
+
+
+@pytest.mark.parametrize("mode", ["timeout", "query_error", "truncation", "malformed", "empty"])
+def test_seq305_sidecar_loss_is_closed_and_does_not_zero_job_or_receipt_sections(tmp_path: Path, mode: str) -> None:
+    result, _ = _run_seq305_failure_snapshot(tmp_path, sidecar_mode=mode)
+    assert result.returncode == 0, result.stderr
+    assert "TOKEN_CANARY" not in result.stdout + result.stderr
+    snapshot = json.loads(result.stdout)
+    expected = "parse_loss" if mode == "malformed" else "truncated" if mode == "truncation" else mode
+    assert snapshot["observation_loss"]["happyranch-tsnet-sidecar.service.active"] == expected
+    assert snapshot["jobs"][0]["unit"] == "happyranch-tsnet-sidecar.service"
+    assert snapshot["diagnostic_receipts"] == [{"category": "network_join", "phase": "peer_establishment"}]
+
+
+@pytest.mark.parametrize("mode", ["timeout", "query_error", "truncation", "malformed", "empty"])
+def test_seq305_job_loss_is_closed_and_does_not_zero_receipt_or_later_sections(tmp_path: Path, mode: str) -> None:
+    result, event_log = _run_seq305_failure_snapshot(tmp_path, jobs_mode=mode)
+    assert result.returncode == 0, result.stderr
+    assert "TOKEN_CANARY" not in result.stdout + result.stderr
+    snapshot = json.loads(result.stdout)
+    expected = "parse_loss" if mode == "malformed" else "truncated" if mode == "truncation" else mode
+    assert snapshot["observation_loss"]["jobs"] == expected
+    assert snapshot["diagnostic_receipts"] == [{"category": "network_join", "phase": "peer_establishment"}]
+    assert any(event.startswith("show:happyranch-connector.service:") for event in event_log.read_text().splitlines())
 
 
 def test_real_systemd_failure_snapshot_uses_real_timeout_and_never_claims_unattempted_as_absent(tmp_path: Path) -> None:
@@ -580,7 +727,7 @@ def test_real_systemd_failure_snapshot_bounds_malformed_observations(tmp_path: P
     assert "SECRET_CANARY" not in result.stdout + result.stderr
     snapshot = json.loads(result.stdout)
     assert {unit["active"] for unit in snapshot["units"].values()} == {"unknown"}
-    assert {value for key, value in snapshot["observation_loss"].items() if key != "diagnostic_receipts"} == {"parse_loss"}
+    assert {value for key, value in snapshot["observation_loss"].items() if key != "diagnostic_receipts"} == {"parse_loss", "not_collected"}
 
 
 def test_real_systemd_barriers_use_restrictive_service_state_directory_and_controller_sudo() -> None:
@@ -970,7 +1117,7 @@ if [[ $1 == show ]]; then echo failed; exit 0; fi
 exit 0
 """)
     (fake_bin / "sudo").write_text("#!/bin/bash\n[[ $1 == test ]] && exit 1\nexec \"$@\"\n")
-    (fake_bin / "journalctl").write_text("#!/bin/bash\nprintf 'journal-called\\n' >>\"$EVENT_LOG\"\nexit 0\n")
+    (fake_bin / "journalctl").write_text("#!/bin/bash\n[[ \" $* \" == *\" JOB_TYPE=start \"* ]] && exit 0\nprintf 'receipt-journal-called\\n' >>\"$EVENT_LOG\"\nexit 0\n")
     for executable in fake_bin.iterdir(): executable.chmod(0o700)
     event_log = tmp_path / "events.log"
     script = f'''set -euo pipefail

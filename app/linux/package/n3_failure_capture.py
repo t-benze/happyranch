@@ -18,6 +18,24 @@ RECEIPT_GRAMMAR = {
 }
 SIDECAR_UNIT = "happyranch-tsnet-sidecar.service"
 SIDECAR_ACTOR = "tsnet-sidecar"
+N3_UNITS = {
+    "happyranch-managed.target",
+    "happyranch-connector.service",
+    SIDECAR_UNIT,
+}
+JOB_RESULTS = {
+    "done",
+    "canceled",
+    "timeout",
+    "failed",
+    "dependency",
+    "skipped",
+    "invalid",
+    "assert",
+    "unsupported",
+    "collected",
+    "once",
+}
 
 
 def _compact_hex(value: object, *, size: int) -> str | None:
@@ -102,10 +120,61 @@ def collect(*, lines: list[str], invocation_id: str, boot_id: str, since_us: int
     return {"receipts": receipts, "losses": sorted(losses) or ["observed"]}
 
 
+def collect_jobs(*, lines: list[str], boot_id: str, since_us: int, until_us: int) -> dict[str, Any]:
+    """Return attributed completed start jobs without retaining journal prose."""
+    jobs: list[dict[str, int | str]] = []
+    losses: set[str] = set()
+    seen_job_ids: set[int] = set()
+    expected_boot = _compact_hex(boot_id, size=32)
+    if expected_boot is None or since_us > until_us:
+        return {"jobs": [], "loss": "parse_loss"}
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            losses.add("parse_loss")
+            continue
+        if not isinstance(event, dict):
+            losses.add("parse_loss")
+            continue
+        unit = event.get("UNIT")
+        job_type = event.get("JOB_TYPE")
+        if not isinstance(unit, str) or unit not in N3_UNITS or job_type != "start":
+            continue
+        timestamp = event.get("__REALTIME_TIMESTAMP")
+        if not isinstance(timestamp, str) or not timestamp.isdecimal():
+            losses.add("parse_loss")
+            continue
+        if _compact_hex(event.get("_BOOT_ID"), size=32) != expected_boot or not since_us <= int(timestamp) <= until_us:
+            losses.add("attribution_loss")
+            continue
+        job_id_text = event.get("JOB_ID")
+        result = event.get("JOB_RESULT")
+        if (
+            not isinstance(job_id_text, str)
+            or not job_id_text.isdecimal()
+            or not 1 <= len(job_id_text) <= 10
+            or not 0 < int(job_id_text) <= 4_294_967_295
+            or not isinstance(result, str)
+            or result not in JOB_RESULTS
+        ):
+            losses.add("parse_loss")
+            continue
+        job_id = int(job_id_text)
+        if job_id in seen_job_ids:
+            losses.add("parse_loss")
+            continue
+        seen_job_ids.add(job_id)
+        jobs.append({"id": job_id, "unit": unit, "type": "start", "result": result})
+    loss = "parse_loss" if "parse_loss" in losses else "attribution_loss" if losses else "observed" if jobs else "empty"
+    return {"jobs": jobs, "loss": loss}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=("receipts", "jobs"), default="receipts")
     parser.add_argument("--input", type=Path, required=True)
-    parser.add_argument("--invocation-id", required=True)
+    parser.add_argument("--invocation-id")
     parser.add_argument("--boot-id", required=True)
     parser.add_argument("--since-us", type=int, required=True)
     parser.add_argument("--until-us", type=int, required=True)
@@ -113,9 +182,24 @@ def main() -> int:
     try:
         lines = args.input.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError):
-        print('{"receipts":[],"losses":["launch_failure"]}')
+        if args.mode == "jobs":
+            print('{"jobs":[],"loss":"launch_failure"}')
+        else:
+            print('{"receipts":[],"losses":["launch_failure"]}')
         return 0
-    print(json.dumps(collect(lines=lines, invocation_id=args.invocation_id, boot_id=args.boot_id, since_us=args.since_us, until_us=args.until_us), separators=(",", ":")))
+    if args.mode == "jobs":
+        result = collect_jobs(lines=lines, boot_id=args.boot_id, since_us=args.since_us, until_us=args.until_us)
+    elif args.invocation_id is None:
+        result = {"receipts": [], "losses": ["parse_loss"]}
+    else:
+        result = collect(
+            lines=lines,
+            invocation_id=args.invocation_id,
+            boot_id=args.boot_id,
+            since_us=args.since_us,
+            until_us=args.until_us,
+        )
+    print(json.dumps(result, separators=(",", ":")))
     return 0
 
 
