@@ -648,6 +648,9 @@ The full founder-facing CLI is documented in `skills/happyranch/SKILL.md`.
 
 ## Running Tests
 
+For where new test files belong, see the forward-only
+[test-placement rule](project-layout.md#test-placement).
+
 ```bash
 uv run pytest tests/ -v -n 4              # unit tests only (default; -n 4 = pytest-xdist parallel)
 uv run pytest tests/ -v -m integration   # integration tests
