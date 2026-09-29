@@ -23,14 +23,13 @@ N3_UNITS = {
     "happyranch-connector.service",
     SIDECAR_UNIT,
 }
-JOB_RESULTS = {
-    "done",
-    "canceled",
+START_BEGIN_MESSAGE_ID = "7d4958e842da4a758f6c1cdc7b36dcc5"
+START_SUCCESS_MESSAGE_ID = "39f53479d3a045ac8e11786248231fbf"
+START_FAILURE_MESSAGE_ID = "be02cf6855d2428ba40df7e9d022f03d"
+START_FAILURE_RESULTS = {
     "timeout",
     "failed",
     "dependency",
-    "skipped",
-    "invalid",
     "assert",
     "unsupported",
     "collected",
@@ -141,6 +140,14 @@ def collect_jobs(*, lines: list[str], boot_id: str, since_us: int, until_us: int
         job_type = event.get("JOB_TYPE")
         if not isinstance(unit, str) or unit not in N3_UNITS or job_type != "start":
             continue
+        message_id = _compact_hex(event.get("MESSAGE_ID"), size=32)
+        if message_id == START_BEGIN_MESSAGE_ID:
+            continue
+        if message_id not in {START_SUCCESS_MESSAGE_ID, START_FAILURE_MESSAGE_ID}:
+            continue
+        if event.get("_PID") != "1" or event.get("_UID") != "0":
+            losses.add("attribution_loss")
+            continue
         timestamp = event.get("__REALTIME_TIMESTAMP")
         if not isinstance(timestamp, str) or not timestamp.isdecimal():
             losses.add("parse_loss")
@@ -156,7 +163,8 @@ def collect_jobs(*, lines: list[str], boot_id: str, since_us: int, until_us: int
             or not 1 <= len(job_id_text) <= 10
             or not 0 < int(job_id_text) <= 4_294_967_295
             or not isinstance(result, str)
-            or result not in JOB_RESULTS
+            or (message_id == START_SUCCESS_MESSAGE_ID and result != "done")
+            or (message_id == START_FAILURE_MESSAGE_ID and result not in START_FAILURE_RESULTS)
         ):
             losses.add("parse_loss")
             continue

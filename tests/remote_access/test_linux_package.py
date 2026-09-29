@@ -495,7 +495,7 @@ def _run_real_systemd_failure_snapshot(tmp_path: Path, *, malformed: bool = Fals
 import json, sys, time
 boot = open("/proc/sys/kernel/random/boot_id").read().strip()
 if any(argument == "JOB_TYPE=start" for argument in sys.argv):
-    print(json.dumps({"UNIT": "happyranch-connector.service", "JOB_ID": "42", "JOB_TYPE": "start", "JOB_RESULT": "failed", "_BOOT_ID": boot, "__REALTIME_TIMESTAMP": str(int(time.time() * 1_000_000))}, separators=(",", ":")))
+    print(json.dumps({"UNIT": "happyranch-connector.service", "JOB_ID": "42", "JOB_TYPE": "start", "JOB_RESULT": "failed", "MESSAGE_ID": "be02cf6855d2428ba40df7e9d022f03d", "_PID": "1", "_UID": "0", "_BOOT_ID": boot, "__REALTIME_TIMESTAMP": str(int(time.time() * 1_000_000))}, separators=(",", ":")))
 else:
     print(json.dumps({"MESSAGE": "diagnostic_receipt=" + json.dumps({"category": "network_join", "phase": "peer_establishment", "actor": "tsnet-sidecar", "unit": "happyranch-tsnet-sidecar.service", "outcome": "failed", "terminal": True, "assertion": {"status": "completed"}}), "_SYSTEMD_UNIT": "happyranch-tsnet-sidecar.service", "_SYSTEMD_INVOCATION_ID": "12345678-1234-1234-1234-123456789abc", "_BOOT_ID": boot, "__REALTIME_TIMESTAMP": str(int(time.time() * 1_000_000))}, separators=(",", ":")))
     print("not-json SECRET_CANARY")
@@ -586,11 +586,18 @@ def _run_seq305_failure_snapshot(
     }, separators=(",", ":"))
     job = json.dumps({
         "UNIT": "happyranch-tsnet-sidecar.service", "JOB_ID": "71", "JOB_TYPE": "start",
-        "JOB_RESULT": "failed", "_BOOT_ID": boot, "__REALTIME_TIMESTAMP": "1700000000000000",
+        "JOB_RESULT": "failed", "MESSAGE_ID": "be02cf6855d2428ba40df7e9d022f03d",
+        "_PID": "1", "_UID": "0", "_BOOT_ID": boot, "__REALTIME_TIMESTAMP": "1700000000000000",
     }, separators=(",", ":"))
     dependency = json.dumps({
         "UNIT": "happyranch-managed.target", "JOB_ID": "72", "JOB_TYPE": "start",
-        "JOB_RESULT": "dependency", "_BOOT_ID": boot, "__REALTIME_TIMESTAMP": "1700000000000000",
+        "JOB_RESULT": "dependency", "MESSAGE_ID": "be02cf6855d2428ba40df7e9d022f03d",
+        "_PID": "1", "_UID": "0", "_BOOT_ID": boot, "__REALTIME_TIMESTAMP": "1700000000000000",
+    }, separators=(",", ":"))
+    connector_job = json.dumps({
+        "UNIT": "happyranch-connector.service", "JOB_ID": "73", "JOB_TYPE": "start",
+        "JOB_RESULT": "failed", "MESSAGE_ID": "be02cf6855d2428ba40df7e9d022f03d",
+        "_PID": "1", "_UID": "0", "_BOOT_ID": boot, "__REALTIME_TIMESTAMP": "1700000000000000",
     }, separators=(",", ":"))
     (fake_bin / "date").write_text("#!/bin/bash\nprintf '1700000000000000000\\n'\n")
     (fake_bin / "systemctl").write_text("""#!/bin/bash
@@ -617,8 +624,9 @@ case "$property" in SubState) echo start-pre;; *) printf 'TOKEN_CANARY%0200d\n' 
 set -u
 if [[ " $* " == *" JOB_TYPE=start "* ]]; then
   printf 'journal:jobs\n' >>"$EVENT_LOG"
+  [[ " $* " == *" --output-fields=UNIT,JOB_ID,JOB_TYPE,JOB_RESULT,MESSAGE_ID,_PID,_UID,_BOOT_ID,__REALTIME_TIMESTAMP "* ]] || exit 91
   case "$JOBS_MODE" in
-    observed) printf '%s\n%s\n' "$JOB" "$DEPENDENCY";; timeout) exit 124;;
+    observed) printf '%s\n%s\n%s\n' "$JOB" "$DEPENDENCY" "$CONNECTOR_JOB";; timeout) exit 124;;
     query_error) printf '%s\n' TOKEN_CANARY; exit 7;; truncation) printf 'TOKEN_CANARY%09000d\n' 0;;
     malformed) printf '%s\n' 'not-json TOKEN_CANARY';; empty) exit 0;;
   esac
@@ -642,7 +650,7 @@ cat "$diagnostics/first-positive-start-failure.json"
 '''
     result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False, env=os.environ | {
         "PATH": f"{fake_bin}:{os.environ['PATH']}", "EVENT_LOG": str(event_log), "INVOCATION": invocation,
-        "BOOT": boot, "RECEIPT": receipt, "JOB": job, "DEPENDENCY": dependency,
+        "BOOT": boot, "RECEIPT": receipt, "JOB": job, "DEPENDENCY": dependency, "CONNECTOR_JOB": connector_job,
         "SIDECAR_MODE": sidecar_mode, "JOBS_MODE": jobs_mode, "N3_UNIT_ROOT": str(tmp_path),
     })
     return result, event_log
@@ -660,6 +668,7 @@ def test_seq305_run_failure_shape_captures_sidecar_failed_jobs_and_receipt_befor
     assert snapshot["jobs"] == [
         {"id": 71, "unit": "happyranch-tsnet-sidecar.service", "type": "start", "result": "failed"},
         {"id": 72, "unit": "happyranch-managed.target", "type": "start", "result": "dependency"},
+        {"id": 73, "unit": "happyranch-connector.service", "type": "start", "result": "failed"},
     ]
     assert snapshot["diagnostic_receipts"] == [{"category": "network_join", "phase": "peer_establishment"}]
     events = event_log.read_text().splitlines()
