@@ -98,7 +98,8 @@ still apply. HappyRanch's retention list includes:
   `web/src/test/openapi-coverage.test.ts`, `web/src/lib/api/`); and the
   permission/allow-rule projections across Claude `--allowedTools`, the Codex
   sandbox, and opencode `permission.bash` surfaces.
-- **Callback payload shape.** Exact `happyranch ... --from-file` commands,
+- **Callback payload shape.** Exact HappyRanch CLI callback commands using
+  `--from-file`,
   required payload fields, and ordering copied from skills or prompts for task,
   thread, and job callbacks.
 - **Audit-row shape and order.** Event kinds, required payload keys, scope
