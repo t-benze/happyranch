@@ -1,3 +1,24 @@
+"""Installed U1A workflow schema and compatibility boundary.
+
+The complete version-one layout is inert foundation. This module installs it
+only when explicitly invoked by OrgState.load; generic Database construction,
+including runtime-audit.db, has no workflow side effect.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import sqlite3
+from collections.abc import Callable
+from datetime import datetime, timezone
+from functools import lru_cache
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from runtime.infrastructure.database import Database
+
+
+CANONICAL_WORKFLOW_DDL = """\
 -- TASK-8849 U1A: canonical inert version-1 workflow-owned layout.
 PRAGMA foreign_keys=ON;
 -- This is the adapter's sole durable version discriminator.  It is created
@@ -122,3 +143,214 @@ CREATE TABLE workflow_activation_operations (org_slug TEXT NOT NULL, principal T
 -- claimed only by ``legacy_recovery``; an exact bridged task only by
 -- ``workflow_recovery``. One primary key/effect key prevents dual launch.
 CREATE TABLE workflow_recovery_claims (record_id TEXT PRIMARY KEY, record_class TEXT NOT NULL CHECK(record_class IN ('legacy_task','workflow_task')), recovery_owner TEXT NOT NULL CHECK(recovery_owner IN ('legacy_recovery','workflow_recovery')), claim_token TEXT NOT NULL UNIQUE, effect_key TEXT NOT NULL UNIQUE, state TEXT NOT NULL CHECK(state IN ('claimed','effect_recorded')), created_at TEXT NOT NULL);
+"""
+
+_INSTALL_EVENT = {
+    "event": "adapter_installed",
+    "state_before": None,
+    "state_after": "installed_legacy_only",
+    "schema_version": 1,
+}
+_INSTALL_EVENT_DIGEST = hashlib.sha256(
+    json.dumps(_INSTALL_EVENT, sort_keys=True, separators=(",", ":")).encode()
+).hexdigest()
+
+
+def _execute_ddl(conn: sqlite3.Connection, ddl: str) -> None:
+    statement = ""
+    for line in ddl.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            if statement.strip():
+                conn.execute(statement)
+            statement = ""
+    if statement.strip():
+        raise ValueError("incomplete_canonical_workflow_schema")
+
+
+def _layout(conn: sqlite3.Connection) -> tuple[object, ...]:
+    objects = tuple(
+        tuple(row)
+        for row in conn.execute(
+            r"""SELECT type,name,tbl_name,sql
+               FROM sqlite_schema
+               WHERE type IN ('table','index','trigger','view')
+                 AND (name LIKE 'workflow\_%' ESCAPE '\'
+                      OR tbl_name LIKE 'workflow\_%' ESCAPE '\')
+               ORDER BY type,name,tbl_name"""
+        )
+    )
+    normalized_objects = tuple(
+        (kind, name, table, None if sql is None else " ".join(str(sql).split()))
+        for kind, name, table, sql in objects
+    )
+    tables = tuple(row[1] for row in normalized_objects if row[0] == "table")
+    table_metadata: list[tuple[object, ...]] = []
+    index_metadata: list[tuple[object, ...]] = []
+    for table in tables:
+        quoted_table = str(table).replace('"', '""')
+        table_metadata.append(
+            (
+                table,
+                tuple(
+                    tuple(row)
+                    for row in conn.execute(f'PRAGMA table_xinfo("{quoted_table}")')
+                ),
+                tuple(
+                    tuple(row)
+                    for row in conn.execute(
+                        f'PRAGMA foreign_key_list("{quoted_table}")'
+                    )
+                ),
+            )
+        )
+        for index in conn.execute(f'PRAGMA index_list("{quoted_table}")'):
+            index_tuple = tuple(index)
+            quoted_index = str(index_tuple[1]).replace('"', '""')
+            index_metadata.append(
+                (
+                    table,
+                    index_tuple,
+                    tuple(
+                        tuple(row)
+                        for row in conn.execute(
+                            f'PRAGMA index_xinfo("{quoted_index}")'
+                        )
+                    ),
+                )
+            )
+    return normalized_objects, tuple(table_metadata), tuple(index_metadata)
+
+
+@lru_cache(maxsize=1)
+def _canonical_layout() -> tuple[object, ...]:
+    expected = sqlite3.connect(":memory:")
+    try:
+        expected.execute("PRAGMA foreign_keys=ON")
+        _execute_ddl(expected, CANONICAL_WORKFLOW_DDL)
+        return _layout(expected)
+    finally:
+        expected.close()
+
+
+def _object_keys(layout: tuple[object, ...]) -> set[tuple[object, ...]]:
+    objects = layout[0]
+    assert isinstance(objects, tuple)
+    return {(row[0], row[1], row[2]) for row in objects}
+
+
+def _validate_installed(conn: sqlite3.Connection) -> None:
+    actual = _layout(conn)
+    expected = _canonical_layout()
+    if _object_keys(actual) != _object_keys(expected):
+        raise ValueError("workflow_schema_object_set_mismatch")
+    if actual != expected:
+        raise ValueError("workflow_schema_layout_mismatch")
+
+    versions = [
+        tuple(row)
+        for row in conn.execute("SELECT version FROM workflow_adapter_versions")
+    ]
+    if len(versions) == 1 and versions[0][0] != 1:
+        raise ValueError("unsupported_workflow_adapter_version")
+    if versions != [(1,)]:
+        raise ValueError("workflow_schema_marker_mismatch")
+
+    cutover = [
+        tuple(row)
+        for row in conn.execute(
+            "SELECT schema_version,state,recovery_owner,generation,"
+            "operation_key,disable_reason,updated_at FROM workflow_cutover_state"
+        )
+    ]
+    if (
+        len(cutover) != 1
+        or cutover[0][:6]
+        != (
+            1,
+            "installed_legacy_only",
+            "workflow_cutover_reconciler",
+            1,
+            None,
+            None,
+        )
+        or not cutover[0][6]
+    ):
+        raise ValueError("workflow_schema_marker_mismatch")
+
+    events = [
+        tuple(row)
+        for row in conn.execute(
+            "SELECT id,event_seq,state_before,state_after,operation_key,"
+            "event_digest,created_at FROM workflow_cutover_events"
+        )
+    ]
+    if (
+        len(events) != 1
+        or events[0][:6]
+        != (
+            "cutover-event-1",
+            1,
+            None,
+            "installed_legacy_only",
+            None,
+            _INSTALL_EVENT_DIGEST,
+        )
+        or not events[0][6]
+    ):
+        raise ValueError("workflow_schema_marker_mismatch")
+
+
+class WorkflowCompatibilityStore:
+    """Minimal U1A owner for atomic installation and exact-layout reopen."""
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    def install_or_recover(
+        self,
+        *,
+        before_commit: Callable[[], None] | None = None,
+    ) -> Literal["installed_legacy_only", "reopened"]:
+        with self._database.workflow_schema_transaction() as conn:
+            actual = _layout(conn)
+            if actual[0]:
+                _validate_installed(conn)
+                return "reopened"
+
+            _execute_ddl(conn, CANONICAL_WORKFLOW_DDL)
+            timestamp = datetime.now(timezone.utc).isoformat()
+            conn.execute("INSERT INTO workflow_adapter_versions VALUES (1)")
+            conn.execute(
+                "INSERT INTO workflow_cutover_state VALUES "
+                "(1,1,\'installed_legacy_only\',\'workflow_cutover_reconciler\',"
+                "1,NULL,NULL,?)",
+                (timestamp,),
+            )
+            conn.execute(
+                "INSERT INTO workflow_cutover_events VALUES (?,?,?,?,?,?,?)",
+                (
+                    "cutover-event-1",
+                    1,
+                    None,
+                    "installed_legacy_only",
+                    None,
+                    _INSTALL_EVENT_DIGEST,
+                    timestamp,
+                ),
+            )
+            _validate_installed(conn)
+            if before_commit is not None:
+                before_commit()
+            return "installed_legacy_only"
+
+
+def install_or_recover(
+    database: Database,
+    *,
+    before_commit: Callable[[], None] | None = None,
+) -> Literal["installed_legacy_only", "reopened"]:
+    """Install or validate the inert v1 layout on an explicit org database."""
+    return WorkflowCompatibilityStore(database).install_or_recover(
+        before_commit=before_commit
+    )
