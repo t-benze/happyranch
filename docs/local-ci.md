@@ -129,8 +129,12 @@ included in the `all` default. Like `python`, it receives a fresh per-run
 `--basetemp` under the effective `TMPDIR` that is removed when the invocation
 ends (see "Per-run pytest scratch lifecycle").
 
-The hosted nightly publishes JUnit XML, the pytest log, and a Markdown
-summary artifact on every outcome. Its Actions job summary reports
+The hosted nightly publishes JUnit XML, a fixed-size pytest log tail, and a
+Markdown summary artifact on every outcome. The log artifact is capped at
+1 MiB (1,048,576 bytes); when pytest output exceeds that cap, the artifact
+starts with a truncation marker and retains the final output bytes within the
+same cap. The full stream remains visible in the hosted step log, and the
+wrapper returns pytest's own exit status. Its Actions job summary reports
 collected/passed/failed/skipped counts and failed test IDs. A failed scheduled
 run opens or comments on the single open issue labelled
 `nightly-integration-failure`; manually dispatched runs do not create or update

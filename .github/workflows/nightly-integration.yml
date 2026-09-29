@@ -29,8 +29,11 @@ jobs:
       - name: Run integration tests
         run: |
           mkdir -p artifacts
-          uv run pytest tests/ -v -m integration --junitxml=artifacts/nightly-integration.xml 2>&1 \
-            | tee artifacts/nightly-integration.log
+          python3 scripts/run_bounded_output.py \
+            --output artifacts/nightly-integration.log \
+            --max-bytes 1048576 \
+            -- uv run pytest tests/ -v -m integration \
+              --junitxml=artifacts/nightly-integration.xml
       - name: Build integration summary
         if: ${{ always() }}
         env:

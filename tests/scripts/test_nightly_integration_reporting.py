@@ -5,8 +5,9 @@ import sys
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "nightly_integration_summary.py"
+RUNNER = ROOT / "scripts" / "run_bounded_output.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "nightly-integration.yml"
 
 
@@ -92,6 +93,10 @@ def test_nightly_workflow_preserves_selection_and_scopes_issue_permission() -> N
 
     assert "uv run pytest tests/ -v -m integration" in workflow
     assert "--junitxml=artifacts/nightly-integration.xml" in workflow
+    assert "python3 scripts/run_bounded_output.py" in workflow
+    assert "--output artifacts/nightly-integration.log" in workflow
+    assert "--max-bytes 1048576" in workflow
+    assert "| tee artifacts/nightly-integration.log" not in workflow
     assert "${{ always() && github.event_name == 'schedule'" in workflow
     assert "needs.integration.result == 'failure'" in workflow
     assert "nightly-integration-failure" in workflow
@@ -103,3 +108,71 @@ def test_nightly_workflow_preserves_selection_and_scopes_issue_permission() -> N
     integration_job, issue_job = workflow.split("  report-scheduled-failure:\n", maxsplit=1)
     assert "issues: write" not in integration_job
     assert "issues: write" in issue_job
+
+
+def _run_bounded_output(
+    tmp_path: Path,
+    *,
+    command: list[str],
+    max_bytes: int = 128,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    output = tmp_path / "nightly-integration.log"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(RUNNER),
+            "--output",
+            str(output),
+            "--max-bytes",
+            str(max_bytes),
+            "--",
+            *command,
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result, output
+
+
+def test_bounded_output_caps_artifact_and_retains_tail(tmp_path: Path) -> None:
+    cap = 128
+    tail = "TAIL-SENTINEL\n"
+    command = [
+        sys.executable,
+        "-c",
+        f"import sys; sys.stdout.write({'x' * 400 + tail!r})",
+    ]
+
+    result, output = _run_bounded_output(
+        tmp_path,
+        command=command,
+        max_bytes=cap,
+    )
+
+    assert result.returncode == 0, result.stderr
+    artifact = output.read_bytes()
+    assert len(artifact) <= cap, f"observed {len(artifact)} bytes for {cap}-byte cap"
+    assert b"nightly log truncated" in artifact
+    assert artifact.endswith(tail.encode())
+
+
+def test_bounded_output_returns_wrapped_nonzero_status(tmp_path: Path) -> None:
+    result, output = _run_bounded_output(
+        tmp_path,
+        command=[sys.executable, "-c", "import sys; print('failed'); sys.exit(7)"],
+    )
+
+    assert result.returncode == 7
+    assert output.read_bytes().endswith(b"failed\n")
+
+
+def test_bounded_output_returns_zero_for_success(tmp_path: Path) -> None:
+    result, output = _run_bounded_output(
+        tmp_path,
+        command=[sys.executable, "-c", "print('passed')"],
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert output.read_bytes().endswith(b"passed\n")
