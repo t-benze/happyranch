@@ -38,6 +38,7 @@ SKILL_DIR = (
 )
 SKILL_MD = SKILL_DIR / "SKILL.md"
 HELPER = SKILL_DIR / "scripts" / "check_path_use.py"
+PROCEDURE = SKILL_DIR / "scripts" / "run_cleanup_candidate.sh"
 MANUAL_FIRST_LINE = "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)"
 DAEMON_MARKER = "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)"
 
@@ -56,6 +57,11 @@ def test_frontmatter_is_admissible_and_named_for_slug(body):
 def test_helper_is_present_in_skill_package():
     assert HELPER.is_file()
     assert HELPER.read_text(encoding="utf-8").startswith("#!/usr/bin/env python3")
+
+
+def test_procedure_is_present_in_skill_package():
+    assert PROCEDURE.is_file()
+    assert PROCEDURE.read_text(encoding="utf-8").startswith("#!/usr/bin/env bash")
 
 
 def test_manual_and_daemon_dispatch_markers(body):
@@ -141,7 +147,10 @@ def test_effectiveness_contract_uses_complete_history_and_exact_host_job(body):
     assert 'rm -rf -- "$WC_ISOLATED_CANDIDATE"' not in procedure
     assert "--workspace-cleanup-delete-isolated-v1" in procedure
     assert "os.supports_dir_fd" in procedure and "os.O_NOFOLLOW" in procedure
-    assert "# gate current-use-scan\n_wc_scan_job" in _shipped_gate_text(body)
+    assert re.search(
+        r"# gate current-use-scan\n\s*_wc_scan_job",
+        _shipped_gate_text(body),
+    )
 
 
 def test_effectiveness_contract_is_zsh_safe_and_preserves_dirty_cache_only(body):
@@ -156,10 +165,25 @@ def test_effectiveness_contract_is_zsh_safe_and_preserves_dirty_cache_only(body)
 
 def test_effectiveness_contract_names_remote_and_merged_preservation(body):
     normalized = " ".join(body.split())
-    assert "freshly verified matching remote task branch" in normalized
+    assert "owning-task remote branch" in normalized
+    assert "head contains (is equal to or descends from) the candidate `HEAD`" in normalized
     assert "confirmed merged PR" in normalized
     assert "may not preserve the original commit topology" in normalized
     assert "closed-unmerged" in normalized
+
+
+def test_skill_invokes_script_without_markdown_extraction_or_eval(body):
+    assert 'bash "$SKILL/scripts/run_cleanup_candidate.sh"' in body
+    forbidden = (
+        "procedure-commands:begin",
+        "eligibility-commands:begin",
+        "source this block",
+        "extract the",
+        "eval ",
+    )
+    normalized = body.lower()
+    for recipe in forbidden:
+        assert recipe not in normalized
 
 
 # ── Behavioral resolver/materialization ───────────────────────────────────
@@ -205,18 +229,22 @@ def test_materializes_into_both_provider_roots_for_no_repo_workspace(tmp_path):
         skills_root=tmp_path / "no-managed-skills",
     )
     expected = SKILL_MD.read_text(encoding="utf-8")
+    expected_procedure = PROCEDURE.read_bytes()
     for root in (workspace / ".claude" / "skills", workspace / ".agents" / "skills"):
         marker = root / "workspace-cleanup" / "SKILL.md"
         assert marker.is_file(), f"workspace-cleanup not materialized at {marker}"
         assert marker.read_text(encoding="utf-8") == expected
+        shipped_procedure = root / "workspace-cleanup" / "scripts" / PROCEDURE.name
+        assert shipped_procedure.is_file()
+        assert shipped_procedure.read_bytes() == expected_procedure
     # no-repo workspace must not receive repo-only contracts
     assert not (workspace / ".agents" / "skills" / "make-worktree").exists()
 
 
 # ── F5: behavioral execution of the DELIVERED procedure ───────────────────
 #
-# These tests extract the shipped ``procedure-commands`` control flow out of the
-# real SKILL.md and execute it against a real isolated Git fixture with labelled
+# These tests execute the real bundled procedure script against a real isolated
+# Git fixture with labelled
 # synthetic authoritative-response fixtures (happyranch recall/audit, gh). The
 # task-output ``eligibility.py`` is not consulted and no test-only copy of the
 # decision algorithm is used: the shipped shell runs, and the shipped helper is
@@ -229,39 +257,33 @@ def test_materializes_into_both_provider_roots_for_no_repo_workspace(tmp_path):
 # mutation-free refusal for gates that return before the literal action begins;
 # they do not extend that promise to failures detected after action has started.
 
-PROC_BEGIN = "<!-- procedure-commands:begin -->"
-PROC_END = "<!-- procedure-commands:end -->"
-ELIG_BEGIN = "<!-- eligibility-commands:begin -->"
-ELIG_END = "<!-- eligibility-commands:end -->"
+ELIG_BEGIN = "# eligibility-commands:begin"
+ELIG_END = "# eligibility-commands:end"
 G = ["git", "-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture"]
 
 OLD = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() - 30 * 86400))
 
 
 def _shipped_procedure(body: str) -> str:
-    assert PROC_BEGIN in body and PROC_END in body
-    block = body[body.index(PROC_BEGIN):body.index(PROC_END)]
-    match = re.search(r"```bash\n(.*?)```", block, re.S)
-    assert match, "no bash procedure block in SKILL.md"
-    return match.group(1)
+    del body
+    assert PROCEDURE.is_file(), f"missing packaged procedure: {PROCEDURE}"
+    return PROCEDURE.read_text(encoding="utf-8")
 
 
 def _shipped_gate_text(body: str) -> str:
-    assert ELIG_BEGIN in body and ELIG_END in body
-    block = body[body.index(ELIG_BEGIN):body.index(ELIG_END)]
-    match = re.search(r"```bash\n(.*?)```", block, re.S)
-    assert match, "no bash eligibility block in SKILL.md"
-    return match.group(1)
+    procedure = _shipped_procedure(body)
+    assert ELIG_BEGIN in procedure and ELIG_END in procedure
+    return procedure[procedure.index(ELIG_BEGIN) + len(ELIG_BEGIN):
+                     procedure.index(ELIG_END)]
 
 
 def test_procedure_uses_the_documented_gate_commands(body):
-    # The executable procedure extracts its gates from the documented block, so
-    # the two can never drift: assert the procedure references the block markers
-    # and the documented block still carries every gate name.
+    # The executable procedure owns and directly executes every gate. There is
+    # no second Markdown source and no extraction/eval path that can drift.
     procedure = _shipped_procedure(body)
-    assert "eligibility-commands:begin" in procedure
-    assert "eligibility-commands:end" in procedure
-    names = re.findall(r"^# gate (.+)$", _shipped_gate_text(body), re.M)
+    assert "_wc_gate_block" not in procedure
+    assert "eval " not in procedure
+    names = re.findall(r"^\s*# gate (.+)$", _shipped_gate_text(body), re.M)
     assert len(names) >= 12, names
     for required in ("workspace-scope", "canonical-shape", "non-primary", "registration",
                      "ownership", "filesystem-ownership", "protected-task",
@@ -442,7 +464,18 @@ def _write_stubs(bin_dir: Path) -> None:
         "#!/bin/sh\n"
         "echo \"gh $*\" >> \"$GH_LOG\"\n"
         "[ \"${WC_GH_FAIL:-0}\" = \"1\" ] && exit 71\n"
-        "[ \"$1\" = api ] && [ \"$2\" = graphql ] || { echo 'expected graphql' >&2; exit 1; }\n"
+        "if [ \"$1\" = api ] && [ \"$2\" != graphql ]; then\n"
+        "  n=$(cat \"$WC_COMPARE_COUNT\"); n=$((n+1)); echo \"$n\" > \"$WC_COMPARE_COUNT\"\n"
+        "  [ \"$WC_COMPARE_SCENARIO\" = fail ] && exit 71\n"
+        "  exec python3 -c 'import json,os\n"
+        "scenario=os.environ[\"WC_COMPARE_SCENARIO\"]; n=int(open(os.environ[\"WC_COMPARE_COUNT\"]).read()); head=os.environ[\"WC_HEAD\"]; target=os.environ[\"WC_TARGET_SHA\"]\n"
+        "if scenario==\"malformed\": print(json.dumps({\"status\":\"ahead\"})); raise SystemExit\n"
+        "status=\"ahead\" if scenario in (\"ahead\",\"changing\",\"truncated\") else (\"identical\" if scenario==\"identical\" else \"diverged\")\n"
+        "if scenario==\"changing\" and n>1: status=\"behind\"\n"
+        "count=1 if status==\"ahead\" else 0; total=2 if scenario==\"truncated\" else count; d={\"status\":status,\"ahead_by\":count,\"behind_by\":0 if status in (\"ahead\",\"identical\") else 1,\"total_commits\":total,\"commit_count\":count,\"base_oid\":head,\"merge_base_oid\":head if status in (\"ahead\",\"identical\") else \"0\"*40,\"target_oid\":target}\n"
+        "print(json.dumps(d,sort_keys=True))'\n"
+        "fi\n"
+        "[ \"$1\" = api ] && [ \"$2\" = graphql ] || { echo 'expected graphql or compare' >&2; exit 1; }\n"
         "exec python3 -c 'import json,os\n"
         "scenario=os.environ.get(\"WC_PR_SCENARIO\",\"none\"); branch=os.environ[\"WC_BRANCH\"]; head=os.environ[\"WC_HEAD\"]\n"
         "def row(number,state=\"MERGED\",merged=\"2026-01-01T00:00:00Z\",oid=None): return {\"number\":number,\"state\":state,\"mergedAt\":merged,\"headRefName\":branch,\"headRefOid\":oid or head}\n"
@@ -451,7 +484,9 @@ def _write_stubs(bin_dir: Path) -> None:
         "if scenario in (\"open\",\"beyond100open\"): nodes=[row(i) for i in range(1,102)]+[row(102,\"OPEN\",None)]\n"
         "elif scenario in (\"closed\",\"beyond100closed\"): nodes=[row(i) for i in range(1,102)]+[row(102,\"CLOSED\",None)]\n"
         "elif scenario==\"merged\": nodes=[row(1)]\n"
+        "elif scenario==\"merged_target\": nodes=[row(1,oid=os.environ[\"WC_TARGET_SHA\"])]\n"
         "elif scenario==\"mismatch\": nodes=[row(1,oid=\"0\"*40)]\n"
+        "elif scenario==\"bad_oid\": nodes=[row(1,oid=\"not-an-oid\")]\n"
         "elif scenario==\"bad_merged_at\": nodes=[row(1,\"MERGED\",None)]\n"
         "elif scenario==\"duplicate\": nodes=[row(1),row(1)]\n"
         "pages=[{\"data\":{\"repository\":{\"pullRequests\":{\"totalCount\":len(nodes),\"nodes\":nodes,\"pageInfo\":{\"hasNextPage\":False,\"endCursor\":None}}}}}]\n"
@@ -533,6 +568,7 @@ def _write_stubs(bin_dir: Path) -> None:
         "case \"$*\" in *\" ls-remote --exit-code origin \"*)\n"
         "  case \"${WC_REMOTE_SCENARIO:-missing}\" in\n"
         "    success) printf '%s\\trefs/heads/%s\\n' \"$WC_HEAD\" \"$WC_BRANCH\"; exit 0 ;;\n"
+        "    target) printf '%s\\trefs/heads/%s\\n' \"$WC_TARGET_SHA\" \"$WC_BRANCH\"; exit 0 ;;\n"
         "    mismatch) printf '%040d\\trefs/heads/%s\\n' 0 \"$WC_BRANCH\"; exit 0 ;;\n"
         "    malformed) echo malformed; exit 0 ;;\n"
         "    fail) exit 71 ;;\n"
@@ -556,6 +592,8 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
                    job_scenario: str | None = None,
                    remote_scenario: str = "missing",
                    pr_scenario: str | None = None,
+                   target_sha: str | None = None,
+                   compare_scenario: str = "diverged",
                    tasks_fail: bool = False,
                    action_drift: str = "", rm_scenario: str = "normal",
                    mv_scenario: str = "normal",
@@ -588,8 +626,7 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
         (tmp_path / name).write_text(json.dumps(payload))
     (tmp_path / "tasks-count").write_text("0\n")
     (tmp_path / "trigger-count").write_text("0\n")
-    proc_src = tmp_path / "proc.sh"
-    proc_src.write_text(_shipped_procedure(body))
+    (tmp_path / "compare-count").write_text("0\n")
     fixture_skill = tmp_path / "shipped-skill"
     (fixture_skill / "scripts").mkdir(parents=True, exist_ok=True)
     (fixture_skill / "SKILL.md").write_text(body)
@@ -638,6 +675,9 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
         ),
         "WC_PR_SCENARIO": pr_scenario or ("open" if open_pr else "none"),
         "WC_REMOTE_SCENARIO": remote_scenario,
+        "WC_TARGET_SHA": target_sha or ("1" * 40),
+        "WC_COMPARE_SCENARIO": compare_scenario,
+        "WC_COMPARE_COUNT": str(tmp_path / "compare-count"),
         "WC_BRANCH": f"task/{containing.name}",
         "WC_HEAD": _git("rev-parse", "HEAD", cwd=containing).stdout.strip(),
         "WC_GH_FAIL": "1" if gh_fail else "0",
@@ -651,8 +691,7 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
         "TMPDIR": str(wc_tmp),
     })
     script = (
-        f'. {shlex.quote(str(proc_src))}\n'
-        f'run_cleanup_candidate {shlex.quote(str(candidate))} '
+        f'bash {shlex.quote(str(PROCEDURE))} {shlex.quote(str(candidate))} '
         f'{shlex.quote(str(containing))}\n'
         'printf "RC=%s\\n" "$?"\n'
     )
@@ -1195,6 +1234,118 @@ def test_preservation_by_fresh_remote_branch_or_confirmed_merged_pr(
 
 
 @pytest.mark.parametrize(
+    "remote,pr",
+    [("target", "none"), ("missing", "merged_target")],
+)
+def test_preservation_when_head_is_local_ancestor_of_own_branch_or_merged_pr(
+        tmp_path, body, remote, pr):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    (fx["eligible"] / "candidate.txt").write_text("candidate\n")
+    _git("add", "-A", cwd=fx["eligible"])
+    _git("commit", "-m", "candidate", cwd=fx["eligible"])
+    candidate_head = _git("rev-parse", "HEAD", cwd=fx["eligible"]).stdout.strip()
+    (fx["eligible"] / "later.txt").write_text("later\n")
+    _git("add", "-A", cwd=fx["eligible"])
+    _git("commit", "-m", "later", cwd=fx["eligible"])
+    target = _git("rev-parse", "HEAD", cwd=fx["eligible"]).stdout.strip()
+    _git("reset", "--hard", candidate_head, cwd=fx["eligible"])
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map, audit_trigger=occurrences,
+        scan_state="clear_observation", remote_scenario=remote,
+        pr_scenario=pr, target_sha=target,
+    )
+    assert result["rc"] == 0, result
+    assert result["git_log"].count("worktree remove") == 1
+
+
+@pytest.mark.parametrize(
+    "remote,pr",
+    [("target", "none"), ("missing", "merged_target")],
+)
+def test_preservation_refuses_diverged_own_branch_or_merged_pr_head(
+        tmp_path, body, remote, pr):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    (fx["eligible"] / "candidate.txt").write_text("candidate\n")
+    _git("add", "-A", cwd=fx["eligible"])
+    _git("commit", "-m", "candidate", cwd=fx["eligible"])
+    divergent = _git("rev-parse", "origin/main", cwd=fx["eligible"]).stdout.strip()
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map, audit_trigger=occurrences,
+        scan_state="clear_observation", remote_scenario=remote,
+        pr_scenario=pr, target_sha=divergent,
+    )
+    assert result["rc"] == 2, result
+    assert "worktree remove" not in result["git_log"]
+    assert fx["eligible"].exists()
+
+
+@pytest.mark.parametrize(
+    "remote,pr",
+    [("target", "none"), ("missing", "merged_target")],
+)
+def test_preservation_uses_double_read_closed_compare_when_target_is_not_local(
+        tmp_path, body, remote, pr):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    (fx["eligible"] / "candidate.txt").write_text("candidate\n")
+    _git("add", "-A", cwd=fx["eligible"])
+    _git("commit", "-m", "candidate", cwd=fx["eligible"])
+    target = "1" * 40
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map, audit_trigger=occurrences,
+        scan_state="clear_observation", remote_scenario=remote,
+        pr_scenario=pr, target_sha=target, compare_scenario="ahead",
+    )
+    assert result["rc"] == 0, result
+    compare_calls = [line for line in result["gh_log"].splitlines()
+                     if "/compare/" in line]
+    # Eligibility is intentionally re-derived twice, and each proof is itself
+    # double-read, so one successful action produces exactly four calls.
+    assert len(compare_calls) == 4, result["gh_log"]
+
+
+@pytest.mark.parametrize(
+    "compare", ["fail", "malformed", "changing", "truncated", "diverged"],
+)
+def test_preservation_refuses_unproven_remote_compare(tmp_path, body, compare):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    (fx["eligible"] / "candidate.txt").write_text("candidate\n")
+    _git("add", "-A", cwd=fx["eligible"])
+    _git("commit", "-m", "candidate", cwd=fx["eligible"])
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map, audit_trigger=occurrences,
+        scan_state="clear_observation", remote_scenario="target",
+        target_sha="1" * 40, compare_scenario=compare,
+    )
+    assert result["rc"] == 2, result
+    assert "worktree remove" not in result["git_log"]
+    assert fx["eligible"].exists()
+
+
+@pytest.mark.parametrize(
     "remote,pr,gh_fail",
     [
         ("missing", "open", False),
@@ -1208,7 +1359,7 @@ def test_preservation_by_fresh_remote_branch_or_confirmed_merged_pr(
         ("mismatch", "none", False),
         ("malformed", "none", False),
         ("fail", "merged", False),
-        ("success", "mismatch", False),
+        ("success", "bad_oid", False),
     ],
 )
 def test_preservation_refuses_bad_remote_or_pr_evidence(
@@ -1460,7 +1611,8 @@ def test_changed_protected_identity_never_reports_success(tmp_path, body):
 def test_recursive_boundary_executes_real_walker_and_refuses_faults(
         tmp_path, body, fault):
     match = re.search(
-        r"_wc_snapshot_tree\(\) \{.*?<<'PY'\n(.*?)\nPY\n\}", body, re.S,
+        r"_wc_snapshot_tree\(\) \{.*?<<'PY'\n(.*?)\nPY\n\}",
+        _shipped_procedure(body), re.S,
     )
     assert match, "missing shipped recursive-boundary program"
     program = match.group(1)

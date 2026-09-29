@@ -220,6 +220,10 @@ def test_frozen_release_data_contains_skills_and_assistant_knowledge(tmp_path: P
         for member in bundled_skills_dir().rglob("*"):
             if member.is_file():
                 assert f"runtime/skills/bundled/{member.relative_to(bundled_skills_dir())}" in shipped
+        assert (
+            "runtime/skills/bundled/workspace-cleanup/scripts/"
+            "run_cleanup_candidate.sh"
+        ) in shipped
         assert not any(key.startswith("protocol/") for key in shipped)
 
 
