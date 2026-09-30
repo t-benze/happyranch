@@ -130,9 +130,11 @@ stale, mismatched, malformed, or missing output refuses without mutation.
 
 For a whole-worktree candidate the containing worktree is the candidate itself,
 so `--containing-worktree` may be omitted. For a cache candidate the helper
-derives the unique actual registered worktree root (never a nested directory
-such as `web/`). When supplied explicitly, it must match that canonical root.
-Missing, ambiguous, unregistered, or changed registration is `unknown`, never a
+derives the deepest registered non-primary (linked) worktree containing the
+target, excluding the primary checkout identified by Git's first porcelain
+record (and never selecting an unregistered nested directory such as `web/`).
+When supplied explicitly, it must match that canonical root. Missing,
+tied-deepest, unregistered, or changed registration is `unknown`, never a
 `dirname` fallback.
 
 It returns exactly one of `clear_observation`, `blocked`, or `unknown`

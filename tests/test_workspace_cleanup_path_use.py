@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -227,14 +228,91 @@ def test_classify_helper_exact_pairs(cpu):
 CACHE_WT = "/work/wt/TASK-X"
 CACHE = CACHE_WT + "/node_modules"
 CMAP = {CACHE_WT: (2049, 42), CACHE: (2049, 77)}
+PRIMARY_WT = "/work"
 
 
 def _cache_proc(cpu, cls=None, member_cwd=CACHE_WT + "/src", **member_kw):
     cls = cls or cpu.FakeProc
     self_p = _spec(SELF, comm="check_path_use")
     member = _spec("600", cwd=member_cwd, **member_kw)
-    return cls({SELF: self_p, "600": member}, stat_map=dict(CMAP),
-               registered_worktrees=[CACHE_WT])
+    return cls(
+        {SELF: self_p, "600": member}, stat_map=dict(CMAP),
+        registered_worktrees=[PRIMARY_WT, CACHE_WT],
+        primary_worktree=PRIMARY_WT,
+    )
+
+
+def _nested_git_worktree(tmp_path):
+    primary = tmp_path / "primary"
+    linked = primary / ".claude" / "worktrees" / "TASK-X"
+    subprocess.run(
+        ["git", "init", "-b", "main", str(primary)],
+        check=True, capture_output=True, text=True,
+    )
+    (primary / "tracked.txt").write_text("primary\n")
+    subprocess.run(
+        ["git", "-C", str(primary), "add", "tracked.txt"],
+        check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        [
+            "git", "-C", str(primary), "-c", "user.name=Test",
+            "-c", "user.email=test@example.invalid", "commit", "-m", "initial",
+        ],
+        check=True, capture_output=True, text=True,
+    )
+    linked.parent.mkdir(parents=True)
+    subprocess.run(
+        [
+            "git", "-C", str(primary), "worktree", "add", "-b", "task/TASK-X",
+            str(linked),
+        ],
+        check=True, capture_output=True, text=True,
+    )
+    return primary, linked
+
+
+def test_f1_real_git_nested_linked_cache_resolves_and_blocks(cpu, tmp_path):
+    primary, linked = _nested_git_worktree(tmp_path)
+    cache = linked / ".venv"
+    cache.mkdir()
+    occupier = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"], cwd=linked,
+    )
+    try:
+        res = cpu.scan(
+            cache, proc=cpu.RealProc(), self_pid=os.getpid(),
+            agent_uid=os.getuid(), bounds=cpu.Bounds(deadline_seconds=10),
+        )
+    finally:
+        occupier.terminate()
+        try:
+            occupier.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            occupier.kill()
+            occupier.wait(timeout=5)
+
+    assert res.coverage["containing_worktree"] == str(linked.resolve())
+    assert res.state == "blocked"
+    assert any(
+        hit["pid"] == str(occupier.pid) and hit["kind"] == "cwd"
+        for hit in res.hits
+    )
+
+
+def test_f1_real_git_cache_directly_under_primary_is_unknown(cpu, tmp_path):
+    primary, _linked = _nested_git_worktree(tmp_path)
+    cache = primary / "node_modules"
+    cache.mkdir()
+
+    res = cpu.scan(
+        cache, proc=cpu.RealProc(), self_pid=os.getpid(),
+        agent_uid=os.getuid(), bounds=cpu.Bounds(deadline_seconds=10),
+    )
+
+    assert res.coverage["containing_worktree"] is None
+    assert res.state == "unknown"
+    assert "containing_worktree_unresolved" in res.reasons
 
 
 def test_f1_cache_candidate_observes_occupied_containing_worktree(cpu):
@@ -244,15 +322,17 @@ def test_f1_cache_candidate_observes_occupied_containing_worktree(cpu):
     assert res.coverage["containing_worktree"] == CACHE_WT
 
 
-def test_f1_cache_candidate_derives_unique_registered_containing_root(cpu):
-    # R2: omission is safe only when Git registration resolves exactly one
-    # canonical containing worktree, whose use is then observed.
-    res = cpu.scan(CACHE, proc=_cache_proc(cpu), self_pid=SELF, agent_uid=UID)
+def test_f1_cache_candidate_derives_deepest_non_primary_root(cpu):
+    # R2: a shallower linked registration does not displace the one deepest
+    # containing non-primary root, whose use is then observed.
+    proc = _cache_proc(cpu)
+    proc._registered_worktrees = [PRIMARY_WT, "/work/wt", CACHE_WT]
+    res = cpu.scan(CACHE, proc=proc, self_pid=SELF, agent_uid=UID)
     assert res.state == "blocked"
     assert res.coverage["containing_worktree"] == CACHE_WT
 
 
-@pytest.mark.parametrize("roots", [[], [CACHE_WT, "/work"]])
+@pytest.mark.parametrize("roots", [[], [PRIMARY_WT, CACHE_WT, CACHE_WT]])
 def test_f1_cache_missing_or_ambiguous_registration_is_unknown(cpu, roots):
     proc = _cache_proc(cpu)
     proc._registered_worktrees = roots
@@ -260,6 +340,33 @@ def test_f1_cache_missing_or_ambiguous_registration_is_unknown(cpu, roots):
                    containing_worktree=CACHE_WT)
     assert res.state == "unknown"
     assert "containing_worktree_unresolved" in res.reasons
+
+
+def test_f1_cache_directly_under_primary_registration_is_unknown(cpu):
+    primary_cache = PRIMARY_WT + "/node_modules"
+    proc = cpu.FakeProc(
+        {SELF: _spec(SELF)},
+        stat_map={PRIMARY_WT: (2049, 40), primary_cache: (2049, 41)},
+        registered_worktrees=[PRIMARY_WT],
+        primary_worktree=PRIMARY_WT,
+    )
+    res = cpu.scan(primary_cache, proc=proc, self_pid=SELF, agent_uid=UID,
+                   containing_worktree=PRIMARY_WT)
+    assert res.state == "unknown"
+    assert res.coverage["containing_worktree"] is None
+    assert "containing_worktree_unresolved" in res.reasons
+
+
+def test_f1_whole_worktree_target_ignores_cache_registration_resolution(cpu):
+    member = _spec("600", cwd=TARGET + "/src")
+    proc = cpu.FakeProc(
+        {SELF: _spec(SELF), "600": member}, stat_map=dict(STAT_MAP),
+        registered_worktrees=[PRIMARY_WT, TARGET, TARGET],
+        primary_worktree=PRIMARY_WT,
+    )
+    res = cpu.scan(TARGET, proc=proc, self_pid=SELF, agent_uid=UID)
+    assert res.state == "blocked"
+    assert res.coverage["containing_worktree"] is None
 
 
 def test_f1_cache_supplied_root_must_match_registration(cpu):
@@ -290,7 +397,9 @@ def test_f1_cache_cannot_self_declare_as_containing_worktree(cpu):
     # The literal cache is not a registered worktree, so it cannot be used to
     # suppress observation of a process elsewhere in the real containing root.
     proc = cpu.FakeProc({SELF: _spec(SELF), "600": _spec("600", cwd=CACHE_WT + "/src")},
-                        stat_map=dict(CMAP), registered_worktrees=[CACHE_WT])
+                        stat_map=dict(CMAP),
+                        registered_worktrees=[PRIMARY_WT, CACHE_WT],
+                        primary_worktree=PRIMARY_WT)
     literal_only = cpu.scan(CACHE, proc=proc, self_pid=SELF, agent_uid=UID,
                             containing_worktree=CACHE)
     assert literal_only.state == "unknown"
@@ -795,7 +904,8 @@ def test_r2_containing_alias_retarget_is_unknown(cpu, tmp_path):
     proc = _AliasChange({SELF: _spec(SELF), "600": _spec("600")},
                         stat_map={target: (1, 46), str(first): (1, 44),
                                   str(second): (1, 45)},
-                        registered_worktrees=[str(first)])
+                        registered_worktrees=[str(tmp_path), str(first)],
+                        primary_worktree=str(tmp_path))
     res = cpu.scan(target, proc=proc, self_pid=SELF, agent_uid=UID,
                    containing_worktree=str(alias))
     assert res.state == "unknown"
