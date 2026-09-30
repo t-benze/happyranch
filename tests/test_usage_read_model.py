@@ -271,12 +271,26 @@ def test_efficiency_keeps_lifecycle_only_runs_and_unpinned_cohort_separate(db: D
         model=None,
     )
     _task_usage(db, "TASK-UNPINNED", "unpinned", NOW - timedelta(hours=19))
+    _task_start(
+        db,
+        task_id="TASK-PREVIOUS-ONLY",
+        session_id="previous-only",
+        when=NOW - timedelta(days=8),
+        executor="claude",
+        model="sonnet",
+    )
 
     options = read_efficiency(db, now=NOW, timezone_name="UTC")
     assert options["cohorts"] == [
         {"executor": "codex", "model": None, "model_unpinned": True, "current_runs": 1, "previous_runs": 0},
         {"executor": "codex", "model": "gpt-5", "model_unpinned": False, "current_runs": 2, "previous_runs": 0},
     ]
+
+    compared_options = read_efficiency(db, now=NOW, timezone_name="UTC", compare=True)
+    assert compared_options["cohorts"][0] == {
+        "executor": "claude", "model": "sonnet", "model_unpinned": False,
+        "current_runs": 0, "previous_runs": 1,
+    }
 
     selected = read_efficiency(
         db, now=NOW, timezone_name="UTC", executor="codex", model="gpt-5",
@@ -532,16 +546,17 @@ def test_deliveries_require_completed_worker_result_and_dedupe_task(db: Database
 
 def test_every_non_delivery_kind_is_excluded(db: Database) -> None:
     cases = (
-        ("manager_decision", TaskStatus.COMPLETED, "completed"),
-        ("unattributed", TaskStatus.COMPLETED, "completed"),  # child/recovery callback
-        ("unattributed", TaskStatus.IN_PROGRESS, "completed"),  # follow-up/blocked
-        ("worker_execution", TaskStatus.COMPLETED, "failed"),  # decline/failure
-        ("worker_execution", TaskStatus.FAILED, "completed"),  # failed retry task
-        ("worker_execution", TaskStatus.CANCELLED, "completed"),
+        ("manager-decision", "manager_decision", TaskStatus.COMPLETED, "completed"),
+        ("child-callback", "unattributed", TaskStatus.COMPLETED, "completed"),
+        ("followup", "unattributed", TaskStatus.IN_PROGRESS, "completed"),
+        ("decline", "worker_execution", TaskStatus.COMPLETED, "failed"),
+        ("retry-failure", "worker_execution", TaskStatus.FAILED, "completed"),
+        ("blocked", "worker_execution", TaskStatus.IN_PROGRESS, "completed"),
+        ("cancelled", "worker_execution", TaskStatus.CANCELLED, "completed"),
     )
-    for ordinal, (purpose, task_status, result_status) in enumerate(cases):
-        task_id = f"TASK-EXCLUDED-{ordinal}"
-        session_id = f"excluded-{ordinal}"
+    for label, purpose, task_status, result_status in cases:
+        task_id = f"TASK-EXCLUDED-{label.upper()}"
+        session_id = f"excluded-{label}"
         _completed_task(db, task_id, task_status=task_status)
         _task_start(
             db, task_id=task_id, session_id=session_id,

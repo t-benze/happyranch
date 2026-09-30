@@ -461,6 +461,7 @@ def read_efficiency(
         {"executor": ex, "model": cohort_model, "model_unpinned": cohort_model is None,
          "current_runs": counts["current"], "previous_runs": counts["previous"] if compare else 0}
         for (ex, cohort_model), counts in sorted(cohorts.items(), key=lambda item: (item[0][0], item[0][1] is not None, item[0][1] or ""))
+        if counts["current"] > 0 or (compare and counts["previous"] > 0)
     ]
     output["unattributed"] = {"current": unattributed["current"], "previous": unattributed["previous"] if compare else None}
     output["rows"] = []
