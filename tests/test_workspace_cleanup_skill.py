@@ -1988,6 +1988,112 @@ def test_recursive_boundary_refuses_protected_descendant_symlink(tmp_path, body)
     assert cache.exists() and protected.exists()
 
 
+def _uv_interpreter(tmp_path: Path, monkeypatch) -> Path:
+    fake_home = tmp_path / "fake-home"
+    store = fake_home / ".local/share/uv/python/cpython-fixture/bin"
+    store.mkdir(parents=True)
+    target = store / "python3.13"
+    target.write_bytes(b"fixture interpreter bytes\x00\xff")
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.delenv("UV_PYTHON_INSTALL_DIR", raising=False)
+    return target
+
+
+def _make_venv(root: Path, target: Path, *, link_name: str = "python") -> Path:
+    (root / "bin").mkdir(parents=True)
+    (root / "pyvenv.cfg").write_text(f"home = {target.parent}\n")
+    (root / "bin" / link_name).symlink_to(target)
+    return root
+
+
+def test_uv_venv_cache_removal_preserves_external_interpreter(
+        tmp_path, body, monkeypatch):
+    fx = _build_procedure_fixture(tmp_path)
+    target = _uv_interpreter(tmp_path, monkeypatch)
+    before = target.read_bytes()
+    cache = _make_venv(fx["eligible"] / ".venv", target)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+    )
+    assert result["rc"] == 0, result
+    assert not cache.exists()
+    assert target.is_file() and target.read_bytes() == before
+
+
+def test_worktree_with_nested_uv_venv_removal_preserves_external_interpreter(
+        tmp_path, body, monkeypatch):
+    fx = _build_procedure_fixture(tmp_path)
+    target = _uv_interpreter(tmp_path, monkeypatch)
+    before = target.read_bytes()
+    nested = _make_venv(fx["eligible"] / "nested" / ".venv", target)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map, audit_trigger=occurrences,
+        scan_state="clear_observation",
+    )
+    assert result["rc"] == 0, result
+    assert not fx["eligible"].exists() and not nested.exists()
+    assert target.is_file() and target.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["outside_bin", "wrong_name", "outside_store", "missing_cfg",
+     "wrong_venv_name", "protected_target"],
+)
+def test_uv_interpreter_exception_refuses_every_other_external_link(
+        tmp_path, body, monkeypatch, fault):
+    fx = _build_procedure_fixture(tmp_path)
+    target = _uv_interpreter(tmp_path, monkeypatch)
+    cache = fx["eligible"] / ".venv"
+    venv = cache
+    link_name = "python"
+    if fault == "wrong_venv_name":
+        cache = fx["eligible"] / "node_modules"
+        venv = cache / "not-venv"
+    if fault == "wrong_name":
+        link_name = "pip"
+    if fault == "outside_store":
+        target = tmp_path / "outside" / "python3.13"
+        target.parent.mkdir()
+        target.write_bytes(b"outside")
+    if fault == "protected_target":
+        target = fx["workspace"] / "output" / "python3.13"
+        target.parent.mkdir()
+        target.write_bytes(b"protected")
+    _make_venv(venv, target, link_name=link_name)
+    if fault == "outside_store":
+        (venv / "pyvenv.cfg").write_text("home = /definitely/not/the/target\n")
+    if fault == "outside_bin":
+        (venv / "bin" / link_name).unlink()
+        (venv / link_name).symlink_to(target)
+    if fault == "missing_cfg":
+        (venv / "pyvenv.cfg").unlink()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+    )
+    assert result["rc"] == 2, result
+    assert cache.exists() and target.exists()
+
+
 @pytest.mark.parametrize("kind", ["nested", "symlink", "missing_manifest", "protected"])
 def test_cache_shape_manifest_symlink_and_protection_fail_closed(
         tmp_path, body, kind):

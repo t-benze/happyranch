@@ -45,6 +45,57 @@ def identity(path):
     value = os.lstat(path)
     return [value.st_dev, value.st_ino, value.st_mode, value.st_uid]
 
+def beneath(path, root):
+    path = os.path.realpath(path)
+    root = os.path.realpath(root)
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+def accepted_uv_interpreter(path, relative):
+    bin_dir = os.path.dirname(path)
+    venv = os.path.dirname(bin_dir)
+    if (os.path.basename(bin_dir) != "bin"
+            or os.path.basename(venv) != ".venv"
+            or re.fullmatch(r"python(?:3(?:\.[0-9]+)?)?", os.path.basename(path)) is None):
+        raise RuntimeError("external_or_protected_symlink")
+    config = os.path.join(venv, "pyvenv.cfg")
+    config_stat = os.lstat(config)
+    if (not stat.S_ISREG(config_stat.st_mode) or stat.S_ISLNK(config_stat.st_mode)
+            or config_stat.st_uid != uid):
+        raise RuntimeError("external_or_protected_symlink")
+    homes = []
+    with open(config, encoding="utf-8") as handle:
+        for line in handle:
+            key, separator, value = line.partition("=")
+            if separator and key.strip().lower() == "home":
+                homes.append(value.strip())
+    if len(homes) != 1 or not homes[0] or not os.path.isabs(os.path.expanduser(homes[0])):
+        raise RuntimeError("external_or_protected_symlink")
+    resolved = os.path.realpath(path)
+    try:
+        target = os.stat(resolved)
+    except OSError as exc:
+        raise RuntimeError("external_or_protected_symlink") from exc
+    if not stat.S_ISREG(target.st_mode):
+        raise RuntimeError("external_or_protected_symlink")
+    configured_store = os.environ.get("UV_PYTHON_INSTALL_DIR")
+    if configured_store:
+        uv_store = os.path.realpath(os.path.abspath(os.path.expanduser(configured_store)))
+    else:
+        data_home = os.environ.get("XDG_DATA_HOME") or os.path.join(
+            os.path.expanduser("~"), ".local", "share",
+        )
+        uv_store = os.path.realpath(os.path.abspath(os.path.join(data_home, "uv", "python")))
+    interpreter_home = os.path.realpath(os.path.expanduser(homes[0]))
+    if not (beneath(resolved, uv_store) or beneath(resolved, interpreter_home)):
+        raise RuntimeError("external_or_protected_symlink")
+    forbidden = [candidate, containing, primary, workspace, *protected_paths]
+    if any(beneath(resolved, item) for item in forbidden):
+        raise RuntimeError("external_or_protected_symlink")
+    return [
+        relative, os.readlink(path), resolved, target.st_dev, target.st_ino,
+        target.st_mode, target.st_uid, target.st_size,
+    ]
+
 protected_paths = [
     workspace,
     os.path.join(workspace, "repos"),
@@ -84,10 +135,14 @@ def snapshot():
         if stat.S_ISLNK(value.st_mode):
             resolved = os.path.realpath(path)
             if resolved != candidate and not resolved.startswith(candidate.rstrip(os.sep) + os.sep):
-                raise RuntimeError("external_or_protected_symlink")
+                accepted = accepted_uv_interpreter(path, rel)
+            else:
+                accepted = None
+        else:
+            accepted = None
         rows.append([
             rel, value.st_dev, value.st_ino, value.st_mode, value.st_uid,
-            value.st_size, getattr(value, "st_blocks", 0),
+            value.st_size, getattr(value, "st_blocks", 0), accepted,
         ])
         if len(rows) > cap:
             raise RuntimeError("entry_cap")
@@ -127,10 +182,10 @@ PY
 
 _wc_validate_isolated_cache() {
   python3 - "$CANDIDATE" "$WC_ISOLATED_CANDIDATE" "$WC_ISOLATION_DIR" \
-    "$CONTAINING" "$WC_TMP/tree-boundary.json" <<'PY'
+    "$CONTAINING" "$WC_TMP/tree-boundary.json" "$PRIMARY" "$WORKSPACE" <<'PY'
 import json, os, re, stat, subprocess, sys
 
-candidate, isolated, isolation_dir, containing, snapshot_path = map(
+candidate, isolated, isolation_dir, containing, snapshot_path, primary, workspace = map(
     os.path.abspath, sys.argv[1:]
 )
 uid = os.getuid()
@@ -162,6 +217,52 @@ def identity(path):
     value = os.lstat(path)
     return [value.st_dev, value.st_ino, value.st_mode, value.st_uid]
 
+def beneath(path, root):
+    path = os.path.realpath(path)
+    root = os.path.realpath(root)
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+def accepted_uv_interpreter(path, relative):
+    bin_dir = os.path.dirname(path)
+    venv = os.path.dirname(bin_dir)
+    if (os.path.basename(bin_dir) != "bin"
+            or os.path.basename(venv) != ".venv"
+            or re.fullmatch(r"python(?:3(?:\.[0-9]+)?)?", os.path.basename(path)) is None):
+        raise RuntimeError("external_or_protected_symlink")
+    config = os.path.join(venv, "pyvenv.cfg")
+    config_stat = os.lstat(config)
+    if (not stat.S_ISREG(config_stat.st_mode) or stat.S_ISLNK(config_stat.st_mode)
+            or config_stat.st_uid != uid):
+        raise RuntimeError("external_or_protected_symlink")
+    homes = []
+    with open(config, encoding="utf-8") as handle:
+        for line in handle:
+            key, separator, value = line.partition("=")
+            if separator and key.strip().lower() == "home": homes.append(value.strip())
+    if len(homes) != 1 or not homes[0] or not os.path.isabs(os.path.expanduser(homes[0])):
+        raise RuntimeError("external_or_protected_symlink")
+    resolved = os.path.realpath(path)
+    try:
+        target = os.stat(resolved)
+    except OSError as exc:
+        raise RuntimeError("external_or_protected_symlink") from exc
+    if not stat.S_ISREG(target.st_mode):
+        raise RuntimeError("external_or_protected_symlink")
+    configured_store = os.environ.get("UV_PYTHON_INSTALL_DIR")
+    if configured_store:
+        uv_store = os.path.realpath(os.path.abspath(os.path.expanduser(configured_store)))
+    else:
+        data_home = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+        uv_store = os.path.realpath(os.path.abspath(os.path.join(data_home, "uv", "python")))
+    interpreter_home = os.path.realpath(os.path.expanduser(homes[0]))
+    if not (beneath(resolved, uv_store) or beneath(resolved, interpreter_home)):
+        raise RuntimeError("external_or_protected_symlink")
+    forbidden = [candidate, containing, primary, workspace, *expected["protected"]]
+    if any(beneath(resolved, item) for item in forbidden):
+        raise RuntimeError("external_or_protected_symlink")
+    return [relative, os.readlink(path), resolved, target.st_dev, target.st_ino,
+            target.st_mode, target.st_uid, target.st_size]
+
 def protected_snapshot(paths):
     return {
         path: (identity(path) if os.path.lexists(path) else None)
@@ -191,10 +292,14 @@ def tree_snapshot(root_path):
         if stat.S_ISLNK(value.st_mode):
             resolved = os.path.realpath(path)
             if resolved != root_path and not resolved.startswith(root_path.rstrip(os.sep) + os.sep):
-                raise RuntimeError("external_or_protected_symlink")
+                accepted = accepted_uv_interpreter(path, rel)
+            else:
+                accepted = None
+        else:
+            accepted = None
         rows.append([
             rel, value.st_dev, value.st_ino, value.st_mode, value.st_uid,
-            value.st_size, getattr(value, "st_blocks", 0),
+            value.st_size, getattr(value, "st_blocks", 0), accepted,
         ])
         if len(rows) > cap:
             raise RuntimeError("entry_cap")
@@ -311,10 +416,24 @@ def mountpoints():
 def identity(value):
     return [value.st_dev, value.st_ino, value.st_mode, value.st_uid]
 
-def row(relative, value):
+def row(relative, value, path=None):
+    accepted = None
+    if path is not None and stat.S_ISLNK(value.st_mode):
+        resolved = os.path.realpath(path)
+        if resolved != isolated and not resolved.startswith(isolated.rstrip(os.sep) + os.sep):
+            try:
+                target = os.stat(resolved)
+            except OSError as exc:
+                raise RuntimeError("external_or_protected_symlink") from exc
+            if not stat.S_ISREG(target.st_mode):
+                raise RuntimeError("external_or_protected_symlink")
+            accepted = [
+                relative, os.readlink(path), resolved, target.st_dev,
+                target.st_ino, target.st_mode, target.st_uid, target.st_size,
+            ]
     return [
         relative, value.st_dev, value.st_ino, value.st_mode, value.st_uid,
-        value.st_size, getattr(value, "st_blocks", 0),
+        value.st_size, getattr(value, "st_blocks", 0), accepted,
     ]
 
 def protected_snapshot(paths):
@@ -339,7 +458,7 @@ def descriptor_tree(root_fd):
             or root.st_uid != uid):
         raise RuntimeError("invalid_isolated_root")
     root_dev = root.st_dev
-    rows = [row("", root)]
+    rows = [row("", root, isolated)]
 
     def walk(directory_fd, relative):
         try:
@@ -356,13 +475,13 @@ def descriptor_tree(root_fd):
                 raise RuntimeError("cross_device_entry")
             if child_path in mounts:
                 raise RuntimeError("nested_mount")
-            rows.append(row(child_rel, value))
+            rows.append(row(child_rel, value, child_path))
             if len(rows) > cap:
                 raise RuntimeError("entry_cap")
             if stat.S_ISDIR(value.st_mode) and not stat.S_ISLNK(value.st_mode):
                 child_fd, opened = opened_directory(directory_fd, name)
                 try:
-                    if row(child_rel, opened) != row(child_rel, value):
+                    if row(child_rel, opened, child_path) != row(child_rel, value, child_path):
                         raise RuntimeError("directory_identity_changed")
                     walk(child_fd, child_rel)
                 finally:
@@ -390,13 +509,14 @@ def remove_tree(root_fd, expected_rows):
             raise RuntimeError("entry_set_changed")
         for name in sorted(names):
             child_rel = os.path.join(relative, name) if relative else name
+            child_path = os.path.join(isolated, child_rel)
             before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-            if row(child_rel, before) != expected[child_rel]:
+            if row(child_rel, before, child_path) != expected[child_rel]:
                 raise RuntimeError("entry_identity_changed")
             if stat.S_ISDIR(before.st_mode) and not stat.S_ISLNK(before.st_mode):
                 child_fd, opened = opened_directory(directory_fd, name)
                 try:
-                    if row(child_rel, opened) != expected[child_rel]:
+                    if row(child_rel, opened, child_path) != expected[child_rel]:
                         raise RuntimeError("entry_identity_changed")
                     remove_children(child_fd, child_rel)
                     current = os.stat(
@@ -443,7 +563,7 @@ try:
         isolation_fd, os.path.basename(isolated),
     )
     root_rows = [item for item in expected["tree"] if item[0] == ""]
-    if len(root_rows) != 1 or row("", isolated_value) != root_rows[0]:
+    if len(root_rows) != 1 or row("", isolated_value, isolated) != root_rows[0]:
         raise RuntimeError("isolated_root_changed")
     if isolation_value.st_dev != isolated_value.st_dev:
         raise RuntimeError("isolation_device_changed")

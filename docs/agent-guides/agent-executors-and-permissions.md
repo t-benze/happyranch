@@ -779,6 +779,11 @@ nested mounts, cross-device or foreign-owned entries, protected descendants,
 unreadable/capped/changing evidence, or identity drift refuse. Measurement
 includes the root inode, and success requires literal absence plus unchanged
 protected-path identities.
+The only external-link exception is a `python`, `python3`, or `python3.N`
+interpreter directly under an owned literal `.venv/bin`, resolving to the
+configured uv Python store or that venv's `pyvenv.cfg` home outside the
+workspace and protected roots. Its link and target identities are snapshotted;
+descriptor-rooted deletion unlinks the link and never follows it.
 Any failure after cache deletion begins or `git worktree remove` is invoked is
 reported with measured before/after accounting as `removed_with_anomaly` and
 halts later mutations; it is never mislabeled as a refusal.

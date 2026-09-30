@@ -181,6 +181,20 @@ nested-mount, cross-device, non-owned, protected-descendant, symlink, identity,
 pathname, action-time, and other accidental or ambiguous drift refusals remain
 mandatory.
 
+The sole external-symlink exception is an interpreter link directly inside
+`<V>/bin/`, where `<V>` is literally named `.venv` and has a regular owned
+`pyvenv.cfg`. Its basename must match exactly `python`, `python3`, or
+`python3.<digits>`. The fully resolved target must be an existing regular file
+under either `${UV_PYTHON_INSTALL_DIR}` (when set), otherwise
+`${XDG_DATA_HOME:-$HOME/.local/share}/uv/python`, or the one absolute `home`
+directory recorded by that `pyvenv.cfg`; it must remain outside the workspace,
+candidate, containing worktree, primary checkout, and every protected path.
+The snapshot records the link text, resolved target, and target identity so
+drift refuses. This applies to a `.venv` cache and to a nested `.venv` anywhere
+inside a whole-worktree candidate. Every other external/dangling/directory or
+protected symlink refuses as `external_or_protected_symlink`. Descriptor-rooted
+deletion unlinks the symlink itself and never follows it.
+
 ## Eligibility gates (literal commands)
 
 Every gate below is re-derived at action time, before the current-use scan and
