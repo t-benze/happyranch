@@ -296,7 +296,7 @@ class RealProc:
                 "pid1_ns_readable": pid1_pid.kind == OK, "ok": ok}
 
     def registered_worktrees(self, path: str, max_entries: int) -> Outcome:
-        """Return canonical Git-registered roots containing ``path``."""
+        """Return the primary identity and registered roots containing ``path``."""
         if not self._admit():
             return Outcome(TRUNCATED, None, "deadline_exceeded")
         try:
@@ -308,18 +308,28 @@ class RealProc:
             return Outcome(ERROR, None, exc.__class__.__name__)
         if listed.returncode:
             return Outcome(ERROR, None, "git_worktree_list")
-        roots: list[str] = []
+        registered_roots: list[str] = []
         for line in listed.stdout.splitlines():
             if not self._admit():
-                return Outcome(TRUNCATED, roots, "deadline_exceeded")
+                return Outcome(TRUNCATED, None, "deadline_exceeded")
             if not line.startswith("worktree "):
                 continue
-            if len(roots) >= max_entries:
-                return Outcome(TRUNCATED, roots, f"worktrees>{max_entries}")
-            root = os.path.realpath(line[9:])
-            if path == root or path.startswith(root.rstrip("/") + "/"):
-                roots.append(root)
-        return Outcome(OK, roots)
+            if len(registered_roots) >= max_entries:
+                return Outcome(TRUNCATED, None, f"worktrees>{max_entries}")
+            raw_root = line[9:]
+            if not raw_root:
+                return Outcome(ERROR, None, "git_worktree_list_malformed")
+            registered_roots.append(os.path.realpath(raw_root))
+        if not registered_roots:
+            return Outcome(ERROR, None, "git_worktree_list_empty")
+        containing = tuple(
+            root for root in registered_roots
+            if path == root or path.startswith(root.rstrip("/") + "/")
+        )
+        return Outcome(
+            OK,
+            {"primary": registered_roots[0], "containing": containing},
+        )
 
 
 class FakeProc:
@@ -338,7 +348,8 @@ class FakeProc:
                  default_stat: tuple[int, int] | None = None,
                  host_context: dict | None = None,
                  root_unverified: set | None = None,
-                 registered_worktrees: list[str] | None = None) -> None:
+                 registered_worktrees: list[str] | None = None,
+                 primary_worktree: str | None = None) -> None:
         self.spec = spec
         self.deny = set(deny)
         self.vanish = set(vanish)
@@ -349,6 +360,10 @@ class FakeProc:
         self.default_stat = default_stat
         self.root_unverified = set(root_unverified or ())
         self._registered_worktrees = list(registered_worktrees or ())
+        self._primary_worktree = (
+            os.path.realpath(primary_worktree)
+            if primary_worktree is not None else None
+        )
         self._host_context = host_context or {"ok": True, "synthetic": True,
                                               "pid1_comm": "systemd",
                                               "pid_ns_agree": True, "mnt_agree": True,
@@ -358,12 +373,19 @@ class FakeProc:
         return dict(self._host_context)
 
     def registered_worktrees(self, path: str, max_entries: int) -> Outcome:
-        roots = [os.path.realpath(root) for root in self._registered_worktrees
-                 if path == os.path.realpath(root)
-                 or path.startswith(os.path.realpath(root).rstrip("/") + "/")]
-        if len(roots) > max_entries:
-            return Outcome(TRUNCATED, roots[:max_entries])
-        return Outcome(OK, roots)
+        registered_roots = [
+            os.path.realpath(root) for root in self._registered_worktrees
+        ]
+        if len(registered_roots) > max_entries:
+            return Outcome(TRUNCATED, None, f"worktrees>{max_entries}")
+        containing = tuple(
+            root for root in registered_roots
+            if path == root or path.startswith(root.rstrip("/") + "/")
+        )
+        return Outcome(
+            OK,
+            {"primary": self._primary_worktree, "containing": containing},
+        )
 
     def _outcome(self, pid: str, rel: str):
         if (pid, rel) in self.deny:
@@ -879,6 +901,36 @@ class _DeadlineProc:
         return value
 
 
+def _deepest_non_primary_worktree(
+    registered: Outcome,
+) -> tuple[str, str] | None:
+    """Resolve one deepest containing linked worktree, preserving ambiguity."""
+    value = registered.value
+    if (registered.kind != OK or not isinstance(value, dict)
+            or set(value) != {"primary", "containing"}
+            or not isinstance(value["containing"], tuple)):
+        return None
+    primary = value["primary"]
+    if not isinstance(primary, str) or not primary:
+        return None
+    if any(not isinstance(root, str) or not root for root in value["containing"]):
+        return None
+    candidates = [
+        root for root in value["containing"]
+        if root != primary
+    ]
+    if not candidates:
+        return None
+    deepest_level = max(root.rstrip(os.sep).count(os.sep) for root in candidates)
+    deepest = [
+        root for root in candidates
+        if root.rstrip(os.sep).count(os.sep) == deepest_level
+    ]
+    if len(deepest) != 1:
+        return None
+    return primary, deepest[0]
+
+
 def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
          agent_uid: int | None = None, bounds: Bounds | None = None,
          clock=time.monotonic,
@@ -888,10 +940,10 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
     Read-only and bounded. Never returns ``safe``. Never mutates anything.
 
     F1: when ``target`` is a literal ``node_modules``/``.venv`` cache candidate,
-    the containing registered worktree (its immediate parent, or an explicitly
-    supplied path) is observed as well, so use anywhere in that worktree blocks.
-    An unresolvable containing worktree is unknown, never a literal-path
-    fallback.
+    the deepest containing registered non-primary worktree (or an explicitly
+    supplied matching path) is observed as well, so use anywhere in that
+    worktree blocks. An unresolvable containing worktree is unknown, never a
+    literal-path fallback.
     """
     raw_proc = proc or RealProc()
     bounds = bounds or Bounds()
@@ -924,7 +976,7 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
                  if tstat.kind == OK else None)
 
     # F1/R2: roots that count as "the candidate". The literal target plus, for a
-    # cache candidate, an EXPLICIT verified containing registered worktree. The
+    # cache candidate, a verified deepest containing non-primary worktree. The
     # cache's own parent is never silently treated as the registration: an
     # omitted containing context for a cache is unknown, and a supplied context
     # that does not contain the target is unknown.
@@ -935,17 +987,17 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
     containing_expected: str | None = None
     containing_missing = False
     target_is_cache = os.path.basename(target_real.rstrip("/")) in CACHE_BASENAMES
-    registration_expected: tuple[str, tuple[int, int]] | None = None
+    registration_expected: tuple[str, str, tuple[int, int]] | None = None
     if target_is_cache:
         registered = proc.registered_worktrees(target_real, DEFAULT_MAX_WORKTREES)
-        candidates = list(registered.value or ()) if registered.kind == OK else []
+        resolved = _deepest_non_primary_worktree(registered)
         supplied_real = (os.path.realpath(os.fspath(containing_raw))
                          if containing_raw is not None and admit() else None)
-        if (registered.kind != OK or len(candidates) != 1
-                or (supplied_real is not None and supplied_real != candidates[0])):
+        if (resolved is None
+                or (supplied_real is not None and supplied_real != resolved[1])):
             containing_missing = True
         else:
-            containing_real = candidates[0]
+            primary_real, containing_real = resolved
             containing_expected = supplied_real or containing_real
             cstat = proc.stat_path(containing_real)
             containing_ok = cstat.kind == OK
@@ -954,7 +1006,7 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
                    if containing_ok else None)
             roots[containing_real] = cid
             if cid is not None:
-                registration_expected = (containing_real, cid)
+                registration_expected = (primary_real, containing_real, cid)
     elif containing_raw is not None:
         if not admit():
             containing_missing = True
@@ -995,9 +1047,9 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
         res.cycles.append({"phase": "target", "kind": tstat.kind})
         return res
     if containing_missing:
-        # R2: a cache candidate must resolve to exactly one Git-registered root;
-        # a supplied root must agree. Missing, ambiguous or contradictory
-        # context is unknown, never a dirname fallback.
+        # R2: a cache candidate must resolve to exactly one deepest registered
+        # non-primary root; a supplied root must agree. Missing, ambiguous or
+        # contradictory context is unknown, never a dirname fallback.
         res.reasons.append("containing_worktree_unresolved")
     if containing_real is not None and not containing_ok:
         # Missing/ambiguous containing registration is unknown, not a
@@ -1274,15 +1326,15 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
                 res.reasons.append(f"target_identity_changed:{root}")
         if registration_expected is not None:
             again = proc.registered_worktrees(target_real, DEFAULT_MAX_WORKTREES)
-            roots_again = list(again.value or ()) if again.kind == OK else []
-            if roots_again != [registration_expected[0]]:
+            resolved_again = _deepest_non_primary_worktree(again)
+            if resolved_again != registration_expected[:2]:
                 res.reasons.append("containing_registration_changed")
             else:
-                rst = proc.stat_path_fresh(roots_again[0])
+                rst = proc.stat_path_fresh(resolved_again[1])
                 rid = ((getattr(rst.value, "st_dev", None),
                         getattr(rst.value, "st_ino", None))
                        if rst.kind == OK else None)
-                if rid != registration_expected[1]:
+                if rid != registration_expected[2]:
                     res.reasons.append("containing_registration_identity_changed")
         if admit():
             try:
