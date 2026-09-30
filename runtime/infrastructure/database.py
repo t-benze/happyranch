@@ -16602,9 +16602,11 @@ class Database:
                       status, started_at, consumed_at, session_id, executor,
                       model, decline_reason
                FROM thread_invocations
-               WHERE started_at >= ? AND started_at < ?
+               WHERE (started_at >= ? AND started_at < ?)
+                  OR (purpose = 'reply'
+                      AND consumed_at >= ? AND consumed_at < ?)
                ORDER BY id""",
-            (start_utc, end_utc),
+            (start_utc, end_utc, start_utc, end_utc),
         ).fetchall()
         usage_rows = self._conn.execute(
             """SELECT * FROM session_token_usage
