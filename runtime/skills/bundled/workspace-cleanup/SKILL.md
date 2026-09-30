@@ -235,6 +235,36 @@ invoked, every later failure is `removed_with_anomaly` with the anomaly reason
 and the same before/after byte and filesystem measurements as a removal; it is
 never reported as `refused`, and further batch mutations must halt.
 
+For an inventory manifest, use the bundled resumable batch driver rather than
+an ad-hoc loop:
+
+```bash
+python3 "$SKILL/scripts/run_cleanup_batch.py" \
+  --manifest "$MANIFEST" --journal "$JOURNAL" \
+  --max-candidates 40 --deadline-seconds 2400
+```
+
+The manifest is a JSON array or JSONL with exactly `candidate`, `containing`,
+`kind` (`worktree` or `cache`), and inventory `allocated_bytes`. The driver
+orders worktrees first and caches second, largest first within each class with
+literal-path tie-breaking. It invokes this runner once per candidate with
+literal argv and fsyncs a terminal journal row after every attempt. A refusal,
+runner error, timeout, malformed receipt, or exception is isolated and later
+candidates continue; `removed_with_anomaly` is journaled and immediately halts
+the batch with exit `3`. Re-running against the same journal skips candidates
+that already have a terminal row. Bounds stop only between candidates.
+
+Run each batch driver as a durable `happyranch` job bound to the cleanup task's
+current ACTIVE task/session, choose a batch/deadline comfortably inside one
+session (target at most about 40 minutes), and wait in-session with
+`happyranch jobs wait`. The per-candidate runner still submits and authenticates
+its own nested host-visible scan job at action time; never replace that scan
+with an in-process shortcut. If the session ends mid-batch, later nested job
+submissions fail closed without mutation; a later cleanup task resumes from the
+fsync'd journal. This outer-job-to-nested-scanner flow is verified on a
+disposable target; an `unknown` scanner result remains an ordinary fail-closed
+refusal rather than a batch-wide stop.
+
 ## Authorized actions (non-force only)
 
 - **Cache.** Atomically isolate one literal real `node_modules` or `.venv`
@@ -286,4 +316,6 @@ the same action-time gates.
 Complete through the normal task contract, creating `output/<task_id>/` with
 `inventory.json`, `final-ledger.jsonl`, and `report.md` (measured sizes, exact
 removals or zero removals, skips and reasons, and any ambiguity), and report to
-the founder in the per-agent cleanup thread.
+the founder in the per-agent cleanup thread. The durable batch journal is the
+ordered source for `final-ledger.jsonl`; preserve each literal argv, timestamps,
+exit status, parsed receipt or malformed raw output, and stop reason.
