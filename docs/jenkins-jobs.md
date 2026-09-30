@@ -166,11 +166,16 @@ Kernel readiness follows the proven Apple 1.5.0 sequence. If
 `~/Library/Application Support/com.apple.container/kernels/default.kernel-arm64`
 already resolves, installation is skipped. Otherwise the job runs bounded
 `container system kernel set --recommended` without `--debug`. When
-`container system status` is not `running`, it runs bounded
+Apple 1.5.0 returns exit 1 with its exact documented `apiserver is not running`
+or `apiserver is not running and not registered with launchd` output, the job
+treats that result as stopped and runs bounded
 `container system start --disable-kernel-install --timeout 120`, then verifies
-`running`. It leaves the kernel, apiserver, and image cache in place.
+`running`. Every other nonzero, malformed, or unexpected status result fails
+closed. It leaves the kernel, apiserver, and image cache in place.
 
-Each build uses a unique container name, arm64, and `--rm`. It does not request
+Each build uses the deterministic build-scoped container name
+`happyranch-integration-<SOURCE_SHA-first-12>-<BUILD_NUMBER>`, arm64, and
+`--rm`. It does not request
 privileged mode, added capabilities, host PID, host networking, SSH forwarding,
 sockets, credentials, or environment inheritance. The only
 host bind mounts are the detached source at `/workspace/src` read-only and the
@@ -189,17 +194,26 @@ python scripts/run_bounded_output.py --output /workspace/artifacts/integration.l
 It then runs `scripts/nightly_integration_summary.py`. The job archives the
 JUnit XML, bounded log, Markdown summary, mount evidence, identity record,
 cleanup evidence, and any bounded failure record. Cleanup always attempts
-`container rm -f <unique-name>`, records `container ls -a`, and fails with
+`container rm -f <build-scoped-name>`, records `container ls -a`, and fails with
 distinct exit 90 when pytest passed but absence could not be verified. A real
-nonzero pytest status is preserved even when cleanup also fails.
+nonzero pytest status is preserved even when cleanup also fails. Declarative
+Pipeline `post { always { ... } }` independently repeats that same bounded
+remove-and-absence check and archives `post-cleanup.txt`, so an outer abort does
+not depend on the runner's Python `finally` block.
 
-The Pipeline has a 55-minute absolute timeout: 30 minutes matching the hosted
-nightly budget, plus 8 minutes for the bounded recommended-kernel download,
-2.5 minutes for system start, 10 minutes for image pull/frozen sync, and about
-4.5 minutes for checkout, evidence, and cleanup. The inner container command is
-also bounded to 42 minutes. macOS has no GNU `timeout`; all host-side bounds are
-Python subprocess deadlines and do not leave watchdog children holding Jenkins
-pipes open.
+The Pipeline has a 90-minute absolute timeout. The runner's maximum cumulative
+subprocess waits are 4,575 seconds (76.25 minutes): four source-checkout calls
+at 300 seconds plus a 30-second detached-HEAD check; 15 seconds for CLI version;
+480 seconds for the kernel; two 30-second status calls plus 150 seconds for
+start; 2,520 seconds for the disposable workload; 30 seconds for image
+inspection; and 60 + 30 seconds for runner cleanup and absence verification.
+The independent Pipeline-post cleanup budget is another 90 seconds, for a
+total bounded requirement of 4,665 seconds (77.75 minutes). The 5,400-second
+outer limit is therefore strictly greater by 735 seconds (12.25 minutes),
+covering Pipeline/definition-checkout overhead while retaining a finite bound.
+The inner container command remains bounded to 42 minutes. macOS has no GNU
+`timeout`; all host-side bounds are Python subprocess deadlines and do not leave
+watchdog children holding Jenkins pipes open.
 
 ### Create and run after merge
 
@@ -210,7 +224,8 @@ repository URL above, the `main` branch, no repository credentials, and script
 path `ci/jenkins/mac-integration/Jenkinsfile`. Confirm the resolved agent is
 `mac-mini`, then run **Build with Parameters** using the approved full commit
 SHA. Review `identity.txt` and `mount-evidence.txt` before accepting the test
-counts, and require `cleanup.txt` to say `cleanup_verified_absent=true`.
+counts, and require both `cleanup.txt` and `post-cleanup.txt` to say
+`cleanup_verified_absent=true`.
 
 Creating, editing, or running that live Jenkins item is an operator action, not
 part of repository verification. Never run this integration command on the

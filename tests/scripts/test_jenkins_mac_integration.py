@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
+import re
 
 import pytest
 
@@ -30,10 +32,17 @@ if args == ["--version"]:
     print(os.environ.get("FAKE_CONTAINER_VERSION", "container CLI version 1.5.0 (build: release, commit: d265d66)"))
     raise SystemExit(0)
 if args[:2] == ["system", "status"]:
-    print("FIELD VALUE")
     started = pathlib.Path(os.environ["FAKE_STARTED_MARKER"]).exists()
-    print("status " + ("running" if started else os.environ.get("FAKE_CONTAINER_STATUS", "running")))
-    raise SystemExit(0)
+    status = "running" if started else os.environ.get("FAKE_CONTAINER_STATUS", "running")
+    if status == "running":
+        print("FIELD VALUE")
+        print("status running")
+        raise SystemExit(0)
+    if status == "stopped":
+        print(os.environ.get("FAKE_CONTAINER_STOPPED_OUTPUT", "apiserver is not running"))
+        raise SystemExit(1)
+    print(os.environ.get("FAKE_CONTAINER_STATUS_OUTPUT", "unexpected status output"))
+    raise SystemExit(int(os.environ.get("FAKE_CONTAINER_STATUS_EXIT", "1")))
 if args[:4] == ["system", "kernel", "set", "--recommended"]:
     pathlib.Path(os.environ["FAKE_KERNEL_LINK"]).touch()
     raise SystemExit(0)
@@ -149,6 +158,8 @@ def test_container_argv_has_only_two_host_mounts_and_no_forbidden_mode(
     assert "scripts/nightly_integration_summary.py" in payload
     assert "/proc/self/mountinfo" in payload
     assert 'replace("\\\\040", " ")' in payload
+    assert "host_backed == expected" in payload
+    assert "expected.issubset(host_backed)" not in payload
 
 
 def test_fake_container_proves_version_kernel_and_start_argv(tmp_path: Path) -> None:
@@ -213,6 +224,76 @@ def test_runtime_ready_skips_installed_kernel_and_running_system(tmp_path: Path)
 
     calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     assert calls == [["system", "status"], ["system", "status"]]
+
+
+@pytest.mark.parametrize(
+    "stopped_output",
+    [
+        "apiserver is not running",
+        "apiserver is not running and not registered with launchd",
+    ],
+)
+def test_runtime_ready_stopped_exit_one_starts_then_reports_running(
+    tmp_path: Path, stopped_output: str
+) -> None:
+    executable, log = _fake_container(tmp_path)
+    kernel_link = tmp_path / "default.kernel-arm64"
+    kernel_link.touch()
+    runner = job.CommandRunner(
+        executable=str(executable),
+        env=_fake_env(
+            log,
+            kernel_link,
+            FAKE_CONTAINER_STATUS="stopped",
+            FAKE_CONTAINER_STOPPED_OUTPUT=stopped_output,
+        ),
+    )
+
+    job.ensure_runtime_ready(runner, kernel_link=kernel_link)
+
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert calls == [
+        ["system", "status"],
+        ["system", "start", "--disable-kernel-install", "--timeout", "120"],
+        ["system", "status"],
+    ]
+
+
+def test_runtime_ready_rejects_unrecognized_exit_one_status(tmp_path: Path) -> None:
+    executable, log = _fake_container(tmp_path)
+    kernel_link = tmp_path / "default.kernel-arm64"
+    kernel_link.touch()
+    runner = job.CommandRunner(
+        executable=str(executable),
+        env=_fake_env(log, kernel_link, FAKE_CONTAINER_STATUS="unexpected"),
+    )
+
+    with pytest.raises(job.JobError, match="unexpected exit-1 output"):
+        job.ensure_runtime_ready(runner, kernel_link=kernel_link)
+
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert calls == [["system", "status"]]
+
+
+def test_runtime_ready_rejects_unparseable_success_status(tmp_path: Path) -> None:
+    executable, log = _fake_container(tmp_path)
+    kernel_link = tmp_path / "default.kernel-arm64"
+    kernel_link.touch()
+    runner = job.CommandRunner(
+        executable=str(executable),
+        env=_fake_env(
+            log,
+            kernel_link,
+            FAKE_CONTAINER_STATUS="unexpected",
+            FAKE_CONTAINER_STATUS_EXIT="0",
+        ),
+    )
+
+    with pytest.raises(job.JobError, match="exact running status"):
+        job.ensure_runtime_ready(runner, kernel_link=kernel_link)
+
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert calls == [["system", "status"]]
 
 
 @pytest.mark.parametrize(
@@ -296,16 +377,62 @@ def test_fake_container_run_returns_real_workload_status(tmp_path: Path) -> None
     assert result.returncode == 23
 
 
+def test_container_name_is_deterministic_and_build_scoped() -> None:
+    assert job.build_container_name("ab" * 20, "123") == (
+        "happyranch-integration-abababababab-123"
+    )
+
+    with pytest.raises(job.JobError, match="BUILD_NUMBER"):
+        job.build_container_name("ab" * 20, "123; container rm -f anything")
+
+
+def test_cleanup_only_returns_distinct_90_and_records_failed_absence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable, log = _fake_container(tmp_path)
+    kernel_link = tmp_path / "kernel"
+    runner = job.CommandRunner(
+        executable=str(executable),
+        env=_fake_env(log, kernel_link, FAKE_LS_STATUS="1"),
+    )
+    monkeypatch.setattr(job, "CommandRunner", lambda: runner)
+    args = argparse.Namespace(
+        workspace=tmp_path,
+        source_sha="ab" * 20,
+        build_number="123",
+    )
+
+    assert job._run_cleanup_only(args) == 90
+    evidence = (tmp_path / "artifacts" / "post-cleanup.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "container_name=happyranch-integration-abababababab-123" in evidence
+    assert "cleanup_verified_absent=false" in evidence
+
+
 def test_jenkinsfile_is_bounded_parameterized_and_archives_evidence() -> None:
     pipeline = JENKINSFILE.read_text(encoding="utf-8")
 
     assert "agent { label 'mac-mini' }" in pipeline
     assert "string(name: 'SOURCE_SHA'" in pipeline
     assert pipeline.count("string(name:") == 1
-    assert "timeout(time: 55, unit: 'MINUTES')" in pipeline
+    timeout_match = re.search(
+        r"timeout\(time: (\d+), unit: 'MINUTES'\)", pipeline
+    )
+    assert timeout_match is not None
+    outer_timeout_seconds = int(timeout_match.group(1)) * 60
+    assert outer_timeout_seconds > (
+        job.MAX_RUNNER_WAIT_SECONDS + job.POST_CLEANUP_BUDGET_SECONDS
+    )
     assert "disableConcurrentBuilds()" in pipeline
     assert "skipDefaultCheckout(true)" in pipeline
     assert "junit allowEmptyResults: true, testResults: 'artifacts/integration.xml'" in pipeline
     assert "archiveArtifacts artifacts: 'artifacts/**'" in pipeline
-    assert "scripts/jenkins_mac_integration.py" in pipeline
+    assert pipeline.count(
+        "exec python3 definition/scripts/jenkins_mac_integration.py"
+    ) == 2
+    assert '--build-number "$BUILD_NUMBER"' in pipeline
+    assert "--cleanup-only" in pipeline
+    assert "post-cleanup.txt" in pipeline
+    assert "returnStatus: true" in pipeline
     assert "cron(" not in pipeline

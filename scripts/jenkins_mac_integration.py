@@ -9,7 +9,6 @@ import re
 import shlex
 import subprocess
 import sys
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -23,15 +22,45 @@ IMAGE_MANIFEST_DIGEST = (
 )
 IMAGE_REFERENCE = f"docker.io/library/python:3.12-slim@{IMAGE_MANIFEST_DIGEST}"
 UV_VERSION = "0.12.21"
+CHECKOUT_COMMAND_COUNT = 4
+CHECKOUT_COMMAND_TIMEOUT_SECONDS = 300
+CHECKOUT_VERIFY_TIMEOUT_SECONDS = 30
+CONTAINER_VERSION_TIMEOUT_SECONDS = 15
 KERNEL_TIMEOUT_SECONDS = 480
+SYSTEM_STATUS_TIMEOUT_SECONDS = 30
 SYSTEM_START_TIMEOUT_SECONDS = 150
 CONTAINER_RUN_TIMEOUT_SECONDS = 2520
+IMAGE_INSPECT_TIMEOUT_SECONDS = 30
+CLEANUP_REMOVE_TIMEOUT_SECONDS = 60
+CLEANUP_LIST_TIMEOUT_SECONDS = 30
+POST_CLEANUP_BUDGET_SECONDS = (
+    CLEANUP_REMOVE_TIMEOUT_SECONDS + CLEANUP_LIST_TIMEOUT_SECONDS
+)
+MAX_RUNNER_WAIT_SECONDS = (
+    CHECKOUT_COMMAND_COUNT * CHECKOUT_COMMAND_TIMEOUT_SECONDS
+    + CHECKOUT_VERIFY_TIMEOUT_SECONDS
+    + CONTAINER_VERSION_TIMEOUT_SECONDS
+    + KERNEL_TIMEOUT_SECONDS
+    + 2 * SYSTEM_STATUS_TIMEOUT_SECONDS
+    + SYSTEM_START_TIMEOUT_SECONDS
+    + CONTAINER_RUN_TIMEOUT_SECONDS
+    + IMAGE_INSPECT_TIMEOUT_SECONDS
+    + CLEANUP_REMOVE_TIMEOUT_SECONDS
+    + CLEANUP_LIST_TIMEOUT_SECONDS
+)
 CLEANUP_FAILURE_EXIT = 90
 EVIDENCE_FAILURE_EXIT = 91
 JOB_FAILURE_EXIT = 2
 
 _SOURCE_SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
+_BUILD_NUMBER = re.compile(r"[0-9]+\Z")
 _VERSION = re.compile(r"\Acontainer CLI version ([0-9]+\.[0-9]+\.[0-9]+)\b")
+_STOPPED_SYSTEM_STATUS_OUTPUTS = frozenset(
+    {
+        "apiserver is not running",
+        "apiserver is not running and not registered with launchd",
+    }
+)
 
 
 class JobError(RuntimeError):
@@ -86,6 +115,13 @@ def validate_source_sha(value: str) -> str:
     return value.lower()
 
 
+def build_container_name(source_sha: str, build_number: str) -> str:
+    normalized_sha = validate_source_sha(source_sha)
+    if _BUILD_NUMBER.fullmatch(build_number) is None:
+        raise JobError("BUILD_NUMBER must contain only decimal digits")
+    return f"happyranch-integration-{normalized_sha[:12]}-{build_number}"
+
+
 def build_checkout_commands(source: Path, source_sha: str) -> list[list[str]]:
     return [
         ["git", "init", str(source)],
@@ -128,16 +164,17 @@ def prepare_source(source: Path, source_sha: str) -> None:
     if source.exists():
         raise JobError(f"refusing pre-existing source directory: {source}")
     for command in build_checkout_commands(source, source_sha):
-        _run_checked(command, timeout_seconds=300)
+        _run_checked(command, timeout_seconds=CHECKOUT_COMMAND_TIMEOUT_SECONDS)
     actual = _run_checked(
-        ["git", "-C", str(source), "rev-parse", "HEAD"], timeout_seconds=30
+        ["git", "-C", str(source), "rev-parse", "HEAD"],
+        timeout_seconds=CHECKOUT_VERIFY_TIMEOUT_SECONDS,
     ).strip()
     if actual != source_sha:
         raise JobError(f"detached checkout mismatch: expected {source_sha}, observed {actual}")
 
 
 def validate_container_version(runner: CommandRunner) -> str:
-    result = runner.run(["--version"], timeout_seconds=15)
+    result = runner.run(["--version"], timeout_seconds=CONTAINER_VERSION_TIMEOUT_SECONDS)
     if result.returncode != 0:
         raise JobError(f"container --version failed with status {result.returncode}")
     output = result.stdout.strip()
@@ -150,14 +187,29 @@ def validate_container_version(runner: CommandRunner) -> str:
 
 
 def _system_is_running(runner: CommandRunner) -> bool:
-    result = runner.run(["system", "status"], timeout_seconds=30)
+    result = runner.run(
+        ["system", "status"], timeout_seconds=SYSTEM_STATUS_TIMEOUT_SECONDS
+    )
+    output = result.stdout.strip()
+    if result.returncode == 1:
+        if output in _STOPPED_SYSTEM_STATUS_OUTPUTS:
+            return False
+        raise JobError(
+            "container system status returned unexpected exit-1 output: "
+            f"{output!r}"
+        )
     if result.returncode != 0:
         raise JobError(f"container system status failed with status {result.returncode}")
+    status: str | None = None
     for line in result.stdout.splitlines():
         fields = line.split()
         if fields and fields[0].lower() == "status" and len(fields) == 2:
-            return fields[1].lower() == "running"
-    raise JobError("container system status did not contain an exact status field")
+            if status is not None:
+                raise JobError("container system status contained duplicate status fields")
+            status = fields[1].lower()
+    if status != "running":
+        raise JobError("container system status did not contain exact running status")
+    return True
 
 
 def ensure_runtime_ready(runner: CommandRunner, *, kernel_link: Path) -> None:
@@ -353,18 +405,24 @@ def cleanup_container(
     container_name: str,
     *,
     artifacts: Path,
+    evidence_name: str = "cleanup.txt",
 ) -> bool:
     rm_status = -1
     ls_status = -1
     listing = ""
     error = ""
     try:
-        rm_result = runner.run(["rm", "-f", container_name], timeout_seconds=60)
+        rm_result = runner.run(
+            ["rm", "-f", container_name],
+            timeout_seconds=CLEANUP_REMOVE_TIMEOUT_SECONDS,
+        )
         rm_status = rm_result.returncode
     except (OSError, subprocess.TimeoutExpired) as exc:
         error = f"remove_error={type(exc).__name__}: {exc}"
     try:
-        ls_result = runner.run(["ls", "-a"], timeout_seconds=30)
+        ls_result = runner.run(
+            ["ls", "-a"], timeout_seconds=CLEANUP_LIST_TIMEOUT_SECONDS
+        )
         ls_status = ls_result.returncode
         listing = ls_result.stdout
         if ls_status != 0:
@@ -384,7 +442,7 @@ def cleanup_container(
         f"{listing}"
         "container_ls_all_end\n"
     )
-    (artifacts / "cleanup.txt").write_text(evidence, encoding="utf-8")
+    (artifacts / evidence_name).write_text(evidence, encoding="utf-8")
     return verified
 
 
@@ -447,9 +505,7 @@ def _run_job(args: argparse.Namespace) -> int:
             / "default.kernel-arm64"
         )
         ensure_runtime_ready(runner, kernel_link=kernel_link)
-        container_name = (
-            f"happyranch-integration-{source_sha[:12]}-{uuid.uuid4().hex[:12]}"
-        )
+        container_name = build_container_name(source_sha, args.build_number)
         container_argv = build_container_argv(
             source=source,
             artifacts=artifacts,
@@ -475,7 +531,8 @@ def _run_job(args: argparse.Namespace) -> int:
                 )
             try:
                 inspect = runner.run(
-                    ["image", "inspect", IMAGE_REFERENCE], timeout_seconds=30
+                    ["image", "inspect", IMAGE_REFERENCE],
+                    timeout_seconds=IMAGE_INSPECT_TIMEOUT_SECONDS,
                 )
             except (OSError, subprocess.TimeoutExpired) as exc:
                 inspect = CommandResult(
@@ -510,15 +567,37 @@ def _run_job(args: argparse.Namespace) -> int:
         raise
 
 
+def _run_cleanup_only(args: argparse.Namespace) -> int:
+    workspace = args.workspace.resolve(strict=True)
+    artifacts = workspace / "artifacts"
+    artifacts.mkdir(mode=0o700, exist_ok=True)
+    container_name = build_container_name(args.source_sha, args.build_number)
+    cleanup_ok = cleanup_container(
+        CommandRunner(),
+        container_name,
+        artifacts=artifacts,
+        evidence_name="post-cleanup.txt",
+    )
+    return 0 if cleanup_ok else CLEANUP_FAILURE_EXIT
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--cleanup-only", action="store_true")
     parser.add_argument("--source-sha", required=True)
-    parser.add_argument("--definition-sha", required=True)
+    parser.add_argument("--build-number", required=True)
+    parser.add_argument("--definition-sha")
     parser.add_argument("--workspace", type=Path, required=True)
-    parser.add_argument("--node-name", required=True)
-    parser.add_argument("--build-url", required=True)
+    parser.add_argument("--node-name")
+    parser.add_argument("--build-url")
     args = parser.parse_args()
+    if not args.cleanup_only:
+        for field in ("definition_sha", "node_name", "build_url"):
+            if getattr(args, field) is None:
+                parser.error(f"--{field.replace('_', '-')} is required")
     try:
+        if args.cleanup_only:
+            return _run_cleanup_only(args)
         return _run_job(args)
     except (JobError, OSError, subprocess.SubprocessError) as exc:
         print(f"jenkins-mac-integration: {exc}", file=sys.stderr)
