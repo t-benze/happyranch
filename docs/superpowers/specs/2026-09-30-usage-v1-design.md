@@ -1,6 +1,6 @@
 # Usage v1: parser semantics, reported state, and lifecycle attribution
 
-> Status: current (PR1 and PR2 of 4)
+> Status: current (PR1 through PR3 of 4)
 > Current Source: `runtime/orchestrator/executors.py`,
 > `runtime/orchestrator/usage_normalization.py`,
 > `runtime/infrastructure/database.py`,
@@ -219,3 +219,55 @@ not make a missing usage row determine cohort membership.
 input + output + reasoning. Because Codex output already includes reasoning,
 that legacy metric double-counts Codex reasoning. This known pre-existing
 issue is outside Usage v1 PR1; normalized Output does not double-count it.
+
+## PR3 lifecycle read model and API
+
+PR3 adds bearer-authenticated, read-only `GET /usage/workload` and
+`GET /usage/efficiency`. Both return `generated_at`, `data_through`, rolling
+UTC window bounds, their rendering in the effective org timezone, and the
+timezone name. Current is `[data_through - 7 days, data_through)`; comparison
+is the equal adjacent interval immediately before it. These are always 168-hour
+UTC intervals, including across local DST changes.
+
+Workload reads task `session_start`, ordered task `session_end`, started
+`thread_invocations`, accepted `task_results`, and consumed reply invocations.
+An end closes the starts since the prior end only when that segment has exactly
+one start; otherwise every start in the segment lacks runtime. Deliveries are
+distinct completed task IDs whose completed result session maps to a
+`worker_execution` start. Results with missing/unattributed purpose are counted
+separately as incomplete history.
+
+Efficiency establishes the five run types and executor/model cohorts entirely
+from lifecycle facts before optional usage correlation. NULL model is a real
+`CLI default (not pinned)` cohort; NULL executor and legacy missing purpose are
+unattributed. THR-247 recovery sessions are identified by
+`task_completion_recoveries.recovery_session_id`, count in Workload, and remain
+outside all five Efficiency rows without suppressing their comparisons.
+
+Usage correlation is intentionally key-specific:
+
+- task: scope `task` plus task ID, agent, and `session_start.session_id`;
+- thread: scope `thread` plus thread ID, agent, and the invocation runtime
+  session ID, with `invocation_token` allowed only as the persistence fallback;
+- dream: scope `dream` plus `dream_started.task_id`/`dreams.id` and agent.
+
+Dream provider session IDs and nullable `dreams.session_id` are never join
+keys. More than one candidate usage row for one lifecycle run is ambiguous:
+the run stays in the denominator but supplies no parseable observation and no
+token value. All selected rows pass through `usage_normalization.py`.
+
+Medians use `statistics.median` over reported values only (for an even count,
+the arithmetic mean of the two middle values) and carry class-specific
+denominators. Decline waste applies only to thread rows and includes explicit
+agent declines; system closures (`participant_removed`, `agent_terminated`,
+`agent_unavailable`, plus failed `daemon_restart`, `coalesced_cutover`, archive,
+and founder-abort paths) are failures. The three reported token classes remain
+separate known totals.
+
+Comparison is server-computed. Workload uses absolute native-unit movement.
+Efficiency withholds every row delta if either non-empty period has usage
+coverage below 95%, or unattributed lifecycle facts could belong to the row.
+Otherwise Runs handles previous-zero/current-positive as `new_from_zero`,
+current-zero as an absolute negative count, and both-zero as `no_change`.
+Each token/decline metric independently uses `withheld: invalid_baseline` when
+a period has no valid observation; infinity and NaN are never emitted.

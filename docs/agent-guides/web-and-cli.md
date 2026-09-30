@@ -789,6 +789,14 @@ task `session_start` adds runtime session ID + actual spawn purpose +
 executor/model, and `dream_started` adds executor/model. NULL remains unknown;
 there is no historical inference or `"default"` sentinel.
 
+The read-only Usage v1 API is `GET /usage/workload?compare=bool` and
+`GET /usage/efficiency?compare=bool`. Efficiency without a cohort returns
+options and unattributed counts; a selected cohort requires `executor` plus
+exactly one of `model` or `model_unpinned=true`. Both routes use the same
+bearer authentication and org scoping as `GET /tokens`. They return rolling
+seven-day UTC bounds with the resolved org timezone for display; no Usage UI
+is part of PR3.
+
 Rollup modifiers (presentation-side; require a `--by-*` flag):
 
 - `--top N` — rank by churn (`total`) DESC and keep the top N; ties: sessions DESC then key ASC.
