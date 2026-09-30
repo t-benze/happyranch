@@ -7810,7 +7810,7 @@ class Database:
     def _claim_authority_policy_v2_candidate_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
-        max_revise_rounds: int, now: str, schema_evidence,
+        max_revise_rounds: int, now: str, schema_observation,
     ) -> AuthorityPolicyV2StageOutcome:
         from runtime.orchestrator.authority import (
             capture_authority_policy_v2_permission_surface,
@@ -7886,7 +7886,7 @@ class Database:
         candidate = self._v2_candidate_from_claim_key(
             claim_key, attempt=attempt, binding=binding,
             origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
-            schema_evidence=schema_evidence,
+            schema_observation=schema_observation,
             permission_surface_digest=permission.evidence.digest,
         )
         return self._insert_v2_candidate_and_pin_uncommitted(
@@ -7898,7 +7898,7 @@ class Database:
     def _v2_candidate_from_claim_key(
         self, claim_key: str, *, attempt: AuthorityPolicyV2Attempt,
         binding: AuthorityPolicyV2SessionBinding, origin_boot_id: str,
-        owner_attempt_id: str, schema_evidence, permission_surface_digest: str,
+        owner_attempt_id: str, schema_observation, permission_surface_digest: str,
     ) -> AuthorityPolicyV2Candidate:
         return AuthorityPolicyV2Candidate(
             candidate_id=f"APV2C-{claim_key}",
@@ -7928,9 +7928,9 @@ class Database:
             ),
             origin_boot_id=origin_boot_id,
             owner_attempt_id=owner_attempt_id,
-            schema_raw_digest=schema_evidence.raw_digest,
-            schema_inventory_digest=schema_evidence.inventory_digest,
-            schema_object_count=schema_evidence.object_count,
+            schema_raw_digest=schema_observation.raw_digest,
+            schema_inventory_digest=schema_observation.inventory_digest,
+            schema_object_count=schema_observation.object_count,
             permission_surface_digest=permission_surface_digest,
         )
 
@@ -8037,11 +8037,10 @@ class Database:
     ) -> AuthorityPolicyV2StageOutcome:
         """First C3b transaction: atomically create K+P and advance J to claimed.
 
-        The independent C3a schema reference and the read-only permission
-        surface are captured OUTSIDE this write transaction; the frozen raw
-        digest is then re-validated while holding BEGIN IMMEDIATE, so an
-        independent connection's DDL cannot change the candidate between
-        capture and the commit.  This transaction never appends the separate
+        Real schema values are observed once while holding BEGIN IMMEDIATE and
+        stored on K/P as diagnostics.  They are not compared with any reference
+        and are never rechecked.  The permission surface remains independently
+        captured and rechecked.  This transaction never appends the separate
         ``a1`` claim-stage audit.
 
         Transaction ownership: when the caller ALREADY owns a transaction this
@@ -8052,8 +8051,7 @@ class Database:
         R4 durability meaning and is deliberately not done.
         """
         from runtime.orchestrator.authority import (
-            capture_authority_policy_v2_schema_integrity,
-            recheck_authority_policy_v2_schema_integrity,
+            capture_authority_policy_v2_schema_observation,
         )
 
         attempt_id = self._authority_policy_v2_attempt_id_for_identity(
@@ -8066,22 +8064,15 @@ class Database:
                 code="transaction_owned",
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED, poison=False,
             )
-        capture = capture_authority_policy_v2_schema_integrity(self)
-        if capture.evidence is None:
-            return self._refuse_v2_stage(
-                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                code="schema_drift", stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
-                origin_boot_id=origin_boot_id,
-            )
-        evidence = capture.evidence
         now = _now().isoformat()
         try:
             self._conn.execute("BEGIN IMMEDIATE")
-            if not recheck_authority_policy_v2_schema_integrity(evidence, self):
+            observation = capture_authority_policy_v2_schema_observation(self)
+            if observation is None:
                 self._conn.rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                    code="schema_drift",
+                    code="claim_failed",
                     stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
                     origin_boot_id=origin_boot_id,
                 )
@@ -8090,7 +8081,7 @@ class Database:
                 manager_session_id=manager_session_id, result_id=result_id,
                 origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
                 max_revise_rounds=max_revise_rounds, now=now,
-                schema_evidence=evidence,
+                schema_observation=observation,
             )
             if outcome.status == "refused":
                 self._conn.rollback()
@@ -8165,9 +8156,6 @@ class Database:
             or pin.provider_id != candidate.provider_id
             or pin.executor_kind != candidate.executor_kind
             or pin.model_id != candidate.model_id
-            or pin.schema_raw_digest != candidate.schema_raw_digest
-            or pin.schema_inventory_digest != candidate.schema_inventory_digest
-            or pin.schema_object_count != candidate.schema_object_count
             or pin.permission_surface_digest != candidate.permission_surface_digest
         )
 
@@ -8183,7 +8171,8 @@ class Database:
         authenticated pinned release/activation/selector prefix, the single a0
         admitted audit, the current task ownership/cancellation, the retained
         current mechanical eligibility AND the full candidate/pin cross-row
-        joins with the frozen claim-time schema/permission evidence.  A
+        joins with the frozen claim-time permission evidence.  The schema
+        values remain immutable observations but are never compared.  A
         between-stage mutation, deletion or mixed identity refuses; the
         already-persisted K/P row is never trusted on its own.
         """
@@ -8231,23 +8220,11 @@ class Database:
 
         from runtime.models import (
             AuthorityPolicyV2PermissionSurface as _PermissionSurface,
-            AuthorityPolicyV2SchemaIntegrity as _SchemaIntegrity,
         )
         from runtime.orchestrator.authority import (
             V2_PERMISSION_SURFACE_CONTRACT,
-            V2_SCHEMA_INTEGRITY_CONTRACT,
             recheck_authority_policy_v2_permission_surface,
-            recheck_authority_policy_v2_schema_integrity,
         )
-
-        frozen_schema = _SchemaIntegrity(
-            contract_version=V2_SCHEMA_INTEGRITY_CONTRACT,
-            raw_digest=candidate.schema_raw_digest,
-            inventory_digest=candidate.schema_inventory_digest,
-            object_count=candidate.schema_object_count,
-        )
-        if not recheck_authority_policy_v2_schema_integrity(frozen_schema, self):
-            return "schema_drift", None
         frozen_permission = _PermissionSurface(
             contract_version=V2_PERMISSION_SURFACE_CONTRACT,
             digest=candidate.permission_surface_digest,
@@ -8453,10 +8430,12 @@ class Database:
         # boundary: the causal result row/body, the immutable launch binding,
         # the authenticated pinned release/activation/selector prefix, the
         # single a0 admitted audit, the current task ownership/cancellation AND
-        # the full K/P cross-row joins with the frozen claim-time
-        # schema/permission evidence.  The already-persisted K/P row is NOT
-        # trusted on its own; a between-stage mutation/deletion/mixed identity
-        # refuses without inventing evidence or advancing J.
+        # the full K/P cross-row joins, including the immutable claim-time
+        # schema observation columns, plus the frozen permission evidence.
+        # Permission evidence is rechecked; schema values are observed-only
+        # and are never compared or rechecked.  The already-persisted K/P row
+        # is NOT trusted on its own; a between-stage mutation/deletion/mixed
+        # identity refuses without inventing evidence or advancing J.
         code, ctx = self._authenticate_v2_candidate_evidence_uncommitted(
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
@@ -8551,11 +8530,12 @@ class Database:
 
         Re-authenticates the complete evidence (result row/body, immutable
         binding, authenticated pinned release/activation/selector prefix, K/P/J
-        joins, prior a0, task ownership/cancellation) AND rechecks the ORIGINAL
-        frozen claim-time schema/permission evidence; inserts exactly one
-        candidate claim event plus the required ``claim_audited`` result-stage
-        evidence; advances J to ``claim_audited`` atomically.  A failure
-        preserves the claimed K/P.
+        joins, prior a0, task ownership/cancellation), including the immutable
+        claim-time schema observation values.  It rechecks only the frozen
+        permission evidence; schema values are never compared or rechecked.
+        Inserts exactly one candidate claim event plus the required
+        ``claim_audited`` result-stage evidence and advances J to
+        ``claim_audited`` atomically.  A failure preserves the claimed K/P.
 
         Transaction ownership: when the caller ALREADY owns a transaction this
         method refuses with ``transaction_owned`` BEFORE it would BEGIN,

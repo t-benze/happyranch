@@ -62,8 +62,8 @@ from tests.test_authority_v2_attempt_admission import (
     _seed_bound_task,
     _store,
 )
-from tests.test_authority_v2_schema_integrity import (
-    _add_historical_agent_enrollments,
+from tests.authority_v2_historical_schema import (
+    add_historical_agent_enrollments,
 )
 
 
@@ -224,7 +224,7 @@ def test_v2_hook_historical_agent_enrollments_reaches_evaluation(tmp_path):
     store, _, _, row, attempt = _admitted(tmp_path)
     db = store._db
     db.bind_authority_policy_v2_process_boot_id(attempt.origin_boot_id)
-    _add_historical_agent_enrollments(db)
+    add_historical_agent_enrollments(db)
     _log_ordinary_completion(db, row["id"])
 
     outcome, _ = _run_hook(store, row, queue=_RecordingQueue())

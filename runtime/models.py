@@ -1534,12 +1534,11 @@ class AuthorityPolicyV2Candidate(BaseModel):
     causal_result_digest: StrictStr
     origin_boot_id: StrictStr
     owner_attempt_id: StrictStr
-    # C3b correction: the ACTUAL claim-time schema evidence and bounded
-    # read-only permission-surface evidence are frozen onto the candidate so the
-    # second boundary can recheck the ORIGINAL evidence (no recapture/rebaseline)
-    # and later evaluation/consume/finalize code reads the same authenticated
-    # values.  These are evidence only, never a clause input, and are
-    # deliberately NOT part of the frozen R2 claim preimage.
+    # The ACTUAL claim-time schema observation and bounded read-only permission
+    # evidence are frozen onto the candidate.  Schema values are retained only
+    # as diagnostics and are never compared/rechecked; permission evidence is
+    # still authenticated at later boundaries.  Neither is a clause input or
+    # part of the frozen R2 claim preimage.
     schema_raw_digest: StrictStr = ""
     schema_inventory_digest: StrictStr = ""
     schema_object_count: StrictInt = 0
@@ -1694,8 +1693,9 @@ class AuthorityPolicyV2Pin(BaseModel):
     provider_id: StrictStr
     executor_kind: StrictStr
     model_id: StrictStr
-    # C3b correction: identity-equal to the candidate's frozen claim-time
-    # schema/permission evidence (evidence only; never a claim preimage input).
+    # Claim-time schema observation and permission evidence mirrored from K.
+    # The schema values are retained diagnostics only and are never compared;
+    # permission evidence remains an authenticated cross-row join.
     schema_raw_digest: StrictStr = ""
     schema_inventory_digest: StrictStr = ""
     schema_object_count: StrictInt = 0
@@ -3244,23 +3244,19 @@ class AuthorityPolicyV2CompletionDispatchContext(BaseModel):
         return value
 
 
-class AuthorityPolicyV2SchemaIntegrity(BaseModel):
-    """Bounded read-only v2 schema-integrity EVIDENCE (THR-229 checkpoint C3a).
+class AuthorityPolicyV2SchemaObservation(BaseModel):
+    """Real schema values observed when an authority-v2 claim is created.
 
-    Produced by the independent constraint-sensitive reference oracle in
-    ``runtime/orchestrator/authority.py``.  ``raw_digest`` is the candidate
-    database's ACTUAL raw ``sqlite_master`` DDL digest captured at validation
-    time, and ``inventory_digest`` is the canonical digest of the complete
-    non-internal object inventory that matched an accepted reference layout.
-    This value is integrity evidence only: it is NOT policy authority, NOT a
-    policy-clause match, and NOT a continuation grant.  A recheck denies ANY
-    later raw-digest drift; a failed or unavailable capture can never become a
-    successful recheck.
+    ``raw_digest`` is the live database's actual raw ``sqlite_master`` DDL
+    digest, ``inventory_digest`` is the digest of its complete observed
+    non-internal object inventory, and ``object_count`` is that inventory's
+    object count.  These values are retained on K/P as claim-time diagnostics
+    only.  They are never policy authority, never compared with a reference or
+    one another, and never rechecked after the claim.
     """
 
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
-    contract_version: StrictStr
     raw_digest: StrictStr
     inventory_digest: StrictStr
     object_count: StrictInt = Field(ge=0, le=100000)
