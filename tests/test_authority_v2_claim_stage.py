@@ -764,6 +764,25 @@ def test_strict_candidate_and_outcome_values():
     ).refusal_code == "owner_lost"
 
 
+def test_historical_schema_drift_refusal_code_remains_readable(tmp_path):
+    """Persisted pre-seq351 schema-drift codes retain their closed mapping."""
+    from runtime.infrastructure.database import (
+        _AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING,
+    )
+    from runtime.models import AuthorityPolicyV2StageOutcome
+
+    outcome = AuthorityPolicyV2StageOutcome(
+        status="refused", refusal_code="schema_drift",
+    )
+    assert outcome.refusal_code == "schema_drift"
+    assert (
+        _AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING[outcome.refusal_code]
+        == "identity_mismatch"
+    )
+    db = Database(tmp_path / "historical-code.db")
+    assert db._v2_finalization_reason_for(outcome.refusal_code) == "schema_drift"
+
+
 # ── C3b correction 1: respect the caller's transaction ───────────────────
 #
 # Both public writers must reject transaction nesting BEFORE they would BEGIN,
@@ -961,17 +980,34 @@ def test_duplicate_claim_loser_does_not_poison_winner(tmp_path):
 
 
 def test_claim_freezes_and_pin_mirrors_claim_time_evidence(tmp_path):
+    from runtime.orchestrator.authority import (
+        capture_authority_policy_v2_schema_observation,
+    )
+
     store, _, _, _, row, attempt = _admitted(tmp_path)
+    observed = capture_authority_policy_v2_schema_observation(store._db)
+    assert observed is not None
     claimed = _claim(store, row, attempt)
     candidate = store.get_v2_candidate(claimed.candidate_id)
     pin = store.get_v2_pin(claimed.candidate_id)
-    assert candidate.schema_raw_digest and candidate.schema_inventory_digest
-    assert candidate.schema_object_count > 0
+    expected_schema = (
+        observed.raw_digest,
+        observed.inventory_digest,
+        observed.object_count,
+    )
+    assert (
+        candidate.schema_raw_digest,
+        candidate.schema_inventory_digest,
+        candidate.schema_object_count,
+    ) == expected_schema
     assert candidate.permission_surface_digest == "a" * 64
     # K and P each retain real observations; later decisions do not compare
     # their schema fields.  Permission evidence remains an authenticated join.
-    assert pin.schema_raw_digest and pin.schema_inventory_digest
-    assert pin.schema_object_count > 0
+    assert (
+        pin.schema_raw_digest,
+        pin.schema_inventory_digest,
+        pin.schema_object_count,
+    ) == expected_schema
     assert pin.permission_surface_digest == candidate.permission_surface_digest
     # The evidence fields are NOT new claim-preimage inputs.
     assert candidate.preimage() == authority_policy_v2_candidate_claim_preimage(
@@ -991,6 +1027,24 @@ def test_claim_freezes_and_pin_mirrors_claim_time_evidence(tmp_path):
         root_task_id=candidate.root_task_id,
         team=candidate.team,
     )
+
+
+def test_unreadable_schema_observation_refuses_claim_as_claim_failed(
+    tmp_path, monkeypatch,
+):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    monkeypatch.setattr(
+        "runtime.orchestrator.authority."
+        "capture_authority_policy_v2_schema_observation",
+        lambda _db: None,
+    )
+
+    outcome = _claim(store, row, attempt)
+
+    assert outcome.status == "refused"
+    assert outcome.refusal_code == "claim_failed"
+    assert _counts(store._db)["candidates"] == 0
+    assert _counts(store._db)["pins"] == 0
 
 
 def test_permission_change_between_stages_refuses_audit(tmp_path):
