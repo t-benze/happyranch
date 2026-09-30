@@ -602,7 +602,14 @@ def test_thread_fallback_join_and_system_declines_are_not_decline_waste(db: Data
         missing_decline.invocation_token, session_id="runtime-missing", executor="codex", model="gpt-5",
     )
     db.mark_invocation_declined(missing_decline.invocation_token, decline_reason="not relevant")
-    for seq, status in ((6, ThreadInvocationStatus.FAILED), (7, ThreadInvocationStatus.TIMEOUT)):
+    system_failures = (
+        (6, ThreadInvocationStatus.FAILED, "daemon_restart"),
+        (7, ThreadInvocationStatus.FAILED, "coalesced_cutover"),
+        (8, ThreadInvocationStatus.FAILED, "archive_started"),
+        (9, ThreadInvocationStatus.FAILED, "founder_aborted"),
+        (10, ThreadInvocationStatus.TIMEOUT, "timeout"),
+    )
+    for seq, status, reason in system_failures:
         failed = db.mint_thread_invocation(
             thread_id="THR-001", agent_name="dev_agent", triggering_seq=seq,
             purpose=ThreadInvocationPurpose.REPLY,
@@ -610,7 +617,7 @@ def test_thread_fallback_join_and_system_declines_are_not_decline_waste(db: Data
         db.stamp_invocation_started(
             failed.invocation_token, session_id=f"runtime-{seq}", executor="codex", model="gpt-5",
         )
-        db.fail_invocation(failed.invocation_token, status=status, decline_reason=status.value)
+        db.fail_invocation(failed.invocation_token, status=status, decline_reason=reason)
     with db._lock:
         db._conn.execute(
             "UPDATE thread_invocations SET started_at=?, consumed_at=?",
@@ -630,8 +637,8 @@ def test_thread_fallback_join_and_system_declines_are_not_decline_waste(db: Data
         db, now=NOW, timezone_name="UTC", executor="codex", model="gpt-5",
     )
     row = next(item for item in result["rows"] if item["run_type"] == "thread_reply")
-    assert row["current"]["runs"] == 7
-    assert row["current"]["usage_coverage"] == {"known": 1, "total": 7, "ratio": 1 / 7}
+    assert row["current"]["runs"] == 10
+    assert row["current"]["usage_coverage"] == {"known": 1, "total": 10, "ratio": 0.1}
     assert row["current"]["decline_waste"]["declined"] == 2
     assert row["current"]["decline_waste"]["usage_known"] == 1
     assert row["current"]["decline_waste"]["fresh_input"] == {"value": 7, "n_reported": 1}
