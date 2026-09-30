@@ -64,10 +64,16 @@ def _completed_candidates(path: Path) -> set[str]:
         if not line.strip():
             continue
         row = json.loads(line)
-        if not isinstance(row, dict):
-            raise ValueError(f"journal row {number} is not an object")
-        if row.get("terminal") is True and isinstance(row.get("candidate"), str):
-            completed.add(row["candidate"])
+        required = {
+            "candidate", "containing", "kind", "allocated_bytes", "argv",
+            "started_at", "ended_at", "terminal", "exit_code", "receipt",
+            "stdout", "stderr", "error",
+        }
+        if (not isinstance(row, dict) or set(row) != required
+                or row.get("terminal") is not True
+                or not isinstance(row.get("candidate"), str)):
+            raise ValueError(f"journal row {number} has an invalid schema")
+        completed.add(row["candidate"])
     return completed
 
 
@@ -83,6 +89,14 @@ def _receipt(stdout: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return value if isinstance(value, dict) and isinstance(value.get("decision"), str) else None
+
+
+def _text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -143,11 +157,12 @@ def main(argv: list[str] | None = None) -> int:
                     timeout=min(args.candidate_timeout_seconds, remaining),
                     check=False,
                 )
+                receipt = _receipt(process.stdout)
                 row.update({
                     "ended_at": _utc_now(),
                     "exit_code": process.returncode,
-                    "receipt": _receipt(process.stdout),
-                    "stdout": process.stdout if _receipt(process.stdout) is None else None,
+                    "receipt": receipt,
+                    "stdout": process.stdout if receipt is None else None,
                     "stderr": process.stderr,
                     "error": None,
                 })
@@ -156,11 +171,11 @@ def main(argv: list[str] | None = None) -> int:
                     "ended_at": _utc_now(),
                     "exit_code": None,
                     "receipt": None,
-                    "stdout": exc.stdout or "",
-                    "stderr": exc.stderr or "",
+                    "stdout": _text(exc.stdout),
+                    "stderr": _text(exc.stderr),
                     "error": "timeout",
                 })
-            except OSError as exc:
+            except Exception as exc:
                 row.update({
                     "ended_at": _utc_now(),
                     "exit_code": None,
