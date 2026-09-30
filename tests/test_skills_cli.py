@@ -75,6 +75,33 @@ class TestSkillsCatalogList:
 class TestSkillsCatalogValidate:
     """Tests for 'skills catalog validate'"""
 
+    def test_without_policy_does_not_read_checkout_root_config(
+        self, capsys, tmp_path, monkeypatch,
+    ):
+        """No --policy means an empty policy, even in a source checkout."""
+        import argparse
+        import cli.commands.skills as skills_command
+
+        fake_checkout = tmp_path / "checkout"
+        fake_module = fake_checkout / "cli" / "commands" / "skills.py"
+        fake_policy = fake_checkout / "org" / "config.yaml"
+        fake_policy.parent.mkdir(parents=True)
+        fake_policy.write_text(
+            "skills:\n"
+            "  org:\n"
+            "    allow: [hr:must-not-be-read]\n"
+        )
+        monkeypatch.setattr(skills_command, "__file__", str(fake_module))
+
+        ns = argparse.Namespace(
+            skills_root=str(FIXTURES), policy_path=None, json=False,
+        )
+        skills_command.cmd_skills_catalog_validate(ns)
+
+        out = capsys.readouterr().out
+        assert "hr:must-not-be-read" not in out
+        assert "Policy path:" not in out
+
     def test_validates_with_known_skills(self, capsys):
         from cli.commands.skills import cmd_skills_catalog_validate
         import argparse
@@ -101,8 +128,8 @@ class TestSkillsCatalogValidate:
         assert "catalog_gate_failures" in data
         assert len(data["catalog_gate_failures"]) > 0
 
-    def test_unknown_ids_in_policy_produce_warnings(self, capsys, tmp_path):
-        """Validate flags unknown skill ids referenced in eligibility policy."""
+    def test_explicit_policy_loads_skills_section(self, capsys, tmp_path):
+        """An explicit --policy loads and validates its skills section."""
         from cli.commands.skills import cmd_skills_catalog_validate
         import argparse
 

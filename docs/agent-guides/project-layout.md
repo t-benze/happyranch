@@ -82,7 +82,6 @@ Tracked source is split by product surface:
 |   |-- superpowers/{plans,specs}/ # historical plans and indexed design history
 |   `-- local-ci.md, jenkins-jobs.md # supported development/CI operations
 |-- examples/orgs/hk-macau-tourism/  # canonical sample org tree
-|-- org/config.yaml              # shipped eligibility-policy guard/fixture used by tests
 `-- tests/                       # Python tests; see the forward-only placement rules below
 ```
 
@@ -113,12 +112,13 @@ For every new or changed test, follow the release-owned
 [`test-authoring-gate`](../../runtime/skills/bundled/test-authoring-gate/SKILL.md)
 for the four PR-body answers, attributable RED/GREEN proof, and keeper rule.
 
-The tracked root `org/config.yaml` has one narrow in-repo role:
-`tests/test_skill_cutover_completeness.py` reads the real file as the shipped
-skill-eligibility-policy guard and fixture. It is not packaged as a top-level
-org by `pyproject.toml`. Deployed org content lives under
-`<runtime>/orgs/<slug>/org/`, while the canonical bootstrap example remains
-`examples/orgs/hk-macau-tourism/`.
+The tracked skill-eligibility fixture lives at
+`tests/fixtures/skill_eligibility/config.yaml` and is read by
+`tests/test_skill_cutover_completeness.py`. The fixture is not a CLI default:
+`happyranch skills catalog validate`, `skills effective`, and
+`skills policy explain` load an eligibility policy only when `--policy` is
+provided. Deployed org content lives under `<runtime>/orgs/<slug>/org/`, while
+the canonical bootstrap example remains `examples/orgs/hk-macau-tourism/`.
 
 ## Runtime Container
 
