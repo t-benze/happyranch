@@ -119,7 +119,7 @@ def test_parse_codex_usage_happy_path():
     assert u.input_tokens == 19884
     assert u.output_tokens == 9003
     assert u.cache_read_tokens == 15003  # mapped from `cached_input_tokens`
-    assert u.cache_creation_tokens is None  # Codex doesn't separate creation
+    assert u.cache_creation_tokens == 0  # reported `cache_write_input_tokens`
     assert u.reasoning_tokens == 1234  # mapped from `reasoning_output_tokens`
     # Codex `exec --json` v0.137.0 carries no model on any event (confirmed
     # against live output); model stays NULL until/unless Codex emits one.
@@ -195,6 +195,59 @@ def test_parse_codex_usage_no_cache_field_preserves_input_unchanged():
     assert u is not None
     assert u.input_tokens == 500  # no cache → no normalization
     assert u.cache_read_tokens is None
+
+
+def test_parse_codex_usage_cache_write_absent_is_not_reported():
+    stream = (
+        '{"type":"turn.completed","usage":{"input_tokens":500,'
+        '"output_tokens":100}}\n'
+    )
+    u = _parse_codex_usage(stream)
+    assert u is not None
+    assert u.cache_creation_tokens is None
+
+
+def test_parse_codex_usage_cache_write_non_integer_is_not_reported():
+    for value in (None, "7", True):
+        stream = json.dumps({
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 500,
+                "output_tokens": 100,
+                "cache_write_input_tokens": value,
+            },
+        })
+        u = _parse_codex_usage(stream)
+        assert u is not None
+        assert u.cache_creation_tokens is None
+
+
+def test_parse_codex_usage_resumed_turns_are_per_turn_and_last_event_wins():
+    turn_a = json.loads(
+        (FIXTURES / "usage_codex_resumed_turn_a.json").read_text()
+    )
+    turn_b = json.loads(
+        (FIXTURES / "usage_codex_resumed_turn_b.json").read_text()
+    )
+
+    parsed_a = _parse_codex_usage(json.dumps({
+        "type": "turn.completed", "usage": turn_a,
+    }))
+    parsed_b = _parse_codex_usage(json.dumps({
+        "type": "turn.completed", "usage": turn_b,
+    }))
+    assert parsed_a is not None
+    assert parsed_b is not None
+    assert parsed_a.input_tokens == 182242
+    assert parsed_b.input_tokens == 85379
+    assert turn_b["input_tokens"] < turn_a["input_tokens"]
+
+    combined_stdout = "\n".join([
+        json.dumps({"type": "turn.completed", "usage": turn_a}),
+        json.dumps({"type": "turn.completed", "usage": turn_b}),
+    ])
+    parsed_combined = _parse_codex_usage(combined_stdout)
+    assert parsed_combined == parsed_b
 
 
 from runtime.orchestrator.executors import _parse_opencode_usage

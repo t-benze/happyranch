@@ -552,6 +552,26 @@ opencode: `OpencodeWorkspaceAdapter.write_opencode_json` writes a strict default
 
 Pi: `PiExecutor.run` invokes `pi -p ... --mode json` from the agent workspace. Use external containment when command/tool restriction matters.
 
+### Built-in usage parsing and Usage v1 normalization
+
+The four built-in parsers store one nullable `TokenUsage` shape, but their
+provider reasoning fields do not share one meaning. `executors.py` declares
+that meaning once as `PARSER_USAGE_SEMANTICS`; consumers must not branch on
+CLI names. The Usage v1 pure normalizer is the only reader of that table.
+
+- Claude, Codex, and Pi declare reasoning `in_output`.
+- OpenCode declares reasoning `separate`.
+- Custom and generic executors remain undeclared. If such a row reports a
+  reasoning value, normalized Output is `not_reported` rather than guessed.
+
+Codex `input_tokens` remains normalized to net uncached input under issue
+#216. A terminal integer `cache_write_input_tokens` is now stored as
+`cache_creation_tokens` exactly (`0` is reported zero); absent/non-integer is
+`NULL`. The normalizer makes Fresh input complete only when both uncached input
+and cache write are reported. See
+`docs/superpowers/specs/2026-09-30-usage-v1-design.md` for the complete state,
+coverage, source-evidence, and resumed-conversation regression contract.
+
 Enrolling a worker with a non-default executor: set `"executor": "<profile-name>"` in the `happyranch manage-agent --from-file` payload where the profile name is a registered executor profile (built-in: `codex`, `opencode`, `pi`, or a custom profile registered in the machine-global runtime store). Founder approval bootstraps the right workspace surface. See `runtime/skills/bundled/manage-agent/SKILL.md`.
 
 **THR-095:** Repos are configured in the **org/agents/<name>.md frontmatter**
