@@ -26,6 +26,29 @@ def test_insert_and_list_session_token_usage(db: Database):
     assert r["output_tokens"] == 20
 
 
+def test_codex_cache_write_zero_persists_as_zero(db: Database):
+    from runtime.orchestrator.executors import _parse_codex_usage
+
+    raw = (
+        '{"type":"turn.completed","usage":{"input_tokens":100,'
+        '"cached_input_tokens":40,"cache_write_input_tokens":0,'
+        '"output_tokens":20,"reasoning_output_tokens":5}}\n'
+    )
+    usage = _parse_codex_usage(raw)
+    assert usage is not None
+    assert usage.cache_creation_tokens == 0
+
+    db.insert_session_token_usage(
+        task_id="TASK-CODEX", agent="dev_agent", session_id="sess-codex",
+        executor="codex", token_usage=usage,
+    )
+    row = db.list_session_token_usage(task_id="TASK-CODEX")[0]
+    assert row["cache_creation_tokens"] == 0
+    # Existing churn contract remains input + output + reasoning. This PR does
+    # not fix the known Codex reasoning double-count in TokenUsage.total.
+    assert usage.total == 85
+
+
 def test_legacy_session_token_usage_table_migrates_before_scope_indexes(tmp_path):
     db_path = tmp_path / "legacy-token-usage.db"
     conn = sqlite3.connect(str(db_path))
@@ -115,7 +138,7 @@ def test_churn_excludes_cache_for_codex_no_double_count(db: Database):
     # reasoning_output=10. The parser normalizes input → 100 (net-fresh).
     raw = (
         '{"type":"turn.completed","usage":{"input_tokens":1000,'
-        '"cached_input_tokens":900,"output_tokens":50,'
+        '"cached_input_tokens":900,"cache_write_input_tokens":0,"output_tokens":50,'
         '"reasoning_output_tokens":10}}\n'
     )
     tu = _parse_codex_usage(raw)
@@ -123,6 +146,7 @@ def test_churn_excludes_cache_for_codex_no_double_count(db: Database):
     assert tu.cache_read_tokens == 900
     assert tu.output_tokens == 50
     assert tu.reasoning_tokens == 10
+    assert tu.total == 160
     db.insert_session_token_usage(
         task_id="T1", agent="code_reviewer", session_id="s1", executor="codex",
         token_usage=tu,
