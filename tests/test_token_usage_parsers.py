@@ -241,9 +241,6 @@ def test_parse_codex_usage_resumed_turns_are_per_turn_and_last_event_wins():
     assert parsed_a.input_tokens == 182242
     assert parsed_b.input_tokens == 85379
     assert turn_b["input_tokens"] < turn_a["input_tokens"]
-    assert turn_b["input_tokens"] != (
-        turn_a["input_tokens"] + turn_b["input_tokens"]
-    )
 
     combined_stdout = "\n".join([
         json.dumps({"type": "turn.completed", "usage": turn_a}),

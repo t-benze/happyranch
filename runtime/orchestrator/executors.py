@@ -709,11 +709,13 @@ def _parse_claude_terminal_error(stdout: str, stderr: str) -> str | None:
 def _parse_codex_usage(stdout: str) -> TokenUsage | None:
     """Parse Codex `exec --json` NDJSON event stream into TokenUsage.
 
-    Walks events, picks the last `turn.completed` — the terminal event that
-    carries the cumulative ``usage`` object in Codex >= 0.137 (confirmed
-    against codex-cli 0.137.0 and 0.139.0 live output). Returns None on empty
-    stdout, TokenUsage with NULL token fields if no terminal usage event is
-    found (forensic preservation), populated TokenUsage on success.
+    Walks events and picks the last `turn.completed`. Its terminal ``usage``
+    object reports the current turn only (while aggregating work performed
+    within that turn), not cumulative usage across a resumed conversation.
+    This is confirmed for codex-cli 0.153.4 by the two-turn resume regression.
+    Returns None on empty stdout, TokenUsage with NULL token fields if no
+    terminal usage event is found (forensic preservation), and populated
+    TokenUsage on success.
 
     Note: Codex `exec --json` v0.137.0 emits no model field on any event, so
     ``model`` stays NULL (read defensively in case a later version adds it).
