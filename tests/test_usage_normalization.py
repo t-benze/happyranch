@@ -132,7 +132,7 @@ def test_output_absent_is_not_reported_for_declared_executor():
 
 def test_undeclared_executor_without_reasoning_can_use_reported_output():
     normalized = normalize_usage(_row(
-        executor="generic-cli", output_tokens=10, reasoning_tokens=None,
+        executor="custom-adapter", output_tokens=10, reasoning_tokens=None,
     ))
 
     assert normalized.output.state is ReportedState.REPORTED
