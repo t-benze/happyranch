@@ -363,10 +363,13 @@ Dispatcher admit it once; and the next real completion result spends, claims,
 applies, and acknowledges the single-use envelope. Startup and zombie recovery
 may only rediscover/refuse or reconcile those same durable identities. There is
 no second evaluator, magic reason, clause identifier, adverse-review veto, or
-raw-DDL veto. `REQUEST_CHANGES`, partial-work observations, and the accepted
-historical schema-layout inequality remain diagnostics; current owner/session,
-cancellation, active-work, budgets, protected drift, atomicity, replay, and
-closed audit evidence remain authoritative.
+raw-DDL veto. `REQUEST_CHANGES`, partial-work observations, and every schema
+shape are diagnostics; current owner/session, cancellation, active-work,
+budgets, permission evidence, atomicity, replay, and closed audit evidence
+remain authoritative. K/P retain the real claim-time schema observation (raw
+DDL digest, inventory digest, and object count), but v2 never compares or
+rechecks those values and schema structure cannot refuse continuation. The
+legacy v1 schema clause remains unchanged.
 
 The dedicated eligible-manager page is available uniformly to every valid
 registered manager, edits the two values only as a pair, and uses the
@@ -444,49 +447,24 @@ shipping v1 writers in `runtime/daemon/routes/authority_policy.py` still bypass
 it and B2b must converge them, so this remains an intermediate unmerged
 storage/control seam rather than a shippable mixed-writer mode.
 
-Checkpoint C3a lands the accepted v2 CONSTRAINT-SENSITIVE schema-integrity
-prerequisite as a separate, read-only, callable seam in
-`runtime/orchestrator/authority.py`:
-`capture_authority_policy_v2_schema_integrity(db)` and
-`recheck_authority_policy_v2_schema_integrity(evidence, db)` returning the
-narrow typed `AuthorityPolicyV2SchemaIntegrity` evidence from
-`runtime/models.py`. Its reference is constructed independently of the
-candidate database — fresh current source plus ONLY the two accepted exact
-migrated `threads`/`thread_messages` ordered-layout substitutions and their
-index-cid consequences — and the oracle compares the complete non-internal
-object inventory (full table SQL including CHECK/UNIQUE/FK expressions, ordered
-`table_xinfo`, `foreign_key_list`, complete `index_xinfo` including expression
-sentinels/collation/key flags/cid, `index_list` origin/unique/partial, explicit
-index SQL/predicate and full trigger/view SQL; autoindex constraint metadata is
-retained and only rootpage/allocator and SQLite's reserved internal
-`sqlite_`-prefixed objects are ignored). The reserved prefix is matched as that
-exact literal, case-insensitive prefix — never a SQL `LIKE 'sqlite_%'` pattern
-whose `_` is a wildcard — so a legal user object that merely resembles the
-internal namespace (for example `sqliteXunreviewed`) is still inventoried and
-refused as unexpected. Every candidate read and the frozen raw digest run inside
-ONE `Database.coherent_read_view()`: the shared-connection lock is held across
-the whole capture and one SQLite read snapshot is pinned, so a commit on an
-independent connection can neither split the inventory from the digest nor be
-authenticated by a stale inventory — it can only make the subsequent recheck
-refuse. It requires `PRAGMA integrity_check` exactly `ok` and zero
-`foreign_key_check` violations, then freezes the validated candidate's ACTUAL
-raw `sqlite_master` DDL digest. A recheck denies ANY later raw-digest drift
-(including a switch to the other accepted layout) and a failed/unavailable
-capture can never become a successful recheck; unknown layouts and read errors
-fail closed with bounded machine-readable diagnostics. The result is integrity
-EVIDENCE only — never policy authority, a clause match or a grant — and the
-candidate is never repaired. The legacy v1
+Checkpoint C3a historically landed a constraint-sensitive v2 schema-integrity
+prerequisite. Founder THR-229 seq351 later removed that gate. The current v2
+path has no source-built reference, historical-layout whitelist, integrity or
+foreign-key check, inventory comparison, or post-claim schema recheck. Instead,
+`capture_authority_policy_v2_schema_observation(db)` records the candidate's
+ACTUAL raw `sqlite_master` DDL digest, complete non-internal object-inventory
+digest, and object count in one coherent claim-time read. The observed values
+are persisted unchanged on both K and P as diagnostics; they are never
+placeholders, compared, or rechecked, and schema structure never produces a v2
+`schema_drift` refusal. Genuine inability to observe the schema still fails the
+claim with the existing bounded `claim_failed` outcome. The legacy v1
 `_release_schema_digest`/`_live_schema_digest`/`_server_evidence`/
 `_server_fact_clause`/`_during_attempt_drift_clause` behavior and all callers
-are unchanged, and this seam is not yet wired into the authority hook. The
-checked-in full historical schema fixture
-`tests/fixtures/authority_v2_historical_schema.json` (with reconstruction
-support in `tests/authority_v2_historical_schema.py`) rebuilds the whole old
-schema and opens it through the actual current `Database` migration path; the
-R3 shipping venue runs over the migrated DB as well. The persisted
-candidate/pin/evaluation/continuation consumer, the corrected
-adverse/partial/raw-DDL diagnostics and the recovery/generation admission
-fences remain staged later units.
+remain unchanged. The checked-in full historical schema fixture
+`tests/fixtures/authority_v2_historical_schema.json` and reconstruction support
+in `tests/authority_v2_historical_schema.py` remain real migration-path test
+support; organic `ADD COLUMN` histories, including `agent_enrollments`, require
+no special acceptance list.
 
 Checkpoint C3b lands the durable v2 candidate/pin claim and the SEPARATE
 claim-audit stages. The Database owns synchronization and the transaction
@@ -507,8 +485,8 @@ or invalidate the live owner whenever the caller already owns a transaction —
 the caller's transaction and its pending work are left untouched and the two
 stage commits stay independent (no merged transaction, no silent savepoint and
 no changed R4 durability) — and otherwise runs ONE synchronized
-`BEGIN IMMEDIATE` (the independent C3a reference is constructed OUTSIDE it and
-its frozen raw digest is re-validated while the transaction is held) that
+`BEGIN IMMEDIATE` and captures the claim-time schema observation once while the
+transaction is held; there is no reference construction or schema recheck. It
 re-reads and authenticates the actual immutable admitted result: exact
 attempt/root/team/manager/session/result plus `origin_boot_id`/`owner_attempt_id`,
 `unfinalized`/`admitted` state, the single authenticated `admitted` audit, the
@@ -540,12 +518,13 @@ result row/body, immutable binding, authenticated pinned release/activation/
 selector prefix, the full candidate/pin/attempt/release/binding joins
 (provider/executor/model/version/digest/boot/owner), the prior required a0 and
 the current task ownership/cancellation — and rechecks the ORIGINAL frozen
-claim-time schema/permission evidence under its owned transaction (no
-recapture-and-rebaseline). It inserts exactly one candidate claim event plus the
+claim-time permission evidence under its owned transaction (no
+recapture-and-rebaseline). The schema observation remains diagnostic and is not
+compared or rechecked. It inserts exactly one candidate claim event plus the
 required `claim_audited` result-stage evidence and advances J to `claim_audited`
 atomically. A failed claim leaves J admitted/a0 with no K/P; a failed claim-audit
 preserves the claimed K/P with no a1. An owned-stage failure, a genuine
-cancellation/replacement, or a schema/permission-drift refusal by the authentic
+cancellation/replacement, or a permission-drift refusal by the authentic
 uninterrupted owner poisons the winning token so a later retry cannot become a
 fresh authority; an unauthorized/stale/duplicate contender (wrong boot, wrong
 owner, wrong tuple, second connection, duplicate call, transaction-nesting
@@ -1239,15 +1218,15 @@ fall back to legacy mutation. Focused coverage lives in
 complete parity sweep, main convergence and final review/QA/CI remain later
 units.
 
-Issue #918 tightens that contract without changing the schema. The integrity
-reference conditionally removes `agent_enrollments` from comparison only after
-its complete metadata exactly matches one layout genuinely shipped by the
-seven-, eight- or nine-column historical constructors and their deterministic
-`ADD COLUMN executor` / `ADD COLUMN allow_rules` upgrade orders. A changed
-constraint/default/order, explicit extra index, mutated autoindex metadata or
-any unrelated unexpected object remains visible to the ordinary fail-closed
-diagnostic. The raw candidate inventory and digest still include the historical
-table, so recheck remains bound to the exact captured database.
+Issue #918 historically tightened that contract without changing the schema by
+accepting exact shipped `agent_enrollments` layouts. Founder THR-229 seq351
+later removed the v2 schema-integrity gate in full. There is now no special
+layout acceptance, source reference, comparison, integrity check, or schema
+recheck. The claim still records the real raw-schema digest, inventory digest,
+and object count on K/P as observed-only diagnostics. This supersedes only the
+schema-gate portion of issue #918; its terminal refusal recovery, durable
+step-audit idempotency, and single post-commit surfacing behavior below remain
+current.
 
 Pre-final stage refusal now records the closed terminal-housekeeping category
 before forgetting the live owner (`schema_drift` and `evidence_drift` map to

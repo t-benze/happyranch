@@ -12,7 +12,8 @@ Focused isolated evidence for the accepted C3b radius, driving the REAL
     boot, changed owner/session, missing/mutated audit or exception refuses;
   * mechanical eligibility, identity integrity and pinned-history negative
     cases refuse with the prior rows preserved;
-  * schema corruption/drift before the claim refuses.
+  * claim-time schema observations remain real diagnostics while permission
+    evidence still fails closed on drift.
 """
 from __future__ import annotations
 
@@ -501,39 +502,6 @@ def test_corrupt_pinned_selector_history_refuses(tmp_path, monkeypatch):
     assert _counts(store._db)["pins"] == 0
 
 
-# ── schema drift ─────────────────────────────────────────────────────────
-
-
-def test_schema_drift_before_claim_refuses(tmp_path):
-    store, _, _, _, row, attempt = _admitted(tmp_path)
-    store._db._conn.execute("DROP TRIGGER authority_policy_v2_candidates_no_delete")
-    store._db._conn.commit()
-    outcome = _claim(store, row, attempt)
-    assert outcome.status == "refused" and outcome.refusal_code == "schema_drift"
-    assert _counts(store._db)["candidates"] == 0
-
-
-def test_schema_drift_between_capture_and_claim_refuses(tmp_path, monkeypatch):
-    store, _, _, _, row, attempt = _admitted(tmp_path)
-    from runtime.orchestrator import authority as authority_mod
-
-    original = authority_mod.recheck_authority_policy_v2_schema_integrity
-
-    def drift(evidence, db):
-        # An independent connection commits legal-but-different DDL after the
-        # capture but before the claim transaction commits.
-        db._conn.execute("CREATE TABLE c3b_drift_marker (id INTEGER PRIMARY KEY)")
-        db._conn.commit()
-        return original(evidence, db)
-
-    monkeypatch.setattr(
-        authority_mod, "recheck_authority_policy_v2_schema_integrity", drift,
-    )
-    outcome = _claim(store, row, attempt)
-    assert outcome.status == "refused" and outcome.refusal_code == "schema_drift"
-    assert _counts(store._db)["candidates"] == 0
-
-
 # ── injected failure at every write boundary ─────────────────────────────
 
 
@@ -989,7 +957,7 @@ def test_duplicate_claim_loser_does_not_poison_winner(tmp_path):
     assert _audit(store, row, attempt).status == "claim_audited"
 
 
-# ── C3b correction 4: retain claim-time schema/permission evidence ────────
+# ── Retain claim-time schema observations and permission evidence ─────────
 
 
 def test_claim_freezes_and_pin_mirrors_claim_time_evidence(tmp_path):
@@ -1000,13 +968,11 @@ def test_claim_freezes_and_pin_mirrors_claim_time_evidence(tmp_path):
     assert candidate.schema_raw_digest and candidate.schema_inventory_digest
     assert candidate.schema_object_count > 0
     assert candidate.permission_surface_digest == "a" * 64
-    # The pin is identity-equal on the frozen evidence.
-    assert (
-        pin.schema_raw_digest == candidate.schema_raw_digest
-        and pin.schema_inventory_digest == candidate.schema_inventory_digest
-        and pin.schema_object_count == candidate.schema_object_count
-        and pin.permission_surface_digest == candidate.permission_surface_digest
-    )
+    # K and P each retain real observations; later decisions do not compare
+    # their schema fields.  Permission evidence remains an authenticated join.
+    assert pin.schema_raw_digest and pin.schema_inventory_digest
+    assert pin.schema_object_count > 0
+    assert pin.permission_surface_digest == candidate.permission_surface_digest
     # The evidence fields are NOT new claim-preimage inputs.
     assert candidate.preimage() == authority_policy_v2_candidate_claim_preimage(
         activation_id=candidate.activation_id,
@@ -1025,40 +991,6 @@ def test_claim_freezes_and_pin_mirrors_claim_time_evidence(tmp_path):
         root_task_id=candidate.root_task_id,
         team=candidate.team,
     )
-
-
-def test_schema_drift_between_claim_and_audit_refuses(tmp_path):
-    """The manager probe's ``schema_drift_after_claim`` case: a new index after
-    the K/P commit denies at the second boundary."""
-    store, _, _, _, row, attempt = _admitted(tmp_path)
-    assert _claim(store, row, attempt).status == "claimed"
-    store._db._conn.execute("CREATE INDEX task8450_unreviewed ON tasks(brief)")
-    store._db._conn.commit()
-    before = _counts(store._db)
-    outcome = _audit(store, row, attempt)
-    assert outcome.status == "refused" and outcome.refusal_code == "schema_drift"
-    assert _counts(store._db) == before
-    assert store._db.get_authority_policy_v2_attempt_for_result(row["id"]).stage == "claimed"
-    assert store.list_v2_candidate_audits(
-        store.get_v2_candidate_for_result(row["id"]).candidate_id) == []
-
-
-def test_schema_drift_between_stages_refuses_after_another_accepted_layout(tmp_path):
-    """Switching to a DIFFERENT individually accepted layout after capture is
-    still a denial: the comparison is against the exact frozen raw digest."""
-    store, _, _, _, row, attempt = _admitted(tmp_path)
-    assert _claim(store, row, attempt).status == "claimed"
-    # Drop and recreate a legal candidate-table trigger so the raw DDL digest
-    # changes while the inventory may still resemble a layout.
-    store._db._conn.execute("DROP TRIGGER authority_policy_v2_pins_no_delete")
-    store._db._conn.execute(
-        """CREATE TRIGGER authority_policy_v2_pins_no_delete
-           BEFORE DELETE ON authority_policy_v2_pins
-           BEGIN SELECT RAISE(ABORT, 'v2 policy pin cannot be deleted'); END"""
-    )
-    store._db._conn.commit()
-    outcome = _audit(store, row, attempt)
-    assert outcome.status == "refused" and outcome.refusal_code == "schema_drift"
 
 
 def test_permission_change_between_stages_refuses_audit(tmp_path):
@@ -1100,26 +1032,17 @@ def test_unbound_permission_reader_refuses_claim(tmp_path):
     assert _counts(store._db)["candidates"] == 0
 
 
-def test_missing_or_empty_frozen_evidence_fails_closed(tmp_path):
+def test_missing_or_empty_frozen_permission_evidence_fails_closed(tmp_path):
     from runtime.models import (
         AuthorityPolicyV2PermissionSurface,
-        AuthorityPolicyV2SchemaIntegrity,
     )
     from runtime.orchestrator.authority import (
         V2_PERMISSION_SURFACE_CONTRACT,
-        V2_SCHEMA_INTEGRITY_CONTRACT,
         recheck_authority_policy_v2_permission_surface,
-        recheck_authority_policy_v2_schema_integrity,
     )
 
     db = Database(tmp_path / "evidence.db")
-    assert recheck_authority_policy_v2_schema_integrity(None, db) is False
     assert recheck_authority_policy_v2_permission_surface(None, db, MANAGER) is False
-    empty = AuthorityPolicyV2SchemaIntegrity(
-        contract_version=V2_SCHEMA_INTEGRITY_CONTRACT,
-        raw_digest="", inventory_digest="", object_count=0,
-    )
-    assert recheck_authority_policy_v2_schema_integrity(empty, db) is False
     empty_permission = AuthorityPolicyV2PermissionSurface(
         contract_version=V2_PERMISSION_SURFACE_CONTRACT, digest="",
     )
