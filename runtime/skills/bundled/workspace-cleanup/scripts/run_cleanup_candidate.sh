@@ -1400,7 +1400,12 @@ run_cleanup_candidate() {
       if [ -e "$WC_ISOLATION_DIR" ] || [ -L "$WC_ISOLATION_DIR" ]; then
         _wc_action_failure "action_isolation_residual" "$bytes_before"; return $?
       fi
-      if ! git -C "$CONTAINING" status --porcelain=v1 -z | cmp -s - "$cache_status_before"; then
+      local cache_status_after
+      cache_status_after="$WC_TMP/cache-status-after"
+      if ! git -C "$CONTAINING" status --porcelain=v1 -z > "$cache_status_after"; then
+        _wc_action_failure "post_action_git_status_unavailable" "$bytes_before"; return $?
+      fi
+      if ! cmp -s "$cache_status_after" "$cache_status_before"; then
         _wc_action_failure "post_action_source_or_status_changed" "$bytes_before"; return $?
       fi
       if [ "$cache_source_before" != "$(_wc_source_digest "$CONTAINING")" ]; then
@@ -1409,7 +1414,9 @@ run_cleanup_candidate() {
       if ! _wc_verify_post_action; then
         _wc_action_failure "post_action_candidate_or_protected_changed" "$bytes_before"; return $?
       fi
-      _wc_removed_receipt "removed_cache" "$bytes_before" ;;
+      if ! _wc_removed_receipt "removed_cache" "$bytes_before"; then
+        _wc_action_failure "receipt_generation_failed" "$bytes_before"; return $?
+      fi ;;
     *)
       if ! _wc_snapshot_tree; then
         { _wc_refuse "action_boundary_changed"; return 2; }
@@ -1424,7 +1431,9 @@ run_cleanup_candidate() {
       if ! _wc_verify_post_action; then
         _wc_action_failure "post_action_candidate_or_protected_changed" "$bytes_before"; return $?
       fi
-      _wc_removed_receipt "removed_worktree" "$bytes_before" ;;
+      if ! _wc_removed_receipt "removed_worktree" "$bytes_before"; then
+        _wc_action_failure "receipt_generation_failed" "$bytes_before"; return $?
+      fi ;;
   esac
   return 0
 }

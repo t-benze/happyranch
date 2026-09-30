@@ -610,6 +610,10 @@ def _write_stubs(bin_dir: Path) -> None:
         "#!/bin/sh\n"
         "echo \"git $*\" >> \"$GIT_LOG\"\n"
         "case \"$*\" in *\"${WC_GIT_FAIL_MATCH:-__never__}\"*) exit 71;; esac\n"
+        "case \"$*\" in *\" status --porcelain=v1 -z\")\n"
+        "  n=$(cat \"$WC_FULL_STATUS_COUNT\"); n=$((n+1)); echo \"$n\" > \"$WC_FULL_STATUS_COUNT\"\n"
+        "  [ -n \"${WC_FULL_STATUS_FAIL_CALL:-}\" ] && [ \"$n\" = \"$WC_FULL_STATUS_FAIL_CALL\" ] && exit 71 ;;\n"
+        "esac\n"
         "case \"$*\" in *\" ls-remote --exit-code origin \"*)\n"
         "  case \"${WC_REMOTE_SCENARIO:-missing}\" in\n"
         "    success) printf '%s\\trefs/heads/%s\\n' \"$WC_HEAD\" \"$WC_BRANCH\"; exit 0 ;;\n"
@@ -633,6 +637,8 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
                    candidate: Path, containing: Path,
                    acting: str = "TASK-ACTING", open_pr: int = 0,
                    gh_fail: bool = False, git_fail_match: str = "",
+                   git_full_status_fail_call: int | None = None,
+                   fail_removed_receipt: bool = False,
                    task_map_second: dict | None = None,
                    job_scenario: str | None = None,
                    remote_scenario: str = "missing",
@@ -679,6 +685,7 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
     (tmp_path / "search-count").write_text("0\n")
     (tmp_path / "pr-detail-count").write_text("0\n")
     (tmp_path / "repo-count").write_text("0\n")
+    (tmp_path / "full-status-count").write_text("0\n")
     fixture_skill = tmp_path / "shipped-skill"
     (fixture_skill / "scripts").mkdir(parents=True, exist_ok=True)
     (fixture_skill / "SKILL.md").write_text(body)
@@ -741,6 +748,12 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
         "WC_HEAD": _git("rev-parse", "HEAD", cwd=containing).stdout.strip(),
         "WC_GH_FAIL": "1" if gh_fail else "0",
         "WC_GIT_FAIL_MATCH": git_fail_match,
+        "WC_FULL_STATUS_COUNT": str(tmp_path / "full-status-count"),
+        "WC_FULL_STATUS_FAIL_CALL": (
+            str(git_full_status_fail_call)
+            if git_full_status_fail_call is not None else ""
+        ),
+        "WC_RECEIPT_FAIL_MARKER": str(tmp_path / "receipt-fail-once"),
         "WC_ACTION_DRIFT": action_drift,
         "WC_RM_SCENARIO": rm_scenario,
         "WC_MV_SCENARIO": mv_scenario,
@@ -749,6 +762,17 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
         ),
         "TMPDIR": str(wc_tmp),
     })
+    if fail_removed_receipt:
+        python = bin_dir / "python3"
+        python.write_text(
+            "#!/bin/sh\n"
+            "if [ -n \"${WC_DECISION:-}\" ] && [ ! -e \"$WC_RECEIPT_FAIL_MARKER\" ]; then\n"
+            "  : > \"$WC_RECEIPT_FAIL_MARKER\"\n"
+            "  exit 72\n"
+            "fi\n"
+            f"exec {shlex.quote(sys.executable)} \"$@\"\n"
+        )
+        python.chmod(0o755)
     script = (
         f'bash {shlex.quote(str(PROCEDURE))} {shlex.quote(str(candidate))} '
         f'{shlex.quote(str(containing))}\n'
@@ -1890,6 +1914,59 @@ def test_candidate_recreated_after_isolated_removal_never_reports_success(
     receipt = json.loads(result["stdout"].splitlines()[-2])
     assert receipt["decision"] == "removed_with_anomaly"
     assert receipt["anomaly"] == "post_action_candidate_or_protected_changed"
+    assert '"decision":"refused"' not in result["stdout"]
+
+
+def test_post_delete_git_status_failure_is_anomaly_not_success(tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    cache = fx["eligible"] / "node_modules"
+    cache.mkdir()
+    (cache / "validated").write_text("validated bytes\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+        git_full_status_fail_call=2,
+    )
+    assert result["rc"] == 3, result
+    assert not cache.exists()
+    assert (tmp_path / "full-status-count").read_text().strip() == "2"
+    receipt = json.loads(result["stdout"].splitlines()[-2])
+    assert receipt["decision"] == "removed_with_anomaly"
+    assert receipt["anomaly"] == "post_action_git_status_unavailable"
+    assert '"decision":"removed_cache"' not in result["stdout"]
+    assert '"decision":"refused"' not in result["stdout"]
+
+
+@pytest.mark.parametrize("candidate_kind", ["cache", "worktree"])
+def test_removed_receipt_failure_is_anomaly_not_success(
+        tmp_path, body, candidate_kind):
+    fx = _build_procedure_fixture(tmp_path)
+    candidate = fx["eligible"]
+    if candidate_kind == "cache":
+        candidate = candidate / "node_modules"
+        candidate.mkdir()
+        (candidate / "validated").write_text("validated bytes\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=candidate, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+        fail_removed_receipt=True,
+    )
+    assert result["rc"] == 3, result
+    assert not candidate.exists()
+    receipt = json.loads(result["stdout"].splitlines()[-2])
+    assert receipt["decision"] == "removed_with_anomaly"
+    assert receipt["anomaly"] == "receipt_generation_failed"
+    assert '"decision":"removed_cache"' not in result["stdout"]
     assert '"decision":"refused"' not in result["stdout"]
 
 

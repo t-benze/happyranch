@@ -7,6 +7,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 
 DRIVER = (
     Path(__file__).resolve().parents[1]
@@ -14,10 +16,10 @@ DRIVER = (
 )
 
 
-def _measurement(decision: str) -> str:
+def _measurement(decision: str, path: str) -> str:
     return json.dumps({
         "decision": decision,
-        "path": "/fixture/result",
+        "path": path,
         "apparent_bytes_before": 1,
         "allocated_bytes_before": 1,
         "apparent_bytes_after": 0,
@@ -31,8 +33,9 @@ def _measurement(decision: str) -> str:
 def _stub(tmp_path: Path) -> tuple[Path, Path]:
     log = tmp_path / "runner.log"
     runner = tmp_path / "runner.sh"
-    success = _measurement("removed_cache")
-    anomaly = json.loads(_measurement("removed_with_anomaly"))
+    wrong_path = _measurement("removed_worktree", "/fixture/not-current")
+    wrong_kind = _measurement("removed_cache", "/fixture/wrong-kind")
+    anomaly = json.loads(_measurement("removed_with_anomaly", "/fixture/anomaly"))
     anomaly["anomaly"] = "fixture"
     anomaly["residual_locations"] = {
         name: {
@@ -43,6 +46,12 @@ def _stub(tmp_path: Path) -> tuple[Path, Path]:
         for name in ("original", "isolated_candidate", "isolation_directory_residue")
     }
     anomaly["measurement_error"] = None
+    anomaly_wrong_path = {**anomaly, "path": "/fixture/not-current"}
+    anomaly_wrong_kind = {
+        **anomaly,
+        "decision": "isolation_anomaly",
+        "path": "/fixture/isolation-anomaly-wrong-kind",
+    }
     runner.write_text(
         "#!/bin/bash\n"
         f"printf '%s\\n' \"$1\" >> {log}\n"
@@ -53,8 +62,13 @@ def _stub(tmp_path: Path) -> tuple[Path, Path]:
         "  *missing-output*) exit 0;;\n"
         "  *mismatch*) echo '{\"decision\":\"refused\",\"reason\":\"fixture\"}'; exit 0;;\n"
         "  *signal*) kill -TERM $$;;\n"
+        f"  *anomaly-wrong-path*) echo '{json.dumps(anomaly_wrong_path, separators=(',', ':'))}'; exit 3;;\n"
+        f"  *isolation-anomaly-wrong-kind*) echo '{json.dumps(anomaly_wrong_kind, separators=(',', ':'))}'; exit 3;;\n"
         f"  *anomaly*) echo '{json.dumps(anomaly, separators=(',', ':'))}'; exit 3;;\n"
-        f"  *) echo '{success}'; exit 0;;\n"
+        f"  *wrong-path*) echo '{wrong_path}'; exit 0;;\n"
+        f"  *wrong-kind*) echo '{wrong_kind}'; exit 0;;\n"
+        "  *) decision=removed_cache; [ \"$1\" = \"$2\" ] && decision=removed_worktree\n"
+        "     printf '{\"decision\":\"%s\",\"path\":\"%s\",\"apparent_bytes_before\":1,\"allocated_bytes_before\":1,\"apparent_bytes_after\":0,\"allocated_bytes_after\":0,\"filesystem_free_before\":1,\"filesystem_free_after\":2,\"filesystem_free_delta\":1}\\n' \"$decision\" \"$1\"; exit 0;;\n"
         "esac\n"
     )
     runner.chmod(0o755)
@@ -92,10 +106,16 @@ def _invoke(
     return result, records, runner, log
 
 
-def _valid_journal_row(item: dict, runner: Path, decision: str = "removed_cache") -> dict:
+def _valid_journal_row(
+    item: dict, runner: Path, decision: str | None = None,
+) -> dict:
+    decision = decision or (
+        "removed_worktree" if item["kind"] == "worktree" else "removed_cache"
+    )
     receipt = (
         {"decision": "refused", "reason": "fixture"}
-        if decision == "refused" else json.loads(_measurement(decision))
+        if decision == "refused"
+        else json.loads(_measurement(decision, item["candidate"]))
     )
     return {
         **item,
@@ -124,6 +144,64 @@ def test_orders_worktrees_then_caches_largest_first(tmp_path):
     ]
     assert all(row["terminal"] is True for row in records)
     assert all(row["argv"][0] == "bash" for row in records)
+
+
+def test_single_json_object_manifest_is_one_jsonl_row(tmp_path):
+    item = _row("one", "worktree", 2)
+    runner, log = _stub(tmp_path)
+    manifest = tmp_path / "manifest.jsonl"
+    journal = tmp_path / "journal.jsonl"
+    manifest.write_text(json.dumps(item) + "\n")
+    result = subprocess.run(
+        [sys.executable, str(DRIVER), "--manifest", str(manifest),
+         "--journal", str(journal), "--runner", str(runner)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines() == [item["candidate"]]
+    assert len(journal.read_text().splitlines()) == 1
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["wrong-path", "wrong-kind", "anomaly-wrong-path",
+     "isolation-anomaly-wrong-kind"],
+)
+def test_live_receipt_must_match_candidate_path_and_kind(tmp_path, name):
+    result, records, _, log = _invoke(tmp_path, [
+        _row(name, "worktree", 4),
+        _row("must-not-run", "cache", 2),
+    ])
+    assert result.returncode == 3
+    assert len(records) == 1
+    assert log.read_text().splitlines() == [f"/fixture/{name}"]
+    expected = (
+        "exit_3_unclassified" if "anomaly" in name else "unclassifiable_outcome"
+    )
+    assert json.loads(result.stdout)["stop_reason"] == expected
+
+
+@pytest.mark.parametrize("fault", ["wrong-path", "wrong-kind"])
+def test_journal_receipt_must_match_candidate_path_and_kind(tmp_path, fault):
+    item = _row("one", "worktree", 2)
+    runner, log = _stub(tmp_path)
+    manifest = tmp_path / "manifest.json"
+    journal = tmp_path / "journal.jsonl"
+    manifest.write_text(json.dumps([item]))
+    row = _valid_journal_row(item, runner)
+    if fault == "wrong-path":
+        row["receipt"]["path"] = "/fixture/not-current"
+    else:
+        row["receipt"]["decision"] = "removed_cache"
+    journal.write_text(json.dumps(row) + "\n")
+    result = subprocess.run(
+        [sys.executable, str(DRIVER), "--manifest", str(manifest),
+         "--journal", str(journal), "--runner", str(runner)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 2
+    assert "exit/receipt mismatch" in result.stderr
+    assert not log.exists()
 
 
 def test_resume_skips_only_strictly_matching_terminal_candidates(tmp_path):

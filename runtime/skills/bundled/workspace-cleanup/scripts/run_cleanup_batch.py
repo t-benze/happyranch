@@ -40,6 +40,8 @@ def _load_manifest(path: Path) -> list[dict[str, Any]]:
         value = json.loads(text)
     except json.JSONDecodeError:
         value = [json.loads(line) for line in text.splitlines() if line.strip()]
+    if isinstance(value, dict):
+        value = [value]
     if not isinstance(value, list):
         raise ValueError("manifest must be a JSON array or JSONL rows")
     rows: list[dict[str, Any]] = []
@@ -141,7 +143,9 @@ def _anomaly_measurements(receipt: dict[str, Any]) -> bool:
             and (receipt["allocated_bytes_after"] is None) == (error is not None))
 
 
-def _valid_receipt(receipt: Any, exit_code: int) -> bool:
+def _valid_receipt(
+    receipt: Any, exit_code: int, item: dict[str, Any],
+) -> bool:
     if not isinstance(receipt, dict):
         return False
     decision = receipt.get("decision")
@@ -149,10 +153,17 @@ def _valid_receipt(receipt: Any, exit_code: int) -> bool:
         return (exit_code == 2 and set(receipt) == {"decision", "reason"}
                 and isinstance(receipt.get("reason"), str) and bool(receipt["reason"]))
     if decision in _REMOVAL_DECISIONS:
-        return (exit_code == 0 and set(receipt) == _MEASUREMENT_KEYS | {"decision"}
+        expected = (
+            "removed_worktree" if item["kind"] == "worktree" else "removed_cache"
+        )
+        return (decision == expected and receipt.get("path") == item["candidate"]
+                and exit_code == 0
+                and set(receipt) == _MEASUREMENT_KEYS | {"decision"}
                 and _measurement_receipt(receipt))
     if decision in _ANOMALY_DECISIONS:
-        return (exit_code == 3 and _anomaly_measurements(receipt)
+        return (receipt.get("path") == item["candidate"]
+                and (decision != "isolation_anomaly" or item["kind"] == "cache")
+                and exit_code == 3 and _anomaly_measurements(receipt)
                 and isinstance(receipt.get("anomaly"), str)
                 and bool(receipt["anomaly"]))
     return False
@@ -179,7 +190,7 @@ def _safe_terminal_row(
         raise ValueError(f"journal row {number} has invalid captured output")
     if row["error"] is not None:
         raise ValueError(f"journal row {number} records an unsafe halted outcome")
-    if not _valid_receipt(row["receipt"], exit_code):
+    if not _valid_receipt(row["receipt"], exit_code, item):
         raise ValueError(f"journal row {number} has an exit/receipt mismatch")
     if exit_code not in (0, 2):
         raise ValueError(f"journal row {number} records an anomaly halt")
@@ -281,10 +292,11 @@ def _halt_reason(row: dict[str, Any]) -> str | None:
     if isinstance(exit_code, int) and exit_code < 0:
         return "runner_signal"
     if exit_code == 3:
-        if isinstance(receipt, dict) and receipt.get("decision") in _ANOMALY_DECISIONS:
+        if (_valid_receipt(receipt, exit_code, row)
+                and receipt.get("decision") in _ANOMALY_DECISIONS):
             return str(receipt["decision"])
         return "exit_3_unclassified"
-    if not isinstance(exit_code, int) or not _valid_receipt(receipt, exit_code):
+    if not isinstance(exit_code, int) or not _valid_receipt(receipt, exit_code, row):
         return "unclassifiable_outcome"
     return None
 
