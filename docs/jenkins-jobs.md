@@ -124,3 +124,94 @@ python3 "$HOME/.local/share/happyranch-tools/jenkins_jobs.py" --controller https
 Verify the actual job script, installed helper SHA256, interpreter, exit and full output; compare the receipt's controller/job/request/queue/build/deadline/result/manifest with the saved submission. A HappyRanch job failure/rejection is a local execution fact, not Jenkins FAILURE or ABORTED. A successful waiter does not imply artifacts were collected: use the explicit bounded collection operation above, then inspect its manifest. Do not keep the model actively polling while the durable job runs.
 
 The document-only B2 skill `custom:269f9a0b-b6ab-4eb3-a19b-a3cbcbc418c8` remains separate from helper acceptance. A valid successor must match this immutable helper pin. Founder-configured eligibility is still required before materialization; this workflow does not grant eligibility or change credentials. Mac smoke TASK7679 and KB publication TASK7683 are separate evidence, not helper acceptance.
+
+## Mac mini disposable integration job
+
+`ci/jenkins/mac-integration/Jenkinsfile` is the reviewable Declarative Pipeline
+definition for the post-merge Mac integration job. Declarative Pipeline keeps
+the node selection, sole parameter, absolute timeout, and unconditional evidence
+publication in one versioned definition; the stdlib-only host logic lives in
+`scripts/jenkins_mac_integration.py` so its validation, argv, cleanup, and exit
+mapping are unit tested with a fake `container` executable. This is separate from
+the repository-root Jenkinsfile parked in PR #864.
+
+The job has one parameter: `SOURCE_SHA`, which must be exactly 40 hexadecimal
+characters. It fetches that exact commit from
+`https://github.com/t-benze/happyranch`, checks it out detached, and rejects a
+different `git rev-parse HEAD`. The Pipeline definition checkout is not mounted
+into the test VM. Do not add a shell/workload parameter, SCM polling, cron, or an
+automatic trigger.
+
+The runtime pins are:
+
+- Apple `container` CLI exactly `1.5.0`; any other reported client version fails
+  before kernel, system, or container operations.
+- `docker.io/library/python:3.12-slim@sha256:950206c37262dd86c55659797f6ee418fee30535072f65a82ed470d985f5cda5`,
+  the `linux/arm64/v8` OCI manifest selected from Docker Hub's
+  `library/python:3.12-slim` index on 2026-10-01. Resolution used the Docker
+  Registry v2 token endpoint and fetched the tag index from
+  `/v2/library/python/manifests/3.12-slim` with OCI-index and Docker manifest-list
+  Accept types, then selected `platform.os=linux`,
+  `platform.architecture=arm64`, `platform.variant=v8`. The job records the
+  pinned reference and `container image inspect` result.
+- uv exactly `0.12.21`, installed inside the disposable VM, verified with
+  `uv --version`, and used for `uv sync --frozen`. The venv and uv caches live
+  under container-local `/tmp`, never the host-mounted source.
+- The image's Debian repositories supply `bash` and `curl`, which the existing
+  integration fixtures invoke; their resolved package versions and Python's
+  effective version are recorded in `identity.txt`. This changes only the
+  disposable VM and introduces no repository dependency.
+
+Kernel readiness follows the proven Apple 1.5.0 sequence. If
+`~/Library/Application Support/com.apple.container/kernels/default.kernel-arm64`
+already resolves, installation is skipped. Otherwise the job runs bounded
+`container system kernel set --recommended` without `--debug`. When
+`container system status` is not `running`, it runs bounded
+`container system start --disable-kernel-install --timeout 120`, then verifies
+`running`. It leaves the kernel, apiserver, and image cache in place.
+
+Each build uses a unique container name, arm64, and `--rm`. It does not request
+privileged mode, added capabilities, host PID, host networking, SSH forwarding,
+sockets, credentials, or environment inheritance. The only
+host bind mounts are the detached source at `/workspace/src` read-only and the
+build-owned `$WORKSPACE/artifacts` at `/workspace/artifacts` read-write. `HOME`
+is a container-local `/tmp` directory. Because the Mac currently has
+`machine.homeMount = "rw"`, the VM records `/proc/self/mountinfo` and fails
+unless the complete set of host-backed virtiofs mount destinations is exactly
+those two paths; `/Users/...` exposure therefore cannot pass silently.
+
+Inside the VM the command mirrors the hosted nightly seam:
+
+~~~text
+python scripts/run_bounded_output.py --output /workspace/artifacts/integration.log --max-bytes 1048576 -- uv run pytest tests/ -v -m integration --basetemp=/tmp/happyranch-pytest -p no:cacheprovider --junitxml=/workspace/artifacts/integration.xml
+~~~
+
+It then runs `scripts/nightly_integration_summary.py`. The job archives the
+JUnit XML, bounded log, Markdown summary, mount evidence, identity record,
+cleanup evidence, and any bounded failure record. Cleanup always attempts
+`container rm -f <unique-name>`, records `container ls -a`, and fails with
+distinct exit 90 when pytest passed but absence could not be verified. A real
+nonzero pytest status is preserved even when cleanup also fails.
+
+The Pipeline has a 55-minute absolute timeout: 30 minutes matching the hosted
+nightly budget, plus 8 minutes for the bounded recommended-kernel download,
+2.5 minutes for system start, 10 minutes for image pull/frozen sync, and about
+4.5 minutes for checkout, evidence, and cleanup. The inner container command is
+also bounded to 42 minutes. macOS has no GNU `timeout`; all host-side bounds are
+Python subprocess deadlines and do not leave watchdog children holding Jenkins
+pipes open.
+
+### Create and run after merge
+
+The engineering manager creates the live job only after this definition is
+merged. In Jenkins, create a Pipeline item with concurrent builds disabled and
+no automatic triggers. Choose **Pipeline script from SCM**, Git, the public
+repository URL above, the `main` branch, no repository credentials, and script
+path `ci/jenkins/mac-integration/Jenkinsfile`. Confirm the resolved agent is
+`mac-mini`, then run **Build with Parameters** using the approved full commit
+SHA. Review `identity.txt` and `mount-evidence.txt` before accepting the test
+counts, and require `cleanup.txt` to say `cleanup_verified_absent=true`.
+
+Creating, editing, or running that live Jenkins item is an operator action, not
+part of repository verification. Never run this integration command on the
+HappyRanch Linux daemon host, directly or through a HappyRanch job.

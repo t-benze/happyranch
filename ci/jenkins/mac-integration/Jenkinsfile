@@ -1,0 +1,52 @@
+pipeline {
+    agent { label 'mac-mini' }
+
+    options {
+        timeout(time: 55, unit: 'MINUTES')
+        disableConcurrentBuilds()
+        skipDefaultCheckout(true)
+        timestamps()
+    }
+
+    parameters {
+        string(name: 'SOURCE_SHA', defaultValue: '', description: 'Exact 40-hex HappyRanch commit to test')
+    }
+
+    stages {
+        stage('Checkout job definition') {
+            steps {
+                deleteDir()
+                dir('definition') {
+                    checkout scm
+                    script {
+                        env.JOB_DEFINITION_SHA = sh(
+                            script: 'git rev-parse HEAD',
+                            returnStdout: true
+                        ).trim()
+                    }
+                }
+            }
+        }
+
+        stage('Run disposable Linux integration VM') {
+            steps {
+                sh '''
+                    set -eu
+                    exec python3 definition/scripts/jenkins_mac_integration.py \
+                      --source-sha "$SOURCE_SHA" \
+                      --definition-sha "$JOB_DEFINITION_SHA" \
+                      --workspace "$WORKSPACE" \
+                      --node-name "$NODE_NAME" \
+                      --build-url "$BUILD_URL"
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            junit allowEmptyResults: true, testResults: 'artifacts/integration.xml'
+            archiveArtifacts artifacts: 'artifacts/**', allowEmptyArchive: false
+        }
+    }
+}
