@@ -2669,6 +2669,7 @@ class Database:
                 session_id TEXT,
                 executor TEXT,
                 model TEXT,
+                reply_message_seq INTEGER,
                 dispatched_task_id TEXT,
                 decline_reason TEXT,
                 FOREIGN KEY (thread_id) REFERENCES threads(id)
@@ -2679,7 +2680,6 @@ class Database:
                 ON thread_invocations(thread_id);
             CREATE INDEX IF NOT EXISTS idx_thread_invocations_pending
                 ON thread_invocations(status) WHERE status = 'pending';
-
             -- GitHub #688 Phase 1 Slice A: additive, provider-neutral
             -- per-(thread_id, agent_name) conversational REPLY delivery state.
             -- Intentionally dark until Slice B wires the route/runner
@@ -2987,6 +2987,7 @@ class Database:
                     raise
         self._migrate_session_token_usage_scope_columns()
         self._migrate_thread_invocation_attribution_columns()
+        self._migrate_thread_invocation_reply_message_link()
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
         # error so this is idempotent across restarts.
@@ -3977,6 +3978,27 @@ class Database:
                 self._conn.execute(
                     f"ALTER TABLE thread_invocations ADD COLUMN {name} TEXT"
                 )
+        self._conn.commit()
+
+    def _migrate_thread_invocation_reply_message_link(self) -> None:
+        """Add the nullable reply-result link and its one-wake/one-message index."""
+        columns = {
+            row["name"]
+            for row in self._conn.execute(
+                "PRAGMA table_info(thread_invocations)"
+            ).fetchall()
+        }
+        if "reply_message_seq" not in columns:
+            self._conn.execute(
+                "ALTER TABLE thread_invocations "
+                "ADD COLUMN reply_message_seq INTEGER"
+            )
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "idx_thread_invocations_reply_message "
+            "ON thread_invocations(thread_id, reply_message_seq) "
+            "WHERE reply_message_seq IS NOT NULL"
+        )
         self._conn.commit()
 
     def _backfill_revisit_of_task_id(self) -> None:
@@ -18925,6 +18947,7 @@ class Database:
             session_id=row["session_id"],
             executor=row["executor"],
             model=row["model"],
+            reply_message_seq=row["reply_message_seq"],
             dispatched_task_id=row["dispatched_task_id"],
             decline_reason=row["decline_reason"],
         )
@@ -21367,6 +21390,9 @@ class Database:
         *,
         outcome: str,
         decline_reason: str | None = None,
+        reply_message_seq: int | None = None,
+        reply_thread_id: str | None = None,
+        reply_agent_name: str | None = None,
     ) -> ThreadReplySettlement | None:
         """Settle a conversational REPLY terminal path inside the open
         transaction. Returns None when ``token`` is not the running token of
@@ -21446,11 +21472,24 @@ class Database:
         # timeout leave the previously acknowledged watermark untouched.
         new_ack = running_through if outcome in ("reply", "decline") else acknowledged
 
-        self._conn.execute(
+        terminal = self._conn.execute(
             "UPDATE thread_invocations SET status = ?, decline_reason = ?, "
             "consumed_at = ? WHERE invocation_token = ? AND status = 'pending'",
             (status, decline_reason, now, token),
         )
+        if (
+            outcome == "reply"
+            and reply_message_seq is not None
+            and reply_thread_id == thread_id
+            and reply_agent_name == agent_name
+            and terminal.rowcount == 1
+        ):
+            self._conn.execute(
+                "UPDATE thread_invocations SET reply_message_seq = ? "
+                "WHERE invocation_token = ? AND thread_id = ? AND agent_name = ? "
+                "AND status = 'consumed' AND reply_message_seq IS NULL",
+                (reply_message_seq, token, reply_thread_id, reply_agent_name),
+            )
         terminal_reason = (
             decline_reason if outcome in ("failed", "timeout") else None
         )
@@ -21789,23 +21828,42 @@ class Database:
                 settlement = self._settle_reply_uncommitted(
                     token,
                     outcome="reply",
+                    reply_message_seq=seq,
+                    reply_thread_id=thread_id,
+                    reply_agent_name=speaker,
                 )
                 if settlement is None:
                     # Legacy/stale pending REPLY not owned by delivery state:
                     # fall back to the legacy consume transition.
-                    self._conn.execute(
+                    terminal = self._conn.execute(
                         "UPDATE thread_invocations SET status = 'consumed', "
                         "consumed_at = ? WHERE invocation_token = ? "
                         "AND status = 'pending'",
                         (now, token),
                     )
+                    if terminal.rowcount == 1:
+                        self._conn.execute(
+                            "UPDATE thread_invocations SET reply_message_seq = ? "
+                            "WHERE invocation_token = ? AND thread_id = ? "
+                            "AND agent_name = ? AND purpose = 'reply' "
+                            "AND status = 'consumed' AND reply_message_seq IS NULL",
+                            (seq, token, thread_id, speaker),
+                        )
             else:
-                self._conn.execute(
+                terminal = self._conn.execute(
                     "UPDATE thread_invocations SET status = 'consumed', "
                     "consumed_at = ? WHERE invocation_token = ? "
                     "AND status = 'pending'",
                     (now, token),
                 )
+                if terminal.rowcount == 1:
+                    self._conn.execute(
+                        "UPDATE thread_invocations SET reply_message_seq = ? "
+                        "WHERE invocation_token = ? AND thread_id = ? "
+                        "AND agent_name = ? AND purpose = ? "
+                        "AND status = 'consumed' AND reply_message_seq IS NULL",
+                        (seq, token, thread_id, speaker, token_purpose.value),
+                    )
             recipients = [name for name in participants if name != speaker]
             # Phase-2 mention routing (THR-198, Slice B): REPLY tokens resolve
             # the broadcast at write time from the persisted structured
