@@ -782,6 +782,13 @@ happyranch tokens --by-agent | --by-task | --by-thread | --by-purpose
 (`--since`, `--thread-id`, `--agent`, `--purpose`, `--scope-type`,
 `--scope-id`, `--task-id`) AND-compose with any view.
 
+Usage v1 efficiency cohorts do not derive historical executor/model from this
+usage view or from current agent configuration. Lifecycle records capture the
+effective launch tuple: thread invocations use nullable executor/model columns,
+task `session_start` adds runtime session ID + actual spawn purpose +
+executor/model, and `dream_started` adds executor/model. NULL remains unknown;
+there is no historical inference or `"default"` sentinel.
+
 Rollup modifiers (presentation-side; require a `--by-*` flag):
 
 - `--top N` — rank by churn (`total`) DESC and keep the top N; ties: sessions DESC then key ASC.

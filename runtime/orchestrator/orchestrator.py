@@ -1088,7 +1088,23 @@ class Orchestrator:
                     budget=budget,
                 )
 
-        self._audit.log_session_start(task_id, agent_name, str(workspace))
+        if recovery:
+            invocation_purpose = "unattributed"
+        elif task is not None and task.task_type == "task":
+            invocation_purpose = "manager_decision"
+        elif task is not None and task.task_type == "subtask":
+            invocation_purpose = "worker_execution"
+        else:
+            invocation_purpose = "unattributed"
+        self._audit.log_session_start(
+            task_id,
+            agent_name,
+            str(workspace),
+            session_id=session_id,
+            invocation_purpose=invocation_purpose,
+            executor=provider,
+            model=model_name,
+        )
         if not recovery:
             self._db.update_task(task_id, assigned_agent=agent_name)
 

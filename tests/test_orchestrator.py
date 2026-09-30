@@ -369,6 +369,105 @@ def test_worker_prompt_omits_role_guidance_block(
     assert "  |\n" not in prompt
 
 
+@pytest.mark.parametrize(
+    ("task_id", "task_type", "expected_purpose"),
+    [
+        ("TASK-WORKER-MODE", "subtask", "worker_execution"),
+        ("TASK-DECISION-MODE", "task", "manager_decision"),
+    ],
+)
+def test_run_agent_session_start_uses_actual_spawn_mode_and_exact_payload(
+    orchestrator, test_runtime, monkeypatch,
+    task_id, task_type, expected_purpose,
+):
+    """The immutable spawn mode, not agent title or root shape, owns purpose."""
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    orchestrator._db.insert_task(TaskRecord(
+        id=task_id,
+        brief="lifecycle attribution",
+        assigned_agent="dev_agent",
+        task_type=task_type,
+    ))
+    session_id = f"sess-{expected_purpose}"
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: session_id)
+    fake = MagicMock()
+    fake.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id=session_id,
+    )
+
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator._run_agent(task_id, "dev_agent", "")
+
+    workspace = str(test_runtime.workspaces_dir / "dev_agent")
+    start = next(
+        row for row in orchestrator._db.get_audit_logs(task_id)
+        if row["action"] == "session_start"
+    )
+    assert set(start["payload"]) == {
+        "workspace", "session_id", "invocation_purpose", "executor", "model",
+    }
+    assert start["payload"] == {
+        "workspace": workspace,
+        "session_id": session_id,
+        "invocation_purpose": expected_purpose,
+        "executor": "claude",
+        "model": None,
+    }
+
+
+def test_run_step_session_start_session_id_joins_usage_row_at_real_spawn_seam(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """A fake provider drives real run_step -> _run_agent -> usage persistence."""
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    task_id = "TASK-USAGE-JOIN"
+    orchestrator._db.insert_task(TaskRecord(
+        id=task_id,
+        brief="prove lifecycle usage join",
+        assigned_agent="dev_agent",
+        task_type="subtask",
+    ))
+    runtime_session_id = "sess-lifecycle-usage-join"
+    monkeypatch.setattr(
+        orchestrator, "_build_session_id", lambda: runtime_session_id,
+    )
+
+    class _CallbackExecutor:
+        def run(self, **kwargs):
+            assert kwargs["session_id"] == runtime_session_id
+            assert orchestrator._db.admit_task_completion_callback(
+                task_id=task_id,
+                agent="dev_agent",
+                session_id=runtime_session_id,
+                status="completed",
+                output_summary="done",
+                confidence_score=100,
+            )
+            return ExecutorResult(
+                success=True,
+                duration_seconds=1,
+                session_id=runtime_session_id,
+                token_usage=TokenUsage(
+                    input_tokens=7, output_tokens=3, model="provider-observed",
+                ),
+            )
+
+    with patch.object(
+        orchestrator, "_build_executor", return_value=_CallbackExecutor(),
+    ):
+        orchestrator.run_step(task_id)
+
+    start = next(
+        row for row in orchestrator._db.get_audit_logs(task_id)
+        if row["action"] == "session_start"
+    )
+    usage = orchestrator._db.list_session_token_usage(task_id=task_id)
+    assert len(usage) == 1
+    assert start["payload"]["session_id"] == usage[0]["session_id"]
+    assert start["payload"]["session_id"] == runtime_session_id
+    assert start["payload"]["invocation_purpose"] == "worker_execution"
+
+
 def test_run_agent_shipping_seam_injects_manager_policy_binds_session_and_omits_worker(
     orchestrator, test_runtime, monkeypatch,
 ):
@@ -732,6 +831,21 @@ def test_run_step_codex_clean_omission_recovers_through_real_callback_admission(
     assert [row["session_id"] for row in usage] == sorted(
         (origin_runtime_id, recovery_runtime_id)
     )
+    starts = [
+        row["payload"] for row in orchestrator._db.get_audit_logs(task_id)
+        if row["action"] == "session_start"
+    ]
+    assert [payload["session_id"] for payload in starts] == [
+        origin_runtime_id, recovery_runtime_id,
+    ]
+    assert [payload["invocation_purpose"] for payload in starts] == [
+        "manager_decision", "unattributed",
+    ]
+    recovery_receipt = orchestrator._db.execute(
+        "SELECT recovery_session_id FROM task_completion_recoveries WHERE task_id=?",
+        (task_id,),
+    ).fetchone()
+    assert recovery_receipt["recovery_session_id"] == starts[1]["session_id"]
 
 
 @pytest.mark.parametrize(

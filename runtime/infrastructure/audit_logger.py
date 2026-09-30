@@ -8,12 +8,28 @@ class AuditLogger:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    def log_session_start(self, task_id: str, agent: str, workspace: str) -> None:
+    def log_session_start(
+        self,
+        task_id: str,
+        agent: str,
+        workspace: str,
+        *,
+        session_id: str | None = None,
+        invocation_purpose: str = "unattributed",
+        executor: str | None = None,
+        model: str | None = None,
+    ) -> None:
         self._db.insert_audit_log(
             task_id=task_id,
             agent=agent,
             action="session_start",
-            payload={"workspace": workspace},
+            payload={
+                "workspace": workspace,
+                "session_id": session_id,
+                "invocation_purpose": invocation_purpose,
+                "executor": executor,
+                "model": model,
+            },
         )
 
     def log_session_end(
@@ -2071,11 +2087,18 @@ class AuditLogger:
             payload={"local_date": local_date},
         )
 
-    def log_dream_started(self, dream_id: str, agent: str) -> None:
+    def log_dream_started(
+        self,
+        dream_id: str,
+        agent: str,
+        *,
+        executor: str | None = None,
+        model: str | None = None,
+    ) -> None:
         self._db.insert_audit_log(
             task_id=dream_id, agent=agent,
             action="dream_started",
-            payload={},
+            payload={"executor": executor, "model": model},
         )
 
     def log_dream_completed(

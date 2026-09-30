@@ -3970,6 +3970,8 @@ class ThreadInvocation(BaseModel):
     started_at: datetime | None = None
     consumed_at: datetime | None = None
     session_id: str | None = None
+    executor: str | None = None
+    model: str | None = None
     dispatched_task_id: str | None = None
     decline_reason: str | None = None
 

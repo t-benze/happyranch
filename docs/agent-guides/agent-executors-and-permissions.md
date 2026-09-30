@@ -572,6 +572,13 @@ and cache write are reported. See
 `docs/superpowers/specs/2026-09-30-usage-v1-design.md` for the complete state,
 coverage, source-evidence, and resumed-conversation regression contract.
 
+Usage v1 lifecycle cohort attribution is captured from the effective launch
+tuple, not a later agent-config read. Thread invocation rows receive nullable
+`executor`/`model` with `started_at`; task `session_start` records the runtime
+session ID, actual spawn purpose, executor, and nullable model; and
+`dream_started` records executor/model. A missing configured model remains
+NULL, never `"default"`, and legacy rows are not backfilled.
+
 Enrolling a worker with a non-default executor: set `"executor": "<profile-name>"` in the `happyranch manage-agent --from-file` payload where the profile name is a registered executor profile (built-in: `codex`, `opencode`, `pi`, or a custom profile registered in the machine-global runtime store). Founder approval bootstraps the right workspace surface. See `runtime/skills/bundled/manage-agent/SKILL.md`.
 
 **THR-095:** Repos are configured in the **org/agents/<name>.md frontmatter**

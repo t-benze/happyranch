@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 from datetime import datetime, timezone
 
@@ -46,6 +48,112 @@ def test_thread_models_roundtrip():
         purpose=ThreadInvocationPurpose.REPLY,
     )
     assert inv.status is ThreadInvocationStatus.PENDING
+    assert inv.executor is None
+    assert inv.model is None
+
+
+_LEGACY_THREAD_INVOCATIONS_DDL = """
+CREATE TABLE thread_invocations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id TEXT NOT NULL,
+    agent_name TEXT NOT NULL,
+    invocation_token TEXT NOT NULL UNIQUE,
+    triggering_seq INTEGER NOT NULL,
+    purpose TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    enqueued_at TEXT NOT NULL,
+    started_at TEXT,
+    consumed_at TEXT,
+    session_id TEXT,
+    dispatched_task_id TEXT,
+    decline_reason TEXT
+)
+"""
+
+
+def _thread_invocation_columns(db: Database) -> dict[str, sqlite3.Row]:
+    return {
+        row["name"]: row
+        for row in db._conn.execute("PRAGMA table_info(thread_invocations)")
+    }
+
+
+def test_thread_invocation_attribution_fresh_schema_is_nullable(tmp_path):
+    db = Database(tmp_path / "fresh.db")
+
+    columns = _thread_invocation_columns(db)
+    assert columns["executor"]["type"] == "TEXT"
+    assert columns["executor"]["notnull"] == 0
+    assert columns["executor"]["dflt_value"] is None
+    assert columns["model"]["type"] == "TEXT"
+    assert columns["model"]["notnull"] == 0
+    assert columns["model"]["dflt_value"] is None
+
+
+def test_thread_invocation_attribution_migrates_legacy_rows_idempotently(tmp_path):
+    path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(path)
+    conn.execute(_LEGACY_THREAD_INVOCATIONS_DDL)
+    expected = []
+    for ordinal, status in enumerate(
+        ("pending", "consumed", "declined", "failed", "timeout"), start=1,
+    ):
+        values = (
+            ordinal,
+            f"THR-{ordinal:03d}",
+            "dev_agent",
+            f"token-{status}",
+            ordinal,
+            "reply",
+            status,
+            f"2026-09-30T00:00:0{ordinal}+00:00",
+            None,
+            None,
+            None,
+            None,
+            status if status != "pending" else None,
+        )
+        conn.execute(
+            "INSERT INTO thread_invocations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            values,
+        )
+        expected.append(values)
+    conn.commit()
+    conn.close()
+
+    for _ in range(2):
+        db = Database(path)
+        rows = db._conn.execute(
+            "SELECT id, thread_id, agent_name, invocation_token, triggering_seq, "
+            "purpose, status, enqueued_at, started_at, consumed_at, session_id, "
+            "dispatched_task_id, decline_reason, executor, model "
+            "FROM thread_invocations ORDER BY id"
+        ).fetchall()
+        assert [tuple(row[:13]) for row in rows] == expected
+        assert [(row["executor"], row["model"]) for row in rows] == [
+            (None, None)
+        ] * 5
+        db.close()
+
+
+@pytest.mark.parametrize("existing_column", ["executor", "model"])
+def test_thread_invocation_attribution_completes_partial_migration(
+    tmp_path, existing_column,
+):
+    path = tmp_path / f"partial-{existing_column}.db"
+    conn = sqlite3.connect(path)
+    conn.execute(_LEGACY_THREAD_INVOCATIONS_DDL)
+    conn.execute(
+        f"ALTER TABLE thread_invocations ADD COLUMN {existing_column} TEXT"
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(path)
+    columns = _thread_invocation_columns(db)
+    assert {"executor", "model"}.issubset(columns)
+    assert columns["executor"]["notnull"] == 0
+    assert columns["model"]["notnull"] == 0
 
 
 def test_next_thread_id_starts_at_one(tmp_path):
@@ -300,6 +408,33 @@ def test_get_pending_invocation_by_token(tmp_path):
     assert found is not None
     assert found.agent_name == "alice"
     assert db.get_pending_invocation("nonsense") is None
+
+
+@pytest.mark.parametrize("model", [None, "gpt-6-astra"])
+def test_stamp_invocation_started_records_executor_and_nullable_model(
+    tmp_path, model,
+):
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.BOOTSTRAP,
+    )
+
+    db.stamp_invocation_started(
+        inv.invocation_token,
+        session_id="sess-thread",
+        executor="codex",
+        model=model,
+    )
+
+    started = db.get_invocation_any_status(inv.invocation_token)
+    assert started is not None
+    assert started.started_at is not None
+    assert started.session_id == "sess-thread"
+    assert started.executor == "codex"
+    assert started.model == model
+    assert started.model != "default"
 
 
 def test_consume_invocation_marks_consumed(tmp_path):
@@ -2130,7 +2265,8 @@ def test_record_conversational_arrival_coalesces_while_running(tmp_path):
     assert len(_pending_reply_rows(db, "THR-001", "alice")) == 1
 
 
-def test_claim_conversational_reply_transfers_queued_to_running(tmp_path):
+@pytest.mark.parametrize("model", [None, "kimi-k2.5"])
+def test_claim_conversational_reply_transfers_queued_to_running(tmp_path, model):
     """The durable queued→running CAS stamps started_at and snapshots the
     inclusive range (acknowledged+1 .. required) atomically."""
     db = Database(tmp_path / "happyranch.db")
@@ -2148,7 +2284,9 @@ def test_claim_conversational_reply_transfers_queued_to_running(tmp_path):
             recipients=["alice"],
         )
 
-    claim = db.claim_conversational_reply(token)
+    claim = db.claim_conversational_reply(
+        token, executor="opencode", model=model,
+    )
     assert claim is not None
     assert claim.thread_id == "THR-001"
     assert claim.agent_name == "alice"
@@ -2167,6 +2305,9 @@ def test_claim_conversational_reply_transfers_queued_to_running(tmp_path):
     assert inv is not None
     assert inv.status is ThreadInvocationStatus.PENDING
     assert inv.started_at is not None  # working evidence for recovery
+    assert inv.executor == "opencode"
+    assert inv.model == model
+    assert inv.model != "default"
 
 
 def test_claim_conversational_reply_stale_duplicate_returns_none(tmp_path):

@@ -319,6 +319,9 @@ async def test_run_invocation_no_callback_silent_decline(tmp_path, monkeypatch):
     # The invocation row itself transitions to a terminal failed/timeout status.
     inv_after = db.get_invocation_any_status(inv.invocation_token)
     assert inv_after.status.value in {"failed", "timeout"}
+    assert inv_after.started_at is not None
+    assert inv_after.executor == "claude"
+    assert inv_after.model is None
 
 
 @pytest.mark.asyncio
