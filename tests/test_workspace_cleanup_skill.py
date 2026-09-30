@@ -1770,6 +1770,39 @@ def test_dirty_worktree_cache_only_removal_preserves_source_and_status(
     assert receipt["allocated_bytes_after"] == 0
 
 
+def test_nonignored_root_cache_is_refused_before_isolation(tmp_path, body):
+    """Causal TASK-7599 regression: root cache is visible as untracked."""
+    fx = _build_procedure_fixture(tmp_path)
+    (fx["eligible"] / ".gitignore").write_text("web/node_modules/\n")
+    cache = fx["eligible"] / "node_modules"
+    cache.mkdir()
+    payload = cache / "precious.bin"
+    payload.write_bytes(b"must remain byte-identical\x00\xff")
+    before = payload.read_bytes()
+    status = subprocess.run(
+        ["git", "-C", str(fx["eligible"]), "status", "--porcelain=v1",
+         "--untracked-files=all"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "?? node_modules/precious.bin" in status
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+    )
+
+    assert result["rc"] == 2, result
+    receipt = json.loads(result["stdout"].splitlines()[-2])
+    assert receipt == {"decision": "refused", "reason": "cache_not_gitignored"}
+    assert payload.read_bytes() == before
+    assert list(fx["eligible"].glob(".workspace-cleanup-isolate.*")) == []
+
+
 @pytest.mark.parametrize("scenario", ["residual", "recreate"])
 def test_cache_post_action_presence_never_reports_success(tmp_path, body, scenario):
     fx = _build_procedure_fixture(tmp_path)
@@ -1786,9 +1819,14 @@ def test_cache_post_action_presence_never_reports_success(tmp_path, body, scenar
         audit_trigger=occurrences, scan_state="clear_observation",
         rm_scenario=scenario,
     )
-    assert result["rc"] == 2, result
+    assert result["rc"] == 3, result
     assert cache.exists()
-    assert '"decision":"removed_cache"' not in result["stdout"]
+    receipt = json.loads(result["stdout"].splitlines()[-2])
+    assert receipt["decision"] == "removed_with_anomaly"
+    assert receipt["anomaly"] in {
+        "action_residual", "post_action_candidate_or_protected_changed",
+    }
+    assert '"decision":"refused"' not in result["stdout"]
 
 
 def test_candidate_recreated_after_isolated_removal_never_reports_success(
@@ -1807,9 +1845,12 @@ def test_candidate_recreated_after_isolated_removal_never_reports_success(
         audit_trigger=occurrences, scan_state="clear_observation",
         rm_scenario="recreate",
     )
-    assert result["rc"] == 2, result
+    assert result["rc"] == 3, result
     assert cache.is_dir()
-    assert '"decision":"removed_cache"' not in result["stdout"]
+    receipt = json.loads(result["stdout"].splitlines()[-2])
+    assert receipt["decision"] == "removed_with_anomaly"
+    assert receipt["anomaly"] == "post_action_candidate_or_protected_changed"
+    assert '"decision":"refused"' not in result["stdout"]
 
 
 def test_unchanged_isolated_cache_removes_only_exact_candidate(tmp_path, body):
@@ -1856,9 +1897,20 @@ def test_changed_protected_identity_never_reports_success(tmp_path, body):
         audit_trigger=occurrences, scan_state="clear_observation",
         rm_scenario="protected-change",
     )
-    assert result["rc"] == 2, result
+    assert result["rc"] == 3, result
     assert protected.lstat().st_ino != original_inode
-    assert '"decision":"removed_cache"' not in result["stdout"]
+    receipt = json.loads(result["stdout"].splitlines()[-2])
+    assert receipt["decision"] == "removed_with_anomaly"
+    assert receipt["anomaly"] == "post_action_candidate_or_protected_changed"
+    assert receipt["path"] == str(cache)
+    assert receipt["apparent_bytes_before"] > 0
+    assert receipt["allocated_bytes_before"] >= 0
+    assert receipt["apparent_bytes_after"] == 0
+    assert receipt["allocated_bytes_after"] == 0
+    assert isinstance(receipt["filesystem_free_before"], int)
+    assert isinstance(receipt["filesystem_free_after"], int)
+    assert isinstance(receipt["filesystem_free_delta"], int)
+    assert '"decision":"refused"' not in result["stdout"]
 
 
 @pytest.mark.parametrize("fault", ["nested_mount", "cross_device", "non_owned"])

@@ -984,6 +984,50 @@ b=json.loads(os.environ["WC_BEFORE"]); v=os.statvfs(os.path.dirname(os.environ["
 print(json.dumps({"decision":os.environ["WC_DECISION"],"path":os.environ["CANDIDATE"],"apparent_bytes_before":b["apparent"],"allocated_bytes_before":b["allocated"],"apparent_bytes_after":0,"allocated_bytes_after":0,"filesystem_free_before":b["fs_free"],"filesystem_free_after":after,"filesystem_free_delta":after-b["fs_free"]},sort_keys=True))'
 }
 
+_wc_anomaly_receipt() {
+  export WC_ANOMALY="$1" WC_BEFORE="$2"
+  python3 -c 'import json,os,stat
+b=json.loads(os.environ["WC_BEFORE"]); p=os.environ["CANDIDATE"]
+apparent=allocated=0
+def add(q):
+ global apparent,allocated
+ value=os.lstat(q); apparent+=value.st_size; allocated+=getattr(value,"st_blocks",0)*512
+if os.path.lexists(p):
+ add(p)
+ if stat.S_ISDIR(os.lstat(p).st_mode) and not stat.S_ISLNK(os.lstat(p).st_mode):
+  def failed(exc): raise exc
+  for root,dirs,files in os.walk(p,followlinks=False,onerror=failed):
+   for name in dirs+files: add(os.path.join(root,name))
+v=os.statvfs(os.path.dirname(p)); after=v.f_bavail*v.f_frsize
+print(json.dumps({"decision":"removed_with_anomaly","anomaly":os.environ["WC_ANOMALY"],"path":p,"apparent_bytes_before":b["apparent"],"allocated_bytes_before":b["allocated"],"apparent_bytes_after":apparent,"allocated_bytes_after":allocated,"filesystem_free_before":b["fs_free"],"filesystem_free_after":after,"filesystem_free_delta":after-b["fs_free"]},sort_keys=True))'
+}
+
+_wc_action_failure() {
+  local reason="$1" before="$2"
+  if [ -n "${WC_DELETE_STARTED:-}" ] && [ -e "$WC_DELETE_STARTED" ]; then
+    _wc_anomaly_receipt "$reason" "$before"
+    return 3
+  fi
+  _wc_refuse "$reason"
+}
+
+_wc_cache_is_gitignored() {
+  local rel tracked status
+  rel="$(python3 -c 'import os,sys
+r=os.path.relpath(os.path.abspath(sys.argv[1]),os.path.abspath(sys.argv[2]))
+if r==".." or r.startswith(".."+os.sep): raise SystemExit(1)
+print(r)' "$CANDIDATE" "$CONTAINING")" || return 1
+  tracked="$WC_TMP/cache-tracked"
+  status="$WC_TMP/cache-status"
+  git -C "$CONTAINING" check-ignore -q --no-index -- "$rel/" || return 1
+  git -C "$CONTAINING" ls-files -z -- "$rel" > "$tracked" || return 1
+  [ ! -s "$tracked" ] || return 1
+  git -C "$CONTAINING" status --porcelain=v1 -z --untracked-files=all -- "$rel" \
+    > "$status" || return 1
+  [ ! -s "$status" ] || return 1
+  return 0
+}
+
 _wc_run_gates() {
 # eligibility-commands:begin
   # gate workspace-scope
@@ -1034,6 +1078,11 @@ raise SystemExit(0 if common(primary)==common(want) else 1)' "$PRIMARY" "$CONTAI
   # gate cache-immediate-parent-manifest
   if _wc_is_cache; then
     test -f "$(dirname "$CANDIDATE")/package-lock.json" || test -f "$(dirname "$CANDIDATE")/pnpm-lock.yaml" || test -f "$(dirname "$CANDIDATE")/yarn.lock" || test -f "$(dirname "$CANDIDATE")/uv.lock" || test -f "$(dirname "$CANDIDATE")/poetry.lock" || test -f "$(dirname "$CANDIDATE")/requirements.txt" || return 1
+    # gate cache-gitignored-and-untracked
+    if ! _wc_cache_is_gitignored; then
+      WC_GATE_REASON="cache_not_gitignored"; export WC_GATE_REASON
+      return 1
+    fi
   fi
   # gate current-use-scan
   _wc_scan_job || return 1
@@ -1152,14 +1201,16 @@ run_cleanup_candidate() {
   export AGE_SECONDS
 
   if ! _wc_join; then return 2; fi
+  WC_GATE_REASON=""; export WC_GATE_REASON
   if ! _wc_run_gates; then
-    { _wc_refuse "eligibility_gate"; return 2; }
+    { _wc_refuse "${WC_GATE_REASON:-eligibility_gate}"; return 2; }
   fi
   if ! _wc_join; then return 2; fi
   # The same-context fresh scan and every other gate immediately precede the
   # literal action. Unknown/refusal never falls through to mutation.
+  WC_GATE_REASON=""; export WC_GATE_REASON
   if ! _wc_run_gates; then
-    { _wc_refuse "pre_action_eligibility_gate"; return 2; }
+    { _wc_refuse "${WC_GATE_REASON:-pre_action_eligibility_gate}"; return 2; }
   fi
 
   if ! bytes_before="$(_wc_measure_path "$CANDIDATE")"; then
@@ -1186,34 +1237,38 @@ run_cleanup_candidate() {
         if [ ! -e "${WC_DELETE_STARTED:-}" ]; then
           _wc_restore_isolated_cache >/dev/null 2>&1 || :
         fi
-        { _wc_refuse "action_failed"; return 2; }
+        _wc_action_failure "action_failed" "$bytes_before"; return $?
       fi
       if [ -e "$WC_ISOLATED_CANDIDATE" ] || [ -L "$WC_ISOLATED_CANDIDATE" ]; then
         _wc_restore_isolated_cache >/dev/null 2>&1 || :
-        { _wc_refuse "action_residual"; return 2; }
+        _wc_action_failure "action_residual" "$bytes_before"; return $?
       fi
       if [ -e "$WC_ISOLATION_DIR" ] || [ -L "$WC_ISOLATION_DIR" ]; then
-        { _wc_refuse "action_isolation_residual"; return 2; }
+        _wc_action_failure "action_isolation_residual" "$bytes_before"; return $?
       fi
       if ! git -C "$CONTAINING" status --porcelain=v1 -z | cmp -s - "$cache_status_before"; then
-        { _wc_refuse "post_action_source_or_status_changed"; return 2; }
+        _wc_action_failure "post_action_source_or_status_changed" "$bytes_before"; return $?
       fi
       if [ "$cache_source_before" != "$(_wc_source_digest "$CONTAINING")" ]; then
-        { _wc_refuse "post_action_source_or_status_changed"; return 2; }
+        _wc_action_failure "post_action_source_or_status_changed" "$bytes_before"; return $?
       fi
       if ! _wc_verify_post_action; then
-        { _wc_refuse "post_action_candidate_or_protected_changed"; return 2; }
+        _wc_action_failure "post_action_candidate_or_protected_changed" "$bytes_before"; return $?
       fi
       _wc_removed_receipt "removed_cache" "$bytes_before" ;;
     *)
       if ! _wc_snapshot_tree; then
         { _wc_refuse "action_boundary_changed"; return 2; }
       fi
+      WC_DELETE_STARTED="$WC_TMP/worktree-remove-invoked"; export WC_DELETE_STARTED
+      if ! printf 'git-worktree-remove-invoked\n' > "$WC_DELETE_STARTED"; then
+        { _wc_refuse "action_marker_failed"; return 2; }
+      fi
       if ! git -C "$PRIMARY" worktree remove "$CANDIDATE"; then
-        { _wc_refuse "action_failed"; return 2; }
+        _wc_action_failure "action_failed" "$bytes_before"; return $?
       fi
       if ! _wc_verify_post_action; then
-        { _wc_refuse "post_action_candidate_or_protected_changed"; return 2; }
+        _wc_action_failure "post_action_candidate_or_protected_changed" "$bytes_before"; return $?
       fi
       _wc_removed_receipt "removed_worktree" "$bytes_before" ;;
   esac

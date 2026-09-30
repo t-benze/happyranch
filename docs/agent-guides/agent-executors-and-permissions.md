@@ -770,10 +770,15 @@ PR preserves integrated content but may not preserve original commit topology.
 A dirty worktree remains ineligible for
 whole removal, but its literal root `.venv` or `node_modules` may be removed
 after the same gates and 24-hour floor, with tracked source bytes and Git status
-proved unchanged. The containing worktree must have the owning primary's exact
+proved unchanged. The cache itself must be positively Git-ignored, contain no
+tracked entries, and be absent from status before isolation. The containing
+worktree must have the owning primary's exact
 registered `.claude/worktrees/<TASK>` path and `task/<TASK>` branch. A complete
 no-follow `lstat` walk of the candidate runs before and again at action time;
 nested mounts, cross-device or foreign-owned entries, protected descendants,
 unreadable/capped/changing evidence, or identity drift refuse. Measurement
 includes the root inode, and success requires literal absence plus unchanged
 protected-path identities.
+Any failure after cache deletion begins or `git worktree remove` is invoked is
+reported with measured before/after accounting as `removed_with_anomaly` and
+halts later mutations; it is never mislabeled as a refusal.

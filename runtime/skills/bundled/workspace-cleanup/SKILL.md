@@ -207,7 +207,10 @@ copy. The shipped script executes them directly in the documented order.
 
 `cache-immediate-parent-manifest` applies only to a `node_modules`/`.venv`
 cache; skip it for a whole worktree. `clean` applies only to a whole worktree;
-every other gate applies to both. A
+every other gate applies to both. A cache must also be positively Git-ignored
+at its containing worktree, have no tracked entry beneath it, and produce no
+tracked or untracked status row; any Git error or negative result refuses as
+`cache_not_gitignored` before isolation. A
 non-exempt unreadable same-user process, a missing/ambiguous containing
 worktree, or any incomplete listing makes the scan `unknown` -> skip; a positive
 non-exempt use makes it `blocked` -> skip; only `clear_observation` with every
@@ -224,10 +227,13 @@ bash "$SKILL/scripts/run_cleanup_candidate.sh" "$CANDIDATE" "$CONTAINING"
 
 `CANDIDATE` is the literal cache or worktree path and `CONTAINING` is its
 registered containing worktree (the same path for a whole-worktree candidate).
-The script uses the environment contract above, prints one JSON receipt, and
-returns `0` only when the literal action ran or `2` on refusal. A refusal before
-the literal action begins performs no mutation; a failure after action starts
-may already have partially mutated the candidate as described above.
+The script uses the environment contract above and prints one JSON receipt. It
+returns `0` only for a verified removal, `2` for a pre-delete refusal, and `3`
+for `removed_with_anomaly`. A refusal before deletion begins performs no
+mutation. Once descriptor-rooted deletion begins, or `git worktree remove` is
+invoked, every later failure is `removed_with_anomaly` with the anomaly reason
+and the same before/after byte and filesystem measurements as a removal; it is
+never reported as `refused`, and further batch mutations must halt.
 
 ## Authorized actions (non-force only)
 
