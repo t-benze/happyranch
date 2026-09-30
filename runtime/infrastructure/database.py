@@ -8430,10 +8430,12 @@ class Database:
         # boundary: the causal result row/body, the immutable launch binding,
         # the authenticated pinned release/activation/selector prefix, the
         # single a0 admitted audit, the current task ownership/cancellation AND
-        # the full K/P cross-row joins with the frozen claim-time
-        # schema/permission evidence.  The already-persisted K/P row is NOT
-        # trusted on its own; a between-stage mutation/deletion/mixed identity
-        # refuses without inventing evidence or advancing J.
+        # the full K/P cross-row joins, including the immutable claim-time
+        # schema observation columns, plus the frozen permission evidence.
+        # Permission evidence is rechecked; schema values are observed-only
+        # and are never compared or rechecked.  The already-persisted K/P row
+        # is NOT trusted on its own; a between-stage mutation/deletion/mixed
+        # identity refuses without inventing evidence or advancing J.
         code, ctx = self._authenticate_v2_candidate_evidence_uncommitted(
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
@@ -8528,11 +8530,12 @@ class Database:
 
         Re-authenticates the complete evidence (result row/body, immutable
         binding, authenticated pinned release/activation/selector prefix, K/P/J
-        joins, prior a0, task ownership/cancellation) AND rechecks the ORIGINAL
-        frozen claim-time schema/permission evidence; inserts exactly one
-        candidate claim event plus the required ``claim_audited`` result-stage
-        evidence; advances J to ``claim_audited`` atomically.  A failure
-        preserves the claimed K/P.
+        joins, prior a0, task ownership/cancellation), including the immutable
+        claim-time schema observation values.  It rechecks only the frozen
+        permission evidence; schema values are never compared or rechecked.
+        Inserts exactly one candidate claim event plus the required
+        ``claim_audited`` result-stage evidence and advances J to
+        ``claim_audited`` atomically.  A failure preserves the claimed K/P.
 
         Transaction ownership: when the caller ALREADY owns a transaction this
         method refuses with ``transaction_owned`` BEFORE it would BEGIN,

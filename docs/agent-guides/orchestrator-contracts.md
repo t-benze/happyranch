@@ -618,8 +618,8 @@ owner. It authenticates the immutable ATTRIBUTION (exact causal result
 row/root/agent/session and the immutable launch binding, plus the attempt and any
 candidate reference) FIRST, before any terminal success or receipt
 classification, and never the failed CONTINUATION evidence whose absence caused
-the refusal (a missing stage audit, a drifted assessment/decision or a frozen
-schema/permission drift is not required and is never reconstructed). For the
+the refusal (a missing stage audit, a drifted assessment/decision or frozen
+permission-surface drift is not required and is never reconstructed). For the
 still-current causal owner (`in_progress`, null `block_kind`, not cancelled) it
 writes the closed refusal result-stage event, a candidate `refused` event if K
 exists, the normal `escalation` audit and the bounded `completion_report` refusal

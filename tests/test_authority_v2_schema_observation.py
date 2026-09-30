@@ -17,10 +17,12 @@ import pytest
 from runtime.daemon.zombie_reaper import _sweep_org_zombies
 from runtime.infrastructure.database import Database
 from runtime.models import TaskRecord, TaskStatus
+from runtime.orchestrator import authority
 from runtime.orchestrator.authority import HOOK_V2_CONTINUED, HOOK_V2_REFUSED
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 from tests.authority_v2_historical_schema import (
     HISTORICAL_AGENT_ENROLLMENTS_SQL,
+    historical_inventory_digest,
     load_historical_fixture,
     reconstruct_historical_database,
 )
@@ -80,6 +82,56 @@ def _historical_store(tmp_path) -> AuthorityPolicyStore:
         "AND name='agent_enrollments'"
     ).fetchone() is not None
     return store
+
+
+def test_full_historical_fixture_reconstructs_and_migrates(tmp_path):
+    """Keep historical fixture fidelity and the real migration seam covered."""
+    fixture = load_historical_fixture()
+    assert fixture["provenance"]["source_commit"] == (
+        "f39b4934611ca13ab7d8b7fa2d7be983a4bfb7a5"
+    )
+    assert len(fixture["provenance"]["runtime_source_sha256"]) == 64
+    assert fixture["object_count"] == len(fixture["objects"])
+
+    historical = tmp_path / "historical.db"
+    reconstruct_historical_database(historical)
+
+    raw = sqlite3.connect(str(historical))
+    try:
+        inventory = authority._v2_capture_inventory(raw)
+        xinfo = {
+            row[1]: row
+            for row in raw.execute("PRAGMA table_xinfo('task_results')")
+        }
+    finally:
+        raw.close()
+    assert xinfo["output_summary"][3] == 0
+    assert xinfo["output_summary"][4] is None
+    assert xinfo["confidence_score"][3] == 0
+    assert xinfo["confidence_score"][4] is None
+
+    task_results_sql = next(
+        obj["sql"]
+        for obj in fixture["objects"]
+        if obj["type"] == "table" and obj["name"] == "task_results"
+    )
+    assert "output_summary TEXT" in task_results_sql
+    assert "output_summary TEXT NOT NULL" not in task_results_sql
+    assert "confidence_score INTEGER" in task_results_sql
+    assert "confidence_score INTEGER NOT NULL" not in task_results_sql
+    assert historical_inventory_digest(inventory) == (
+        fixture["historical_inventory_digest"]
+    )
+
+    migrated_db = Database(historical)
+    try:
+        observation = authority.capture_authority_policy_v2_schema_observation(
+            migrated_db
+        )
+        assert observation is not None
+        assert observation.object_count > fixture["object_count"]
+    finally:
+        migrated_db._conn.close()
 
 
 def _admit_historical(tmp_path, *, carrier=None, admission=None):
