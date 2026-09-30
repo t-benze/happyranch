@@ -102,6 +102,8 @@ CREATE TABLE thread_invocations (
     started_at TEXT,                           -- set when runner launches subprocess
     consumed_at TEXT,                          -- set on terminal status transition
     session_id TEXT,                           -- executor's session_id, recorded for audit
+    executor TEXT,                             -- nullable invocation-time executor (Usage v1)
+    model TEXT,                                -- nullable configured model; NULL means default/unknown
     dispatched_task_id TEXT,                   -- non-null iff a dispatch was issued on this token
     decline_reason TEXT,                       -- runner-recorded reason on timeout/failure
     FOREIGN KEY (thread_id) REFERENCES threads(id)
@@ -110,6 +112,11 @@ CREATE INDEX idx_thread_invocations_token ON thread_invocations(invocation_token
 CREATE INDEX idx_thread_invocations_thread ON thread_invocations(thread_id);
 CREATE INDEX idx_thread_invocations_pending ON thread_invocations(status) WHERE status = 'pending';
 ```
+
+The `executor` and `model` lines are the additive THR-272 Usage v1 extension.
+Both are written with `started_at`; pre-extension rows remain NULL without
+backfill, and an executor-default model is stored as NULL rather than the
+literal `default`.
 
 ### 3.2 ID format and sequencing
 

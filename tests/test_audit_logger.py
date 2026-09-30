@@ -48,11 +48,37 @@ def test_log_memory_read(db):
 
 def test_log_session_start(db):
     logger = AuditLogger(db)
-    logger.log_session_start("TASK-001", "dev_agent", "/tmp/workspace")
+    logger.log_session_start(
+        "TASK-001",
+        "dev_agent",
+        "/tmp/workspace",
+        session_id="sess-task",
+        invocation_purpose="worker_execution",
+        executor="codex",
+        model=None,
+    )
     logs = db.get_audit_logs("TASK-001")
     assert len(logs) == 1
     assert logs[0]["action"] == "session_start"
-    assert logs[0]["payload"]["workspace"] == "/tmp/workspace"
+    assert logs[0]["payload"] == {
+        "workspace": "/tmp/workspace",
+        "session_id": "sess-task",
+        "invocation_purpose": "worker_execution",
+        "executor": "codex",
+        "model": None,
+    }
+
+
+def test_log_dream_started_includes_lifecycle_attribution(db):
+    logger = AuditLogger(db)
+    logger.log_dream_started(
+        "DREAM-001", "dev_agent", executor="claude", model=None,
+    )
+
+    logs = db.get_audit_logs("DREAM-001")
+    assert len(logs) == 1
+    assert logs[0]["action"] == "dream_started"
+    assert logs[0]["payload"] == {"executor": "claude", "model": None}
 
 
 def test_log_session_end(db):

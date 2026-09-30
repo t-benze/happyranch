@@ -1,21 +1,31 @@
-# Usage v1: parser semantics and normalized reported state
+# Usage v1: parser semantics, reported state, and lifecycle attribution
 
-> Status: current (PR1 of 4)
+> Status: current (PR1 and PR2 of 4)
 > Current Source: `runtime/orchestrator/executors.py`,
-> `runtime/orchestrator/usage_normalization.py`, and
+> `runtime/orchestrator/usage_normalization.py`,
+> `runtime/infrastructure/database.py`,
+> `runtime/infrastructure/audit_logger.py`,
+> `runtime/orchestrator/orchestrator.py`,
+> `runtime/daemon/thread_runner.py`, `runtime/daemon/dream_runner.py`, and
 > `docs/agent-guides/features-and-invariants.md`
-> Authority: THR-272 seq64; Product requirements TASK-9165, sections 6 and 10
+> Authority: THR-272 seq64; Product requirements TASK-9165, sections 6 and 10;
+> product_lead THR-272 seq68
 
 ## Scope
 
-This PR establishes the provider-independent usage seam needed by later Usage
-v1 read-model and UI work. It corrects Codex cache-write ingest, declares the
+PR1 establishes the provider-independent usage seam needed by later Usage v1
+read-model and UI work. It corrects Codex cache-write ingest, declares the
 reasoning meaning of every verifiable built-in parser, normalizes one stored
 row into reported states, and preserves an offline Codex resume regression.
 
-It does not add a database column, migrate or rewrite old rows, change
-`TokenUsage.total`, change the existing `happyranch tokens`/`GET /tokens`
-contract, build lifecycle coverage, or add a route or UI.
+PR2 captures executor/model cohort identity at the lifecycle start even when a
+run later produces no usage. It adds two nullable thread-invocation columns and
+additive fields on the existing task and dream start audit events. It does not
+infer or backfill history.
+
+Together these PRs do not rewrite old rows, change `TokenUsage.total`, change
+the existing `happyranch tokens`/`GET /tokens` contract, build the PR3
+lifecycle read model/coverage queries, or add a route or UI.
 
 ## Stored Codex contract
 
@@ -124,6 +134,84 @@ On every Codex CLI major-version change:
    the semantics are understood. Codex Workload remains available.
 
 This procedure is opt-in and never runs live in CI.
+
+## Lifecycle-side executor and model attribution
+
+Efficiency cohort membership comes from lifecycle rows, never from an inner
+join to usage and never from an agent's current configuration.
+
+### Thread invocations
+
+`thread_invocations` has two additive nullable TEXT columns:
+
+- `executor`: the effective executor kind selected for the invocation;
+- `model`: the configured model argument passed to the executor, or NULL when
+  no model is supplied and the executor chooses its default.
+
+Fresh DDL includes both columns. Existing databases add only a missing column
+on open, so pre-column, repeatedly opened, and one-column-partial databases
+converge idempotently. The migration has no default, `NOT NULL`, index, data
+rewrite, or inference; every legacy row remains NULL.
+
+Both production writers that set `thread_invocations.started_at` write the
+same effective executor/model tuple in that same UPDATE:
+
+1. `Database.claim_conversational_reply`, whose queued-to-running transaction
+   stamps a conversational reply before prompt work; and
+2. `Database.stamp_invocation_started`, used by the runner for the invocation
+   session ID and for non-reply start stamping.
+
+The runner resolves one live `AgentDef` tuple and reuses it for both writers
+and the actual executor call. An unavailable agent that launches no provider
+gets no guessed attribution.
+
+### Task session starts
+
+The task `session_start` payload keeps the existing `workspace` value and adds
+exactly:
+
+```json
+{
+  "workspace": "<unchanged workspace path>",
+  "session_id": "<daemon runtime invocation session>",
+  "invocation_purpose": "worker_execution | manager_decision | unattributed",
+  "executor": "<effective executor>",
+  "model": "<configured model or null>"
+}
+```
+
+The runtime session ID is the same value written to
+`session_token_usage.session_id` for that run; provider conversation IDs remain
+separate. The purpose is selected from the immutable spawn mode already used
+to build the launched prompt:
+
+- decision-capable `task` spawn → `manager_decision`;
+- leaf `subtask` spawn → `worker_execution`;
+- a mode outside those two → `unattributed`.
+
+This is deliberately independent of agent title, assigned role, task owner,
+and root/leaf position. A manager's bounded self-delegated subtask is worker
+execution; a worker launched as a decision-capable task is a manager decision.
+
+THR-247 completion recovery is a callback-only launch rather than either v1
+task run type, so its `session_start.invocation_purpose` is `unattributed`.
+It remains durably distinguishable from ordinary sessions without another
+payload field: `task_completion_recoveries.recovery_session_id` uniquely binds
+the recovery runtime session. PR3 may use that existing relation.
+
+### Dream starts
+
+`dream_started` has the exact additive payload
+`{"executor": <effective executor>, "model": <configured model or null>}`.
+The tuple is resolved before the event and is the tuple later passed to
+`executor.run`.
+
+### Missing-data boundary
+
+No configured model means JSON/SQL NULL—never the literal `"default"` and
+never a guessed model. Old task/dream event payloads and old thread rows stay
+historical. PR3 must surface their lifecycle attribution as unknown and must
+not make a missing usage row determine cohort membership.
 
 ## Legacy total boundary
 

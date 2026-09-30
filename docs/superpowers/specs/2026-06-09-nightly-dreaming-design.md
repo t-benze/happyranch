@@ -284,7 +284,9 @@ Dashboard integration is not required in v1, but audit rows should make future d
 Audit actions should include:
 
 - `dream_scheduled`
-- `dream_started`
+- `dream_started` (`payload={"executor": <effective executor>, "model":
+  <configured model or null>}` as of THR-272 Usage v1; no inferred
+  `"default"` model)
 - `dream_completed`
 - `dream_failed`
 - `dream_timeout`

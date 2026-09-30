@@ -2667,6 +2667,8 @@ class Database:
                 started_at TEXT,
                 consumed_at TEXT,
                 session_id TEXT,
+                executor TEXT,
+                model TEXT,
                 dispatched_task_id TEXT,
                 decline_reason TEXT,
                 FOREIGN KEY (thread_id) REFERENCES threads(id)
@@ -2984,6 +2986,7 @@ class Database:
                 if "duplicate column name" not in str(exc).lower():
                     raise
         self._migrate_session_token_usage_scope_columns()
+        self._migrate_thread_invocation_attribution_columns()
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
         # error so this is idempotent across restarts.
@@ -3959,6 +3962,21 @@ class Database:
             "COALESCE(scope_type, 'task'), COALESCE(scope_id, task_id), "
             "agent, session_id)"
         )
+        self._conn.commit()
+
+    def _migrate_thread_invocation_attribution_columns(self) -> None:
+        """Add nullable invocation-time executor/model without rewriting rows."""
+        columns = {
+            row["name"]
+            for row in self._conn.execute(
+                "PRAGMA table_info(thread_invocations)"
+            ).fetchall()
+        }
+        for name in ("executor", "model"):
+            if name not in columns:
+                self._conn.execute(
+                    f"ALTER TABLE thread_invocations ADD COLUMN {name} TEXT"
+                )
         self._conn.commit()
 
     def _backfill_revisit_of_task_id(self) -> None:
@@ -18905,6 +18923,8 @@ class Database:
             started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
             consumed_at=datetime.fromisoformat(row["consumed_at"]) if row["consumed_at"] else None,
             session_id=row["session_id"],
+            executor=row["executor"],
+            model=row["model"],
             dispatched_task_id=row["dispatched_task_id"],
             decline_reason=row["decline_reason"],
         )
@@ -19186,12 +19206,18 @@ class Database:
 
     @_synchronized
     def stamp_invocation_started(
-        self, token: str, *, session_id: str | None
+        self,
+        token: str,
+        *,
+        session_id: str | None,
+        executor: str | None = None,
+        model: str | None = None,
     ) -> None:
         self._conn.execute(
-            "UPDATE thread_invocations SET started_at = ?, session_id = ? "
+            "UPDATE thread_invocations SET started_at = ?, session_id = ?, "
+            "executor = ?, model = ? "
             "WHERE invocation_token = ? AND status = 'pending'",
-            (_now().isoformat(), session_id, token),
+            (_now().isoformat(), session_id, executor, model, token),
         )
         self._conn.commit()
 
@@ -21826,7 +21852,11 @@ class Database:
 
     @_synchronized
     def claim_conversational_reply(
-        self, token: str,
+        self,
+        token: str,
+        *,
+        executor: str | None = None,
+        model: str | None = None,
     ) -> ThreadReplyClaim | None:
         """Durable queued→running CAS for a conversational REPLY.
 
@@ -21868,9 +21898,10 @@ class Database:
             running_from = acknowledged + 1
             running_through = required
             self._conn.execute(
-                "UPDATE thread_invocations SET started_at = ? "
+                "UPDATE thread_invocations SET started_at = ?, executor = ?, "
+                "model = ? "
                 "WHERE invocation_token = ? AND status = 'pending'",
-                (now, token),
+                (now, executor, model, token),
             )
             self._conn.execute(
                 "UPDATE thread_reply_delivery_state SET "

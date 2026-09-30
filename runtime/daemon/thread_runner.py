@@ -962,13 +962,42 @@ async def run_invocation(
         logger.info("run_invocation: token %s already non-pending", invocation_token[:8])
         return
 
+    # Resolve the exact executor/model tuple before either started-at writer.
+    # The queued->running REPLY claim stamps lifecycle start atomically, so it
+    # must receive the same tuple later passed to executor.run. Missing or
+    # terminated agents still follow the existing claimed-then-settled path,
+    # but record no guessed executor/model because no provider is launched.
+    try:
+        from runtime.orchestrator._paths import OrgPaths
+        paths = OrgPaths(root=org_state.root)
+    except Exception:
+        paths = None
+    terminated = False
+    try:
+        from runtime.orchestrator.prompt_loader import is_terminated, load_agent
+        agent_def = load_agent(paths, inv.agent_name) if paths else None
+        terminated = bool(
+            agent_def is None and paths and is_terminated(paths, inv.agent_name)
+        )
+    except Exception:
+        agent_def = None
+    executor_name: str | None = None
+    model_name: str | None = None
+    if agent_def is not None:
+        executor_name = agent_def.executor.lower()
+        if not _is_registered_executor(executor_name):
+            executor_name = "claude"
+        model_name = agent_def.model
+
     # GitHub #688 Slice B: a conversational REPLY must pass the durable
     # queued→running CAS before any prompt/subprocess work. A stale/duplicate
     # queue notification no-ops here. BOOTSTRAP/TASK_FOLLOWUP keep the legacy
     # direct path (no delivery-state row).
     claim: "ThreadReplyClaim | None" = None
     if inv.purpose is ThreadInvocationPurpose.REPLY:
-        claim = org_state.db.claim_conversational_reply(invocation_token)
+        claim = org_state.db.claim_conversational_reply(
+            invocation_token, executor=executor_name, model=model_name,
+        )
         if claim is None:
             logger.info(
                 "run_invocation: token %s stale/duplicate REPLY (claim CAS miss)",
@@ -990,26 +1019,8 @@ async def run_invocation(
 
     workspace = org_state.root / "workspaces" / inv.agent_name
 
-    # Build OrgPaths for executor resolution + allow rules.
-    try:
-        from runtime.orchestrator._paths import OrgPaths
-        paths = OrgPaths(root=org_state.root)
-    except Exception:
-        paths = None
-
-    # THR-095: read executor from org/agents/<name>.md (single source of truth).
-    # FAIL-CLOSED: terminated or missing agents must never fall back to
-    # ``claude`` and must never reach executor construction.
-    try:
-        from runtime.orchestrator.prompt_loader import is_terminated, load_agent
-        agent_def = load_agent(paths, inv.agent_name) if paths else None
-    except Exception:
-        agent_def = None
-
     if agent_def is None:
-        reason = "agent_unavailable"
-        if paths and is_terminated(paths, inv.agent_name):
-            reason = "agent_terminated"
+        reason = "agent_terminated" if terminated else "agent_unavailable"
         _settle_or_fail_reply(
             org_state, invocation_token=invocation_token, claim=claim,
             status=ThreadInvocationStatus.DECLINED,
@@ -1025,12 +1036,7 @@ async def run_invocation(
         )
         return
 
-    executor_name = agent_def.executor.lower()
-    if not _is_registered_executor(executor_name):
-        executor_name = "claude"
-
-    # Issue #568: forward AgentDef.model to executor.run for thread invocations.
-    model_name: str | None = agent_def.model
+    assert executor_name is not None
 
     breaker_key = _breaker_executor_key(executor_name, model_name, settings)
     org_state.db.close_thread_reply_breakers_except(
@@ -1263,7 +1269,12 @@ async def run_invocation(
             prompt += "\n" + escalation_note
         prompt += range_note
 
-        org_state.db.stamp_invocation_started(invocation_token, session_id=session_id)
+        org_state.db.stamp_invocation_started(
+            invocation_token,
+            session_id=session_id,
+            executor=executor_name,
+            model=model_name,
+        )
         await _publish_invocation_event(
             org_state, thread_id=inv.thread_id, agent_name=inv.agent_name,
             seq=inv.triggering_seq, kind="invocation_started", status="working",

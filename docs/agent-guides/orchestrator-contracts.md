@@ -208,6 +208,14 @@ fabricated. Both `happyranch details` and the Tasks UI render this summary;
 `runtime/skills/bundled/start-task/SKILL.md` §5 makes the corresponding worker
 checkpoint policy concrete.
 
+The same `session_start` row now also carries additive Usage v1 lifecycle
+fields: runtime `session_id`, actual spawn `invocation_purpose`, `executor`,
+and nullable `model`; `workspace` is unchanged. Spawn purpose follows the
+decision-loop versus worker-execution mode, never agent role or root/leaf
+shape. THR-247 callback-only completion recovery is `unattributed` and remains
+durably distinguishable through `task_completion_recoveries.recovery_session_id`.
+These payload fields are not projected by `work_status`.
+
 ### Post-deploy operational measurement (not a shipping gate)
 
 The per-task states above make **individual** tasks observable; they do not,
