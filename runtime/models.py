@@ -3972,6 +3972,7 @@ class ThreadInvocation(BaseModel):
     session_id: str | None = None
     executor: str | None = None
     model: str | None = None
+    reply_message_seq: int | None = None
     dispatched_task_id: str | None = None
     decline_reason: str | None = None
 

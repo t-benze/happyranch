@@ -104,6 +104,7 @@ CREATE TABLE thread_invocations (
     session_id TEXT,                           -- executor's session_id, recorded for audit
     executor TEXT,                             -- nullable invocation-time executor (Usage v1)
     model TEXT,                                -- nullable configured model; NULL means default/unknown
+    reply_message_seq INTEGER,                 -- persisted reply message, NULL when outcome unrecorded
     dispatched_task_id TEXT,                   -- non-null iff a dispatch was issued on this token
     decline_reason TEXT,                       -- runner-recorded reason on timeout/failure
     FOREIGN KEY (thread_id) REFERENCES threads(id)
@@ -111,12 +112,26 @@ CREATE TABLE thread_invocations (
 CREATE INDEX idx_thread_invocations_token ON thread_invocations(invocation_token);
 CREATE INDEX idx_thread_invocations_thread ON thread_invocations(thread_id);
 CREATE INDEX idx_thread_invocations_pending ON thread_invocations(status) WHERE status = 'pending';
+CREATE UNIQUE INDEX idx_thread_invocations_reply_message
+    ON thread_invocations(thread_id, reply_message_seq)
+    WHERE reply_message_seq IS NOT NULL;
 ```
 
 The `executor` and `model` lines are the additive THR-272 Usage v1 extension.
 Both are written with `started_at`; pre-extension rows remain NULL without
 backfill, and an executor-default model is stored as NULL rather than the
 literal `default`.
+
+The `reply_message_seq` line and partial unique index are the additive THR-272
+Usage v1 PR2b extension. `Database.reply_conversational` writes the link in the
+same transaction as the message only when that transaction itself terminalizes
+the matching thread/agent token (modern REPLY settlement, legacy REPLY fallback,
+BOOTSTRAP, or TASK_FOLLOWUP). A failed link rolls the message and terminal
+transition back together. Every other terminal path—including manual escalation
+resolution via `consume_invocation`, decline, failure, timeout, discard, and
+restart recovery—leaves it NULL. Legacy rows remain NULL without inference or
+backfill. NULL means “reply outcome not recorded” (legacy or no persisted
+message), not “no reply.”
 
 ### 3.2 ID format and sequencing
 
