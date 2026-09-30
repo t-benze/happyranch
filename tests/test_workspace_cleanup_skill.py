@@ -563,6 +563,10 @@ def _write_stubs(bin_dir: Path) -> None:
         "      mkdir \"$WC_ISOLATED_CANDIDATE\" || exit $?\n"
         "      printf 'unvalidated replacement\\n' > \"$WC_ISOLATED_CANDIDATE/replacement\" || exit $? ;;\n"
         "    action-fail) exit 71 ;;\n"
+        "    partial-delete)\n"
+        "      printf 'descriptor-rooted-delete-started\\n' > \"$WC_DELETE_STARTED\" || exit $?\n"
+        "      /usr/bin/rm -- \"$WC_ISOLATED_CANDIDATE/deleted.bin\" || exit $?\n"
+        "      exit 71 ;;\n"
         "  esac\n"
         "fi\n"
         f"{shlex.quote(sys.executable)} \"$@\"\n"
@@ -1196,14 +1200,47 @@ def test_pre_descriptor_admission_root_swap_refuses_and_preserves_both_objects(
         rm_scenario="final-dispatch-swap",
         action_scenario="final-dispatch-swap",
     )
-    assert result["rc"] == 2, result
+    assert result["rc"] == 3, result
     assert '"decision":"removed_cache"' not in result["stdout"]
+    receipt = json.loads(result["stdout"].splitlines()[-2])
+    assert receipt["decision"] == "isolation_anomaly"
+    assert receipt["anomaly"] == "isolation_restore_failed"
     assert (cache / "replacement").read_text() == "unvalidated replacement\n"
     preserved = list(fx["eligible"].glob(
         ".workspace-cleanup-isolate.*/node_modules.validated/validated"
     ))
     assert len(preserved) == 1, preserved
     assert preserved[0].read_text() == "validated bytes\n"
+
+
+def test_partial_delete_anomaly_accounts_for_isolated_residual_bytes(tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    cache = fx["eligible"] / "node_modules"
+    cache.mkdir()
+    (cache / "deleted.bin").write_bytes(b"delete me")
+    residual = cache / "residual.bin"
+    residual.write_bytes(b"x" * 8192)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+        action_scenario="partial-delete",
+    )
+    assert result["rc"] == 3, result
+    receipt = json.loads(result["stdout"].splitlines()[-2])
+    assert receipt["decision"] == "removed_with_anomaly"
+    assert receipt["anomaly"] == "action_failed"
+    isolated = receipt["residual_locations"]["isolated_candidate"]
+    assert isolated["exists"] is True
+    assert isolated["apparent_bytes"] >= 8192
+    assert isolated["allocated_bytes"] >= 8192
+    assert receipt["apparent_bytes_after"] >= isolated["apparent_bytes"]
+    assert receipt["allocated_bytes_after"] >= isolated["allocated_bytes"]
+    assert receipt["measurement_error"] is None
 
 
 def test_isolation_identity_drift_refuses_and_preserves_both_objects(
@@ -1222,8 +1259,11 @@ def test_isolation_identity_drift_refuses_and_preserves_both_objects(
         audit_trigger=occurrences, scan_state="clear_observation",
         mv_scenario="isolation-drift",
     )
-    assert result["rc"] == 2, result
+    assert result["rc"] == 3, result
     assert '"decision":"removed_cache"' not in result["stdout"]
+    receipt = json.loads(result["stdout"].splitlines()[-2])
+    assert receipt["decision"] == "isolation_anomaly"
+    assert receipt["anomaly"] == "isolation_restore_failed"
     assert (cache / "replacement").read_text() == "isolation replacement\n"
     preserved = list(fx["eligible"].glob(
         ".workspace-cleanup-isolate.*/node_modules.validated/validated"

@@ -784,6 +784,15 @@ interpreter directly under an owned literal `.venv/bin`, resolving to the
 configured uv Python store or that venv's `pyvenv.cfg` home outside the
 workspace and protected roots. Its link and target identities are snapshotted;
 descriptor-rooted deletion unlinks the link and never follows it.
-Any failure after cache deletion begins or `git worktree remove` is invoked is
-reported with measured before/after accounting as `removed_with_anomaly` and
-halts later mutations; it is never mislabeled as a refusal.
+Failed restoration after a cache was moved into isolation is reported with
+original/isolated/isolation-residue accounting as exit-3 `isolation_anomaly`;
+only successful restoration may remain an exit-2 refusal. Any failure after
+cache deletion begins or `git worktree remove` is invoked is similarly measured
+as `removed_with_anomaly`. Unavailable residual measurements are explicit,
+never false zeroes. Both anomaly decisions halt later mutations. The batch also
+halts after journaling any timeout (after whole-process-group termination),
+signal death, exit 3, malformed or mismatched receipt, unreceipted nonzero exit,
+runner exception, or unclassifiable outcome. Resume accepts only a unique,
+closed-schema terminal row exactly bound to the current manifest identity and
+argv; stale, malformed, duplicate, or conflicting rows fail before any runner
+starts.

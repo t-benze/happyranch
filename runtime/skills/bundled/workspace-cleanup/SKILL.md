@@ -242,12 +242,17 @@ bash "$SKILL/scripts/run_cleanup_candidate.sh" "$CANDIDATE" "$CONTAINING"
 `CANDIDATE` is the literal cache or worktree path and `CONTAINING` is its
 registered containing worktree (the same path for a whole-worktree candidate).
 The script uses the environment contract above and prints one JSON receipt. It
-returns `0` only for a verified removal, `2` for a pre-delete refusal, and `3`
-for `removed_with_anomaly`. A refusal before deletion begins performs no
-mutation. Once descriptor-rooted deletion begins, or `git worktree remove` is
-invoked, every later failure is `removed_with_anomaly` with the anomaly reason
-and the same before/after byte and filesystem measurements as a removal; it is
-never reported as `refused`, and further batch mutations must halt.
+returns `0` only for a verified removal and `2` only for a refusal whose final
+state has no outstanding mutation: either the cache was never moved, or it was
+moved into private isolation and successfully restored. Exit `3` is the anomaly
+family. A restoration failure before recursive deletion is the distinct
+`isolation_anomaly` / `isolation_restore_failed`; once descriptor-rooted
+deletion begins, or `git worktree remove` is invoked, every later failure is
+`removed_with_anomaly`. Both exit-3 decisions carry the anomaly reason and
+measured original, isolated-candidate, isolation-directory-residue, total, and
+filesystem accounting. An unavailable residual measurement is explicit (`null`
+plus `measurement_error`), never a false zero. An anomaly is never reported as
+`refused`, and further batch mutations must halt.
 
 For an inventory manifest, use the bundled resumable batch driver rather than
 an ad-hoc loop:
@@ -262,11 +267,19 @@ The manifest is a JSON array or JSONL with exactly `candidate`, `containing`,
 `kind` (`worktree` or `cache`), and inventory `allocated_bytes`. The driver
 orders worktrees first and caches second, largest first within each class with
 literal-path tie-breaking. It invokes this runner once per candidate with
-literal argv and fsyncs a terminal journal row after every attempt. A refusal,
-runner error, timeout, malformed receipt, or exception is isolated and later
-candidates continue; `removed_with_anomaly` is journaled and immediately halts
-the batch with exit `3`. Re-running against the same journal skips candidates
-that already have a terminal row. Bounds stop only between candidates.
+literal argv and fsyncs a terminal journal row after every attempt. Only a
+closed-schema exit-2 pre-action receipt (`refused`, `report_only`, or
+`inventory_only`) and a closed-schema exit-0 verified-removal receipt permit the
+next candidate. Any exit `3`, timeout, signal death, unreceipted nonzero exit,
+malformed/missing output, exit/receipt mismatch, runner exception, or other
+unclassifiable result is journaled and halts the batch with a nonzero exit. Each
+runner owns a new process session; timeout sends SIGTERM then SIGKILL to the
+whole process group, reaps the runner, and records whether group survival could
+be ruled out before halting. Re-running skips only a unique, valid terminal row
+whose candidate, containing worktree, kind, allocated bytes, and exact argv
+match the current manifest. A stale, malformed, unsafe, duplicate, or conflicting
+journal row fails closed before any runner starts. Bounds stop only between
+candidates.
 
 Run each batch driver as a durable `happyranch` job bound to the cleanup task's
 current ACTIVE task/session, choose a batch/deadline comfortably inside one
@@ -288,9 +301,11 @@ refusal rather than a batch-wide stop.
   through authenticated no-follow directory descriptors. A replacement before
   descriptor admission refuses without deletion. Descriptor-relative primitive
   support is checked only after the candidate has been moved into private
-  isolation: an unsupported platform refuses before recursive deletion, then
-  the caller attempts restoration. Restoration may fail and leave the candidate
-  in isolation; the refusal never emits `removed_cache`. The cache must be
+  isolation: an unsupported platform refuses before recursive deletion only
+  when the caller successfully restores the cache. A failed restoration emits
+  exit-3 `isolation_anomaly` / `isolation_restore_failed`, measures both the
+  original and isolated locations plus isolation-directory residue, and halts
+  the batch; it is never a refusal and never emits `removed_cache`. The cache must be
   inside a registered, non-primary linked worktree of your own workspace, and
   removal is allowed only when its
   immediate parent has the accepted lock/manifest, the owning task has been

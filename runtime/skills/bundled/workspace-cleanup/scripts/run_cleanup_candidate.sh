@@ -635,6 +635,7 @@ _wc_restore_isolated_cache() {
 }
 
 _wc_isolate_cache() {
+  WC_CACHE_ISOLATED=""; export WC_CACHE_ISOLATED
   if ! WC_ISOLATION_DIR="$(mktemp -d "$CONTAINING/.workspace-cleanup-isolate.XXXXXX")"; then
     return 1
   fi
@@ -644,6 +645,7 @@ _wc_isolate_cache() {
     rmdir -- "$WC_ISOLATION_DIR" 2>/dev/null || :
     return 1
   fi
+  WC_CACHE_ISOLATED=1; export WC_CACHE_ISOLATED
   _wc_validate_isolated_cache
 }
 
@@ -1105,21 +1107,44 @@ print(json.dumps({"decision":os.environ["WC_DECISION"],"path":os.environ["CANDID
 }
 
 _wc_anomaly_receipt() {
-  export WC_ANOMALY="$1" WC_BEFORE="$2"
+  export WC_ANOMALY="$1" WC_BEFORE="$2" WC_ANOMALY_DECISION="${3:-removed_with_anomaly}"
   python3 -c 'import json,os,stat
-b=json.loads(os.environ["WC_BEFORE"]); p=os.environ["CANDIDATE"]
-apparent=allocated=0
-def add(q):
- global apparent,allocated
- value=os.lstat(q); apparent+=value.st_size; allocated+=getattr(value,"st_blocks",0)*512
-if os.path.lexists(p):
- add(p)
- if stat.S_ISDIR(os.lstat(p).st_mode) and not stat.S_ISLNK(os.lstat(p).st_mode):
-  def failed(exc): raise exc
-  for root,dirs,files in os.walk(p,followlinks=False,onerror=failed):
-   for name in dirs+files: add(os.path.join(root,name))
-v=os.statvfs(os.path.dirname(p)); after=v.f_bavail*v.f_frsize
-print(json.dumps({"decision":"removed_with_anomaly","anomaly":os.environ["WC_ANOMALY"],"path":p,"apparent_bytes_before":b["apparent"],"allocated_bytes_before":b["allocated"],"apparent_bytes_after":apparent,"allocated_bytes_after":allocated,"filesystem_free_before":b["fs_free"],"filesystem_free_after":after,"filesystem_free_delta":after-b["fs_free"]},sort_keys=True))'
+b=json.loads(os.environ["WC_BEFORE"]); original=os.environ["CANDIDATE"]
+isolated=os.environ.get("WC_ISOLATED_CANDIDATE",""); isolation=os.environ.get("WC_ISOLATION_DIR","")
+def measure(path,exclude=""):
+ result={"path":path,"exists":False,"apparent_bytes":0,"allocated_bytes":0,"measurement_error":None}
+ if not path or not os.path.lexists(path): return result
+ apparent=allocated=0
+ try:
+  def add(q):
+   nonlocal apparent,allocated
+   value=os.lstat(q); apparent+=value.st_size; allocated+=getattr(value,"st_blocks",0)*512
+  add(path); value=os.lstat(path); result["exists"]=True
+  if stat.S_ISDIR(value.st_mode) and not stat.S_ISLNK(value.st_mode):
+   def failed(exc): raise exc
+   for root,dirs,files in os.walk(path,followlinks=False,onerror=failed):
+    children=[]
+    for name in dirs+files:
+     q=os.path.join(root,name)
+     if exclude and (q==exclude or q.startswith(exclude.rstrip(os.sep)+os.sep)): continue
+     children.append(q)
+    if exclude:
+     dirs[:]=[name for name in dirs if os.path.join(root,name)!=exclude]
+    for q in children: add(q)
+  result["apparent_bytes"]=apparent; result["allocated_bytes"]=allocated
+ except OSError as exc:
+  result["apparent_bytes"]=None; result["allocated_bytes"]=None
+  result["measurement_error"]=type(exc).__name__
+ return result
+locations={"original":measure(original),"isolated_candidate":measure(isolated),"isolation_directory_residue":measure(isolation,isolated)}
+errors=[name+":"+value["measurement_error"] for name,value in locations.items() if value["measurement_error"]]
+apparent=None if errors else sum(value["apparent_bytes"] for value in locations.values())
+allocated=None if errors else sum(value["allocated_bytes"] for value in locations.values())
+try:
+ v=os.statvfs(os.path.dirname(original)); after=v.f_bavail*v.f_frsize; delta=after-b["fs_free"]
+except OSError as exc:
+ after=b["fs_free"]; delta=0; errors.append("filesystem_free:"+type(exc).__name__)
+print(json.dumps({"decision":os.environ["WC_ANOMALY_DECISION"],"anomaly":os.environ["WC_ANOMALY"],"path":original,"apparent_bytes_before":b["apparent"],"allocated_bytes_before":b["allocated"],"apparent_bytes_after":apparent,"allocated_bytes_after":allocated,"residual_locations":locations,"measurement_error":";".join(errors) if errors else None,"filesystem_free_before":b["fs_free"],"filesystem_free_after":after,"filesystem_free_delta":delta},sort_keys=True))'
 }
 
 _wc_action_failure() {
@@ -1350,12 +1375,21 @@ run_cleanup_candidate() {
         { _wc_refuse "action_boundary_changed"; return 2; }
       fi
       if ! _wc_isolate_cache; then
-        _wc_restore_isolated_cache >/dev/null 2>&1 || :
+        if [ "${WC_CACHE_ISOLATED:-}" = "1" ]; then
+          if _wc_restore_isolated_cache >/dev/null 2>&1; then
+            { _wc_refuse "action_isolation_changed"; return 2; }
+          fi
+          _wc_anomaly_receipt "isolation_restore_failed" "$bytes_before" "isolation_anomaly"
+          return 3
+        fi
         { _wc_refuse "action_isolation_changed"; return 2; }
       fi
       if ! _wc_delete_isolated_cache; then
         if [ ! -e "${WC_DELETE_STARTED:-}" ]; then
-          _wc_restore_isolated_cache >/dev/null 2>&1 || :
+          if ! _wc_restore_isolated_cache >/dev/null 2>&1; then
+            _wc_anomaly_receipt "isolation_restore_failed" "$bytes_before" "isolation_anomaly"
+            return 3
+          fi
         fi
         _wc_action_failure "action_failed" "$bytes_before"; return $?
       fi
