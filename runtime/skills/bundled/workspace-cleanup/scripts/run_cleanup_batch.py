@@ -354,7 +354,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 try:
                     stdout, stderr = process.communicate(
-                        timeout=min(args.candidate_timeout_seconds, remaining),
+                        timeout=args.candidate_timeout_seconds,
                     )
                     error = None
                 except subprocess.TimeoutExpired as exc:
