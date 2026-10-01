@@ -96,6 +96,7 @@ def test_manager_gets_exact_authenticated_section_and_worker_is_byte_absent(tmp_
         action="bootstrap", actor_kind="shared_local_operator_credential",
         request_id="REQ-1", request_digest="1" * 64,
     ))
+    store.ensure_authority_selector("engineering")
     section = resolve_active_team_policy_section(
         store=store, root=tmp_path, teams=teams, team="engineering",
         agent_name="engineering_manager", eligible=True,
@@ -112,6 +113,12 @@ def test_manager_gets_exact_authenticated_section_and_worker_is_byte_absent(tmp_
 def test_no_active_policy_is_ordinary_empty_and_reserved_impersonation_rejected(tmp_path):
     teams = _manager_context(tmp_path)
     store = AuthorityPolicyStore(Database(tmp_path / "db.sqlite"))
+    with pytest.raises(ActiveAuthorityPolicyError, match="selector is uninitialized"):
+        resolve_active_team_policy_section(
+            store=store, root=tmp_path, teams=teams, team="engineering",
+            agent_name="engineering_manager", eligible=True,
+        )
+    store.ensure_authority_selector("engineering")
     assert resolve_active_team_policy_section(
         store=store, root=tmp_path, teams=teams, team="engineering",
         agent_name="engineering_manager", eligible=True,
@@ -143,6 +150,7 @@ def test_session_binding_survives_activation_swap_and_restart(tmp_path):
         action="bootstrap", actor_kind="shared_local_operator_credential",
         request_id="REQ-1", request_digest="1" * 64,
     ))
+    store.ensure_authority_selector("engineering")
     launch = resolve_active_team_policy_snapshot(
         store=store, root=tmp_path, teams=teams, team="engineering",
         agent_name="engineering_manager", eligible=True,

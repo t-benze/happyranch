@@ -242,8 +242,10 @@ def get_team_escalation_policy(slug: str, agent_name: str, org: OrgDep) -> dict:
         # Reader backstop for API-only fixtures that never ran daemon startup:
         # the serialized initializer is idempotent and observes authenticated
         # legacy history or truly empty state. Never reconstructs a selector.
-        store.ensure_authority_selector(team)
-        selector = store.get_authority_selector(team)
+        selector = org.workflow_authority.ensure_authority_selector(
+            team=team,
+            publisher="get_team_escalation_policy:selector-initialization",
+        )
         if selector is None:
             raise ValueError("authority selector is unavailable after initialization")
         result = {
@@ -591,7 +593,10 @@ def create_team_escalation_policy_release(
         # B2b: initialize the serialized selector BEFORE creating unselected
         # legacy history, so this route's own release cannot strand its later
         # initialization. A release-only write never implies a selection.
-        store.ensure_authority_selector(team)
+        org.workflow_authority.ensure_authority_selector(
+            team=team,
+            publisher="create_team_escalation_policy_release:selector-initialization",
+        )
         clauses = [clause.model_dump(mode="json") for clause in body.clauses]
         clauses_json = json.dumps(
             clauses, sort_keys=True, separators=(",", ":"), ensure_ascii=False
@@ -670,37 +675,40 @@ def activate_team_escalation_policy(
     team, _ = _manager_surface(org, agent_name)
     _legacy_policy_or_404(team)
     try:
-        store = AuthorityPolicyStore(org.db)
-        # Compatible writer backstop: the serialized initializer commits BEFORE
-        # the policy transaction and never implies a selection.
-        store.ensure_authority_selector(team)
-        if body.action == "reactivate_rollback":
-            # The v1 wire names a release; the transaction owner requires the
-            # exact authenticated activation. Never fabricate a missing one.
-            target = store.get_activation_for_release(team, body.release_id)
-            if target is None:
+        with org.workflow_authority.supported_change(
+            publisher="activate_team_escalation_policy",
+        ):
+            store = AuthorityPolicyStore(org.db)
+            # Compatible writer backstop: the serialized initializer commits BEFORE
+            # the policy transaction and never implies a selection.
+            store.ensure_authority_selector(team)
+            if body.action == "reactivate_rollback":
+                # The v1 wire names a release; the transaction owner requires the
+                # exact authenticated activation. Never fabricate a missing one.
+                target = store.get_activation_for_release(team, body.release_id)
+                if target is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={"code": "activation_conflict"},
+                    )
+                receipt = store.reactivate_legacy_authority_policy(
+                    AuthorityPolicyLegacyReactivationRequest(
+                        team=team, activation_id=target.id, request_id=body.request_id,
+                        expected_selector_id=body.expected_selector_id,
+                    )
+                )
+            else:
+                receipt = store.activate_legacy_authority_policy(
+                    AuthorityPolicyLegacyActivationRequest(
+                        team=team, release_id=body.release_id, request_id=body.request_id,
+                        expected_selector_id=body.expected_selector_id,
+                    )
+                )
+            legacy_activation = store.get_activation(receipt.activation_id)
+            if legacy_activation is None:
                 raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={"code": "activation_conflict"},
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=_STORE_UNAVAILABLE,
                 )
-            receipt = store.reactivate_legacy_authority_policy(
-                AuthorityPolicyLegacyReactivationRequest(
-                    team=team, activation_id=target.id, request_id=body.request_id,
-                    expected_selector_id=body.expected_selector_id,
-                )
-            )
-        else:
-            receipt = store.activate_legacy_authority_policy(
-                AuthorityPolicyLegacyActivationRequest(
-                    team=team, release_id=body.release_id, request_id=body.request_id,
-                    expected_selector_id=body.expected_selector_id,
-                )
-            )
-        legacy_activation = store.get_activation(receipt.activation_id)
-        if legacy_activation is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=_STORE_UNAVAILABLE,
-            )
         return {
             **_project_legacy_control(receipt),
             "selector_id": receipt.selector_id,
@@ -764,15 +772,18 @@ async def create_and_activate_team_escalation_policy_v2(
     team, _ = _manager_surface(org, agent_name)
     data = await _decode_control_body(request, V2PairedControlBody, team=team)
     try:
-        store = AuthorityPolicyStore(org.db)
-        try:
-            store.ensure_authority_selector(team)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={"code": "initialization_unavailable"},
-            ) from None
-        receipt = store.create_and_activate_v2(data)
+        async with org.workflow_authority.supported_change_async(
+            publisher="create_and_activate_team_escalation_policy_v2",
+        ):
+            store = AuthorityPolicyStore(org.db)
+            try:
+                store.ensure_authority_selector(team)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={"code": "initialization_unavailable"},
+                ) from None
+            receipt = store.create_and_activate_v2(data)
     except HTTPException:
         raise
     except sqlite3.IntegrityError as exc:
@@ -812,15 +823,18 @@ async def activate_team_escalation_policy_v2(
     team, _ = _manager_surface(org, agent_name)
     data = await _decode_control_body(request, V2ActivationControlBody, team=team)
     try:
-        store = AuthorityPolicyStore(org.db)
-        try:
-            store.ensure_authority_selector(team)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={"code": "initialization_unavailable"},
-            ) from None
-        receipt = store.activate_v2(data)
+        async with org.workflow_authority.supported_change_async(
+            publisher="activate_team_escalation_policy_v2",
+        ):
+            store = AuthorityPolicyStore(org.db)
+            try:
+                store.ensure_authority_selector(team)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={"code": "initialization_unavailable"},
+                ) from None
+            receipt = store.activate_v2(data)
     except HTTPException:
         raise
     except sqlite3.IntegrityError as exc:

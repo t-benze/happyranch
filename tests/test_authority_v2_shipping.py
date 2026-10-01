@@ -385,6 +385,9 @@ class _ShippingFixture:
         string reassigned on a live object).
         """
         from runtime.daemon.state import DaemonState
+        from runtime.orchestrator.active_authority_policy import (
+            is_eligible_policy_manager,
+        )
         from runtime.orchestrator._paths import OrgPaths
         from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
 
@@ -411,6 +414,24 @@ class _ShippingFixture:
         assert set(self.state.orgs.keys()) == set(self.org_slugs)
         self.orgs = self.state.orgs
         self.org = self.orgs[self.org_slugs[0]]
+
+        # This fixture enters below the shipping `_build_state` boundary. Model
+        # its coordinated selector initialization before any queue worker can
+        # launch, using the same production coordinator API and eligibility
+        # predicate rather than teaching the launch reader to mutate authority.
+        for org in self.orgs.values():
+            for team in org.teams.teams():
+                manager = org.teams.manager_for_team(team).name
+                if is_eligible_policy_manager(
+                    root=org.root,
+                    agent_name=manager,
+                    team=team,
+                    teams=org.teams,
+                ):
+                    org.workflow_authority.ensure_authority_selector(
+                        team=team,
+                        publisher="shipping-fixture:selector-initialization",
+                    )
 
         # Fixture-owned workspace bootstrap through the supported Codex adapter
         # for EVERY loaded org (single-org default unchanged).

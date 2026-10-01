@@ -104,6 +104,7 @@ def _audit_rows(db, action, session_id="sess-1"):
 
 def test_empty_selector_is_static_and_never_claims_v2(tmp_path):
     store = _store(tmp_path)
+    store.ensure_authority_selector(TEAM)
     root, teams = policy_manager_context(store)
     assert _resolve(store) is None
     assert resolve_active_team_policy_section(

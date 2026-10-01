@@ -178,6 +178,52 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
 
 **Failure diagnostics (THR-220).** Failed thread-invocation audits retain capped raw stdout/stderr tails as additive payload keys. Task, thread, and dream reports select one bounded human cause from complete stderr before tailing; exact known benign launcher/trust lines do not win, while meaningful stderr (including lookalikes) does. The proven API-error/session-limit envelope separately retains its bounded reset notice on those existing surfaces. This is not a comprehensive redaction guarantee and does not alter raw classifier, rate-limit, exact-eviction, retry-owner, or breaker inputs. Claude's session-limit notice is terminal but is not a short-backoff rate-limit retry signal.
 
+## Workflow authority publication (U2A)
+
+`WorkflowAuthorityCoordinator` owns the org-scoped producer half of the
+workflow authority contract. Every supported roster, team, repository,
+executor/model, reviewer-set, or active-policy writer must durably fence the
+org before its authority mutation and publish a coherent digest-addressed
+generation afterward. A post-commit publication failure preserves the legacy
+writer response but leaves the pointer fenced and machine-readable for cold
+recovery; it must never restore a stale ready pointer.
+
+The fence creates the publishing writer's invocation-owned `prepared` journal.
+Another coordinator may supersede only that pre-file state; after file-phase
+reservation, recovery owns completion. Snapshot reservation, canonical-file
+replacement, and the pointer CAS all require the original journal and
+`publisher_invocation`, so a stale coordinator cannot adopt a newer fence or
+return old authority bytes to ready. Cold recovery re-captures against that
+same pre-file journal without replacing it; an incoherent re-capture is
+read-only and remains fenced, while concurrent supersession is refused by the
+same binding checks. Selector initialization during whole-runtime state loading
+(covering daemon startup and runtime register/switch before state publication),
+before dynamic org attachment, founder creation
+of a new-team manager, pending bootstrap-manager approval, and the legacy
+policy GET/release compatibility handlers uses the same coordinated canonical
+change. Repeated startup/dynamic checks and existing-team worker creation do
+not advance the generation or selector history beyond their own authority
+write. Every task/thread/dream/wake/schedule
+launch resolver is read-only and refuses an uninitialized selector; it never
+initializes authority while launching. An authenticated existing selector
+remains a read and does not fence or advance the generation.
+
+Multi-stage async writers take the process-local coordinator gate before
+`teams_lock` and retain that gate through their terminal success or
+compensation. Startup migration retains the same process gate for its batch.
+The shipped durable publication lease is acquired only for each synchronous
+canonical mutation and released before filesystem scanning, awaited workspace
+bootstrap, cloning, network access, host launch, callbacks, snapshot capture,
+or other canonical-input scanning. SQLite stage transactions remain short.
+Do not change the existing `org.db_lock -> binding_lease -> synchronized DB
+callback` order. Direct same-UID file/DB mutation is outside this cooperative
+guarantee.
+
+U2A provides `verify_admission_ready()` for later workflow units but wires no
+admission, activation, or dispatch consumer. Machine-global executor profiles
+remain U2B-deferred: profile changes do not yet fence orgs, and no workflow
+admission consumer may ship until that coordinator exists.
+
 ## Commands
 
 ```bash

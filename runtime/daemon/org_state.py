@@ -29,6 +29,7 @@ from runtime.orchestrator.dashboard_projection import DashboardProjectionManager
 from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.org_validation import validate_team_membership
 from runtime.orchestrator.teams import TeamsRegistry
+from runtime.workflows.authority import WorkflowAuthorityCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ class OrgState:
     teams: TeamsRegistry
     settings: Settings
     orchestrator: Orchestrator
+    workflow_authority: WorkflowAuthorityCoordinator = field(init=False)
     sessions: SessionTracker = field(default_factory=SessionTracker)
     db_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     kb_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -87,6 +89,12 @@ class OrgState:
     }
 
     def __post_init__(self) -> None:
+        self.workflow_authority = WorkflowAuthorityCoordinator(
+            db=self.db,
+            org_slug=self.slug,
+            root=self.root,
+            teams=self.teams,
+        )
         self.dashboard_projection = DashboardProjectionManager(
             org_slug=self.slug, org_root=self.root,
         )
@@ -225,7 +233,7 @@ class OrgState:
                 teams=teams,
                 authority_evaluator=_build_authority_evaluator(),
             )
-            return cls(
+            state = cls(
                 slug=slug,
                 root=root,
                 db=db,
@@ -233,6 +241,19 @@ class OrgState:
                 settings=settings,
                 orchestrator=orchestrator,
             )
+            # U2A publishes/reconciles the org authority generation before the
+            # state is returned. Failure remains fail-closed in the workflow
+            # pointer but does not detach the org or alter legacy task/chain
+            # behavior; later supported writers and the next cold start retain
+            # the same recovery path.
+            try:
+                state.workflow_authority.recover_or_publish()
+            except Exception:
+                logger.exception(
+                    "org %r: workflow authority startup publication remains fenced",
+                    slug,
+                )
+            return state
         except Exception:
             db.close()
             raise

@@ -75,6 +75,56 @@ def test_migrate_copies_executor_repos_model_from_yaml_to_md(
     assert agent_def.repos == {"happyranch": "https://github.com/t-benze/happyranch.git"}
 
 
+def test_startup_migration_batch_publishes_one_real_org_generation(
+    tmp_path: Path,
+) -> None:
+    """The lifespan migration writer publishes once through real OrgState."""
+    from runtime.config import Settings
+    from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
+    from runtime.daemon.org_state import OrgState
+    from runtime.orchestrator._paths import OrgPaths
+    from tests.workflows.authority_test_support import ensure_coherent_authority
+
+    paths = OrgPaths(root=tmp_path)
+    paths.agents_dir.mkdir(parents=True, exist_ok=True)
+    paths.teams_config_path.write_text(
+        "teams:\n"
+        "  engineering:\n"
+        "    manager: engineering_manager\n"
+        "    workers: [dev_agent]\n"
+    )
+    _write_agent_md(paths, "engineering_manager", role="manager")
+    _write_agent_md(paths, "dev_agent")
+    org = OrgState.load(slug="alpha", root=tmp_path, settings=Settings())
+    ensure_coherent_authority(org)
+    before = org.workflow_authority.verify_admission_ready()
+
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    _write_agent_yaml(
+        workspace,
+        executor="codex",
+        model="gpt-5",
+        repos={"docs": "https://example.invalid/docs.git"},
+    )
+    result = migrate_agent_yaml_to_frontmatter(
+        paths,
+        workflow_authority=org.workflow_authority,
+    )
+    assert result["dev_agent"].startswith("migrated")
+    after = org.workflow_authority.verify_admission_ready()
+    assert after.generation == before.generation + 1
+    assert b'"executor":"codex"' in after.snapshot_bytes
+    assert b'"model":"gpt-5"' in after.snapshot_bytes
+
+    again = migrate_agent_yaml_to_frontmatter(
+        paths,
+        workflow_authority=org.workflow_authority,
+    )
+    assert again["dev_agent"] == "skipped (already migrated)"
+    assert org.workflow_authority.verify_admission_ready() == after
+    org.close()
+
+
 def test_migrate_repairs_engineering_manager_repos_drift(
     tmp_path: Path,
 ) -> None:
