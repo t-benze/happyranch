@@ -563,6 +563,10 @@ def _write_stubs(bin_dir: Path) -> None:
         "      mkdir \"$WC_ISOLATED_CANDIDATE\" || exit $?\n"
         "      printf 'unvalidated replacement\\n' > \"$WC_ISOLATED_CANDIDATE/replacement\" || exit $? ;;\n"
         "    action-fail) exit 71 ;;\n"
+        "    partial-delete)\n"
+        "      printf 'descriptor-rooted-delete-started\\n' > \"$WC_DELETE_STARTED\" || exit $?\n"
+        "      /usr/bin/rm -- \"$WC_ISOLATED_CANDIDATE/deleted.bin\" || exit $?\n"
+        "      exit 71 ;;\n"
         "  esac\n"
         "fi\n"
         f"{shlex.quote(sys.executable)} \"$@\"\n"
@@ -606,6 +610,10 @@ def _write_stubs(bin_dir: Path) -> None:
         "#!/bin/sh\n"
         "echo \"git $*\" >> \"$GIT_LOG\"\n"
         "case \"$*\" in *\"${WC_GIT_FAIL_MATCH:-__never__}\"*) exit 71;; esac\n"
+        "case \"$*\" in *\" status --porcelain=v1 -z\")\n"
+        "  n=$(cat \"$WC_FULL_STATUS_COUNT\"); n=$((n+1)); echo \"$n\" > \"$WC_FULL_STATUS_COUNT\"\n"
+        "  [ -n \"${WC_FULL_STATUS_FAIL_CALL:-}\" ] && [ \"$n\" = \"$WC_FULL_STATUS_FAIL_CALL\" ] && exit 71 ;;\n"
+        "esac\n"
         "case \"$*\" in *\" ls-remote --exit-code origin \"*)\n"
         "  case \"${WC_REMOTE_SCENARIO:-missing}\" in\n"
         "    success) printf '%s\\trefs/heads/%s\\n' \"$WC_HEAD\" \"$WC_BRANCH\"; exit 0 ;;\n"
@@ -629,6 +637,8 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
                    candidate: Path, containing: Path,
                    acting: str = "TASK-ACTING", open_pr: int = 0,
                    gh_fail: bool = False, git_fail_match: str = "",
+                   git_full_status_fail_call: int | None = None,
+                   fail_removed_receipt: bool = False,
                    task_map_second: dict | None = None,
                    job_scenario: str | None = None,
                    remote_scenario: str = "missing",
@@ -675,6 +685,7 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
     (tmp_path / "search-count").write_text("0\n")
     (tmp_path / "pr-detail-count").write_text("0\n")
     (tmp_path / "repo-count").write_text("0\n")
+    (tmp_path / "full-status-count").write_text("0\n")
     fixture_skill = tmp_path / "shipped-skill"
     (fixture_skill / "scripts").mkdir(parents=True, exist_ok=True)
     (fixture_skill / "SKILL.md").write_text(body)
@@ -737,6 +748,12 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
         "WC_HEAD": _git("rev-parse", "HEAD", cwd=containing).stdout.strip(),
         "WC_GH_FAIL": "1" if gh_fail else "0",
         "WC_GIT_FAIL_MATCH": git_fail_match,
+        "WC_FULL_STATUS_COUNT": str(tmp_path / "full-status-count"),
+        "WC_FULL_STATUS_FAIL_CALL": (
+            str(git_full_status_fail_call)
+            if git_full_status_fail_call is not None else ""
+        ),
+        "WC_RECEIPT_FAIL_MARKER": str(tmp_path / "receipt-fail-once"),
         "WC_ACTION_DRIFT": action_drift,
         "WC_RM_SCENARIO": rm_scenario,
         "WC_MV_SCENARIO": mv_scenario,
@@ -745,6 +762,17 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
         ),
         "TMPDIR": str(wc_tmp),
     })
+    if fail_removed_receipt:
+        python = bin_dir / "python3"
+        python.write_text(
+            "#!/bin/sh\n"
+            "if [ -n \"${WC_DECISION:-}\" ] && [ ! -e \"$WC_RECEIPT_FAIL_MARKER\" ]; then\n"
+            "  : > \"$WC_RECEIPT_FAIL_MARKER\"\n"
+            "  exit 72\n"
+            "fi\n"
+            f"exec {shlex.quote(sys.executable)} \"$@\"\n"
+        )
+        python.chmod(0o755)
     script = (
         f'bash {shlex.quote(str(PROCEDURE))} {shlex.quote(str(candidate))} '
         f'{shlex.quote(str(containing))}\n'
@@ -1196,14 +1224,47 @@ def test_pre_descriptor_admission_root_swap_refuses_and_preserves_both_objects(
         rm_scenario="final-dispatch-swap",
         action_scenario="final-dispatch-swap",
     )
-    assert result["rc"] == 2, result
+    assert result["rc"] == 3, result
     assert '"decision":"removed_cache"' not in result["stdout"]
+    receipt = json.loads(result["stdout"].splitlines()[-2])
+    assert receipt["decision"] == "isolation_anomaly"
+    assert receipt["anomaly"] == "isolation_restore_failed"
     assert (cache / "replacement").read_text() == "unvalidated replacement\n"
     preserved = list(fx["eligible"].glob(
         ".workspace-cleanup-isolate.*/node_modules.validated/validated"
     ))
     assert len(preserved) == 1, preserved
     assert preserved[0].read_text() == "validated bytes\n"
+
+
+def test_partial_delete_anomaly_accounts_for_isolated_residual_bytes(tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    cache = fx["eligible"] / "node_modules"
+    cache.mkdir()
+    (cache / "deleted.bin").write_bytes(b"delete me")
+    residual = cache / "residual.bin"
+    residual.write_bytes(b"x" * 8192)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+        action_scenario="partial-delete",
+    )
+    assert result["rc"] == 3, result
+    receipt = json.loads(result["stdout"].splitlines()[-2])
+    assert receipt["decision"] == "removed_with_anomaly"
+    assert receipt["anomaly"] == "action_failed"
+    isolated = receipt["residual_locations"]["isolated_candidate"]
+    assert isolated["exists"] is True
+    assert isolated["apparent_bytes"] >= 8192
+    assert isolated["allocated_bytes"] >= 8192
+    assert receipt["apparent_bytes_after"] >= isolated["apparent_bytes"]
+    assert receipt["allocated_bytes_after"] >= isolated["allocated_bytes"]
+    assert receipt["measurement_error"] is None
 
 
 def test_isolation_identity_drift_refuses_and_preserves_both_objects(
@@ -1222,8 +1283,11 @@ def test_isolation_identity_drift_refuses_and_preserves_both_objects(
         audit_trigger=occurrences, scan_state="clear_observation",
         mv_scenario="isolation-drift",
     )
-    assert result["rc"] == 2, result
+    assert result["rc"] == 3, result
     assert '"decision":"removed_cache"' not in result["stdout"]
+    receipt = json.loads(result["stdout"].splitlines()[-2])
+    assert receipt["decision"] == "isolation_anomaly"
+    assert receipt["anomaly"] == "isolation_restore_failed"
     assert (cache / "replacement").read_text() == "isolation replacement\n"
     preserved = list(fx["eligible"].glob(
         ".workspace-cleanup-isolate.*/node_modules.validated/validated"
@@ -1770,6 +1834,39 @@ def test_dirty_worktree_cache_only_removal_preserves_source_and_status(
     assert receipt["allocated_bytes_after"] == 0
 
 
+def test_nonignored_root_cache_is_refused_before_isolation(tmp_path, body):
+    """Causal TASK-7599 regression: root cache is visible as untracked."""
+    fx = _build_procedure_fixture(tmp_path)
+    (fx["eligible"] / ".gitignore").write_text("web/node_modules/\n")
+    cache = fx["eligible"] / "node_modules"
+    cache.mkdir()
+    payload = cache / "precious.bin"
+    payload.write_bytes(b"must remain byte-identical\x00\xff")
+    before = payload.read_bytes()
+    status = subprocess.run(
+        ["git", "-C", str(fx["eligible"]), "status", "--porcelain=v1",
+         "--untracked-files=all"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "?? node_modules/precious.bin" in status
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+    )
+
+    assert result["rc"] == 2, result
+    receipt = json.loads(result["stdout"].splitlines()[-2])
+    assert receipt == {"decision": "refused", "reason": "cache_not_gitignored"}
+    assert payload.read_bytes() == before
+    assert list(fx["eligible"].glob(".workspace-cleanup-isolate.*")) == []
+
+
 @pytest.mark.parametrize("scenario", ["residual", "recreate"])
 def test_cache_post_action_presence_never_reports_success(tmp_path, body, scenario):
     fx = _build_procedure_fixture(tmp_path)
@@ -1786,9 +1883,14 @@ def test_cache_post_action_presence_never_reports_success(tmp_path, body, scenar
         audit_trigger=occurrences, scan_state="clear_observation",
         rm_scenario=scenario,
     )
-    assert result["rc"] == 2, result
+    assert result["rc"] == 3, result
     assert cache.exists()
-    assert '"decision":"removed_cache"' not in result["stdout"]
+    receipt = json.loads(result["stdout"].splitlines()[-2])
+    assert receipt["decision"] == "removed_with_anomaly"
+    assert receipt["anomaly"] in {
+        "action_residual", "post_action_candidate_or_protected_changed",
+    }
+    assert '"decision":"refused"' not in result["stdout"]
 
 
 def test_candidate_recreated_after_isolated_removal_never_reports_success(
@@ -1807,9 +1909,65 @@ def test_candidate_recreated_after_isolated_removal_never_reports_success(
         audit_trigger=occurrences, scan_state="clear_observation",
         rm_scenario="recreate",
     )
-    assert result["rc"] == 2, result
+    assert result["rc"] == 3, result
     assert cache.is_dir()
+    receipt = json.loads(result["stdout"].splitlines()[-2])
+    assert receipt["decision"] == "removed_with_anomaly"
+    assert receipt["anomaly"] == "post_action_candidate_or_protected_changed"
+    assert '"decision":"refused"' not in result["stdout"]
+
+
+def test_post_delete_git_status_failure_is_anomaly_not_success(tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    cache = fx["eligible"] / "node_modules"
+    cache.mkdir()
+    (cache / "validated").write_text("validated bytes\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+        git_full_status_fail_call=2,
+    )
+    assert result["rc"] == 3, result
+    assert not cache.exists()
+    assert (tmp_path / "full-status-count").read_text().strip() == "2"
+    receipt = json.loads(result["stdout"].splitlines()[-2])
+    assert receipt["decision"] == "removed_with_anomaly"
+    assert receipt["anomaly"] == "post_action_git_status_unavailable"
     assert '"decision":"removed_cache"' not in result["stdout"]
+    assert '"decision":"refused"' not in result["stdout"]
+
+
+@pytest.mark.parametrize("candidate_kind", ["cache", "worktree"])
+def test_removed_receipt_failure_is_anomaly_not_success(
+        tmp_path, body, candidate_kind):
+    fx = _build_procedure_fixture(tmp_path)
+    candidate = fx["eligible"]
+    if candidate_kind == "cache":
+        candidate = candidate / "node_modules"
+        candidate.mkdir()
+        (candidate / "validated").write_text("validated bytes\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=candidate, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+        fail_removed_receipt=True,
+    )
+    assert result["rc"] == 3, result
+    assert not candidate.exists()
+    receipt = json.loads(result["stdout"].splitlines()[-2])
+    assert receipt["decision"] == "removed_with_anomaly"
+    assert receipt["anomaly"] == "receipt_generation_failed"
+    assert '"decision":"removed_cache"' not in result["stdout"]
+    assert '"decision":"refused"' not in result["stdout"]
 
 
 def test_unchanged_isolated_cache_removes_only_exact_candidate(tmp_path, body):
@@ -1856,9 +2014,20 @@ def test_changed_protected_identity_never_reports_success(tmp_path, body):
         audit_trigger=occurrences, scan_state="clear_observation",
         rm_scenario="protected-change",
     )
-    assert result["rc"] == 2, result
+    assert result["rc"] == 3, result
     assert protected.lstat().st_ino != original_inode
-    assert '"decision":"removed_cache"' not in result["stdout"]
+    receipt = json.loads(result["stdout"].splitlines()[-2])
+    assert receipt["decision"] == "removed_with_anomaly"
+    assert receipt["anomaly"] == "post_action_candidate_or_protected_changed"
+    assert receipt["path"] == str(cache)
+    assert receipt["apparent_bytes_before"] > 0
+    assert receipt["allocated_bytes_before"] >= 0
+    assert receipt["apparent_bytes_after"] == 0
+    assert receipt["allocated_bytes_after"] == 0
+    assert isinstance(receipt["filesystem_free_before"], int)
+    assert isinstance(receipt["filesystem_free_after"], int)
+    assert isinstance(receipt["filesystem_free_delta"], int)
+    assert '"decision":"refused"' not in result["stdout"]
 
 
 @pytest.mark.parametrize("fault", ["nested_mount", "cross_device", "non_owned"])
@@ -1934,6 +2103,112 @@ def test_recursive_boundary_refuses_protected_descendant_symlink(tmp_path, body)
     )
     assert result["rc"] == 2, result
     assert cache.exists() and protected.exists()
+
+
+def _uv_interpreter(tmp_path: Path, monkeypatch) -> Path:
+    fake_home = tmp_path / "fake-home"
+    store = fake_home / ".local/share/uv/python/cpython-fixture/bin"
+    store.mkdir(parents=True)
+    target = store / "python3.13"
+    target.write_bytes(b"fixture interpreter bytes\x00\xff")
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.delenv("UV_PYTHON_INSTALL_DIR", raising=False)
+    return target
+
+
+def _make_venv(root: Path, target: Path, *, link_name: str = "python") -> Path:
+    (root / "bin").mkdir(parents=True)
+    (root / "pyvenv.cfg").write_text(f"home = {target.parent}\n")
+    (root / "bin" / link_name).symlink_to(target)
+    return root
+
+
+def test_uv_venv_cache_removal_preserves_external_interpreter(
+        tmp_path, body, monkeypatch):
+    fx = _build_procedure_fixture(tmp_path)
+    target = _uv_interpreter(tmp_path, monkeypatch)
+    before = target.read_bytes()
+    cache = _make_venv(fx["eligible"] / ".venv", target)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+    )
+    assert result["rc"] == 0, result
+    assert not cache.exists()
+    assert target.is_file() and target.read_bytes() == before
+
+
+def test_worktree_with_nested_uv_venv_removal_preserves_external_interpreter(
+        tmp_path, body, monkeypatch):
+    fx = _build_procedure_fixture(tmp_path)
+    target = _uv_interpreter(tmp_path, monkeypatch)
+    before = target.read_bytes()
+    nested = _make_venv(fx["eligible"] / "nested" / ".venv", target)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map, audit_trigger=occurrences,
+        scan_state="clear_observation",
+    )
+    assert result["rc"] == 0, result
+    assert not fx["eligible"].exists() and not nested.exists()
+    assert target.is_file() and target.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["outside_bin", "wrong_name", "outside_store", "missing_cfg",
+     "wrong_venv_name", "protected_target"],
+)
+def test_uv_interpreter_exception_refuses_every_other_external_link(
+        tmp_path, body, monkeypatch, fault):
+    fx = _build_procedure_fixture(tmp_path)
+    target = _uv_interpreter(tmp_path, monkeypatch)
+    cache = fx["eligible"] / ".venv"
+    venv = cache
+    link_name = "python"
+    if fault == "wrong_venv_name":
+        cache = fx["eligible"] / "node_modules"
+        venv = cache / "not-venv"
+    if fault == "wrong_name":
+        link_name = "pip"
+    if fault == "outside_store":
+        target = tmp_path / "outside" / "python3.13"
+        target.parent.mkdir()
+        target.write_bytes(b"outside")
+    if fault == "protected_target":
+        target = fx["workspace"] / "output" / "python3.13"
+        target.parent.mkdir()
+        target.write_bytes(b"protected")
+    _make_venv(venv, target, link_name=link_name)
+    if fault == "outside_store":
+        (venv / "pyvenv.cfg").write_text("home = /definitely/not/the/target\n")
+    if fault == "outside_bin":
+        (venv / "bin" / link_name).unlink()
+        (venv / link_name).symlink_to(target)
+    if fault == "missing_cfg":
+        (venv / "pyvenv.cfg").unlink()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=cache, containing=fx["eligible"], task_map=task_map,
+        audit_trigger=occurrences, scan_state="clear_observation",
+    )
+    assert result["rc"] == 2, result
+    assert cache.exists() and target.exists()
 
 
 @pytest.mark.parametrize("kind", ["nested", "symlink", "missing_manifest", "protected"])

@@ -770,10 +770,29 @@ PR preserves integrated content but may not preserve original commit topology.
 A dirty worktree remains ineligible for
 whole removal, but its literal root `.venv` or `node_modules` may be removed
 after the same gates and 24-hour floor, with tracked source bytes and Git status
-proved unchanged. The containing worktree must have the owning primary's exact
+proved unchanged. The cache itself must be positively Git-ignored, contain no
+tracked entries, and be absent from status before isolation. The containing
+worktree must have the owning primary's exact
 registered `.claude/worktrees/<TASK>` path and `task/<TASK>` branch. A complete
 no-follow `lstat` walk of the candidate runs before and again at action time;
 nested mounts, cross-device or foreign-owned entries, protected descendants,
 unreadable/capped/changing evidence, or identity drift refuse. Measurement
 includes the root inode, and success requires literal absence plus unchanged
 protected-path identities.
+The only external-link exception is a `python`, `python3`, or `python3.N`
+interpreter directly under an owned literal `.venv/bin`, resolving to the
+configured uv Python store or that venv's `pyvenv.cfg` home outside the
+workspace and protected roots. Its link and target identities are snapshotted;
+descriptor-rooted deletion unlinks the link and never follows it.
+Failed restoration after a cache was moved into isolation is reported with
+original/isolated/isolation-residue accounting as exit-3 `isolation_anomaly`;
+only successful restoration may remain an exit-2 refusal. Any failure after
+cache deletion begins or `git worktree remove` is invoked is similarly measured
+as `removed_with_anomaly`. Unavailable residual measurements are explicit,
+never false zeroes. Both anomaly decisions halt later mutations. The batch also
+halts after journaling any timeout (after whole-process-group termination),
+signal death, exit 3, malformed or mismatched receipt, unreceipted nonzero exit,
+runner exception, or unclassifiable outcome. Resume accepts only a unique,
+closed-schema terminal row exactly bound to the current manifest identity and
+argv; stale, malformed, duplicate, or conflicting rows fail before any runner
+starts.

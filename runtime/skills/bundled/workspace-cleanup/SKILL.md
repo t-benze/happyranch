@@ -181,6 +181,20 @@ nested-mount, cross-device, non-owned, protected-descendant, symlink, identity,
 pathname, action-time, and other accidental or ambiguous drift refusals remain
 mandatory.
 
+The sole external-symlink exception is an interpreter link directly inside
+`<V>/bin/`, where `<V>` is literally named `.venv` and has a regular owned
+`pyvenv.cfg`. Its basename must match exactly `python`, `python3`, or
+`python3.<digits>`. The fully resolved target must be an existing regular file
+under either `${UV_PYTHON_INSTALL_DIR}` (when set), otherwise
+`${XDG_DATA_HOME:-$HOME/.local/share}/uv/python`, or the one absolute `home`
+directory recorded by that `pyvenv.cfg`; it must remain outside the workspace,
+candidate, containing worktree, primary checkout, and every protected path.
+The snapshot records the link text, resolved target, and target identity so
+drift refuses. This applies to a `.venv` cache and to a nested `.venv` anywhere
+inside a whole-worktree candidate. Every other external/dangling/directory or
+protected symlink refuses as `external_or_protected_symlink`. Descriptor-rooted
+deletion unlinks the symlink itself and never follows it.
+
 ## Eligibility gates (literal commands)
 
 Every gate below is re-derived at action time, before the current-use scan and
@@ -207,7 +221,10 @@ copy. The shipped script executes them directly in the documented order.
 
 `cache-immediate-parent-manifest` applies only to a `node_modules`/`.venv`
 cache; skip it for a whole worktree. `clean` applies only to a whole worktree;
-every other gate applies to both. A
+every other gate applies to both. A cache must also be positively Git-ignored
+at its containing worktree, have no tracked entry beneath it, and produce no
+tracked or untracked status row; any Git error or negative result refuses as
+`cache_not_gitignored` before isolation. A
 non-exempt unreadable same-user process, a missing/ambiguous containing
 worktree, or any incomplete listing makes the scan `unknown` -> skip; a positive
 non-exempt use makes it `blocked` -> skip; only `clear_observation` with every
@@ -224,10 +241,56 @@ bash "$SKILL/scripts/run_cleanup_candidate.sh" "$CANDIDATE" "$CONTAINING"
 
 `CANDIDATE` is the literal cache or worktree path and `CONTAINING` is its
 registered containing worktree (the same path for a whole-worktree candidate).
-The script uses the environment contract above, prints one JSON receipt, and
-returns `0` only when the literal action ran or `2` on refusal. A refusal before
-the literal action begins performs no mutation; a failure after action starts
-may already have partially mutated the candidate as described above.
+The script uses the environment contract above and prints one JSON receipt. It
+returns `0` only for a verified removal and `2` only for a refusal whose final
+state has no outstanding mutation: either the cache was never moved, or it was
+moved into private isolation and successfully restored. Exit `3` is the anomaly
+family. A restoration failure before recursive deletion is the distinct
+`isolation_anomaly` / `isolation_restore_failed`; once descriptor-rooted
+deletion begins, or `git worktree remove` is invoked, every later failure is
+`removed_with_anomaly`. Both exit-3 decisions carry the anomaly reason and
+measured original, isolated-candidate, isolation-directory-residue, total, and
+filesystem accounting. An unavailable residual measurement is explicit (`null`
+plus `measurement_error`), never a false zero. An anomaly is never reported as
+`refused`, and further batch mutations must halt.
+
+For an inventory manifest, use the bundled resumable batch driver rather than
+an ad-hoc loop:
+
+```bash
+python3 "$SKILL/scripts/run_cleanup_batch.py" \
+  --manifest "$MANIFEST" --journal "$JOURNAL" \
+  --max-candidates 40 --deadline-seconds 2400
+```
+
+The manifest is a JSON array or JSONL with exactly `candidate`, `containing`,
+`kind` (`worktree` or `cache`), and inventory `allocated_bytes`. The driver
+orders worktrees first and caches second, largest first within each class with
+literal-path tie-breaking. It invokes this runner once per candidate with
+literal argv and fsyncs a terminal journal row after every attempt. Only a
+closed-schema exit-2 pre-action receipt (`refused`, `report_only`, or
+`inventory_only`) and a closed-schema exit-0 verified-removal receipt permit the
+next candidate. Any exit `3`, timeout, signal death, unreceipted nonzero exit,
+malformed/missing output, exit/receipt mismatch, runner exception, or other
+unclassifiable result is journaled and halts the batch with a nonzero exit. Each
+runner owns a new process session; timeout sends SIGTERM then SIGKILL to the
+whole process group, reaps the runner, and records whether group survival could
+be ruled out before halting. Re-running skips only a unique, valid terminal row
+whose candidate, containing worktree, kind, allocated bytes, and exact argv
+match the current manifest. A stale, malformed, unsafe, duplicate, or conflicting
+journal row fails closed before any runner starts. Bounds stop only between
+candidates.
+
+Run each batch driver as a durable `happyranch` job bound to the cleanup task's
+current ACTIVE task/session, choose a batch/deadline comfortably inside one
+session (target at most about 40 minutes), and wait in-session with
+`happyranch jobs wait`. The per-candidate runner still submits and authenticates
+its own nested host-visible scan job at action time; never replace that scan
+with an in-process shortcut. If the session ends mid-batch, later nested job
+submissions fail closed without mutation; a later cleanup task resumes from the
+fsync'd journal. This outer-job-to-nested-scanner flow is verified on a
+disposable target; an `unknown` scanner result remains an ordinary fail-closed
+refusal rather than a batch-wide stop.
 
 ## Authorized actions (non-force only)
 
@@ -238,9 +301,11 @@ may already have partially mutated the candidate as described above.
   through authenticated no-follow directory descriptors. A replacement before
   descriptor admission refuses without deletion. Descriptor-relative primitive
   support is checked only after the candidate has been moved into private
-  isolation: an unsupported platform refuses before recursive deletion, then
-  the caller attempts restoration. Restoration may fail and leave the candidate
-  in isolation; the refusal never emits `removed_cache`. The cache must be
+  isolation: an unsupported platform refuses before recursive deletion only
+  when the caller successfully restores the cache. A failed restoration emits
+  exit-3 `isolation_anomaly` / `isolation_restore_failed`, measures both the
+  original and isolated locations plus isolation-directory residue, and halts
+  the batch; it is never a refusal and never emits `removed_cache`. The cache must be
   inside a registered, non-primary linked worktree of your own workspace, and
   removal is allowed only when its
   immediate parent has the accepted lock/manifest, the owning task has been
@@ -280,4 +345,6 @@ the same action-time gates.
 Complete through the normal task contract, creating `output/<task_id>/` with
 `inventory.json`, `final-ledger.jsonl`, and `report.md` (measured sizes, exact
 removals or zero removals, skips and reasons, and any ambiguity), and report to
-the founder in the per-agent cleanup thread.
+the founder in the per-agent cleanup thread. The durable batch journal is the
+ordered source for `final-ledger.jsonl`; preserve each literal argv, timestamps,
+exit status, parsed receipt or malformed raw output, and stop reason.
