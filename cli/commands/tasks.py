@@ -305,7 +305,18 @@ def cmd_details(args: argparse.Namespace) -> None:
             agent = leg.get("agent", "")
             prompt_excerpt = (leg.get("prompt") or "")[:40]
             print(f"  {marker} Leg {i}  {agent:<14} {prompt_excerpt}{verdict_note}")
-    if task.get("note"):
+    escalation_reason = body.get("escalation_reason")
+    is_v2_refusal = (
+        task.get("status") == "escalated"
+        and isinstance(escalation_reason, dict)
+        and bool(escalation_reason.get("refusal_code"))
+    )
+    if is_v2_refusal:
+        if escalation_reason.get("primary"):
+            print(f"Escalation reason: {escalation_reason['primary']}")
+        if escalation_reason.get("secondary"):
+            print(f"Automatic escalation: {escalation_reason['secondary']}")
+    elif task.get("note"):
         print(f"Note:       {task['note']}")
     if body.get("results"):
         print(f"\nResults ({len(body['results'])}):")

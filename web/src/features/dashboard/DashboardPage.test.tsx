@@ -654,6 +654,26 @@ describe('DashboardPage', () => {
     expect(resolveBody).toEqual({ decision: 'continue', rationale: '', brief: '' });
   });
 
+  test('EscalationInboxRow renders primary reason before v2 secondary explanation', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.escalations = [{
+      task_id: 'TASK-V2', agent: 'engineering_manager', team: 'engineering',
+      question: 'Founder must choose A or B', raised_at: '2026-05-30T11:00:00Z', age_seconds: 3600,
+      escalation_reason: {
+        primary: 'Founder must choose A or B', refusal_code: 'identity_mismatch',
+        secondary: 'The authority attempt no longer matched the active task session, so this was escalated to you.',
+      },
+    }];
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    const primary = await screen.findByText('Founder must choose A or B');
+    const secondary = screen.getByText('The authority attempt no longer matched the active task session, so this was escalated to you.');
+    expect(primary.compareDocumentPosition(secondary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   test('renders org pulse table when teams exist', async () => {
     const s = emptySummary();
     s.org_age_days = 14;

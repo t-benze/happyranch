@@ -3095,7 +3095,11 @@ def _details_output(client, capsys, *, task_id="T-1"):
     return capsys.readouterr().out
 
 
-def _stub_detail_response(ws: dict, task: dict | None = None) -> MagicMock:
+def _stub_detail_response(
+    ws: dict,
+    task: dict | None = None,
+    escalation_reason: dict | None = None,
+) -> MagicMock:
     client = MagicMock()
     response = MagicMock()
     response.status_code = 200
@@ -3110,6 +3114,7 @@ def _stub_detail_response(ws: dict, task: dict | None = None) -> MagicMock:
     response.json.return_value = {
         "task": base_task, "results": [], "audit_log": [],
         "work_status": ws,
+        "escalation_reason": escalation_reason,
     }
     client.get.return_value = response
     return client
@@ -3153,6 +3158,39 @@ def test_cmd_details_shows_recent_progress_message(capsys):
     assert "Work status: Recent update recorded" in out
     assert "Phase 3 of 6: tests passing" in out
     assert "Update:" in out
+
+
+def test_cmd_details_shows_v2_primary_and_secondary_instead_of_raw_note(capsys):
+    client = _stub_detail_response(
+        {"applicable": False, "state": "not_applicable", "label": "Not applicable"},
+        task={
+            "status": "escalated",
+            "note": "authority_v2_refusal:final_commit_failed",
+        },
+        escalation_reason={
+            "primary": "Founder must restart the reviewed service.",
+            "refusal_code": "final_commit_failed",
+            "secondary": "Automatic continuation couldn't be committed, so this was escalated to you.",
+        },
+    )
+    out = _details_output(client, capsys)
+    assert "Escalation reason: Founder must restart the reviewed service." in out
+    assert "Automatic escalation: Automatic continuation couldn't be committed" in out
+    assert "authority_v2_refusal:final_commit_failed" not in out
+
+
+def test_cmd_details_keeps_ordinary_note_output_byte_identical(capsys):
+    client = _stub_detail_response(
+        {"applicable": False, "state": "not_applicable", "label": "Not applicable"},
+        task={"status": "escalated", "note": "Ordinary founder question"},
+        escalation_reason={
+            "primary": "Ordinary founder question", "refusal_code": None, "secondary": None,
+        },
+    )
+    out = _details_output(client, capsys)
+    assert "Note:       Ordinary founder question" in out
+    assert "Escalation reason:" not in out
+    assert "Automatic escalation:" not in out
 
 
 def test_cmd_details_stale_but_alive_no_receipt(capsys):

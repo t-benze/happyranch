@@ -146,6 +146,12 @@ export interface ActiveChainResponse {
   step_audit_id: number;
 }
 
+export interface EscalationReason {
+  primary: string | null;
+  refusal_code: string | null;
+  secondary: string | null;
+}
+
 /** Envelope returned by `GET /api/v1/orgs/{slug}/tasks/{task_id}`. */
 export interface TaskDetailResponse {
   task: TaskRecord;
@@ -163,6 +169,8 @@ export interface TaskDetailResponse {
    *  rows (session_start / progress). Absent only from legacy-daemon or
    *  stubbed fixtures. */
   work_status: WorkStatusResponse | null;
+  /** Current-episode-only read projection. Existing task.note is unchanged. */
+  escalation_reason: EscalationReason | null;
   [extra: string]: unknown;
 }
 
@@ -673,6 +681,7 @@ export interface DashboardEscalationRow {
    *  `escalated` status ("needs-decision" | "exhausted" | "over-budget"),
    *  or null when the escalation reason is absent/unrecognized. */
   flavor?: string | null;
+  escalation_reason?: EscalationReason | null;
 }
 
 export interface DashboardPendingReviewJobRow {
