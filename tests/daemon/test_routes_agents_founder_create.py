@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from fastapi.testclient import TestClient
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator import prompt_loader
@@ -35,7 +36,18 @@ def _base_manager(name: str = "delta_head") -> dict:
 
 
 def test_founder_create_worker_into_existing_team(client_with_runtime) -> None:
+    from tests.workflows.authority_test_support import ensure_coherent_authority
+
     client, org = client_with_runtime
+    ensure_coherent_authority(org)
+    selector = org.workflow_authority.ensure_authority_selector(
+        team="engineering",
+        publisher="founder-worker-control:selector-initialization",
+    )
+    before = org.workflow_authority.verify_admission_ready()
+    history_before = org.db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_active_selector_history"
+    ).fetchone()[0]
     r = _post(client, _base_worker())
     assert r.status_code == 200, r.text
     assert r.json() == {"name": "alpha_worker_1", "team": "engineering", "role": "worker"}
@@ -54,13 +66,30 @@ def test_founder_create_worker_into_existing_team(client_with_runtime) -> None:
 
     # teams.yaml updated.
     assert "alpha_worker_1" in org.teams.manager_for_team("engineering").workers
+    after = org.workflow_authority.verify_admission_ready()
+    assert after.generation == before.generation + 1
+    published = {
+        row["team"]: row["selector"]
+        for row in json.loads(after.snapshot_bytes)["active_policy_selectors"]
+    }
+    assert published["engineering"] == selector.model_dump(mode="json")
+    assert org.db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_active_selector_history"
+    ).fetchone()[0] == history_before
 
     # Workspace bootstrapped.
     assert (org.root / "workspaces" / "alpha_worker_1" / "CLAUDE.md").exists()
 
 
-def test_founder_create_manager_creates_new_team(client_with_runtime) -> None:
+def test_founder_create_manager_initializes_selector_before_real_launch(
+    client_with_runtime, monkeypatch,
+) -> None:
+    from runtime.orchestrator.executors import ExecutorResult
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    from tests.workflows.authority_test_support import ensure_coherent_authority
+
     client, org = client_with_runtime
+    before_generation = ensure_coherent_authority(org)
     r = _post(client, _base_manager())
     assert r.status_code == 200, r.text
     assert r.json() == {"name": "delta_head", "team": "delta", "role": "manager"}
@@ -70,6 +99,67 @@ def test_founder_create_manager_creates_new_team(client_with_runtime) -> None:
     m = org.teams.manager_for_team("delta")
     assert m.name == "delta_head"
     assert m.workers == ()
+
+    store = AuthorityPolicyStore(org.db)
+    selector = store.get_authority_selector("delta")
+    assert selector is not None and selector.family == "empty"
+    ready = org.workflow_authority.verify_admission_ready()
+    assert ready.generation == before_generation + 1
+    published = {
+        row["team"]: row["selector"]
+        for row in json.loads(ready.snapshot_bytes)["active_policy_selectors"]
+    }
+    assert published["delta"] == selector.model_dump(mode="json")
+    history_count = org.db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_active_selector_history"
+    ).fetchone()[0]
+
+    # Reach the shared task/thread/dream/wake/schedule policy resolver through
+    # the real task launch seam. Only the external executor is replaced.
+    org.orchestrator.attach_host_supervisor(None)
+    executor = MagicMock()
+    executor.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="provider-session",
+    )
+    task_id = org.orchestrator.create_task("delta manager launch")
+    monkeypatch.setattr(
+        org.orchestrator, "_build_session_id", lambda: "sess-delta-manager",
+    )
+    with patch.object(org.orchestrator, "_build_executor", return_value=executor):
+        org.orchestrator._run_agent(task_id, "delta_head", "decide")
+
+    assert executor.run.called
+    assert org.workflow_authority.verify_admission_ready() == ready
+    assert org.db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_active_selector_history"
+    ).fetchone()[0] == history_count
+
+
+def test_approve_pending_manager_initializes_selector_in_same_generation(
+    client_with_runtime,
+) -> None:
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    from tests.workflows.authority_test_support import ensure_coherent_authority
+
+    client, org = client_with_runtime
+    before_generation = ensure_coherent_authority(org)
+    paths = OrgPaths(root=org.root)
+    paths.pending_agents_dir.mkdir(parents=True, exist_ok=True)
+    active = paths.agents_dir / "engineering_head.md"
+    pending = paths.pending_agents_dir / "engineering_head.md"
+    active.replace(pending)
+
+    r = client.post("/api/v1/orgs/alpha/agents/engineering_head/approve")
+    assert r.status_code == 200, r.text
+    selector = AuthorityPolicyStore(org.db).get_authority_selector("engineering")
+    assert selector is not None and selector.family == "empty"
+    ready = org.workflow_authority.verify_admission_ready()
+    assert ready.generation == before_generation + 1
+    published = {
+        row["team"]: row["selector"]
+        for row in json.loads(ready.snapshot_bytes)["active_policy_selectors"]
+    }
+    assert published["engineering"] == selector.model_dump(mode="json")
 
 
 def test_invalid_agent_name_returns_422(client_with_runtime) -> None:

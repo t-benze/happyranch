@@ -37,6 +37,7 @@ from runtime.daemon.sessions import SessionTracker
 from runtime.infrastructure.database import Database
 from runtime.models import TaskRecord, TaskStatus, TokenUsage
 from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 from runtime.orchestrator.context_builder import ContextBuilder
 from runtime.orchestrator.executors import ExecutorResult
 from runtime.orchestrator.host_supervisor import (
@@ -329,6 +330,11 @@ def _make_orch(tmp_path: Path, backend: _FakeBackend, executor: _RecordingExecut
     paths = OrgPaths(root=rt / "orgs" / "test")
     _seed_org(paths, tmp_path, test_settings)
     db = Database(paths.db_path)
+    # This harness intentionally constructs Orchestrator directly instead of
+    # entering shipping startup or DaemonState.add_org. Establish the same
+    # authenticated empty-selector prerequisite those lifecycle seams publish
+    # before any real launch; launch policy resolution itself stays read-only.
+    AuthorityPolicyStore(db).ensure_authority_selector("engineering")
     orch = Orchestrator(
         db=db, settings=test_settings, paths=paths, slug="test",
         teams=TeamsRegistry.load(paths.root),

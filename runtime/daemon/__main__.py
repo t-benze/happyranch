@@ -38,7 +38,6 @@ from runtime.models import BlockKind, TaskStatus
 from runtime.orchestrator.active_authority_policy import (
     is_eligible_policy_manager,
 )
-from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 from runtime.orchestrator.orchestrator import (
     Orchestrator,
     completion_report_from_result_row,
@@ -540,13 +539,15 @@ def _build_state(settings: Settings) -> DaemonState:
         # and an initializer-audit failure rather than manufacturing empty state
         # or silently selecting legacy. A refusal propagates out of
         # ``_build_state`` so the daemon never binds the API or admits launch.
-        selector_store = AuthorityPolicyStore(org.db)
         for team in org.teams.teams():
             manager = org.teams.manager_for_team(team).name
             if is_eligible_policy_manager(
                 root=org.root, agent_name=manager, team=team, teams=org.teams,
             ):
-                selector_store.ensure_authority_selector(team)
+                org.workflow_authority.ensure_authority_selector(
+                    team=team,
+                    publisher="daemon-startup:selector-initialization",
+                )
         recovered_tokens = _sweep_on_startup(
             org.db, state.queue, org.slug, org.orchestrator,
         )

@@ -155,7 +155,42 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   process-local event-loop protection. Synchronous unlocked segments remain
   unlocked; this does not provide global workspace-generation fencing or
   serialize external same-UID/multiprocess filesystem writers.
-- **Approval.** `POST /agents/{name}/approve` atomically moves the pending file to `org/agents/<name>.md` and bootstraps the workspace under `workspaces/<name>/`. Approved agents appear in `GET /agents` and `GET /agents/enrollments?status=approved`.
+- **Workflow-authority participation.** Supported org-scoped authority writers
+  enter the coordinator gate before `teams_lock`, durably fence around each
+  synchronous canonical mutation, and publish the next generation only from
+  their terminal success/compensation state. Multi-stage update/termination
+  retains the process gate across awaited bootstrap; startup migration retains
+  it across the batch. The durable lease and SQLite transactions never span
+  scanning, clone/network/host-launch/callback work, awaited bootstrap, snapshot
+  capture, or other canonical-input scanning. Publication failure leaves new workflow
+  admission fail-closed and is recovered at cold `OrgState.load`; it does not
+  roll back or falsify the existing route result after the legacy write
+  committed. Direct same-UID edits remain outside the cooperative guarantee.
+  Every publication is bound to the writer's invocation-owned `prepared`
+  journal before the canonical mutation. An independent coordinator may abort
+  and supersede only that pre-file state; file reservation and the final pointer
+  CAS require the same journal plus `publisher_invocation`, so a stale publisher
+  cannot adopt the newer fence. Cold recovery re-captures against the same
+  pre-file journal; an incoherent retry performs no durable write and remains
+  fenced, while a superseded retry is refused. Eligible-team selector
+  initialization during whole-runtime `DaemonState` loading covers daemon
+  startup and runtime register/switch before state publication; dynamic org
+  attachment owns the same conditional boundary separately. Raw
+  `OrgState.load` retains the coordinator's coherent recovery generation and
+  is made launch-ready by its containing supported lifecycle. Founder creation of a new-team manager and
+  pending bootstrap-manager approval initialize the selector inside the same
+  coordinated canonical change as the roster mutation; policy GET/release
+  compatibility handlers also participate conditionally. A missing selector
+  fences and publishes exactly once, while an authenticated existing selector
+  is read-only and does not advance generation. Existing-team worker creation
+  advances only its roster generation and adds no selector-history churn. Common task,
+  thread, dream, wake, and schedule launch resolution is read-only and refuses
+  an uninitialized selector rather than mutating authority during launch.
+- **U2A boundary.** The coordinator's readiness verifier is intentionally not
+  consumed by task, chain, fan-out, activation, or dispatch paths yet.
+  Machine-global executor-profile changes remain U2B-deferred and do not yet
+  fence orgs; no workflow admission consumer may ship before U2B.
+- **Approval.** `POST /agents/{name}/approve` atomically moves the pending file to `org/agents/<name>.md`; when that promotion makes the registered manager eligible, it initializes the team's selector in the same workflow-authority canonical change. It then bootstraps the workspace under `workspaces/<name>/`. Approved agents appear in `GET /agents` and `GET /agents/enrollments?status=approved`.
 - **Termination.** `manage-agent terminate` archives an approved **non-manager worker** on the caller's team. It is refused if the agent is a manager, belongs to another team, or has live work. Live work includes non-terminal tasks assigned to the agent, already-started thread invocations, firing schedules, running work-hours wakes, running dreams, or pending/running jobs attributable to the agent. If the agent is quiescent, the route:
   - archives the active `org/agents/<name>.md` to `org/agents/_terminated/<name>.md`;
   - archives the workspace `workspaces/<name>/` to `workspaces/_terminated/<name>/`;

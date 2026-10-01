@@ -19,6 +19,12 @@ import yaml
 from fastapi.testclient import TestClient
 
 
+def _authority_generation(org_state) -> int:
+    from tests.workflows.authority_test_support import ensure_coherent_authority
+
+    return ensure_coherent_authority(org_state)
+
+
 # ----------------------------------------------------------------
 # Positive: correct shape
 # ----------------------------------------------------------------
@@ -1255,6 +1261,7 @@ def test_put_teams_add_and_remove_workers(
 
     client = TestClient(app)
     paths = OrgPaths(root=org_state.root)
+    before_generation = _authority_generation(org_state)
 
     # Seed agent files for all seeded workers + manager
     _seed_agent_file(paths, "qa_engineer", "engineering")
@@ -1278,6 +1285,10 @@ def test_put_teams_add_and_remove_workers(
     eng = next(t for t in teams if t["name"] == "engineering")
     assert "qa_engineer" in eng["workers"]
     assert "product_manager" in eng["workers"]
+    assert (
+        _authority_generation(org_state)
+        == before_generation + 1
+    )
 
     # Remove product_manager (agent file still declares team=engineering)
     # This should trigger 409 + rollback
@@ -1619,6 +1630,7 @@ def test_put_settings_updates_reviewer_agents(
 ) -> None:
     _seed_reviewer_agents_agents(org_state)
     client = TestClient(app)
+    before_generation = _authority_generation(org_state)
     r = client.put(
         f"/api/v1/orgs/{org_state.slug}/settings/org",
         headers=auth_headers,
@@ -1629,6 +1641,35 @@ def test_put_settings_updates_reviewer_agents(
     # Persisted in the DB.
     import json as _json
     assert _json.loads(org_state.db.get_org_setting("reviewer_agents")) == ["senior_dev"]
+    assert (
+        _authority_generation(org_state)
+        == before_generation + 1
+    )
+
+
+def test_settings_route_publication_failure_preserves_response_and_fences(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from unittest.mock import patch
+
+    from runtime.workflows.authority import WorkflowAuthorityError
+
+    _seed_reviewer_agents_agents(org_state)
+    with patch.object(
+        org_state.workflow_authority,
+        "publish_current",
+        side_effect=RuntimeError("injected publication failure"),
+    ):
+        response = TestClient(app).put(
+            f"/api/v1/orgs/{org_state.slug}/settings/org",
+            headers=auth_headers,
+            json={"reviewer_agents": ["senior_dev"]},
+        )
+    assert response.status_code == 200
+    assert response.json()["org"]["reviewer_agents"] == ["senior_dev"]
+    assert org_state.db.get_org_setting("reviewer_agents") is not None
+    with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+        org_state.workflow_authority.verify_admission_ready()
 
 
 def test_put_settings_rejects_unknown_reviewer_agent(

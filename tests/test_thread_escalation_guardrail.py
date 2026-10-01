@@ -426,6 +426,10 @@ class _FakeExecutorResult:
 
 def _make_org_state_with_teams(db, root, manager_name: str = "engineering_head"):
     """Return an org_state-like object with a .teams registry."""
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+
+    AuthorityPolicyStore(db).ensure_authority_selector("engineering")
+
     class _OS:
         pass
     os = _OS()

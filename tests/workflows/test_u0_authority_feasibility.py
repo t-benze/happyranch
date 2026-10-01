@@ -1173,6 +1173,14 @@ def test_r1_termination_before_validate_denies_real_contained_delegation(tmp_pat
                           sessions=tracker, settings=orch._settings,
                           teams_lock=asyncio.Lock(), db_lock=asyncio.Lock(),
                           event_bus=EventSink())
+    from runtime.infrastructure.workflow_schema import install_or_recover
+    from runtime.workflows.authority import WorkflowAuthorityCoordinator
+    install_or_recover(db)
+    db.upsert_org_setting("reviewer_agents", '["engineering_head"]')
+    org.workflow_authority = WorkflowAuthorityCoordinator(
+        db=db, org_slug="test", root=paths.root, teams=orch._teams,
+    )
+    org.workflow_authority.recover_or_publish(publisher="u0-test-setup")
     # A separate active manager session owns the authority writer; it cannot
     # be mistaken for the parent invocation whose decision is being consumed.
     db.insert_task(TaskRecord(id="TASK-U0-AUTH", team="engineering", brief="authority writer",

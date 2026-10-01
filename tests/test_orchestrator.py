@@ -517,6 +517,106 @@ def test_run_agent_shipping_seam_injects_manager_policy_binds_session_and_omits_
     assert RESERVED_TEAM_POLICY_HEADER not in mock_executor.run.call_args.kwargs["prompt"]
 
 
+def test_dynamic_add_cold_org_coordinates_selector_before_real_launch(
+    tmp_path, test_settings, monkeypatch,
+):
+    """A lazily attached org is coherent before any real launch can read it."""
+    from runtime.daemon.state import DaemonState
+    from runtime.orchestrator.active_authority_policy import (
+        RESERVED_TEAM_POLICY_HEADER,
+    )
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    from runtime.runtime import RuntimeDir
+
+    runtime = RuntimeDir.init(tmp_path / "dynamic-runtime")
+    state = DaemonState.from_runtime(runtime, test_settings)
+    paths = OrgPaths(root=runtime.orgs_dir / "alpha")
+    paths.agents_dir.mkdir(parents=True)
+    paths.teams_config_path.write_text(
+        "teams:\n"
+        "  engineering:\n"
+        "    manager: engineering_manager\n"
+        "    workers: [code_reviewer]\n"
+    )
+    manager = AgentDef(
+        name="engineering_manager", team="engineering", role="manager",
+        executor="claude", allow_rules=(), repos={}, enrolled_by=None,
+        enrolled_at_task=None, enrolled_at=None, system_prompt="You manage.",
+        description="Manager", model=None,
+    )
+    (paths.agents_dir / "engineering_manager.md").write_text(
+        render_agent_text(manager)
+    )
+    reviewer = AgentDef(
+        name="code_reviewer", team="engineering", role="worker",
+        executor="claude", allow_rules=(), repos={}, enrolled_by=None,
+        enrolled_at_task=None, enrolled_at=None, system_prompt="You review.",
+        description="Reviewer", model=None,
+    )
+    (paths.agents_dir / "code_reviewer.md").write_text(
+        render_agent_text(reviewer)
+    )
+    _setup_workspaces(paths, ["engineering_manager"])
+
+    org = asyncio.run(state.add_org("alpha"))
+    store = AuthorityPolicyStore(org.db)
+    # Keep this regression at the real in-process launch seam; containment is
+    # independently covered and would require an unrelated systemd venue.
+    org.orchestrator.attach_host_supervisor(None)
+
+    # Once the dynamic org is attachable, launch policy resolution must be a
+    # read. Any direct initializer here is the exact stale-publication bug.
+    def forbid_launch_initializer(*_args, **_kwargs):
+        raise AssertionError("launch resolver mutated the authority selector")
+
+    monkeypatch.setattr(
+        AuthorityPolicyStore, "ensure_authority_selector",
+        forbid_launch_initializer,
+    )
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="provider-session",
+    )
+
+    first_task = org.orchestrator.create_task("first manager launch")
+    monkeypatch.setattr(
+        org.orchestrator, "_build_session_id", lambda: "sess-dynamic-first",
+    )
+    with patch.object(org.orchestrator, "_build_executor", return_value=mock_executor):
+        org.orchestrator._run_agent(
+            first_task, "engineering_manager", "decide",
+        )
+
+    selector = store.get_authority_selector("engineering")
+    assert selector is not None and selector.family == "empty"
+    first_ready = org.workflow_authority.verify_admission_ready()
+    assert first_ready.generation == 2
+    assert json.loads(first_ready.snapshot_bytes)["active_policy_selectors"] == [{
+        "selector": selector.model_dump(mode="json"),
+        "team": "engineering",
+    }]
+    assert RESERVED_TEAM_POLICY_HEADER not in mock_executor.run.call_args.kwargs["prompt"]
+    history_count = org.db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_active_selector_history"
+    ).fetchone()[0]
+
+    second_task = org.orchestrator.create_task("repeat manager launch")
+    monkeypatch.setattr(
+        org.orchestrator, "_build_session_id", lambda: "sess-dynamic-second",
+    )
+    with patch.object(org.orchestrator, "_build_executor", return_value=mock_executor):
+        org.orchestrator._run_agent(
+            second_task, "engineering_manager", "decide again",
+        )
+
+    assert org.workflow_authority.verify_admission_ready() == first_ready
+    assert org.db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_active_selector_history"
+    ).fetchone()[0] == history_count == 1
+
+
 def test_run_agent_v2_shipping_seam_renders_dual_text_and_persists_binding(
     orchestrator, test_runtime, monkeypatch,
 ):
