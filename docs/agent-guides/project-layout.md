@@ -52,6 +52,7 @@ Tracked source is split by product surface:
 |   |-- adapters/                # Claude, Codex, opencode, and Pi adapters
 |   |-- daemon/                  # FastAPI app, routes, queue, sessions, runners, compatibility aliases
 |   |-- infrastructure/          # SQLite, audit, KB, learnings, threads, artifacts, mention routing
+|   |   `-- db/                  # Capability mixins behind the database.py Database facade
 |   |-- orchestrator/            # task state machine, executors, prompts, teams, workspaces, task-scratch reports
 |   |-- platform/                # process/session backends and platform enforcement
 |   |-- portability/             # org portability classification helpers
@@ -91,6 +92,11 @@ The task-scratch report, coverage, and evidence implementations live under
 `runtime/orchestrator/`, and the pure thread-mention resolver lives under
 `runtime/infrastructure/`. Their former `runtime/daemon/` module paths are
 identity aliases retained for import and monkeypatch compatibility.
+
+`runtime/infrastructure/database.py` remains the stable `Database` facade.
+Capability-owned methods move incrementally into mixins under
+`runtime/infrastructure/db/`; callers continue importing and instantiating the
+facade from its original module.
 
 ## Test placement
 
