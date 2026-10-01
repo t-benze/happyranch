@@ -16599,6 +16599,65 @@ class Database:
         )
         self._conn.commit()
 
+    @_synchronized
+    def query_usage_lifecycle_snapshot(
+        self, *, start_utc: str, end_utc: str,
+    ) -> dict[str, list[dict]]:
+        """Return the bounded, read-only lifecycle facts used by Usage v1.
+
+        Membership is selected from lifecycle tables first.  Usage rows are
+        optional candidates for those lifecycle rows; callers resolve the
+        documented task/thread/dream keys and reject ambiguous candidates.
+        """
+        audit_rows = self._conn.execute(
+            """SELECT id, task_id, agent, action, payload, timestamp
+               FROM audit_log
+               WHERE (action IN ('session_start', 'session_end')
+                      AND timestamp < ?)
+                  OR (action = 'dream_started'
+                      AND timestamp >= ? AND timestamp < ?)
+               ORDER BY id""",
+            (end_utc, start_utc, end_utc),
+        ).fetchall()
+        thread_rows = self._conn.execute(
+            """SELECT id, thread_id, agent_name, invocation_token, purpose,
+                      status, started_at, consumed_at, session_id, executor,
+                      model, decline_reason, reply_message_seq
+               FROM thread_invocations
+               WHERE (started_at >= ? AND started_at < ?)
+                  OR (purpose = 'reply'
+                      AND consumed_at >= ? AND consumed_at < ?)
+               ORDER BY id""",
+            (start_utc, end_utc, start_utc, end_utc),
+        ).fetchall()
+        usage_rows = self._conn.execute(
+            """SELECT * FROM session_token_usage
+               WHERE created_at >= ? AND created_at < ?
+                 AND COALESCE(scope_type, 'task') IN ('task', 'thread', 'dream')
+               ORDER BY id""",
+            (start_utc, end_utc),
+        ).fetchall()
+        result_rows = self._conn.execute(
+            """SELECT r.id, r.task_id, r.agent, r.session_id, r.status,
+                      r.created_at, t.status AS task_status
+               FROM task_results AS r
+               JOIN tasks AS t ON t.id = r.task_id
+               WHERE r.created_at >= ? AND r.created_at < ?
+               ORDER BY r.id""",
+            (start_utc, end_utc),
+        ).fetchall()
+        recovery_rows = self._conn.execute(
+            """SELECT task_id, agent, recovery_session_id
+               FROM task_completion_recoveries"""
+        ).fetchall()
+        return {
+            "audit": [dict(row) for row in audit_rows],
+            "threads": [dict(row) for row in thread_rows],
+            "usage": [dict(row) for row in usage_rows],
+            "results": [dict(row) for row in result_rows],
+            "recoveries": [dict(row) for row in recovery_rows],
+        }
+
     def _session_token_usage_filters(
         self,
         *,
