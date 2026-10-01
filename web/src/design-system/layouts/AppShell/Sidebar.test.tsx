@@ -421,36 +421,46 @@ describe('THR-140 seq 208: flat navigation', () => {
   });
 });
 
+/** Empty Usage v1 responses (shape of runtime/daemon/routes/usage.py). */
+function seedUsageV1(): void {
+  const window = {
+    start_utc: '2026-09-22T00:00:00Z', end_utc: '2026-09-29T00:00:00Z',
+    start_local: '2026-09-22T00:00:00+00:00', end_local: '2026-09-29T00:00:00+00:00',
+  };
+  const meta = {
+    generated_at: '2026-09-29T00:00:00Z', data_through: '2026-09-29T00:00:00Z',
+    timezone: 'UTC', current_window: window, previous_window: null,
+  };
+  const none = {
+    worker_task: 0, manager_decision: 0, thread_reply: 0, thread_followup: 0, dream: 0,
+    task_unclassified: 0, recovery: 0,
+  };
+  server.use(
+    http.get(`/api/v1/orgs/${SLUG}/usage/workload`, () => HttpResponse.json({ ...meta, agents: [] })),
+    http.get(`/api/v1/orgs/${SLUG}/usage/efficiency`, () =>
+      HttpResponse.json({ ...meta, cohorts: [], unattributed: { current: none, previous: null }, rows: [] }),
+    ),
+  );
+}
+
 describe('Sidebar-routed surfaces', () => {
   test('renders Usage surface', async () => {
     seedSidebarShell();
-    // Seed token endpoints so UsagePage doesn't error
-    server.use(
-      http.get(`/api/v1/orgs/${SLUG}/tokens`, ({ request }) => {
-        const url = new URL(request.url);
-        const groupBy = url.searchParams.get('group_by');
-        return HttpResponse.json({ rollup: groupBy === 'model' ? [] : [] });
-      }),
-    );
+    // Seed the Usage v1 read routes so UsagePage doesn't error
+    seedUsageV1();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/usage` });
     await waitFor(() => {
-      expect(screen.getByText(/Token usage and cache savings/i)).toBeInTheDocument();
+      expect(screen.getByRole('heading', { level: 2, name: 'Workload' })).toBeInTheDocument();
     });
   });
 
   test('legacy /spend redirects to the Usage surface (THR-061 seq79)', async () => {
     seedSidebarShell();
-    // Seed token endpoints so UsagePage doesn't error
-    server.use(
-      http.get(`/api/v1/orgs/${SLUG}/tokens`, ({ request }) => {
-        const url = new URL(request.url);
-        const groupBy = url.searchParams.get('group_by');
-        return HttpResponse.json({ rollup: groupBy === 'model' ? [] : [] });
-      }),
-    );
+    // Seed the Usage v1 read routes so UsagePage doesn't error
+    seedUsageV1();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/spend` });
     await waitFor(() => {
-      expect(screen.getByText(/Token usage and cache savings/i)).toBeInTheDocument();
+      expect(screen.getByRole('heading', { level: 2, name: 'Workload' })).toBeInTheDocument();
     });
   });
 
