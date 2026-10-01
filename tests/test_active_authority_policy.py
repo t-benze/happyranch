@@ -111,20 +111,24 @@ def test_manager_gets_exact_authenticated_section_and_worker_is_byte_absent(tmp_
     ) == ""
 
 
-def test_legacy_v1_render_bytes_remain_frozen():
+def test_legacy_v1_bound_and_unbound_render_bytes_remain_frozen():
     release = _release(1)
     activation = AuthorityPolicyActivation.create(
         id="APA-FROZEN", team="engineering", epoch=7, release_id=release.id,
         action="bootstrap", actor_kind="shared_local_operator_credential",
         request_id="REQ-FROZEN", request_digest="f" * 64,
     )
-    rendered = render_active_team_policy(
+    bound = render_active_team_policy(
         release=release, activation=activation, provider_id="codex",
         executor_kind="codex", model_id="gpt-test", root_task_id="TASK-FROZEN",
         manager_session_id="sess-frozen",
     )
-    assert hashlib.sha256(rendered.encode()).hexdigest() == (
+    unbound = render_active_team_policy(release=release, activation=activation)
+    assert hashlib.sha256(bound.encode()).hexdigest() == (
         "6deaf28836182bfca2a88e6aa5a56d457e5c89aa26d26881374436e8525afc6a"
+    )
+    assert hashlib.sha256(unbound.encode()).hexdigest() == (
+        "6df608ea0104ed482a94ce74ba7e70f2043640de9d5a498711c84c6b97148fdd"
     )
 
 

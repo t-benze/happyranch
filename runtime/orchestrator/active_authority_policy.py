@@ -425,11 +425,23 @@ def render_active_team_policy_v2(
         assessment_fields["uncertainty_codes"].annotation
     )
     uncertainty_code_values = get_args(uncertainty_code_literal)
-    bound_provider_id = provider_id or "unknown"
-    bound_executor_kind = executor_kind or provider_id or "unknown"
-    bound_model_id = model_id or "default"
-    bound_root_task_id = root_task_id or "unknown"
-    bound_manager_session_id = manager_session_id or "unknown"
+    unbound_manager_decision = root_task_id is None or manager_session_id is None
+    if unbound_manager_decision:
+        bound_provider_id = provider_id or "<manager-decision-provider-id>"
+        bound_executor_kind = (
+            executor_kind or provider_id or "<manager-decision-executor-kind>"
+        )
+        bound_model_id = model_id or "<manager-decision-model-id>"
+        bound_root_task_id = root_task_id or "<manager-decision-root-task-id>"
+        bound_manager_session_id = (
+            manager_session_id or "<manager-decision-session-id>"
+        )
+    else:
+        bound_provider_id = provider_id or "unknown"
+        bound_executor_kind = executor_kind or provider_id or "unknown"
+        bound_model_id = model_id or "default"
+        bound_root_task_id = root_task_id
+        bound_manager_session_id = manager_session_id
     self_evaluation_example = AuthorityPolicyV2ManagerSelfEvaluation(
         activation_epoch=selector.selector_epoch,
         activation_id=activation.id,
@@ -462,6 +474,49 @@ def render_active_team_policy_v2(
     uncertainty_codes_json = json.dumps(
         uncertainty_code_values, separators=(",", ":"),
     )
+    if unbound_manager_decision:
+        completion_guidance = (
+            "Manager-decision completion shape reference: include one "
+            "`manager_self_evaluation` object beside `decision`, with no rationale, "
+            "prose, transcript, credentials, or secrets. "
+            f"Contract `{AUTHORITY_POLICY_V2_CONTRACT_ID}` "
+            f"`{AUTHORITY_POLICY_V2_CONTRACT_VERSION}` digest `{contract_digest}`. "
+            "Required fields: contract_id, contract_version, contract_digest, "
+            "root_task_id, manager_session_id, release_id, policy_version, "
+            "policy_digest, activation_id, activation_epoch, provider_id, "
+            "executor_kind, model_id, what_to_escalate, and what_not_to_escalate. "
+            "There is no clause id, canonical continuation phrase, or keyword unlock. "
+            "This context has no bound manager-decision identity. Do not submit a "
+            "`manager_self_evaluation` from this context. A `manager_self_evaluation` "
+            "is submitted only in a manager-decision task's report-completion, using "
+            "the root_task_id/manager_session_id bound in that task's policy block. "
+            "`manager_self_evaluation` is a top-level key in that report-completion "
+            "JSON file, a sibling of `decision`, not inside `decision`.\n\n"
+            "Exact required `manager_self_evaluation` object shape and types only; "
+            "the placeholder manager-decision identity tokens are not values to copy:\n"
+        )
+    else:
+        completion_guidance = (
+            "Completion requirement: include one `manager_self_evaluation` object "
+            "beside your `decision`, with no rationale, prose, transcript, credentials, "
+            "or secrets. "
+            f"Contract `{AUTHORITY_POLICY_V2_CONTRACT_ID}` "
+            f"`{AUTHORITY_POLICY_V2_CONTRACT_VERSION}` digest `{contract_digest}`. "
+            "Required fields: contract_id, contract_version, contract_digest, "
+            "root_task_id, manager_session_id, release_id, policy_version, "
+            "policy_digest, activation_id, activation_epoch, provider_id, "
+            "executor_kind, model_id, what_to_escalate, and what_not_to_escalate. "
+            "There is no clause id, canonical continuation phrase, or keyword unlock. "
+            "Bound manager runtime identity: provider_id="
+            f"`{bound_provider_id}`, executor_kind=`{bound_executor_kind}`, "
+            f"model_id=`{bound_model_id}`, root_task_id=`{bound_root_task_id}`, "
+            f"manager_session_id=`{bound_manager_session_id}`. "
+            "`manager_self_evaluation` must be a top-level key in the "
+            "report-completion JSON file, a sibling of `decision`, not inside "
+            "`decision`.\n\n"
+            "Exact required `manager_self_evaluation` object shape, filled with this "
+            "launch's bound values:\n"
+        )
     return (
         f"{_BEGIN}\n{RESERVED_TEAM_POLICY_HEADER}\n"
         f"Contract: `{AUTHORITY_POLICY_V2_CONTRACT_ID}` "
@@ -476,22 +531,7 @@ def render_active_team_policy_v2(
         "otherwise conflicting, escalate. Only a clear `what_to_escalate` "
         "`does_not_apply` together with a clear `what_not_to_escalate` `applies` "
         "permits continuing the same root.\n\n"
-        "Completion requirement: include one `manager_self_evaluation` object beside "
-        "your `decision`, with no rationale, prose, transcript, credentials, or secrets. "
-        f"Contract `{AUTHORITY_POLICY_V2_CONTRACT_ID}` "
-        f"`{AUTHORITY_POLICY_V2_CONTRACT_VERSION}` digest `{contract_digest}`. Required "
-        "fields: contract_id, contract_version, contract_digest, root_task_id, "
-        "manager_session_id, release_id, policy_version, policy_digest, activation_id, "
-        "activation_epoch, provider_id, executor_kind, model_id, what_to_escalate, and "
-        "what_not_to_escalate. There is no clause id, canonical continuation phrase, or "
-        "keyword unlock. Bound manager runtime identity: provider_id="
-        f"`{bound_provider_id}`, executor_kind=`{bound_executor_kind}`, "
-        f"model_id=`{bound_model_id}`, root_task_id=`{bound_root_task_id}`, "
-        f"manager_session_id=`{bound_manager_session_id}`. "
-        "`manager_self_evaluation` must be a top-level key in the report-completion "
-        "JSON file, a sibling of `decision`, not inside `decision`.\n\n"
-        "Exact required `manager_self_evaluation` object shape, filled with this "
-        "launch's bound values:\n"
+        f"{completion_guidance}"
         f"```json\n{example_json}\n```\n"
         "The assessment values shown demonstrate the shape, not a default: set both "
         "assessments honestly and do not copy the continue-shaped values unless they "

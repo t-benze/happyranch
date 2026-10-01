@@ -492,6 +492,39 @@ def test_v2_prompt_renders_exact_self_evaluation_shape_and_vocabulary(tmp_path):
     assert isinstance(example["activation_epoch"], int)
 
 
+def test_v2_unbound_prompt_shows_shape_without_copyable_unknown_identities(tmp_path):
+    store = _store(tmp_path)
+    _v2_receipt(store)
+    section = render_selected_team_policy(_resolve(store))
+
+    assert "filled with this launch's bound values" not in section
+    assert "This context has no bound manager-decision identity." in section
+    assert "only in a manager-decision task's report-completion" in section
+    assert "shape and types only" in section
+    assert '"root_task_id": "unknown"' not in section
+    assert '"manager_session_id": "unknown"' not in section
+
+    example = _manager_self_evaluation_example(section)
+    assert isinstance(example["root_task_id"], str)
+    assert isinstance(example["manager_session_id"], str)
+    assert isinstance(example["policy_version"], int)
+    assert isinstance(example["activation_epoch"], int)
+    for assessment_name in ("what_to_escalate", "what_not_to_escalate"):
+        assessment = example[assessment_name]
+        assert isinstance(assessment, dict)
+        assert isinstance(assessment["confidence"], int)
+        assert isinstance(assessment["uncertainty_codes"], list)
+
+    applicability = AuthorityPolicyV2Assessment.model_fields["applicability"].annotation
+    for value in get_args(applicability):
+        assert value in section
+    (code_literal,) = get_args(
+        AuthorityPolicyV2Assessment.model_fields["uncertainty_codes"].annotation
+    )
+    for value in get_args(code_literal):
+        assert value in section
+
+
 def test_rendered_v2_example_round_trips_through_real_binding_admission(tmp_path):
     from runtime.daemon.routes.tasks import CompletionBody, _completion_v2_evidence
 
@@ -527,7 +560,6 @@ def test_rendered_v2_example_round_trips_through_real_binding_admission(tmp_path
 
 
 def test_old_plain_string_v2_shape_still_fails_closed(tmp_path):
-    from pydantic import ValidationError
     from runtime.daemon.routes.tasks import CompletionBody, _completion_v2_evidence
 
     store = _store(tmp_path)
@@ -539,20 +571,23 @@ def test_old_plain_string_v2_shape_still_fails_closed(tmp_path):
     binding = load_session_policy_binding(
         db=store._db, task_id=task_id, session_id=session_id, agent_name=MANAGER,
     )
-    section = render_selected_team_policy(
-        snapshot, provider_id="codex", executor_kind="codex", model_id="default",
-        root_task_id=task_id, manager_session_id=session_id,
-    )
-    malformed = _manager_self_evaluation_example(section)
-    malformed.update({
-        "policy_version": str(malformed["policy_version"]),
-        "activation_epoch": str(malformed["activation_epoch"]),
+    malformed = {
+        "activation_epoch": binding["selector_epoch"],
+        "activation_id": binding["activation_id"],
+        "contract_digest": binding["contract_digest"],
+        "contract_id": binding["contract_id"],
+        "contract_version": binding["contract_version"],
+        "executor_kind": binding["executor_kind"],
+        "manager_session_id": session_id,
+        "model_id": binding["model_id"],
+        "policy_digest": binding["policy_digest"],
+        "policy_version": "1",
+        "provider_id": binding["provider_id"],
+        "release_id": binding["release_id"],
+        "root_task_id": task_id,
         "what_to_escalate": "does_not_apply",
         "what_not_to_escalate": "applies",
-    })
-
-    with pytest.raises(ValidationError):
-        AuthorityPolicyV2ManagerSelfEvaluation.model_validate(malformed)
+    }
     carrier, _admission = _completion_v2_evidence(
         org=object(),
         body=CompletionBody(
@@ -563,6 +598,7 @@ def test_old_plain_string_v2_shape_still_fails_closed(tmp_path):
         binding=binding, task_id=task_id,
     )
     assert carrier["_error_code"] == "malformed_output"
+    assert "payload_digest" in carrier
 
 
 def test_rendered_v2_threshold_wording_matches_production_boundary(tmp_path):

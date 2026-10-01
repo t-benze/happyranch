@@ -415,10 +415,15 @@ rechecks those values and schema structure cannot refuse continuation. The
 legacy v1 schema clause remains unchanged.
 
 The injected active-policy block shows the exact top-level
-`manager_self_evaluation` object shape beside `decision`, including a filled
-example bound to that launch and the code-derived assessment vocabularies. The
-block is authoritative for shaping the callback; both assessments must still be
-set honestly, and the displayed continue-shaped values are not a default.
+`manager_self_evaluation` object shape beside `decision` and the code-derived
+assessment vocabularies. A manager-decision task receives a filled example bound
+to that launch. Thread, wake, schedule, and dream contexts have no bound
+manager-decision identity, so their policy block labels the example as shape and
+types only and uses explicit placeholder tokens rather than copyable `unknown`
+values. They do not submit the object; it is submitted only in a manager-decision
+task's report-completion using that task's bound root/session identities. Both
+assessments must still be set honestly, and the displayed continue-shaped values
+are not a default.
 
 The dedicated eligible-manager page is available uniformly to every valid
 registered manager, edits the two values only as a pair, and uses the

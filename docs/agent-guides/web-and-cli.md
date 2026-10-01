@@ -905,8 +905,13 @@ unknown and worker targets fail closed without an editable fallback.
 For a v2-bound manager escalation, the injected role guidance supplies the
 binding identities and requires one structured `manager_self_evaluation` beside
 the ordinary `decision`. The active policy block is authoritative for its exact
-object shape and supplies a filled launch-bound example; managers set both
-assessments honestly rather than treating the displayed values as defaults.
+object shape and supplies a filled launch-bound example in that manager-decision
+task; managers set both assessments honestly rather than treating the displayed
+values as defaults. Policy blocks rendered for thread, wake, schedule, and dream
+contexts have no bound manager-decision identity and show shape/type placeholders
+only, not values to submit. A manager self-evaluation is submitted only from the
+manager-decision task's report-completion using that task's bound root/session
+identities.
 `happyranch report-completion --from-file` preserves that member for strict
 server validation; omission, explicit null, malformed or uncertain evidence
 fails closed. The CLI does not embed policy prose, a clause identifier, a
