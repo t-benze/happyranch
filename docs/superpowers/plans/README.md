@@ -11,3 +11,7 @@ For current behavior, start with the repository [README](../../../README.md),
 [specs index](../specs/README.md) identifies the small set of design references
 explicitly marked current. When a plan conflicts with those sources, treat the
 plan as history.
+
+## Plans
+
+- [Backend decomposition program (THR-273 step 5)](2026-10-01-backend-decomposition.md)

@@ -14,16 +14,7 @@ SCANNED_DIRS = (
     Path("runtime/infrastructure"),
     Path("runtime/orchestrator"),
 )
-ALLOWED_DAEMON_IMPORTS = {
-    (
-        Path("runtime/infrastructure/database.py"),
-        "runtime.daemon.thread_mentions",
-    ),
-    (
-        Path("runtime/orchestrator/orchestrator.py"),
-        "runtime.daemon.task_scratch_report",
-    ),
-}
+ALLOWED_DAEMON_IMPORTS: set[tuple[Path, str]] = set()
 
 
 @dataclass(frozen=True, order=True)
@@ -138,11 +129,15 @@ def _scan_lower_layer_daemon_imports(root: Path) -> list[ImportEdge]:
     return sorted(set(edges))
 
 
-def _forbidden_edges(edges: list[ImportEdge]) -> list[ImportEdge]:
+def _forbidden_edges(
+    edges: list[ImportEdge],
+    *,
+    allowed: set[tuple[Path, str]] = ALLOWED_DAEMON_IMPORTS,
+) -> list[ImportEdge]:
     return [
         edge
         for edge in edges
-        if (edge.importer, edge.target) not in ALLOWED_DAEMON_IMPORTS
+        if (edge.importer, edge.target) not in allowed
     ]
 
 
@@ -164,11 +159,11 @@ def _write(root: Path, relative: str, source: str) -> None:
     path.write_text(source, encoding="utf-8")
 
 
-def test_production_lower_layers_have_only_the_two_exact_legacy_debts() -> None:
+def test_production_lower_layers_have_no_daemon_imports() -> None:
     edges = _scan_lower_layer_daemon_imports(REPO_ROOT)
     forbidden = _forbidden_edges(edges)
     assert not forbidden, _diagnostic(forbidden)
-    assert {(edge.importer, edge.target) for edge in edges} == ALLOWED_DAEMON_IMPORTS
+    assert edges == []
 
 
 def test_detects_import_and_from_forms_with_aliases_and_multiple_names(
@@ -239,6 +234,16 @@ def test_new_lower_layer_daemon_edges_fail_with_actionable_diagnostics(
 
 
 def test_allowlist_is_exact_by_importer_and_imported_module(tmp_path: Path) -> None:
+    allowed = {
+        (
+            Path("runtime/infrastructure/database.py"),
+            "runtime.daemon.thread_mentions",
+        ),
+        (
+            Path("runtime/orchestrator/orchestrator.py"),
+            "runtime.daemon.task_scratch_report",
+        ),
+    }
     _write(
         tmp_path,
         "runtime/infrastructure/database.py",
@@ -261,7 +266,10 @@ import runtime.daemon.new_dependency
 """,
     )
 
-    forbidden = _forbidden_edges(_scan_lower_layer_daemon_imports(tmp_path))
+    forbidden = _forbidden_edges(
+        _scan_lower_layer_daemon_imports(tmp_path),
+        allowed=allowed,
+    )
 
     assert {(edge.importer.as_posix(), edge.target) for edge in forbidden} == {
         (
