@@ -366,18 +366,18 @@ function EfficiencyTable({
   const byType = new Map(data.rows.map((r) => [r.run_type, r]));
   return (
     <ScrollTable label="Efficiency table">
-      <table className="text-body min-w-content-form w-full border-collapse">
+      <table className="text-body min-w-content-form md:min-w-content-narrow w-full table-fixed border-collapse">
         <caption className="sr-only">
           Efficiency by run type for {selection.executor} · {modelLabel(selection.model)}
         </caption>
         <thead>
           <tr>
-            <th scope="col" className={`${TH_CLASS} bg-surface sticky left-0 z-10 text-left`}>Run type</th>
+            <th scope="col" className={`${TH_CLASS} bg-surface sticky left-0 z-10 w-1/5 text-left`}>Run type</th>
             <th scope="col" className={`${TH_CLASS} text-right`}>Runs</th>
             <th scope="col" className={`${TH_CLASS} text-right`}>Median fresh input<FootnoteMark n={1} /></th>
             <th scope="col" className={`${TH_CLASS} text-right`}>Median re-read<FootnoteMark n={2} /></th>
             <th scope="col" className={`${TH_CLASS} text-right`}>Median output<FootnoteMark n={3} /></th>
-            <th scope="col" className={`${TH_CLASS} text-right`}>Decline waste<FootnoteMark n={4} /></th>
+            <th scope="col" className={`${TH_CLASS} w-1/5 text-right`}>Decline waste<FootnoteMark n={4} /></th>
           </tr>
         </thead>
         <tbody>

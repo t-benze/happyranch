@@ -76,7 +76,7 @@ export function UsagePage(): JSX.Element {
   const [compare, setCompare] = useState(false);
   return (
     <ContentWrap>
-      <header className="mb-6 flex flex-wrap items-start justify-between gap-3">
+      <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1">
           <PageHeader title="Usage" meta={<PeriodLabel compare={compare} />} />
         </div>

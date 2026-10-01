@@ -57,7 +57,9 @@ export function DeltaLine({
     );
   }
   let text: string;
-  switch (delta.kind) {
+  // The daemon reports an unchanged non-zero Efficiency run count as an
+  // absolute movement of 0; a zero movement always reads "No change" (PRD §4).
+  switch (delta.kind === 'absolute' && delta.value === 0 ? 'no_change' : delta.kind) {
     case 'no_change':
       text = 'No change';
       break;

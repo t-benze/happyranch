@@ -840,7 +840,8 @@ describe('Usage v1 — Efficiency comparison', () => {
         current: ePeriod({ runs: 8, decline_waste: declines({ declined: 1, total: 8, rate: 0.125 }) }),
         previous: ePeriod({ runs: 8, decline_waste: declines({ declined: 2, total: 8, rate: 0.25 }) }),
         deltas: {
-          runs: NO_CHANGE,
+          // The daemon's Efficiency count delta for equal non-zero runs.
+          runs: { kind: 'absolute', value: 0, withheld_reason: null },
           fresh_input: withheld('invalid_baseline'),
           reread: pct(14.2),
           output: pct(0.4),
@@ -909,7 +910,10 @@ describe('Usage v1 — Efficiency comparison', () => {
   it('a per-metric withheld baseline and the decline measures render from the server deltas', async () => {
     const table = await renderCompared();
     const row = await rowFor(table, 'Thread follow-up');
-    const [, fresh, , , decline] = within(row).getAllByRole('cell');
+    const [runs, fresh, , , decline] = within(row).getAllByRole('cell');
+
+    expect(within(runs).getByText('No change')).toBeInTheDocument();
+    expect(within(runs).queryByText('+0')).toBeNull();
 
     expect(within(fresh).getByText('—')).toBeInTheDocument();
     expect(

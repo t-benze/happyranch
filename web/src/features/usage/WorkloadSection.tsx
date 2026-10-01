@@ -90,7 +90,7 @@ function AgentRow({ row, compare }: { row: WorkloadAgent; compare: boolean }): J
   return (
     <tr className="border-border-default border-b last:border-0">
       <th scope="row" className={IDENTITY_CLASS}>
-        <span className="text-text-primary font-medium break-all">{row.agent}</span>
+        <span className="text-text-primary font-medium break-words">{row.agent}</span>
       </th>
       {count('task_runs')}
       {count('thread_wakes')}
@@ -140,11 +140,11 @@ function AgentRow({ row, compare }: { row: WorkloadAgent; compare: boolean }): J
 function WorkloadTable({ data, compare }: { data: WorkloadResponse; compare: boolean }): JSX.Element {
   return (
     <ScrollTable label="Workload table">
-      <table className="text-body min-w-content-form w-full border-collapse">
+      <table className="text-body min-w-content-form w-full table-fixed border-collapse">
         <caption className="sr-only">Workload by agent</caption>
         <thead>
           <tr>
-            <th scope="col" className={`${TH_CLASS} bg-surface sticky left-0 z-10 text-left`}>Agent</th>
+            <th scope="col" className={`${TH_CLASS} bg-surface sticky left-0 z-10 w-1/4 text-left`}>Agent</th>
             <th scope="col" className={`${TH_CLASS} text-right`}>Task runs</th>
             <th scope="col" className={`${TH_CLASS} text-right`}>Thread wakes</th>
             <th scope="col" className={`${TH_CLASS} text-right`}>
