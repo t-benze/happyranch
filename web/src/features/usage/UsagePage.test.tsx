@@ -530,7 +530,7 @@ describe('Usage v1 — Workload', () => {
 /* ================================================================== */
 
 describe('Usage v1 — Efficiency cohort selection', () => {
-  it('renders no Efficiency data and presses no CLI on first load, and explains why there is no combined view', async () => {
+  it('first load selects nothing: no CLI or model pressed, no cohort requested, and explains why there is no combined view', async () => {
     serve();
     renderPage();
 
@@ -540,11 +540,16 @@ describe('Usage v1 — Efficiency cohort selection', () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('Choose a CLI first')).toBeInTheDocument();
+    expect(within(screen.getByRole('region', { name: 'Efficiency' })).getByRole('status')).toHaveTextContent(
+      'Choose a CLI to see Efficiency',
+    );
     expect(screen.queryByRole('table', { name: /Efficiency by run type/ })).toBeNull();
     const cliGroup = screen.getByRole('group', { name: 'CLI' });
+    expect(within(cliGroup).getAllByRole('button').map((b) => b.textContent)).toEqual(['claude', 'codex']);
     for (const pill of within(cliGroup).getAllByRole('button')) {
       expect(pill).toHaveAttribute('aria-pressed', 'false');
     }
+    expect(within(screen.getByRole('group', { name: 'Model' })).queryAllByRole('button')).toEqual([]);
     for (const call of getEfficiency.mock.calls) {
       expect(call[1]?.executor).toBeUndefined();
     }
@@ -646,22 +651,6 @@ describe('Usage v1 — Efficiency default model', () => {
       }),
     );
   }
-
-  it('first load selects nothing: no CLI or model pressed and no cohort requested', async () => {
-    serve();
-    renderPage();
-
-    expect(await screen.findByText('Choose a CLI first')).toBeInTheDocument();
-    for (const pill of within(screen.getByRole('group', { name: 'CLI' })).getAllByRole('button')) {
-      expect(pill).toHaveAttribute('aria-pressed', 'false');
-    }
-    expect(within(screen.getByRole('group', { name: 'Model' })).queryAllByRole('button')).toEqual([]);
-    expect(screen.queryByRole('table', { name: /Efficiency by run type/ })).toBeNull();
-    expect(efficiencyStatus()).toHaveTextContent('Choose a CLI to see Efficiency');
-    for (const call of getEfficiency.mock.calls) {
-      expect(call[1]?.executor).toBeUndefined();
-    }
-  });
 
   it('choosing a CLI preselects its unpinned cohort even when a named model has more runs', async () => {
     serve(); // claude: unpinned 3 runs, opus 5, sonnet 40
@@ -822,6 +811,74 @@ describe('Usage v1 — Efficiency default model', () => {
     }
     expect(screen.queryByRole('table', { name: /Efficiency by run type/ })).toBeNull();
     expect(efficiencyStatus()).toHaveTextContent('Choose a CLI to see Efficiency');
+
+    // The CLI choice itself was cleared, not hidden: when gemini is offered again it
+    // is unpressed and choosing it selects its unpinned cohort.
+    fireEvent.click(compareSwitch);
+    const gemini = await screen.findByRole('button', { name: 'gemini' });
+    expect(gemini).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByText('Choose a CLI first')).toBeInTheDocument();
+    fireEvent.click(gemini);
+    expect(pressedModels()).toEqual([UNPINNED]);
+    expect(await efficiencyTable()).toHaveAccessibleName(`Efficiency by run type for gemini · ${UNPINNED}`);
+  });
+
+  it('an options refetch that drops the chosen CLI but keeps another never shows or requests the dropped CLI’s unpinned cohort', async () => {
+    serve({
+      options: (compare) =>
+        efficiency(
+          {
+            cohorts: compare
+              ? [cohort('claude', 'sonnet', 40, 30), cohort('gemini', null, 0, 4)]
+              : [cohort('claude', 'sonnet', 40)],
+          },
+          compare,
+        ),
+    });
+    const { client } = renderPage();
+    const compareSwitch = await screen.findByRole('switch', { name: 'Compare with previous 7 days' });
+    fireEvent.click(compareSwitch);
+    fireEvent.click(await screen.findByRole('button', { name: 'gemini' }));
+    expect(pressedModels()).toEqual([UNPINNED]);
+    await waitFor(() =>
+      expect(getEfficiency).toHaveBeenCalledWith(SLUG, { compare: true, executor: 'gemini', model_unpinned: true }),
+    );
+    // Make the cached compare=false options stale, so the first render after the
+    // toggle (before reconciliation runs) itself issues the options refetch.
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ['usage'] });
+    });
+
+    // From here on, record every request together with the Model pills on screen
+    // when it was made (the render that issued it), to catch the pre-reconciliation render.
+    const seen: Array<{ params: unknown; pills: Array<string | null> }> = [];
+    const respond = getEfficiency.getMockImplementation()!;
+    getEfficiency.mockImplementation(async (slug, params = {}) => {
+      seen.push({
+        params,
+        pills: within(screen.getByRole('group', { name: 'Model' }))
+          .queryAllByRole('button')
+          .map((b) => b.textContent),
+      });
+      return respond(slug, params);
+    });
+
+    fireEvent.click(compareSwitch); // the compare=false options no longer offer gemini; claude remains
+
+    expect(await screen.findByText('Choose a CLI first')).toBeInTheDocument();
+    expect(within(screen.getByRole('group', { name: 'Model' })).queryAllByRole('button')).toEqual([]);
+    expect(within(screen.getByRole('group', { name: 'CLI' })).getAllByRole('button').map((b) => b.textContent)).toEqual([
+      'claude',
+    ]);
+    expect(within(screen.getByRole('group', { name: 'CLI' })).getByRole('button', { name: 'claude' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+    expect(efficiencyStatus()).toHaveTextContent('Choose a CLI to see Efficiency');
+    expect(screen.queryByRole('table', { name: /Efficiency by run type/ })).toBeNull();
+    expect(seen.map((s) => s.params)).toContainEqual({ compare: false });
+    expect(seen.filter((s) => (s.params as { executor?: string }).executor === 'gemini')).toEqual([]);
+    expect(seen.flatMap((s) => s.pills)).not.toContain(UNPINNED);
   });
 });
 

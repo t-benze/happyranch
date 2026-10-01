@@ -465,9 +465,14 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
   const optionsQ = useEfficiencyOptions(compare);
   const [executor, setExecutor] = useState<string | null>(null);
   const [selection, setSelection] = useState<CohortSelection | null>(null);
-  const dataQ = useEfficiency(selection, compare);
 
   const cohorts = optionsQ.data?.cohorts ?? [];
+  // Until the reconciliation effect below clears them, a stored CLI that the
+  // latest options no longer offer is treated as not chosen: no pills, no request.
+  const offered = new Set(cohorts.map((c) => c.executor));
+  const chosenExecutor = executor !== null && offered.has(executor) ? executor : null;
+  const chosen = selection !== null && offered.has(selection.executor) ? selection : null;
+  const dataQ = useEfficiency(chosen, compare);
 
   // A named model that is no longer offered (e.g. a previous-only cohort after
   // Compare is switched off) is never silently kept: it falls back to the CLI's
@@ -496,7 +501,7 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
     if (executor !== null) setSelection({ executor, model });
   };
 
-  const shown = selection ? dataQ.data : optionsQ.data;
+  const shown = chosen ? dataQ.data : optionsQ.data;
   const meta = shown
     ? `Data through ${formatInstant(shown.data_through, shown.timezone)} (${shown.timezone}) · generated ${formatInstant(shown.generated_at, shown.timezone)}`
     : null;
@@ -518,7 +523,7 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
         No CLI/model cohort has runs in this period, so there is nothing to compare within a cohort.
       </p>
     );
-  } else if (selection === null) {
+  } else if (chosen === null) {
     status = 'Choose a CLI to see Efficiency';
     body = (
       <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-5">
@@ -539,7 +544,7 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
     const stale = dataQ.isError;
     status = stale
       ? 'Efficiency is stale: the latest refresh failed'
-      : `Efficiency loaded for ${selection.executor} · ${modelLabel(selection.model)}`;
+      : `Efficiency loaded for ${chosen.executor} · ${modelLabel(chosen.model)}`;
     body = (
       <>
         {stale && (
@@ -549,7 +554,7 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
             retrying={dataQ.isFetching}
           />
         )}
-        <EfficiencyTable data={data} selection={selection} compare={compare} />
+        <EfficiencyTable data={data} selection={chosen} compare={compare} />
         <UsageSentence data={data} compare={compare} />
         <div className="text-body text-text-secondary mt-3 space-y-2">
           <UnattributedBlock counts={data.unattributed.current} period="this period" />
@@ -586,8 +591,8 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
         cohorts.length > 0 && (
           <CohortPicker
             cohorts={cohorts}
-            executor={executor}
-            selection={selection}
+            executor={chosenExecutor}
+            selection={chosen}
             onExecutor={onExecutor}
             onModel={onModel}
           />
