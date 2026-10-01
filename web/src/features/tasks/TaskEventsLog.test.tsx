@@ -1,4 +1,5 @@
 import { act, render, screen } from '@testing-library/react';
+import { I18nTestBoundary } from '@/test/render';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { TaskEvent } from '@/lib/api/types';
@@ -55,7 +56,7 @@ describe('TaskEventsLog', () => {
   });
 
   test('shows task-scoped loading, empty, and subscription-error states', () => {
-    render(<TaskEventsLog taskId="TASK-LOCAL-TIME" />);
+    render(<TaskEventsLog taskId="TASK-LOCAL-TIME" />, { wrapper: I18nTestBoundary });
 
     expect(screen.getByText('Loading events for TASK-LOCAL-TIME…')).toBeInTheDocument();
 
@@ -82,7 +83,7 @@ describe('TaskEventsLog', () => {
       }).format(this);
     });
     const user = userEvent.setup();
-    render(<TaskEventsLog taskId="TASK-LOCAL-TIME" />);
+    render(<TaskEventsLog taskId="TASK-LOCAL-TIME" />, { wrapper: I18nTestBoundary });
 
     emit('TASK-LOCAL-TIME', EVENT);
 
@@ -105,7 +106,7 @@ describe('TaskEventsLog', () => {
 
   test('renders valid timestamps for synthetic terminal events (completed/failed/escalated) without falling back', () => {
     vi.spyOn(Date.prototype, 'toLocaleString').mockReturnValue('FORMATTED');
-    render(<TaskEventsLog taskId="TASK-SYNTH" />);
+    render(<TaskEventsLog taskId="TASK-SYNTH" />, { wrapper: I18nTestBoundary });
 
     const completed: TaskEvent = {
       type: 'task_complete',
@@ -139,7 +140,7 @@ describe('TaskEventsLog', () => {
 
   test('renders a stable fallback instead of Invalid Date when the timestamp is missing', () => {
     vi.spyOn(Date.prototype, 'toLocaleString').mockReturnValue('FORMATTED');
-    render(<TaskEventsLog taskId="TASK-MISSING" />);
+    render(<TaskEventsLog taskId="TASK-MISSING" />, { wrapper: I18nTestBoundary });
 
     // Real legacy SSE shape: a synthesized terminal event with no timestamp key.
     const missing = {
@@ -156,7 +157,7 @@ describe('TaskEventsLog', () => {
 
   test('renders a stable fallback instead of Invalid Date for a malformed timestamp', () => {
     vi.spyOn(Date.prototype, 'toLocaleString').mockReturnValue('FORMATTED');
-    render(<TaskEventsLog taskId="TASK-MALFORMED" />);
+    render(<TaskEventsLog taskId="TASK-MALFORMED" />, { wrapper: I18nTestBoundary });
 
     const malformed: TaskEvent = {
       type: 'task_failed',

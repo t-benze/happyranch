@@ -491,7 +491,7 @@ test('C03 exact root/predecessor/successor navigation and C12 list-only AppBar',
 test.each([[0, 'just now'], [5, '5m'], [120, '2h'], [2880, '2d']] as const)('C02 relative age %s minutes', (minutes, expected) => {
   const now = Date.parse('2026-09-13T12:00:00Z'); vi.spyOn(Date, 'now').mockReturnValue(now);
   const record = { ...task('LONG-TASK-IDENTIFIER'), updated_at: new Date(now - minutes * 60_000).toISOString() };
-  render(<MemoryRouter><TaskListRow task={record} to="/orgs/org-a/tasks/LONG-TASK-IDENTIFIER" taskRoutes={{ detail: (id) => `/orgs/org-a/tasks/${id}` }} /></MemoryRouter>);
+  render(<MemoryRouter><I18nTestBoundary><TaskListRow task={record} to="/orgs/org-a/tasks/LONG-TASK-IDENTIFIER" taskRoutes={{ detail: (id) => `/orgs/org-a/tasks/${id}` }} /></I18nTestBoundary></MemoryRouter>);
   expect(screen.getByText(expected)).toHaveClass('text-right', 'font-mono', 'text-task-meta');
   expect(screen.getByTitle(record.task_id)).toHaveTextContent(record.task_id);
 });

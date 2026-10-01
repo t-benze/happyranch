@@ -175,9 +175,9 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
     ]);
   });
 
-  it('marks only the W2a/W2b/W2c/W3a-migrated namespaces translated and keeps later slices incomplete', () => {
+  it('marks only the W2a/W2b/W2c/W3a/W3b-1-migrated namespaces translated and keeps later slices incomplete', () => {
     const summary = coverageSummary();
-    expect(summary.translated).toBe(8);
+    expect(summary.translated).toBe(9);
     const translated = COVERAGE_MANIFEST.filter((entry) => entry.status === 'translated')
       .map((entry) => entry.namespace)
       .sort();
@@ -189,12 +189,12 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
       'onboarding',
       'root-shell',
       'settings',
+      'tasks',
       'threads',
     ]);
-    // W3b (Tasks/Jobs), W4 slices and every other route family remain honest
+    // W3b-2 (Jobs), W4 slices and every other route family remain honest
     // English-only.
     for (const namespace of [
-      'tasks',
       'todos',
       'kb',
       'audit',

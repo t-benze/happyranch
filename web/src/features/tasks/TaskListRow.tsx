@@ -23,6 +23,10 @@ import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import { AgentChip } from '@/design-system/patterns/AgentChip';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
 import type { TaskRecord, TaskStatus } from '@/lib/api/types';
+import { useTranslation } from '@/hooks/i18n';
+import type { MessageKey, MessageParams } from '@/lib/i18n';
+
+type Translate = (key: MessageKey, params?: MessageParams) => string;
 
 /** Route helper injected by the feature caller (keeps the row hook-free). */
 export interface TaskListRoutes {
@@ -36,15 +40,15 @@ const COL = {
 } as const;
 const ROW_FLEX = 'tasks-grid items-center';
 
-function relativeAge(iso: string): string {
+function relativeAge(iso: string, t: Translate): string {
   const ms = Date.now() - new Date(iso).getTime();
   const min = Math.round(ms / 60000);
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min}m`;
+  if (min < 1) return t('tasks.age.justNow');
+  if (min < 60) return t('tasks.age.minutes', { count: min });
   const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr}h`;
+  if (hr < 24) return t('tasks.age.hours', { count: hr });
   const d = Math.round(hr / 24);
-  return `${d}d`;
+  return t('tasks.age.days', { count: d });
 }
 
 function briefHeadline(brief: string): string {
@@ -76,9 +80,23 @@ const ROLLUP_COLOR: Record<TaskStatus, string> = {
   superseded: 'text-status-archived',
 };
 
-/** Human label for the worst-child status (spaces, no underscores). */
-function rollupLabel(status: TaskStatus): string {
-  return status === 'superseded' ? 'superseded' : status.replace(/_/g, ' ');
+/** Localized label for a KNOWN worst-child status; an unknown future status
+ *  renders verbatim (API machine value). */
+const ROLLUP_LABEL_KEY: Record<string, MessageKey> = {
+  pending: 'tasks.rollup.pending',
+  in_progress: 'tasks.rollup.inProgress',
+  escalated: 'tasks.rollup.escalated',
+  blocked: 'tasks.rollup.blocked',
+  completed: 'tasks.rollup.completed',
+  failed: 'tasks.rollup.failed',
+  cancelled: 'tasks.rollup.cancelled',
+  superseded: 'tasks.rollup.superseded',
+};
+
+function rollupLabel(status: TaskStatus, t: Translate): string {
+  return Object.prototype.hasOwnProperty.call(ROLLUP_LABEL_KEY, status)
+    ? t(ROLLUP_LABEL_KEY[status])
+    : status;
 }
 
 /**
@@ -92,12 +110,13 @@ function rollupLabel(status: TaskStatus): string {
  * inside the title column instead of forcing adjacent columns to move.
  */
 function SubtaskRollup({ status }: { status: TaskStatus }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <span
       className={`${ROLLUP_COLOR[status]} flex max-w-full items-center gap-1 overflow-hidden text-xs font-medium text-ellipsis whitespace-nowrap`}
     >
       <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
-      subtask {rollupLabel(status)}
+      {t('tasks.row.subtaskRollup', { status: rollupLabel(status, t) })}
     </span>
   );
 }
@@ -111,10 +130,11 @@ function SubtaskRollup({ status }: { status: TaskStatus }): JSX.Element {
 function waitingContext(
   status: TaskStatus,
   blockKind: TaskRecord['block_kind'],
+  t: Translate,
 ): string | null {
   if (status !== 'in_progress' || !blockKind) return null;
-  if (blockKind === 'delegated') return 'waiting on subtasks';
-  if (blockKind === 'blocked_on_job') return 'waiting on jobs';
+  if (blockKind === 'delegated') return t('tasks.waiting.subtasks');
+  if (blockKind === 'blocked_on_job') return t('tasks.waiting.jobs');
   return null;
 }
 
@@ -145,16 +165,17 @@ function agentChipRole(name: string): 'worker' | 'founder' {
  * STATUS and TASK are now separate columns; the bar is rounded.
  */
 export function TaskListColumnHeader(): JSX.Element {
+  const { t } = useTranslation();
   return (
     <div
       className={`${ROW_FLEX} text-text-muted border-border-default bg-surface-page tasks-column-header rounded-xl border shadow-sm font-semibold tracking-wide`}
     >
-      <div className={COL.status}>STATUS</div>
-      <div className={COL.task}>TASK</div>
-      <div className={COL.title}>TITLE</div>
-      <div className={COL.agent}>AGENT</div>
-      <div className={COL.thread}>THREAD</div>
-      <div className={COL.updated}>UPDATED</div>
+      <div className={COL.status}>{t('tasks.column.status')}</div>
+      <div className={COL.task}>{t('tasks.column.task')}</div>
+      <div className={COL.title}>{t('tasks.column.title')}</div>
+      <div className={COL.agent}>{t('tasks.column.agent')}</div>
+      <div className={COL.thread}>{t('tasks.column.thread')}</div>
+      <div className={COL.updated}>{t('tasks.column.updated')}</div>
     </div>
   );
 }
@@ -166,7 +187,9 @@ export interface TaskListRowProps {
 }
 
 export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Element {
+  const { t, render } = useTranslation();
   const rollup = severityRollupStatus(task);
+  const waiting = waitingContext(task.status, task.block_kind, t);
   const agent = task.assigned_agent;
   const thread = threadRef(task);
   const revisits = directRevisits(task);
@@ -189,14 +212,14 @@ export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Ele
             and/or worst-child severity rollup), both clipped to the title column */}
         <div className={`${COL.title} flex flex-col items-start justify-center gap-0.5 overflow-hidden`}>
           <span className="text-text-primary text-task-title w-full min-w-0 truncate font-semibold" title={task.brief}>{briefHeadline(task.brief)}</span>
-          {(waitingContext(task.status, task.block_kind) || rollup !== task.status) && (
+          {(waiting || rollup !== task.status) && (
             <div className="flex max-w-full items-center gap-1.5 overflow-hidden text-xs whitespace-nowrap">
-              {waitingContext(task.status, task.block_kind) && (
+              {waiting && (
                 <span className="text-text-muted truncate">
-                  {waitingContext(task.status, task.block_kind)}
+                  {waiting}
                 </span>
               )}
-              {waitingContext(task.status, task.block_kind) && rollup !== task.status && (
+              {waiting && rollup !== task.status && (
                 <span className="text-border-default" aria-hidden>
                   ·
                 </span>
@@ -223,7 +246,7 @@ export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Ele
         </div>
         {/* UPDATED — relative age */}
         <div className={`${COL.updated} text-task-meta font-mono text-text-muted whitespace-nowrap tabular-nums`}>
-          {relativeAge(task.updated_at)}
+          {relativeAge(task.updated_at, t)}
         </div>
       </Link>
 
@@ -233,13 +256,16 @@ export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Ele
         <div className="text-text-muted flex flex-wrap gap-x-3 gap-y-0.5 px-2 pb-1.5 text-xs">
           {task.revisit_of_task_id && (
             <Link to={taskRoutes.detail(task.revisit_of_task_id)} className="hover:underline">
-              supersedes{' '}
-              <span className="text-id-task font-mono">{task.revisit_of_task_id}</span>
+              {render('tasks.row.supersedes', {
+                id: <span className="text-id-task font-mono">{task.revisit_of_task_id}</span>,
+              })}
             </Link>
           )}
           {revisits.map((rid) => (
             <Link key={rid} to={taskRoutes.detail(rid)} className="hover:underline">
-              superseded by <span className="text-id-task font-mono">{rid}</span>
+              {render('tasks.row.supersededBy', {
+                id: <span className="text-id-task font-mono">{rid}</span>,
+              })}
             </Link>
           ))}
         </div>

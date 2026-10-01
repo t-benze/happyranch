@@ -32,13 +32,16 @@ import {
 import { useTasksRootsInfinite, useTasksRoutes } from '@/hooks/tasks';
 import type { TaskRecord } from '@/lib/api/types';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
+import { useTranslation } from '@/hooks/i18n';
+import type { MessageKey, MessageParams } from '@/lib/i18n';
 
 type GroupBy = 'status' | 'agent' | 'thread';
+type Translate = (key: MessageKey, params?: MessageParams) => string;
 
-const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
-  { value: 'status', label: 'Status' },
-  { value: 'agent', label: 'Agent' },
-  { value: 'thread', label: 'Thread' },
+const GROUP_BY_OPTIONS: { value: GroupBy; label: MessageKey }[] = [
+  { value: 'status', label: 'tasks.page.groupBy.status' },
+  { value: 'agent', label: 'tasks.page.groupBy.agent' },
+  { value: 'thread', label: 'tasks.page.groupBy.thread' },
 ];
 
 /**
@@ -118,35 +121,45 @@ function GroupHeading({
   );
 }
 
+// Locale-neutral group keys: they are React keys and the sort key, so a
+// locale switch re-labels the same group nodes instead of remounting them.
+const UNASSIGNED_GROUP = 'Unassigned';
+const NO_THREAD_GROUP = 'No thread';
+
 function groupKey(task: TaskRecord, by: GroupBy): string {
   switch (by) {
     case 'status':
       return task.status;
     case 'agent':
-      return task.assigned_agent || 'Unassigned';
+      return task.assigned_agent || UNASSIGNED_GROUP;
     case 'thread': {
       const threadId = (task as Record<string, unknown>).dispatched_from_thread_id;
       if (threadId && typeof threadId === 'string' && threadId.length > 0) {
         return threadId;
       }
-      return 'No thread';
+      return NO_THREAD_GROUP;
     }
   }
 }
 
-function groupLabel(key: string, by: GroupBy): string {
+const STATUS_GROUP_LABEL_KEY: Record<string, MessageKey> = {
+  pending: 'tasks.group.status.pending',
+  in_progress: 'tasks.group.status.inProgress',
+  escalated: 'tasks.group.status.escalated',
+  completed: 'tasks.group.status.completed',
+  failed: 'tasks.group.status.failed',
+  cancelled: 'tasks.group.status.cancelled',
+  superseded: 'tasks.group.status.superseded',
+};
+
+function groupLabel(key: string, by: GroupBy, t: Translate): string {
   if (by === 'status') {
-    const map: Record<string, string> = {
-      pending: 'Pending',
-      in_progress: 'In progress',
-      escalated: 'Waiting on you',
-      completed: 'Completed',
-      failed: 'Failed',
-      cancelled: 'Cancelled',
-      superseded: 'Resolved',
-    };
-    return map[key] ?? key;
+    return Object.prototype.hasOwnProperty.call(STATUS_GROUP_LABEL_KEY, key)
+      ? t(STATUS_GROUP_LABEL_KEY[key])
+      : key;
   }
+  if (by === 'agent' && key === UNASSIGNED_GROUP) return t('tasks.group.unassigned');
+  if (by === 'thread' && key === NO_THREAD_GROUP) return t('tasks.group.noThread');
   return key;
 }
 
@@ -177,6 +190,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
   filters: TaskFilters | undefined;
   setFilters: (value: TaskFilters | undefined) => void;
 }): JSX.Element {
+  const { t } = useTranslation();
   const [filterOpen, setFilterOpen] = useState(false);
   const [draftStatus, setDraftStatus] = useState(filters?.status ?? '');
   const [draftAgent, setDraftAgent] = useState(filters?.assigned_agent ?? '');
@@ -234,11 +248,11 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
       (t) => severityRollupStatus(t) === 'failed',
     ).length;
     return [
-      `${ordinaryTasks.length} LOADED MATCHING ROOT TASKS`,
-      'SUBTASKS ROLL UP',
-      `${failed} FAILED`,
+      t('tasks.page.eyebrow.loaded', { count: ordinaryTasks.length }),
+      t('tasks.page.eyebrow.rollUp'),
+      t('tasks.page.eyebrow.failed', { count: failed }),
     ].join(' · ');
-  }, [ordinaryTasks]);
+  }, [ordinaryTasks, t]);
 
   // Group tasks by the active dimension, sorted by group priority then recency.
   const groups = useMemo(() => {
@@ -349,8 +363,8 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
     }
   };
   const attentionCount = attentionQuery.hasNextPage
-    ? '50+ waiting on you'
-    : `${attentionTasks.length} waiting on you`;
+    ? t('tasks.attention.countMore')
+    : t('tasks.attention.count', { count: attentionTasks.length });
 
   // Presentation split. The escalated attention traversal is independent of the
   // ordinary roots page, so its group is decided on its own data: when it has
@@ -377,7 +391,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
               {eyebrow}
             </p>
             <h1 className="font-display text-text-primary text-task-heading font-medium">
-              What the org is working on
+              {t('tasks.page.title')}
             </h1>
           </div>
           <div className="flex shrink-0 items-center gap-2.5">
@@ -387,7 +401,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
             onValueChange={(v) => setGroupBy(v as GroupBy)}
           >
             <TabsList
-              aria-label="Group by"
+              aria-label={t('tasks.page.groupBy')}
               className="border-border-default bg-surface-sunken tasks-segment gap-0 rounded-full border"
             >
               {GROUP_BY_OPTIONS.map((opt) => (
@@ -396,46 +410,46 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                   value={opt.value}
                   className="data-[state=active]:bg-accent-soft data-[state=active]:text-accent-text tasks-segment-button rounded-full"
                 >
-                  {opt.label}
+                  {t(opt.label)}
                 </TabsTrigger>
               ))}
             </TabsList>
           </Tabs>
           <Button variant="ghost" size="sm" aria-expanded={filterOpen} onClick={() => setFilterOpen(!filterOpen)}>
-            <Filter size={14} aria-hidden /> Filter
+            <Filter size={14} aria-hidden /> {t('tasks.page.filter')}
           </Button>
           </div>
         </div>
         {filterOpen && (
-          <form aria-label="Task filters" className="mb-4 flex flex-wrap items-end gap-3" onSubmit={(event) => {
+          <form aria-label={t('tasks.filters.label')} className="mb-4 flex flex-wrap items-end gap-3" onSubmit={(event) => {
             event.preventDefault();
             const next = { ...(draftStatus ? { status: draftStatus } : {}), ...(draftAgent ? { assigned_agent: draftAgent } : {}) };
             setFilters(Object.keys(next).length ? next : undefined);
           }}>
-            <label className="text-text-secondary text-sm">Status
-              <select aria-label="Task status" className="border-border-default bg-surface-raised block rounded-sm border px-3 py-2" value={draftStatus} onChange={(event) => setDraftStatus(event.target.value)}>
-                <option value="">All statuses</option>
+            <label className="text-text-secondary text-sm">{t('tasks.filters.status')}
+              <select aria-label={t('tasks.filters.statusSelect')} className="border-border-default bg-surface-raised block rounded-sm border px-3 py-2" value={draftStatus} onChange={(event) => setDraftStatus(event.target.value)}>
+                <option value="">{t('tasks.filters.allStatuses')}</option>
                 {Object.keys(GROUP_ORDER_STATUS).map((status) => <option key={status} value={status}>{status}</option>)}
               </select>
             </label>
-            <label className="text-text-secondary text-sm">Assigned agent (exact name)
+            <label className="text-text-secondary text-sm">{t('tasks.filters.agent')}
               <Input value={draftAgent} onChange={(event) => setDraftAgent(event.target.value)} />
             </label>
-            <Button type="submit" size="sm">Apply</Button>
-            <Button type="button" variant="outline" size="sm" onClick={() => { setDraftStatus(''); setDraftAgent(''); setFilters(undefined); }}>Clear</Button>
+            <Button type="submit" size="sm">{t('tasks.filters.apply')}</Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => { setDraftStatus(''); setDraftAgent(''); setFilters(undefined); }}>{t('tasks.filters.clear')}</Button>
           </form>
         )}
-        {filters && <p className="text-text-secondary mb-4 text-sm">Applied filters: {filters.status && `status = ${filters.status}`} {filters.assigned_agent && `assigned agent = ${filters.assigned_agent}`}</p>}
+        {filters && <p className="text-text-secondary mb-4 text-sm">{t('tasks.filters.applied')} {filters.status && t('tasks.filters.appliedStatus', { status: filters.status })} {filters.assigned_agent && t('tasks.filters.appliedAgent', { agent: filters.assigned_agent })}</p>}
         {/* The attention traversal owns its own loading/error states. Its rows
             render inside the shared list shell below, as the first group. */}
         {attentionLoading && (
-          <p className="text-text-muted px-6 text-sm">Loading waiting-on-you tasks…</p>
+          <p className="text-text-muted px-6 text-sm">{t('tasks.attention.loading')}</p>
         )}
         {attentionInitialError && (
           <div role="alert" className="border-feedback-danger bg-danger-soft mx-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
-            <p className="text-text-primary text-sm font-medium">Could not load waiting-on-you tasks</p>
+            <p className="text-text-primary text-sm font-medium">{t('tasks.attention.error')}</p>
             <Button size="sm" variant="outline" className="h-auto w-full max-w-full whitespace-normal break-words sm:w-auto" onClick={() => void retryAttention()}>
-              <RefreshCw size={14} aria-hidden /> Retry
+              <RefreshCw size={14} aria-hidden /> {t('common.retry')}
             </Button>
           </div>
         )}
@@ -463,13 +477,13 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                 <div className="flex min-w-0 items-center gap-2">
                   <AlertCircle className="text-feedback-danger shrink-0" size={18} aria-hidden />
                   <div>
-                    <p className="text-text-primary text-sm font-medium">Tasks may be out of date</p>
-                    <p className="text-text-secondary text-xs">Some task updates could not be loaded.</p>
+                    <p className="text-text-primary text-sm font-medium">{t('tasks.list.staleTitle')}</p>
+                    <p className="text-text-secondary text-xs">{t('tasks.list.staleBody')}</p>
                   </div>
                 </div>
                 <Button size="sm" variant="outline" onClick={retry} loading={isRetrying}>
                   <RefreshCw size={14} aria-hidden />
-                  Retry
+                  {t('common.retry')}
                 </Button>
               </div>
             )}
@@ -484,7 +498,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                   <div className="flex items-center justify-between gap-3">
                     <GroupHeading
                       id="waiting-on-you-heading"
-                      label="Waiting on you"
+                      label={t('tasks.attention.heading')}
                       dot="escalated"
                     />
                     <span className="text-text-muted mb-2 text-xs tabular-nums">
@@ -505,15 +519,15 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                   </section>
                   {attentionQuery.isError && (
                     <div role="alert" className="border-feedback-danger bg-danger-soft mt-2 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
-                      <p className="text-text-primary text-sm font-medium">Could not load waiting-on-you tasks; previously loaded rows are still shown.</p>
+                      <p className="text-text-primary text-sm font-medium">{t('tasks.attention.partialError')}</p>
                       <Button size="sm" variant="outline" className="h-auto w-full max-w-full whitespace-normal break-words sm:w-auto" onClick={() => void (attentionNextPageError ? loadNextAttentionPage() : retryAttention())}>
-                        <RefreshCw size={14} aria-hidden /> {attentionNextPageError ? 'Retry loading more waiting-on-you tasks' : 'Retry'}
+                        <RefreshCw size={14} aria-hidden /> {attentionNextPageError ? t('tasks.attention.retryMore') : t('common.retry')}
                       </Button>
                     </div>
                   )}
                   {attentionQuery.hasNextPage && !attentionNextPageError && (
                     <Button size="sm" variant="outline" className="mt-2 h-auto w-full max-w-full whitespace-normal break-words sm:w-auto" onClick={() => void loadNextAttentionPage()} loading={attentionQuery.isFetchingNextPage}>
-                      Load more waiting-on-you tasks
+                      {t('tasks.attention.loadMore')}
                     </Button>
                   )}
                 </div>
@@ -522,7 +536,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
               return (
                 <div key={key} className="tasks-group">
                   <GroupHeading
-                    label={groupLabel(key, groupBy)}
+                    label={groupLabel(key, groupBy, t)}
                     count={tasks.length}
                     dot={groupDot(key, groupBy)}
                   />
@@ -547,20 +561,20 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                 is still loading, errored, or empty. Keep those ordinary states
                 truthful and visible WITHOUT hiding the shared list shell. */}
             {showEscalatedGroup && ordinaryLoading && (
-              <p className="text-text-muted py-6 text-center text-sm">Loading…</p>
+              <p className="text-text-muted py-6 text-center text-sm">{t('tasks.list.loading')}</p>
             )}
             {showEscalatedGroup && ordinaryInitialError && (
               <EmptyState
                 icon={<AlertCircle size={32} className="text-feedback-danger" />}
-                title="Could not load tasks"
-                body="The server returned an error. You can try again."
-                cta={{ label: isRetrying ? 'Retrying…' : 'Retry', onClick: retry }}
+                title={t('tasks.list.errorTitle')}
+                body={t('tasks.list.errorBody')}
+                cta={{ label: isRetrying ? t('tasks.list.retrying') : t('common.retry'), onClick: retry }}
               />
             )}
             <div ref={sentinelRef} aria-hidden className="h-1" />
             {isFetchingNextPage && (
               <p className="text-text-muted py-3 text-center text-sm">
-                Loading more…
+                {t('tasks.list.loadingMore')}
               </p>
             )}
             {nextPageError && (
@@ -568,33 +582,33 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                 <div className="flex min-w-0 items-center gap-2">
                   <AlertCircle className="text-feedback-danger shrink-0" size={18} aria-hidden />
                   <div>
-                    <p className="text-text-primary text-sm font-medium">Could not load more tasks</p>
-                    <p className="text-text-secondary text-xs">Loaded tasks are still available.</p>
+                    <p className="text-text-primary text-sm font-medium">{t('tasks.list.moreErrorTitle')}</p>
+                    <p className="text-text-secondary text-xs">{t('tasks.list.moreErrorBody')}</p>
                   </div>
                 </div>
-                <Button size="sm" variant="outline" aria-label="Retry loading more tasks" onClick={() => void loadNextPage()} loading={isFetchingNextPage}>
+                <Button size="sm" variant="outline" aria-label={t('tasks.list.retryMore')} onClick={() => void loadNextPage()} loading={isFetchingNextPage}>
                   <RefreshCw size={14} aria-hidden />
-                  Retry
+                  {t('common.retry')}
                 </Button>
               </div>
             )}
             {!tasksQuery.isError && !nextPageError && !hasNextPage && allTasks.length > 0 && (
               <p className="text-text-muted py-4 text-center text-xs">
-                End of list
+                {t('tasks.list.endOfList')}
               </p>
             )}
           </div>
         ) : ordinaryLoading ? (
-          <p className="text-text-muted py-6 text-center text-sm">Loading…</p>
+          <p className="text-text-muted py-6 text-center text-sm">{t('tasks.list.loading')}</p>
         ) : ordinaryInitialError ? (
           <EmptyState
             icon={<AlertCircle size={32} className="text-feedback-danger" />}
-            title="Could not load tasks"
-            body="The server returned an error. You can try again."
-            cta={{ label: isRetrying ? 'Retrying…' : 'Retry', onClick: retry }}
+            title={t('tasks.list.errorTitle')}
+            body={t('tasks.list.errorBody')}
+            cta={{ label: isRetrying ? t('tasks.list.retrying') : t('common.retry'), onClick: retry }}
           />
         ) : (
-          <EmptyState title="No tasks" body="No tasks match the current filters." />
+          <EmptyState title={t('tasks.list.emptyTitle')} body={t('tasks.list.emptyBody')} />
         )}
         </ContentWrap>
       </main>
