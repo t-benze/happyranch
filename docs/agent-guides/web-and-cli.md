@@ -282,6 +282,25 @@ root's own severity and all escalations are preserved (see
 subtask browsing. No New task flow is
 exposed by this list.
 
+### Current escalation reason display
+
+Task detail (including its root recall-tree Outcome), `happyranch details`,
+and the dashboard Waiting on you inbox use
+the additive `escalation_reason` read projection. Ordinary escalations retain
+their existing `task.note`, API values, and presentation. When the current
+escalation audit is an `authority_v2_refusal`, `primary` comes only from an
+`orchestration_step` whose decision is `escalate` within the current episode;
+the previous and current `escalation` audit IDs are the exclusive episode
+boundaries. The UI and CLI show that manager-authored text first, followed by
+the server-owned plain-English explanation for the refusal code. A refusal
+episode with no escalate decision shows only the explanation, and an unknown
+code is shown verbatim. A resolved older episode is never searched.
+
+The read is exact-task scoped and bounded. It does not alter `tasks.note`, the
+refusal finalizer, any audit payload, or the `audit_log.task_id` scope-prefix
+contract. Task list rows and the resolution dialog do not display escalation
+reason text; their behavior is unchanged.
+
 ### Thread-detail system rows
 
 The live `ThreadDetailTranscript` renders system events through its local

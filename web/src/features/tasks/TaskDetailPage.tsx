@@ -27,6 +27,7 @@ import { useJobsList } from '@/hooks/jobs';
 import { getTask } from '@/lib/api/tasks';
 import type {
   ActiveChainResponse,
+  EscalationReason,
   JobRecord,
   TaskRecallNode,
   TaskRecord,
@@ -548,6 +549,20 @@ interface ChainWithBlock {
    *  daemon response lacks it (legacy daemon / stubbed fixture) — the page
    *  then renders no execution-status card (empty behavior preserved). */
   workStatus: WorkStatusResponse | null;
+  escalationReason: EscalationReason | null;
+}
+
+function parseEscalationReason(rr: Record<string, unknown>): EscalationReason | null {
+  const value = rr.escalation_reason;
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Record<string, unknown>;
+  const nullableString = (field: unknown) => field === null || typeof field === 'string';
+  if (
+    !nullableString(candidate.primary) ||
+    !nullableString(candidate.refusal_code) ||
+    !nullableString(candidate.secondary)
+  ) return null;
+  return candidate as unknown as EscalationReason;
 }
 
 function parseWorkStatus(rr: Record<string, unknown>): WorkStatusResponse | null {
@@ -599,6 +614,7 @@ function useChainWithBlock(slug: string | undefined, taskId: string | undefined)
         revisitChain,
         directRevisits,
         workStatus: parseWorkStatus(rr),
+        escalationReason: parseEscalationReason(rr),
       };
     },
     enabled: !!slug && !!taskId,
@@ -855,6 +871,22 @@ export function TaskDetailPage(): JSX.Element {
   const failureNote = isFailed && typeof note === 'string' && note ? note : null;
   const escalationNote =
     isEscalated && typeof note === 'string' && note ? note : null;
+  const projectedEscalation = chainQuery.data?.escalationReason ?? null;
+  const isAuthorityV2Refusal = !!projectedEscalation?.refusal_code;
+  const escalationPrimary = isAuthorityV2Refusal
+    ? projectedEscalation.primary
+    : escalationNote;
+  const escalationSecondary = isAuthorityV2Refusal
+    ? projectedEscalation.secondary
+    : null;
+  const recallNode = recall.data && isAuthorityV2Refusal
+    ? {
+        ...recall.data,
+        output_summary: [escalationPrimary, escalationSecondary]
+          .filter((value): value is string => !!value)
+          .join('\n\n') || null,
+      }
+    : recall.data;
   const brief = task.data?.brief ?? '';
   // §G derived escalated flavor (graceful: null → plain "escalated").
   const escalationFlavor = isEscalated ? chainQuery.data?.escalationFlavor ?? null : null;
@@ -996,12 +1028,22 @@ export function TaskDetailPage(): JSX.Element {
                 <span className="font-mono">{failureNote}</span>
               </div>
             )}
-            {escalationNote && (
+            {(escalationPrimary || escalationSecondary) && (
               <div
                 className="bg-tier-amber-tint text-status-escalated mt-3 max-h-32 overflow-y-auto rounded-md px-3 py-2 text-sm"
               >
-                <span className="font-semibold">Escalation reason:</span>{' '}
-                <span className="font-mono">{escalationNote}</span>
+                {escalationPrimary && (
+                  <p>
+                    <span className="font-semibold">Escalation reason:</span>{' '}
+                    <span className="font-mono">{escalationPrimary}</span>
+                  </p>
+                )}
+                {escalationSecondary && (
+                  <p className={escalationPrimary ? 'mt-1' : undefined}>
+                    <span className="font-semibold">Automatic escalation:</span>{' '}
+                    <span>{escalationSecondary}</span>
+                  </p>
+                )}
               </div>
             )}
             <div className="mt-3 flex gap-2">
@@ -1087,8 +1129,8 @@ export function TaskDetailPage(): JSX.Element {
               <h3 className="text-text-secondary mb-2 text-xs font-semibold tracking-wider uppercase">
                 Recall tree
               </h3>
-              {recall.data ? (
-                <TaskRecallTree node={recall.data} />
+              {recallNode ? (
+                <TaskRecallTree node={recallNode} />
               ) : (
                 <p className="text-text-muted text-xs">Loading recall…</p>
               )}
