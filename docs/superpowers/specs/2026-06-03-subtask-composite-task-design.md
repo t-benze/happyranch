@@ -4,6 +4,11 @@
 **Status:** Design ratified; ready for implementation plan
 **Origin:** Today the capability to orchestrate a multi-step workstream is welded to `role: manager` — only managers' completion output is parsed as a `NextStep` decision (`run_step.py:299`), only managers get the orchestration prompt, and only managers spawn child tasks. The founder wants orchestration driven by the **task** rather than the **manager role**: any agent that owns a top-level task should be able to spawn sub-tasks, drive their completion, and be woken when each sub-task terminates — without a manager in the loop.
 
+> **Supersession note (THR-277):** later fan-out/chain work permits
+> decision-producing non-root task owners. They remain structurally non-root:
+> any escalation request or authority-v2 refusal fails the child and wakes its
+> parent; only `parent_task_id IS NULL` enters founder escalation.
+
 ## Goal
 
 Let a top-level task spawn sub-tasks that its owning agent orchestrates: the owner is woken when each sub-task reaches a terminal state and decides what runs next. Decouple "can orchestrate" from `role: manager` and re-gate it on **task type**. The driving sentence: *whether a task orchestrates depends on whether it is a top-level `task` (vs a spawned `subtask`), not on who owns it.*

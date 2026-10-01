@@ -10,3 +10,8 @@ the existing mechanically validated failed-child provenance link, or proposes
 escalation through the existing THR-181 authority path. Fanout waits for live
 siblings, carriers fail closed, and completed or superseded descendants retire
 historical failed leaves.
+
+Authority-v2 refusal is also a bounded delegated-failure source (THR-277).
+Non-root refusal records `authority_v2_refusal_task_failed`, terminalizes the
+child as FAILED, and wakes the same owning manager; only structural roots enter
+the founder-escalation lifecycle.

@@ -882,7 +882,6 @@ def test_run_step_done_completes_task_and_enqueues_parent(
             output_dir="output/run-1",
         )
     monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
-
     orch.run_step("T-CHD")
 
     child = db.get_task("T-CHD")
@@ -926,6 +925,13 @@ def test_run_step_nonroot_escalate_fails_and_routes_to_parent(
             output_summary=json.dumps({"action": "escalate", "reason": "needs founder"}),
         )
     monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+    escalation_writer_calls = []
+
+    def forbidden_escalation_writer(*args, **kwargs):
+        escalation_writer_calls.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr(db, "try_escalate", forbidden_escalation_writer)
 
     orch.run_step("T-CHD")
 
@@ -939,6 +945,7 @@ def test_run_step_nonroot_escalate_fails_and_routes_to_parent(
     # No escalation audit row was written for the child.
     escalations = [a for a in db.get_audit_logs("T-CHD") if a["action"] == "escalation"]
     assert escalations == []
+    assert escalation_writer_calls == []
 
     # Parent woken for a bounded-recovery decision step (1 failed child < bound).
     assert q.qsize() == 1

@@ -732,14 +732,27 @@ later publication/admission/spend transitions and
 the startup/reaper/run-step automatic discovery wiring remain separate units, so
 the dual-text feature remains unaccepted.
 
+THR-277 supersedes C3d1's root-only terminal wording for structural children.
+The refusal transaction authenticates exactly one of two complete shapes: a
+root retains the existing `escalation` audit and `escalated` task, while a
+non-root writes `authority_v2_refusal_task_failed` and becomes terminal
+`failed` before its ordinary or recovery-owned FAILED tail wakes the parent.
+Startup classifies only `admitted` attempts from the exact causal result via
+the shipping completion reconstruction/parser; blocked and parsed
+non-escalate results receive zero writes and no fence. Missing/unreadable
+evidence, parser-unavailable callers, later stages, and parsed escalation keep
+the fail-closed refusal path. No schema or task-status value changes.
+
 #### Current-episode refusal reason projection
 
-The refusal writer remains unchanged: its normal `escalation` audit carries
-only `reason=authority_v2_refusal`, the closed `refusal_code`, and `attempt_id`,
-and `tasks.note` remains `authority_v2_refusal:<code>`. Founder-facing reads
-derive an additive `escalation_reason` without rewriting either invariant. Two
-consecutive exact-task `escalation` audit IDs delimit the current episode. For
-a v2 refusal, only an intervening `orchestration_step` with
+For a root refusal, the retained `escalation` audit carries only
+`reason=authority_v2_refusal`, the closed `refusal_code`, and `attempt_id`, and
+`tasks.note` remains `authority_v2_refusal:<code>`. Founder-facing reads derive
+an additive `escalation_reason` without rewriting either invariant. A non-root
+refusal is terminal `failed`, writes no `escalation` audit, and therefore has no
+founder-facing escalation-reason projection. Two consecutive exact-task
+`escalation` audit IDs delimit the current root episode. For a root v2 refusal,
+only an intervening `orchestration_step` with
 `decision.action=escalate` may supply the manager-authored primary reason; a
 delegate/done/fanout callback therefore yields no primary and never reaches
 back to an older episode. Ordinary escalations keep their stored reason and no
