@@ -418,13 +418,15 @@ adopting a newer writer's fence and reopening old bytes. Cold recovery
 re-captures against that same pre-file journal rather than aborting and
 replacing it; an incoherent re-capture performs no durable write and remains
 fenced, while concurrent supersession is refused by the bound reservation CAS.
-The effective
-org-scoped writer map also includes eligible-team selector initialization in
-daemon startup plus the legacy policy GET and release-creation compatibility
-handlers. Those three call sites conditionally fence/publish only when the
-selector is absent; an authenticated existing-selector read causes zero
-generation churn. They are additional later-mainline map misses alongside the
-two v2 policy writers, so the v2 pair are not the only reconciled misses.
+The effective org-scoped writer map also includes eligible-team selector
+initialization in daemon startup, before dynamic org attachment, plus the
+legacy policy GET and release-creation compatibility handlers. Those four
+entry points conditionally fence/publish only when the selector is absent; an
+authenticated existing-selector read causes zero generation churn. Common
+task/thread/dream/wake/schedule launch resolution is read-only and refuses an
+uninitialized selector instead of mutating authority during launch. These are
+additional later-mainline map misses alongside the two v2 policy writers, so
+the v2 pair are not the only reconciled misses.
 
 This is a concrete proposed protocol plus executable isolated evidence, not a
 production approval, migration, runtime import, or a claim that same-UID

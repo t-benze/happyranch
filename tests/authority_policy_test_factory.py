@@ -61,4 +61,8 @@ def activate_test_policy(
         actor_kind="shared_local_operator_credential",
         request_id=f"REQ-{epoch}", request_digest=str(epoch) * 64,
     ))
+    # Shipping launch readers are deliberately read-only. Tests using this
+    # legacy fixture establish the same authenticated selector prerequisite
+    # that startup/dynamic attachment establishes in production.
+    store.ensure_authority_selector("engineering")
     return release, activation

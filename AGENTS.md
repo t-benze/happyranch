@@ -196,10 +196,12 @@ replacement, and the pointer CAS all require the original journal and
 return old authority bytes to ready. Cold recovery re-captures against that
 same pre-file journal without replacing it; an incoherent re-capture is
 read-only and remains fenced, while concurrent supersession is refused by the
-same binding checks. Selector initialization at daemon startup
-and in the legacy policy GET/release compatibility handlers uses the same
-conditional interval. An authenticated existing selector remains a read and
-does not fence or advance the generation.
+same binding checks. Selector initialization at daemon startup, before dynamic
+org attachment, and in the legacy policy GET/release compatibility handlers
+uses the same conditional interval. Every task/thread/dream/wake/schedule
+launch resolver is read-only and refuses an uninitialized selector; it never
+initializes authority while launching. An authenticated existing selector
+remains a read and does not fence or advance the generation.
 
 Multi-stage async writers take the process-local coordinator gate before
 `teams_lock` and retain that gate through their terminal success or

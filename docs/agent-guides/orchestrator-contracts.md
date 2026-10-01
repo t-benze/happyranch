@@ -173,10 +173,12 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   cannot adopt the newer fence. Cold recovery re-captures against the same
   pre-file journal; an incoherent retry performs no durable write and remains
   fenced, while a superseded retry is refused. Eligible-team selector
-  initialization at daemon
-  startup and the policy GET/release compatibility handlers participates
-  conditionally: a missing selector fences and publishes exactly once, while an
-  authenticated existing selector is read-only and does not advance generation.
+  initialization at daemon startup, before dynamic org attachment, and in the
+  policy GET/release compatibility handlers participates conditionally: a
+  missing selector fences and publishes exactly once, while an authenticated
+  existing selector is read-only and does not advance generation. Common task,
+  thread, dream, wake, and schedule launch resolution is read-only and refuses
+  an uninitialized selector rather than mutating authority during launch.
 - **U2A boundary.** The coordinator's readiness verifier is intentionally not
   consumed by task, chain, fan-out, activation, or dispatch paths yet.
   Machine-global executor-profile changes remain U2B-deferred and do not yet
