@@ -414,7 +414,11 @@ The publishing writer now owns a durable `prepared` journal from its pre-fence.
 A later independent coordinator may supersede only that unreserved state; the
 candidate refresh, file-phase reservation and pointer CAS require the original
 journal and `publisher_invocation`. This prevents a stale coordinator from
-adopting a newer writer's fence and reopening old bytes. The effective
+adopting a newer writer's fence and reopening old bytes. Cold recovery
+re-captures against that same pre-file journal rather than aborting and
+replacing it; an incoherent re-capture performs no durable write and remains
+fenced, while concurrent supersession is refused by the bound reservation CAS.
+The effective
 org-scoped writer map also includes eligible-team selector initialization in
 daemon startup plus the legacy policy GET and release-creation compatibility
 handlers. Those three call sites conditionally fence/publish only when the

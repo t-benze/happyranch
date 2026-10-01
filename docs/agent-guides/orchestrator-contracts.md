@@ -170,7 +170,10 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   journal before the canonical mutation. An independent coordinator may abort
   and supersede only that pre-file state; file reservation and the final pointer
   CAS require the same journal plus `publisher_invocation`, so a stale publisher
-  cannot adopt the newer fence. Eligible-team selector initialization at daemon
+  cannot adopt the newer fence. Cold recovery re-captures against the same
+  pre-file journal; an incoherent retry performs no durable write and remains
+  fenced, while a superseded retry is refused. Eligible-team selector
+  initialization at daemon
   startup and the policy GET/release compatibility handlers participates
   conditionally: a missing selector fences and publishes exactly once, while an
   authenticated existing selector is read-only and does not advance generation.

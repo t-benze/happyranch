@@ -299,6 +299,21 @@ class WorkflowAuthorityCoordinator:
             (namespace,),
         ).fetchone()
 
+    def _prepared_recovery_binding(
+        self,
+        conn: sqlite3.Connection,
+    ) -> tuple[str, str] | None:
+        active = self._active_journal(conn, self.namespace)
+        if active is None or str(active["state"]) != "prepared":
+            return None
+        snapshot = bytes(active["snapshot_bytes"])
+        if (
+            int(active["generation"]) != int(active["expected_generation"]) + 1
+            or _digest(snapshot) != str(active["snapshot_digest"])
+        ):
+            raise WorkflowAuthorityError("authority_active_journal_invalid")
+        return str(active["id"]), str(active["publisher_invocation"])
+
     def _acquire_lease(self, owner: str) -> None:
         with self._transaction() as conn:
             row = conn.execute(
@@ -782,6 +797,13 @@ class WorkflowAuthorityCoordinator:
     def recover(self) -> str:
         """Reconcile one interrupted publisher using only durable ownership."""
         with self._publisher_lock:
+            # A prepared journal has not reserved or replaced canonical bytes.
+            # Inspect it without acquiring the write lease so an incoherent
+            # cold-start re-capture performs zero durable writes. Publication
+            # still validates the journal id and invocation after capture.
+            with self._db._lock:
+                if self._prepared_recovery_binding(self._db._conn) is not None:
+                    return "prepared_unpublished"
             owner = f"workflow-recovery:{uuid.uuid4().hex}"
             self._acquire_lease(owner)
             try:
@@ -824,17 +846,13 @@ class WorkflowAuthorityCoordinator:
                 staging = path.with_name(f"{path.name}.{journal_id}.staging")
 
                 if state == "prepared":
-                    with self._transaction() as conn:
-                        changed = conn.execute(
-                            "UPDATE workflow_publication_journals SET state='aborted' "
-                            "WHERE id=? AND namespace=? AND state='prepared'",
-                            (journal_id, self.namespace),
-                        ).rowcount
-                        if changed != 1:
-                            raise WorkflowAuthorityError(
-                                "authority_publication_in_progress",
-                            )
-                    return "aborted_unpublished"
+                    # No canonical bytes were reserved or replaced. Preserve
+                    # this invocation-owned fence so cold recovery can
+                    # re-capture against it without churning durable state.
+                    # A concurrent writer may still supersede this pre-file
+                    # state; the bound publication CAS then refuses the stale
+                    # recovery attempt.
+                    return "prepared_unpublished"
 
                 if state == "file_phase_reserved":
                     if staging.is_file():
@@ -914,6 +932,17 @@ class WorkflowAuthorityCoordinator:
     def recover_or_publish(self, *, publisher: str = "org-startup") -> int:
         """Cold-start reconciliation followed by one initial/fenced republish."""
         outcome = self.recover()
+        if outcome == "prepared_unpublished":
+            with self._db._lock:
+                binding = self._prepared_recovery_binding(self._db._conn)
+                if binding is None:
+                    raise WorkflowAuthorityError("publication_fence_superseded")
+                fence_journal_id, publisher_invocation = binding
+            return self.publish_current(
+                publisher=publisher,
+                fence_journal_id=fence_journal_id,
+                publisher_invocation=publisher_invocation,
+            )
         if outcome in {"uninitialized_no_authority", "fenced_no_admission", "aborted_unpublished"}:
             return self.publish_current(publisher=publisher)
         return self.verify_admission_ready().generation

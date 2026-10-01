@@ -193,7 +193,10 @@ Another coordinator may supersede only that pre-file state; after file-phase
 reservation, recovery owns completion. Snapshot reservation, canonical-file
 replacement, and the pointer CAS all require the original journal and
 `publisher_invocation`, so a stale coordinator cannot adopt a newer fence or
-return old authority bytes to ready. Selector initialization at daemon startup
+return old authority bytes to ready. Cold recovery re-captures against that
+same pre-file journal without replacing it; an incoherent re-capture is
+read-only and remains fenced, while concurrent supersession is refused by the
+same binding checks. Selector initialization at daemon startup
 and in the legacy policy GET/release compatibility handlers uses the same
 conditional interval. An authenticated existing selector remains a read and
 does not fence or advance the generation.

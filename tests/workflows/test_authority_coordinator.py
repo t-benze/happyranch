@@ -204,6 +204,59 @@ def test_every_durable_boundary_recovers_once_on_cold_reopen(
     twice.close()
 
 
+def test_pre_file_recovery_recaptures_without_replacing_its_durable_fence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "alpha"
+    _seed_org(root)
+    org = _load(root)
+    org.workflow_authority.fence(reason="incoherent-writer")
+
+    def incoherent_snapshot() -> bytes:
+        raise WorkflowAuthorityError("authority_reviewer_incoherent")
+
+    monkeypatch.setattr(
+        org.workflow_authority,
+        "capture_snapshot",
+        incoherent_snapshot,
+    )
+    with pytest.raises(
+        WorkflowAuthorityError,
+        match="authority_reviewer_incoherent",
+    ):
+        org.workflow_authority.publish_current(publisher="incoherent-writer")
+    prepared = org.db.execute(
+        "SELECT id,publisher_invocation FROM workflow_publication_journals "
+        "WHERE namespace=? AND state='prepared'",
+        (org.workflow_authority.namespace,),
+    ).fetchone()
+    assert prepared is not None
+    before_rows = _rows(org)
+
+    with pytest.raises(
+        WorkflowAuthorityError,
+        match="authority_reviewer_incoherent",
+    ):
+        org.workflow_authority.recover_or_publish(publisher="cold-recovery")
+    assert _rows(org) == before_rows
+
+    monkeypatch.undo()
+    assert org.workflow_authority.recover_or_publish(publisher="cold-recovery") == 2
+    completed = org.db.execute(
+        "SELECT id,publisher_invocation,state "
+        "FROM workflow_publication_journals WHERE namespace=? ORDER BY rowid DESC LIMIT 1",
+        (org.workflow_authority.namespace,),
+    ).fetchone()
+    assert completed is not None
+    assert tuple(completed) == (
+        prepared["id"],
+        prepared["publisher_invocation"],
+        "cache_installed",
+    )
+    org.close()
+
+
 def test_dead_publication_lease_is_reclaimed(tmp_path: Path) -> None:
     root = tmp_path / "alpha"
     _seed_org(root)
