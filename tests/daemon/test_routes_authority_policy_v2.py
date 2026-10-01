@@ -122,8 +122,11 @@ def _post_raw(client, url, payload: bytes):
 
 
 def test_empty_paired_bootstrap_is_atomic_exact_and_readback(client_with_runtime):
+    from tests.workflows.authority_test_support import ensure_coherent_authority
+
     client, org = client_with_runtime
     _seed_agent(org)
+    before_generation = ensure_coherent_authority(org)
 
     projection = client.get(BASE).json()
     assert projection["bootstrap_required"] is True
@@ -131,12 +134,18 @@ def test_empty_paired_bootstrap_is_atomic_exact_and_readback(client_with_runtime
     assert projection["selector_id"] == EMPTY_SELECTOR_ID
     assert projection["selector_epoch"] == 0
     assert "active" not in projection
+    after_initializer_generation = ensure_coherent_authority(org)
+    assert after_initializer_generation == before_generation + 1
 
     response = client.post(
         f"{BASE}/v2/releases",
         json=_pair_body(base=None, expected=None),
     )
     assert response.status_code == 201
+    assert (
+        ensure_coherent_authority(org)
+        == after_initializer_generation + 1
+    )
     body = response.json()
     assert body["family"] == "v2" and body["contract_version"] == "v2"
     receipt = body["receipt"]
@@ -176,6 +185,33 @@ def test_empty_paired_bootstrap_is_atomic_exact_and_readback(client_with_runtime
     assert history["items"][0]["release_id"] == receipt["release_id"]
     assert history["items"][0]["what_to_escalate"] == WHAT_TO
     assert history["items"][0]["activation"]["selector_epoch"] == 1
+
+
+def test_v2_route_publication_failure_preserves_response_and_fences(
+    client_with_runtime,
+) -> None:
+    from unittest.mock import patch
+
+    from runtime.workflows.authority import WorkflowAuthorityError
+    from tests.workflows.authority_test_support import ensure_coherent_authority
+
+    client, org = client_with_runtime
+    _seed_agent(org)
+    ensure_coherent_authority(org)
+    with patch.object(
+        org.workflow_authority,
+        "publish_current",
+        side_effect=RuntimeError("injected publication failure"),
+    ):
+        response = client.post(
+            f"{BASE}/v2/releases",
+            json=_pair_body(base=None, expected=None),
+        )
+    assert response.status_code == 201
+    assert response.json()["receipt"]["selector_epoch"] == 1
+    assert _count(org, "authority_policy_v2_releases") == 1
+    with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+        org.workflow_authority.verify_admission_ready()
 
 
 def test_active_v1_then_first_v2_selection_keeps_v1_rows(client_with_runtime):
@@ -220,8 +256,11 @@ def test_active_v1_then_first_v2_selection_keeps_v1_rows(client_with_runtime):
 
 
 def test_v2_activation_route_rolls_back_and_replays_after_reopen(client_with_runtime, tmp_path):
+    from tests.workflows.authority_test_support import ensure_coherent_authority
+
     client, org = client_with_runtime
     _seed_agent(org)
+    ensure_coherent_authority(org)
 
     first = client.post(f"{BASE}/v2/releases", json=_pair_body(base=None, expected=None))
     assert first.status_code == 201
@@ -235,6 +274,9 @@ def test_v2_activation_route_rolls_back_and_replays_after_reopen(client_with_run
     assert second.status_code == 201
     receipt2 = second.json()["receipt"]
     assert receipt2["release_version"] == 2
+    before_rollback_generation = (
+        ensure_coherent_authority(org)
+    )
 
     rollback = client.post(f"{BASE}/v2/activations", json={
         "team": TEAM, "release_id": receipt1["release_id"],
@@ -250,6 +292,10 @@ def test_v2_activation_route_rolls_back_and_replays_after_reopen(client_with_run
     assert rolled["release_id"] == receipt1["release_id"]
     assert rolled["selector_epoch"] == 3
     assert rolled["previous_selector_id"] == receipt2["selector_id"]
+    assert (
+        ensure_coherent_authority(org)
+        == before_rollback_generation + 1
+    )
 
     # Exact replay of the FIRST paired request returns the ORIGINAL receipt,
     # after a later selection, without reapplying anything.

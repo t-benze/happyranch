@@ -14,6 +14,10 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from runtime.infrastructure.database import Database
+from runtime.orchestrator.escalation_reason import (
+    EscalationReason,
+    derive_current_escalation_reason,
+)
 
 
 class HeartbeatBucket(BaseModel):
@@ -44,6 +48,9 @@ class EscalationRow(BaseModel):
     # "needs-decision" / "exhausted" / "over-budget", or None when the reason
     # is absent/unrecognized (surface falls back to plain "escalated").
     flavor: str | None = None
+    # Default preserves compatibility with cached projections composed by an
+    # older daemon before the additive current-episode field existed.
+    escalation_reason: EscalationReason | None = None
 
 
 class PendingReviewJobRow(BaseModel):
@@ -477,18 +484,26 @@ def compute_escalations_open(db: Database, *, now: datetime) -> list[EscalationR
     Path B (THR-037 Change B): escalations are the stored top-level
     status='escalated' (block_kind cleared)."""
     rows = db.fetch_all_readonly(
-        "SELECT t.id, t.assigned_agent, t.team, t.updated_at, "
-        "       a.payload AS escalation_payload, a.timestamp AS escalation_ts "
-        "FROM tasks t "
-        "LEFT JOIN audit_log a ON a.task_id = t.id AND a.action = 'escalation' "
-        "WHERE t.status = 'escalated' AND t.parent_task_id IS NULL "
-        "ORDER BY t.updated_at DESC"
+        "SELECT id, assigned_agent, team, updated_at FROM tasks "
+        "WHERE status = 'escalated' AND parent_task_id IS NULL "
+        "ORDER BY updated_at DESC"
     )
     result: list[EscalationRow] = []
     for r in rows:
-        payload = json.loads(r["escalation_payload"] or "{}")
-        reason = payload.get("reason") or payload.get("question") or ""
-        raised = datetime.fromisoformat(r["escalation_ts"] or r["updated_at"])
+        episode_rows = db.get_escalation_episode_audit_tail(r["id"])
+        current_escalation = next(
+            (row for row in episode_rows if row.get("action") == "escalation"),
+            None,
+        )
+        payload = (current_escalation or {}).get("payload") or {}
+        stored_reason = payload.get("reason") or payload.get("question") or ""
+        projected = derive_current_escalation_reason(
+            task_status="escalated", audit_rows=episode_rows,
+        )
+        assert projected is not None
+        reason = projected.primary or projected.secondary or stored_reason
+        raised_value = (current_escalation or {}).get("timestamp") or r["updated_at"]
+        raised = datetime.fromisoformat(raised_value)
         if raised.tzinfo is None:
             raised = raised.replace(tzinfo=timezone.utc)
         moment = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
@@ -501,6 +516,7 @@ def compute_escalations_open(db: Database, *, now: datetime) -> list[EscalationR
             raised_at=raised,
             age_seconds=max(0, age),
             flavor=classify_escalation_flavor(reason),
+            escalation_reason=projected,
         ))
     return result
 

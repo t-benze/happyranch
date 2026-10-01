@@ -38,7 +38,28 @@ def load_agent_config(workspace: Path) -> dict:
     return config
 
 
-def migrate_agent_yaml_to_frontmatter(paths) -> dict[str, str]:
+def migrate_agent_yaml_to_frontmatter(
+    paths,
+    *,
+    workflow_authority=None,
+) -> dict[str, str]:
+    """Run the one-shot migration as one coordinator-owned writer batch."""
+    if workflow_authority is None:
+        return _migrate_agent_yaml_to_frontmatter(paths, authority_change=None)
+    with workflow_authority.writer_interval(
+        publisher="agent_yaml_frontmatter_migration",
+    ) as authority_change:
+        return _migrate_agent_yaml_to_frontmatter(
+            paths,
+            authority_change=authority_change,
+        )
+
+
+def _migrate_agent_yaml_to_frontmatter(
+    paths,
+    *,
+    authority_change,
+) -> dict[str, str]:
     """One-shot idempotent reconcile: copy agent.yaml executor/repos/model
     into org/agents/<name>.md frontmatter for every org agent with a workspace.
 
@@ -69,13 +90,13 @@ def migrate_agent_yaml_to_frontmatter(paths) -> dict[str, str]:
     import logging
     import os
     import tempfile
+    from contextlib import nullcontext
 
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     from runtime.orchestrator.prompt_loader import load_agent
 
     _logger = logging.getLogger(__name__)
     results: dict[str, str] = {}
-
     agents_dir = paths.agents_dir
     workspaces_dir = paths.workspaces_dir
 
@@ -166,15 +187,23 @@ def migrate_agent_yaml_to_frontmatter(paths) -> dict[str, str]:
                 model=yaml_model,  # None when agent.yaml had no model key
             )
 
-            # Atomic write via tempfile + os.replace
+            # Atomic write via tempfile + os.replace. The enclosing batch owns
+            # the process gate across scanning, but the durable lease covers
+            # only this synchronous canonical mutation.
             active_path = agents_dir / f"{agent_name}.md"
             fd, tmp = tempfile.mkstemp(
                 prefix=f".{agent_name}.", suffix=".md", dir=str(agents_dir),
             )
             try:
-                with os.fdopen(fd, "w") as fh:
-                    fh.write(render_agent_text(updated))
-                os.replace(tmp, active_path)
+                mutation = (
+                    authority_change.canonical_change()
+                    if authority_change is not None
+                    else nullcontext()
+                )
+                with mutation:
+                    with os.fdopen(fd, "w") as fh:
+                        fh.write(render_agent_text(updated))
+                    os.replace(tmp, active_path)
             except Exception:
                 try:
                     os.unlink(tmp)

@@ -2408,6 +2408,11 @@ describe('TaskDetailPage — escalation reason', () => {
 
   function stubDetailHandlers(
     overrides: Partial<TaskRecord> & Record<string, unknown>,
+    escalationReason?: {
+      primary: string | null;
+      refusal_code: string | null;
+      secondary: string | null;
+    } | null,
   ) {
     const detailTask = { ...TASK, ...overrides } as TaskRecord;
     server.use(
@@ -2427,6 +2432,7 @@ describe('TaskDetailPage — escalation reason', () => {
           predecessor_prior_status: null,
           active_chain: null,
           blocked_on_jobs: null,
+          escalation_reason: escalationReason ?? null,
         }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/tasks/${detailTask.task_id}/recall`, () =>
@@ -2435,7 +2441,10 @@ describe('TaskDetailPage — escalation reason', () => {
           assigned_agent: null,
           brief: detailTask.brief,
           status: detailTask.status,
-          output_summary: null,
+          output_summary:
+            escalationReason?.refusal_code && typeof detailTask.note === 'string'
+              ? detailTask.note
+              : null,
           children: [],
         }),
       ),
@@ -2464,6 +2473,39 @@ describe('TaskDetailPage — escalation reason', () => {
     expect(screen.getByText(ESCALATION_NOTE)).toBeInTheDocument();
     // The escalated action set (Continue) is present because the task is escalated.
     expect(screen.getByRole('button', { name: /^Continue$/ })).toBeInTheDocument();
+  });
+
+  test('shows v2 manager reason as primary and refusal explanation as secondary', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubDetailHandlers(
+      { status: 'escalated', block_kind: null, note: 'authority_v2_refusal:final_commit_failed' },
+      {
+        primary: 'Founder must choose the supported host action.',
+        refusal_code: 'final_commit_failed',
+        secondary: "Automatic continuation couldn't be committed, so this was escalated to you.",
+      },
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/tasks/${TASK.task_id}` });
+
+    expect(await screen.findAllByText('Founder must choose the supported host action.')).toHaveLength(2);
+    expect(screen.getAllByText("Automatic continuation couldn't be committed, so this was escalated to you.")).toHaveLength(2);
+    expect(screen.queryByText('authority_v2_refusal:final_commit_failed')).not.toBeInTheDocument();
+  });
+
+  test('shows only the refusal explanation when the current episode has no escalate step', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubDetailHandlers(
+      { status: 'escalated', block_kind: null, note: 'authority_v2_refusal:interrupted_pre_final' },
+      {
+        primary: null,
+        refusal_code: 'interrupted_pre_final',
+        secondary: 'Automatic continuation was interrupted before it finished, so this was escalated to you.',
+      },
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/tasks/${TASK.task_id}` });
+
+    expect(await screen.findAllByText('Automatic continuation was interrupted before it finished, so this was escalated to you.')).toHaveLength(2);
+    expect(screen.queryByText('authority_v2_refusal:interrupted_pre_final')).not.toBeInTheDocument();
   });
 
   test('displays escalation reason for a legacy blocked+escalated task with a note', async () => {

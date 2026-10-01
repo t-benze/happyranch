@@ -287,6 +287,49 @@ def test_bound_stops_cleanly_between_candidates(tmp_path):
     assert json.loads(result.stdout)["stop_reason"] == "max_candidates"
 
 
+def test_deadline_stops_only_between_candidates_and_journal_resumes(tmp_path):
+    log = tmp_path / "runner.log"
+    runner = tmp_path / "deadline-runner.sh"
+    runner.write_text(
+        "#!/bin/bash\n"
+        f"printf '%s\\n' \"$1\" >> {log}\n"
+        "case \"$1\" in *first*) sleep 0.15;; esac\n"
+        "echo '{\"decision\":\"refused\",\"reason\":\"fixture\"}'\n"
+        "exit 2\n"
+    )
+    runner.chmod(0o755)
+    rows = [_row("first", "worktree", 3), _row("second", "worktree", 2)]
+    manifest = tmp_path / "manifest.json"
+    journal = tmp_path / "journal.jsonl"
+    manifest.write_text(json.dumps(rows))
+    command = [
+        sys.executable, str(DRIVER), "--manifest", str(manifest),
+        "--journal", str(journal), "--runner", str(runner),
+        "--deadline-seconds", "0.05", "--candidate-timeout-seconds", "1",
+    ]
+
+    first = subprocess.run(command, capture_output=True, text=True)
+    assert first.returncode == 0, first.stderr
+    assert json.loads(first.stdout) == {
+        "invoked": 1, "remaining": 1, "stop_reason": "deadline",
+    }
+    assert log.read_text().splitlines() == [rows[0]["candidate"]]
+    first_record = json.loads(journal.read_text().splitlines()[0])
+    assert first_record["receipt"] == {"decision": "refused", "reason": "fixture"}
+    assert first_record["error"] is None
+
+    resumed = subprocess.run(command, capture_output=True, text=True)
+    assert resumed.returncode == 0, resumed.stderr
+    assert "invalid captured output" not in resumed.stderr
+    assert json.loads(resumed.stdout) == {
+        "invoked": 1, "remaining": 0, "stop_reason": "complete",
+    }
+    assert log.read_text().splitlines() == [
+        rows[0]["candidate"], rows[1]["candidate"],
+    ]
+    assert len(journal.read_text().splitlines()) == 2
+
+
 def test_well_formed_refusal_continues_to_next_candidate(tmp_path):
     result, records, _, _ = _invoke(tmp_path, [
         _row("refuse", "worktree", 4),

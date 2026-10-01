@@ -1024,6 +1024,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'tasks.detail.supersededBy': '· 已被 {id} 取代',
   'tasks.detail.failureReason': '失败原因：',
   'tasks.detail.escalationReason': '升级原因：',
+  'tasks.detail.automaticEscalation': '自动升级：',
   'tasks.detail.continue': '继续',
   'tasks.detail.cancel': '取消',
   'tasks.detail.revisit': '重做',

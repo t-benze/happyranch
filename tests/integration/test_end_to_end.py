@@ -36,11 +36,15 @@ def _register_runtime(global_base: str, container: Path) -> None:
     assert r.status_code == 200, r.text
 
 
-def _write_agent_config(runtime: Path, agent: str, executor: str) -> None:
+def _write_agent_config(
+    runtime: Path, agent: str, executor: str, *, pending: bool = False,
+) -> None:
     """Write current AgentDef frontmatter (agent.yaml is legacy-only)."""
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
     agents_dir = runtime / "org" / "agents"
+    if pending:
+        agents_dir /= "_pending"
     agents_dir.mkdir(parents=True, exist_ok=True)
     agent_def = AgentDef(
         name=agent,
@@ -291,7 +295,16 @@ def test_register_and_run_completes_via_codex_callback(
     base = f"http://127.0.0.1:{port}/api/v1/orgs/test"
     headers = _auth_headers()
 
-    _write_agent_config(runtime, "engineering_head", "codex")
+    # This manager becomes active after daemon startup. Use the supported
+    # bootstrap-manager approval lifecycle instead of an uncoordinated direct
+    # write into the active AgentDef roster.
+    _write_agent_config(runtime, "engineering_head", "codex", pending=True)
+    approved = httpx.post(
+        f"{base}/agents/engineering_head/approve",
+        headers=headers,
+        timeout=30.0,
+    )
+    assert approved.status_code == 200, approved.text
     _init_agent(base, "engineering_head", headers)
 
     _write_plan(

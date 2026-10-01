@@ -1107,6 +1107,7 @@ export const en = {
   'tasks.detail.supersededBy': '· superseded by {id}',
   'tasks.detail.failureReason': 'Failure reason:',
   'tasks.detail.escalationReason': 'Escalation reason:',
+  'tasks.detail.automaticEscalation': 'Automatic escalation:',
   'tasks.detail.continue': 'Continue',
   'tasks.detail.cancel': 'Cancel',
   'tasks.detail.revisit': 'Revisit',

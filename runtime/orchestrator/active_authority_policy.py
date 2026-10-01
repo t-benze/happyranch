@@ -117,19 +117,22 @@ def resolve_active_team_policy_snapshot(
 ) -> ActivePolicySnapshot | None:
     """Resolve one authenticated, selector-derived launch identity.
 
-    Eligible launches resolve through the authenticated shared selector (using
-    the transaction-owning ``ensure_authority_selector`` backstop when startup
-    did not initialize it). An authenticated ``empty`` selector is the
-    documented static/no-active behavior. A selected ``legacy_v1`` resolves
-    exactly that selector's legacy release/activation; a selected ``v2``
-    resolves exactly its immutable pair. Missing/corrupt/unsupported/mixed
-    state refuses; there is never a fallback to the newest legacy activation.
+    Eligible launches read the authenticated shared selector only. Shipping
+    startup and dynamic org attachment own coordinated cold initialization;
+    a missing selector here refuses rather than mutating authority from a
+    launch path. An authenticated ``empty`` selector is the documented
+    static/no-active behavior. A selected ``legacy_v1`` resolves exactly that
+    selector's legacy release/activation; a selected ``v2`` resolves exactly
+    its immutable pair. Missing/corrupt/unsupported/mixed state refuses; there
+    is never a fallback to the newest legacy activation.
     """
     if not eligible or resolve_policy_manager_team(
         root=root, agent_name=agent_name, teams=teams, team_hint=team,
     ) != team:
         return None
-    selector = store.ensure_authority_selector(team)
+    selector = store.get_authority_selector(team)
+    if selector is None:
+        raise ActiveAuthorityPolicyError("authority selector is uninitialized")
     if selector.family == "empty":
         return None
     if selector.family == "legacy_v1":

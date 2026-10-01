@@ -154,6 +154,30 @@ class DaemonState:
                 state.broken_orgs[slug] = str(exc)
                 logger.error("org %r failed consistency check: %s", slug, exc)
                 continue
+            # U2A: every whole-runtime construction path (normal startup and
+            # live register/switch) initializes eligible selectors before the
+            # resulting DaemonState is returned or published. Raw
+            # ``OrgState.load`` retains its generation-1 recovery seam; this
+            # containing lifecycle owner makes it launch-ready.
+            from runtime.orchestrator.active_authority_policy import (
+                is_eligible_policy_manager,
+            )
+            try:
+                for team in org.teams.teams():
+                    manager = org.teams.manager_for_team(team).name
+                    if is_eligible_policy_manager(
+                        root=org.root,
+                        agent_name=manager,
+                        team=team,
+                        teams=org.teams,
+                    ):
+                        org.workflow_authority.ensure_authority_selector(
+                            team=team,
+                            publisher="daemon-state-load:selector-initialization",
+                        )
+            except Exception:
+                org.close()
+                raise
             # Attach the global queue + per-org sessions + daemon-wide host
             # supervisor so the orchestrator can re-enqueue tasks (e.g. parent
             # wake-up after a child resolves) and run task sessions through
@@ -193,6 +217,29 @@ class DaemonState:
             # action (init / unload+reload) and must fail loudly so the
             # founder sees the reason at the HTTP layer.
             org = OrgState.load(slug=slug, root=root, settings=self.settings)
+            # U2A: a dynamically attached org must cross the same coordinated
+            # selector-initialization boundary as daemon startup before it is
+            # wired or made runnable. Every launch reader is deliberately
+            # read-only and fails closed if this boundary did not complete.
+            from runtime.orchestrator.active_authority_policy import (
+                is_eligible_policy_manager,
+            )
+            try:
+                for team in org.teams.teams():
+                    manager = org.teams.manager_for_team(team).name
+                    if is_eligible_policy_manager(
+                        root=org.root,
+                        agent_name=manager,
+                        team=team,
+                        teams=org.teams,
+                    ):
+                        org.workflow_authority.ensure_authority_selector(
+                            team=team,
+                            publisher="daemon-dynamic-add:selector-initialization",
+                        )
+            except Exception:
+                org.close()
+                raise
             org.orchestrator.attach_queue(self.queue)
             org.orchestrator.attach_sessions(org.sessions)
             org.orchestrator.attach_host_supervisor(self.host_supervisor)

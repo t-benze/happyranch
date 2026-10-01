@@ -141,7 +141,10 @@ async def _lifespan(app: FastAPI):
         # THR-095: one-shot reconcile agent.yaml executor/repos/model → .md
         try:
             from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
-            migration_results = migrate_agent_yaml_to_frontmatter(OrgPaths(root=org.root))
+            migration_results = migrate_agent_yaml_to_frontmatter(
+                OrgPaths(root=org.root),
+                workflow_authority=org.workflow_authority,
+            )
             if migration_results:
                 changed = {k: v for k, v in migration_results.items() if v != "unchanged"}
                 if changed:

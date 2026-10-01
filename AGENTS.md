@@ -8,6 +8,8 @@ HappyRanch is an org-agnostic runtime for operating a multi-agent organization s
 
 **Current THR-229 v2 schema-observation correction (founder seq351).** The v2 decision path no longer performs a schema-integrity/reference comparison or schema recheck. Candidate and pin rows still store the real claim-time raw-schema digest, inventory digest, and object count as observed-only diagnostics; those values are never placeholders, compared, or rechecked, and structural differences cannot produce a v2 `schema_drift` refusal. Genuine observation failure retains the bounded `claim_failed` outcome. The historical fixture remains real migration-path test support, while the legacy v1 schema clause and every non-schema v2 fence remain unchanged. The checkpoint C3a and issue #918 paragraphs below are historical implementation records superseded only for this removed gate; their recovery and idempotency behavior remains current.
 
+**Current THR-279 v2 final-return diagnostic.** When the automatic v2 hook's final continuation call returns a bounded non-success status, the hook records that exact closed status and reason through the existing best-effort `authority_hook` `capture_failure` action before requesting the unchanged `final_commit_failed` refusal. A raised finalizer exception retains its distinct existing diagnostic. This changes no continuation decision, refusal code, audit action, task note, or identity semantics.
+
 Keep this file short. It is loaded at the start of every Claude Code session. Detailed reference lives in `docs/agent-guides/`; read only the guide that matches the files you are touching.
 
 ## Read When Touching
@@ -158,6 +160,7 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
 - Only root tasks (`parent_task_id is None`) escalate to the founder; non-root tasks fail and hand back to their parent (bounded recovery carries it up).
 - **THR-181 pre-escalation authority hook (Track A):** before a current manager-owned Engineering root escalates, including a thread-originated root, exactly one audited LLM evaluation runs against immutable release policy. Every committed post-activation escalation has one `authority_hook` denominator outcome; runtime-raised mechanical escalations atomically record linked `not_applicable` rather than invoking evaluation. Thread id/origin remain structured provenance and do not relax same-root identity or the prohibition on revisit/successor/supersession/fresh-root replacement. A clean CONTINUE_SAME_ROOT atomically returns the same root to pending and mints a single-use lifecycle envelope bound to evaluation, causal result, manager, team, root, session, and policy identity. The next turn uses the manager agent's ordinary configured executor permissions and normal manager-decision validation; no exact-action whitelist, executor capability refusal, Claude allowTools narrowing, or opencode permission-map swap applies. The daemon remains authoritative for same-root identity, cancellation, replay, CAS, budgets, protected boundaries, and terminal audit reconciliation. Evaluator error or ambiguity fails closed to ESCALATE. See `docs/agent-guides/orchestrator-contracts.md` §THR-181.
 - **Escalation continuation:** autonomous thread escalation continuation is retired. `orchestration_step_count` is monotonic telemetry, not a blocker; every genuine human blocker — including exhausted revise-round or per-slice retry budgets — remains escalated. The direct task-level continue route remains the named, auditable manual break-glass exception under the current shared-bearer trust model.
+- **Escalation reason display (THR-279):** `tasks.note`, the authority-v2 refusal finalizer, escalation audit payloads, and `audit_log.task_id` scope semantics remain unchanged. Task detail, dashboard Waiting on you, and `happyranch details` receive an additive read-only `escalation_reason`: consecutive exact-task escalation audit IDs delimit the current episode; only an intervening manager `decision.action=escalate` can supply a v2 refusal's primary reason. Closed refusal codes map to server-owned plain-English secondary copy; a no-escalate episode has no primary, unknown codes render verbatim, ordinary escalations retain their existing bytes, and non-escalated tasks are unaffected.
 - **THR-225 task-followup replacement bound:** an authoritative pending
   `TASK_FOLLOWUP` owned by the dispatching team manager may transactionally
   create one true replacement root for its causal thread-dispatched root. The
@@ -177,6 +180,52 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
 **Thread reply provider breaker (THR-200 PR B).** One durable continuity per `(thread, agent, executor/model/policy)` opens after exactly three consecutive structured final provider-execution failures. Threshold 3 and cooldown 900 seconds are fixed policy constants, not environment/config settings, so restart cannot fork continuity or bypass an OPEN episode. Only a process proven launched and ending as provider nonzero, provider timeout, or post-launch contract failure qualifies; pre-launch/admission/host refusal, interruption/cancellation, canonical transcript gap fallback, exact eviction itself, successful eviction fallback, and a successful no-callback nudge do not. A failed eviction fallback counts exactly once. OPEN retains/coalesces the delivery range and launches nothing. After exactly 900 seconds the daemon scheduler atomically mints one HALF_OPEN probe; every tick also republishes a committed pending probe token through a process queue whose deduplication ownership spans queued and in-flight delivery. Worker success acknowledges that ownership, while a pre-claim exception or cancellation releases it for a later tick; the durable claim CAS preserves exactly-once provider launch. A recovered ownerless gap with no episode follows the same cooldown-probe path, never ordinary CLOSED admission. Held deferrals in an OPEN exchange remain held and excluded even when the breaker is otherwise recoverable. Probe success settles and closes; probe failure rearms 900 seconds. Episode/receipt/audit writes are idempotent and redacted; stale callbacks cannot close newer continuity. No API/OpenAPI/web projection or manual action is added by PR B.
 
 **Failure diagnostics (THR-220).** Failed thread-invocation audits retain capped raw stdout/stderr tails as additive payload keys. Task, thread, and dream reports select one bounded human cause from complete stderr before tailing; exact known benign launcher/trust lines do not win, while meaningful stderr (including lookalikes) does. The proven API-error/session-limit envelope separately retains its bounded reset notice on those existing surfaces. This is not a comprehensive redaction guarantee and does not alter raw classifier, rate-limit, exact-eviction, retry-owner, or breaker inputs. Claude's session-limit notice is terminal but is not a short-backoff rate-limit retry signal.
+
+## Workflow authority publication (U2A)
+
+`WorkflowAuthorityCoordinator` owns the org-scoped producer half of the
+workflow authority contract. Every supported roster, team, repository,
+executor/model, reviewer-set, or active-policy writer must durably fence the
+org before its authority mutation and publish a coherent digest-addressed
+generation afterward. A post-commit publication failure preserves the legacy
+writer response but leaves the pointer fenced and machine-readable for cold
+recovery; it must never restore a stale ready pointer.
+
+The fence creates the publishing writer's invocation-owned `prepared` journal.
+Another coordinator may supersede only that pre-file state; after file-phase
+reservation, recovery owns completion. Snapshot reservation, canonical-file
+replacement, and the pointer CAS all require the original journal and
+`publisher_invocation`, so a stale coordinator cannot adopt a newer fence or
+return old authority bytes to ready. Cold recovery re-captures against that
+same pre-file journal without replacing it; an incoherent re-capture is
+read-only and remains fenced, while concurrent supersession is refused by the
+same binding checks. Selector initialization during whole-runtime state loading
+(covering daemon startup and runtime register/switch before state publication),
+before dynamic org attachment, founder creation
+of a new-team manager, pending bootstrap-manager approval, and the legacy
+policy GET/release compatibility handlers uses the same coordinated canonical
+change. Repeated startup/dynamic checks and existing-team worker creation do
+not advance the generation or selector history beyond their own authority
+write. Every task/thread/dream/wake/schedule
+launch resolver is read-only and refuses an uninitialized selector; it never
+initializes authority while launching. An authenticated existing selector
+remains a read and does not fence or advance the generation.
+
+Multi-stage async writers take the process-local coordinator gate before
+`teams_lock` and retain that gate through their terminal success or
+compensation. Startup migration retains the same process gate for its batch.
+The shipped durable publication lease is acquired only for each synchronous
+canonical mutation and released before filesystem scanning, awaited workspace
+bootstrap, cloning, network access, host launch, callbacks, snapshot capture,
+or other canonical-input scanning. SQLite stage transactions remain short.
+Do not change the existing `org.db_lock -> binding_lease -> synchronized DB
+callback` order. Direct same-UID file/DB mutation is outside this cooperative
+guarantee.
+
+U2A provides `verify_admission_ready()` for later workflow units but wires no
+admission, activation, or dispatch consumer. Machine-global executor profiles
+remain U2B-deferred: profile changes do not yet fence orgs, and no workflow
+admission consumer may ship until that coordinator exists.
 
 ## Commands
 

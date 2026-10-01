@@ -284,6 +284,28 @@ root's own severity and all escalations are preserved (see
 subtask browsing. No New task flow is
 exposed by this list.
 
+### Current escalation reason display
+
+Task detail (including its root recall-tree Outcome), `happyranch details`,
+and the dashboard Waiting on you inbox use
+the additive `escalation_reason` read projection. Ordinary escalations retain
+their existing `task.note`, API values, and presentation. When the current
+escalation audit is an `authority_v2_refusal`, `primary` comes only from an
+`orchestration_step` whose decision is `escalate` within the current episode;
+the previous and current `escalation` audit IDs are the exclusive episode
+boundaries. The UI and CLI show that manager-authored text first, followed by
+the server-owned plain-English explanation for the refusal code. A refusal
+episode with no escalate decision shows only the explanation, and an unknown
+code is shown verbatim. A resolved older episode is never searched. On task
+detail the two labels (`tasks.detail.escalationReason`,
+`tasks.detail.automaticEscalation`) follow the UI locale (W3b-1); the
+`primary`/`secondary` values are daemon text rendered verbatim in every locale.
+
+The read is exact-task scoped and bounded. It does not alter `tasks.note`, the
+refusal finalizer, any audit payload, or the `audit_log.task_id` scope-prefix
+contract. Task list rows and the resolution dialog do not display escalation
+reason text; their behavior is unchanged.
+
 ### Thread-detail system rows
 
 The live `ThreadDetailTranscript` renders system events through its local
@@ -799,11 +821,33 @@ The read-only Usage v1 API is `GET /usage/workload?compare=bool` and
 options and unattributed counts; a selected cohort requires `executor` plus
 exactly one of `model` or `model_unpinned=true`. Both routes use the same
 bearer authentication and org scoping as `GET /tokens`. They return rolling
-seven-day UTC bounds with the resolved org timezone for display; no Usage UI
-is part of PR3. Workload emits only current-window agents. Each period's
+seven-day UTC bounds with the resolved org timezone for display. Workload
+emits only current-window agents. Each period's
 `reply_outcome_coverage` reports linked `recorded` replies out of
 `total_consumed` REPLY wakes; a NULL `reply_message_seq` is unknown, does not
 count as a Reply, and withholds only the Replies delta when comparison is on.
+
+The web Usage page (`/orgs/<slug>/usage`, `web/src/features/usage/`) is the
+Usage v1 UI over these two routes and no longer reads `GET /tokens`. It shows
+a fixed "Last 7 days" window taken from the response (with Data through and
+generated-at in the response timezone) and a Compare toggle that is off by
+default. Workload lists exactly the returned agents: Task runs, Thread wakes,
+Recorded runtime (agent runtime with known/total coverage; missing runtime is
+"Not recorded", never zero), Deliveries (unclassified results are footnoted),
+and Replies (recorded X of Y, with the unknown portion labelled "reply outcome
+not recorded"). Efficiency renders nothing until exactly one CLI and then one
+model are chosen from `cohorts`; the NULL-model cohort is its own "CLI default
+(not pinned)" option, and there is no aggregate option. The five run-type rows
+always render in fixed order. A null class reads "Not reported", or "Unknown"
+when no run in the row has usage, and is never zero. A partial Fresh input is
+labelled with its class denominator, and decline waste appears only on the two
+thread rows. Unattributed lifecycle counts are listed outside the rows. Every
+delta is rendered from the server's `UsageDelta`, with neutral styling. A
+withheld delta shows a dash, both periods' coverage and a plain-language
+reason, never the raw code. Loading, per-view error with retry, stale (earlier
+figures kept after a failed refetch), and empty states are explicit. Below
+`md` both tables scroll sideways under a frozen identity column. There is no
+export, cost, or blended token total.
 
 Rollup modifiers (presentation-side; require a `--by-*` flag):
 

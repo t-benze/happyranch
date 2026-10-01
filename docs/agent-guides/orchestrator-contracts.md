@@ -155,7 +155,42 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   process-local event-loop protection. Synchronous unlocked segments remain
   unlocked; this does not provide global workspace-generation fencing or
   serialize external same-UID/multiprocess filesystem writers.
-- **Approval.** `POST /agents/{name}/approve` atomically moves the pending file to `org/agents/<name>.md` and bootstraps the workspace under `workspaces/<name>/`. Approved agents appear in `GET /agents` and `GET /agents/enrollments?status=approved`.
+- **Workflow-authority participation.** Supported org-scoped authority writers
+  enter the coordinator gate before `teams_lock`, durably fence around each
+  synchronous canonical mutation, and publish the next generation only from
+  their terminal success/compensation state. Multi-stage update/termination
+  retains the process gate across awaited bootstrap; startup migration retains
+  it across the batch. The durable lease and SQLite transactions never span
+  scanning, clone/network/host-launch/callback work, awaited bootstrap, snapshot
+  capture, or other canonical-input scanning. Publication failure leaves new workflow
+  admission fail-closed and is recovered at cold `OrgState.load`; it does not
+  roll back or falsify the existing route result after the legacy write
+  committed. Direct same-UID edits remain outside the cooperative guarantee.
+  Every publication is bound to the writer's invocation-owned `prepared`
+  journal before the canonical mutation. An independent coordinator may abort
+  and supersede only that pre-file state; file reservation and the final pointer
+  CAS require the same journal plus `publisher_invocation`, so a stale publisher
+  cannot adopt the newer fence. Cold recovery re-captures against the same
+  pre-file journal; an incoherent retry performs no durable write and remains
+  fenced, while a superseded retry is refused. Eligible-team selector
+  initialization during whole-runtime `DaemonState` loading covers daemon
+  startup and runtime register/switch before state publication; dynamic org
+  attachment owns the same conditional boundary separately. Raw
+  `OrgState.load` retains the coordinator's coherent recovery generation and
+  is made launch-ready by its containing supported lifecycle. Founder creation of a new-team manager and
+  pending bootstrap-manager approval initialize the selector inside the same
+  coordinated canonical change as the roster mutation; policy GET/release
+  compatibility handlers also participate conditionally. A missing selector
+  fences and publishes exactly once, while an authenticated existing selector
+  is read-only and does not advance generation. Existing-team worker creation
+  advances only its roster generation and adds no selector-history churn. Common task,
+  thread, dream, wake, and schedule launch resolution is read-only and refuses
+  an uninitialized selector rather than mutating authority during launch.
+- **U2A boundary.** The coordinator's readiness verifier is intentionally not
+  consumed by task, chain, fan-out, activation, or dispatch paths yet.
+  Machine-global executor-profile changes remain U2B-deferred and do not yet
+  fence orgs; no workflow admission consumer may ship before U2B.
+- **Approval.** `POST /agents/{name}/approve` atomically moves the pending file to `org/agents/<name>.md`; when that promotion makes the registered manager eligible, it initializes the team's selector in the same workflow-authority canonical change. It then bootstraps the workspace under `workspaces/<name>/`. Approved agents appear in `GET /agents` and `GET /agents/enrollments?status=approved`.
 - **Termination.** `manage-agent terminate` archives an approved **non-manager worker** on the caller's team. It is refused if the agent is a manager, belongs to another team, or has live work. Live work includes non-terminal tasks assigned to the agent, already-started thread invocations, firing schedules, running work-hours wakes, running dreams, or pending/running jobs attributable to the agent. If the agent is quiescent, the route:
   - archives the active `org/agents/<name>.md` to `org/agents/_terminated/<name>.md`;
   - archives the workspace `workspaces/<name>/` to `workspaces/_terminated/<name>/`;
@@ -686,6 +721,29 @@ later publication/admission/spend transitions and
 the startup/reaper/run-step automatic discovery wiring remain separate units, so
 the dual-text feature remains unaccepted.
 
+#### Current-episode refusal reason projection
+
+The refusal writer remains unchanged: its normal `escalation` audit carries
+only `reason=authority_v2_refusal`, the closed `refusal_code`, and `attempt_id`,
+and `tasks.note` remains `authority_v2_refusal:<code>`. Founder-facing reads
+derive an additive `escalation_reason` without rewriting either invariant. Two
+consecutive exact-task `escalation` audit IDs delimit the current episode. For
+a v2 refusal, only an intervening `orchestration_step` with
+`decision.action=escalate` may supply the manager-authored primary reason; a
+delegate/done/fanout callback therefore yields no primary and never reaches
+back to an older episode. Ordinary escalations keep their stored reason and no
+secondary explanation. Non-escalated tasks return no projection.
+
+The database read selects only `escalation` and `orchestration_step` rows with
+exact `task_id` equality, newest primary-key order, and a 256-row cap. Under the
+writer contract, the causal decision and refusal are adjacent in that
+action-filtered stream. If evidence is not inside the bounded tail, the primary
+stays absent rather than consulting older rows. Scope-prefixed rows such as
+`config:*` cannot match a `TASK-*` row.
+The refusal-code explanation map is server-owned,
+covers the complete closed housekeeping refusal vocabulary, and falls back to
+the raw code for forward compatibility.
+
 Checkpoint C3d2 lands the accepted R4 finalize and settle-receipt steps 1-2 on
 the same unmerged draft PR, adding exactly the three remaining approved additive
 tables. `authority_policy_v2_continue_envelopes` (E) is unique by candidate and
@@ -745,6 +803,12 @@ forwarders (`finalize_v2_continuation`, `settle_v2_continuation_receipt`,
 envelope spend, the startup/reaper/run-step wiring and the production
 authority-hook continuation remain separate units; the shipping hook still
 fail-closes to ESCALATE and the dual-text feature remains unaccepted.
+
+In the shipping automatic hook, a bounded non-success finalization return is
+recorded best-effort as an `authority_hook` `capture_failure` carrying its
+closed status and reason before the unchanged `final_commit_failed` refusal
+housekeeping runs. A raised finalizer exception retains its existing distinct
+raised-exception diagnostic and the same refusal code.
 
 C3d2 correction (same unmerged draft PR). The exact post-final causal replay and
 settlement now authenticate the COMPLETE durable evidence read-only through ONE
