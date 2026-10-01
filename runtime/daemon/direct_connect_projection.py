@@ -15,11 +15,13 @@ daemon-owned periodic projection sweep. It is never invoked by receipt-only
 """
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
 from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
 
 @dataclass(frozen=True)
 class ProjectionOutcome:
@@ -51,7 +53,11 @@ def _await_concurrent_outcome(store: DirectConnectAuthorityStore, operation_id: 
 
 
 def project(
-    store: DirectConnectAuthorityStore, operation_id: str, *, now: float | None = None
+    store: DirectConnectAuthorityStore,
+    operation_id: str,
+    *,
+    now: float | None = None,
+    profile_coordinator=None,
 ) -> ProjectionOutcome:
     """Drive one direct-connect receipt to COMMITTED, or fail closed.
 
@@ -145,35 +151,50 @@ def project(
 
     adapter_created = False
     replaced_adapter: AdapterEntry | None = None
-    acquire_store_lock()
-    try:
-        existing_adapter = get_adapter(adapter_id)
-        if existing_adapter is None:
-            save_adapter(entry)
-            adapter_created = True
-        elif existing_adapter.executable_hash != entry.executable_hash:
-            save_adapter(entry)
-            replaced_adapter = existing_adapter
+    profile_span = (
+        profile_coordinator.operation(
+            [artifacts.intended_profile_name],
+            operation_kind=(
+                "rebind"
+                if artifacts.intended_profile_name
+                in load_runtime_profiles()
+                else "register"
+            ),
+            publisher="direct_connect_projection",
+        )
+        if profile_coordinator is not None
+        else nullcontext()
+    )
+    with profile_span:
+        acquire_store_lock()
         try:
-            bind_result = custom_adapter_registry._perform_adapter_profile_binding(
-                adapter_id=adapter_id,
-                profile_name=artifacts.intended_profile_name,
-                workspace_adapter=artifacts.workspace_adapter_id,
-            )
-        except Exception:
-            if adapter_created:
-                remove_adapter(adapter_id)
-            elif replaced_adapter is not None:
-                save_adapter(replaced_adapter)
-            # The direct gate persists only a fixed category; arbitrary
-            # exception text, paths, hashes, or candidate output must never
-            # reach durable rows or the HTTP response.
-            store.mark_failed(operation_id, "profile_binding_failed", now=now)
-            return ProjectionOutcome(
-                state="failed", adapter_id=None, profile_name=None, reason="profile_binding_failed",
-            )
-    finally:
-        release_store_lock()
+            existing_adapter = get_adapter(adapter_id)
+            if existing_adapter is None:
+                save_adapter(entry)
+                adapter_created = True
+            elif existing_adapter.executable_hash != entry.executable_hash:
+                save_adapter(entry)
+                replaced_adapter = existing_adapter
+            try:
+                bind_result = custom_adapter_registry._perform_adapter_profile_binding(
+                    adapter_id=adapter_id,
+                    profile_name=artifacts.intended_profile_name,
+                    workspace_adapter=artifacts.workspace_adapter_id,
+                )
+            except Exception:
+                if adapter_created:
+                    remove_adapter(adapter_id)
+                elif replaced_adapter is not None:
+                    save_adapter(replaced_adapter)
+                # The direct gate persists only a fixed category; arbitrary
+                # exception text, paths, hashes, or candidate output must never
+                # reach durable rows or the HTTP response.
+                store.mark_failed(operation_id, "profile_binding_failed", now=now)
+                return ProjectionOutcome(
+                    state="failed", adapter_id=None, profile_name=None, reason="profile_binding_failed",
+                )
+        finally:
+            release_store_lock()
 
     store.mark_committed(
         operation_id, adapter_id=adapter_id, profile_name=bind_result["profile_name"], now=now,

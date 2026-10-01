@@ -17,6 +17,7 @@ from runtime.daemon.queue import TaskQueue
 from runtime.daemon.registration_token import RegistrationTokenStore
 from runtime.orchestrator.org_validation import OrgConsistencyError
 from runtime.runtime import RuntimeDir
+from runtime.workflows.profile_coordinator import ProfileCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,10 @@ class DaemonState:
     # Always constructed (idle and runtime states) so the payload shape is
     # deterministic.
     host_session_store: HostSessionStore = field(default_factory=HostSessionStore)
+    # U2B same-host coordinator for machine-global executor profiles.  It is
+    # constructed only for runtime-backed states after every initial OrgState
+    # has loaded, then reconciled before the DaemonState is returned.
+    profile_coordinator: ProfileCoordinator | None = None
 
     @classmethod
     def idle(cls, settings: Settings) -> "DaemonState":
@@ -119,6 +124,12 @@ class DaemonState:
         from runtime.orchestrator.runtime_executor_store import (
             load_runtime_profiles,
         )
+        from runtime.runtime import daemon_home
+
+        state.profile_coordinator = ProfileCoordinator(
+            daemon_home=daemon_home(),
+            orgs=state.orgs,
+        )
 
         # Load runtime-level executor profiles into the process-wide registry
         # so every org can resolve them (machine-global, visible to all orgs).
@@ -130,12 +141,18 @@ class DaemonState:
         runtime_profiles = load_runtime_profiles()
         if runtime_profiles:
             registry = get_registry()
-            for name, cfg in runtime_profiles.items():
+            for name in runtime_profiles:
                 try:
-                    profile = registry.validate_custom_profile_config(
-                        name, cfg
-                    )
-                    registry.register_custom_profile(profile)
+                    with state.profile_coordinator.profile_read(name):
+                        # Re-read this exact profile while paired with the
+                        # process cache publication. A concurrent supported
+                        # writer can never expose split YAML/registry state.
+                        current = load_runtime_profiles().get(name)
+                        if current is not None:
+                            profile = registry.validate_custom_profile_config(
+                                name, current
+                            )
+                            registry.register_custom_profile(profile)
                 except Exception as exc:
                     logger.warning(
                         "runtime executor profile %r skipped during "
@@ -188,6 +205,13 @@ class DaemonState:
             org.orchestrator.attach_sessions(org.sessions)
             org.orchestrator.attach_host_supervisor(state.host_supervisor)
             state.orgs[slug] = org
+        assert state.profile_coordinator is not None
+        for org in state.orgs.values():
+            # Keep the established route-call signatures intact: org-scoped
+            # writers reach their daemon-owned machine coordinator through
+            # the already-injected OrgState.
+            org._profile_coordinator = state.profile_coordinator
+        state.profile_coordinator.reconcile_startup()
         return state
 
     @property
@@ -244,6 +268,12 @@ class DaemonState:
             org.orchestrator.attach_sessions(org.sessions)
             org.orchestrator.attach_host_supervisor(self.host_supervisor)
             self.orgs[slug] = org
+            if self.profile_coordinator is not None:
+                org._profile_coordinator = self.profile_coordinator
+                # The shared mapping already contains the new org.  Reconcile
+                # its exact agent consumers and publish before it is returned
+                # to the caller as runnable state.
+                self.profile_coordinator.synchronize_all_dependencies()
             self.broken_orgs.pop(slug, None)
             # Wire the thread queue + main loop so run_step workers can
             # cross the async boundary via run_coroutine_threadsafe when

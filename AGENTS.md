@@ -220,9 +220,21 @@ callback` order. Direct same-UID file/DB mutation is outside this cooperative
 guarantee.
 
 U2A provides `verify_admission_ready()` for later workflow units but wires no
-admission, activation, or dispatch consumer. Machine-global executor profiles
-remain U2B-deferred: profile changes do not yet fence orgs, and no workflow
-admission consumer may ship until that coordinator exists.
+admission, activation, or dispatch consumer. U2B now ships the cooperative
+same-host `ProfileCoordinator`: every supported machine-global profile/adapter
+writer acquires the stable owner-only per-profile `flock` before any affected
+org publication gate, pre-fences exactly the orgs with active or outstanding
+consumers, commits through the existing durable-first writer, and republishes
+only a complete coherent closure. The only lock order is profile lease -> org
+publication lease; publication paths never acquire a profile lease, and no
+lease or SQLite transaction spans filesystem scanning, network, host launch, or
+callbacks. Multiple consumers remain separate dependency rows. Removal leaves
+an outstanding consumer unbound and the org fenced until an explicit coherent
+rebind/removal. Cold startup completes interrupted operations once; a
+post-commit republish failure preserves the writer's established response while
+leaving a machine-readable fenced recovery state. Direct same-UID file/DB edits
+remain outside the cooperative guarantee. U2B still wires no workflow
+admission, activation, or dispatch consumer; those remain later units.
 
 ## Commands
 

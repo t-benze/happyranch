@@ -57,6 +57,15 @@ class AuthorityReadiness:
     snapshot_bytes: bytes
 
 
+@dataclass(frozen=True)
+class ProfileFenceBinding:
+    """One profile operation's immutable org-publication binding."""
+
+    journal_id: str
+    publisher_invocation: str
+    profile_fence: int
+
+
 class _SupportedWriterInterval:
     """One process-serialized writer with short durable mutation leases."""
 
@@ -250,12 +259,65 @@ class WorkflowAuthorityCoordinator:
         return _canonical_json({
             "active_policy_selectors": selectors,
             "agents": [projected[name] for name in sorted(projected)],
-            "machine_global_profiles": "deferred_u2b",
+            "machine_global_profiles": self._profile_projection(),
             "org_slug": self._org_slug,
             "reviewer_agents": list(reviewer_agents),
             "schema_version": 1,
             "teams": teams,
         })
+
+    def _profile_projection(self) -> list[dict[str, object]]:
+        """Return the coherent machine-profile requirements for this org.
+
+        The profile coordinator owns these rows.  A ready authority snapshot
+        never contains an unbound or stale requirement: such an org remains
+        fenced and therefore cannot reach this projection as admitted state.
+        """
+        with self._db._lock:
+            rows = self._db._conn.execute(
+                "SELECT d.profile_name,d.consumer_identity,d.bound_generation,"
+                "d.state,s.generation,s.profile_digest,s.state AS store_state,"
+                "r.published_generation "
+                "FROM workflow_profile_dependencies d "
+                "LEFT JOIN workflow_profile_store s "
+                "ON s.profile_name=d.profile_name "
+                "LEFT JOIN workflow_profile_registry r "
+                "ON r.profile_name=d.profile_name "
+                "WHERE d.org_namespace=? AND d.state IN ('active','unbound') "
+                "ORDER BY d.profile_name,d.consumer_identity",
+                (self.namespace,),
+            ).fetchall()
+        grouped: dict[str, dict[str, object]] = {}
+        for row in rows:
+            bound = int(row["bound_generation"])
+            if (
+                row["state"] != "active"
+                or row["store_state"] != "active"
+                or row["generation"] is None
+                or int(row["generation"]) != bound
+                or row["published_generation"] is None
+                or int(row["published_generation"]) != bound
+            ):
+                raise WorkflowAuthorityError("authority_pointer_not_ready")
+            profile_name = str(row["profile_name"])
+            current = grouped.setdefault(
+                profile_name,
+                {
+                    "consumers": [],
+                    "generation": bound,
+                    "profile_digest": str(row["profile_digest"]),
+                    "profile_name": profile_name,
+                },
+            )
+            if (
+                current["generation"] != bound
+                or current["profile_digest"] != str(row["profile_digest"])
+            ):
+                raise WorkflowAuthorityError("authority_pointer_not_ready")
+            consumers = current["consumers"]
+            assert isinstance(consumers, list)
+            consumers.append(str(row["consumer_identity"]))
+        return [grouped[name] for name in sorted(grouped)]
 
     @contextmanager
     def _transaction(self):
@@ -378,6 +440,7 @@ class WorkflowAuthorityCoordinator:
         *,
         reason: str,
         publisher_invocation: str,
+        increment_profile_fence: bool = False,
     ) -> str:
         """Fence and durably bind it to one publication invocation.
 
@@ -391,6 +454,22 @@ class WorkflowAuthorityCoordinator:
         with self._transaction() as conn:
             active = self._active_journal(conn, self.namespace)
             if active is not None:
+                if str(active["publisher_invocation"]).startswith(
+                    "profile-coordinator:"
+                ):
+                    coordinator_invocation = str(
+                        active["publisher_invocation"]
+                    ).removeprefix("profile-coordinator:")
+                    profile_operation = conn.execute(
+                        "SELECT 1 FROM workflow_profile_operations "
+                        "WHERE coordinator_invocation=? "
+                        "AND state NOT IN ('published','aborted') LIMIT 1",
+                        (coordinator_invocation,),
+                    ).fetchone()
+                    if profile_operation is not None:
+                        raise WorkflowAuthorityError(
+                            "authority_publication_in_progress"
+                        )
                 if str(active["state"]) != "prepared":
                     raise WorkflowAuthorityError("authority_publication_in_progress")
                 changed = conn.execute(
@@ -403,6 +482,8 @@ class WorkflowAuthorityCoordinator:
             generation, journal_id, digest, state, profile_fence = self._pointer(
                 conn, self.namespace,
             )
+            if increment_profile_fence:
+                profile_fence += 1
             if state not in {"ready", "fenced"}:
                 raise WorkflowAuthorityError("authority_pointer_not_ready")
             if generation == 0:
@@ -442,7 +523,8 @@ class WorkflowAuthorityCoordinator:
                 "INSERT INTO workflow_authority_pointers("
                 "namespace,current_generation,journal_id,snapshot_digest,state,profile_fence"
                 ") VALUES (?,?,?,?, 'fenced',?) "
-                "ON CONFLICT(namespace) DO UPDATE SET state='fenced'",
+                "ON CONFLICT(namespace) DO UPDATE SET "
+                "state='fenced',profile_fence=excluded.profile_fence",
                 (
                     self.namespace, generation, journal_id, digest,
                     profile_fence,
@@ -450,6 +532,98 @@ class WorkflowAuthorityCoordinator:
             )
             self._cache.pop(self.namespace, None)
             return fence_journal_id
+
+    @contextmanager
+    def profile_change_interval(
+        self,
+        *,
+        reason: str,
+        coordinator_invocation: str,
+        resume: bool = False,
+    ) -> Iterator[ProfileFenceBinding]:
+        """Hold the org publisher gate for one machine-profile operation.
+
+        The machine-global profile lease is acquired by the caller before this
+        interval, establishing the only supported order: profile lease then
+        org publication gate/lease.  The durable publication lease is held
+        only while the profile fence is created; the process gate stays held
+        through the caller's store mutation and bound republish.
+        """
+        with self._publisher_lock:
+            publisher_invocation = f"profile-coordinator:{coordinator_invocation}"
+            if resume:
+                with self._db._lock:
+                    active = self._active_journal(self._db._conn, self.namespace)
+                    if (
+                        active is not None
+                        and str(active["state"]) == "prepared"
+                        and str(active["publisher_invocation"])
+                        == publisher_invocation
+                    ):
+                        existing_binding = ProfileFenceBinding(
+                            journal_id=str(active["id"]),
+                            publisher_invocation=publisher_invocation,
+                            profile_fence=int(active["profile_fence"]),
+                        )
+                    else:
+                        existing_binding = None
+                if existing_binding is not None:
+                    yield existing_binding
+                    return
+            owner = f"{publisher_invocation}:{uuid.uuid4().hex}"
+            self._acquire_lease(owner)
+            try:
+                journal_id = self._fence_under_lease(
+                    reason=reason,
+                    publisher_invocation=publisher_invocation,
+                    increment_profile_fence=True,
+                )
+                with self._db._lock:
+                    active = self._active_journal(self._db._conn, self.namespace)
+                    if active is None or str(active["id"]) != journal_id:
+                        raise WorkflowAuthorityError("authority_pointer_not_ready")
+                    profile_fence = int(active["profile_fence"])
+            finally:
+                self._release_lease(owner)
+            yield ProfileFenceBinding(
+                journal_id=journal_id,
+                publisher_invocation=publisher_invocation,
+                profile_fence=profile_fence,
+            )
+
+    def publish_profile_change(
+        self,
+        *,
+        publisher: str,
+        binding: ProfileFenceBinding,
+    ) -> int:
+        """Publish a profile-only generation without rescanning org files.
+
+        The prepared journal already contains the coherent predecessor.  Only
+        the machine-profile projection changes, so patching that field avoids
+        holding the profile lease across an agent/team filesystem scan.
+        """
+        with self._publisher_lock, self._db._lock:
+            active = self._active_journal(self._db._conn, self.namespace)
+            if (
+                active is None
+                or str(active["id"]) != binding.journal_id
+                or str(active["publisher_invocation"])
+                != binding.publisher_invocation
+                or int(active["profile_fence"]) != binding.profile_fence
+            ):
+                raise WorkflowAuthorityError("publication_fence_superseded")
+            predecessor = json.loads(bytes(active["snapshot_bytes"]))
+        if not isinstance(predecessor, dict):
+            raise WorkflowAuthorityError("authority_snapshot_not_canonical")
+        predecessor["machine_global_profiles"] = self._profile_projection()
+        snapshot = _canonical_json(predecessor)
+        return self._publish_current_locked(
+            publisher=publisher,
+            fence_journal_id=binding.journal_id,
+            publisher_invocation=binding.publisher_invocation,
+            snapshot_override=snapshot,
+        )
 
     def _begin_publication_fence(self, *, publisher: str) -> tuple[str, str]:
         invocation = f"workflow-writer:{publisher}:{uuid.uuid4().hex}"
@@ -609,9 +783,14 @@ class WorkflowAuthorityCoordinator:
         publisher: str,
         fence_journal_id: str,
         publisher_invocation: str,
+        snapshot_override: bytes | None = None,
     ) -> int:
         """Publish while the process-local writer/publisher gate is held."""
-        snapshot = self.capture_snapshot()
+        snapshot = (
+            self.capture_snapshot()
+            if snapshot_override is None
+            else snapshot_override
+        )
         snapshot_digest = _digest(snapshot)
         with self._publisher_lock:
             owner = f"{publisher}:{uuid.uuid4().hex}"

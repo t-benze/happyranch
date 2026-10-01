@@ -56,6 +56,19 @@ written for executor resolution. The executor is resolved against the
 Four **built-in** profiles ship with the runtime; approved custom-adapter
 profiles are bound in the machine-global runtime store (THR-107 — see below).
 
+Machine-global profile mutations use the U2B same-host cooperative coordinator.
+Each supported adapter/profile writer takes a stable owner-only per-profile
+file lease, pre-fences only orgs with consumers of that profile, commits through
+the existing durable-first writer, and republishes each org only after its full
+profile dependency closure is coherent. The lock order is always profile lease
+before org publication lease. Multiple agents using one profile remain distinct
+consumer rows; removing one cannot erase another. A removed profile leaves its
+remaining consumers unbound and their org fenced until an explicit valid rebind
+or removal. Live contention returns `profile_coordinator_busy`; process death
+releases the kernel lease and startup resumes the durable operation exactly
+once. Existing admitted work is not killed, and U2B adds no workflow admission
+or activation surface.
+
 **Built-in profiles:**
 
 | Executor | Bootstrap doc | Skills dir | Permission surface |
@@ -316,6 +329,12 @@ persist provider stdout, stderr, errors, or the canary.
    durably removed and an audit entry (scope ``adapter:<id>``, action
    ``adapter_removed``) is written. The adapter's on-disk executable is never
    touched.
+
+For all profile-changing steps above, a failure after the durable writer but
+before dependent-org publication preserves the route's established success or
+error contract and leaves the affected org pointer fenced with durable recovery
+state. Daemon startup reconciles that operation forward; it never restores a
+stale ready snapshot. Orgs with no dependency on the profile are untouched.
 
 **Per-launch hash verification:** the ``CustomAdapterExecutor`` re-verifies
 path type (exists, regular file, executable) and SHA-256 immediately before

@@ -401,8 +401,9 @@ retained as provenance; its "proposed, unimplemented" labels are historical
 for those org-scoped writer rows and are superseded by this status note. The
 readiness verifier exists for later units, but U2A wires no admission,
 activation, dispatch, callback or legacy task/chain/fan-out consumer.
-Machine-global `ProfileCoordinator` work remains U2B-deferred: profile changes
-do not yet fence orgs and no admission consumer may ship before U2B. Direct
+Machine-global `ProfileCoordinator` work shipped in U2B: supported profile and
+adapter writers now fence dependent orgs and publish a coherent profile closure.
+No workflow admission consumer ships in U2B. Direct
 same-UID file/DB edits remain outside the cooperative guarantee.
 Multi-stage route writers retain a process-local coordinator gate through
 terminal success or compensation, ordered before their existing `teams_lock`;
@@ -794,22 +795,37 @@ the terminal reverse `journal[:6]` is derived from the prior admitted prestate
 and the independently captured publisher invocation. No new schedule was added
 and no row is compared to itself.
 
-**Proposed D2 global profile protocol (concrete).** The proposal selects a
-machine-global coordinator that cannot be represented by the org-scoped pointer
-alone. Proposed (unimplemented) symbols live in
-`runtime/workflows/profile_coordinator.py` (`ProfileCoordinator.register`,
-`.rebind`, `.remove`, `.reconcile`, `.compensate`, `.republish_dependents`) over
-coordinator-owned durable relations in the machine-global store:
+**D2 global profile protocol (concrete; shipped by U2B).** The selected
+machine-global coordinator cannot be represented by the org-scoped pointer
+alone. Production symbols live in
+`runtime/workflows/profile_coordinator.py` (`ProfileCoordinator.operation`,
+`.dependency_writer`, `.rebind_consumer`, `.reconcile_startup`) over
+the U1A relations installed in each org database:
 `workflow_profile_store(profile_name, generation, profile_digest, state)`,
 `workflow_profile_registry(profile_name, published_generation)`,
 `workflow_profile_dependencies(org_namespace, profile_name, consumer_identity,
 bound_generation, state)`, `workflow_profile_operations(id, profile_name, operation_kind,
 captured_members, target_generation, state, profile_digest,
 coordinator_invocation, compensation_generation, created_at)`, and
-`workflow_profile_leases(profile_name, owner_token, owner_pid)`. The isolated
-model uses a separate machine-global SQLite file carrying the same proposed
-schema; the dependent-organization authority itself remains exactly the existing
-per-org pointer/journal/lease/canonical-file/cache relations above.
+`workflow_profile_leases(profile_name, owner_token, owner_pid)`. Unlike the
+earlier isolated model's separate SQLite file, production reuses those shipped
+org-local relations and serializes the machine-global edge with stable
+owner-only `fcntl.flock` files under daemon home. No U2B DDL, store file, or
+authority-layout change is required; the dependent-organization authority
+remains the existing per-org pointer/journal/lease/canonical-file/cache
+relations above.
+
+The org-local placement replaces the isolated model's single-transaction
+machine-global capture mechanically without weakening fence-before-write: exact
+agent consumers are mirrored at startup and supported executor rebinding, the
+`flock` serializes membership
+capture for the selected profile, the same immutable member list and operation
+identity are installed in every captured org before the first fence, and no
+profile-store mutation begins until every captured org is fenced. A crash during
+the per-org row fanout or fence pass leaves enough identical operation data for
+cold reconciliation to complete missing mirrors and fences. The kernel lock is
+the live-owner authority; org-local `workflow_profile_leases` rows are durable
+diagnostics and cannot override kernel-proven dead-owner release.
 
 Operation identity is `id`; the affected-org set's identity is
 `(org_namespace, profile_name)` while the consumer-requirement identity is
@@ -894,19 +910,17 @@ by construction); the service owns membership truthfulness, capture immutability
 the admission barrier, fence-before-store ordering, forward-only compensation and
 cold reconciliation semantics that SQL alone cannot express.
 
-**Remaining ledger (F4 D, for F6 consolidation).** F4-A effective map: delivered
+**Shipped ledger (F4 D, for F6 consolidation).** F4-A effective map: delivered
 here; owner dev_agent; dependency = current pinned source; verification =
 targeted `rg` citations. F4-B protocol: delivered here; owner dev_agent;
 dependency = D5 protected-choice disposition; verification = independent review.
 F4-C isolated proof: delivered here; owner dev_agent; dependency = ten-path
 evidence radius; verification = focused + all-three-U0 + required local CI.
-F4-D per-delta implementation needs: (1) additive `runtime/workflows/` schema and
-coordinator (production schema/ownership decision); (2) per-org pre-fence wiring
-from the coordinator to real supported writers (needs the supported-writer
-boundary decision); (3) barrier enforcement at every supported activation/rebind
-route (needs route-level implementation review); (4) republish/recovery wiring
-into startup reconciliation (needs old-reader/disable-new-runs decisions). These
-remain unimplemented and are owned by the later protected D5 disposition; F5
+F4-D is implemented by U2A/U2B: the org-scoped authority publisher, org-local
+profile dependency/operation mirrors, same-host profile lease, supported writer
+participation, exact dependent-org pre-fence, coherent republish, and cold
+startup reconciliation now ship. The implementation adds no schema and no
+machine-global SQLite store. F5
 (atomic request/outbox/uncertain launch) and F6 (historical cutover/old-reader,
 disable-new-runs/drain, template namespace/name/version/CAS) remain explicitly
 pending, together with the U1--U6 ledger.
@@ -927,11 +941,11 @@ acceptance. Evidence remains UNACCEPTED / D5 NOT READY; the study is NOT RUN.
 
 ### 2026-09-21 F4 consolidated correction: membership, validity and stale recovery (TASK-8691)
 
-This subsection is the current normative correction of the proposed D2 global
-profile protocol and supersedes the earlier F4 outline wherever the two differ.
-It remains an unimplemented cooperative proposal plus isolated executable
-evidence; current shipping routes gain none of these guarantees and D5 is not
-approved.
+This subsection is the normative correction of the D2 global profile protocol
+and supersedes the earlier F4 outline wherever the two differ. U2B carries the
+corrected consumer identity, complete-closure, same-host lease, fencing and
+cold-recovery rules into production; the isolated schedules remain provenance
+for those shipped choices. This does not itself approve or ship D5 admission.
 
 **Consumer-requirement identity and honest state.** The isolated fixture's
 `workflow_profile_dependencies` primary key is the tuple `(org_namespace,

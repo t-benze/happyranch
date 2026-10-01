@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Annotated
 
@@ -769,6 +770,46 @@ def get_adapter_entry(adapter_id: str) -> AdapterEntryResponse:
 def approve_registered_adapter(
     adapter_id: str,
     body: AdapterApproveRequest,
+    request: Request,
+) -> dict:
+    entry = get_adapter(adapter_id)
+    profile_name = (
+        entry.intended_profile_name
+        if entry is not None and entry.intended_profile_name
+        else None
+    )
+    coordinator = getattr(request.app.state.daemon, "profile_coordinator", None)
+    span = (
+        coordinator.operation(
+            [profile_name] if profile_name is not None else [],
+            operation_kind=(
+                "rebind"
+                if profile_name is not None
+                and profile_name in load_runtime_profiles()
+                else "register"
+            ),
+            publisher="approve_registered_adapter",
+        )
+        if coordinator is not None
+        else nullcontext()
+    )
+    try:
+        with span:
+            return _approve_registered_adapter(adapter_id, body)
+    except Exception as exc:
+        from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+
+        if isinstance(exc, ProfileCoordinatorError):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": exc.code},
+            ) from None
+        raise
+
+
+def _approve_registered_adapter(
+    adapter_id: str,
+    body: AdapterApproveRequest,
 ) -> dict:
     """Approve a pending custom adapter (THR-107 seq237: approve + optionally bind profile).
 
@@ -1058,18 +1099,33 @@ def submit_adapter(
             detail="Token is already reserved or consumed by a concurrent submission.",
         )
 
-    try:
-        entry = register_custom_adapter(
-            executable=body.executable,
-            version=body.version,
-            capabilities=body.capabilities,
-            workspace_adapter=body.workspace_adapter,
-            registered_by=f"adapter-submission:{intended_profile}",
-            intended_profile_name=intended_profile,
-            dependency_manifest_version=body.dependency_manifest_version,
-            dependencies=body.dependencies,
-            verify_thread_resume=body.verify_thread_resume,
+    coordinator = getattr(request.app.state.daemon, "profile_coordinator", None)
+    span = (
+        coordinator.operation(
+            [intended_profile],
+            operation_kind=(
+                "rebind"
+                if intended_profile in load_runtime_profiles()
+                else "register"
+            ),
+            publisher="submit_adapter",
         )
+        if coordinator is not None
+        else nullcontext()
+    )
+    try:
+        with span:
+            entry = register_custom_adapter(
+                executable=body.executable,
+                version=body.version,
+                capabilities=body.capabilities,
+                workspace_adapter=body.workspace_adapter,
+                registered_by=f"adapter-submission:{intended_profile}",
+                intended_profile_name=intended_profile,
+                dependency_manifest_version=body.dependency_manifest_version,
+                dependencies=body.dependencies,
+                verify_thread_resume=body.verify_thread_resume,
+            )
     except ValueError as exc:
         # Release the token on failure so it remains retryable
         store.release_runtime(raw_token)
@@ -1077,6 +1133,16 @@ def submit_adapter(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         )
+    except Exception as exc:
+        from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+
+        store.release_runtime(raw_token)
+        if isinstance(exc, ProfileCoordinatorError):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": exc.code},
+            ) from None
+        raise
 
     # Consume the token permanently on success
     store.commit_runtime(raw_token)
@@ -1479,6 +1545,38 @@ def _audit_adapter_bind(
 def bind_adapter_profile(
     adapter_id: str,
     body: BindProfileRequest,
+    request: Request,
+) -> dict:
+    profile_name = body.profile_name.strip()
+    coordinator = getattr(request.app.state.daemon, "profile_coordinator", None)
+    span = (
+        coordinator.operation(
+            [profile_name],
+            operation_kind=(
+                "rebind" if profile_name in load_runtime_profiles() else "register"
+            ),
+            publisher="bind_adapter_profile",
+        )
+        if coordinator is not None
+        else nullcontext()
+    )
+    try:
+        with span:
+            return _bind_adapter_profile(adapter_id, body)
+    except Exception as exc:
+        from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+
+        if isinstance(exc, ProfileCoordinatorError):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": exc.code},
+            ) from None
+        raise
+
+
+def _bind_adapter_profile(
+    adapter_id: str,
+    body: BindProfileRequest,
 ) -> dict:
     """Bind a profile name to an APPROVED custom adapter (THR-107 seq141).
 
@@ -1828,6 +1926,26 @@ def remove_unbound_direct_connect_adapter(adapter_id: str):
     dependencies=[require_token()],
 )
 def remove_adapter_entry(
+    adapter_id: str,
+    body: AdapterRemoveRequest,
+    request: Request,
+) -> dict:
+    # The existing exact bound-profile guard makes every successful adapter
+    # removal profile-neutral.  Still route the writer through the coordinator
+    # entry point so a later relaxation cannot silently bypass U2B.
+    coordinator = getattr(request.app.state.daemon, "profile_coordinator", None)
+    span = (
+        coordinator.operation(
+            [], operation_kind="remove", publisher="remove_adapter_entry",
+        )
+        if coordinator is not None
+        else nullcontext()
+    )
+    with span:
+        return _remove_adapter_entry(adapter_id, body)
+
+
+def _remove_adapter_entry(
     adapter_id: str,
     body: AdapterRemoveRequest,
 ) -> dict:

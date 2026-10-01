@@ -337,6 +337,15 @@ record keyed by the profile name. No ``shutil.which`` or PATH discovery is
 used for any profile. See
 [agent-executors-and-permissions.md](./agent-executors-and-permissions.md).
 
+At daemon state construction, U2B rebuilds exact per-agent custom-profile
+dependencies for every loaded org and reconciles any interrupted coordinated
+profile operation before the state is exposed to routes. It uses the U1A
+org-local profile relations plus an owner-only same-host `flock`; there is no
+new machine-global database or schema. A coherent dependency change publishes
+a new org authority generation, while an absent, removed, or otherwise
+unpublished required profile keeps the org fenced. Startup does not dispatch,
+activate, or admit workflow work.
+
 ## Org Config: Timezone and `current_time` Prompt Injection
 
 Top-level `timezone:` in `<runtime>/orgs/<slug>/org/config.yaml` is the org-wide

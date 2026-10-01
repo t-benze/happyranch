@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import tempfile
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -1901,6 +1902,27 @@ def _validate_executor(executor: str) -> None:
         )
 
 
+@contextmanager
+def _profile_dependency_writer(coordinator, profile_names: list[str]):
+    """Translate cooperative profile contention at the existing route seam."""
+    if coordinator is None:
+        with nullcontext():
+            yield
+        return
+    try:
+        with coordinator.dependency_writer(profile_names):
+            yield
+    except Exception as exc:
+        from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+
+        if isinstance(exc, ProfileCoordinatorError):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": exc.code},
+            ) from None
+        raise
+
+
 @router.put("/agents/{agent_name}/executor")
 async def set_agent_executor(
     slug: str, agent_name: str, body: SetExecutorBody, org: OrgDep,
@@ -2193,39 +2215,82 @@ async def set_agent_executor(
     # Final supported-route compare/mutate boundary: no await occurs while
     # teams_lock is held. Atomic replace provides durable bytes, while this
     # fresh read prevents a stale whole-definition write among ASGI writers.
-    async with (
-        org.workflow_authority.async_writer_interval(
-            publisher="set_agent_executor",
-        ) as authority_change,
-        org.teams_lock,
-    ):
-        latest = prompt_loader.load_agent(paths, agent_name)
-        if latest is None:
-            raise HTTPException(status_code=404, detail={"code": "agent_not_found", "agent": agent_name})
-        if latest.executor != existing.executor or latest.model != existing.model:
-            raise HTTPException(status_code=409, detail={"code": "executor_switch_conflict", "agent": agent_name})
-        updated = AgentDef(
-            name=latest.name, team=latest.team, role=latest.role,
-            executor=body.executor, allow_rules=latest.allow_rules,
-            repos=latest.repos, enrolled_by=latest.enrolled_by,
-            enrolled_at_task=latest.enrolled_at_task, enrolled_at=latest.enrolled_at,
-            system_prompt=latest.system_prompt, description=latest.description,
-            model=None if body.executor != latest.executor else latest.model,
-        )
-        from runtime.orchestrator.agent_def import render_agent_text
-        active_path = paths.agents_dir / f"{agent_name}.md"
-        fd, tmp = tempfile.mkstemp(prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir))
-        try:
-            with authority_change.canonical_change():
-                with os.fdopen(fd, "w") as fh:
-                    fh.write(render_agent_text(updated))
-                os.replace(tmp, active_path)
-        except Exception:
+    profile_coordinator = getattr(org, "_profile_coordinator", None)
+    from runtime.orchestrator.executor_registry import get_registry
+
+    registry = get_registry()
+
+    def dependency_profile(executor: str) -> str | None:
+        profile = registry.get_profile(executor)
+        if profile is not None and profile.kind == "builtin":
+            return None
+        return executor.lower()
+
+    from_profile = dependency_profile(existing.executor)
+    to_profile = dependency_profile(body.executor)
+    profile_span = _profile_dependency_writer(
+        profile_coordinator,
+        [name for name in (from_profile, to_profile) if name is not None],
+    )
+    with profile_span:
+        async with (
+            org.workflow_authority.async_writer_interval(
+                publisher="set_agent_executor",
+            ) as authority_change,
+            org.teams_lock,
+        ):
+            latest = prompt_loader.load_agent(paths, agent_name)
+            if latest is None:
+                raise HTTPException(status_code=404, detail={"code": "agent_not_found", "agent": agent_name})
+            if latest.executor != existing.executor or latest.model != existing.model:
+                raise HTTPException(status_code=409, detail={"code": "executor_switch_conflict", "agent": agent_name})
+            updated = AgentDef(
+                name=latest.name, team=latest.team, role=latest.role,
+                executor=body.executor, allow_rules=latest.allow_rules,
+                repos=latest.repos, enrolled_by=latest.enrolled_by,
+                enrolled_at_task=latest.enrolled_at_task, enrolled_at=latest.enrolled_at,
+                system_prompt=latest.system_prompt, description=latest.description,
+                model=None if body.executor != latest.executor else latest.model,
+            )
+            from runtime.orchestrator.agent_def import render_agent_text
+            active_path = paths.agents_dir / f"{agent_name}.md"
+            original_bytes = active_path.read_bytes()
+            fd, tmp = tempfile.mkstemp(prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir))
             try:
-                os.unlink(tmp)
-            except FileNotFoundError:
-                pass
-            raise
+                with authority_change.canonical_change():
+                    with os.fdopen(fd, "w") as fh:
+                        fh.write(render_agent_text(updated))
+                    os.replace(tmp, active_path)
+                    if profile_coordinator is not None:
+                        try:
+                            profile_coordinator.rebind_consumer(
+                                org=org,
+                                consumer_identity=agent_name,
+                                from_profile=from_profile,
+                                to_profile=to_profile,
+                            )
+                        except BaseException:
+                            restore_fd, restore_tmp = tempfile.mkstemp(
+                                prefix=f".{agent_name}.profile-restore.",
+                                suffix=".md",
+                                dir=str(paths.agents_dir),
+                            )
+                            try:
+                                with os.fdopen(restore_fd, "wb") as restore_fh:
+                                    restore_fh.write(original_bytes)
+                                os.replace(restore_tmp, active_path)
+                            finally:
+                                try:
+                                    os.unlink(restore_tmp)
+                                except FileNotFoundError:
+                                    pass
+                            raise
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except FileNotFoundError:
+                    pass
+                raise
 
     after_ws = before_ws
     stale_files: list[str] = []

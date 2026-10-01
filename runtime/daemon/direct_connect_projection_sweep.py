@@ -21,11 +21,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger("happyranch.daemon.direct_connect_projection_sweep")
 
 
-def _sweep_once(store: DirectConnectAuthorityStore) -> None:
+def _sweep_once(
+    store: DirectConnectAuthorityStore,
+    profile_coordinator=None,
+) -> None:
     """Project only the latest accepted candidate per parent lifecycle."""
     for operation_id in store.list_latest_operations_pending_projection():
         try:
-            direct_connect_projection.project(store, operation_id)
+            if profile_coordinator is None:
+                direct_connect_projection.project(store, operation_id)
+            else:
+                direct_connect_projection.project(
+                    store,
+                    operation_id,
+                    profile_coordinator=profile_coordinator,
+                )
         except Exception:
             logger.exception("direct-connect projection sweep failed for operation %s", operation_id)
 
@@ -40,7 +50,11 @@ async def direct_connect_projection_sweep_loop(
         if store is None:
             logger.error("direct-connect projection sweep skipped: authority store unavailable")
         else:
-            await asyncio.to_thread(_sweep_once, store)
+            await asyncio.to_thread(
+                _sweep_once,
+                store,
+                state.profile_coordinator,
+            )
         duration = time.monotonic() - t0
         state.metrics_registry.record_loop_tick(
             "direct_connect_projection_sweep", interval_seconds, duration,
