@@ -1,7 +1,8 @@
 /**
  * Efficiency — one homogeneous cohort (exactly one CLI and one model) broken
- * into the five fixed run types (PRD §5–§8). Nothing renders until both are
- * chosen: there is no combined or aggregate option. Every figure, coverage
+ * into the five fixed run types (PRD §5–§8). Nothing renders until a CLI is
+ * chosen; choosing one preselects its most-used model, and there is no combined
+ * or aggregate option. Every figure, coverage
  * fraction and delta comes from `GET /usage/efficiency`; missing usage is
  * never shown as zero.
  */
@@ -65,6 +66,28 @@ type TokenClass = (typeof TOKEN_CLASSES)[number][0];
 
 function modelLabel(model: string | null): string {
   return model === null ? UNPINNED_LABEL : model;
+}
+
+/**
+ * The executor's most-used cohort: highest current runs, then higher previous
+ * runs, then ascending code-unit order of the displayed label. The unpinned
+ * cohort is an ordinary candidate.
+ */
+function defaultCohortFor(cohorts: CohortOption[], executor: string): CohortOption | undefined {
+  let best: CohortOption | undefined;
+  for (const c of cohorts) {
+    if (c.executor !== executor) continue;
+    if (
+      best === undefined ||
+      c.current_runs > best.current_runs ||
+      (c.current_runs === best.current_runs &&
+        (c.previous_runs > best.previous_runs ||
+          (c.previous_runs === best.previous_runs && modelLabel(c.model) < modelLabel(best.model))))
+    ) {
+      best = c;
+    }
+  }
+  return best;
 }
 
 /* ------------------------------------------------------------------ */
@@ -463,7 +486,8 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
   const cohorts = optionsQ.data?.cohorts ?? [];
 
   // A cohort that is no longer offered (e.g. a previous-only cohort after
-  // Compare is switched off) is cleared rather than silently kept.
+  // Compare is switched off) is never silently kept: it falls back to the
+  // executor's default cohort, or both are cleared when the executor is gone.
   useEffect(() => {
     if (!optionsQ.isSuccess || optionsQ.isPlaceholderData) return;
     const list = optionsQ.data.cohorts;
@@ -474,14 +498,16 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
       selection !== null &&
       !list.some((c) => c.executor === selection.executor && c.model === selection.model)
     ) {
-      setSelection(null);
+      const fallback = executor !== null ? defaultCohortFor(list, executor) : undefined;
+      setSelection(fallback ? { executor: fallback.executor, model: fallback.model } : null);
     }
   }, [optionsQ.isSuccess, optionsQ.isPlaceholderData, optionsQ.data, executor, selection]);
 
   const onExecutor = (ex: string) => {
     if (ex === executor) return;
+    const fallback = defaultCohortFor(cohorts, ex);
     setExecutor(ex);
-    setSelection(null);
+    setSelection(fallback ? { executor: fallback.executor, model: fallback.model } : null);
   };
   const onModel = (model: string | null) => {
     if (executor !== null) setSelection({ executor, model });
@@ -510,12 +536,12 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
       </p>
     );
   } else if (selection === null) {
-    status = 'Choose a CLI and a model to see Efficiency';
+    status = 'Choose a CLI to see Efficiency';
     body = (
       <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-5">
         <p className="text-body text-text-primary">
-          Choose one CLI, then one model. Token reporting differs by CLI and model, so there is no
-          combined view.
+          Choose one CLI. Its most-used model is preselected and you can switch to another. Token
+          reporting differs by CLI and model, so there is no combined view.
         </p>
       </div>
     );
