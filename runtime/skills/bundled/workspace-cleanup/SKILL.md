@@ -219,6 +219,34 @@ The executable forms of these gates live only in
 `scripts/run_cleanup_candidate.sh`; this document does not carry a second
 copy. The shipped script executes them directly in the documented order.
 
+That order, in both the initial and immediately-pre-action passes, is:
+
+1. `workspace-scope`
+2. `canonical-shape`
+3. `non-primary`
+4. `ownership`
+5. `filesystem-ownership`
+6. `protected-task`
+7. `retention-age`
+8. `not-symlink`
+9. `same-filesystem`
+10. `cache-immediate-parent-manifest` (cache only)
+11. `registration`
+12. `clean` (whole worktree only)
+13. `cache-gitignored-and-untracked` (cache only)
+14. `durable-preservation-and-pr`
+15. `current-use-scan`
+16. `recursive-boundary`
+
+For the initial pass, the first authoritative peer/history join runs after
+`cache-immediate-parent-manifest` and before `registration`, so cheap
+candidate-local refusals do not pay for the join or later Git, PR, scan, and
+tree work. The second peer/history join remains immediately before the complete
+pre-action pass. No gate is omitted from either pass. Gate refusals name the
+exact gate as `gate:<gate-id>` on the initial pass and
+`pre_action_gate:<gate-id>` on the pre-action pass; the established
+`cache_not_gitignored` reason remains unchanged.
+
 `cache-immediate-parent-manifest` applies only to a `node_modules`/`.venv`
 cache; skip it for a whole worktree. `clean` applies only to a whole worktree;
 every other gate applies to both. A cache must also be positively Git-ignored
@@ -279,11 +307,16 @@ be ruled out before halting. Re-running skips only a unique, valid terminal row
 whose candidate, containing worktree, kind, allocated bytes, and exact argv
 match the current manifest. A stale, malformed, unsafe, duplicate, or conflicting
 journal row fails closed before any runner starts. Bounds stop only between
-candidates.
+candidates: the batch deadline prevents starting a new candidate but never
+preempts one already in flight. The separate per-candidate timeout still
+terminates that candidate's whole process group, journals the unsafe halt, and
+stops the batch with a nonzero exit; such a row remains deliberately
+unresumable.
 
 Run each batch driver as a durable `happyranch` job bound to the cleanup task's
 current ACTIVE task/session, choose a batch/deadline comfortably inside one
-session (target at most about 40 minutes), and wait in-session with
+session (target at most about 40 minutes), ensure the job wall budget exceeds
+the batch deadline plus one full per-candidate timeout, and wait in-session with
 `happyranch jobs wait`. The per-candidate runner still submits and authenticates
 its own nested host-visible scan job at action time; never replace that scan
 with an in-process shortcut. If the session ends mid-batch, later nested job
