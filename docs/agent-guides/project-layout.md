@@ -108,10 +108,6 @@ At adoption, 187 legacy tests remain as flat `tests/test_*.py` files. Move a
 legacy flat test only when its production area is already being changed in the
 same PR; do not perform a mass move. This rule governs new work going forward.
 
-For every new or changed test, follow the release-owned
-[`test-authoring-gate`](../../runtime/skills/bundled/test-authoring-gate/SKILL.md)
-for the four PR-body answers, attributable RED/GREEN proof, and keeper rule.
-
 The tracked skill-eligibility fixture lives at
 `tests/fixtures/skill_eligibility/config.yaml` and is read by
 `tests/test_skill_cutover_completeness.py`. The fixture is not a CLI default:
