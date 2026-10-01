@@ -877,19 +877,17 @@ def put_org_settings(slug: str, org: OrgDep, patch: OrgSettingsPatch) -> Setting
             }
             raise HTTPException(status_code=422, detail=detail)
 
-    authority_changes = "reviewer_agents" in patch_raw
-    if authority_changes:
-        org.workflow_authority.fence(reason="put_org_settings:reviewer_agents")
-
     # THR-095: write to DB (transactional per section: upsert + audit row).
     try:
-        write_org_setting_to_db(paths, org.db, patch_raw)
+        if "reviewer_agents" in patch_raw:
+            with org.workflow_authority.supported_change(
+                publisher="put_org_settings:reviewer_agents",
+            ):
+                write_org_setting_to_db(paths, org.db, patch_raw)
+        else:
+            write_org_setting_to_db(paths, org.db, patch_raw)
     except OrgConfigError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if authority_changes:
-        org.workflow_authority.publish_after_supported_change(
-            publisher="put_org_settings:reviewer_agents",
-        )
 
     # Return updated snapshot from DB-resolved values.
     return get_settings(slug, org)
@@ -1047,61 +1045,57 @@ async def put_teams(slug: str, org: OrgDep, patch: TeamsPatch) -> dict:
     m = teams.manager_for_team(patch.team)
     original_workers = m.workers
 
-    org.workflow_authority.fence(reason="put_teams")
     async with org.teams_lock:
-        for agent in patch.add_workers:
+        with org.workflow_authority.supported_change(publisher="put_teams"):
+            for agent in patch.add_workers:
+                try:
+                    teams.add_worker(patch.team, agent)
+                except KeyError:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"team {patch.team!r} not found",
+                    )
+            for agent in patch.remove_workers:
+                try:
+                    teams.remove_worker(patch.team, agent)
+                except KeyError:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"team {patch.team!r} not found",
+                    )
+
+            # Re-validate consistency
             try:
-                teams.add_worker(patch.team, agent)
-            except KeyError:
+                validate_team_membership(paths, teams)
+            except OrgConsistencyError as exc:
+                # Rollback: restore original workers
+                current = teams.manager_for_team(patch.team).workers
+                added = set(current) - set(original_workers)
+                removed = set(original_workers) - set(current)
+                for agent in added:
+                    teams.remove_worker(patch.team, agent)
+                for agent in removed:
+                    teams.add_worker(patch.team, agent)
                 raise HTTPException(
-                    status_code=404,
-                    detail=f"team {patch.team!r} not found",
-                )
-        for agent in patch.remove_workers:
-            try:
-                teams.remove_worker(patch.team, agent)
-            except KeyError:
+                    status_code=409,
+                    detail={"code": "teams_consistency_drift", "message": str(exc)},
+                ) from exc
+
+            # Supplementary check: worker rows vs agent file declarations
+            worker_drift = _post_flight_worker_agent_drift(paths, teams)
+            if worker_drift:
+                # Rollback: restore original workers
+                current = teams.manager_for_team(patch.team).workers
+                added = set(current) - set(original_workers)
+                removed = set(original_workers) - set(current)
+                for agent in added:
+                    teams.remove_worker(patch.team, agent)
+                for agent in removed:
+                    teams.add_worker(patch.team, agent)
                 raise HTTPException(
-                    status_code=404,
-                    detail=f"team {patch.team!r} not found",
+                    status_code=409,
+                    detail={"code": "teams_worker_agent_drift", "message": "; ".join(worker_drift)},
                 )
-
-        # Re-validate consistency
-        try:
-            validate_team_membership(paths, teams)
-        except OrgConsistencyError as exc:
-            # Rollback: restore original workers
-            current = teams.manager_for_team(patch.team).workers
-            added = set(current) - set(original_workers)
-            removed = set(original_workers) - set(current)
-            for agent in added:
-                teams.remove_worker(patch.team, agent)
-            for agent in removed:
-                teams.add_worker(patch.team, agent)
-            raise HTTPException(
-                status_code=409,
-                detail={"code": "teams_consistency_drift", "message": str(exc)},
-            ) from exc
-
-        # Supplementary check: worker rows vs agent file declarations
-        worker_drift = _post_flight_worker_agent_drift(paths, teams)
-        if worker_drift:
-            # Rollback: restore original workers
-            current = teams.manager_for_team(patch.team).workers
-            added = set(current) - set(original_workers)
-            removed = set(original_workers) - set(current)
-            for agent in added:
-                teams.remove_worker(patch.team, agent)
-            for agent in removed:
-                teams.add_worker(patch.team, agent)
-            raise HTTPException(
-                status_code=409,
-                detail={"code": "teams_worker_agent_drift", "message": "; ".join(worker_drift)},
-            )
-
-    org.workflow_authority.publish_after_supported_change(
-        publisher="put_teams",
-    )
 
     # Return updated teams list (mirrors GET /teams shape)
     rows = []

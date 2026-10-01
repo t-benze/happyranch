@@ -3,17 +3,20 @@ from __future__ import annotations
 import json
 import os
 import threading
+from contextlib import AbstractContextManager
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from runtime.config import Settings
 from runtime.daemon.org_state import OrgState
+from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 from runtime.workflows.authority import (
-    AuthorityPublicationInterrupted,
     WorkflowAuthorityError,
 )
 
@@ -114,20 +117,77 @@ def test_fence_refuses_readiness_until_next_generation(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "boundary",
-    ["prepared", "file_phase_reserved", "staged", "canonical_published", "pointer_committed"],
+    ("boundary", "expected_state"),
+    [
+        ("prepared", "prepared"),
+        ("file_phase_reserved", "file_phase_reserved"),
+        ("staged", "file_phase_reserved"),
+        ("canonical_published", "canonical_published"),
+        ("pointer_committed", "pointer_committed"),
+    ],
 )
 def test_every_durable_boundary_recovers_once_on_cold_reopen(
-    tmp_path: Path, boundary: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+    expected_state: str,
 ) -> None:
+    class InjectedPublisherCrash(BaseException):
+        pass
+
     root = tmp_path / boundary
     _seed_org(root)
     org = OrgState.load(slug=boundary, root=root, settings=Settings())
     org.workflow_authority.fence(reason="interrupted-writer")
-    with pytest.raises(AuthorityPublicationInterrupted, match=boundary):
-        org.workflow_authority.publish_current(
-            publisher="interrupted-writer", interrupt_at=boundary,
+
+    if boundary in {"prepared", "canonical_published", "pointer_committed"}:
+        fail_on_call = {
+            "prepared": 3,
+            "canonical_published": 5,
+            "pointer_committed": 6,
+        }[boundary]
+        original_transaction = org.workflow_authority._transaction
+        calls = 0
+
+        def crash_at_transaction() -> AbstractContextManager[Any]:
+            nonlocal calls
+            calls += 1
+            if calls == fail_on_call:
+                raise InjectedPublisherCrash(boundary)
+            return original_transaction()
+
+        monkeypatch.setattr(
+            org.workflow_authority, "_transaction", crash_at_transaction,
         )
+    elif boundary == "file_phase_reserved":
+        original_write_bytes = Path.write_bytes
+
+        def crash_before_staging_write(path: Path, data: bytes) -> int:
+            if path.name.endswith(".staging"):
+                raise InjectedPublisherCrash(boundary)
+            return original_write_bytes(path, data)
+
+        monkeypatch.setattr(Path, "write_bytes", crash_before_staging_write)
+    else:
+        def crash_before_canonical_replace(
+            source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        ) -> None:
+            del source, destination
+            raise InjectedPublisherCrash(boundary)
+
+        monkeypatch.setattr(os, "replace", crash_before_canonical_replace)
+
+    with pytest.raises(InjectedPublisherCrash, match=boundary):
+        org.workflow_authority.publish_current(publisher="interrupted-writer")
+    active = org.db.execute(
+        "SELECT state FROM workflow_publication_journals "
+        "WHERE namespace=? AND state NOT IN ('cache_installed','aborted')",
+        (org.workflow_authority.namespace,),
+    ).fetchone()
+    assert active is not None
+    assert active["state"] == expected_state
+    monkeypatch.undo()
     org.close()
 
     reopened = OrgState.load(slug=boundary, root=root, settings=Settings())
@@ -186,6 +246,92 @@ def test_two_publishers_serialize_to_distinct_generations(tmp_path: Path) -> Non
     org.close()
 
 
+def test_supported_writer_prevents_concurrent_publisher_from_reopening(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "alpha"
+    _seed_org(root)
+    org = _load(root)
+    publisher_started = threading.Event()
+    outcomes: list[int | str] = []
+
+    def publish() -> None:
+        publisher_started.set()
+        try:
+            outcomes.append(org.workflow_authority.publish_current(publisher="contender"))
+        except WorkflowAuthorityError as exc:
+            outcomes.append(exc.code)
+
+    with org.workflow_authority.supported_change(publisher="supported-writer"):
+        pointer = _rows(org)["pointers"][0]
+        assert pointer[4] == "fenced"
+        worker = threading.Thread(target=publish)
+        worker.start()
+        assert publisher_started.wait(timeout=5)
+        worker.join(timeout=0.05)
+        assert worker.is_alive()
+        definition = next(
+            agent for agent in prompt_loader.list_agents(OrgPaths(root=root))
+            if agent.name == "dev_agent"
+        )
+        (OrgPaths(root=root).agents_dir / "dev_agent.md").write_text(
+            render_agent_text(replace(definition, model="gpt-next")),
+        )
+
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert outcomes == [3]
+    ready = org.workflow_authority.verify_admission_ready()
+    assert ready.generation == 3
+    assert json.loads(ready.snapshot_bytes)["agents"][1]["model"] == "gpt-next"
+    org.close()
+
+
+def test_publisher_before_supported_writer_serializes_both_generations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "alpha"
+    _seed_org(root)
+    org = _load(root)
+    capture_started = threading.Event()
+    release_capture = threading.Event()
+    outcomes: list[int] = []
+    original_capture = org.workflow_authority.capture_snapshot
+
+    def blocked_capture() -> bytes:
+        capture_started.set()
+        assert release_capture.wait(timeout=5)
+        return original_capture()
+
+    monkeypatch.setattr(org.workflow_authority, "capture_snapshot", blocked_capture)
+
+    publisher = threading.Thread(
+        target=lambda: outcomes.append(
+            org.workflow_authority.publish_current(publisher="first-publisher"),
+        ),
+    )
+    publisher.start()
+    assert capture_started.wait(timeout=5)
+
+    # A concrete worker function keeps context ownership and release paired.
+    def write() -> None:
+        with org.workflow_authority.supported_change(publisher="second-writer"):
+            pass
+
+    writer = threading.Thread(target=write)
+    writer.start()
+    writer.join(timeout=0.05)
+    assert writer.is_alive()
+    release_capture.set()
+    publisher.join(timeout=5)
+    writer.join(timeout=5)
+    assert not publisher.is_alive()
+    assert not writer.is_alive()
+    assert outcomes == [2]
+    assert org.workflow_authority.verify_admission_ready().generation == 3
+    org.close()
+
+
 def test_live_publication_lease_cannot_be_stolen(tmp_path: Path) -> None:
     root = tmp_path / "alpha"
     _seed_org(root)
@@ -213,7 +359,8 @@ def test_post_commit_publication_failure_preserves_fenced_state(
     org = _load(root)
     org.workflow_authority.fence(reason="supported-writer")
 
-    def fail_publish(*, publisher: str, interrupt_at=None) -> int:
+    def fail_publish(*, publisher: str) -> int:
+        del publisher
         raise OSError("injected publication failure")
 
     monkeypatch.setattr(org.workflow_authority, "publish_current", fail_publish)

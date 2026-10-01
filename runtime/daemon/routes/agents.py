@@ -624,24 +624,21 @@ async def manage_repo(
         description=agent_def.description,
         model=agent_def.model,
     )
-    org.workflow_authority.fence(reason="manage_repo")
-    active_path = paths.agents_dir / f"{agent_name}.md"
-    fd, tmp = tempfile.mkstemp(
-        prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir),
-    )
-    try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(render_agent_text(updated))
-        os.replace(tmp, active_path)
-    except Exception:
+    with org.workflow_authority.supported_change(publisher="manage_repo"):
+        active_path = paths.agents_dir / f"{agent_name}.md"
+        fd, tmp = tempfile.mkstemp(
+            prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir),
+        )
         try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
-        raise
-    org.workflow_authority.publish_after_supported_change(
-        publisher="manage_repo",
-    )
+            with os.fdopen(fd, "w") as fh:
+                fh.write(render_agent_text(updated))
+            os.replace(tmp, active_path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            raise
 
     # Clone/remove repo dir as before
     if body.action == RepoAction.add:
@@ -725,12 +722,11 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                 description=body.description,
                 model=body.model if body.model else None,
             )
-            org.workflow_authority.fence(reason="manage_agent_enroll")
-            prompt_loader.write_pending_agent(paths, agent)
-            org.teams.add_worker(manager_team, body.name)
-        org.workflow_authority.publish_after_supported_change(
-            publisher="manage_agent_enroll",
-        )
+            with org.workflow_authority.supported_change(
+                publisher="manage_agent_enroll",
+            ):
+                prompt_loader.write_pending_agent(paths, agent)
+                org.teams.add_worker(manager_team, body.name)
         audit.log_agent_managed(
             scope_id=scope_id,
             action="enroll",
@@ -2190,10 +2186,12 @@ async def set_agent_executor(
         active_path = paths.agents_dir / f"{agent_name}.md"
         fd, tmp = tempfile.mkstemp(prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir))
         try:
-            org.workflow_authority.fence(reason="set_agent_executor")
-            with os.fdopen(fd, "w") as fh:
-                fh.write(render_agent_text(updated))
-            os.replace(tmp, active_path)
+            with org.workflow_authority.supported_change(
+                publisher="set_agent_executor",
+            ):
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(render_agent_text(updated))
+                os.replace(tmp, active_path)
         except Exception:
             try:
                 os.unlink(tmp)
@@ -2201,9 +2199,6 @@ async def set_agent_executor(
                 pass
             raise
 
-    org.workflow_authority.publish_after_supported_change(
-        publisher="set_agent_executor",
-    )
     after_ws = before_ws
     stale_files: list[str] = []
     removed: list[str] = []
@@ -2312,25 +2307,22 @@ async def set_agent_model(
         description=existing.description,
         model=body.model if body.model else None,
     )
-    org.workflow_authority.fence(reason="set_agent_model")
-    from runtime.orchestrator.agent_def import render_agent_text
-    active_path = paths.agents_dir / f"{agent_name}.md"
-    fd, tmp = tempfile.mkstemp(
-        prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir),
-    )
-    try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(render_agent_text(updated))
-        os.replace(tmp, active_path)
-    except Exception:
+    with org.workflow_authority.supported_change(publisher="set_agent_model"):
+        from runtime.orchestrator.agent_def import render_agent_text
+        active_path = paths.agents_dir / f"{agent_name}.md"
+        fd, tmp = tempfile.mkstemp(
+            prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir),
+        )
         try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
-        raise
-    org.workflow_authority.publish_after_supported_change(
-        publisher="set_agent_model",
-    )
+            with os.fdopen(fd, "w") as fh:
+                fh.write(render_agent_text(updated))
+            os.replace(tmp, active_path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            raise
 
     after_model = _resolve_agent_model(paths, agent_name)
 
@@ -2462,14 +2454,11 @@ async def approve_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
             },
         )
 
-    org.workflow_authority.fence(reason="approve_agent")
-    try:
-        agent_def = prompt_loader.approve_agent(paths, agent_name)
-    except FileExistsError:
-        raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
-    org.workflow_authority.publish_after_supported_change(
-        publisher="approve_agent",
-    )
+    with org.workflow_authority.supported_change(publisher="approve_agent"):
+        try:
+            agent_def = prompt_loader.approve_agent(paths, agent_name)
+        except FileExistsError:
+            raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
 
     workspace = paths.workspaces_dir / agent_name
     workspace.mkdir(parents=True, exist_ok=True)
@@ -2508,31 +2497,27 @@ async def reject_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
 
     # Fresh-read after acquiring the lock so a promotion or replacement that
     # wins while this request waits cannot be unlinked or removed by stale team.
-    org.workflow_authority.fence(reason="reject_agent")
     async with org.teams_lock:
-        pending = prompt_loader.load_pending_agent(paths, agent_name)
-        if pending is None:
-            existing = prompt_loader.load_agent(paths, agent_name)
-            if existing is not None:
-                raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
-            raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
-        # Drop the file first; holding teams_lock keeps the synchronous unlink
-        # and teams-yaml mutation paired with the freshly read pending state.
-        try:
-            prompt_loader.reject_agent(paths, agent_name)
-        except FileNotFoundError:
-            raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
-        # manage_agent.enroll added this worker to teams.yaml when it wrote the
-        # pending file. Reject must undo both — otherwise the agent stays in
-        # team membership forever and re-enrollment hits "duplicate" on the
-        # team-side too. remove_worker is a no-op if the agent isn't a worker
-        # under pending.team, so this is safe even if teams drifted.
-        if org.teams is not None and pending.team in org.teams.teams():
-            org.teams.remove_worker(pending.team, agent_name)
-
-    org.workflow_authority.publish_after_supported_change(
-        publisher="reject_agent",
-    )
+        with org.workflow_authority.supported_change(publisher="reject_agent"):
+            pending = prompt_loader.load_pending_agent(paths, agent_name)
+            if pending is None:
+                existing = prompt_loader.load_agent(paths, agent_name)
+                if existing is not None:
+                    raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
+                raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+            # Drop the file first; holding teams_lock keeps the synchronous unlink
+            # and teams-yaml mutation paired with the freshly read pending state.
+            try:
+                prompt_loader.reject_agent(paths, agent_name)
+            except FileNotFoundError:
+                raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+            # manage_agent.enroll added this worker to teams.yaml when it wrote the
+            # pending file. Reject must undo both — otherwise the agent stays in
+            # team membership forever and re-enrollment hits "duplicate" on the
+            # team-side too. remove_worker is a no-op if the agent isn't a worker
+            # under pending.team, so this is safe even if teams drifted.
+            if org.teams is not None and pending.team in org.teams.teams():
+                org.teams.remove_worker(pending.team, agent_name)
 
     return {"ok": True}
 

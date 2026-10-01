@@ -17,10 +17,11 @@ import logging
 import os
 import threading
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
@@ -46,25 +47,12 @@ class WorkflowAuthorityError(RuntimeError):
         super().__init__(code)
 
 
-class AuthorityPublicationInterrupted(RuntimeError):
-    """Deterministic test seam standing in for a publisher process crash."""
-
-
 @dataclass(frozen=True)
 class AuthorityReadiness:
     namespace: str
     generation: int
     snapshot_digest: str
     snapshot_bytes: bytes
-
-
-_InterruptBoundary = Literal[
-    "prepared",
-    "file_phase_reserved",
-    "staged",
-    "canonical_published",
-    "pointer_committed",
-]
 
 
 def _canonical_json(value: object) -> bytes:
@@ -130,7 +118,7 @@ class WorkflowAuthorityCoordinator:
         # Process-local serialization complements the durable cross-process
         # lease. It is never treated as protection from arbitrary same-UID
         # mutation and is not held during snapshot capture.
-        self._publisher_lock = threading.Lock()
+        self._publisher_lock = threading.RLock()
 
     @property
     def namespace(self) -> str:
@@ -333,47 +321,80 @@ class WorkflowAuthorityCoordinator:
             raise WorkflowAuthorityError("authority_pointer_journal_invalid")
         return row
 
+    def _fence_under_lease(self, *, reason: str) -> None:
+        """Fence while the caller owns both coordinator and durable leases."""
+        del reason  # stable machine state is in the pointer; no free-form payload.
+        with self._transaction() as conn:
+            if self._active_journal(conn, self.namespace) is not None:
+                raise WorkflowAuthorityError("authority_publication_in_progress")
+            generation, journal_id, digest, state, profile_fence = self._pointer(
+                conn, self.namespace,
+            )
+            if state not in {"ready", "fenced"}:
+                raise WorkflowAuthorityError("authority_pointer_not_ready")
+            conn.execute(
+                "INSERT INTO workflow_authority_pointers("
+                "namespace,current_generation,journal_id,snapshot_digest,state,profile_fence"
+                ") VALUES (?,?,?,?, 'fenced',?) "
+                "ON CONFLICT(namespace) DO UPDATE SET state='fenced'",
+                (
+                    self.namespace, generation, journal_id, digest,
+                    profile_fence,
+                ),
+            )
+            self._cache.pop(self.namespace, None)
+
     def fence(self, *, reason: str) -> None:
         """Durably deny later workflow admission before an authority mutation."""
-        del reason  # stable machine state is in the pointer; no free-form payload.
         with self._publisher_lock:
             owner = f"workflow-fence:{uuid.uuid4().hex}"
             self._acquire_lease(owner)
             try:
-                with self._transaction() as conn:
-                    if self._active_journal(conn, self.namespace) is not None:
-                        raise WorkflowAuthorityError("authority_publication_in_progress")
-                    generation, journal_id, digest, state, profile_fence = self._pointer(
-                        conn, self.namespace,
-                    )
-                    if state not in {"ready", "fenced"}:
-                        raise WorkflowAuthorityError("authority_pointer_not_ready")
-                    conn.execute(
-                        "INSERT INTO workflow_authority_pointers("
-                        "namespace,current_generation,journal_id,snapshot_digest,state,profile_fence"
-                        ") VALUES (?,?,?,?, 'fenced',?) "
-                        "ON CONFLICT(namespace) DO UPDATE SET state='fenced'",
-                        (
-                            self.namespace, generation, journal_id, digest,
-                            profile_fence,
-                        ),
-                    )
-                    self._cache.pop(self.namespace, None)
+                self._fence_under_lease(reason=reason)
             finally:
                 self._release_lease(owner)
+
+    @contextmanager
+    def supported_change(self, *, publisher: str) -> Iterator[None]:
+        """Fence one supported writer through its canonical mutation.
+
+        The durable publication lease covers only the synchronous canonical
+        mutation/compensation span.  It is released before snapshot capture,
+        while the process-local writer gate remains held through publication.
+        This keeps scans and later network/host work outside the durable lease.
+        A failed legacy mutation is republished only when its own compensation
+        has already restored a coherent snapshot; incoherence stays fenced.
+        """
+        with self._publisher_lock:
+            owner = f"workflow-writer:{publisher}:{uuid.uuid4().hex}"
+            self._acquire_lease(owner)
+            try:
+                self._fence_under_lease(reason=publisher)
+                try:
+                    yield
+                except Exception:
+                    self._release_lease(owner)
+                    owner = ""
+                    self.publish_after_supported_change(
+                        publisher=f"{publisher}:compensation",
+                    )
+                    raise
+            finally:
+                if owner:
+                    self._release_lease(owner)
+            self.publish_after_supported_change(publisher=publisher)
 
     def publish_current(
         self,
         *,
         publisher: str,
-        interrupt_at: _InterruptBoundary | None = None,
     ) -> int:
         """Capture then publish the next generation through durable stages."""
-        if interrupt_at not in {
-            None, "prepared", "file_phase_reserved", "staged",
-            "canonical_published", "pointer_committed",
-        }:
-            raise WorkflowAuthorityError("unknown_publication_interrupt")
+        with self._publisher_lock:
+            return self._publish_current_locked(publisher=publisher)
+
+    def _publish_current_locked(self, *, publisher: str) -> int:
+        """Publish while the process-local writer/publisher gate is held."""
         snapshot = self.capture_snapshot()
         snapshot_digest = _digest(snapshot)
         with self._publisher_lock:
@@ -400,9 +421,6 @@ class WorkflowAuthorityCoordinator:
                             snapshot, snapshot_digest, publisher, owner, profile_fence,
                         ),
                     )
-                if interrupt_at == "prepared":
-                    raise AuthorityPublicationInterrupted("prepared")
-
                 with self._transaction() as conn:
                     changed = conn.execute(
                         "UPDATE workflow_publication_journals "
@@ -413,15 +431,10 @@ class WorkflowAuthorityCoordinator:
                     ).rowcount
                     if changed != 1:
                         raise WorkflowAuthorityError("publication_phase_owner_required")
-                if interrupt_at == "file_phase_reserved":
-                    raise AuthorityPublicationInterrupted("file_phase_reserved")
-
                 path = self.canonical_path
                 path.parent.mkdir(parents=True, exist_ok=True)
                 staging = path.with_name(f"{path.name}.{journal_id}.staging")
                 staging.write_bytes(snapshot)
-                if interrupt_at == "staged":
-                    raise AuthorityPublicationInterrupted("staged")
                 os.replace(staging, path)
                 with self._transaction() as conn:
                     changed = conn.execute(
@@ -433,9 +446,6 @@ class WorkflowAuthorityCoordinator:
                     ).rowcount
                     if changed != 1:
                         raise WorkflowAuthorityError("publication_phase_owner_required")
-                if interrupt_at == "canonical_published":
-                    raise AuthorityPublicationInterrupted("canonical_published")
-
                 with self._transaction() as conn:
                     current, _old_id, _old_digest, _state, current_profile_fence = self._pointer(
                         conn, self.namespace,
@@ -465,9 +475,6 @@ class WorkflowAuthorityCoordinator:
                             snapshot_digest, profile_fence,
                         ),
                     )
-                if interrupt_at == "pointer_committed":
-                    raise AuthorityPublicationInterrupted("pointer_committed")
-
                 self._cache[self.namespace] = (generation + 1, snapshot_digest)
                 with self._transaction() as conn:
                     changed = conn.execute(
