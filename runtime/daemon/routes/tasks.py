@@ -1883,6 +1883,13 @@ async def cancel_task(
     for tid in to_cancel:
         _kill_jobs_for_terminating_task(org.orchestrator, tid)
 
+    if org.orchestrator is not None:
+        from runtime.orchestrator.run_step import (
+            _reclaim_terminal_task_worktree,
+        )
+        for tid in to_cancel:
+            _reclaim_terminal_task_worktree(org.orchestrator, tid)
+
     return {
         "ok": True,
         "task_id": task_id,

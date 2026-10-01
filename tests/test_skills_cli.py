@@ -75,6 +75,33 @@ class TestSkillsCatalogList:
 class TestSkillsCatalogValidate:
     """Tests for 'skills catalog validate'"""
 
+    def test_without_policy_does_not_read_checkout_root_config(
+        self, capsys, tmp_path, monkeypatch,
+    ):
+        """No --policy means an empty policy, even in a source checkout."""
+        import argparse
+        import cli.commands.skills as skills_command
+
+        fake_checkout = tmp_path / "checkout"
+        fake_module = fake_checkout / "cli" / "commands" / "skills.py"
+        fake_policy = fake_checkout / "org" / "config.yaml"
+        fake_policy.parent.mkdir(parents=True)
+        fake_policy.write_text(
+            "skills:\n"
+            "  org:\n"
+            "    allow: [hr:must-not-be-read]\n"
+        )
+        monkeypatch.setattr(skills_command, "__file__", str(fake_module))
+
+        ns = argparse.Namespace(
+            skills_root=str(FIXTURES), policy_path=None, json=False,
+        )
+        skills_command.cmd_skills_catalog_validate(ns)
+
+        out = capsys.readouterr().out
+        assert "hr:must-not-be-read" not in out
+        assert "Policy path:" not in out
+
     def test_validates_with_known_skills(self, capsys):
         from cli.commands.skills import cmd_skills_catalog_validate
         import argparse
@@ -101,8 +128,8 @@ class TestSkillsCatalogValidate:
         assert "catalog_gate_failures" in data
         assert len(data["catalog_gate_failures"]) > 0
 
-    def test_unknown_ids_in_policy_produce_warnings(self, capsys, tmp_path):
-        """Validate flags unknown skill ids referenced in eligibility policy."""
+    def test_explicit_policy_loads_skills_section(self, capsys, tmp_path):
+        """An explicit --policy loads and validates its skills section."""
         from cli.commands.skills import cmd_skills_catalog_validate
         import argparse
 
@@ -720,7 +747,7 @@ class TestSkillsCliReflection:
         out = capsys.readouterr().out
         # Check system contracts section does NOT list reflection
         # reflection appears only in Effective skills / Blocked, not in System Contracts
-        # The system contracts section should show exactly 7 contracts
+        # The system contracts section should show exactly 8 contracts
         assert "System Contracts (runtime-injected):" in out
         # review should appear in effective/blocked section, not system contracts
         # Verify the existing 7 contracts are still there
@@ -742,10 +769,6 @@ class TestSkillsCliRegistration:
         )
         choices = set(subparsers_action.choices.keys())
         assert "skills" in choices
-
-    def test_test_skill_cli_commands_exist_e2e(self):
-        """The existing test_skill_cli_commands_exist test should not need updating
-        for managed skills (they are `skills ...` commands, not `happyranch <skill_slug>`)."""
 
     def test_skills_catalog_list_subcommand(self):
         from cli.main import build_parser
@@ -1076,7 +1099,7 @@ class TestSystemContractsCliDisplay:
 
         out = capsys.readouterr().out
         assert "System Contracts (runtime-injected):" in out
-        assert "Total: 7 contract(s)" in out
+        assert "Total: 8 contract(s)" in out
         assert "start-task" in out
         assert "jobs" in out
         assert "make-worktree" in out
@@ -1102,7 +1125,7 @@ class TestSystemContractsCliDisplay:
         out = capsys.readouterr().out
         data = json.loads(out)
         assert "system_contracts" in data
-        assert len(data["system_contracts"]) == 7
+        assert len(data["system_contracts"]) == 8
         ids = [sc["id"] for sc in data["system_contracts"]]
         assert "start-task" in ids
         assert "jobs" in ids

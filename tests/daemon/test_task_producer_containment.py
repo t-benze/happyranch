@@ -37,6 +37,7 @@ from runtime.daemon.sessions import SessionTracker
 from runtime.infrastructure.database import Database
 from runtime.models import TaskRecord, TaskStatus, TokenUsage
 from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.context_builder import ContextBuilder
 from runtime.orchestrator.executors import ExecutorResult
 from runtime.orchestrator.host_supervisor import (
     AdmissionRequest,
@@ -46,6 +47,7 @@ from runtime.orchestrator.host_supervisor import (
 )
 from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.teams import TeamsRegistry
+from runtime.orchestrator.workspace_adapters import write_canonical_instruction_pair
 from runtime.platform.session_backend import (
     Capability,
     CapabilityLevel,
@@ -212,12 +214,22 @@ class _RecordingExecutor:
         ]
         self._observer = observer
         self.calls: list[dict] = []
+        self.spec_calls: list[dict] = []
         self.lock = threading.Lock()
 
     def set_invocation_context(self, **kwargs):
         pass
 
-    def build_launch_spec(self, *, workspace, prompt, session_id=None, model=None, org_slug=None, timeout_seconds=1800) -> LaunchSpec:
+    def build_launch_spec(
+        self, *, workspace, prompt, session_id=None, model=None,
+        resume_session_id=None, org_slug=None, timeout_seconds=1800,
+    ) -> LaunchSpec:
+        self.spec_calls.append(
+            {
+                "session_id": session_id,
+                "resume_session_id": resume_session_id,
+            }
+        )
         return LaunchSpec(argv=("fake-cli",), cwd=str(workspace), env={})
 
     def verify_launch_ready(self) -> str | None:
@@ -256,7 +268,10 @@ class _RaisingSpecExecutor(_RecordingExecutor):
     argv gate etc.) — the producer fails closed and must still clear the
     SessionTracker control/session."""
 
-    def build_launch_spec(self, *, workspace, prompt, session_id=None, model=None, org_slug=None, timeout_seconds=1800) -> LaunchSpec:
+    def build_launch_spec(
+        self, *, workspace, prompt, session_id=None, model=None,
+        resume_session_id=None, org_slug=None, timeout_seconds=1800,
+    ) -> LaunchSpec:
         raise RuntimeError("argv gate refused")
 
 
@@ -283,14 +298,20 @@ def _seed_org(paths: OrgPaths, tmp_path: Path, test_settings: Settings) -> None:
     (paths.root / "org" / "config.yaml").write_text("timezone: Asia/Shanghai\n")
     # Protocol skill sources for the system-contract materializer.
     proto = test_settings.get_bundled_skills_dir()
-    for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "wake", "schedule"):
+    for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "wake", "schedule", "workspace-cleanup"):
         src = proto / sid
         src.mkdir(parents=True, exist_ok=True)
         (src / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
     ws = paths.workspaces_dir / _AGENT
-    ws.mkdir(parents=True, exist_ok=True)
-    (ws / "task_history.md").write_text("# Task History: dev_agent\n\n")
-    (ws / "agent.yaml").write_text("executor: claude\n")
+    ContextBuilder(test_settings, paths, slug="test").ensure_workspace_ready(
+        ws, _AGENT, "Build software.", provider="claude",
+    )
+    # U0 imports this fixture and launches both registered agents. Keep the
+    # manager's narrower fixture shape while using the production pair writer.
+    write_canonical_instruction_pair(
+        paths.workspaces_dir / "engineering_head",
+        "Manage the engineering team.\n",
+    )
     # NOTE: no pre-created skill directories — the canonical-store
     # SymlinkMaterializer creates the start-task link + readiness marker
     # during materialization; a pre-created ordinary dir at the link path
@@ -367,6 +388,8 @@ def test_task_producer_contained_success_lifecycle(tmp_path, monkeypatch):
     # body (the supervisor's AdmissionRequest.on_started owns the PID), no
     # internal 429 retry.
     assert len(executor.calls) == 1
+    assert len(executor.spec_calls) == 1
+    assert executor.spec_calls[0]["resume_session_id"] is None
     call = executor.calls[0]
     assert call["running"] is backend.last_running
     assert call["on_started"] is None
@@ -389,6 +412,24 @@ def test_task_producer_contained_success_lifecycle(tmp_path, monkeypatch):
     assert tracker.get_cancel_control(task_id, _AGENT) is None
     assert tracker.get_pid(task_id, _AGENT) is None
     assert tracker.get_active(task_id, _AGENT) is None
+
+
+def test_recording_executor_keeps_runtime_and_provider_resume_ids_distinct(tmp_path):
+    """The fake matches the real build_launch_spec recovery/resume signature."""
+    executor = _RecordingExecutor()
+    executor.build_launch_spec(
+        workspace=tmp_path,
+        prompt="recover completion",
+        session_id="runtime-session",
+        resume_session_id="provider-session",
+    )
+
+    assert executor.spec_calls == [
+        {
+            "session_id": "runtime-session",
+            "resume_session_id": "provider-session",
+        }
+    ]
 
 
 def test_task_producer_429_retry_reacquires_fresh_handle(tmp_path, monkeypatch):
@@ -550,14 +591,6 @@ def test_session_tracker_cancel_control_lifecycle():
     assert tracker.get_pid("T-1", "dev_agent") is None
     assert tracker.get_active("T-1", "dev_agent") is None
     assert calls == []
-
-
-def test_cancel_route_invokes_opaque_control_not_pid_signal(tmp_path, monkeypatch):
-    """The /tasks/{id}/cancel route invokes the SessionTracker opaque control
-    (off the event loop) for a wired session and NEVER signals its PID."""
-    # Covered deterministically by test_cancel_route_invokes_control_and_skips_pid_kill
-    # below (the async route test); this sync marker documents the contract.
-    assert True
 
 
 @pytest.mark.asyncio

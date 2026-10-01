@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -14,11 +15,54 @@ from runtime.config import Settings
 from runtime.daemon.__main__ import _sweep_on_startup
 from runtime.daemon.queue import TaskQueue
 from runtime.infrastructure.database import Database
+from runtime.infrastructure.workflow_schema import install_or_recover
 from runtime.models import BlockKind, TaskRecord, TaskStatus, ThreadInvocationPurpose, ThreadRecord, ThreadStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.teams import TeamsRegistry
 from runtime.runtime import RuntimeDir
+
+
+def _open_live_org_database(path: Path) -> Database:
+    db = Database(path)
+    install_or_recover(db)
+    return db
+
+
+@contextmanager
+def _capture_joined_cleanup_threads(
+    *, release: threading.Event | None = None,
+):
+    """Capture test-created daemon workers and join them on every exit path."""
+    real_thread = threading.Thread
+    workers: list[threading.Thread] = []
+    errors: list[BaseException] = []
+
+    def tracked_thread(*thread_args, **thread_kwargs):
+        target = thread_kwargs.get("target")
+        if target is not None:
+            def capture_error(*target_args, **target_kwargs):
+                try:
+                    return target(*target_args, **target_kwargs)
+                except BaseException as exc:
+                    errors.append(exc)
+            thread_kwargs["target"] = capture_error
+        worker = real_thread(*thread_args, **thread_kwargs)
+        workers.append(worker)
+        return worker
+
+    with mock.patch("threading.Thread", side_effect=tracked_thread):
+        try:
+            yield workers, errors
+        finally:
+            if release is not None:
+                release.set()
+            for worker in workers:
+                worker.join(2)
+            assert all(not worker.is_alive() for worker in workers), (
+                "test-owned cleanup worker leaked"
+            )
+            assert not errors, f"test-owned cleanup worker errors: {errors!r}"
 
 
 def _seed_manager_recovery_result(tmp_path, *, self_evaluation="valid"):
@@ -168,7 +212,7 @@ def test_accepted_recovery_continue_settles_exact_receipt_once_across_restart(tm
     assert db.execute("SELECT state FROM task_completion_recoveries WHERE task_id=?", (task_id,)).fetchone()["state"] == "callback_consumed"
     path = db.path
     db.close()
-    reopened = Database(path)
+    reopened = _open_live_org_database(path)
     orch._db, orch._audit = reopened, AuditLogger(reopened)
     _sweep_on_startup(reopened, queue, "test", orch)
     _sweep_on_startup(reopened, queue, "test", orch)
@@ -282,7 +326,7 @@ def test_accepted_recovery_root_escalation_final_owner_fence(tmp_path, winner_ki
     ).fetchone())
     path = db.path
     db.close()
-    reopened = Database(path)
+    reopened = _open_live_org_database(path)
     orch._db, orch._audit = reopened, AuditLogger(reopened)
     _sweep_on_startup(reopened, queue, "test", orch)
     _sweep_on_startup(reopened, queue, "test", orch)
@@ -323,13 +367,19 @@ def test_accepted_recovery_root_escalation_positive_control_uses_real_authority(
     assert db.list_thread_messages("THR-RECOVERY")
 
 
-def test_nonroot_manager_recovery_escalation_is_parent_routed_and_consumed(tmp_path):
+def test_nonroot_manager_recovery_escalation_is_parent_routed_and_consumed(
+    tmp_path, monkeypatch,
+):
     """A parent-linked manager result has no root authority/escalation effects."""
     from runtime.orchestrator.orchestrator import completion_report_from_result_row
     from runtime.orchestrator.run_step import _consume_accepted_completion_recovery
     from runtime.infrastructure.audit_logger import AuditLogger
 
     db, orch, queue, task_id, _ = _seed_manager_recovery_result(tmp_path)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *_: pytest.fail("accepted non-root recovery must not reclaim"),
+    )
     db.insert_task(TaskRecord(
         id="TASK-PARENT", brief="parent", status=TaskStatus.IN_PROGRESS,
         task_type="task",
@@ -442,11 +492,16 @@ def test_nonroot_manager_recovery_postcommit_cleanup_reenters_on_restart(tmp_pat
     assert db.get_job("JOB-OWNED").status.value == "running"
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     orch._audit = AuditLogger(reopened)
     with mock.patch("runtime.orchestrator.authority.run_authority_hook") as authority:
-        _sweep_on_startup(reopened, queue, "test", orch)
+        with _capture_joined_cleanup_threads() as (
+            first_cleanup_workers, first_worker_errors,
+        ):
+            _sweep_on_startup(reopened, queue, "test", orch)
+        assert len(first_cleanup_workers) == 1
+        assert not first_worker_errors
         # The recovery-owned durable backstop commits inside the startup sweep;
         # do not mistake the asynchronous terminator return for that boundary.
         assert reopened.get_job("JOB-OWNED").reason == "task_ended"
@@ -455,7 +510,12 @@ def test_nonroot_manager_recovery_postcommit_cleanup_reenters_on_restart(tmp_pat
         assert reopened.recover_orphaned_running_jobs(
             now_iso="2026-01-01T00:02:00+00:00",
         ) == ["JOB-OTHER"]
-        _sweep_on_startup(reopened, queue, "test", orch)
+        with _capture_joined_cleanup_threads() as (
+            second_cleanup_workers, second_worker_errors,
+        ):
+            _sweep_on_startup(reopened, queue, "test", orch)
+        assert len(second_cleanup_workers) == 1
+        assert not second_worker_errors
     assert authority.call_count == 0
     assert reopened.get_task(task_id).status is TaskStatus.FAILED
     assert reopened.get_job("JOB-OWNED").reason == "task_ended"
@@ -518,7 +578,7 @@ def test_nonroot_manager_recovery_transaction_abort_rolls_back_then_startup_sett
     assert rolled_back["accepted_result_id"] == accepted["id"]
     assert db.execute("SELECT id FROM task_results WHERE id=?", (accepted["id"],)).fetchone()["id"] == accepted["id"]
     db.execute(f"DROP TRIGGER abort_nonroot_{point}")
-    path = db.path; db.close(); reopened = Database(path); orch._db = reopened; orch._audit = AuditLogger(reopened)
+    path = db.path; db.close(); reopened = _open_live_org_database(path); orch._db = reopened; orch._audit = AuditLogger(reopened)
     with mock.patch("runtime.orchestrator.authority.run_authority_hook") as authority:
         _sweep_on_startup(reopened, queue, "test", orch)
         _sweep_on_startup(reopened, queue, "test", orch)
@@ -774,7 +834,7 @@ def test_root_recovery_escalation_transaction_rolls_back_then_restart_settles_on
 
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     orch._audit = AuditLogger(reopened)
     _sweep_on_startup(reopened, queue, "test", orch)
@@ -828,12 +888,18 @@ def test_sweep_orphaned_result_replay_cannot_continue_twice(tmp_path):
     assert db.execute("SELECT COUNT(*) FROM authority_evaluations").fetchone()[0] == 1
 
 
-def test_accepted_manager_done_recovery_reuses_its_step_audit_after_crash(tmp_path):
+def test_accepted_manager_done_recovery_reuses_its_step_audit_after_crash(
+    tmp_path, monkeypatch,
+):
     """A crash after the manager step audit replays the exact admitted result once."""
     from runtime.orchestrator.orchestrator import completion_report_from_result_row
     from runtime.orchestrator.run_step import _consume_accepted_completion_recovery
 
     db, orch, queue, task_id, _ = _seed_manager_recovery_result(tmp_path)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *_: pytest.fail("accepted root recovery must not reclaim"),
+    )
     db.update_task(task_id, current_session_id="origin-manager")
     assert db.claim_task_completion_recovery(
         task_id=task_id, agent="engineering_manager", origin_session_id="origin-manager",
@@ -862,7 +928,7 @@ def test_accepted_manager_done_recovery_reuses_its_step_audit_after_crash(tmp_pa
     assert len([r for r in db.get_audit_logs(task_id) if r["action"] == "orchestration_step"]) == 1
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     from runtime.infrastructure.audit_logger import AuditLogger
     orch._audit = AuditLogger(reopened)
@@ -1005,7 +1071,7 @@ def test_manager_done_postcommit_cleanup_pending_restarts_once(
         db_path = db.path
         assert db.get_job("JOB-OWNED").status.value == "running"
         db.close()
-        reopened = Database(db_path)
+        reopened = _open_live_org_database(db_path)
         orch._db = reopened
         orch._audit = AuditLogger(reopened)
         assert reopened.get_job("JOB-OWNED").status.value == "running"
@@ -1031,9 +1097,21 @@ def test_manager_done_postcommit_cleanup_pending_restarts_once(
         with pytest.raises(AssertionError):
             assert reopened.get_job("JOB-OWNED").reason == "task_ended"
 
-        _sweep_on_startup(reopened, queue, "test", orch)
-        assert restarted_cleanup_finished.wait(2.0), "new-process durable backstop did not finish"
-        _sweep_on_startup(reopened, queue, "test", orch)
+        with _capture_joined_cleanup_threads() as (
+            first_cleanup_workers, first_worker_errors,
+        ):
+            _sweep_on_startup(reopened, queue, "test", orch)
+            assert restarted_cleanup_finished.wait(2.0), (
+                "new-process durable backstop did not finish"
+            )
+        assert len(first_cleanup_workers) == 1
+        assert not first_worker_errors
+        with _capture_joined_cleanup_threads() as (
+            second_cleanup_workers, second_worker_errors,
+        ):
+            _sweep_on_startup(reopened, queue, "test", orch)
+        assert len(second_cleanup_workers) == 1
+        assert not second_worker_errors
         # This is before the later lifespan orphan reconciliation; startup
         # touched only the recovery owner's durable row.
         assert reopened.get_job("JOB-OWNED").reason == "task_ended"
@@ -1289,8 +1367,14 @@ def test_accepted_manager_done_recovery_final_owner_and_receipt_fences(tmp_path,
 
 
 @pytest.mark.parametrize("agent", ["dev_agent", "engineering_manager"])
-def test_sweep_orphaned_result_worker_and_legacy_compatibility(tmp_path, agent):
+def test_sweep_orphaned_result_worker_and_legacy_compatibility(
+    tmp_path, agent, monkeypatch,
+):
     db, orch, queue = _seed_org_with_orch(tmp_path)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *_: pytest.fail("restart result settlement must not reclaim"),
+    )
     task_id = f"TASK-COMPAT-{agent}"
     session_id = f"sess-{agent}"
     db.insert_task(TaskRecord(
@@ -1316,7 +1400,7 @@ def _seed_org(tmp_path: Path, slug: str = "test") -> Database:
     org_root.mkdir(parents=True)
     (org_root / "org").mkdir()
     (org_root / "org" / "teams.yaml").write_text("teams: {}\n")
-    return Database(org_root / "happyranch.db")
+    return _open_live_org_database(org_root / "happyranch.db")
 
 
 def _seed_org_with_orch(
@@ -1337,7 +1421,7 @@ def _seed_org_with_orch(
         "    manager: engineering_head\n"
         "    workers: [dev_agent]\n"
     )
-    db = Database(paths.db_path)
+    db = _open_live_org_database(paths.db_path)
     queue = TaskQueue()
     orch = Orchestrator(
         db=db, settings=Settings(), paths=paths, slug=slug,
@@ -1389,7 +1473,7 @@ def test_accepted_recovery_reentry_after_effects_is_consumed_without_duplicate_a
             )
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     from runtime.infrastructure.audit_logger import AuditLogger
     orch._audit = AuditLogger(reopened)
@@ -1402,7 +1486,7 @@ def test_accepted_recovery_reentry_after_effects_is_consumed_without_duplicate_a
 
 @pytest.mark.parametrize("failure_point", ["terminal", "before_ledger", "after_ledger"])
 def test_accepted_leaf_completion_recovery_is_atomic_and_preserves_exact_verdict(
-    tmp_path, failure_point,
+    tmp_path, failure_point, monkeypatch,
 ):
     """A real admitted SUBTASK callback commits its two audit facts together.
 
@@ -1415,6 +1499,10 @@ def test_accepted_leaf_completion_recovery_is_atomic_and_preserves_exact_verdict
     from runtime.orchestrator.run_step import _consume_accepted_completion_recovery
 
     db, orch, queue = _seed_org_with_orch(tmp_path)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *_: pytest.fail("accepted leaf recovery must not reclaim"),
+    )
     db.insert_task(TaskRecord(
         id="TASK-PARENT", brief="parent", team="engineering",
         status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
@@ -1476,7 +1564,7 @@ def test_accepted_leaf_completion_recovery_is_atomic_and_preserves_exact_verdict
     db_path = db.path
     db.close()
 
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     reopened.execute("DROP TRIGGER " + {
         "terminal": "abort_leaf_terminal",
         "before_ledger": "abort_leaf_before_ledger",
@@ -1578,7 +1666,7 @@ def test_accepted_leaf_recovery_loses_to_winner_at_consume_transaction_boundary(
         assert cleanup_calls == [] and winner_control_calls == []
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     _sweep_on_startup(reopened, queue, "test", orch)
     _sweep_on_startup(reopened, queue, "test", orch)
@@ -1618,10 +1706,15 @@ def test_completed_leaf_postcommit_restart_cleans_only_owned_job_and_wakes_once(
     with mock.patch("runtime.orchestrator.run_step._kill_jobs_for_terminating_task", side_effect=RuntimeError("after commit")):
         with pytest.raises(RuntimeError, match="after commit"):
             _consume_accepted_completion_recovery(orch, "TASK-LEAF", completion_report_from_result_row("TASK-LEAF", accepted, fallback_agent="dev_agent"), agent="dev_agent", session_id="recovery-TASK-LEAF", result_row_id=accepted["id"])
-    path = db.path; db.close(); reopened = Database(path); orch._db = reopened
+    path = db.path; db.close(); reopened = _open_live_org_database(path); orch._db = reopened
     from runtime.infrastructure.audit_logger import AuditLogger
     orch._audit = AuditLogger(reopened)
-    _sweep_on_startup(reopened, queue, "test", orch)
+    with _capture_joined_cleanup_threads() as (
+        first_cleanup_workers, first_worker_errors,
+    ):
+        _sweep_on_startup(reopened, queue, "test", orch)
+    assert len(first_cleanup_workers) == 1
+    assert not first_worker_errors
     # The startup sweep settles the exact ledger-owned job durably before it
     # returns. The generic lifespan scan therefore sees only the unrelated
     # row; no process wait or persisted PID signal is involved at restart.
@@ -1629,8 +1722,13 @@ def test_completed_leaf_postcommit_restart_cleans_only_owned_job_and_wakes_once(
     assert reopened.recover_orphaned_running_jobs(
         now_iso="2026-01-01T00:02:00+00:00",
     ) == ["JOB-OTHER"]
-    with mock.patch("runtime.daemon.jobs_runner.terminate_jobs_for_task"):
-        _sweep_on_startup(reopened, queue, "test", orch)
+    with _capture_joined_cleanup_threads() as (
+        second_cleanup_workers, second_worker_errors,
+    ):
+        with mock.patch("runtime.daemon.jobs_runner.terminate_jobs_for_task"):
+            _sweep_on_startup(reopened, queue, "test", orch)
+    assert len(second_cleanup_workers) == 1
+    assert not second_worker_errors
     assert reopened.get_job("JOB-OWNED").reason == "task_ended"
     assert reopened.get_job("JOB-OTHER").reason == "daemon_crash"
     assert reopened.get_task("TASK-OTHER-PARENT").status is TaskStatus.IN_PROGRESS
@@ -2126,7 +2224,7 @@ def test_accepted_blocked_recovery_restart_consumes_once_then_resumes_owned_job(
 
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     from runtime.infrastructure.audit_logger import AuditLogger
     orch._audit = AuditLogger(reopened)
@@ -2171,9 +2269,13 @@ def test_accepted_blocked_recovery_restart_consumes_once_then_resumes_owned_job(
 @pytest.mark.parametrize("binding", ["origin", "recovery"])
 @pytest.mark.parametrize("executor_pid", [None, 424242])
 def test_sweep_restart_settles_unaccepted_recovery_before_pid_liveness_and_reconciles_owned_job(
-    tmp_path, binding, executor_pid,
+    tmp_path, binding, executor_pid, monkeypatch,
 ):
     db, orch, queue = _seed_org_with_orch(tmp_path)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *_: pytest.fail("restart recovery settlement must not reclaim"),
+    )
     _claim_interrupted_recovery(db, "TASK-REC", binding=binding)
     _seed_job(db, "JOB-REC", "TASK-REC", status="running")
     db.insert_task(TaskRecord(id="TASK-OTHER", brief="other"))
@@ -2181,7 +2283,7 @@ def test_sweep_restart_settles_unaccepted_recovery_before_pid_liveness_and_recon
     db.update_task("TASK-REC", executor_pid=executor_pid)
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
 
     from runtime.orchestrator.run_step import _kill_jobs_for_terminating_task
@@ -2268,7 +2370,7 @@ def test_sweep_restart_settlement_reenters_after_cleanup_interrupt_and_lifespan_
     )
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
 
     with mock.patch(
@@ -2283,7 +2385,7 @@ def test_sweep_restart_settlement_reenters_after_cleanup_interrupt_and_lifespan_
     assert queue._queue.empty()
     reopened.close()
 
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     with mock.patch("os.kill") as kill:
         _sweep_on_startup(reopened, queue, "test", orch)
@@ -2324,7 +2426,7 @@ def test_restart_settlement_rolls_back_task_ledger_and_job_together(tmp_path):
         _sweep_on_startup(db, queue, "test", orch)
     db.close()
 
-    reopened = Database(db.path)
+    reopened = _open_live_org_database(db.path)
     orch._db = reopened
     assert reopened.get_task("TASK-REC").status is TaskStatus.IN_PROGRESS
     assert reopened.get_job("JOB-REC").status.value == "running"
@@ -2399,10 +2501,14 @@ def test_late_callback_after_restart_settlement_is_rejected_without_revival(tmp_
     assert db.get_task_results("TASK-REC") == []
 
 
-def test_sweep_in_progress_to_failed(tmp_path: Path) -> None:
+def test_sweep_in_progress_to_failed(tmp_path: Path, monkeypatch) -> None:
     db = _seed_org(tmp_path)
     db.insert_task(TaskRecord(id="T-1", brief="x"))
     db.update_task("T-1", status=TaskStatus.IN_PROGRESS)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        lambda *_: pytest.fail("startup without orchestrator must not reclaim"),
+    )
 
     _sweep_on_startup(db, TaskQueue(), "test")
 
@@ -2410,6 +2516,76 @@ def test_sweep_in_progress_to_failed(tmp_path: Path) -> None:
     assert t.status == TaskStatus.FAILED
     # THR-079: null executor_pid → fail-closed with undeterminable liveness note.
     assert t.note and "liveness undeterminable" in t.note
+
+
+def test_sweep_failed_writer_attempts_reclamation_after_audit_and_parent_wake(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    db.insert_task(TaskRecord(
+        id="T-RECLAIM", brief="x", assigned_agent="dev_agent",
+    ))
+    db.update_task("T-RECLAIM", status=TaskStatus.IN_PROGRESS)
+    observed = []
+
+    def reclaim(actual_orch, task_id):
+        observed.append((
+            actual_orch is orch,
+            db.get_task(task_id).status,
+            [row["action"] for row in db.get_audit_logs(task_id)],
+        ))
+
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._reclaim_terminal_task_worktree",
+        reclaim,
+    )
+
+    _sweep_on_startup(db, queue, "test", orch)
+
+    assert observed == [(
+        True,
+        TaskStatus.FAILED,
+        ["daemon_restart_failure"],
+    )]
+
+
+@pytest.mark.parametrize("executor_pid", [None, 99999], ids=["unknown", "dead"])
+def test_startup_failure_shipping_seam_removes_real_eligible_linked_worktree(
+    tmp_path: Path, monkeypatch, executor_pid,
+) -> None:
+    from runtime.daemon.sessions import SessionTracker
+    from tests.test_run_step import (
+        _admit_terminal_worktree,
+        _git,
+        _registered_terminal_worktree,
+    )
+
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    task_id = f"TASK-STARTUP-REAL-{'UNKNOWN' if executor_pid is None else 'DEAD'}"
+    db.insert_task(TaskRecord(
+        id=task_id,
+        brief="real startup reclamation",
+        assigned_agent="dev_agent",
+        status=TaskStatus.IN_PROGRESS,
+    ))
+    if executor_pid is not None:
+        db.update_task(task_id, executor_pid=executor_pid)
+    primary, candidate = _registered_terminal_worktree(
+        orch._paths, task_id,
+    )
+    orch.attach_sessions(SessionTracker())
+    _admit_terminal_worktree(monkeypatch)
+
+    _sweep_on_startup(db, queue, "test", orch)
+
+    assert db.get_task(task_id).status is TaskStatus.FAILED
+    assert not candidate.exists()
+    assert str(candidate) not in _git(
+        primary, "worktree", "list", "--porcelain",
+    ).stdout
+    assert _git(
+        primary, "show-ref", "--verify", f"refs/heads/task/{task_id}",
+    ).returncode == 0
 
 
 def test_sweep_parked_delegated_with_all_children_terminal_reenqueues(tmp_path):
@@ -2584,6 +2760,372 @@ def _seed_consumed_parent_handoff(db: Database) -> tuple[dict, dict]:
     db.update_task("TASK-CHILD-HANDOFF", status=TaskStatus.COMPLETED)
     assert db.mark_task_completion_recovery_callback_consumed(task_id="TASK-CHILD-HANDOFF", agent="dev_agent", session_id="recovery", result_row_id=accepted["id"], settled_at="2026-01-01T00:01:00Z")
     return accepted, dict(accepted)
+
+
+def test_single_sweep_after_marker_cleanup_and_branch2_publish_one_parent_wake(
+    tmp_path, monkeypatch,
+):
+    """One sweep atomically arbitrates its cleanup tail with Branch 2.
+
+    The deque probe coordinates the historical check-then-enqueue race only.
+    Once production uses ``TaskQueue.enqueue_if_absent``, the probe is not a
+    shipping dependency: both producers instead meet at that public boundary.
+    """
+    from collections import deque
+
+    from runtime.daemon import jobs_runner
+
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    _seed_consumed_parent_handoff(db)
+    _seed_job(db, "JOB-OWNED", "TASK-CHILD-HANDOFF", "running")
+    queue.enqueue("test", "TASK-UNRELATED", metadata={"source": "control"})
+
+    admission_entered = threading.Event()
+    release_cleanup = threading.Event()
+    scans = threading.Barrier(2)
+    deque_lock = threading.Lock()
+
+    class CoordinatedDeque:
+        def __init__(self, values):
+            self.values = deque(values)
+            self.coordinate = True
+
+        def __len__(self):
+            return len(self.values)
+
+        def append(self, value):
+            self.values.append(value)
+
+        def popleft(self):
+            return self.values.popleft()
+
+        def __iter__(self):
+            snapshot = tuple(self.values)
+            with deque_lock:
+                coordinate = self.coordinate
+                if coordinate:
+                    admission_entered.set()
+            if coordinate:
+                scans.wait(timeout=2)
+                with deque_lock:
+                    self.coordinate = False
+            return iter(snapshot)
+
+    coordinated = CoordinatedDeque(queue._queue._queue)
+    queue._queue._queue = coordinated
+
+    # On the corrected path signal the same release from the public boundary;
+    # on the historical path the first private-deque scan provides the signal.
+    atomic_admit = getattr(queue, "enqueue_if_absent", None)
+    if atomic_admit is not None:
+        def observed_admit(*args, **kwargs):
+            admission_entered.set()
+            return atomic_admit(*args, **kwargs)
+        monkeypatch.setattr(queue, "enqueue_if_absent", observed_admit)
+
+    errors: list[BaseException] = []
+    workers: list[threading.Thread] = []
+    real_thread = threading.Thread
+    prior_inflight = dict(jobs_runner._INFLIGHT)
+    prior_kill_reasons = dict(jobs_runner._KILL_REASON_OVERRIDE)
+
+    async def paused_termination(*_args, **_kwargs):
+        assert release_cleanup.wait(2), "cleanup release was never signalled"
+        return []
+
+    def tracked_thread(*, target, daemon):
+        worker = real_thread(
+            target=lambda: _capture_worker_error(target, errors), daemon=daemon,
+        )
+        workers.append(worker)
+        return worker
+
+    def release_at_competing_admission() -> None:
+        if not admission_entered.wait(2):
+            errors.append(AssertionError("neither admission seam was reached"))
+        release_cleanup.set()
+
+    coordinator = real_thread(target=release_at_competing_admission)
+    coordinator.start()
+    monkeypatch.setattr(jobs_runner, "terminate_jobs_for_task", paused_termination)
+    monkeypatch.setattr(threading, "Thread", tracked_thread)
+    try:
+        _sweep_on_startup(db, queue, "test", orch)
+    finally:
+        release_cleanup.set()
+        coordinator.join(2)
+        for worker in workers:
+            worker.join(2)
+        jobs_runner._INFLIGHT.clear()
+        jobs_runner._INFLIGHT.update(prior_inflight)
+        jobs_runner._KILL_REASON_OVERRIDE.clear()
+        jobs_runner._KILL_REASON_OVERRIDE.update(prior_kill_reasons)
+
+    assert not coordinator.is_alive()
+    assert all(not worker.is_alive() for worker in workers), "cleanup worker leaked"
+    assert not errors
+    queued = list(coordinated.values)
+    assert queued[0] == ("test", "TASK-UNRELATED", {"source": "control"})
+    assert queued.count(("test", "TASK-PARENT-HANDOFF", None)) == 1
+    assert db.get_job("JOB-OWNED").reason == "task_ended"
+
+
+def test_parent_wake_shipping_paths_do_not_invert_queue_and_database_locks(
+    tmp_path,
+):
+    """Branch 2 and receipt cleanup finish without queue/DB lock inversion.
+
+    This drives the two actual shipping admission seams.  The startup producer
+    enters ``_sweep_enqueue(..., pending_once=True)`` while the receipt-owned
+    database handoff holds ``Database._lock`` and invokes
+    ``_enqueue_parent_if_waiting``.  A bounded observable lock turns the old
+    circular wait into a surfaced worker error so RED cannot leak threads.
+    """
+    from runtime.daemon.__main__ import _sweep_enqueue
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    accepted, _ = _seed_consumed_parent_handoff(db)
+    queue.enqueue("test", "TASK-UNRELATED", metadata={"source": "control"})
+
+    db_held = threading.Event()
+    startup_queue_held = threading.Event()
+    inversion_observed = threading.Event()
+    errors: list[BaseException] = []
+    original_lock = queue._admission_lock
+    startup_thread: threading.Thread
+
+    class BoundedObservableLock:
+        def acquire(self, *args, **kwargs):
+            if threading.current_thread() is startup_thread:
+                acquired = original_lock.acquire(*args, **kwargs)
+                if acquired:
+                    startup_queue_held.set()
+                return acquired
+            if startup_queue_held.is_set():
+                acquired = original_lock.acquire(blocking=False)
+                if acquired:
+                    return True
+                inversion_observed.set()
+                acquired = original_lock.acquire(timeout=0.25)
+                if not acquired:
+                    raise RuntimeError("queue/database lock inversion")
+                return acquired
+            return original_lock.acquire(*args, **kwargs)
+
+        def release(self):
+            return original_lock.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            self.release()
+            return False
+
+    queue._admission_lock = BoundedObservableLock()
+
+    def receipt_cleanup() -> None:
+        try:
+            def parent_effect() -> None:
+                db_held.set()
+                assert startup_queue_held.wait(2), "startup never won admission"
+                _enqueue_parent_if_waiting(orch, "TASK-CHILD-HANDOFF")
+
+            assert db.handoff_consumed_task_completion_recovery_parent_effect(
+                task_id="TASK-CHILD-HANDOFF",
+                agent="dev_agent",
+                recovery_session_id="recovery",
+                result_row_id=accepted["id"],
+                terminal_status="completed",
+                effect=parent_effect,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    def startup_branch_two() -> None:
+        try:
+            _sweep_enqueue(
+                queue,
+                "test",
+                "TASK-PARENT-HANDOFF",
+                orch,
+                pending_once=True,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    cleanup_thread = threading.Thread(target=receipt_cleanup, daemon=True)
+    startup_thread = threading.Thread(target=startup_branch_two, daemon=True)
+    cleanup_thread.start()
+    assert db_held.wait(2), "receipt cleanup never acquired the database lock"
+    startup_thread.start()
+    startup_thread.join(2)
+    cleanup_thread.join(2)
+
+    assert not startup_thread.is_alive(), "startup Branch 2 leaked"
+    assert not cleanup_thread.is_alive(), "receipt cleanup leaked"
+    assert not inversion_observed.is_set(), (
+        "external publisher ran under queue admission lock"
+    )
+    assert not errors
+    queued = list(queue._queue._queue)
+    assert queued[0] == ("test", "TASK-UNRELATED", {"source": "control"})
+    assert queued.count(("test", "TASK-PARENT-HANDOFF", None)) == 1
+    assert db.get_task("TASK-PARENT-HANDOFF").status is TaskStatus.IN_PROGRESS
+    assert db.execute(
+        "SELECT state FROM task_completion_recoveries "
+        "WHERE task_id='TASK-CHILD-HANDOFF'",
+    ).fetchone()["state"] == "callback_consumed"
+
+
+@pytest.mark.parametrize(
+    "second_sweep_timing", ["before-cleanup-tail", "after-cleanup-tail"],
+)
+def test_duplicate_ordinary_startup_wakes_admit_and_launch_once(
+    tmp_path, monkeypatch, second_sweep_timing,
+):
+    """Duplicate startup wakes converge at the real durable admission seam.
+
+    The first parent wake is taken from the queue before its durable claim,
+    exactly as a live worker does. A second sweep or the first sweep's cleanup
+    tail can then reconstruct another wake. Both are consumed through the real
+    ``TaskQueue.drain_sync -> Orchestrator.run_step`` path; only the persisted
+    CAS winner may reach ``_run_agent``.
+    """
+    from runtime.daemon import jobs_runner
+    from runtime.orchestrator import run_step
+
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    _seed_consumed_parent_handoff(db)
+    _seed_job(db, "JOB-OWNED", "TASK-CHILD-HANDOFF", "running")
+    db.insert_task(TaskRecord(
+        id="TASK-UNRELATED", brief="unrelated runnable", team="engineering",
+        assigned_agent="dev_agent", status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.BLOCKED_ON_JOB,
+        blocked_on_job_ids='["JOB-NOT-TERMINAL"]',
+    ))
+    unrelated_metadata = {"source": "preexisting", "ordinal": 7}
+    queue.enqueue("test", "TASK-UNRELATED", metadata=unrelated_metadata)
+
+    cleanup_entered = threading.Event()
+    release_cleanup = threading.Event()
+    prior_inflight = dict(jobs_runner._INFLIGHT)
+    prior_kill_reasons = dict(jobs_runner._KILL_REASON_OVERRIDE)
+
+    async def paused_termination(*_args, **_kwargs):
+        cleanup_entered.set()
+        assert release_cleanup.wait(2), "cleanup tail was never released"
+        return []
+
+    monkeypatch.setattr(
+        jobs_runner, "terminate_jobs_for_task", paused_termination,
+    )
+    try:
+        with _capture_joined_cleanup_threads(
+            release=release_cleanup,
+        ) as (cleanup_workers, cleanup_errors):
+            _sweep_on_startup(db, queue, "test", orch)
+            assert cleanup_entered.wait(2), "startup cleanup tail did not start"
+
+            # Model the exact worker boundary that invalidates queue emptiness
+            # as an invariant: both existing items have been dequeued, but the
+            # parent has not yet attempted its durable claim. Preserve their
+            # bytes and task accounting, then let startup reconstruct the wake.
+            unrelated_item = queue._queue.get_nowait()
+            queue._queue.task_done()
+            original_parent_wake = queue._queue.get_nowait()
+            queue._queue.task_done()
+            assert unrelated_item == (
+                "test", "TASK-UNRELATED", unrelated_metadata,
+            )
+            assert original_parent_wake == (
+                "test", "TASK-PARENT-HANDOFF", None,
+            )
+            queue.enqueue(
+                unrelated_item[0], unrelated_item[1],
+                metadata=unrelated_item[2],
+            )
+
+            if second_sweep_timing == "after-cleanup-tail":
+                release_cleanup.set()
+                for worker in tuple(cleanup_workers):
+                    worker.join(2)
+                    assert not worker.is_alive()
+
+            _sweep_on_startup(db, queue, "test", orch)
+            if second_sweep_timing == "before-cleanup-tail":
+                release_cleanup.set()
+
+            # Re-present the already-dequeued first wake. The queue now holds
+            # the unrelated control followed by two ordinary startup wakes.
+            queue.enqueue(
+                original_parent_wake[0], original_parent_wake[1],
+                metadata=original_parent_wake[2],
+            )
+        assert cleanup_workers
+        assert not cleanup_errors
+    finally:
+        # The capture context releases and joins all workers before shared
+        # jobs_runner state is restored, on success and on every failure path.
+        release_cleanup.set()
+        jobs_runner._INFLIGHT.clear()
+        jobs_runner._INFLIGHT.update(prior_inflight)
+        jobs_runner._KILL_REASON_OVERRIDE.clear()
+        jobs_runner._KILL_REASON_OVERRIDE.update(prior_kill_reasons)
+
+    db.update_task(
+        "TASK-UNRELATED", status=TaskStatus.PENDING, block_kind=None,
+    )
+    monkeypatch.setattr(run_step, "_build_agent_prompt", lambda *a, **k: "prompt")
+    monkeypatch.setattr(
+        run_step, "_prepare_workspace_cleanup_reclamation_context",
+        lambda *a, **k: "",
+    )
+    launches: list[str] = []
+    durable_parent_claims: list[bool] = []
+    real_claim = db.try_claim_for_step
+
+    def observed_claim(task_id, *args, **kwargs):
+        claimed = real_claim(task_id, *args, **kwargs)
+        if task_id == "TASK-PARENT-HANDOFF":
+            durable_parent_claims.append(claimed)
+        return claimed
+
+    def stop_after_launch(task_id, *_args, **_kwargs):
+        launches.append(task_id)
+        raise RuntimeError("test stops after observing the launch seam")
+
+    monkeypatch.setattr(db, "try_claim_for_step", observed_claim)
+    monkeypatch.setattr(orch, "_run_agent", stop_after_launch)
+    dequeues: list[tuple[str, str, dict | None]] = []
+
+    class RecordingRouter:
+        def run_step(self, slug, task_id, metadata=None):
+            dequeues.append((slug, task_id, metadata))
+            orch.run_step(task_id, metadata=metadata)
+
+    # The deterministic red-before run proved a queue-empty oracle is false at
+    # this boundary. Two pending entries are the setup, not the invariant; the
+    # durable admission and launch observations below are the assertion.
+    assert sum(
+        item[1] == "TASK-PARENT-HANDOFF" for item in queue._queue._queue
+    ) == 2
+
+    asyncio.run(queue.drain_sync(RecordingRouter()))
+
+    assert dequeues == [
+        ("test", "TASK-UNRELATED", unrelated_metadata),
+        ("test", "TASK-PARENT-HANDOFF", None),
+        ("test", "TASK-PARENT-HANDOFF", None),
+    ]
+    assert launches == ["TASK-UNRELATED", "TASK-PARENT-HANDOFF"]
+    assert durable_parent_claims == [True]
+    parent = db.get_task("TASK-PARENT-HANDOFF")
+    assert parent is not None
+    assert parent.orchestration_step_count == 1
+    assert db.get_job("JOB-OWNED").reason == "task_ended"
 
 
 @pytest.mark.parametrize("captured_jobs,replace_before_handoff", [(0, False), (1, False), (0, True), (1, True)], ids=["zero-job", "one-job", "zero-job-winner", "one-job-winner"])
@@ -3406,24 +3948,12 @@ def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
     """Regression THR-109: daemon lifespan MUST wire thread queues + main loop
     BEFORE starting task workers.
 
-    This test exercises two complementary verification surfaces:
-
-    **A. Source-order guard (deterministic).** Uses ``inspect.getsource``
-    to verify the two statements inside ``_wire_then_start_workers``
-    appear in the correct order: ``_attach_thread_queue_wiring`` before
-    ``ensure_workers_started``.  This is a pure code-level check that
-    fails immediately if the helper's internal ordering is ever reversed —
-    no runtime race, no sleep, no non-determinism.
-
-    **B. Behavioural regression (runtime, deterministic sync).** Calls the SAME
-    production helper that ``_lifespan`` invokes via a background event loop.
-    A test-local wrapper around the real ``ThreadQueue.put`` records every
-    ``ThreadJob`` and signals a ``threading.Event`` after its ``await``
-    completes, so the test waits on explicit delivery proof — never DB polling
-    or arbitrary sleep.  Real queue workers pick up a pre-seeded terminal task,
-    exercise the exact ``_maybe_post_thread_escalation`` →
-    ``_append_followup_system_and_reinvoke`` code path, and the test asserts
-    the post-fix outcomes.
+    The test calls the SAME production helper that ``_lifespan`` invokes with
+    a real daemon state, worker pool, dispatcher, orchestrator, database,
+    audit logger, and thread queue. Eager task creation plus an observational
+    ``Dispatcher.run_step`` completion barrier makes the real worker attempt
+    finish before the helper can continue. A reversed helper therefore cannot
+    attach the queue in time to rescue the attempt.
 
     With the post-fix helper ordering (wiring before workers):
     - (1) a TASK_FOLLOWUP invocation is minted and its ``ThreadJob`` is
@@ -3435,26 +3965,13 @@ def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
     order in app.py is temporarily reversed (red-side proof, not committed).
     """
     import asyncio
-    import inspect
     import threading
 
-    from runtime.daemon.app import _wire_then_start_workers
+    from runtime.daemon import app as app_module
+    from runtime.daemon.dispatcher import Dispatcher
     from runtime.models import (
         TaskRecord, TaskStatus, ThreadInvocationPurpose, ThreadRecord,
     )
-
-    # ── A. Source-order guard (deterministic) ──
-    src = inspect.getsource(_wire_then_start_workers)
-    wire_idx = src.index("_attach_thread_queue_wiring")
-    workers_idx = src.index("ensure_workers_started")
-    assert wire_idx < workers_idx, (
-        f"_wire_then_start_workers: _attach_thread_queue_wiring "
-        f"(idx {wire_idx}) must precede ensure_workers_started "
-        f"(idx {workers_idx}); ordering is reversed — TASK_FOLLOWUP "
-        f"invocations will strand with enqueue_unavailable"
-    )
-
-    # ── B. Behavioural regression (runtime, deterministic sync) ──
 
     org = daemon_state.orgs["alpha"]
     db = org.db
@@ -3462,22 +3979,41 @@ def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
     audit = orch._audit
     thread_queue = org.thread_queue
 
-    # ── Deterministic delivery signal: wrap ThreadQueue.put ──
-    # A test-local async wrapper around the real ThreadQueue.put that records
-    # the ThreadJob and signals a threading.Event *after* the await completes.
-    # This guarantees the job is actually enqueued in the asyncio.Queue before
-    # the test proceeds — no DB polling, no sleep, no race window.
+    worker_entered = threading.Event()
+    worker_finished = threading.Event()
     delivery_event = threading.Event()
-    delivered_job = None
-    _original_put = thread_queue.put
+    delivered_jobs = []
+    worker_threads = []
 
-    async def _wrapped_put(job):
-        nonlocal delivered_job
-        await _original_put(job)
-        delivered_job = job
+    original_run_step = Dispatcher.run_step
+    original_put = thread_queue.put
+    original_ensure_workers_started = app_module.ensure_workers_started
+
+    def observed_run_step(self, slug, task_id, metadata=None):
+        worker_threads.append(threading.current_thread())
+        worker_entered.set()
+        try:
+            return original_run_step(self, slug, task_id, metadata)
+        finally:
+            worker_finished.set()
+
+    async def observed_put(job):
+        await original_put(job)
+        delivered_jobs.append(job)
         delivery_event.set()
 
-    thread_queue.put = _wrapped_put  # type: ignore[method-assign]
+    def observed_ensure_workers_started(state):
+        original_ensure_workers_started(state)
+        assert worker_entered.wait(timeout=5.0), (
+            "real task worker never entered Dispatcher.run_step"
+        )
+        assert worker_finished.wait(timeout=15.0), (
+            "real task worker never finished Dispatcher.run_step"
+        )
+
+    Dispatcher.run_step = observed_run_step
+    thread_queue.put = observed_put  # type: ignore[method-assign]
+    app_module.ensure_workers_started = observed_ensure_workers_started
 
     # Seed an OPEN thread + dispatched PENDING root task.
     db.insert_thread(ThreadRecord(id="THR-STRT", subject="startup ordering"))
@@ -3498,53 +4034,63 @@ def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
     # Start a real event loop in a background daemon thread.
     # Mirrors the daemon lifespan where FastAPI/uvicorn runs the loop.
     loop = asyncio.new_event_loop()
+    prior_task_factory = loop.get_task_factory()
     bg_thread = threading.Thread(target=loop.run_forever, daemon=True)
     bg_thread.start()
+    start_future = None
+    worker_tasks = []
+    cleanup_pending_tasks = []
 
     try:
-        # Call the same production helper that _lifespan uses.
         async def _start():
-            _wire_then_start_workers(daemon_state, loop)
-        asyncio.run_coroutine_threadsafe(_start(), loop).result(timeout=5.0)
+            loop.set_task_factory(asyncio.eager_task_factory)
+            try:
+                app_module._wire_then_start_workers(daemon_state, loop)
+            finally:
+                loop.set_task_factory(prior_task_factory)
 
-        # Wait for deterministic delivery proof — the wrapped put signals
-        # delivery_event AFTER the real asyncio.Queue.put await completes.
-        # This replaces the flaky DB-polling loop.
-        assert delivery_event.wait(timeout=10.0), (
-            "ThreadJob was never delivered via ThreadQueue.put within 10s; "
-            "thread queue wiring is not in place before workers started — "
-            "TASK_FOLLOWUP invocations will strand with enqueue_unavailable"
-        )
+        start_future = asyncio.run_coroutine_threadsafe(_start(), loop)
+        start_future.result(timeout=20.0)
 
-        # (1) TASK_FOLLOWUP invocation is minted and the delivered ThreadJob
-        #     matches the minted invocation token.
+        assert worker_entered.is_set()
+        assert worker_finished.is_set()
+        assert len(worker_threads) == 1
+
+        # Assert the durable reversal symptom before waiting for delivery. An
+        # exact two-call reversal therefore fails here on real behavior, not
+        # later on a timeout or a source-text check.
         invs = db.list_thread_invocations("THR-STRT")
         followups = [
-            i for i in invs
-            if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP
+            invocation for invocation in invs
+            if invocation.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP
         ]
-        assert len(followups) >= 1, (
-            f"expected \u22651 TASK_FOLLOWUP invocation, got {len(followups)}"
+        assert len(followups) == 1, (
+            f"expected exactly one TASK_FOLLOWUP invocation, got {len(followups)}"
         )
+        audit_rows = db.get_audit_logs("TASK-STRT")
+        enqueue_unavailable = [
+            row for row in audit_rows
+            if row.get("action") == "thread_followup_skipped"
+            and row.get("payload", {}).get("reason") == "enqueue_unavailable"
+        ]
+        assert not enqueue_unavailable, (
+            "real task worker reached its terminal follow-up before thread "
+            "queue wiring; found structured enqueue_unavailable audit: "
+            f"{enqueue_unavailable}"
+        )
+
+        assert delivery_event.wait(timeout=5.0), (
+            "real ThreadQueue.put did not finish for the minted TASK_FOLLOWUP"
+        )
+        assert len(delivered_jobs) == 1
+        delivered_job = delivered_jobs[0]
         assert delivered_job.org_slug == org.slug
         assert delivered_job.invocation_token == followups[0].invocation_token, (
             f"delivered job token {delivered_job.invocation_token} "
             f"!= minted token {followups[0].invocation_token}"
         )
 
-        # (2) No enqueue_unavailable audit row was written.
-        audit_rows = db.get_audit_logs("TASK-STRT")
-        skipped = [
-            r for r in audit_rows
-            if r.get("action") == "thread_followup_skipped"
-            and "enqueue_unavailable" in str(r.get("payload", {}))
-        ]
-        assert not skipped, (
-            f"found enqueue_unavailable audit -- thread queue wiring was "
-            f"not in place before escalation fired: {skipped}"
-        )
-
-        # (3) Normal nearby lifecycle: the task ran through the follow-up path
+        # Normal nearby lifecycle: the task ran through the follow-up path
         # and reached its ordinary terminal outcome.  The test fixture has no
         # runnable executor, so that outcome is FAILED; it must not rely on a
         # retired total-step denial to reach it.
@@ -3559,17 +4105,54 @@ def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
         job = fut.result(timeout=2.0)
         assert job.invocation_token == delivered_job.invocation_token
     finally:
-        # Restore the original put before cleanup.
-        thread_queue.put = _original_put  # type: ignore[method-assign]
-        # Stop workers gracefully before tearing down the loop.
-        async def _stop():
+        Dispatcher.run_step = original_run_step
+        thread_queue.put = original_put  # type: ignore[method-assign]
+        app_module.ensure_workers_started = original_ensure_workers_started
+
+        if start_future is not None and not start_future.done():
+            start_future.cancel()
+
+        async def _cleanup():
+            nonlocal worker_tasks, cleanup_pending_tasks
+            loop.set_task_factory(prior_task_factory)
+            worker_tasks = list(daemon_state.queue._worker_tasks)
             await daemon_state.queue.stop(timeout=2.0)
-        try:
-            asyncio.run_coroutine_threadsafe(_stop(), loop).result(timeout=3.0)
-        except Exception:
-            pass
+            while thread_queue.size:
+                await thread_queue.get()
+            await daemon_state.close_all()
+
+            current = asyncio.current_task()
+            cleanup_pending_tasks = [
+                task for task in asyncio.all_tasks(loop)
+                if task is not current and not task.done()
+            ]
+            for task in cleanup_pending_tasks:
+                task.cancel()
+            if cleanup_pending_tasks:
+                await asyncio.gather(
+                    *cleanup_pending_tasks, return_exceptions=True,
+                )
+            await loop.shutdown_asyncgens()
+            await loop.shutdown_default_executor(timeout=5.0)
+
+        cleanup_future = asyncio.run_coroutine_threadsafe(_cleanup(), loop)
+        cleanup_future.result(timeout=10.0)
         loop.call_soon_threadsafe(loop.stop)
-        bg_thread.join(timeout=2.0)
+        bg_thread.join(timeout=5.0)
+        assert not bg_thread.is_alive(), "test event-loop thread leaked"
+        assert loop.get_task_factory() is prior_task_factory
+        assert all(task.done() for task in worker_tasks), (
+            "real TaskQueue worker survived cleanup"
+        )
+        assert all(task.done() for task in cleanup_pending_tasks), (
+            "test-owned asyncio task survived cleanup"
+        )
+        assert not [task for task in asyncio.all_tasks(loop) if not task.done()]
+        assert all(not thread.is_alive() for thread in worker_threads), (
+            "default-executor worker thread survived cleanup"
+        )
+        loop.close()
+        assert loop.is_closed()
 
 
 # ── Orphaned result local_ci reconstruction ──────────────────────────────
@@ -4049,7 +4632,7 @@ def test_shipping_startup_invocation_commit_serializes_owned_job_backstop(
     # startup-governed pending receipt from an unrelated terminal receipt.
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     owned = reopened.get_job("JOB-OWNED")
     other_job = reopened.get_job("JOB-OTHER")
     assert owned is not None and owned.reason == "task_ended"

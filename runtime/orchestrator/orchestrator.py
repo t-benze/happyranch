@@ -26,6 +26,7 @@ from runtime.models import (
     NextStep,
     StepRecord,
     TaskRecord,
+    TaskStatus,
 )
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.executors import (
@@ -852,6 +853,10 @@ class Orchestrator:
                 ),
                 status=TaskStatus.FAILED,
             )
+            from runtime.orchestrator.run_step import (
+                _reclaim_terminal_task_worktree,
+            )
+            _reclaim_terminal_task_worktree(self, task_id)
             return ExecutorResult(
                 success=False,
                 duration_seconds=0,
@@ -906,6 +911,22 @@ class Orchestrator:
         # before skills existed (or the user wiped it), the agent never calls
         # `happyranch report-completion` and the task silently rejects. Fail fast
         # with an actionable message instead.
+        # THR-262 Slice B (founder seq59): every provider must present the
+        # canonical instruction pair — regular ``AGENTS.md`` plus a raw
+        # relative ``CLAUDE.md -> AGENTS.md`` resolving to that exact file —
+        # before an executor is launched. Read-only refusal; no mutation and
+        # no recovery. The single profile marker remains an additional check
+        # below, never a substitute for the pair.
+        from runtime.orchestrator.workspace_adapters import instruction_pair_refusal
+
+        pair_refusal = instruction_pair_refusal(workspace)
+        if pair_refusal is not None:
+            raise WorkspaceNotInitialized(
+                f"workspace for {agent_name!r} does not have the canonical "
+                f"AGENTS.md/CLAUDE.md instruction pair ({pair_refusal}). Run "
+                f"`happyranch init-agent {agent_name}` to complete it."
+            )
+
         skill_marker = self._readiness_marker(workspace, provider)
         if not skill_marker.exists():
             raise WorkspaceNotInitialized(
@@ -967,6 +988,7 @@ class Orchestrator:
             persist_session_policy_binding,
             render_selected_team_policy,
             resolve_active_team_policy_snapshot,
+            resolve_policy_manager_team,
         )
         from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
         assert_no_reserved_team_policy_header(brief, source="task brief")
@@ -979,9 +1001,14 @@ class Orchestrator:
         # resolved executor tuple is carried into both the rendered section and
         # the durable binding. A binding/audit failure raises before the
         # external launch, so no success is ever fabricated.
+        policy_team = resolve_policy_manager_team(
+            root=self._paths.root, agent_name=agent_name,
+            teams=self._teams, team_hint=team,
+        )
         policy_snapshot = resolve_active_team_policy_snapshot(
-            store=AuthorityPolicyStore(self._db), team=team, agent_name=agent_name,
-            eligible=self._teams.is_team_manager(agent_name),
+            store=AuthorityPolicyStore(self._db), root=self._paths.root,
+            teams=self._teams, team=team, agent_name=agent_name,
+            eligible=policy_team == team,
         )
         active_policy_section = (
             render_selected_team_policy(
@@ -991,7 +1018,7 @@ class Orchestrator:
                 root_task_id=task_id, manager_session_id=session_id,
             ) if policy_snapshot is not None else ""
         )
-        if self._teams.is_team_manager(agent_name):
+        if policy_team == team:
             persist_session_policy_binding(
                 db=self._db, task_id=task_id, session_id=session_id,
                 agent_name=agent_name, snapshot=policy_snapshot,
@@ -1061,7 +1088,23 @@ class Orchestrator:
                     budget=budget,
                 )
 
-        self._audit.log_session_start(task_id, agent_name, str(workspace))
+        if recovery:
+            invocation_purpose = "unattributed"
+        elif task is not None and task.task_type == "task":
+            invocation_purpose = "manager_decision"
+        elif task is not None and task.task_type == "subtask":
+            invocation_purpose = "worker_execution"
+        else:
+            invocation_purpose = "unattributed"
+        self._audit.log_session_start(
+            task_id,
+            agent_name,
+            str(workspace),
+            session_id=session_id,
+            invocation_purpose=invocation_purpose,
+            executor=provider,
+            model=model_name,
+        )
         if not recovery:
             self._db.update_task(task_id, assigned_agent=agent_name)
 

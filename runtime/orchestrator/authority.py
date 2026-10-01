@@ -90,13 +90,16 @@ from typing import TYPE_CHECKING, Protocol
 
 from pydantic import BaseModel, Field, field_validator
 
-from runtime.infrastructure.database import _authority_claim_key
+from runtime.infrastructure.database import (
+    _AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING,
+    _authority_claim_key,
+)
 from runtime.models import (
     AuthorityDisposition,
     AuthorityDispositionCode,
     AuthorityFenceResult,
     AuthorityPolicyV2PermissionSurface,
-    AuthorityPolicyV2SchemaIntegrity,
+    AuthorityPolicyV2SchemaObservation,
     TaskStatus,
     ManagerSelfEvaluation,
     validate_authority_digest,
@@ -214,20 +217,24 @@ def _sha256(text: str) -> str:
 _APPROVED_VERDICTS = frozenset({"APPROVE", "PASS"})
 
 
-# The release-expected DB schema digest: the schema a FRESH Database() built
-# from the CURRENT code creates. Any divergence of the live DB from this
-# release schema is an authoritative schema/migration drift signal — the
-# surface the continuation would operate on is not the reviewed release
-# surface, so a schema/migration condition is in flight and the attempt must
-# escalate. Computed once per process and cached.
+# The release-expected ORG DB schema digest: the schema a fresh Database() built
+# from the CURRENT code creates after the canonical org-only workflow installer
+# runs. Generic Database callers remain workflow-free; this isolated reference
+# mirrors the complete surface that OrgState.load attaches to an orchestrator.
+# Any divergence of the live DB from this release schema is an authoritative
+# schema/migration drift signal, so the attempt must escalate. Computed once per
+# process and cached.
 _release_schema_digest_cache: str | None = None
 
 
 def _release_schema_digest() -> str:
-    """Digest of the sqlite_master DDL a fresh Database() creates with the
-    current code (the release-pinned schema surface). Cached after first
-    computation; never raises (returns "unavailable" on any defect, which
-    fails closed as a drift signal)."""
+    """Digest of the complete release-pinned org-database schema surface.
+
+    The temporary generic database receives the same canonical workflow
+    installation as ``OrgState.load`` before hashing.  No persistent generic
+    or runtime-audit database is changed.  Cached after first computation;
+    never raises (``"unavailable"`` fails closed as a drift signal).
+    """
     global _release_schema_digest_cache
     if _release_schema_digest_cache is not None:
         return _release_schema_digest_cache
@@ -235,15 +242,14 @@ def _release_schema_digest() -> str:
         import tempfile
         from pathlib import Path as _Path
         from runtime.infrastructure.database import Database
+        from runtime.infrastructure.workflow_schema import install_or_recover
         with tempfile.TemporaryDirectory() as td:
             fresh = Database(_Path(td) / "fresh-authority-schema.db")
             try:
+                install_or_recover(fresh)
                 _release_schema_digest_cache = _live_schema_digest(fresh)
             finally:
-                try:
-                    fresh._conn.close()
-                except Exception:
-                    pass
+                fresh.close()
     except Exception:
         _release_schema_digest_cache = "unavailable"
     return _release_schema_digest_cache
@@ -261,86 +267,21 @@ def _live_schema_digest(db) -> str:
         return "unavailable"
 
 
-# ── THR-229 C3a: independent constraint-sensitive v2 schema-integrity seam ──
+# ── THR-229 seq351: observed-only v2 claim-time schema values ─────────────
 #
-# ``_release_schema_digest`` above is the LEGACY v1 behavior and stays exactly
-# as it is: it compares a live DB's raw DDL against a fresh ``Database()`` and
-# treats ANY difference as a drift signal.  A historical database migrated
-# forward by the current source legitimately differs from a fresh one in only
-# two ordered table layouts (``threads`` / ``thread_messages``), so the raw
-# digest alone cannot distinguish that accepted historical representation from
-# real constraint drift.  The functions below are the accepted v2
-# full-schema oracle: an INDEPENDENT, READ-ONLY, constraint-sensitive gate
-# whose reference is built from fresh current source plus only the two accepted
-# exact migrated table substitutions.  They produce integrity EVIDENCE only —
-# never policy authority, a clause match, or a grant — and they never repair
-# the candidate.
+# ``_release_schema_digest`` above remains the LEGACY v1 behavior.  The v2
+# decision path does not compare schema structure or run integrity checks.
+# It records the live raw DDL digest, complete observed-inventory digest and
+# object count on K/P at claim time for diagnostics only; those values are
+# never compared or rechecked.
 
-V2_SCHEMA_INTEGRITY_CONTRACT = "authority-policy-v2-schema-integrity-v1"
 V2_PERMISSION_SURFACE_CONTRACT = "authority-policy-v2-permission-surface-v1"
 
-# Exact ordered ``CREATE TABLE`` bytes the current source produces when it
-# migrates the immutable historical constructor
-# (``f39b4934611ca13ab7d8b7fa2d7be983a4bfb7a5``) forward.  These are the ONLY
-# accepted historical substitutions; every other object must match fresh
-# current source exactly.  ``threads`` and ``thread_messages`` are the only
-# two tables whose ordered layout differs between fresh and migrated.
-_V2_MIGRATED_TABLE_CREATE_SQL: dict[str, str] = {
-    "threads": (
-        "CREATE TABLE threads (\n"
-        "                id TEXT PRIMARY KEY,\n"
-        "                subject TEXT NOT NULL,\n"
-        "                started_at TEXT NOT NULL,\n"
-        "                archived_at TEXT,\n"
-        "                status TEXT NOT NULL DEFAULT 'open',\n"
-        "                forwarded_from_id TEXT,\n"
-        "                forwarded_from_kind TEXT,\n"
-        "                turn_cap INTEGER NOT NULL DEFAULT 500,\n"
-        "                turns_used INTEGER NOT NULL DEFAULT 0,\n"
-        "                summary TEXT,\n"
-        "                transcript_path TEXT\n"
-        "            , composed_by TEXT NOT NULL DEFAULT 'founder',"
-        " composed_from_task_id TEXT, composed_from_dream_id TEXT,"
-        " pinned_at TEXT, mention_routing_enabled INTEGER NOT NULL DEFAULT 1)"
-    ),
-    "thread_messages": (
-        "CREATE TABLE thread_messages (\n"
-        "                id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
-        "                thread_id TEXT NOT NULL,\n"
-        "                seq INTEGER NOT NULL,\n"
-        "                speaker TEXT NOT NULL,\n"
-        "                kind TEXT NOT NULL,\n"
-        "                body_markdown TEXT,\n"
-        "                addressed_to_json TEXT,\n"
-        "                decline_reason TEXT,\n"
-        "                system_payload_json TEXT,\n"
-        "                sent_from_task_id TEXT,\n"
-        "                created_at TEXT NOT NULL, mentions_json TEXT,\n"
-        "                FOREIGN KEY (thread_id) REFERENCES threads(id)\n"
-        "            )"
-    ),
-}
-
 _V2_INVENTORY_KINDS = ("tables", "indexes", "triggers", "views")
-_V2_SCHEMA_REFERENCE_CACHE: list[dict] | None = None
-
-
-@dataclass(frozen=True)
-class AuthorityPolicyV2SchemaIntegrityOutcome:
-    """Result of the v2 schema-integrity capture: bounded evidence on success,
-    a bounded machine-readable diagnostic on fail-closed refusal.  Exactly one
-    of ``evidence`` / ``diagnostic`` is set."""
-
-    evidence: AuthorityPolicyV2SchemaIntegrity | None
-    diagnostic: dict[str, object] | None
 
 
 def _v2_optional_text(value) -> object:
     return None if value is None else str(value)
-
-
-def _v2_is_v2_object(name: str) -> bool:
-    return str(name).startswith("authority_policy_v2_")
 
 
 def _v2_is_reserved_internal_name(name: str) -> bool:
@@ -462,256 +403,36 @@ def _v2_capture_inventory(conn) -> dict:
     }
 
 
-def _v2_apply_migrated_substitutions(conn, fresh: dict) -> dict:
-    """Apply ONLY the two accepted migrated table substitutions to the fresh
-    reference connection, then re-capture.  SQLite itself derives the ordered
-    column and index-cid consequences; no allowlist is learned from any
-    candidate database."""
-    explicit_index_sql = [
-        meta["sql"]
-        for meta in fresh["indexes"].values()
-        if meta["tbl"] in _V2_MIGRATED_TABLE_CREATE_SQL and meta["sql"]
-    ]
-    conn.execute("PRAGMA foreign_keys=OFF")
-    conn.execute("DROP TABLE IF EXISTS thread_messages")
-    conn.execute("DROP TABLE IF EXISTS threads")
-    for table in ("threads", "thread_messages"):
-        conn.execute(_V2_MIGRATED_TABLE_CREATE_SQL[table])
-    for sql in explicit_index_sql:
-        conn.execute(sql)
-    return _v2_capture_inventory(conn)
-
-
-def _v2_build_reference_inventories() -> list[dict] | None:
-    """Build the accepted reference inventories fresh from current source.
-
-    Returns ``[fresh, migrated]`` — the two and only two accepted ordered
-    representations — or ``None`` when the reference cannot be constructed
-    (fail closed).  The evaluated candidate database is never consulted.
-    """
-    global _V2_SCHEMA_REFERENCE_CACHE
-    if _V2_SCHEMA_REFERENCE_CACHE is not None:
-        return _V2_SCHEMA_REFERENCE_CACHE
-    try:
-        import tempfile
-        from pathlib import Path as _Path
-        from runtime.infrastructure.database import Database
-
-        with tempfile.TemporaryDirectory() as td:
-            reference = Database(_Path(td) / "v2-schema-reference.db")
-            try:
-                conn = reference._conn
-                fresh = _v2_capture_inventory(conn)
-                migrated = _v2_apply_migrated_substitutions(conn, fresh)
-            finally:
-                try:
-                    reference._conn.close()
-                except Exception:
-                    pass
-        _V2_SCHEMA_REFERENCE_CACHE = [fresh, migrated]
-    except Exception:
-        return None
-    return _V2_SCHEMA_REFERENCE_CACHE
-
-
 def _v2_inventory_digest(inventory: dict) -> str:
     return _sha256(json.dumps(inventory, sort_keys=True, separators=(",", ":")))
 
 
-def _v2_inventory_mismatches(reference: dict, candidate: dict) -> list[dict]:
-    """Bounded structural mismatches between an accepted reference and the
-    candidate.  Each diagnostic names a category, an object kind/name and
-    whether the object is a v2 object; no raw schema/data/model prose."""
-    out: list[dict] = []
-
-    def _diag(code: str, kind: str, name: str) -> dict:
-        return {
-            "code": code,
-            "kind": kind,
-            "object": name,
-            "v2": _v2_is_v2_object(name),
-        }
-
-    for kind in _V2_INVENTORY_KINDS:
-        ref_names = reference[kind]
-        cand_names = candidate[kind]
-        for name in sorted(set(ref_names) - set(cand_names)):
-            code = "missing_v2_object" if _v2_is_v2_object(name) else "missing_object"
-            out.append(_diag(code, kind, name))
-        for name in sorted(set(cand_names) - set(ref_names)):
-            out.append(_diag("unexpected_object", kind, name))
-    table_names = sorted(set(reference["tables"]) & set(candidate["tables"]))
-    for name in table_names:
-        ref = reference["tables"][name]
-        cand = candidate["tables"][name]
-        if ref["sql"] != cand["sql"]:
-            out.append(_diag("table_sql_mismatch", "table", name))
-        if ref["xinfo"] != cand["xinfo"]:
-            out.append(_diag("table_column_layout_mismatch", "table", name))
-        if ref["fks"] != cand["fks"]:
-            out.append(_diag("table_foreign_key_mismatch", "table", name))
-        for iname in sorted(set(ref["indexes"]) - set(cand["indexes"])):
-            code = "missing_v2_object" if _v2_is_v2_object(iname) else "missing_object"
-            out.append(_diag(code, "index", iname))
-        for iname in sorted(set(cand["indexes"]) - set(ref["indexes"])):
-            out.append(_diag("unexpected_object", "index", iname))
-        for iname in sorted(set(ref["indexes"]) & set(cand["indexes"])):
-            if ref["indexes"][iname] != cand["indexes"][iname]:
-                out.append(_diag("table_index_metadata_mismatch", "index", iname))
-    index_names = sorted(set(reference["indexes"]) & set(candidate["indexes"]))
-    for name in index_names:
-        ref = reference["indexes"][name]
-        cand = candidate["indexes"][name]
-        if ref["sql"] != cand["sql"]:
-            out.append(_diag("index_sql_mismatch", "index", name))
-        if ref["xinfo"] != cand["xinfo"]:
-            out.append(_diag("index_xinfo_mismatch", "index", name))
-    trigger_names = sorted(set(reference["triggers"]) & set(candidate["triggers"]))
-    for name in trigger_names:
-        if reference["triggers"][name]["sql"] != candidate["triggers"][name]["sql"]:
-            out.append(_diag("trigger_sql_mismatch", "trigger", name))
-    view_names = sorted(set(reference["views"]) & set(candidate["views"]))
-    for name in view_names:
-        if reference["views"][name]["sql"] != candidate["views"][name]["sql"]:
-            out.append(_diag("view_sql_mismatch", "view", name))
-    return out
-
-
-def _v2_closest_mismatches(references: list[dict], candidate: dict) -> list[dict]:
-    """Diagnose against the accepted reference that the candidate is closest
-    to (fewest structural mismatches); ties keep the fresh reference first."""
-    scored = [
-        (len(_v2_inventory_mismatches(reference, candidate)), position, reference)
-        for position, reference in enumerate(references)
-    ]
-    scored.sort(key=lambda item: (item[0], item[1]))
-    return _v2_inventory_mismatches(scored[0][2], candidate)
-
-
-def _v2_data_integrity_check(conn) -> dict | None:
-    """Require ``integrity_check`` exactly ``ok`` and zero
-    ``foreign_key_check`` violations; a read defect fails closed."""
-    try:
-        rows = conn.execute("PRAGMA integrity_check").fetchall()
-    except Exception:
-        return {"code": "integrity_check_unavailable", "kind": "data",
-                "object": None, "v2": False}
-    if [tuple(row) for row in rows] != [("ok",)]:
-        return {"code": "integrity_check_failed", "kind": "data",
-                "object": None, "v2": False}
-    try:
-        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
-    except Exception:
-        return {"code": "foreign_key_check_unavailable", "kind": "data",
-                "object": None, "v2": False}
-    if violations:
-        return {"code": "foreign_key_check_failed", "kind": "data",
-                "object": None, "v2": False}
-    return None
-
-
-def capture_authority_policy_v2_schema_integrity(
+def capture_authority_policy_v2_schema_observation(
     db,
-) -> AuthorityPolicyV2SchemaIntegrityOutcome:
-    """Read-only capture of constraint-sensitive v2 schema-integrity evidence.
+) -> AuthorityPolicyV2SchemaObservation | None:
+    """Capture real claim-time schema values without validating structure.
 
-    The candidate's complete non-internal inventory must match an accepted
-    reference layout exactly, ``integrity_check`` must be exactly ``ok`` and
-    ``foreign_key_check`` must return zero violations.  On success the returned
-    outcome carries typed evidence holding the candidate's ACTUAL raw DDL
-    digest.  Any unknown layout, read/query error or unavailable reference
-    fails closed with a bounded machine-readable diagnostic and no evidence.
-    The candidate is never repaired or mutated.
-
-    Every candidate read and the frozen raw digest run inside ONE
-    ``Database.coherent_read_view()``: the shared-connection lock is held for
-    the whole capture and a single SQLite read snapshot is pinned, so a commit
-    on an independent connection cannot produce evidence assembled from an old
-    inventory plus a new digest.  A mutation invisible to that coherent
-    snapshot is caught by the subsequent ``recheck``.
+    All reads share one synchronized SQLite snapshot.  Any genuinely unreadable
+    schema returns ``None`` so the claim fails through its existing
+    ``claim_failed`` path; no placeholder digest or count is ever written.
     """
-    references = None
-    try:
-        references = _v2_build_reference_inventories()
-    except Exception:
-        references = None
-    if not references:
-        return AuthorityPolicyV2SchemaIntegrityOutcome(
-            evidence=None,
-            diagnostic={"code": "reference_unavailable", "kind": "reference",
-                        "object": None, "v2": False},
-        )
     try:
         with db.coherent_read_view() as conn:
-            candidate = _v2_capture_inventory(conn)
-            if not any(
-                not _v2_inventory_mismatches(reference, candidate)
-                for reference in references
-            ):
-                mismatches = _v2_closest_mismatches(references, candidate)
-                diagnostic = mismatches[0] if mismatches else {
-                    "code": "inventory_mismatch", "kind": "inventory",
-                    "object": None, "v2": False,
-                }
-                return AuthorityPolicyV2SchemaIntegrityOutcome(
-                    evidence=None, diagnostic=diagnostic,
-                )
-            data_diagnostic = _v2_data_integrity_check(conn)
-            if data_diagnostic is not None:
-                return AuthorityPolicyV2SchemaIntegrityOutcome(
-                    evidence=None, diagnostic=data_diagnostic,
-                )
-            raw_digest = _live_schema_digest(db)
-            if not isinstance(raw_digest, str) or raw_digest == "unavailable":
-                return AuthorityPolicyV2SchemaIntegrityOutcome(
-                    evidence=None,
-                    diagnostic={"code": "candidate_digest_unavailable",
-                                "kind": "candidate", "object": None, "v2": False},
-                )
-            evidence = AuthorityPolicyV2SchemaIntegrity(
-                contract_version=V2_SCHEMA_INTEGRITY_CONTRACT,
+            raw_rows = conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE sql IS NOT NULL ORDER BY name"
+            ).fetchall()
+            inventory = _v2_capture_inventory(conn)
+            raw_digest = _sha256("\n".join(str(row[0]) for row in raw_rows))
+            return AuthorityPolicyV2SchemaObservation(
                 raw_digest=raw_digest,
-                inventory_digest=_v2_inventory_digest(candidate),
+                inventory_digest=_v2_inventory_digest(inventory),
                 object_count=sum(
-                    len(candidate[kind]) for kind in _V2_INVENTORY_KINDS
+                    len(inventory[kind]) for kind in _V2_INVENTORY_KINDS
                 ),
             )
-            return AuthorityPolicyV2SchemaIntegrityOutcome(
-                evidence=evidence, diagnostic=None,
-            )
     except Exception:
-        return AuthorityPolicyV2SchemaIntegrityOutcome(
-            evidence=None,
-            diagnostic={"code": "candidate_unreadable", "kind": "candidate",
-                        "object": None, "v2": False},
-        )
-
-
-def recheck_authority_policy_v2_schema_integrity(
-    evidence: AuthorityPolicyV2SchemaIntegrity | None,
-    db,
-) -> bool:
-    """Deny ANY later raw-digest drift from the captured candidate.
-
-    A ``None`` (failed/unavailable) capture can never become a successful
-    recheck, and matching a *different* accepted layout after capture does not
-    authorize the changed attempt because the comparison is against the exact
-    raw digest frozen at capture time.
-    """
-    if evidence is None:
-        return False
-    if getattr(evidence, "contract_version", None) != V2_SCHEMA_INTEGRITY_CONTRACT:
-        return False
-    raw_digest = getattr(evidence, "raw_digest", None)
-    if not isinstance(raw_digest, str) or len(raw_digest) != 64:
-        return False
-    try:
-        current = _live_schema_digest(db)
-    except Exception:
-        return False
-    if not isinstance(current, str) or current == "unavailable":
-        return False
-    return current == raw_digest
+        return None
 
 
 @dataclass(frozen=True)
@@ -2012,25 +1733,9 @@ def _is_successor_root(db, task_id: str) -> bool:
 # code into the terminal housekeeping refusal vocabulary.  The mapping is
 # total (any unmapped code fails closed to the generic pre-final interruption)
 # and never accepts caller prose.
-_V2_STAGE_REFUSAL_TO_HOUSEKEEPING = {
-    "owner_lost": "owner_lost",
-    "cancelled": "cancelled",
-    "claim_failed": "claim_failed",
-    "claim_audit_missing": "claim_audit_missing",
-    "evaluation_failed": "evaluation_failed",
-    "evaluation_audit_missing": "evaluation_audit_missing",
-    "evaluation_missing": "evaluation_audit_missing",
-    "consume_failed": "consume_failed",
-    "final_commit_failed": "final_commit_failed",
-    "identity_mismatch": "identity_mismatch",
-    "transaction_owned": "identity_mismatch",
-    "evidence_drift": "identity_mismatch",
-    "schema_drift": "identity_mismatch",
-    "already_claimed": "interrupted_pre_final",
-    "already_audited": "interrupted_pre_final",
-    "already_evaluated": "interrupted_pre_final",
-    "already_consumed": "interrupted_pre_final",
-}
+_V2_STAGE_REFUSAL_TO_HOUSEKEEPING = (
+    _AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING
+)
 
 # The accepted pre-final stage sequence with the exact expected success status
 # of each Database-owned writer.  The writers themselves refuse any skipped or
@@ -2055,7 +1760,9 @@ _V2_INTERRUPTED_STAGE_REFUSAL = {
 }
 
 
-def refuse_authority_policy_v2_pre_final_on_startup(db) -> set[str] | None:
+def refuse_authority_policy_v2_pre_final_on_startup(
+    db, orchestrator: "Orchestrator | None" = None,
+) -> set[str] | None:
     """Discover and refuse interrupted pre-final v2 attempts before recovery.
 
     The returned roots own a pre-final obligation for this sweep and must not
@@ -2064,6 +1771,12 @@ def refuse_authority_policy_v2_pre_final_on_startup(db) -> set[str] | None:
     fail closed for every task-recovery branch in that startup pass.  A
     same-current-boot live owner is deliberately included in the fence but the
     Database writer returns ``housekeeping_pending`` without stealing it.
+
+    Only the caller that receives the just-committed ``refused`` outcome owns
+    the ordinary post-commit founder surfacing tail.  An authenticated replay
+    returns ``already_refused`` and therefore emits no second notification or
+    thread follow-up.  Production startup supplies ``orchestrator``; the
+    optional form preserves database-only test harnesses.
     """
     from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 
@@ -2091,13 +1804,41 @@ def refuse_authority_policy_v2_pre_final_on_startup(db) -> set[str] | None:
                     target.stage, "interrupted_pre_final",
                 )
             )
-            store.finalize_v2_attempt_refusal(
+            outcome = store.finalize_v2_attempt_refusal(
                 root_task_id=target.root_task_id,
                 manager_agent=target.manager_agent,
                 manager_session_id=target.manager_session_id,
                 result_id=target.result_id,
                 refusal_code=refusal_code,
             )
+            if outcome.status == "refused" and orchestrator is not None:
+                result = db.get_latest_task_result(
+                    target.root_task_id,
+                    target.manager_agent,
+                    target.manager_session_id,
+                )
+                last_summary = (
+                    result.get("output_summary", "")
+                    if result is not None and result.get("id") == target.result_id
+                    else ""
+                )
+                orchestrator.notify_escalated(
+                    task_id=target.root_task_id,
+                    agent=target.manager_agent,
+                    reason="authority_v2_refusal",
+                    last_summary=last_summary or "",
+                )
+                # Import lazily to preserve the authority/run_step module
+                # boundary.  The refusal transaction committed before this
+                # external projection is attempted.
+                from runtime.orchestrator.run_step import (
+                    _maybe_post_thread_escalation,
+                )
+                _maybe_post_thread_escalation(
+                    orchestrator,
+                    target.root_task_id,
+                    reason="authority_v2_refusal",
+                )
         except Exception:
             # The prior J/R/stage residue remains the retry obligation.  The
             # root stays fenced from every later startup effect in this pass.

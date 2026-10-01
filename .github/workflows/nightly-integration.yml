@@ -6,6 +6,9 @@ on:
     - cron: '0 7 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   integration:
     name: Python integration (3.12)
@@ -24,4 +27,103 @@ jobs:
       - name: Sync dependencies (frozen)
         run: uv sync --frozen
       - name: Run integration tests
-        run: uv run pytest tests/ -v -m integration
+        run: |
+          mkdir -p artifacts
+          python3 scripts/run_bounded_output.py \
+            --output artifacts/nightly-integration.log \
+            --max-bytes 1048576 \
+            -- uv run pytest tests/ -v -m integration \
+              --junitxml=artifacts/nightly-integration.xml
+      - name: Build integration summary
+        if: ${{ always() }}
+        env:
+          NIGHTLY_ARTIFACT_NAME: nightly-integration-${{ github.run_id }}-${{ github.run_attempt }}
+          NIGHTLY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 scripts/nightly_integration_summary.py \
+            artifacts/nightly-integration.xml \
+            --output artifacts/nightly-summary.md \
+            --head-sha "${GITHUB_SHA}" \
+            --run-url "${NIGHTLY_RUN_URL}" \
+            --artifact-name "${NIGHTLY_ARTIFACT_NAME}"
+          cat artifacts/nightly-summary.md >> "${GITHUB_STEP_SUMMARY}"
+      - name: Upload nightly evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-integration-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/nightly-integration.xml
+            artifacts/nightly-integration.log
+            artifacts/nightly-summary.md
+          if-no-files-found: warn
+          retention-days: 14
+
+  report-scheduled-failure:
+    name: Report scheduled integration failure
+    needs: integration
+    if: ${{ always() && github.event_name == 'schedule' && needs.integration.result == 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      issues: write
+    steps:
+      - name: Download nightly evidence
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: nightly-integration-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts
+      - name: Open or update nightly failure issue
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const fs = require('fs');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const label = 'nightly-integration-failure';
+            const title = 'Nightly integration scheduled failure';
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const summaryPath = 'artifacts/nightly-summary.md';
+            const summary = fs.existsSync(summaryPath)
+              ? fs.readFileSync(summaryPath, 'utf8')
+              : 'Nightly summary artifact was unavailable; inspect the hosted run logs.';
+            const body = `Scheduled run [${context.runId}](${runUrl}) failed at \`${context.sha}\`.\n\n${summary}`;
+
+            try {
+              await github.rest.issues.getLabel({ owner, repo, name: label });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              await github.rest.issues.createLabel({
+                owner,
+                repo,
+                name: label,
+                color: 'b60205',
+                description: 'Automated failures from the scheduled integration suite',
+              });
+            }
+
+            const openIssues = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: 'open',
+              labels: label,
+              per_page: 100,
+            });
+            const matches = openIssues.filter(
+              issue => !issue.pull_request && issue.title === title,
+            );
+            if (matches.length > 1) {
+              core.setFailed(`Refusing ambiguous nightly issue set: found ${matches.length}`);
+              return;
+            }
+            if (matches.length === 1) {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: matches[0].number,
+                body,
+              });
+              return;
+            }
+            await github.rest.issues.create({ owner, repo, title, body, labels: [label] });

@@ -96,13 +96,18 @@ def runtime(runtime_container: Path) -> Path:
 
 
 def seed_workspace(org_root: Path, agent: str, *, executor: str = "claude") -> Path:
-    """Create the minimum active-agent layout needed for `_run_agent`.
+    """Provision the active-agent layout needed for `_run_agent`.
 
     THR-095 made ``org/agents/<name>.md`` the single authoritative launch
     configuration.  A workspace directory alone is deliberately not an
     active agent, so the integration fixture must materialize both surfaces.
 
-    Only the workspace ROOT is seeded here. Every entry under
+    The workspace is converged through the same ``ContextBuilder`` helper used
+    by real enrollment/init-agent paths. In particular, the fixture never
+    hand-writes either member of the canonical ``AGENTS.md`` plus
+    ``CLAUDE.md -> AGENTS.md`` instruction pair.
+
+    Every entry under
     ``.claude/skills/`` is owned by the daemon's canonical-skill
     materializer: it builds the canonical ``start-task`` package and creates
     a managed symlink at ``.claude/skills/start-task`` BEFORE the
@@ -115,10 +120,13 @@ def seed_workspace(org_root: Path, agent: str, *, executor: str = "claude") -> P
     ``SymlinkMaterializationError(ordinary_dir_at_link_path)``, which would
     abort every task/thread executor spawn (DREAM-405 finding 2, PR #691).
 
-    We don't need a real CLAUDE.md, settings.json, or task_history.md for
-    the fake Claude binary to succeed, because `fake_claude.sh` parses
-    task_id/session_id out of the prompt instead of running the skill."""
+    The fake executors parse task/session identity from the prompt, but the
+    workspace still has to satisfy the same launch preconditions as a real
+    enrolled agent."""
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    from runtime.orchestrator.context_builder import ContextBuilder
 
     teams = yaml.safe_load((org_root / "org" / "teams.yaml").read_text())["teams"]
     membership = [
@@ -148,7 +156,14 @@ def seed_workspace(org_root: Path, agent: str, *, executor: str = "claude") -> P
     (agents_dir / f"{agent}.md").write_text(render_agent_text(agent_def))
 
     ws = org_root / "workspaces" / agent
-    ws.mkdir(parents=True, exist_ok=True)
+    ContextBuilder(
+        Settings(), OrgPaths(root=org_root), slug=org_root.name,
+    ).ensure_workspace_ready(
+        ws,
+        agent,
+        agent_def.system_prompt,
+        provider=executor,
+    )
     return ws
 
 

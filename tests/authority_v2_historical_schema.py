@@ -1,8 +1,8 @@
-"""Reusable complete historical schema fixture support (THR-229 checkpoint C3a).
+"""Reusable complete historical schema fixture support for THR-229.
 
 This module owns the checked-in full historical schema fixture and the
-reconstruction helper used by the targeted schema-integrity tests and the R3
-shipping venue.
+reconstruction helper used by the observed-schema tests and the R3 shipping
+venue.
 
 The fixture is derived from the FULL historical ``Database`` constructor at
 the immutable revision ``f39b4934611ca13ab7d8b7fa2d7be983a4bfb7a5`` (the exact
@@ -41,6 +41,19 @@ HISTORICAL_SOURCE_PARENT = "37df230c00a2e75e9f1e58e82dac0f9d5dad781b"
 _FIXTURE_CACHE: dict | None = None
 
 _GENERATOR = "tests/authority_v2_historical_schema.py"
+
+HISTORICAL_AGENT_ENROLLMENTS_SQL = """\
+CREATE TABLE agent_enrollments (
+                name TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                system_prompt TEXT NOT NULL,
+                repos TEXT NOT NULL DEFAULT '{}',
+                executor TEXT NOT NULL DEFAULT 'claude',
+                allow_rules TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
 
 
 def load_historical_fixture() -> dict:
@@ -97,6 +110,12 @@ def reconstruct_historical_database(
     finally:
         conn.close()
     return db_path
+
+
+def add_historical_agent_enrollments(db: object) -> None:
+    """Add the exact nine-column enrollment table shipped in history."""
+    db._conn.execute(HISTORICAL_AGENT_ENROLLMENTS_SQL)
+    db._conn.commit()
 
 
 def _current_capture_inventory_for_file(db_path: Path) -> dict:

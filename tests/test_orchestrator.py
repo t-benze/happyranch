@@ -1,15 +1,17 @@
 import asyncio
 import hashlib
 import json
+import os
 import re
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from runtime.daemon.agent_config import set_executor, write_default_agent_config
 from runtime.infrastructure.database import Database
+from runtime.infrastructure.workflow_schema import install_or_recover
 from runtime.models import (
     TaskRecord,
     TaskStatus,
@@ -17,7 +19,11 @@ from runtime.models import (
     ThreadRecord,
 )
 from runtime.orchestrator.executors import ExecutorResult
-from runtime.orchestrator.orchestrator import Orchestrator, AgentUnavailableError
+from runtime.orchestrator.orchestrator import (
+    Orchestrator,
+    AgentUnavailableError,
+    WorkspaceNotInitialized,
+)
 from runtime.orchestrator.teams import TeamsRegistry
 
 
@@ -42,7 +48,7 @@ def _seed_active_agents_for_orchestrator(test_runtime):
 @pytest.fixture
 def orchestrator(test_settings, test_runtime):
     test_runtime.root.mkdir(parents=True, exist_ok=True)
-    db = Database(test_runtime.db_path)
+    db = _open_live_org_database(test_runtime.db_path)
     teams = TeamsRegistry.load(test_runtime.root)
     return Orchestrator(
         db=db, settings=test_settings,
@@ -50,12 +56,18 @@ def orchestrator(test_settings, test_runtime):
     )
 
 
+def _open_live_org_database(path: Path) -> Database:
+    db = Database(path)
+    install_or_recover(db)
+    return db
+
+
 _DEFAULT_AGENTS = ["engineering_head", "product_manager", "dev_agent", "payment_agent"]
 
 # System-contract IDs expected for "task" context with repos.
 # Must exist in runtime/skills/bundled/ so ensure_system_contracts_materialized
 # (TASK-2511) can inject + verify them.
-_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]
+_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]
 
 
 def _setup_protocol_skills(settings, contract_ids: list[str] | None = None) -> None:
@@ -67,24 +79,44 @@ def _setup_protocol_skills(settings, contract_ids: list[str] | None = None) -> N
         (src / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {sid}.\n")
 
 
+def _seed_instruction_pair(ws: Path, content: str) -> None:
+    """Seed the canonical AGENTS.md + raw relative CLAUDE.md link.
+
+    THR-262 Slice B: session launch requires the canonical instruction pair
+    for every provider, so test workspaces seed it explicitly.
+    """
+    (ws / "AGENTS.md").write_text(content)
+    claude = ws / "CLAUDE.md"
+    if claude.is_symlink() or claude.exists():
+        claude.unlink()
+    os.symlink("AGENTS.md", claude)
+
+
 def _setup_workspaces(runtime, agents: list[str] | None = None):
     for agent in (agents or _DEFAULT_AGENTS):
         ws = runtime.workspaces_dir / agent
         ws.mkdir(parents=True, exist_ok=True)
         (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
+        _seed_instruction_pair(ws, f"# Agent: {agent}\n")
         # Under the canonical store model, workspace skill symlinks are
         # created by the SymlinkMaterializer during pre-spawn materialization,
         # NOT by pre-creating ordinary directories. Creating an ordinary
         # directory at the link path would cause ordinary_dir_at_link_path.
 
 
+def _write_residual_agent_yaml(workspace: Path, executor: str) -> None:
+    """Seed the retired workspace config shape used by compatibility fixtures."""
+    (workspace / "agent.yaml").write_text(
+        f"executor: {executor}\nrepos: {{}}\n",
+    )
+
+
 def _setup_codex_workspace(runtime, agent: str) -> None:
     ws = runtime.workspaces_dir / agent
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
-    write_default_agent_config(ws)
-    set_executor(ws, "codex")
-    (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+    _write_residual_agent_yaml(ws, "codex")
+    _seed_instruction_pair(ws, f"# Agent: {agent}\n")
     # THR-095: executor is now read from org/agents/<name>.md (single source),
     # not agent.yaml. Write the .md with the matching executor.
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
@@ -102,9 +134,8 @@ def _setup_opencode_workspace(runtime, agent: str) -> None:
     ws = runtime.workspaces_dir / agent
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
-    write_default_agent_config(ws)
-    set_executor(ws, "opencode")
-    (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+    _write_residual_agent_yaml(ws, "opencode")
+    _seed_instruction_pair(ws, f"# Agent: {agent}\n")
     # THR-095: executor is now read from org/agents/<name>.md (single source)
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     ad = AgentDef(
@@ -121,9 +152,8 @@ def _setup_pi_workspace(runtime, agent: str) -> None:
     ws = runtime.workspaces_dir / agent
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
-    write_default_agent_config(ws)
-    set_executor(ws, "pi")
-    (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+    _write_residual_agent_yaml(ws, "pi")
+    _seed_instruction_pair(ws, f"# Agent: {agent}\n")
     # THR-095: executor is now read from org/agents/<name>.md (single source)
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     ad = AgentDef(
@@ -337,6 +367,105 @@ def test_worker_prompt_omits_role_guidance_block(
     assert "role_guidance:" not in prompt
     # No dangling block-scalar marker should be left behind.
     assert "  |\n" not in prompt
+
+
+@pytest.mark.parametrize(
+    ("task_id", "task_type", "expected_purpose"),
+    [
+        ("TASK-WORKER-MODE", "subtask", "worker_execution"),
+        ("TASK-DECISION-MODE", "task", "manager_decision"),
+    ],
+)
+def test_run_agent_session_start_uses_actual_spawn_mode_and_exact_payload(
+    orchestrator, test_runtime, monkeypatch,
+    task_id, task_type, expected_purpose,
+):
+    """The immutable spawn mode, not agent title or root shape, owns purpose."""
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    orchestrator._db.insert_task(TaskRecord(
+        id=task_id,
+        brief="lifecycle attribution",
+        assigned_agent="dev_agent",
+        task_type=task_type,
+    ))
+    session_id = f"sess-{expected_purpose}"
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: session_id)
+    fake = MagicMock()
+    fake.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id=session_id,
+    )
+
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator._run_agent(task_id, "dev_agent", "")
+
+    workspace = str(test_runtime.workspaces_dir / "dev_agent")
+    start = next(
+        row for row in orchestrator._db.get_audit_logs(task_id)
+        if row["action"] == "session_start"
+    )
+    assert set(start["payload"]) == {
+        "workspace", "session_id", "invocation_purpose", "executor", "model",
+    }
+    assert start["payload"] == {
+        "workspace": workspace,
+        "session_id": session_id,
+        "invocation_purpose": expected_purpose,
+        "executor": "claude",
+        "model": None,
+    }
+
+
+def test_run_step_session_start_session_id_joins_usage_row_at_real_spawn_seam(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """A fake provider drives real run_step -> _run_agent -> usage persistence."""
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    task_id = "TASK-USAGE-JOIN"
+    orchestrator._db.insert_task(TaskRecord(
+        id=task_id,
+        brief="prove lifecycle usage join",
+        assigned_agent="dev_agent",
+        task_type="subtask",
+    ))
+    runtime_session_id = "sess-lifecycle-usage-join"
+    monkeypatch.setattr(
+        orchestrator, "_build_session_id", lambda: runtime_session_id,
+    )
+
+    class _CallbackExecutor:
+        def run(self, **kwargs):
+            assert kwargs["session_id"] == runtime_session_id
+            assert orchestrator._db.admit_task_completion_callback(
+                task_id=task_id,
+                agent="dev_agent",
+                session_id=runtime_session_id,
+                status="completed",
+                output_summary="done",
+                confidence_score=100,
+            )
+            return ExecutorResult(
+                success=True,
+                duration_seconds=1,
+                session_id=runtime_session_id,
+                token_usage=TokenUsage(
+                    input_tokens=7, output_tokens=3, model="provider-observed",
+                ),
+            )
+
+    with patch.object(
+        orchestrator, "_build_executor", return_value=_CallbackExecutor(),
+    ):
+        orchestrator.run_step(task_id)
+
+    start = next(
+        row for row in orchestrator._db.get_audit_logs(task_id)
+        if row["action"] == "session_start"
+    )
+    usage = orchestrator._db.list_session_token_usage(task_id=task_id)
+    assert len(usage) == 1
+    assert start["payload"]["session_id"] == usage[0]["session_id"]
+    assert start["payload"]["session_id"] == runtime_session_id
+    assert start["payload"]["invocation_purpose"] == "worker_execution"
 
 
 def test_run_agent_shipping_seam_injects_manager_policy_binds_session_and_omits_worker(
@@ -702,6 +831,21 @@ def test_run_step_codex_clean_omission_recovers_through_real_callback_admission(
     assert [row["session_id"] for row in usage] == sorted(
         (origin_runtime_id, recovery_runtime_id)
     )
+    starts = [
+        row["payload"] for row in orchestrator._db.get_audit_logs(task_id)
+        if row["action"] == "session_start"
+    ]
+    assert [payload["session_id"] for payload in starts] == [
+        origin_runtime_id, recovery_runtime_id,
+    ]
+    assert [payload["invocation_purpose"] for payload in starts] == [
+        "manager_decision", "unattributed",
+    ]
+    recovery_receipt = orchestrator._db.execute(
+        "SELECT recovery_session_id FROM task_completion_recoveries WHERE task_id=?",
+        (task_id,),
+    ).fetchone()
+    assert recovery_receipt["recovery_session_id"] == starts[1]["session_id"]
 
 
 @pytest.mark.parametrize(
@@ -1928,6 +2072,123 @@ def test_run_agent_skips_session_registration_when_tracker_not_attached(
     assert captured == [(task_id, "engineering_head", "sess-eh")]
 
 
+@pytest.mark.parametrize(
+    "preservation, expected_outcome",
+    [
+        (None, ("removed", "eligible")),
+        ("dirty", ("preserved", "worktree-dirty")),
+        ("open-pr", ("preserved", "unmerged-pull-request")),
+        ("live", ("preserved", "live-session")),
+        ("foreign", ("preserved", "agent-unregistered")),
+        ("probe-error", ("preserved", "probe-error")),
+        ("timeout", ("preserved", "probe-timeout")),
+    ],
+)
+def test_run_agent_integrity_refusal_persists_failed_then_reclaims_without_launch(
+    orchestrator, test_runtime, monkeypatch, preservation, expected_outcome,
+):
+    from runtime.daemon.sessions import SessionTracker
+    from runtime.orchestrator import run_step as run_step_module
+    from runtime.orchestrator.workspace_adapters import WorkspaceIntegrityError
+
+    agent = "engineering_head"
+    _setup_workspaces(test_runtime, [agent])
+    orchestrator._teams = TeamsRegistry._from_layout(
+        {"engineering": {"manager": agent, "workers": []}},
+        test_runtime.root,
+    )
+    task_id = orchestrator.create_task("integrity refusal")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    orchestrator.attach_sessions(SessionTracker())
+
+    primary = test_runtime.workspaces_dir / agent / "repos" / "happyranch"
+    primary.mkdir(parents=True)
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=primary, text=True,
+            capture_output=True, check=True,
+        )
+
+    git("init", "-b", "main")
+    git("config", "user.email", "tests@example.invalid")
+    git("config", "user.name", "HappyRanch tests")
+    (primary / "tracked.txt").write_text("base\n")
+    git("add", "tracked.txt")
+    git("commit", "-m", "test base")
+    git("update-ref", "refs/remotes/origin/main", "HEAD")
+    candidate = primary / ".claude" / "worktrees" / task_id
+    candidate.parent.mkdir(parents=True)
+    git("worktree", "add", "-b", f"task/{task_id}", str(candidate))
+    if preservation == "dirty":
+        (candidate / "tracked.txt").write_text("dirty\n")
+    elif preservation == "live":
+        orchestrator._sessions.set_active(task_id, agent, "sess-live")
+    elif preservation == "foreign":
+        orchestrator._db.update_task(task_id, assigned_agent="foreign_agent")
+
+    monkeypatch.setattr(
+        "runtime.orchestrator.orchestrator.materialize_workspace_skills",
+        lambda *args, **kwargs: [],
+    )
+
+    def refuse(*args, **kwargs):
+        raise WorkspaceIntegrityError("test-integrity", "refused")
+
+    monkeypatch.setattr(
+        "runtime.orchestrator.orchestrator.validate_workspace_skills_integrity",
+        refuse,
+    )
+    real_run = run_step_module._run_terminal_worktree_command
+
+    def fake_run(args, *, cwd, timeout):
+        if args[0] == "gh":
+            assert orchestrator._db.get_task(task_id).status is TaskStatus.FAILED
+            if preservation == "timeout":
+                raise subprocess.TimeoutExpired(args, timeout)
+            if preservation == "open-pr":
+                return subprocess.CompletedProcess(
+                    args, 0, '[{"number": 887, "state": "OPEN"}]\n', "",
+                )
+            return subprocess.CompletedProcess(args, 0, "[]\n", "")
+        return real_run(args, cwd=cwd, timeout=timeout)
+
+    monkeypatch.setattr(run_step_module, "_run_terminal_worktree_command", fake_run)
+    monkeypatch.setattr(
+        run_step_module,
+        "_terminal_worktree_process_reference",
+        (
+            lambda *_: (_ for _ in ()).throw(RuntimeError("probe failed"))
+            if preservation == "probe-error" else None
+        ),
+    )
+    original_reclaim = run_step_module._reclaim_terminal_task_worktree
+    outcomes = []
+
+    def observed_reclaim(*args, **kwargs):
+        outcome = original_reclaim(*args, **kwargs)
+        outcomes.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(
+        run_step_module, "_reclaim_terminal_task_worktree", observed_reclaim,
+    )
+    executor = MagicMock()
+
+    with patch.object(orchestrator, "_build_executor", return_value=executor):
+        result, report = orchestrator._run_agent(task_id, agent, "prompt")
+
+    assert result.success is False
+    assert report is None
+    assert orchestrator._db.get_task(task_id).status is TaskStatus.FAILED
+    executor.run.assert_not_called()
+    assert outcomes == [expected_outcome]
+    assert candidate.exists() is (preservation is not None)
+    if preservation is not None:
+        assert str(candidate) in git("worktree", "list", "--porcelain").stdout
+    assert git("show-ref", "--verify", f"refs/heads/task/{task_id}").returncode == 0
+
+
 def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_runtime, test_settings, monkeypatch):
     """TASK-2511: When workspace skill materialization fails, the failure
     propagates as a named error (SymlinkMaterializationError) before executor
@@ -1948,7 +2209,7 @@ def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_ru
     # Create source skill dirs in runtime/skills/bundled/ for the project_root temp.
     proto_skills = test_settings.get_bundled_skills_dir()
     proto_skills.mkdir(parents=True, exist_ok=True)
-    for sid in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+    for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "workspace-cleanup"):
         (proto_skills / sid).mkdir(parents=True, exist_ok=True)
         (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
 
@@ -2051,6 +2312,133 @@ def test_run_agent_accepts_codex_readiness_marker(orchestrator, test_runtime, mo
 
     assert result.success is True
     assert report is None
+    assert mock_executor.run.call_count == 1
+
+
+def _setup_provider_workspace(runtime, agent: str, provider: str) -> None:
+    """Seed an active workspace + agent frontmatter for ``provider``."""
+    _setup_codex_workspace(runtime, agent)
+    ws = runtime.workspaces_dir / agent
+    _write_residual_agent_yaml(ws, provider)
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    ad = AgentDef(
+        name=agent, team="engineering", role="manager",
+        executor=provider, allow_rules=(), repos={},
+        enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+        system_prompt=f"You are {agent}.", description="", model=None,
+    )
+    (runtime.agents_dir / f"{agent}.md").write_text(render_agent_text(ad))
+
+
+def _disfigure_instruction_pair(ws: Path, form: str) -> None:
+    """Turn a valid canonical pair into exactly one refused pair shape."""
+    agents = ws / "AGENTS.md"
+    claude = ws / "CLAUDE.md"
+
+    def _unlink(path: Path) -> None:
+        if path.is_symlink() or path.exists():
+            path.unlink()
+
+    if form == "missing_agents":
+        _unlink(agents)
+    elif form == "missing_claude":
+        _unlink(claude)
+    elif form == "dangling":
+        _unlink(claude)
+        os.symlink("MISSING.md", claude)
+    elif form == "cyclic":
+        _unlink(claude)
+        os.symlink("CLAUDE.md", claude)
+    elif form == "reversed":
+        # ``AGENTS.md -> CLAUDE.md``: the reverse of the accepted topology.
+        _unlink(claude)
+        claude.write_text("reversed\n")
+        _unlink(agents)
+        os.symlink("CLAUDE.md", agents)
+    elif form == "absolute":
+        _unlink(claude)
+        os.symlink(str(agents), claude)
+    elif form == "foreign":
+        _unlink(claude)
+        os.symlink("/etc/hostname", claude)
+    elif form == "wrong_target":
+        _unlink(claude)
+        (ws / "OTHER.md").write_text("other\n")
+        os.symlink("OTHER.md", claude)
+    elif form == "non_link":
+        _unlink(claude)
+        claude.write_text("regular\n")
+    elif form == "claude_directory":
+        _unlink(claude)
+        claude.mkdir()
+    elif form == "agents_symlink":
+        (ws / "AGENTS-real.md").write_text("# Agent: engineering_head\n")
+        _unlink(agents)
+        os.symlink("AGENTS-real.md", agents)
+        _unlink(claude)
+        os.symlink("AGENTS.md", claude)
+    else:  # pragma: no cover - guard against a typo in the parametrization
+        raise AssertionError(f"unknown form {form}")
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+@pytest.mark.parametrize(
+    "form",
+    [
+        "missing_agents",
+        "missing_claude",
+        "dangling",
+        "cyclic",
+        "reversed",
+        "absolute",
+        "foreign",
+        "wrong_target",
+        "non_link",
+        "claude_directory",
+        "agents_symlink",
+    ],
+)
+def test_run_agent_refuses_non_canonical_pair_before_launch(
+    orchestrator, test_runtime, monkeypatch, provider, form,
+):
+    """THR-262 Slice B / founder seq59: every non-canonical or incomplete
+    instruction pair refuses for every provider through the existing
+    ``WorkspaceNotInitialized`` class naming ``init-agent``, and launches
+    no executor."""
+    _setup_provider_workspace(test_runtime, "engineering_head", provider)
+    ws = test_runtime.workspaces_dir / "engineering_head"
+    _disfigure_instruction_pair(ws, form)
+    task_id = orchestrator.create_task("ping")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
+
+    mock_executor = MagicMock()
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
+        with pytest.raises(WorkspaceNotInitialized) as excinfo:
+            orchestrator._run_agent(task_id, "engineering_head", "any prompt")
+
+    assert "init-agent" in str(excinfo.value)
+    assert "engineering_head" in str(excinfo.value)
+    mock_executor.run.assert_not_called()
+
+
+def test_run_agent_valid_canonical_pair_reaches_launch(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """Positive control: a valid canonical pair proceeds to launch."""
+    _setup_codex_workspace(test_runtime, "engineering_head")
+    task_id = orchestrator.create_task("ping")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
+
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="sess-eh",
+    )
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
+        result, _report = orchestrator._run_agent(
+            task_id, "engineering_head", "any prompt",
+        )
+
+    assert result.success is True
     assert mock_executor.run.call_count == 1
 
 
@@ -2477,23 +2865,6 @@ def test_read_completion_from_db_corrupt_local_ci(orchestrator):
     report = orchestrator._read_completion_from_db("TASK-001", "dev_agent", "sess-corrupt")
     assert report is not None
     assert report.local_ci is None
-
-
-def test_local_ci_column_migration_idempotent(orchestrator):
-    """The ALTER TABLE ADD COLUMN local_ci TEXT migration is idempotent.
-    Running it twice via the _ensure_schema path does not crash."""
-    # The column already exists after the first migration run during DB init.
-    # We can verify by re-running the ALTER and catching sqlite3.OperationalError.
-    import sqlite3
-    try:
-        orchestrator._db._conn.execute(
-            "ALTER TABLE task_results ADD COLUMN local_ci TEXT"
-        )
-        # If we get here, the column already exists (no error) or was added.
-        # Either way, the idempotent migration pattern works.
-    except sqlite3.OperationalError:
-        # Expected: column already exists.
-        pass
 
 
 def test_orchestrator_requires_teams() -> None:
@@ -4489,7 +4860,7 @@ def test_preflight_checks_all_contracts_before_any_canonical_build(
 
     # Compute trusted hashes for ALL contracts before failure.
     trusted_hashes_before: dict[str, str] = {}
-    for cid in ["start-task", "jobs", "make-worktree", "thread"]:
+    for cid in ["start-task", "jobs", "make-worktree", "thread", "workspace-cleanup"]:
         d = proto_skills / cid
         if d.exists():
             trusted_hashes_before[cid] = _compute_dir_hash(d)
@@ -4569,7 +4940,7 @@ def test_preflight_checks_all_contracts_before_any_canonical_build(
 
     # ── No canonical package was built for non-seeded contracts ──────────
     # "jobs" was seeded by us — it should have exactly the seeded entry.
-    for cid in ["start-task", "jobs", "make-worktree", "thread"]:
+    for cid in ["start-task", "jobs", "make-worktree", "thread", "workspace-cleanup"]:
         pkg_base = store.root / cid / "system"
         if cid == "jobs":
             # Only the seeded package should exist
@@ -4602,7 +4973,7 @@ def test_preflight_checks_all_contracts_before_any_canonical_build(
     )
 
     # ── Trusted source hashes unchanged ───────────────────────────────────
-    for cid in ["start-task", "jobs", "make-worktree"]:
+    for cid in ["start-task", "jobs", "make-worktree", "workspace-cleanup"]:
         if cid in trusted_hashes_before:
             current_hash = _compute_dir_hash(proto_skills / cid)
             assert current_hash == trusted_hashes_before[cid], (
@@ -4713,7 +5084,7 @@ def test_preflight_context_union_raises_on_missing_source_executor_switch(
 
     # Compute trusted hashes of surviving contracts
     trusted_hashes: dict[str, str] = {}
-    for cid in ["start-task", "jobs", "make-worktree", "thread"]:
+    for cid in ["start-task", "jobs", "make-worktree", "thread", "workspace-cleanup"]:
         d = proto_skills / cid
         if d.exists():
             trusted_hashes[cid] = _compute_dir_hash(d)

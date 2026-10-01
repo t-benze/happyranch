@@ -2,70 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 import yaml
 
-from runtime.daemon.agent_config import (
-    add_repo,
-    load_agent_config,
-    remove_repo,
-    set_executor,
-    set_model,
-    update_repo_url,
-    write_default_agent_config,
-)
-
-
-def test_add_repo_creates_entry(tmp_path: Path) -> None:
-    write_default_agent_config(tmp_path)
-    add_repo(tmp_path, "web-app", "https://github.com/t-benze/web-app.git")
-    cfg = load_agent_config(tmp_path)
-    assert cfg["repos"]["web-app"] == "https://github.com/t-benze/web-app.git"
-    assert cfg["executor"] == "claude"
-
-
-def test_add_repo_duplicate_raises(tmp_path: Path) -> None:
-    write_default_agent_config(tmp_path)
-    add_repo(tmp_path, "web-app", "https://github.com/t-benze/web-app.git")
-    with pytest.raises(ValueError, match="already exists"):
-        add_repo(tmp_path, "web-app", "https://other.git")
-
-
-def test_add_repo_initializes_repos_if_missing(tmp_path: Path) -> None:
-    """agent.yaml exists but has no repos key."""
-    (tmp_path / "agent.yaml").write_text(yaml.dump({"other": "val"}))
-    add_repo(tmp_path, "docs", "https://github.com/t-benze/docs.git")
-    cfg = load_agent_config(tmp_path)
-    assert cfg["repos"]["docs"] == "https://github.com/t-benze/docs.git"
-    assert cfg["executor"] == "claude"
-
-
-def test_remove_repo_deletes_entry(tmp_path: Path) -> None:
-    write_default_agent_config(tmp_path)
-    add_repo(tmp_path, "web-app", "https://github.com/t-benze/web-app.git")
-    remove_repo(tmp_path, "web-app")
-    cfg = load_agent_config(tmp_path)
-    assert "web-app" not in cfg.get("repos", {})
-
-
-def test_remove_repo_nonexistent_raises(tmp_path: Path) -> None:
-    write_default_agent_config(tmp_path)
-    with pytest.raises(KeyError, match="web-app"):
-        remove_repo(tmp_path, "web-app")
-
-
-def test_update_repo_url_changes_url(tmp_path: Path) -> None:
-    write_default_agent_config(tmp_path)
-    add_repo(tmp_path, "web-app", "https://old.git")
-    update_repo_url(tmp_path, "web-app", "https://new.git")
-    cfg = load_agent_config(tmp_path)
-    assert cfg["repos"]["web-app"] == "https://new.git"
-
-
-def test_update_repo_url_nonexistent_raises(tmp_path: Path) -> None:
-    write_default_agent_config(tmp_path)
-    with pytest.raises(KeyError, match="web-app"):
-        update_repo_url(tmp_path, "web-app", "https://new.git")
+from runtime.daemon.agent_config import load_agent_config
 
 
 def test_load_agent_config_defaults_executor_when_missing(tmp_path: Path) -> None:
@@ -74,40 +13,8 @@ def test_load_agent_config_defaults_executor_when_missing(tmp_path: Path) -> Non
     assert cfg["executor"] == "claude"
 
 
-def test_set_executor_updates_agent_yaml(tmp_path: Path) -> None:
-    write_default_agent_config(tmp_path)
-    set_executor(tmp_path, "codex")
-    cfg = load_agent_config(tmp_path)
-    assert cfg["executor"] == "codex"
-
-
-# ---- model ----
-
-def test_set_model_writes_to_agent_yaml(tmp_path: Path) -> None:
-    write_default_agent_config(tmp_path)
-    set_model(tmp_path, "gpt-5")
-    cfg = load_agent_config(tmp_path)
-    assert cfg["model"] == "gpt-5"
-
-
-def test_set_model_none_clears_key(tmp_path: Path) -> None:
-    write_default_agent_config(tmp_path)
-    set_model(tmp_path, "gpt-5")
-    set_model(tmp_path, None)
-    cfg = load_agent_config(tmp_path)
-    assert "model" not in cfg
-
-
-def test_set_model_empty_string_clears_key(tmp_path: Path) -> None:
-    write_default_agent_config(tmp_path)
-    set_model(tmp_path, "gpt-5")
-    set_model(tmp_path, "")
-    cfg = load_agent_config(tmp_path)
-    assert "model" not in cfg
-
-
 def test_load_agent_config_no_model_key_when_absent(tmp_path: Path) -> None:
-    write_default_agent_config(tmp_path)
+    (tmp_path / "agent.yaml").write_text(yaml.dump({"repos": {}, "executor": "claude"}))
     cfg = load_agent_config(tmp_path)
     assert "model" not in cfg
     assert "executor" in cfg  # still injects default executor

@@ -813,6 +813,9 @@ def _setup_orch_workspace(test_runtime, agent: str = "dev_agent") -> None:
     ws = test_runtime.workspaces_dir / agent
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
+    # THR-262 Slice B: canonical instruction pair required before launch.
+    (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+    (ws / "CLAUDE.md").symlink_to("AGENTS.md")
     # Create agent.yaml and repos so materialization can proceed.
     (ws / "agent.yaml").write_text("executor: claude\n")
     (ws / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
@@ -842,7 +845,7 @@ class TestCallPathManagedSkillsIndex:
 
         # TASK-2511: pre-create runtime/skills/bundled/ source dirs so
         # ensure_system_contracts_materialized can inject + verify.
-        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
+        for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]:
             src = test_settings.get_bundled_skills_dir() / sid
             src.mkdir(parents=True, exist_ok=True)
             (src / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {sid}.\n")

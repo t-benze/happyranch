@@ -19,6 +19,19 @@ withdrawable. A tombstone committed during selection excludes the skill at the
 publication barrier; it does not recall already-running work. Canonical-store,
 production-boundary, and materialization tests own these guarantees.
 
+The runtime-global system assistant joins this same delivery path during
+supported register and repair. Its workspace has no repository and the call
+supplies no org database or managed catalog, so both discovery roots receive
+exactly `dream`, `jobs`, `start-task`, `thread`, `todos`, and
+`workspace-cleanup`; custom, managed, and repo-gated skills are not projected.
+Repeated repair is idempotent. Bootstrap read-only preflights the complete set
+in both roots and validates every existing canonical target before writing
+assistant metadata or skills. An unsafe, non-link, wrong-target, content-hash,
+or tree-hash refusal leaves the complete assistant workspace unchanged. If a
+failure can surface only during materialization, bootstrap removes only links
+and empty parent directories recorded as absent before that call; pre-existing
+operator content is not changed.
+
 The daemon and executor share one OS identity. Integrity checks detect mismatches
 and refuse launches; they do not provide OS isolation or close same-UID TOCTOU
 windows. Existing corrupt packages are never rebuilt automatically. Manual
@@ -47,10 +60,25 @@ profiles are bound in the machine-global runtime store (THR-107 — see below).
 
 | Executor | Bootstrap doc | Skills dir | Permission surface |
 | --- | --- | --- | --- |
-| `claude` | `CLAUDE.md` | `.claude/skills/` | `permissions.allow` in `.claude/settings.json` and `--allowedTools` |
-| `codex` | `AGENTS.md` | `.agents/skills/` | sandbox flags on CLI |
-| `opencode` | `AGENTS.md` | `.agents/skills/` | `opencode.json` `permission.bash` map |
-| `pi` | `AGENTS.md` | `.agents/skills/` | no HappyRanch-managed sandbox |
+| `claude` | `AGENTS.md` + `CLAUDE.md` → `AGENTS.md` | `.claude/skills/` | `permissions.allow` in `.claude/settings.json` and `--allowedTools` |
+| `codex` | `AGENTS.md` + `CLAUDE.md` → `AGENTS.md` | `.agents/skills/` | sandbox flags on CLI |
+| `opencode` | `AGENTS.md` + `CLAUDE.md` → `AGENTS.md` | `.agents/skills/` | `opencode.json` `permission.bash` map |
+| `pi` | `AGENTS.md` + `CLAUDE.md` → `AGENTS.md` | `.agents/skills/` | no HappyRanch-managed sandbox |
+
+**Canonical instruction pair (THR-262 Slice B).** Every built-in generated
+workspace holds one regular `AGENTS.md` plus the raw relative symlink
+`CLAUDE.md -> AGENTS.md` (same directory). Conversion is non-destructive:
+both paths are classified without following links, every required
+collision-safe preservation copy is written and verified before either path
+is mutated, and an external target is never written through. Session launch
+is read-only and refuses every incomplete/non-canonical pair for every
+provider through `WorkspaceNotInitialized` with an actionable
+`happyranch init-agent <agent>` and no executor launch; the operator
+`init-agent` retry completes the pair or stops on a named preserved conflict
+and is idempotent. There is no persistent journal, scheduler, durable receipt
+or automatic reopen recovery; a caught in-process conversion failure restores
+the exact prior state, while abrupt process death leaves the actual on-disk
+state and preservation copies for the explicit retry.
 
 **Per-agent model selection (THR-067):** Each built-in profile carries a verified `model_arg` — the CLI flag the executor uses when the agent has a model set:
 
@@ -90,6 +118,37 @@ skill computes the workspace root as 5 parents above the task worktree
 ``.claude/skills/`` then ``.agents/skills/``, failing loudly if neither
 exists. It is a narrow, non-permission tool with no DB, API, schema, audit,
 auth, notification, or sandbox footprint.
+
+The same skill makes completion ordering explicit: once publication work is
+done, attempt safe worktree cleanup or record
+`worktree-deferred: <specific reason>` in the existing completion risks, then
+make `report-completion` the final action. Cleanup uses literal
+`git worktree remove .claude/worktrees/<task_id>` only after the worktree is
+clean, its commit is durable through the accepted ref, an equal/descendant own
+origin branch, an own merged PR, or a fully confirmed containing any-task
+merged PR, it has no owning-branch open or closed-unmerged PR, and no live
+session/process reference remains. An existing owning branch is authoritative:
+non-containment or failed containment evidence refuses without merged-PR
+fallback. Any-task discovery is complete and
+double-read, then independently confirms merged/default-branch state and
+candidate-to-PR-head containment; another task's unmerged PR never counts. It
+never uses `--force` and never deletes a branch.
+
+Independently, the runtime has a forward-only terminal hook for exact
+`completed`, `failed`, and `cancelled` transitions. It resolves only the
+registered assigned agent's canonical `repos/happyranch` task worktree and
+fails closed across ownership, realpath/device, Git registration/branch,
+cleanliness, remote durability, PR, liveness, recorded-deferral, and deadline
+gates. Each shipping hook makes one attempt after terminal durability and
+applicable teardown; errors and uncertainty preserve. Its process gate loads
+the bundled `workspace-cleanup` scanner by explicit path and applies the same
+exact name-plus-expected-cgroup helper exemptions: root-owned processes are out
+of scope, any other unreadable same-user process is uncertain, and a positive
+reference preserves. The call runs in the existing task worker thread under
+the unchanged five-second total hook deadline. It does not scan other
+worktrees or schedule cleanup, and it deliberately excludes `superseded`,
+`blocked_on_job`, accepted/restart completion-recovery settlement, and
+historical residue.
 
 **Custom-adapter profiles** (D7B, ``command_adapter_id: custom-adapter:<id>``)
 route through ``CustomAdapterExecutor`` instead — see
@@ -493,6 +552,33 @@ opencode: `OpencodeWorkspaceAdapter.write_opencode_json` writes a strict default
 
 Pi: `PiExecutor.run` invokes `pi -p ... --mode json` from the agent workspace. Use external containment when command/tool restriction matters.
 
+### Built-in usage parsing and Usage v1 normalization
+
+The four built-in parsers store one nullable `TokenUsage` shape, but their
+provider reasoning fields do not share one meaning. `executors.py` declares
+that meaning once as `PARSER_USAGE_SEMANTICS`; consumers must not branch on
+CLI names. The Usage v1 pure normalizer is the only reader of that table.
+
+- Claude, Codex, and Pi declare reasoning `in_output`.
+- OpenCode declares reasoning `separate`.
+- Custom and generic executors remain undeclared. If such a row reports a
+  reasoning value, normalized Output is `not_reported` rather than guessed.
+
+Codex `input_tokens` remains normalized to net uncached input under issue
+#216. A terminal integer `cache_write_input_tokens` is now stored as
+`cache_creation_tokens` exactly (`0` is reported zero); absent/non-integer is
+`NULL`. The normalizer makes Fresh input complete only when both uncached input
+and cache write are reported. See
+`docs/superpowers/specs/2026-09-30-usage-v1-design.md` for the complete state,
+coverage, source-evidence, and resumed-conversation regression contract.
+
+Usage v1 lifecycle cohort attribution is captured from the effective launch
+tuple, not a later agent-config read. Thread invocation rows receive nullable
+`executor`/`model` with `started_at`; task `session_start` records the runtime
+session ID, actual spawn purpose, executor, and nullable model; and
+`dream_started` records executor/model. A missing configured model remains
+NULL, never `"default"`, and legacy rows are not backfilled.
+
 Enrolling a worker with a non-default executor: set `"executor": "<profile-name>"` in the `happyranch manage-agent --from-file` payload where the profile name is a registered executor profile (built-in: `codex`, `opencode`, `pi`, or a custom profile registered in the machine-global runtime store). Founder approval bootstraps the right workspace surface. See `runtime/skills/bundled/manage-agent/SKILL.md`.
 
 **THR-095:** Repos are configured in the **org/agents/<name>.md frontmatter**
@@ -546,13 +632,19 @@ not restored. This is process-local/no-`await` protection where documented,
 not global workspace-generation fencing or external same-UID/multiprocess
 serialization.
 
-Switching **away from Claude** leaves the Claude-only files (`CLAUDE.md`, `.claude/`) behind, because the new adapter writes `AGENTS.md`/`.agents/` and never deletes them. By default the command **warns** that these files are stale and names them; it never auto-deletes. Pass `--clean` to delete them:
+Switching **away from Claude** leaves no stale instruction surface: the shared canonical pair
+(`AGENTS.md` + `CLAUDE.md -> AGENTS.md`) and `.claude/skills` are **preserved**
+for every executor. The only executor-only artifact is `.claude/settings.json`.
+By default the command **warns** that `.claude/settings.json` is stale and
+names it; it never auto-deletes. Pass `--clean` to delete exactly that file
+(and the emptied `.claude/` directory):
 
 ```bash
 happyranch set-executor --org <org> <agent> --executor pi --clean
 ```
 
-(The symmetric case — switching *to* Claude leaves `AGENTS.md`/`.agents/`/`opencode.json` stale — is not yet handled.)
+(The symmetric case — switching *to* Claude — keeps the same shared pair and
+settings file, so there is no separate stale surface.)
 
 **THR-095:** ``happyranch init-agent`` no longer emits ``executor_drift``
 warnings — the .md frontmatter is the single source of truth so there is
@@ -624,3 +716,83 @@ implemented in this phase.
 > profile with `command_adapter_id: custom-adapter:<id>`. Recovery uses an
 > existing built-in executor or ordinary re-registration of a valid approved
 > custom-adapter profile; there is no automatic or versioned fallback.
+
+## Shared workspace-cleanup skill (THR-259 / TASK-8667)
+
+The daemon-managed workspace-cleanup scheduler and manual cleanup both deliver
+the ONE shared `workspace-cleanup` TASK system contract
+(`runtime/skills/bundled/workspace-cleanup/SKILL.md`, `requires_repo=false`), so
+no-repo agents receive it too; it materializes into both `.claude/skills` and
+`.agents/skills` like every other release-owned contract. Manual dispatch
+requires the exact first line `HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN
+(manual-dispatch)`; an unmarked manual request is inventory-only, and manual
+runs contribute zero to the first-two report-only ordinal.
+
+Its bundled read-only helper `runtime/skills/bundled/workspace-cleanup/scripts/check_path_use.py`
+implements the founder-approved THR-259 seq171/seq185 observation: an
+authoritative recorded terminal status plus a fresh complete same-user process
+scan replaces separate live-session/task-to-process identity, and a fixed
+login/session daemon qualifies only by an exact readable process name AND its
+exact bounded cgroup role (`sshd-session`, `systemd --user`, `(sd-pam)`,
+`ssh-agent`, `gpg-agent`, `gcr-ssh-agent`/`ssh-agent` alias in
+`gcr-ssh-agent.service`). A qualifying exception is deliberately uninspected —
+unreadable `exe`/namespace is not a veto and is not executable-identity
+authentication; every other unreadable same-user process is `unknown` and skips,
+root is outside the scan, and positive non-exempt use blocks. For a
+`node_modules`/`.venv` cache candidate the helper additionally resolves and
+identity-binds its containing registered worktree, so use anywhere in that
+worktree blocks; an unresolvable containing worktree is `unknown`, never a
+literal-path fallback. A conflicting applicable systemd/unified cgroup path
+never grants an exception. This is a snapshot
+with accepted later-opener/write-interruption residual, never an OS-wide-absence
+or future-non-use guarantee.
+
+Both manual and daily procedures invoke that helper only through the supported
+task-bound host-visible HappyRanch jobs path and consume a closed-schema,
+non-truncated receipt that binds the authenticated task/session to the actual
+job, agent, stored command, interpreter, resolved cwd, timestamps, terminal
+status/exit/reason, complete output byte totals, and scanner result; there is no
+direct in-session fallback. Candidate-specific assigned-task and filtered-trigger
+history is completely keyset-paged, so unrelated audit volume cannot veto a
+candidate, while missing, changing, conflicting, malformed, or incomplete
+relevant evidence still refuses. PR evidence is completely paginated and read
+twice; any open, closed-unmerged, duplicate, changing, conflicting, or malformed
+row refuses. A clean whole worktree may prove preservation through the accepted
+durable ref, an owning origin task branch whose head equals or descends from
+the candidate, an owning-task merged PR, or an any-task merged PR whose
+confirmed head contains the candidate. An existing owning branch is
+authoritative: non-containment or failed containment evidence refuses without
+merged-PR fallback. The any-task route requires complete
+stable double-read discovery, merged/default-branch confirmation, and an
+independent complete stable compare; discovery alone and other-task unmerged
+PRs never count, while owning-branch unmerged evidence still refuses. A merged
+PR preserves integrated content but may not preserve original commit topology.
+A dirty worktree remains ineligible for
+whole removal, but its literal root `.venv` or `node_modules` may be removed
+after the same gates and 24-hour floor, with tracked source bytes and Git status
+proved unchanged. The cache itself must be positively Git-ignored, contain no
+tracked entries, and be absent from status before isolation. The containing
+worktree must have the owning primary's exact
+registered `.claude/worktrees/<TASK>` path and `task/<TASK>` branch. A complete
+no-follow `lstat` walk of the candidate runs before and again at action time;
+nested mounts, cross-device or foreign-owned entries, protected descendants,
+unreadable/capped/changing evidence, or identity drift refuse. Measurement
+includes the root inode, and success requires literal absence plus unchanged
+protected-path identities.
+The only external-link exception is a `python`, `python3`, or `python3.N`
+interpreter directly under an owned literal `.venv/bin`, resolving to the
+configured uv Python store or that venv's `pyvenv.cfg` home outside the
+workspace and protected roots. Its link and target identities are snapshotted;
+descriptor-rooted deletion unlinks the link and never follows it.
+Failed restoration after a cache was moved into isolation is reported with
+original/isolated/isolation-residue accounting as exit-3 `isolation_anomaly`;
+only successful restoration may remain an exit-2 refusal. Any failure after
+cache deletion begins or `git worktree remove` is invoked is similarly measured
+as `removed_with_anomaly`. Unavailable residual measurements are explicit,
+never false zeroes. Both anomaly decisions halt later mutations. The batch also
+halts after journaling any timeout (after whole-process-group termination),
+signal death, exit 3, malformed or mismatched receipt, unreceipted nonzero exit,
+runner exception, or unclassifiable outcome. Resume accepts only a unique,
+closed-schema terminal row exactly bound to the current manifest identity and
+argv; stale, malformed, duplicate, or conflicting rows fail before any runner
+starts.

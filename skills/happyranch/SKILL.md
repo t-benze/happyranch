@@ -294,7 +294,7 @@ scripts/happyranch orgs unload <slug>                                    # drops
 Per-org content lives under `<runtime>/orgs/<slug>/`:
 
 - `org/{charter.md, escalation-rules.md, teams.yaml, config.yaml, agents/*.md}` — editable org definition
-- `workspaces/<agent>/` — one workspace per approved agent (CLAUDE.md or AGENTS.md, repos, learnings)
+- `workspaces/<agent>/` — one workspace per approved agent (regular AGENTS.md plus raw relative CLAUDE.md -> AGENTS.md, repos, learnings)
 - `kb/`, `threads/` — per-org content stores
 - `happyranch.db` — per-org SQLite
 

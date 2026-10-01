@@ -519,7 +519,9 @@ async def test_thread_supersede_remains_supported_and_replay_is_rejected(client_
     assert first.status_code == 200, first.text
     assert first.json()["new_status"] == "superseded"
     assert org.db.get_task("T-1").status is TaskStatus.SUPERSEDED
-    assert org.db.get_invocation_any_status(token).status is ThreadInvocationStatus.CONSUMED
+    resolved_invocation = org.db.get_invocation_any_status(token)
+    assert resolved_invocation.status is ThreadInvocationStatus.CONSUMED
+    assert resolved_invocation.reply_message_seq is None
     org.db.update_task("T-1", status=TaskStatus.ESCALATED, block_kind=None)
     replay = client.post("/api/v1/orgs/alpha/threads/THR-1/resolve-escalation", json=payload)
     assert replay.status_code == 409

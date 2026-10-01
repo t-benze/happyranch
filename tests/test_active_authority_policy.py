@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -11,10 +12,59 @@ from runtime.orchestrator.active_authority_policy import (
     assert_no_reserved_team_policy_header,
     load_session_policy_snapshot,
     persist_session_policy_binding,
+    resolve_policy_manager_team,
     resolve_active_team_policy_snapshot,
     resolve_active_team_policy_section,
 )
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+from runtime.orchestrator.teams import TeamManager, TeamsRegistry
+
+
+def _write_agent(root, *, name: str, team: str, role: str = "manager") -> None:
+    agent = AgentDef(
+        name=name, team=team, role=role, executor="codex", allow_rules=tuple(),
+        repos={}, enrolled_by=None, enrolled_at_task=None,
+        enrolled_at=datetime.now(timezone.utc), system_prompt="prompt", description="desc",
+    )
+    paths = OrgPaths(root=root)
+    paths.agents_dir.mkdir(parents=True, exist_ok=True)
+    (paths.agents_dir / f"{name}.md").write_text(render_agent_text(agent))
+
+
+def _manager_context(root):
+    _write_agent(root, name="engineering_manager", team="engineering")
+    return TeamsRegistry({
+        "engineering": TeamManager("engineering_manager", "engineering", ()),
+    })
+
+
+def test_policy_manager_resolver_requires_one_live_exact_registry_tuple(tmp_path):
+    _write_agent(tmp_path, name="content_manager", team="content")
+    valid = TeamsRegistry({
+        "content": TeamManager("content_manager", "content", ()),
+        "engineering": TeamManager("engineering_manager", "engineering", ()),
+    })
+    assert resolve_policy_manager_team(
+        root=tmp_path, agent_name="content_manager", teams=valid,
+    ) == "content"
+    assert resolve_policy_manager_team(
+        root=tmp_path, agent_name="content_manager", teams=valid, team_hint="engineering",
+    ) is None
+
+    duplicate = TeamsRegistry({
+        "content": TeamManager("content_manager", "content", ()),
+        "media": TeamManager("content_manager", "media", ()),
+    })
+    assert resolve_policy_manager_team(
+        root=tmp_path, agent_name="content_manager", teams=duplicate,
+    ) is None
+
+    _write_agent(tmp_path, name="content_manager", team="content", role="worker")
+    assert resolve_policy_manager_team(
+        root=tmp_path, agent_name="content_manager", teams=valid,
+    ) is None
 
 
 def _release(version=1):
@@ -38,6 +88,7 @@ def _release(version=1):
 
 
 def test_manager_gets_exact_authenticated_section_and_worker_is_byte_absent(tmp_path):
+    teams = _manager_context(tmp_path)
     store = AuthorityPolicyStore(Database(tmp_path / "db.sqlite"))
     release = store.create_release(_release())
     store.activate(AuthorityPolicyActivation.create(
@@ -46,20 +97,24 @@ def test_manager_gets_exact_authenticated_section_and_worker_is_byte_absent(tmp_
         request_id="REQ-1", request_digest="1" * 64,
     ))
     section = resolve_active_team_policy_section(
-        store=store, team="engineering", agent_name="engineering_manager", eligible=True,
+        store=store, root=tmp_path, teams=teams, team="engineering",
+        agent_name="engineering_manager", eligible=True,
     )
     assert RESERVED_TEAM_POLICY_HEADER in section
     assert release.id in section and release.policy_digest in section
     assert release.continuation_phrase in section
     assert resolve_active_team_policy_section(
-        store=store, team="engineering", agent_name="dev_agent", eligible=False,
+        store=store, root=tmp_path, teams=teams, team="engineering",
+        agent_name="dev_agent", eligible=False,
     ) == ""
 
 
 def test_no_active_policy_is_ordinary_empty_and_reserved_impersonation_rejected(tmp_path):
+    teams = _manager_context(tmp_path)
     store = AuthorityPolicyStore(Database(tmp_path / "db.sqlite"))
     assert resolve_active_team_policy_section(
-        store=store, team="engineering", agent_name="engineering_manager", eligible=True,
+        store=store, root=tmp_path, teams=teams, team="engineering",
+        agent_name="engineering_manager", eligible=True,
     ) == ""
     with pytest.raises(ActiveAuthorityPolicyError, match="server-reserved"):
         assert_no_reserved_team_policy_header(
@@ -78,6 +133,7 @@ def test_every_reserved_marker_is_rejected_case_insensitively(marker):
 
 
 def test_session_binding_survives_activation_swap_and_restart(tmp_path):
+    teams = _manager_context(tmp_path)
     path = tmp_path / "db.sqlite"
     db = Database(path)
     store = AuthorityPolicyStore(db)
@@ -88,7 +144,8 @@ def test_session_binding_survives_activation_swap_and_restart(tmp_path):
         request_id="REQ-1", request_digest="1" * 64,
     ))
     launch = resolve_active_team_policy_snapshot(
-        store=store, team="engineering", agent_name="engineering_manager", eligible=True,
+        store=store, root=tmp_path, teams=teams, team="engineering",
+        agent_name="engineering_manager", eligible=True,
     )
     persist_session_policy_binding(
         db=db, task_id="T-1", session_id="sess-1",

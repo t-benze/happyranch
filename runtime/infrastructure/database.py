@@ -107,7 +107,6 @@ from runtime.models import (
     AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISHED,
     AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED,
     AUTHORITY_POLICY_V2_RESULT_STAGE_SPENT,
-    AUTHORITY_POLICY_V2_TEAM,
     authority_policy_v2_attempt_id,
     authority_policy_v2_canonical_json_bytes,
     authority_policy_v2_candidate_claim_preimage,
@@ -160,6 +159,33 @@ from runtime.daemon.thread_mentions import (
     resolve_wake_set,
     valid_mentions,
 )
+
+
+# Closed translation between the precise pre-final stage vocabulary and the
+# terminal refusal-housekeeping vocabulary.  Both the stage writer (which must
+# persist the obligation before dropping its live owner) and the hook consumer
+# use this one table.
+_AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING = {
+    "owner_lost": "owner_lost",
+    "cancelled": "cancelled",
+    "claim_failed": "claim_failed",
+    "claim_audit_missing": "claim_audit_missing",
+    "evaluation_failed": "evaluation_failed",
+    "evaluation_audit_missing": "evaluation_audit_missing",
+    "evaluation_missing": "evaluation_audit_missing",
+    "consume_failed": "consume_failed",
+    "consume_audit_missing": "consume_audit_missing",
+    "final_commit_failed": "final_commit_failed",
+    "identity_mismatch": "identity_mismatch",
+    "decision_dispatch_interrupted": "decision_dispatch_interrupted",
+    "transaction_owned": "identity_mismatch",
+    "evidence_drift": "identity_mismatch",
+    "schema_drift": "identity_mismatch",
+    "already_claimed": "interrupted_pre_final",
+    "already_audited": "interrupted_pre_final",
+    "already_evaluated": "interrupted_pre_final",
+    "already_consumed": "interrupted_pre_final",
+}
 
 
 def _parse_dt(value: str) -> datetime:
@@ -1871,6 +1897,36 @@ class Database:
             finally:
                 self._lock.release()
 
+    @contextmanager
+    def workflow_schema_transaction(self):
+        """Yield the shared connection for the one org-load schema unit.
+
+        U1A installs and validates the workflow-owned layout only through
+        ``OrgState.load``.  The installer needs the same connection and RLock
+        discipline as every other ``Database`` operation, with one
+        ``BEGIN IMMEDIATE`` covering its first schema observation through its
+        final marker/event write.  Filesystem, network, and host work are not
+        permitted inside this context.
+
+        A caller-owned transaction is rejected rather than joined: the
+        workflow layout is a complete atomic unit and must never be committed
+        or rolled back as an accidental side effect of another owner.
+        """
+        self._lock.acquire(blocking=True)
+        try:
+            if self._conn.in_transaction:
+                raise ValueError("workflow_schema_caller_transaction_not_allowed")
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield self._conn
+            except Exception:
+                self._conn.rollback()
+                raise
+            else:
+                self._conn.commit()
+        finally:
+            self._lock.release()
+
     def _retire_skill_lifecycle_if_present(self) -> None:
         """Permanently remove legacy lifecycle tables and their content blobs."""
         tables = {
@@ -2681,6 +2737,9 @@ class Database:
                 started_at TEXT,
                 consumed_at TEXT,
                 session_id TEXT,
+                executor TEXT,
+                model TEXT,
+                reply_message_seq INTEGER,
                 dispatched_task_id TEXT,
                 decline_reason TEXT,
                 FOREIGN KEY (thread_id) REFERENCES threads(id)
@@ -2691,7 +2750,6 @@ class Database:
                 ON thread_invocations(thread_id);
             CREATE INDEX IF NOT EXISTS idx_thread_invocations_pending
                 ON thread_invocations(status) WHERE status = 'pending';
-
             -- GitHub #688 Phase 1 Slice A: additive, provider-neutral
             -- per-(thread_id, agent_name) conversational REPLY delivery state.
             -- Intentionally dark until Slice B wires the route/runner
@@ -2998,6 +3056,8 @@ class Database:
                 if "duplicate column name" not in str(exc).lower():
                     raise
         self._migrate_session_token_usage_scope_columns()
+        self._migrate_thread_invocation_attribution_columns()
+        self._migrate_thread_invocation_reply_message_link()
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
         # error so this is idempotent across restarts.
@@ -3972,6 +4032,42 @@ class Database:
             "ON session_token_usage ("
             "COALESCE(scope_type, 'task'), COALESCE(scope_id, task_id), "
             "agent, session_id)"
+        )
+        self._conn.commit()
+
+    def _migrate_thread_invocation_attribution_columns(self) -> None:
+        """Add nullable invocation-time executor/model without rewriting rows."""
+        columns = {
+            row["name"]
+            for row in self._conn.execute(
+                "PRAGMA table_info(thread_invocations)"
+            ).fetchall()
+        }
+        for name in ("executor", "model"):
+            if name not in columns:
+                self._conn.execute(
+                    f"ALTER TABLE thread_invocations ADD COLUMN {name} TEXT"
+                )
+        self._conn.commit()
+
+    def _migrate_thread_invocation_reply_message_link(self) -> None:
+        """Add the nullable reply-result link and its one-wake/one-message index."""
+        columns = {
+            row["name"]
+            for row in self._conn.execute(
+                "PRAGMA table_info(thread_invocations)"
+            ).fetchall()
+        }
+        if "reply_message_seq" not in columns:
+            self._conn.execute(
+                "ALTER TABLE thread_invocations "
+                "ADD COLUMN reply_message_seq INTEGER"
+            )
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "idx_thread_invocations_reply_message "
+            "ON thread_invocations(thread_id, reply_message_seq) "
+            "WHERE reply_message_seq IS NOT NULL"
         )
         self._conn.commit()
 
@@ -7827,7 +7923,17 @@ class Database:
         only for a closed refusal code on an unfinalized attempt, and never
         fabricates task/receipt ownership.
         """
-        if code not in AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES:
+        # Stage writers expose a more precise closed refusal vocabulary than
+        # terminal housekeeping. Persist the same lossy mapping consumed by
+        # run_authority_hook before the live owner is forgotten; otherwise a
+        # schema/evidence refusal leaves no durable authority for the later
+        # finalizer and the task remains a recoverable zombie forever.
+        housekeeping_code = (
+            _AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING.get(
+                code, "interrupted_pre_final",
+            )
+        )
+        if housekeeping_code not in AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES:
             return
         if self._v2_process_boot_id is None:
             return
@@ -7869,7 +7975,7 @@ class Database:
                     json.dumps({
                         "attempt_id": attempt_id,
                         "result_id": row["result_id"],
-                        "refusal_code": code,
+                        "refusal_code": housekeeping_code,
                         "origin_boot_id": row["origin_boot_id"],
                         "owner_attempt_id": row["owner_attempt_id"],
                     }),
@@ -7997,6 +8103,52 @@ class Database:
             return "claim_failed"
         return None
 
+    def _authority_policy_v2_attempt_id_for_identity(
+        self, *, root_task_id: str, manager_agent: str,
+        manager_session_id: str, result_id: int,
+    ) -> str:
+        """Derive an attempt identity from durable bound team evidence only.
+
+        Existing attempt rows win. Before an attempt exists, the immutable v2
+        session binding supplies the team; the persisted task team is the
+        final pre-admission source. If none exists, the bounded refusal ID uses
+        a null team member rather than inventing or defaulting a team.
+        """
+        row = self._conn.execute(
+            """SELECT attempt_id FROM authority_policy_v2_attempts
+               WHERE root_task_id=? AND manager_agent=?
+                 AND manager_session_id=? AND result_id=?""",
+            (root_task_id, manager_agent, manager_session_id, result_id),
+        ).fetchone()
+        if row is not None:
+            return str(row["attempt_id"])
+        binding = self._conn.execute(
+            """SELECT team FROM authority_policy_v2_session_bindings
+               WHERE root_task_id=? AND manager_agent=? AND manager_session_id=?""",
+            (root_task_id, manager_agent, manager_session_id),
+        ).fetchone()
+        task = self._conn.execute(
+            "SELECT team FROM tasks WHERE id=?", (root_task_id,),
+        ).fetchone()
+        team = binding["team"] if binding is not None else (
+            task["team"] if task is not None else None
+        )
+        if isinstance(team, str) and team:
+            return authority_policy_v2_attempt_id(
+                manager_agent=manager_agent,
+                manager_session_id=manager_session_id,
+                result_id=result_id,
+                root_task_id=root_task_id,
+                team=team,
+            )
+        return "APV2R-" + authority_policy_v2_sha256({
+            "manager_agent": manager_agent,
+            "manager_session_id": manager_session_id,
+            "result_id": result_id,
+            "root_task_id": root_task_id,
+            "team": None,
+        })
+
     def _authenticate_v2_claim_evidence_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
@@ -8014,10 +8166,9 @@ class Database:
         ``(refusal_code, None)`` on any mismatch/mutation/deletion, or
         ``(None, ctx)`` with the authenticated values.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
         row = self._conn.execute(
             """SELECT * FROM authority_policy_v2_attempts
@@ -8135,16 +8286,15 @@ class Database:
     def _claim_authority_policy_v2_candidate_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
-        max_revise_rounds: int, now: str, schema_evidence,
+        max_revise_rounds: int, now: str, schema_observation,
     ) -> AuthorityPolicyV2StageOutcome:
         from runtime.orchestrator.authority import (
             capture_authority_policy_v2_permission_surface,
         )
 
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
         def _refused(code: str) -> AuthorityPolicyV2StageOutcome:
@@ -8212,7 +8362,7 @@ class Database:
         candidate = self._v2_candidate_from_claim_key(
             claim_key, attempt=attempt, binding=binding,
             origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
-            schema_evidence=schema_evidence,
+            schema_observation=schema_observation,
             permission_surface_digest=permission.evidence.digest,
         )
         return self._insert_v2_candidate_and_pin_uncommitted(
@@ -8224,7 +8374,7 @@ class Database:
     def _v2_candidate_from_claim_key(
         self, claim_key: str, *, attempt: AuthorityPolicyV2Attempt,
         binding: AuthorityPolicyV2SessionBinding, origin_boot_id: str,
-        owner_attempt_id: str, schema_evidence, permission_surface_digest: str,
+        owner_attempt_id: str, schema_observation, permission_surface_digest: str,
     ) -> AuthorityPolicyV2Candidate:
         return AuthorityPolicyV2Candidate(
             candidate_id=f"APV2C-{claim_key}",
@@ -8254,9 +8404,9 @@ class Database:
             ),
             origin_boot_id=origin_boot_id,
             owner_attempt_id=owner_attempt_id,
-            schema_raw_digest=schema_evidence.raw_digest,
-            schema_inventory_digest=schema_evidence.inventory_digest,
-            schema_object_count=schema_evidence.object_count,
+            schema_raw_digest=schema_observation.raw_digest,
+            schema_inventory_digest=schema_observation.inventory_digest,
+            schema_object_count=schema_observation.object_count,
             permission_surface_digest=permission_surface_digest,
         )
 
@@ -8363,11 +8513,10 @@ class Database:
     ) -> AuthorityPolicyV2StageOutcome:
         """First C3b transaction: atomically create K+P and advance J to claimed.
 
-        The independent C3a schema reference and the read-only permission
-        surface are captured OUTSIDE this write transaction; the frozen raw
-        digest is then re-validated while holding BEGIN IMMEDIATE, so an
-        independent connection's DDL cannot change the candidate between
-        capture and the commit.  This transaction never appends the separate
+        Real schema values are observed once while holding BEGIN IMMEDIATE and
+        stored on K/P as diagnostics.  They are not compared with any reference
+        and are never rechecked.  The permission surface remains independently
+        captured and rechecked.  This transaction never appends the separate
         ``a1`` claim-stage audit.
 
         Transaction ownership: when the caller ALREADY owns a transaction this
@@ -8378,14 +8527,12 @@ class Database:
         R4 durability meaning and is deliberately not done.
         """
         from runtime.orchestrator.authority import (
-            capture_authority_policy_v2_schema_integrity,
-            recheck_authority_policy_v2_schema_integrity,
+            capture_authority_policy_v2_schema_observation,
         )
 
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
         if self._conn.in_transaction:
             return self._refuse_v2_stage(
@@ -8393,22 +8540,15 @@ class Database:
                 code="transaction_owned",
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED, poison=False,
             )
-        capture = capture_authority_policy_v2_schema_integrity(self)
-        if capture.evidence is None:
-            return self._refuse_v2_stage(
-                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                code="schema_drift", stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
-                origin_boot_id=origin_boot_id,
-            )
-        evidence = capture.evidence
         now = _now().isoformat()
         try:
             self._conn.execute("BEGIN IMMEDIATE")
-            if not recheck_authority_policy_v2_schema_integrity(evidence, self):
+            observation = capture_authority_policy_v2_schema_observation(self)
+            if observation is None:
                 self._conn.rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                    code="schema_drift",
+                    code="claim_failed",
                     stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
                     origin_boot_id=origin_boot_id,
                 )
@@ -8417,7 +8557,7 @@ class Database:
                 manager_session_id=manager_session_id, result_id=result_id,
                 origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
                 max_revise_rounds=max_revise_rounds, now=now,
-                schema_evidence=evidence,
+                schema_observation=observation,
             )
             if outcome.status == "refused":
                 self._conn.rollback()
@@ -8492,9 +8632,6 @@ class Database:
             or pin.provider_id != candidate.provider_id
             or pin.executor_kind != candidate.executor_kind
             or pin.model_id != candidate.model_id
-            or pin.schema_raw_digest != candidate.schema_raw_digest
-            or pin.schema_inventory_digest != candidate.schema_inventory_digest
-            or pin.schema_object_count != candidate.schema_object_count
             or pin.permission_surface_digest != candidate.permission_surface_digest
         )
 
@@ -8510,7 +8647,8 @@ class Database:
         authenticated pinned release/activation/selector prefix, the single a0
         admitted audit, the current task ownership/cancellation, the retained
         current mechanical eligibility AND the full candidate/pin cross-row
-        joins with the frozen claim-time schema/permission evidence.  A
+        joins with the frozen claim-time permission evidence.  The schema
+        values remain immutable observations but are never compared.  A
         between-stage mutation, deletion or mixed identity refuses; the
         already-persisted K/P row is never trusted on its own.
         """
@@ -8558,23 +8696,11 @@ class Database:
 
         from runtime.models import (
             AuthorityPolicyV2PermissionSurface as _PermissionSurface,
-            AuthorityPolicyV2SchemaIntegrity as _SchemaIntegrity,
         )
         from runtime.orchestrator.authority import (
             V2_PERMISSION_SURFACE_CONTRACT,
-            V2_SCHEMA_INTEGRITY_CONTRACT,
             recheck_authority_policy_v2_permission_surface,
-            recheck_authority_policy_v2_schema_integrity,
         )
-
-        frozen_schema = _SchemaIntegrity(
-            contract_version=V2_SCHEMA_INTEGRITY_CONTRACT,
-            raw_digest=candidate.schema_raw_digest,
-            inventory_digest=candidate.schema_inventory_digest,
-            object_count=candidate.schema_object_count,
-        )
-        if not recheck_authority_policy_v2_schema_integrity(frozen_schema, self):
-            return "schema_drift", None
         frozen_permission = _PermissionSurface(
             contract_version=V2_PERMISSION_SURFACE_CONTRACT,
             digest=candidate.permission_surface_digest,
@@ -8765,10 +8891,9 @@ class Database:
         result_id: int, origin_boot_id: str, owner_attempt_id: str, now: str,
         max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
         def _refused(code: str, candidate_id: str | None = None) -> AuthorityPolicyV2StageOutcome:
@@ -8781,10 +8906,12 @@ class Database:
         # boundary: the causal result row/body, the immutable launch binding,
         # the authenticated pinned release/activation/selector prefix, the
         # single a0 admitted audit, the current task ownership/cancellation AND
-        # the full K/P cross-row joins with the frozen claim-time
-        # schema/permission evidence.  The already-persisted K/P row is NOT
-        # trusted on its own; a between-stage mutation/deletion/mixed identity
-        # refuses without inventing evidence or advancing J.
+        # the full K/P cross-row joins, including the immutable claim-time
+        # schema observation columns, plus the frozen permission evidence.
+        # Permission evidence is rechecked; schema values are observed-only
+        # and are never compared or rechecked.  The already-persisted K/P row
+        # is NOT trusted on its own; a between-stage mutation/deletion/mixed
+        # identity refuses without inventing evidence or advancing J.
         code, ctx = self._authenticate_v2_candidate_evidence_uncommitted(
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
@@ -8879,21 +9006,21 @@ class Database:
 
         Re-authenticates the complete evidence (result row/body, immutable
         binding, authenticated pinned release/activation/selector prefix, K/P/J
-        joins, prior a0, task ownership/cancellation) AND rechecks the ORIGINAL
-        frozen claim-time schema/permission evidence; inserts exactly one
-        candidate claim event plus the required ``claim_audited`` result-stage
-        evidence; advances J to ``claim_audited`` atomically.  A failure
-        preserves the claimed K/P.
+        joins, prior a0, task ownership/cancellation), including the immutable
+        claim-time schema observation values.  It rechecks only the frozen
+        permission evidence; schema values are never compared or rechecked.
+        Inserts exactly one candidate claim event plus the required
+        ``claim_audited`` result-stage evidence and advances J to
+        ``claim_audited`` atomically.  A failure preserves the claimed K/P.
 
         Transaction ownership: when the caller ALREADY owns a transaction this
         method refuses with ``transaction_owned`` BEFORE it would BEGIN,
         ROLLBACK or invalidate the live owner, so the caller's transaction and
         its work are left untouched.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
         if self._conn.in_transaction:
             return self._refuse_v2_stage(
@@ -8953,10 +9080,9 @@ class Database:
             authority_policy_v2_persisted_assessment_outcome,
         )
 
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
         def _refused(code: str, candidate_id: str | None = None) -> AuthorityPolicyV2StageOutcome:
@@ -9122,10 +9248,9 @@ class Database:
         The task and recovery receipt are unchanged, and no envelope,
         notification or dispatch is created.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
         if self._conn.in_transaction:
             return self._refuse_v2_stage(
@@ -9171,10 +9296,9 @@ class Database:
         result_id: int, origin_boot_id: str, owner_attempt_id: str, now: str,
         max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
         def _refused(code: str, candidate_id: str | None = None) -> AuthorityPolicyV2StageOutcome:
@@ -9280,10 +9404,9 @@ class Database:
         re-derives the outcome to authenticate V.  A failure preserves V and the
         evaluated K.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
         if self._conn.in_transaction:
             return self._refuse_v2_stage(
@@ -9329,10 +9452,9 @@ class Database:
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
         max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
         def _refused(code: str, candidate_id: str | None = None) -> AuthorityPolicyV2StageOutcome:
@@ -9413,10 +9535,9 @@ class Database:
         persisted V with NO second model call and NO repeated pure derivation.
         It mints no authority and does not change the task.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
         if self._conn.in_transaction:
             return self._refuse_v2_stage(
@@ -9461,10 +9582,9 @@ class Database:
         result_id: int, origin_boot_id: str, owner_attempt_id: str, now: str,
         max_revise_rounds: int = 0,
     ) -> AuthorityPolicyV2StageOutcome:
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
         def _refused(code: str, candidate_id: str | None = None) -> AuthorityPolicyV2StageOutcome:
@@ -9574,10 +9694,9 @@ class Database:
         hook remains fail-closed until the later finalization/refusal/recovery
         unit.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
         if self._conn.in_transaction:
             return self._refuse_v2_stage(
@@ -10009,10 +10128,9 @@ class Database:
         already-finalized J returns a read-only exact replay only when its exact
         refusal/completion evidence authenticates, and is never repaired.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
         def _pending(reason: str) -> AuthorityPolicyV2HousekeepingOutcome:
@@ -10112,21 +10230,29 @@ class Database:
                 self._conn.rollback()
                 return _pending("identity_mismatch")
 
-            # Optional exact Q: match by the exact recovery session identity.
+            # Optional exact Q: match only this attempt's exact recovery-session
+            # identity.  A task may legitimately retain settled receipts from
+            # prior generations; those rows are historical evidence, not a
+            # claim that the current ordinary result is recovery-owned.
             receipts = self._conn.execute(
                 "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
                 (root_task_id, manager_agent),
             ).fetchall()
-            exact_receipt = None
-            for receipt in receipts:
-                if receipt["recovery_session_id"] == manager_session_id:
-                    if exact_receipt is not None:
-                        self._conn.rollback()
-                        return _pending("identity_mismatch")
-                    exact_receipt = receipt
-            if receipts and exact_receipt is None:
-                # An unrelated/mismatched receipt must never be labelled
-                # ordinary/absent or settled as a replacement.
+            matching_receipts = [
+                receipt for receipt in receipts
+                if receipt["recovery_session_id"] == manager_session_id
+            ]
+            if len(matching_receipts) > 1:
+                self._conn.rollback()
+                return _pending("identity_mismatch")
+            exact_receipt = matching_receipts[0] if matching_receipts else None
+            if any(
+                receipt["recovery_session_id"] != manager_session_id
+                and receipt["state"] in ("claimed", "callback_accepted")
+                for receipt in receipts
+            ):
+                # A different still-live recovery obligation is not ordinary
+                # absence and must never be settled as this attempt's receipt.
                 self._conn.rollback()
                 return _pending("identity_mismatch")
             if exact_receipt is not None:
@@ -11021,10 +11147,9 @@ class Database:
         A legitimate finalized replay/reopen must authenticate without
         restoring a live pre-final owner, re-evaluating or reminting.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
         row = self._conn.execute(
             """SELECT * FROM authority_policy_v2_attempts
@@ -11341,10 +11466,9 @@ class Database:
         result_id: int, origin_boot_id: str, owner_attempt_id: str,
         max_revise_rounds: int, now: str,
     ) -> AuthorityPolicyV2FinalizationOutcome:
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
         def _pending(reason: str, candidate_id: str | None = None) -> AuthorityPolicyV2FinalizationOutcome:
@@ -11596,10 +11720,9 @@ class Database:
         no queue call happen here.  A genuine failure poisons only the authentic
         winning owner and selects C3d1 refusal-only housekeeping.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
         if self._conn.in_transaction:
             return AuthorityPolicyV2FinalizationOutcome(
@@ -11997,10 +12120,9 @@ class Database:
         completion-consumer seam.  A failed settlement retains Pending/E/N/D/J
         and callback_accepted and permits ONLY exact settlement retry.
         """
-        attempt_id = authority_policy_v2_attempt_id(
-            manager_agent=manager_agent, manager_session_id=manager_session_id,
-            result_id=result_id, root_task_id=root_task_id,
-            team=AUTHORITY_POLICY_V2_TEAM,
+        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
         )
 
         def _pending(reason: str, **kw) -> AuthorityPolicyV2SettlementOutcome:
@@ -16913,6 +17035,65 @@ class Database:
         )
         self._conn.commit()
 
+    @_synchronized
+    def query_usage_lifecycle_snapshot(
+        self, *, start_utc: str, end_utc: str,
+    ) -> dict[str, list[dict]]:
+        """Return the bounded, read-only lifecycle facts used by Usage v1.
+
+        Membership is selected from lifecycle tables first.  Usage rows are
+        optional candidates for those lifecycle rows; callers resolve the
+        documented task/thread/dream keys and reject ambiguous candidates.
+        """
+        audit_rows = self._conn.execute(
+            """SELECT id, task_id, agent, action, payload, timestamp
+               FROM audit_log
+               WHERE (action IN ('session_start', 'session_end')
+                      AND timestamp < ?)
+                  OR (action = 'dream_started'
+                      AND timestamp >= ? AND timestamp < ?)
+               ORDER BY id""",
+            (end_utc, start_utc, end_utc),
+        ).fetchall()
+        thread_rows = self._conn.execute(
+            """SELECT id, thread_id, agent_name, invocation_token, purpose,
+                      status, started_at, consumed_at, session_id, executor,
+                      model, decline_reason, reply_message_seq
+               FROM thread_invocations
+               WHERE (started_at >= ? AND started_at < ?)
+                  OR (purpose = 'reply'
+                      AND consumed_at >= ? AND consumed_at < ?)
+               ORDER BY id""",
+            (start_utc, end_utc, start_utc, end_utc),
+        ).fetchall()
+        usage_rows = self._conn.execute(
+            """SELECT * FROM session_token_usage
+               WHERE created_at >= ? AND created_at < ?
+                 AND COALESCE(scope_type, 'task') IN ('task', 'thread', 'dream')
+               ORDER BY id""",
+            (start_utc, end_utc),
+        ).fetchall()
+        result_rows = self._conn.execute(
+            """SELECT r.id, r.task_id, r.agent, r.session_id, r.status,
+                      r.created_at, t.status AS task_status
+               FROM task_results AS r
+               JOIN tasks AS t ON t.id = r.task_id
+               WHERE r.created_at >= ? AND r.created_at < ?
+               ORDER BY r.id""",
+            (start_utc, end_utc),
+        ).fetchall()
+        recovery_rows = self._conn.execute(
+            """SELECT task_id, agent, recovery_session_id
+               FROM task_completion_recoveries"""
+        ).fetchall()
+        return {
+            "audit": [dict(row) for row in audit_rows],
+            "threads": [dict(row) for row in thread_rows],
+            "usage": [dict(row) for row in usage_rows],
+            "results": [dict(row) for row in result_rows],
+            "recoveries": [dict(row) for row in recovery_rows],
+        }
+
     def _session_token_usage_filters(
         self,
         *,
@@ -19259,6 +19440,9 @@ class Database:
             started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
             consumed_at=datetime.fromisoformat(row["consumed_at"]) if row["consumed_at"] else None,
             session_id=row["session_id"],
+            executor=row["executor"],
+            model=row["model"],
+            reply_message_seq=row["reply_message_seq"],
             dispatched_task_id=row["dispatched_task_id"],
             decline_reason=row["decline_reason"],
         )
@@ -19540,12 +19724,18 @@ class Database:
 
     @_synchronized
     def stamp_invocation_started(
-        self, token: str, *, session_id: str | None
+        self,
+        token: str,
+        *,
+        session_id: str | None,
+        executor: str | None = None,
+        model: str | None = None,
     ) -> None:
         self._conn.execute(
-            "UPDATE thread_invocations SET started_at = ?, session_id = ? "
+            "UPDATE thread_invocations SET started_at = ?, session_id = ?, "
+            "executor = ?, model = ? "
             "WHERE invocation_token = ? AND status = 'pending'",
-            (_now().isoformat(), session_id, token),
+            (_now().isoformat(), session_id, executor, model, token),
         )
         self._conn.commit()
 
@@ -21695,6 +21885,9 @@ class Database:
         *,
         outcome: str,
         decline_reason: str | None = None,
+        reply_message_seq: int | None = None,
+        reply_thread_id: str | None = None,
+        reply_agent_name: str | None = None,
     ) -> ThreadReplySettlement | None:
         """Settle a conversational REPLY terminal path inside the open
         transaction. Returns None when ``token`` is not the running token of
@@ -21774,11 +21967,24 @@ class Database:
         # timeout leave the previously acknowledged watermark untouched.
         new_ack = running_through if outcome in ("reply", "decline") else acknowledged
 
-        self._conn.execute(
+        terminal = self._conn.execute(
             "UPDATE thread_invocations SET status = ?, decline_reason = ?, "
             "consumed_at = ? WHERE invocation_token = ? AND status = 'pending'",
             (status, decline_reason, now, token),
         )
+        if (
+            outcome == "reply"
+            and reply_message_seq is not None
+            and reply_thread_id == thread_id
+            and reply_agent_name == agent_name
+            and terminal.rowcount == 1
+        ):
+            self._conn.execute(
+                "UPDATE thread_invocations SET reply_message_seq = ? "
+                "WHERE invocation_token = ? AND thread_id = ? AND agent_name = ? "
+                "AND status = 'consumed' AND reply_message_seq IS NULL",
+                (reply_message_seq, token, reply_thread_id, reply_agent_name),
+            )
         terminal_reason = (
             decline_reason if outcome in ("failed", "timeout") else None
         )
@@ -22117,23 +22323,42 @@ class Database:
                 settlement = self._settle_reply_uncommitted(
                     token,
                     outcome="reply",
+                    reply_message_seq=seq,
+                    reply_thread_id=thread_id,
+                    reply_agent_name=speaker,
                 )
                 if settlement is None:
                     # Legacy/stale pending REPLY not owned by delivery state:
                     # fall back to the legacy consume transition.
-                    self._conn.execute(
+                    terminal = self._conn.execute(
                         "UPDATE thread_invocations SET status = 'consumed', "
                         "consumed_at = ? WHERE invocation_token = ? "
                         "AND status = 'pending'",
                         (now, token),
                     )
+                    if terminal.rowcount == 1:
+                        self._conn.execute(
+                            "UPDATE thread_invocations SET reply_message_seq = ? "
+                            "WHERE invocation_token = ? AND thread_id = ? "
+                            "AND agent_name = ? AND purpose = 'reply' "
+                            "AND status = 'consumed' AND reply_message_seq IS NULL",
+                            (seq, token, thread_id, speaker),
+                        )
             else:
-                self._conn.execute(
+                terminal = self._conn.execute(
                     "UPDATE thread_invocations SET status = 'consumed', "
                     "consumed_at = ? WHERE invocation_token = ? "
                     "AND status = 'pending'",
                     (now, token),
                 )
+                if terminal.rowcount == 1:
+                    self._conn.execute(
+                        "UPDATE thread_invocations SET reply_message_seq = ? "
+                        "WHERE invocation_token = ? AND thread_id = ? "
+                        "AND agent_name = ? AND purpose = ? "
+                        "AND status = 'consumed' AND reply_message_seq IS NULL",
+                        (seq, token, thread_id, speaker, token_purpose.value),
+                    )
             recipients = [name for name in participants if name != speaker]
             # Phase-2 mention routing (THR-198, Slice B): REPLY tokens resolve
             # the broadcast at write time from the persisted structured
@@ -22180,7 +22405,11 @@ class Database:
 
     @_synchronized
     def claim_conversational_reply(
-        self, token: str,
+        self,
+        token: str,
+        *,
+        executor: str | None = None,
+        model: str | None = None,
     ) -> ThreadReplyClaim | None:
         """Durable queued→running CAS for a conversational REPLY.
 
@@ -22222,9 +22451,10 @@ class Database:
             running_from = acknowledged + 1
             running_through = required
             self._conn.execute(
-                "UPDATE thread_invocations SET started_at = ? "
+                "UPDATE thread_invocations SET started_at = ?, executor = ?, "
+                "model = ? "
                 "WHERE invocation_token = ? AND status = 'pending'",
-                (now, token),
+                (now, executor, model, token),
             )
             self._conn.execute(
                 "UPDATE thread_reply_delivery_state SET "

@@ -40,6 +40,7 @@ from runtime.orchestrator.authority_policy import (
     ENGINEERING_PRE_ESCALATION_POLICY,
 )
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+from runtime.orchestrator.teams import TeamManager
 
 TEAM = "engineering"
 POLICY_ID = "engineering-dual-text"
@@ -67,6 +68,11 @@ BASE = "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy"
 
 
 def _seed_agent(org, name="engineering_manager", *, team="engineering", role="manager"):
+    if role == "manager":
+        existing = org.teams._teams.get(team)
+        org.teams._teams[team] = TeamManager(
+            name=name, team=team, workers=() if existing is None else existing.workers,
+        )
     agent = AgentDef(
         name=name, team=team, role=role, executor="claude", allow_rules=tuple(),
         repos={}, enrolled_by=None, enrolled_at_task=None,

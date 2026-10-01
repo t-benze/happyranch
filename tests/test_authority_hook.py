@@ -38,6 +38,7 @@ import pytest
 
 from runtime.config import Settings
 from runtime.infrastructure.database import Database
+from runtime.infrastructure.workflow_schema import install_or_recover
 from runtime.models import BlockKind, TaskRecord, TaskStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.authority import (
@@ -91,7 +92,9 @@ def runtime(tmp_path: Path) -> OrgPaths:
 
 @pytest.fixture
 def db(runtime: OrgPaths) -> Database:
-    return Database(runtime.db_path)
+    database = Database(runtime.db_path)
+    install_or_recover(database)
+    return database
 
 
 def _make_report(output_summary: str, status: str = "completed"):
@@ -524,6 +527,7 @@ def test_escalate_golden_byte_identical_behavior(runtime, db, monkeypatch):
     assert db.list_authority_candidates_for_root("T-X") == []
 
     db2 = Database(runtime.db_path.parent / "golden-hook.db")  # fresh DB file
+    install_or_recover(db2)
     fake = StrictFakeAuthorityEvaluator()
     _seed_root(db2, task_id="T-X")
     orch2 = _make_orch(runtime, db2, evaluator=fake)

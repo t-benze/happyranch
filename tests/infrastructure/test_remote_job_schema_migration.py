@@ -696,6 +696,10 @@ def test_exact_untouched_merged_s2_upgrades_and_preserves_every_unrelated_byte_v
         )
         conn.commit()
     before_schema, before_rows = _complete_snapshot(path)
+    with sqlite3.connect(path) as conn:
+        before_thread_columns = conn.execute(
+            "PRAGMA table_info(thread_invocations)"
+        ).fetchall()
 
     Database(path).close()
     Database(path).close()
@@ -734,7 +738,15 @@ def test_exact_untouched_merged_s2_upgrades_and_preserves_every_unrelated_byte_v
     def unrelated(schema: list[tuple]) -> list[tuple]:
         return [
             row for row in schema
-            if row[1] not in added | {"remote_runners", "idx_task_completion_recoveries_task"}
+            if row[1] not in added | {
+                "remote_runners",
+                "idx_task_completion_recoveries_task",
+                # Usage v1 PR2 adds only executor/model to this existing table.
+                # PR2b adds only reply_message_seq plus the named partial
+                # unique index. The exact allowed DDL delta is asserted below.
+                "thread_invocations",
+                "idx_thread_invocations_reply_message",
+            }
             and row[2] not in {
                 "remote_runners",
                 "remote_runner_enrollment_challenges",
@@ -746,6 +758,23 @@ def test_exact_untouched_merged_s2_upgrades_and_preserves_every_unrelated_byte_v
         if table not in {"remote_runners", "remote_runner_schema_migrations"}:
             assert after_rows[table] == rows
     with sqlite3.connect(path) as conn:
+        after_thread_columns = conn.execute(
+            "PRAGMA table_info(thread_invocations)"
+        ).fetchall()
+        assert after_thread_columns[:-3] == before_thread_columns
+        assert [column[1:] for column in after_thread_columns[-3:]] == [
+            ("executor", "TEXT", 0, None, 0),
+            ("model", "TEXT", 0, None, 0),
+            ("reply_message_seq", "INTEGER", 0, None, 0),
+        ]
+        assert conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+            ("idx_thread_invocations_reply_message",),
+        ).fetchone() == (
+            "CREATE UNIQUE INDEX idx_thread_invocations_reply_message "
+            "ON thread_invocations(thread_id, reply_message_seq) "
+            "WHERE reply_message_seq IS NOT NULL",
+        )
         assert conn.execute(
             "SELECT name,stage FROM remote_runner_schema_migrations WHERE name=?",
             (IDENTITY_MIGRATION_NAME,),

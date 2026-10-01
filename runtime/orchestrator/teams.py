@@ -100,6 +100,15 @@ class TeamsRegistry:
                 return team
         return None
 
+    def teams_for_manager(self, manager_name: str) -> tuple[str, ...]:
+        """Return every exact registration for *manager_name* in stable order.
+
+        Authority callers must require cardinality one; the older first-match
+        helper remains for non-authority compatibility consumers.
+        """
+        return tuple(sorted(team for team, manager in self._teams.items()
+                            if manager.name == manager_name))
+
     def is_team_manager(self, name: str) -> bool:
         return any(m.name == name for m in self._teams.values())
 

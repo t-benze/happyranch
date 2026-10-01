@@ -6,10 +6,10 @@ persistence for those three fields is DEPRECATED — no new writes target
 agent.yaml, and the ORG-agent read paths (orchestrator resolvers,
 thread_runner, dream_runner, list_agents) all read from AgentDef (.md).
 
-The ``load_agent_config`` reader is kept for the one-shot migration
-(``migrate_agent_yaml_to_frontmatter``) and for the ``set_agent_executor``
-route's before/after display.  It will be removed in a follow-up cleanup
-once existing workspaces have been migrated.
+The legacy ``agent.yaml`` writer helpers were removed after supported writes
+moved to AgentDef frontmatter.  The ``load_agent_config`` reader remains for
+the one-shot migration (``migrate_agent_yaml_to_frontmatter``) and for the
+``set_agent_executor`` route's before/after display.
 
 System assistant (runtime/system_assistant.py) writes its own agent.yaml
 directly and has no org/agents/<name>.md — it is unaffected by this module.
@@ -36,78 +36,6 @@ def load_agent_config(workspace: Path) -> dict:
     config.setdefault("repos", {})
     config.setdefault("executor", DEFAULT_EXECUTOR)
     return config
-
-
-def write_default_agent_config(workspace: Path) -> None:
-    """DEPRECATED (THR-095). No longer called by any org-agent path.
-
-    Kept for backward compatibility with system_assistant and any
-    external callers.  Org-agent paths now write to .md frontmatter.
-    """
-    path = workspace / "agent.yaml"
-    if path.exists():
-        return
-    workspace.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        yaml.dump({"repos": {}, "executor": DEFAULT_EXECUTOR}, default_flow_style=False),
-    )
-
-
-def set_executor(workspace: Path, executor: str | None) -> None:
-    """DEPRECATED (THR-095). No longer called by any org-agent path.
-
-    Org-agent executor is now written to .md frontmatter via AgentDef.
-    """
-    config = load_agent_config(workspace)
-    config["executor"] = executor or DEFAULT_EXECUTOR
-    (workspace / "agent.yaml").write_text(yaml.dump(config, default_flow_style=False))
-
-
-def set_model(workspace: Path, model: str | None) -> None:
-    """DEPRECATED (THR-095). No longer called by any org-agent path.
-
-    Org-agent model is now written to .md frontmatter via AgentDef.
-    """
-    config = load_agent_config(workspace)
-    effective = model if model else None
-    if effective:
-        config["model"] = effective
-    else:
-        config.pop("model", None)
-    (workspace / "agent.yaml").write_text(yaml.dump(config, default_flow_style=False))
-
-
-def add_repo(workspace: Path, name: str, url: str) -> None:
-    """DEPRECATED (THR-095). No longer called by any org-agent path.
-
-    Org-agent repos are now written to .md frontmatter via AgentDef.
-    """
-    config = load_agent_config(workspace)
-    repos = config.setdefault("repos", {})
-    if name in repos:
-        raise ValueError(f"repo {name!r} already exists")
-    repos[name] = url
-    (workspace / "agent.yaml").write_text(yaml.dump(config, default_flow_style=False))
-
-
-def remove_repo(workspace: Path, name: str) -> None:
-    """DEPRECATED (THR-095). No longer called by any org-agent path."""
-    config = load_agent_config(workspace)
-    repos = config.get("repos", {})
-    if name not in repos:
-        raise KeyError(name)
-    del repos[name]
-    (workspace / "agent.yaml").write_text(yaml.dump(config, default_flow_style=False))
-
-
-def update_repo_url(workspace: Path, name: str, url: str) -> None:
-    """DEPRECATED (THR-095). No longer called by any org-agent path."""
-    config = load_agent_config(workspace)
-    repos = config.get("repos", {})
-    if name not in repos:
-        raise KeyError(name)
-    repos[name] = url
-    (workspace / "agent.yaml").write_text(yaml.dump(config, default_flow_style=False))
 
 
 def migrate_agent_yaml_to_frontmatter(paths) -> dict[str, str]:
