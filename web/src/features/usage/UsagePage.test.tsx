@@ -305,7 +305,7 @@ describe('Usage v1 — structure and shared controls', () => {
     ).toBeInTheDocument();
   });
 
-  it('removes the token-centric page: no export, no cost, no token burn hero, no aggregate CLI/model option', async () => {
+  it('removes the token-centric page: no export, cost, token burn hero, window choice, breakdown, cache or team cards, or aggregate CLI/model option', async () => {
     serve();
     renderPage();
     await screen.findByRole('table', { name: 'Workload by agent' });
@@ -314,7 +314,18 @@ describe('Usage v1 — structure and shared controls', () => {
     expect(screen.queryByText(/not metered/i)).toBeNull();
     expect(screen.queryByText(/\$/)).toBeNull();
     expect(screen.queryByText(/token burn/i)).toBeNull();
+    expect(screen.queryAllByText(/token usage and cache savings/i)).toHaveLength(0);
     expect(screen.queryByRole('button', { name: /^All/i })).toBeNull();
+    // The window is fixed (PRD §3): no 24h / 7d / 30d choice.
+    expect(screen.queryAllByRole('button', { name: /^(24h|7d|30d)$/ })).toHaveLength(0);
+    // No blended token breakdown, ranking, cache-savings or team cards.
+    expect(screen.queryAllByRole('button', { name: /^(Agent|Thread|Model)$/ })).toHaveLength(0);
+    expect(screen.queryAllByText(/where it went/i)).toHaveLength(0);
+    expect(screen.queryAllByText(/top threads/i)).toHaveLength(0);
+    expect(screen.queryAllByText(/cache saved|served from cache|from cache|of all reads/i)).toHaveLength(0);
+    expect(screen.queryAllByText(/^by team$/i)).toHaveLength(0);
+    // No guessed cross-model labels.
+    expect(screen.queryAllByText(/\((mixed|cli-unreported|unknown —[^)]*)\)/)).toHaveLength(0);
   });
 });
 
@@ -942,8 +953,11 @@ describe('Usage v1 — loading, error, stale', () => {
     renderPage();
 
     const section = await screen.findByRole('region', { name: 'Workload' });
-    const skeleton = within(section).getByTestId('usage-skeleton');
-    expect(skeleton).toHaveAttribute('aria-busy', 'true');
+    // Located by its assistive-technology busy state, not a test id.
+    const busy = section.querySelectorAll('[aria-busy="true"]');
+    expect(busy).toHaveLength(1);
+    const skeleton = busy[0] as HTMLElement;
+    expect(within(skeleton).getByText('Recorded runtime')).toBeInTheDocument();
     expect(skeleton.textContent ?? '').not.toMatch(/\d/);
     expect(within(section).getByRole('status')).toHaveTextContent('Loading workload');
   });
