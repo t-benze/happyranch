@@ -804,6 +804,12 @@ envelope spend, the startup/reaper/run-step wiring and the production
 authority-hook continuation remain separate units; the shipping hook still
 fail-closes to ESCALATE and the dual-text feature remains unaccepted.
 
+In the shipping automatic hook, a bounded non-success finalization return is
+recorded best-effort as an `authority_hook` `capture_failure` carrying its
+closed status and reason before the unchanged `final_commit_failed` refusal
+housekeeping runs. A raised finalizer exception retains its existing distinct
+raised-exception diagnostic and the same refusal code.
+
 C3d2 correction (same unmerged draft PR). The exact post-final causal replay and
 settlement now authenticate the COMPLETE durable evidence read-only through ONE
 shared post-final authenticator — the exact J/R/K/P/V joins, the authentic
