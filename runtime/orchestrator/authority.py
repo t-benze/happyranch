@@ -144,8 +144,10 @@ OUTCOME_CAPTURE_FAILURE = "capture_failure"
 # escalation/notification must NOT run:
 #   * ``v2_continued`` -- the final continuation committed (or was exactly
 #     replayed) and post-final settlement/publication was attempted;
-#   * ``v2_refused``   -- durable refusal housekeeping committed a terminal
-#     refusal for the unfinalized attempt;
+#   * ``v2_refused``   -- refusal housekeeping returned a bounded structured
+#     result.  Its string value preserves this vocabulary while ``status`` and
+#     ``task_disposition`` identify a fresh terminal writer versus owner loss
+#     or an exact replay;
 #   * ``v2_pending``   -- the attempt/stage identity could not be safely
 #     finalized and refusal itself could not commit; the prior durable state is
 #     preserved as a bounded housekeeping obligation (later discovery unit).
@@ -154,6 +156,31 @@ HOOK_CONTINUE_SAME_ROOT = "continue_same_root"
 HOOK_V2_CONTINUED = "v2_continued"
 HOOK_V2_REFUSED = "v2_refused"
 HOOK_V2_PENDING = "v2_pending"
+
+
+class AuthorityHookV2RefusalOutcome(str):
+    """String-compatible v2 refusal result with the writer's disposition.
+
+    Existing callers/tests may continue comparing the result with
+    ``HOOK_V2_REFUSED``.  The run-step consumer additionally uses these
+    bounded fields to distinguish a refusal committed by this call from an
+    owner-lost or replay result, so only the exact fresh terminal writer owns
+    a post-commit projection.
+    """
+
+    status: str
+    task_disposition: str | None
+
+    def __new__(
+        cls,
+        *,
+        status: str,
+        task_disposition: str | None = None,
+    ) -> "AuthorityHookV2RefusalOutcome":
+        value = super().__new__(cls, HOOK_V2_REFUSED)
+        value.status = status
+        value.task_disposition = task_disposition
+        return value
 
 AUDIT_ACTION_HOOK_OUTCOME = "authority_hook"
 AUDIT_ACTION_CONTINUED_SAME_ROOT = "authority_continued_same_root"
@@ -1944,8 +1971,9 @@ def _v2_request_refusal(
 ) -> str:
     """Request durable refusal housekeeping for one unfinalized v2 attempt.
 
-    This never falls back to the ordinary escalation path.  ``v2_refused``
-    means the terminal refusal committed (or was exactly replayed);
+    This never falls back to the ordinary escalation path.  ``v2_refused`` is
+    string-compatible structured output whose bounded fields distinguish a
+    fresh terminal refusal from owner loss or an exact replay;
     ``v2_pending`` means safe attribution could not be established (or the
     refusal transaction itself failed), so the prior durable state is preserved
     and a later discovery unit owns the bounded obligation.
@@ -1975,7 +2003,10 @@ def _v2_request_refusal(
         return HOOK_V2_PENDING
     status = getattr(outcome, "status", None)
     if status in ("refused", "owner_lost", "already_refused"):
-        return HOOK_V2_REFUSED
+        return AuthorityHookV2RefusalOutcome(
+            status=status,
+            task_disposition=getattr(outcome, "task_disposition", None),
+        )
     # housekeeping_pending (or an unknown bounded value): prior state intact.
     return HOOK_V2_PENDING
 
@@ -2041,7 +2072,10 @@ def _run_authority_hook_v2(
         )
         return HOOK_V2_CONTINUED
     if attempt.finalization_state in ("refused", "owner_lost"):
-        return HOOK_V2_REFUSED
+        return AuthorityHookV2RefusalOutcome(
+            status="already_refused",
+            task_disposition=None,
+        )
 
     from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
     store = AuthorityPolicyStore(db)

@@ -303,7 +303,11 @@ def test_startup_non_escalate_admission_is_read_only_across_two_boots(tmp_path):
         "UPDATE task_results SET decision_json=? WHERE id=?",
         (json.dumps({"action": "done"}), row["id"]),
     )
-    store._db.update_task(attempt.root_task_id, status=TaskStatus.PENDING)
+    store._db.update_task(
+        attempt.root_task_id,
+        status=TaskStatus.IN_PROGRESS,
+        block_kind=None,
+    )
     store._db._conn.execute(
         """INSERT INTO task_completion_recoveries
            (task_id, agent, origin_session_id, recovery_session_id,
@@ -345,8 +349,8 @@ def test_startup_non_escalate_admission_is_read_only_across_two_boots(tmp_path):
         "SELECT state FROM task_completion_recoveries WHERE task_id=?",
         (attempt.root_task_id,),
     ).fetchone()["state"]
-    assert receipt_after_first in {"callback_accepted", "callback_consumed"}
-    assert receipt_after_second == receipt_after_first
+    assert receipt_after_first == "callback_consumed"
+    assert receipt_after_second == "callback_consumed"
     assert store._db.get_authority_policy_v2_attempt_for_result(
         row["id"]
     ).finalization_state == "unfinalized"

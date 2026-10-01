@@ -1743,15 +1743,20 @@ def _consume_completion_report_body(
             # publication may still be pending); no ordinary escalation runs.
             return
         if hook_outcome == "v2_refused":
-            failed = orch._db.get_task(task_id)
+            refusal_status = getattr(hook_outcome, "status", None)
+            task_disposition = getattr(hook_outcome, "task_disposition", None)
+            refused_task = orch._db.get_task(task_id)
             expected_prefix = "authority_v2_refusal:"
             if (
-                failed is not None
-                and failed.status == TaskStatus.FAILED
-                and failed.completed_at is not None
-                and (failed.note or "").startswith(expected_prefix)
+                refusal_status == "refused"
+                and task_disposition == "failed"
+                and refused_task is not None
+                and refused_task.parent_task_id is not None
+                and refused_task.status == TaskStatus.FAILED
+                and refused_task.completed_at is not None
+                and (refused_task.note or "").startswith(expected_prefix)
             ):
-                expected_note = failed.note or ""
+                expected_note = refused_task.note or ""
                 if recovery_owner is None:
                     _fail_terminal_tail(
                         orch,
@@ -1791,12 +1796,21 @@ def _consume_completion_report_body(
                         ),
                     )
                 return
-            # Root refusal retains the pre-existing escalation projection.
-            orch.notify_escalated(
-                task_id=task_id, agent=agent, reason=reason,
-                last_summary=getattr(report, "output_summary", "") or "",
-            )
-            _maybe_post_thread_escalation(orch, task_id, reason=reason)
+            if (
+                refusal_status == "refused"
+                and task_disposition == "escalated"
+                and refused_task is not None
+                and refused_task.parent_task_id is None
+                and refused_task.status == TaskStatus.ESCALATED
+                and refused_task.completed_at is None
+                and (refused_task.note or "").startswith(expected_prefix)
+            ):
+                # Root refusal retains the pre-existing escalation projection.
+                orch.notify_escalated(
+                    task_id=task_id, agent=agent, reason=reason,
+                    last_summary=getattr(report, "output_summary", "") or "",
+                )
+                _maybe_post_thread_escalation(orch, task_id, reason=reason)
             return
         # A bounded v2_pending outcome means refusal housekeeping did not
         # commit.  Failing closed must still terminate and surface the root, so
@@ -4192,7 +4206,10 @@ def _enqueue_parent_if_waiting(
         # clear the chain.
         is_chain_trigger = (
             child.status == TaskStatus.COMPLETED
-            or _child_has_landed_terminal_result(orch, child)
+            or (
+                child.status not in TERMINAL_STATES
+                and _child_has_landed_terminal_result(orch, child)
+            )
         )
         if is_chain_trigger:
             children_ids = orch._db.get_children(parent.id)
