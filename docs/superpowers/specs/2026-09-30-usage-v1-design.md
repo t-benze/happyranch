@@ -1,6 +1,6 @@
-# Usage v1: parser semantics, reported state, and lifecycle attribution
+# Usage v1: parser semantics, lifecycle attribution, and reply linkage
 
-> Status: current (PR1 through PR3 of 4)
+> Status: current (PR1 through PR3 of 4, including PR2b)
 > Current Source: `runtime/orchestrator/executors.py`,
 > `runtime/orchestrator/usage_normalization.py`,
 > `runtime/infrastructure/database.py`,
@@ -9,7 +9,8 @@
 > `runtime/daemon/thread_runner.py`, `runtime/daemon/dream_runner.py`, and
 > `docs/agent-guides/features-and-invariants.md`
 > Authority: THR-272 seq64; Product requirements TASK-9165, sections 6 and 10;
-> product_lead THR-272 seq68
+> product_lead THR-272 seq68; PR2b founder THR-272 seq79 and product_lead
+> seq76
 
 ## Scope
 
@@ -22,6 +23,10 @@ PR2 captures executor/model cohort identity at the lifecycle start even when a
 run later produces no usage. It adds two nullable thread-invocation columns and
 additive fields on the existing task and dream start audit events. It does not
 infer or backfill history.
+
+PR2b adds the durable nullable link from a terminalized thread wake to the
+single agent message persisted by that same reply transaction. It does not
+backfill history or infer a link from timestamps, status, audits, or ordering.
 
 Together these PRs do not rewrite old rows, change `TokenUsage.total`, change
 the existing `happyranch tokens`/`GET /tokens` contract, build the PR3
@@ -164,6 +169,31 @@ same effective executor/model tuple in that same UPDATE:
 The runner resolves one live `AgentDef` tuple and reuses it for both writers
 and the actual executor call. An unavailable agent that launches no provider
 gets no guessed attribution.
+
+### Durable reply-message link
+
+`thread_invocations.reply_message_seq` is one additive nullable INTEGER with no
+default and no `NOT NULL`. The partial unique index on
+`(thread_id, reply_message_seq) WHERE reply_message_seq IS NOT NULL` enforces
+one wake-to-one-message attribution within a thread. Existing rows stay NULL;
+the idempotent upgrade adds a missing column and/or missing index without
+rewriting or inferring historical values.
+
+`Database.reply_conversational` sets the link to the `thread_messages.seq` it
+just appended, inside that existing transaction, only when the transaction
+itself terminalizes the matching thread/agent invocation. This covers modern
+REPLY settlement, the legacy pending-REPLY fallback, BOOTSTRAP, and
+TASK_FOLLOWUP. An already-terminal, foreign-thread, or foreign-agent token is
+never linked. A link or uniqueness failure rolls back the message and terminal
+transition together. `consume_invocation`/manual escalation supersede,
+decline, failure, timeout, discard, and restart sweeps leave the field NULL.
+
+For the Usage v1 Workload table, **Replies** means REPLY-purpose invocations
+with this durable link to one persisted agent message in the selected window;
+the message timestamp owns window placement. BOOTSTRAP and TASK_FOLLOWUP links
+remain available for truthful lifecycle accounting but are not Replies. NULL
+means **reply outcome not recorded**—legacy history or a terminal path with no
+persisted reply—not “no reply.” Read models must not infer or backfill it.
 
 ### Task session starts
 

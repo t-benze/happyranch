@@ -26,6 +26,78 @@ def _seed_org(org_root: Path) -> None:
     (org_root / "kb").mkdir()
 
 
+_PRE_REPLY_LINK_INVOCATIONS_DDL = """
+CREATE TABLE thread_invocations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id TEXT NOT NULL,
+    agent_name TEXT NOT NULL,
+    invocation_token TEXT NOT NULL UNIQUE,
+    triggering_seq INTEGER NOT NULL,
+    purpose TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    enqueued_at TEXT NOT NULL,
+    started_at TEXT,
+    consumed_at TEXT,
+    session_id TEXT,
+    executor TEXT,
+    model TEXT,
+    dispatched_task_id TEXT,
+    decline_reason TEXT
+)
+"""
+
+
+def _database_snapshot(path: Path) -> tuple[list[tuple], dict[str, list[tuple]]]:
+    with sqlite3.connect(path) as conn:
+        schema = conn.execute(
+            "SELECT type,name,tbl_name,rootpage,sql FROM sqlite_master "
+            "ORDER BY type,name"
+        ).fetchall()
+        rows = {
+            table: conn.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall()
+            for (table,) in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ).fetchall()
+        }
+    return schema, rows
+
+
+def _seed_pre_reply_link_rows(path: Path) -> list[tuple]:
+    expected: list[tuple] = []
+    with sqlite3.connect(path) as conn:
+        conn.execute(_PRE_REPLY_LINK_INVOCATIONS_DDL)
+        ordinal = 0
+        for purpose in ("reply", "bootstrap", "task_followup"):
+            for status in ("pending", "consumed", "declined", "failed", "timeout"):
+                ordinal += 1
+                values = (
+                    ordinal,
+                    f"THR-{ordinal:03d}",
+                    f"agent-{ordinal}",
+                    f"token-{purpose}-{status}",
+                    ordinal,
+                    purpose,
+                    status,
+                    f"2026-09-30T00:00:{ordinal:02d}+00:00",
+                    f"2026-09-30T00:01:{ordinal:02d}+00:00" if status != "pending" else None,
+                    f"2026-09-30T00:02:{ordinal:02d}+00:00" if status != "pending" else None,
+                    f"session-{ordinal}" if status != "pending" else None,
+                    "codex" if ordinal % 2 else "claude",
+                    None if ordinal % 3 else "pinned-model",
+                    f"TASK-{ordinal:03d}" if purpose == "task_followup" else None,
+                    f"reason-{status}" if status in {"declined", "failed", "timeout"} else None,
+                )
+                conn.execute(
+                    "INSERT INTO thread_invocations VALUES "
+                    "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    values,
+                )
+                expected.append(values)
+        conn.commit()
+    return expected
+
+
 def test_org_state_load_opens_db_and_teams(tmp_path: Path) -> None:
     org_root = tmp_path / "rt" / "orgs" / "alpha"
     _seed_org(org_root)
@@ -39,6 +111,64 @@ def test_org_state_load_opens_db_and_teams(tmp_path: Path) -> None:
         "SELECT version FROM workflow_adapter_versions"
     ).fetchall()] == [(1,)]
     org.close()
+
+
+def test_org_state_load_migrates_reply_links_without_rewriting_legacy_rows(
+    tmp_path: Path,
+) -> None:
+    org_root = tmp_path / "rt" / "orgs" / "legacy-reply-links"
+    _seed_org(org_root)
+    path = OrgPaths(root=org_root).db_path
+    expected = _seed_pre_reply_link_rows(path)
+
+    org = OrgState.load(slug="legacy-reply-links", root=org_root, settings=Settings())
+    migrated = org.db.execute(
+        "SELECT * FROM thread_invocations ORDER BY id"
+    ).fetchall()
+    columns = org.db.execute("PRAGMA table_info(thread_invocations)").fetchall()
+    index = org.db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' "
+        "AND name='idx_thread_invocations_reply_message'"
+    ).fetchone()
+    org.close()
+
+    assert columns[-1][1:] == ("reply_message_seq", "INTEGER", 0, None, 0)
+    assert [tuple(row[:15]) for row in migrated] == expected
+    assert [row["reply_message_seq"] for row in migrated] == [None] * len(expected)
+    assert index is not None
+    assert index[0] == (
+        "CREATE UNIQUE INDEX idx_thread_invocations_reply_message "
+        "ON thread_invocations(thread_id, reply_message_seq) "
+        "WHERE reply_message_seq IS NOT NULL"
+    )
+
+    first_snapshot = _database_snapshot(path)
+    reopened = OrgState.load(
+        slug="legacy-reply-links", root=org_root, settings=Settings(),
+    )
+    reopened.close()
+    assert _database_snapshot(path) == first_snapshot
+
+
+def test_org_state_load_completes_partial_reply_link_migration(tmp_path: Path) -> None:
+    org_root = tmp_path / "rt" / "orgs" / "partial-reply-links"
+    _seed_org(org_root)
+    path = OrgPaths(root=org_root).db_path
+    with sqlite3.connect(path) as conn:
+        conn.execute(_PRE_REPLY_LINK_INVOCATIONS_DDL)
+        conn.execute("ALTER TABLE thread_invocations ADD COLUMN reply_message_seq INTEGER")
+        conn.commit()
+
+    org = OrgState.load(slug="partial-reply-links", root=org_root, settings=Settings())
+    columns = org.db.execute("PRAGMA table_info(thread_invocations)").fetchall()
+    index = org.db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' "
+        "AND name='idx_thread_invocations_reply_message'"
+    ).fetchone()
+    org.close()
+
+    assert [row["name"] for row in columns].count("reply_message_seq") == 1
+    assert index is not None
 
 
 def test_org_state_load_closes_new_database_when_workflow_install_fails(
