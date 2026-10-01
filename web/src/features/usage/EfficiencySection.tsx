@@ -88,7 +88,7 @@ function Pill({
       className={cn(
         'text-caption focus-visible:ring-accent-ring rounded-sm border px-3 py-1 font-mono transition-colors focus-visible:ring-2 focus-visible:outline-none',
         pressed
-          ? 'bg-text-primary text-text-inverse border-transparent'
+          ? 'bg-text-primary text-text-inverse border-text-primary'
           : 'bg-surface border-border-default text-text-secondary hover:text-text-primary',
       )}
     >
