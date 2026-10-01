@@ -232,3 +232,36 @@ describe('InboxRow — thread layout (THR-099 id-first row)', () => {
     expect(screen.getByRole('link')).not.toHaveClass('transition-colors');
   });
 });
+
+describe('InboxRow dream badge accessible name (THR-118 W3a)', () => {
+  test.each(['default', 'thread'] as const)('%s layout: labels.dreamBadge names the badge; omitted keeps English', (layout) => {
+    const { rerender } = render(
+      <InboxRow
+        threadId="THR-007"
+        subject="Dream reflection"
+        status="open"
+        needsYou={false}
+        active={false}
+        fromDream
+        layout={layout}
+        href="#"
+        labels={{ fromDream: '来自梦境', dreamBadge: '源自梦境' }}
+      />,
+    );
+    const badge = screen.getByRole('img', { name: '源自梦境' });
+    expect(screen.queryByRole('img', { name: 'Dream-originated' })).not.toBeInTheDocument();
+    rerender(
+      <InboxRow
+        threadId="THR-007"
+        subject="Dream reflection"
+        status="open"
+        needsYou={false}
+        active={false}
+        fromDream
+        layout={layout}
+        href="#"
+      />,
+    );
+    expect(screen.getByRole('img', { name: 'Dream-originated' })).toBe(badge);
+  });
+});

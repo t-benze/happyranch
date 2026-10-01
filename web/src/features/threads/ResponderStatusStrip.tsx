@@ -1,5 +1,6 @@
 import type { ResponderStatusEntry } from '@/lib/api/types';
-import { formatElapsed } from '@/lib/elapsed';
+import { useTranslation } from '@/hooks/i18n';
+import { localizedElapsed, type DeliveryTranslator } from './ReplyDeliveryStrip';
 
 export function ResponderStatusStrip({
   statuses,
@@ -8,6 +9,7 @@ export function ResponderStatusStrip({
   statuses: ResponderStatusEntry[];
   nowMs?: number;
 }): JSX.Element | null {
+  const { t } = useTranslation();
   // In-flight states (queued/working) are surfaced by the inline TypingBubble
   // at the transcript tail; this strip is the per-message terminal record only.
   const terminal = statuses.filter(
@@ -26,7 +28,7 @@ export function ResponderStatusStrip({
         <span key={s.agent_name} className="inline-flex items-center gap-1.5">
           <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass(s)}`} />
           <span className="text-text-secondary font-mono">{s.agent_name}</span>
-          <span className={stateClass(s)}>{statusLabel(s, now)}</span>
+          <span className={stateClass(s)}>{statusLabel(s, now, t)}</span>
         </span>
       ))}
     </div>
@@ -43,42 +45,47 @@ function isAborted(s: ResponderStatusEntry): boolean {
   return s.decline_reason === 'founder_aborted';
 }
 
-function statusLabel(s: ResponderStatusEntry, nowMs: number): string {
-  if (isAborted(s)) return 'aborted';
+function statusLabel(s: ResponderStatusEntry, nowMs: number, t: DeliveryTranslator): string {
+  if (isAborted(s)) return t('threads.responder.aborted');
   switch (s.status) {
     case 'queued':
-      return 'queued';
+      return t('threads.responder.queued');
     case 'working': {
-      const e = formatElapsed(s.started_at, nowMs);
-      return e ? `working ${e}` : 'working…';
+      const elapsed = localizedElapsed(s.started_at, nowMs, t);
+      return elapsed
+        ? t('threads.responder.workingElapsed', { elapsed })
+        : t('threads.responder.working');
     }
     case 'replied':
-      return 'replied';
+      return t('threads.responder.replied');
     case 'declined':
     case 'failed':
       // Category-distinguished so the founder can tell the four terminal
       // causes apart. Falls back to today's generic label when category is
       // null (older/replied data or a row PR-A didn't classify).
-      return terminalLabel(s) ?? s.status;
+      return (
+        terminalLabel(s, t) ??
+        t(s.status === 'declined' ? 'threads.responder.declined' : 'threads.responder.failed')
+      );
   }
 }
 
 // Maps the persisted failure/decline category to a founder-readable label.
 // Returns null when there is no category to distinguish (caller falls back
 // to the generic 'declined'/'failed' label).
-function terminalLabel(s: ResponderStatusEntry): string | null {
+function terminalLabel(s: ResponderStatusEntry, t: DeliveryTranslator): string | null {
   switch (s.category) {
     case 'declined':
-      return 'declined';
+      return t('threads.responder.declined');
     case 'no_callback':
-      return 'reply failed (no callback)';
+      return t('threads.responder.noCallback');
     case 'no_callback_after_reprompt':
-      return 'reply failed (no callback after re-prompt)';
+      return t('threads.responder.noCallbackAfterReprompt');
     case 'infra_fail': {
       // Surface the return code when the backend embedded one (rc=N), matching
       // the daemon's own infra-signature parse; otherwise a bare infra label.
       const rc = s.decline_reason?.match(/rc=(\d+)/i)?.[1];
-      return rc ? `reply failed (infra: rc=${rc})` : 'reply failed (infra)';
+      return rc ? t('threads.responder.infraRc', { rc }) : t('threads.responder.infra');
     }
     default:
       return null;

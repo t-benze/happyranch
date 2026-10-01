@@ -16,6 +16,9 @@ import type { DashboardEscalationRow } from '@/lib/api/types';
 import { useResolveEscalation } from '@/hooks/tasks';
 import { Button } from '@/design-system/primitives/Button';
 import { Textarea } from '@/design-system/primitives/Textarea';
+import { useTranslation } from '@/hooks/i18n';
+import type { MessageKey } from '@/lib/i18n';
+import { formatAge } from '../dashboardCopy';
 
 /** An escalation is "stale" once it has waited a full day (THR-061 slice 1).
  *  Purely client-derived from the real `age_seconds` field — no new metric. */
@@ -49,12 +52,15 @@ interface EscalationInboxRowProps {
   slug: string;
 }
 
-function relativeAge(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-  return `${Math.floor(seconds / 86400)}d`;
-}
+/**
+ * Localized display label for a KNOWN derived flavor. The machine value stays
+ * the chip-tint/logic key; an unknown flavor renders verbatim (API data).
+ */
+const FLAVOR_LABEL_KEY: Record<string, MessageKey> = {
+  'needs-decision': 'dashboard.escalation.flavor.needsDecision',
+  'over-budget': 'dashboard.escalation.flavor.overBudget',
+  exhausted: 'dashboard.escalation.flavor.exhausted',
+};
 
 export function EscalationInboxRow({
   row,
@@ -63,6 +69,7 @@ export function EscalationInboxRow({
   onCollapse,
   slug,
 }: EscalationInboxRowProps): JSX.Element {
+  const { t, locale } = useTranslation();
   const [rationale, setRationale] = useState('');
   const taRef = useRef<HTMLTextAreaElement>(null);
   const resolve = useResolveEscalation(row.task_id);
@@ -111,15 +118,15 @@ export function EscalationInboxRow({
           <span
             className={isStale ? 'text-status-escalated font-medium' : undefined}
           >
-            {relativeAge(row.age_seconds)}
+            {formatAge(locale, row.age_seconds)}
           </span>
         </span>
         {isStale && (
           <span
             className="border-tier-red text-status-escalated rounded border px-1 text-xs font-medium uppercase"
-            title="Waiting 24h+"
+            title={t('dashboard.escalation.staleTitle')}
           >
-            stale
+            {t('dashboard.escalation.stale')}
           </span>
         )}
         {row.flavor && (
@@ -128,7 +135,9 @@ export function EscalationInboxRow({
               row.flavor,
             )}`}
           >
-            {row.flavor}
+            {Object.prototype.hasOwnProperty.call(FLAVOR_LABEL_KEY, row.flavor)
+              ? t(FLAVOR_LABEL_KEY[row.flavor])
+              : row.flavor}
           </span>
         )}
       </div>
@@ -141,19 +150,21 @@ export function EscalationInboxRow({
             value={rationale}
             onChange={(e) => setRationale(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder={`Your response to ${row.agent}… (⌘↵ to send)`}
+            placeholder={t('dashboard.escalation.placeholder', { agent: row.agent })}
             rows={3}
           />
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={onCollapse} type="button">
-              Cancel
+              {t('dashboard.escalation.cancel')}
             </Button>
             <Button
               onClick={() => void submit()}
               disabled={resolve.isPending}
               type="button"
             >
-              {resolve.isPending ? 'Continuing…' : 'Continue & resolve'}
+              {resolve.isPending
+                ? t('dashboard.escalation.continuing')
+                : t('dashboard.escalation.continue')}
             </Button>
           </div>
         </div>
