@@ -242,8 +242,10 @@ def get_team_escalation_policy(slug: str, agent_name: str, org: OrgDep) -> dict:
         # Reader backstop for API-only fixtures that never ran daemon startup:
         # the serialized initializer is idempotent and observes authenticated
         # legacy history or truly empty state. Never reconstructs a selector.
-        store.ensure_authority_selector(team)
-        selector = store.get_authority_selector(team)
+        selector = org.workflow_authority.ensure_authority_selector(
+            team=team,
+            publisher="get_team_escalation_policy:selector-initialization",
+        )
         if selector is None:
             raise ValueError("authority selector is unavailable after initialization")
         result = {
@@ -591,7 +593,10 @@ def create_team_escalation_policy_release(
         # B2b: initialize the serialized selector BEFORE creating unselected
         # legacy history, so this route's own release cannot strand its later
         # initialization. A release-only write never implies a selection.
-        store.ensure_authority_selector(team)
+        org.workflow_authority.ensure_authority_selector(
+            team=team,
+            publisher="create_team_escalation_policy_release:selector-initialization",
+        )
         clauses = [clause.model_dump(mode="json") for clause in body.clauses]
         clauses_json = json.dumps(
             clauses, sort_keys=True, separators=(",", ":"), ensure_ascii=False

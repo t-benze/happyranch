@@ -21,6 +21,7 @@ function with the shipping store.
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -63,10 +64,14 @@ def _fresh_runtime(
     org_root = runtime.orgs_dir / ORG
     (org_root / "org").mkdir(parents=True)
     if teams is None:
-        teams = f"teams:\n  engineering:\n    manager: {manager}\n    workers: []\n"
+        teams = (
+            f"teams:\n  engineering:\n    manager: {manager}\n"
+            "    workers: [code_reviewer]\n"
+        )
     (org_root / "org" / "teams.yaml").write_text(teams)
     if seed_manager:
         _seed_agent(org_root, manager)
+        _seed_agent(org_root, "code_reviewer", role="worker")
     runtimes.register(runtime.root)
     return runtime, org_root
 
@@ -121,6 +126,12 @@ def test_empty_org_initializes_before_recovery_boundary(tmp_path, monkeypatch):
 
     assert selector is not None
     assert selector.family == "empty" and selector.selector_epoch == 0
+    readiness = org.workflow_authority.verify_admission_ready()
+    assert readiness.generation == 2
+    assert json.loads(readiness.snapshot_bytes)["active_policy_selectors"] == [{
+        "selector": selector.model_dump(mode="json"),
+        "team": TEAM,
+    }]
     assert observed["selector"] is not None
     assert observed["selector"].selector_id == selector.selector_id
     assert _count(org.db, "authority_policy_active_selector") == 1
@@ -211,6 +222,9 @@ def test_repeat_startup_and_reopen_are_deterministic(tmp_path, monkeypatch):
     assert second_selector.selector_epoch == first_selector.selector_epoch == 0
     assert _count(org.db, "authority_policy_active_selector_history") == first_history == 1
     assert _control_kinds(org.db) == ["selector_initialized_empty"]
+    assert second.orgs[ORG].workflow_authority.verify_admission_ready().generation == (
+        first.orgs[ORG].workflow_authority.verify_admission_ready().generation
+    )
 
     # Reopen a fresh connection to the same file: still one initializer.
     reopened = _db(_org_root)

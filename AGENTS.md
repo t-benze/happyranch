@@ -188,6 +188,16 @@ generation afterward. A post-commit publication failure preserves the legacy
 writer response but leaves the pointer fenced and machine-readable for cold
 recovery; it must never restore a stale ready pointer.
 
+The fence creates the publishing writer's invocation-owned `prepared` journal.
+Another coordinator may supersede only that pre-file state; after file-phase
+reservation, recovery owns completion. Snapshot reservation, canonical-file
+replacement, and the pointer CAS all require the original journal and
+`publisher_invocation`, so a stale coordinator cannot adopt a newer fence or
+return old authority bytes to ready. Selector initialization at daemon startup
+and in the legacy policy GET/release compatibility handlers uses the same
+conditional interval. An authenticated existing selector remains a read and
+does not fence or advance the generation.
+
 Multi-stage async writers take the process-local coordinator gate before
 `teams_lock` and retain that gate through their terminal success or
 compensation. Startup migration retains the same process gate for its batch.

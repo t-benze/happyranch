@@ -410,6 +410,17 @@ the startup AgentDef migration retains it across the batch. A durable lease is
 held only around each synchronous canonical mutation, never across scanning,
 awaited bootstrap, clone/network/host work, callbacks, snapshot capture, or
 other canonical-input scanning.
+The publishing writer now owns a durable `prepared` journal from its pre-fence.
+A later independent coordinator may supersede only that unreserved state; the
+candidate refresh, file-phase reservation and pointer CAS require the original
+journal and `publisher_invocation`. This prevents a stale coordinator from
+adopting a newer writer's fence and reopening old bytes. The effective
+org-scoped writer map also includes eligible-team selector initialization in
+daemon startup plus the legacy policy GET and release-creation compatibility
+handlers. Those three call sites conditionally fence/publish only when the
+selector is absent; an authenticated existing-selector read causes zero
+generation churn. They are additional later-mainline map misses alongside the
+two v2 policy writers, so the v2 pair are not the only reconciled misses.
 
 This is a concrete proposed protocol plus executable isolated evidence, not a
 production approval, migration, runtime import, or a claim that same-UID

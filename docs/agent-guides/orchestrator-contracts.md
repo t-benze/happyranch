@@ -166,6 +166,14 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   admission fail-closed and is recovered at cold `OrgState.load`; it does not
   roll back or falsify the existing route result after the legacy write
   committed. Direct same-UID edits remain outside the cooperative guarantee.
+  Every publication is bound to the writer's invocation-owned `prepared`
+  journal before the canonical mutation. An independent coordinator may abort
+  and supersede only that pre-file state; file reservation and the final pointer
+  CAS require the same journal plus `publisher_invocation`, so a stale publisher
+  cannot adopt the newer fence. Eligible-team selector initialization at daemon
+  startup and the policy GET/release compatibility handlers participates
+  conditionally: a missing selector fences and publishes exactly once, while an
+  authenticated existing selector is read-only and does not advance generation.
 - **U2A boundary.** The coordinator's readiness verifier is intentionally not
   consumed by task, chain, fan-out, activation, or dispatch paths yet.
   Machine-global executor-profile changes remain U2B-deferred and do not yet

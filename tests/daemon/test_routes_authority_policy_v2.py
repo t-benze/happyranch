@@ -134,6 +134,8 @@ def test_empty_paired_bootstrap_is_atomic_exact_and_readback(client_with_runtime
     assert projection["selector_id"] == EMPTY_SELECTOR_ID
     assert projection["selector_epoch"] == 0
     assert "active" not in projection
+    after_initializer_generation = ensure_coherent_authority(org)
+    assert after_initializer_generation == before_generation + 1
 
     response = client.post(
         f"{BASE}/v2/releases",
@@ -142,7 +144,7 @@ def test_empty_paired_bootstrap_is_atomic_exact_and_readback(client_with_runtime
     assert response.status_code == 201
     assert (
         ensure_coherent_authority(org)
-        == before_generation + 1
+        == after_initializer_generation + 1
     )
     body = response.json()
     assert body["family"] == "v2" and body["contract_version"] == "v2"

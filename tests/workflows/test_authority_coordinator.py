@@ -13,10 +13,13 @@ import pytest
 
 from runtime.config import Settings
 from runtime.daemon.org_state import OrgState
+from runtime.infrastructure.database import Database
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+from runtime.orchestrator.teams import TeamsRegistry
 from runtime.workflows.authority import (
+    WorkflowAuthorityCoordinator,
     WorkflowAuthorityError,
 )
 
@@ -142,9 +145,9 @@ def test_every_durable_boundary_recovers_once_on_cold_reopen(
 
     if boundary in {"prepared", "canonical_published", "pointer_committed"}:
         fail_on_call = {
-            "prepared": 3,
-            "canonical_published": 5,
-            "pointer_committed": 6,
+            "prepared": 6,
+            "canonical_published": 8,
+            "pointer_committed": 9,
         }[boundary]
         original_transaction = org.workflow_authority._transaction
         calls = 0
@@ -359,8 +362,11 @@ def test_post_commit_publication_failure_preserves_fenced_state(
     org = _load(root)
     org.workflow_authority.fence(reason="supported-writer")
 
-    def fail_publish(*, publisher: str) -> int:
-        del publisher
+    def fail_publish(
+        *, publisher: str, fence_journal_id: str | None = None,
+        publisher_invocation: str | None = None,
+    ) -> int:
+        del publisher, fence_journal_id, publisher_invocation
         raise OSError("injected publication failure")
 
     monkeypatch.setattr(org.workflow_authority, "publish_current", fail_publish)
@@ -372,3 +378,101 @@ def test_post_commit_publication_failure_preserves_fenced_state(
     pointer = _rows(org)["pointers"][0]
     assert pointer[4] == "fenced"
     org.close()
+
+
+def test_independent_coordinators_cannot_publish_a_superseded_writer_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "alpha"
+    _seed_org(root)
+    first = _load(root)
+    second_db = Database(OrgPaths(root=root).db_path)
+    second = WorkflowAuthorityCoordinator(
+        db=second_db,
+        org_slug="alpha",
+        root=root,
+        teams=TeamsRegistry.load(root),
+    )
+    a_captured = threading.Event()
+    allow_a_publish = threading.Event()
+    b_captured = threading.Event()
+    allow_b_publish = threading.Event()
+    a_original_capture = first.workflow_authority.capture_snapshot
+    b_original_capture = second.capture_snapshot
+    errors: list[BaseException] = []
+
+    def capture_a() -> bytes:
+        snapshot = a_original_capture()
+        a_captured.set()
+        assert allow_a_publish.wait(timeout=5)
+        return snapshot
+
+    def capture_b() -> bytes:
+        snapshot = b_original_capture()
+        b_captured.set()
+        assert allow_b_publish.wait(timeout=5)
+        return snapshot
+
+    monkeypatch.setattr(first.workflow_authority, "capture_snapshot", capture_a)
+    monkeypatch.setattr(second, "capture_snapshot", capture_b)
+
+    def set_model(value: str) -> None:
+        paths = OrgPaths(root=root)
+        current = prompt_loader.load_agent(paths, "dev_agent")
+        assert current is not None
+        (paths.agents_dir / "dev_agent.md").write_text(
+            render_agent_text(replace(current, model=value)),
+        )
+
+    def write(coordinator: WorkflowAuthorityCoordinator, label: str, value: str) -> None:
+        try:
+            with coordinator.supported_change(publisher=label):
+                set_model(value)
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    writer_a = threading.Thread(
+        target=write, args=(first.workflow_authority, "writer-a", "model-a"),
+    )
+    writer_a.start()
+    assert a_captured.wait(timeout=5)
+
+    writer_b = threading.Thread(
+        target=write, args=(second, "writer-b", "model-b"),
+    )
+    writer_b.start()
+    assert b_captured.wait(timeout=5)
+
+    allow_a_publish.set()
+    writer_a.join(timeout=5)
+    assert not writer_a.is_alive()
+    assert errors == []
+    with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+        first.workflow_authority.verify_admission_ready()
+    canonical = prompt_loader.load_agent(OrgPaths(root=root), "dev_agent")
+    assert canonical is not None and canonical.model == "model-b"
+
+    allow_b_publish.set()
+    writer_b.join(timeout=5)
+    assert not writer_b.is_alive()
+    assert errors == []
+    ready = first.workflow_authority.recover_or_publish(publisher="test-refresh")
+    assert ready == 2
+    snapshot = json.loads(first.workflow_authority.verify_admission_ready().snapshot_bytes)
+    assert next(
+        item["model"] for item in snapshot["agents"] if item["name"] == "dev_agent"
+    ) == "model-b"
+    journal_states = [
+        tuple(row)
+        for row in first.db.execute(
+            "SELECT publisher,state FROM workflow_publication_journals "
+            "WHERE namespace=? ORDER BY rowid",
+            (first.workflow_authority.namespace,),
+        ).fetchall()
+    ]
+    assert journal_states[-2:] == [
+        ("writer-a", "aborted"),
+        ("writer-b", "cache_installed"),
+    ]
+    second_db.close()
+    first.close()

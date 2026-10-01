@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     import sqlite3
 
     from runtime.infrastructure.database import Database
+    from runtime.models import AuthorityPolicySelector
 
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,8 @@ class _SupportedWriterInterval:
         self._coordinator = coordinator
         self.publisher = publisher
         self.fenced = False
+        self.fence_journal_id: str | None = None
+        self.publisher_invocation: str | None = None
 
     @contextmanager
     def canonical_change(self) -> Iterator[None]:
@@ -75,7 +78,11 @@ class _SupportedWriterInterval:
         owner = f"workflow-writer:{self.publisher}:{uuid.uuid4().hex}"
         self._coordinator._acquire_lease(owner)
         try:
-            self._coordinator._fence_under_lease(reason=self.publisher)
+            self.fence_journal_id = self._coordinator._fence_under_lease(
+                reason=self.publisher,
+                publisher_invocation=owner,
+            )
+            self.publisher_invocation = owner
             self.fenced = True
             yield
         finally:
@@ -351,17 +358,71 @@ class WorkflowAuthorityCoordinator:
             raise WorkflowAuthorityError("authority_pointer_journal_invalid")
         return row
 
-    def _fence_under_lease(self, *, reason: str) -> None:
-        """Fence while the caller owns both coordinator and durable leases."""
-        del reason  # stable machine state is in the pointer; no free-form payload.
+    def _fence_under_lease(
+        self,
+        *,
+        reason: str,
+        publisher_invocation: str,
+    ) -> str:
+        """Fence and durably bind it to one publication invocation.
+
+        ``prepared`` is the only pre-file state and is therefore the only state
+        a later fencing writer may supersede. Its snapshot fields carry the
+        verified predecessor until the owning invocation refreshes them with
+        its post-mutation capture immediately before reserving the file phase.
+        Once file ownership is reserved, a later writer must fail closed and
+        leave recovery to complete the already-started publication.
+        """
         with self._transaction() as conn:
-            if self._active_journal(conn, self.namespace) is not None:
-                raise WorkflowAuthorityError("authority_publication_in_progress")
+            active = self._active_journal(conn, self.namespace)
+            if active is not None:
+                if str(active["state"]) != "prepared":
+                    raise WorkflowAuthorityError("authority_publication_in_progress")
+                changed = conn.execute(
+                    "UPDATE workflow_publication_journals SET state='aborted' "
+                    "WHERE id=? AND namespace=? AND state='prepared'",
+                    (str(active["id"]), self.namespace),
+                ).rowcount
+                if changed != 1:
+                    raise WorkflowAuthorityError("authority_publication_in_progress")
             generation, journal_id, digest, state, profile_fence = self._pointer(
                 conn, self.namespace,
             )
             if state not in {"ready", "fenced"}:
                 raise WorkflowAuthorityError("authority_pointer_not_ready")
+            if generation == 0:
+                predecessor = _canonical_json({})
+            else:
+                if journal_id is None or digest is None:
+                    raise WorkflowAuthorityError("authority_pointer_not_ready")
+                previous = self._journal(conn, journal_id)
+                predecessor = bytes(previous["snapshot_bytes"])
+                if (
+                    previous["state"] != "cache_installed"
+                    or int(previous["generation"]) != generation
+                    or previous["snapshot_digest"] != digest
+                    or _digest(predecessor) != digest
+                ):
+                    raise WorkflowAuthorityError("authority_pointer_not_ready")
+            fence_journal_id = f"WAJ-{uuid.uuid4().hex}"
+            conn.execute(
+                "INSERT INTO workflow_publication_journals("
+                "id,namespace,generation,expected_generation,snapshot_bytes,"
+                "snapshot_digest,publisher,publisher_invocation,profile_fence,"
+                "state,recovery_owner,file_phase_owner"
+                ") VALUES (?,?,?,?,?,?,?,?,?,'prepared','workflow-recovery',NULL)",
+                (
+                    fence_journal_id,
+                    self.namespace,
+                    generation + 1,
+                    generation,
+                    predecessor,
+                    _digest(predecessor),
+                    reason,
+                    publisher_invocation,
+                    profile_fence,
+                ),
+            )
             conn.execute(
                 "INSERT INTO workflow_authority_pointers("
                 "namespace,current_generation,journal_id,snapshot_digest,state,profile_fence"
@@ -373,6 +434,19 @@ class WorkflowAuthorityCoordinator:
                 ),
             )
             self._cache.pop(self.namespace, None)
+            return fence_journal_id
+
+    def _begin_publication_fence(self, *, publisher: str) -> tuple[str, str]:
+        invocation = f"workflow-writer:{publisher}:{uuid.uuid4().hex}"
+        self._acquire_lease(invocation)
+        try:
+            journal_id = self._fence_under_lease(
+                reason=publisher,
+                publisher_invocation=invocation,
+            )
+        finally:
+            self._release_lease(invocation)
+        return journal_id, invocation
 
     def fence(self, *, reason: str) -> None:
         """Durably deny later workflow admission before an authority mutation."""
@@ -380,7 +454,10 @@ class WorkflowAuthorityCoordinator:
             owner = f"workflow-fence:{uuid.uuid4().hex}"
             self._acquire_lease(owner)
             try:
-                self._fence_under_lease(reason=reason)
+                self._fence_under_lease(
+                    reason=reason,
+                    publisher_invocation=owner,
+                )
             finally:
                 self._release_lease(owner)
 
@@ -399,11 +476,17 @@ class WorkflowAuthorityCoordinator:
                 if interval.fenced:
                     self.publish_after_supported_change(
                         publisher=f"{publisher}:compensation",
+                        fence_journal_id=interval.fence_journal_id,
+                        publisher_invocation=interval.publisher_invocation,
                     )
                 raise
             else:
                 if interval.fenced:
-                    self.publish_after_supported_change(publisher=publisher)
+                    self.publish_after_supported_change(
+                        publisher=publisher,
+                        fence_journal_id=interval.fence_journal_id,
+                        publisher_invocation=interval.publisher_invocation,
+                    )
 
     @asynccontextmanager
     async def async_writer_interval(
@@ -429,11 +512,17 @@ class WorkflowAuthorityCoordinator:
                     if interval.fenced:
                         self.publish_after_supported_change(
                             publisher=f"{publisher}:compensation",
+                            fence_journal_id=interval.fence_journal_id,
+                            publisher_invocation=interval.publisher_invocation,
                         )
                     raise
                 else:
                     if interval.fenced:
-                        self.publish_after_supported_change(publisher=publisher)
+                        self.publish_after_supported_change(
+                            publisher=publisher,
+                            fence_journal_id=interval.fence_journal_id,
+                            publisher_invocation=interval.publisher_invocation,
+                        )
 
     @contextmanager
     def supported_change(self, *, publisher: str) -> Iterator[None]:
@@ -457,16 +546,55 @@ class WorkflowAuthorityCoordinator:
             with interval.canonical_change():
                 yield
 
+    def ensure_authority_selector(
+        self,
+        *,
+        team: str,
+        publisher: str,
+    ) -> AuthorityPolicySelector:
+        """Initialize a missing selector inside one conditional writer interval.
+
+        The authenticated existing-selector path is read-only and therefore
+        does not fence or advance the authority generation. The process gate
+        closes the ordinary in-process check-to-initialize race; the durable
+        invocation binding keeps independent coordinators fail-closed.
+        """
+        store = AuthorityPolicyStore(self._db)
+        with self.writer_interval(publisher=publisher) as interval:
+            selector = store.get_authority_selector(team)
+            if selector is None:
+                with interval.canonical_change():
+                    selector = store.ensure_authority_selector(team)
+            return selector
+
     def publish_current(
         self,
         *,
         publisher: str,
+        fence_journal_id: str | None = None,
+        publisher_invocation: str | None = None,
     ) -> int:
         """Capture then publish the next generation through durable stages."""
         with self._publisher_lock:
-            return self._publish_current_locked(publisher=publisher)
+            if (fence_journal_id is None) != (publisher_invocation is None):
+                raise WorkflowAuthorityError("publication_fence_binding_incomplete")
+            if fence_journal_id is None or publisher_invocation is None:
+                fence_journal_id, publisher_invocation = self._begin_publication_fence(
+                    publisher=publisher,
+                )
+            return self._publish_current_locked(
+                publisher=publisher,
+                fence_journal_id=fence_journal_id,
+                publisher_invocation=publisher_invocation,
+            )
 
-    def _publish_current_locked(self, *, publisher: str) -> int:
+    def _publish_current_locked(
+        self,
+        *,
+        publisher: str,
+        fence_journal_id: str,
+        publisher_invocation: str,
+    ) -> int:
         """Publish while the process-local writer/publisher gate is held."""
         snapshot = self.capture_snapshot()
         snapshot_digest = _digest(snapshot)
@@ -474,39 +602,58 @@ class WorkflowAuthorityCoordinator:
             owner = f"{publisher}:{uuid.uuid4().hex}"
             self._acquire_lease(owner)
             try:
-                journal_id = f"WAJ-{uuid.uuid4().hex}"
                 with self._transaction() as conn:
-                    if self._active_journal(conn, self.namespace) is not None:
-                        raise WorkflowAuthorityError("authority_publication_in_progress")
+                    active = self._active_journal(conn, self.namespace)
                     generation, _old_journal, _old_digest, state, profile_fence = self._pointer(
                         conn, self.namespace,
                     )
-                    if state not in {"ready", "fenced"}:
-                        raise WorkflowAuthorityError("authority_pointer_not_ready")
-                    conn.execute(
-                        "INSERT INTO workflow_publication_journals("
-                        "id,namespace,generation,expected_generation,snapshot_bytes,"
-                        "snapshot_digest,publisher,publisher_invocation,profile_fence,"
-                        "state,recovery_owner,file_phase_owner"
-                        ") VALUES (?,?,?,?,?,?,?,?,?,'prepared','workflow-recovery',NULL)",
+                    if (
+                        state != "fenced"
+                        or active is None
+                        or str(active["id"]) != fence_journal_id
+                        or str(active["state"]) != "prepared"
+                        or str(active["publisher_invocation"]) != publisher_invocation
+                        or int(active["expected_generation"]) != generation
+                        or int(active["generation"]) != generation + 1
+                        or int(active["profile_fence"]) != profile_fence
+                    ):
+                        raise WorkflowAuthorityError("publication_fence_superseded")
+                    changed = conn.execute(
+                        "UPDATE workflow_publication_journals SET "
+                        "snapshot_bytes=?,snapshot_digest=?,publisher=? "
+                        "WHERE id=? AND namespace=? AND state='prepared' "
+                        "AND publisher_invocation=?",
                         (
-                            journal_id, self.namespace, generation + 1, generation,
-                            snapshot, snapshot_digest, publisher, owner, profile_fence,
+                            snapshot,
+                            snapshot_digest,
+                            publisher,
+                            fence_journal_id,
+                            self.namespace,
+                            publisher_invocation,
                         ),
-                    )
+                    ).rowcount
+                    if changed != 1:
+                        raise WorkflowAuthorityError("publication_fence_superseded")
                 with self._transaction() as conn:
                     changed = conn.execute(
                         "UPDATE workflow_publication_journals "
                         "SET state='file_phase_reserved',file_phase_owner=? "
                         "WHERE id=? AND namespace=? AND state='prepared' "
                         "AND publisher_invocation=?",
-                        (owner, journal_id, self.namespace, owner),
+                        (
+                            owner,
+                            fence_journal_id,
+                            self.namespace,
+                            publisher_invocation,
+                        ),
                     ).rowcount
                     if changed != 1:
                         raise WorkflowAuthorityError("publication_phase_owner_required")
                 path = self.canonical_path
                 path.parent.mkdir(parents=True, exist_ok=True)
-                staging = path.with_name(f"{path.name}.{journal_id}.staging")
+                staging = path.with_name(
+                    f"{path.name}.{fence_journal_id}.staging",
+                )
                 staging.write_bytes(snapshot)
                 os.replace(staging, path)
                 with self._transaction() as conn:
@@ -515,22 +662,30 @@ class WorkflowAuthorityCoordinator:
                         "SET state='canonical_published' "
                         "WHERE id=? AND namespace=? AND state='file_phase_reserved' "
                         "AND file_phase_owner=?",
-                        (journal_id, self.namespace, owner),
+                        (fence_journal_id, self.namespace, owner),
                     ).rowcount
                     if changed != 1:
                         raise WorkflowAuthorityError("publication_phase_owner_required")
                 with self._transaction() as conn:
-                    current, _old_id, _old_digest, _state, current_profile_fence = self._pointer(
+                    current, _old_id, _old_digest, pointer_state, current_profile_fence = self._pointer(
                         conn, self.namespace,
                     )
-                    if current != generation or current_profile_fence != profile_fence:
+                    active = self._active_journal(conn, self.namespace)
+                    if (
+                        current != generation
+                        or pointer_state != "fenced"
+                        or current_profile_fence != profile_fence
+                        or active is None
+                        or str(active["id"]) != fence_journal_id
+                        or str(active["publisher_invocation"]) != publisher_invocation
+                    ):
                         raise WorkflowAuthorityError("publication_pointer_cas_stale")
                     changed = conn.execute(
                         "UPDATE workflow_publication_journals "
                         "SET state='pointer_committed' "
                         "WHERE id=? AND namespace=? AND state='canonical_published' "
                         "AND file_phase_owner=?",
-                        (journal_id, self.namespace, owner),
+                        (fence_journal_id, self.namespace, owner),
                     ).rowcount
                     if changed != 1:
                         raise WorkflowAuthorityError("publication_pointer_cas_stale")
@@ -544,7 +699,7 @@ class WorkflowAuthorityCoordinator:
                         "snapshot_digest=excluded.snapshot_digest,state='ready',"
                         "profile_fence=excluded.profile_fence",
                         (
-                            self.namespace, generation + 1, journal_id,
+                            self.namespace, generation + 1, fence_journal_id,
                             snapshot_digest, profile_fence,
                         ),
                     )
@@ -554,7 +709,7 @@ class WorkflowAuthorityCoordinator:
                         "UPDATE workflow_publication_journals SET state='cache_installed' "
                         "WHERE id=? AND namespace=? AND state='pointer_committed' "
                         "AND file_phase_owner=?",
-                        (journal_id, self.namespace, owner),
+                        (fence_journal_id, self.namespace, owner),
                     ).rowcount
                     if changed != 1:
                         self._cache.pop(self.namespace, None)
@@ -563,7 +718,13 @@ class WorkflowAuthorityCoordinator:
             finally:
                 self._release_lease(owner)
 
-    def publish_after_supported_change(self, *, publisher: str) -> bool:
+    def publish_after_supported_change(
+        self,
+        *,
+        publisher: str,
+        fence_journal_id: str | None = None,
+        publisher_invocation: str | None = None,
+    ) -> bool:
         """Best-effort post-commit publication preserving the writer contract.
 
         A supported writer fences before its legacy mutation. Once that legacy
@@ -573,7 +734,11 @@ class WorkflowAuthorityCoordinator:
         pointer fenced for startup or a later supported writer to recover.
         """
         try:
-            self.publish_current(publisher=publisher)
+            self.publish_current(
+                publisher=publisher,
+                fence_journal_id=fence_journal_id,
+                publisher_invocation=publisher_invocation,
+            )
         except Exception:
             logger.exception(
                 "workflow authority publication failed after supported writer "
@@ -658,7 +823,20 @@ class WorkflowAuthorityCoordinator:
                 path = self.canonical_path
                 staging = path.with_name(f"{path.name}.{journal_id}.staging")
 
-                if state in {"prepared", "file_phase_reserved"}:
+                if state == "prepared":
+                    with self._transaction() as conn:
+                        changed = conn.execute(
+                            "UPDATE workflow_publication_journals SET state='aborted' "
+                            "WHERE id=? AND namespace=? AND state='prepared'",
+                            (journal_id, self.namespace),
+                        ).rowcount
+                        if changed != 1:
+                            raise WorkflowAuthorityError(
+                                "authority_publication_in_progress",
+                            )
+                    return "aborted_unpublished"
+
+                if state == "file_phase_reserved":
                     if staging.is_file():
                         if staging.read_bytes() != snapshot:
                             raise WorkflowAuthorityError("authority_staging_snapshot_mismatch")
