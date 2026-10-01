@@ -1,8 +1,9 @@
 /**
  * Efficiency — one homogeneous cohort (exactly one CLI and one model) broken
  * into the five fixed run types (PRD §5–§8). Nothing renders until a CLI is
- * chosen; choosing one preselects its most-used model, and there is no combined
- * or aggregate option. Every figure, coverage
+ * chosen; choosing one preselects its CLI default (not pinned) cohort, a named
+ * model can then be picked, and there is no combined or aggregate option. Every
+ * figure, coverage
  * fraction and delta comes from `GET /usage/efficiency`; missing usage is
  * never shown as zero.
  */
@@ -68,28 +69,6 @@ function modelLabel(model: string | null): string {
   return model === null ? UNPINNED_LABEL : model;
 }
 
-/**
- * The executor's most-used cohort: highest current runs, then higher previous
- * runs, then ascending code-unit order of the displayed label. The unpinned
- * cohort is an ordinary candidate.
- */
-function defaultCohortFor(cohorts: CohortOption[], executor: string): CohortOption | undefined {
-  let best: CohortOption | undefined;
-  for (const c of cohorts) {
-    if (c.executor !== executor) continue;
-    if (
-      best === undefined ||
-      c.current_runs > best.current_runs ||
-      (c.current_runs === best.current_runs &&
-        (c.previous_runs > best.previous_runs ||
-          (c.previous_runs === best.previous_runs && modelLabel(c.model) < modelLabel(best.model))))
-    ) {
-      best = c;
-    }
-  }
-  return best;
-}
-
 /* ------------------------------------------------------------------ */
 /*  Cohort selectors                                                   */
 /* ------------------------------------------------------------------ */
@@ -134,7 +113,12 @@ function CohortPicker({
   onModel: (model: string | null) => void;
 }): JSX.Element {
   const executors = useMemo(() => [...new Set(cohorts.map((c) => c.executor))], [cohorts]);
-  const models = cohorts.filter((c) => c.executor === executor);
+  // The unpinned cohort is always offered for the chosen CLI, even when it has
+  // no runs in this window (and so no cohort row).
+  const models: Array<string | null> = [
+    null,
+    ...cohorts.filter((c) => c.executor === executor && c.model !== null).map((c) => c.model),
+  ];
   return (
     <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-3">
       <div role="group" aria-labelledby="usage-cli-label" className="flex flex-wrap items-center gap-2">
@@ -150,13 +134,13 @@ function CohortPicker({
         {executor === null ? (
           <span className="text-caption text-text-muted">Choose a CLI first</span>
         ) : (
-          models.map((c) => (
+          models.map((model) => (
             <Pill
-              key={c.model ?? '\u0000unpinned'}
-              pressed={selection !== null && selection.executor === executor && selection.model === c.model}
-              onClick={() => onModel(c.model)}
+              key={model ?? '\u0000unpinned'}
+              pressed={selection !== null && selection.executor === executor && selection.model === model}
+              onClick={() => onModel(model)}
             >
-              {modelLabel(c.model)}
+              {modelLabel(model)}
             </Pill>
           ))
         )}
@@ -485,9 +469,9 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
 
   const cohorts = optionsQ.data?.cohorts ?? [];
 
-  // A cohort that is no longer offered (e.g. a previous-only cohort after
-  // Compare is switched off) is never silently kept: it falls back to the
-  // executor's default cohort, or both are cleared when the executor is gone.
+  // A named model that is no longer offered (e.g. a previous-only cohort after
+  // Compare is switched off) is never silently kept: it falls back to the CLI's
+  // unpinned cohort, which is always offered. Both are cleared when the CLI is gone.
   useEffect(() => {
     if (!optionsQ.isSuccess || optionsQ.isPlaceholderData) return;
     const list = optionsQ.data.cohorts;
@@ -496,18 +480,17 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
       setSelection(null);
     } else if (
       selection !== null &&
+      selection.model !== null &&
       !list.some((c) => c.executor === selection.executor && c.model === selection.model)
     ) {
-      const fallback = executor !== null ? defaultCohortFor(list, executor) : undefined;
-      setSelection(fallback ? { executor: fallback.executor, model: fallback.model } : null);
+      setSelection({ executor: selection.executor, model: null });
     }
   }, [optionsQ.isSuccess, optionsQ.isPlaceholderData, optionsQ.data, executor, selection]);
 
   const onExecutor = (ex: string) => {
     if (ex === executor) return;
-    const fallback = defaultCohortFor(cohorts, ex);
     setExecutor(ex);
-    setSelection(fallback ? { executor: fallback.executor, model: fallback.model } : null);
+    setSelection({ executor: ex, model: null });
   };
   const onModel = (model: string | null) => {
     if (executor !== null) setSelection({ executor, model });
@@ -540,8 +523,8 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
     body = (
       <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-5">
         <p className="text-body text-text-primary">
-          Choose one CLI. Its most-used model is preselected and you can switch to another. Token
-          reporting differs by CLI and model, so there is no combined view.
+          Choose one CLI. Its CLI default (not pinned) cohort is preselected and you can pick a named
+          model. Token reporting differs by CLI and model, so there is no combined view.
         </p>
       </div>
     );
