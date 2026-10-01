@@ -7,6 +7,7 @@ THR-243 seq42.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -21,7 +22,10 @@ from runtime.daemon.zombie_reaper import (
 )
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.audit_logger import AuditLogger
-from runtime.models import TaskRecord, TaskStatus
+from runtime.models import BlockKind, TaskRecord, TaskStatus
+from runtime.orchestrator.authority import (
+    refuse_authority_policy_v2_pre_final_on_startup,
+)
 from runtime.orchestrator.active_authority_policy import (
     SESSION_POLICY_BINDING_ACTION,
 )
@@ -207,6 +211,147 @@ def test_startup_refusal_replay_surfaces_new_transition_exactly_once(
     assert len(thread_followups) == 1
 
 
+def test_startup_admitted_blocked_result_is_not_refused_or_fenced(tmp_path):
+    """D2-B' regression: the real sweep reaches Branch 2 in the same pass."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store._db._conn.execute(
+        "UPDATE task_results SET status='blocked', decision_json=NULL WHERE id=?",
+        (row["id"],),
+    )
+    store._db._conn.commit()
+    store._db.update_task(
+        attempt.root_task_id,
+        status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED,
+    )
+    store._db.insert_task(TaskRecord(
+        id="TASK-D2-TERMINAL-CHILD",
+        brief="terminal child",
+        parent_task_id=attempt.root_task_id,
+        status=TaskStatus.COMPLETED,
+        completed_at="2026-01-01T00:00:00+00:00",
+    ))
+    store.bind_v2_process_boot_id("boot-after-restart")
+    store._db._v2_live_attempt_owners.clear()
+    orch = _reaper_orch(store)
+    queue = TaskQueue()
+
+    fenced = refuse_authority_policy_v2_pre_final_on_startup(
+        store._db, orchestrator=orch,
+    )
+    _sweep_on_startup(store._db, queue, "test", orchestrator=orch)
+
+    # The returned fence set and Branch 2's enqueue independently prove that
+    # classification did not suppress ordinary recovery in this boot.
+    assert attempt.root_task_id not in fenced
+    assert store._db.get_task(attempt.root_task_id).block_kind is BlockKind.DELEGATED
+    assert queue._queue.qsize() == 1
+    assert store._db.get_authority_policy_v2_attempt_for_result(
+        row["id"]
+    ).finalization_state == "unfinalized"
+    actions = [a["action"] for a in store._db.get_audit_logs(attempt.root_task_id)]
+    assert "escalation" not in actions
+    assert "authority_v2_refusal_task_failed" not in actions
+    assert "daemon_restart_failure" not in actions
+
+
+def test_startup_non_escalate_classification_without_orchestrator_fails_closed(tmp_path):
+    """M4: database-only startup callers cannot reproduce parser semantics."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store._db._conn.execute(
+        "UPDATE task_results SET decision_json=? WHERE id=?",
+        (json.dumps({"action": "done"}), row["id"]),
+    )
+    store._db._conn.commit()
+    store.bind_v2_process_boot_id("boot-after-restart")
+    store._db._v2_live_attempt_owners.clear()
+
+    _sweep_on_startup(store._db, TaskQueue(), "test")
+
+    assert store._db.get_task(attempt.root_task_id).status is TaskStatus.ESCALATED
+    assert store._db.get_authority_policy_v2_attempt_for_result(
+        row["id"]
+    ).finalization_state == "refused"
+
+
+def test_startup_non_admitted_non_escalate_result_still_refuses(tmp_path):
+    """M3: classification is admitted-only; a claimed attempt is interrupted."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _claim(store, row, attempt).status == "claimed"
+    store._db._conn.execute(
+        "UPDATE task_results SET decision_json=? WHERE id=?",
+        (json.dumps({"action": "done"}), row["id"]),
+    )
+    store._db._conn.commit()
+    store.bind_v2_process_boot_id("boot-after-restart")
+    store._db._v2_live_attempt_owners.clear()
+
+    _sweep_on_startup(
+        store._db, TaskQueue(), "test", orchestrator=_reaper_orch(store),
+    )
+
+    assert store._db.get_task(attempt.root_task_id).status is TaskStatus.ESCALATED
+    assert store._db.get_authority_policy_v2_attempt_for_result(
+        row["id"]
+    ).refusal_code == "claim_audit_missing"
+
+
+def test_startup_non_escalate_admission_is_read_only_across_two_boots(tmp_path):
+    """M5: two boots skip J and consume an accepted Q no more than once."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store._db._conn.execute(
+        "UPDATE task_results SET decision_json=? WHERE id=?",
+        (json.dumps({"action": "done"}), row["id"]),
+    )
+    store._db.update_task(attempt.root_task_id, status=TaskStatus.PENDING)
+    store._db._conn.execute(
+        """INSERT INTO task_completion_recoveries
+           (task_id, agent, origin_session_id, recovery_session_id,
+            provider_session_id, claimed_at, expires_at, state,
+            accepted_result_id, accepted_result_session_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            attempt.root_task_id,
+            attempt.manager_agent,
+            "sess-origin",
+            attempt.manager_session_id,
+            "provider-1",
+            "2026-01-01T00:00:00+00:00",
+            "2999-01-01T00:02:00+00:00",
+            "callback_accepted",
+            row["id"],
+            attempt.manager_session_id,
+        ),
+    )
+    store._db._conn.commit()
+    store.bind_v2_process_boot_id("boot-after-restart")
+    store._db._v2_live_attempt_owners.clear()
+    orch = _reaper_orch(store)
+    _sweep_on_startup(store._db, TaskQueue(), "test", orchestrator=orch)
+    after_first = store._db._conn.execute(
+        "SELECT COUNT(*) FROM audit_log"
+    ).fetchone()[0]
+    receipt_after_first = store._db._conn.execute(
+        "SELECT state FROM task_completion_recoveries WHERE task_id=?",
+        (attempt.root_task_id,),
+    ).fetchone()["state"]
+
+    _sweep_on_startup(store._db, TaskQueue(), "test", orchestrator=orch)
+
+    assert store._db._conn.execute(
+        "SELECT COUNT(*) FROM audit_log"
+    ).fetchone()[0] == after_first
+    receipt_after_second = store._db._conn.execute(
+        "SELECT state FROM task_completion_recoveries WHERE task_id=?",
+        (attempt.root_task_id,),
+    ).fetchone()["state"]
+    assert receipt_after_first in {"callback_accepted", "callback_consumed"}
+    assert receipt_after_second == receipt_after_first
+    assert store._db.get_authority_policy_v2_attempt_for_result(
+        row["id"]
+    ).finalization_state == "unfinalized"
+
+
 def _flag_v2_zombie(store, *, age: int) -> tuple[datetime, object]:
     task = store._db.get_task("TASK-C2")
     now = datetime.now(timezone.utc)
@@ -224,6 +369,7 @@ def _reaper_orch(store):
     orch = _orch(store)
     orch._audit = AuditLogger(store._db)
     orch._parse_next_step = lambda report: report.decision
+    orch._update_task_history = lambda _task_id: None
     return orch
 
 

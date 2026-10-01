@@ -1788,7 +1788,6 @@ def refuse_authority_policy_v2_pre_final_on_startup(
         return None
     fenced_roots: set[str] = set()
     for discovered in targets:
-        fenced_roots.add(discovered.root_task_id)
         try:
             target = store.get_v2_housekeeping_target(
                 root_task_id=discovered.root_task_id,
@@ -1797,7 +1796,44 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                 result_id=discovered.result_id,
             )
             if target is None or target.attempt_id != discovered.attempt_id:
+                fenced_roots.add(discovered.root_task_id)
                 continue
+            if target.stage == "admitted" and orchestrator is not None:
+                try:
+                    from runtime.orchestrator.orchestrator import (
+                        completion_report_from_result_row,
+                    )
+                    result = next(
+                        (
+                            row for row in db.get_task_results(target.root_task_id)
+                            if row.get("id") == target.result_id
+                            and row.get("agent") == target.manager_agent
+                            and row.get("session_id") == target.manager_session_id
+                        ),
+                        None,
+                    )
+                    if result is None:
+                        raise ValueError("causal result is missing")
+                    report = completion_report_from_result_row(
+                        target.root_task_id,
+                        result,
+                        fallback_agent=target.manager_agent,
+                    )
+                    non_escalate = (
+                        report.status == "blocked"
+                        or orchestrator._parse_next_step(report).action != "escalate"
+                    )
+                except Exception:
+                    # Missing/unreadable causal evidence fails closed through
+                    # the existing refusal path below.
+                    non_escalate = False
+                if non_escalate:
+                    # D2-B': the admission is inert residue.  Do not touch J,
+                    # Q, audits, or the task, and do not fence later branches.
+                    continue
+            # orchestrator=None cannot reproduce shipping parsing semantics and
+            # therefore fails closed to the existing refusal path (M4).
+            fenced_roots.add(discovered.root_task_id)
             refusal_code = (
                 target.obligation_code
                 or _V2_INTERRUPTED_STAGE_REFUSAL.get(
@@ -1812,6 +1848,59 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                 refusal_code=refusal_code,
             )
             if outcome.status == "refused" and orchestrator is not None:
+                if outcome.task_disposition == "failed":
+                    from runtime.orchestrator.run_step import (
+                        _enqueue_parent_if_waiting,
+                        _fail_terminal_tail,
+                        _handoff_consumed_recovery_terminal_effects,
+                        _task_matches_authority_v2_refusal_failure,
+                        _maybe_post_thread_followup,
+                    )
+                    expected_note = f"authority_v2_refusal:{refusal_code}"
+                    if outcome.receipt_settled:
+                        _handoff_consumed_recovery_terminal_effects(
+                            orchestrator,
+                            target.root_task_id,
+                            target.manager_agent,
+                            target.manager_session_id,
+                            target.result_id,
+                            "failed",
+                            after_recovery_cleanup=lambda: (
+                                _enqueue_parent_if_waiting(
+                                    orchestrator,
+                                    target.root_task_id,
+                                    root_auto_revisit_spawned=False,
+                                )
+                                if _task_matches_authority_v2_refusal_failure(
+                                    orchestrator, target.root_task_id, expected_note,
+                                )
+                                else None
+                            ),
+                        )
+                    else:
+                        _fail_terminal_tail(
+                            orchestrator,
+                            target.root_task_id,
+                            expected_note=expected_note,
+                        )
+                        if _task_matches_authority_v2_refusal_failure(
+                            orchestrator, target.root_task_id, expected_note,
+                        ):
+                            _enqueue_parent_if_waiting(
+                                orchestrator,
+                                target.root_task_id,
+                                root_auto_revisit_spawned=False,
+                            )
+                        if _task_matches_authority_v2_refusal_failure(
+                            orchestrator, target.root_task_id, expected_note,
+                        ):
+                            _maybe_post_thread_followup(
+                                orchestrator,
+                                target.root_task_id,
+                                status=TaskStatus.FAILED,
+                                auto_revisit_spawned=False,
+                            )
+                    continue
                 result = db.get_latest_task_result(
                     target.root_task_id,
                     target.manager_agent,

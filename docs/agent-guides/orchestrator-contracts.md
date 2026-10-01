@@ -721,6 +721,17 @@ later publication/admission/spend transitions and
 the startup/reaper/run-step automatic discovery wiring remain separate units, so
 the dual-text feature remains unaccepted.
 
+THR-277 supersedes C3d1's root-only terminal wording for structural children.
+The refusal transaction authenticates exactly one of two complete shapes: a
+root retains the existing `escalation` audit and `escalated` task, while a
+non-root writes `authority_v2_refusal_task_failed` and becomes terminal
+`failed` before its ordinary or recovery-owned FAILED tail wakes the parent.
+Startup classifies only `admitted` attempts from the exact causal result via
+the shipping completion reconstruction/parser; blocked and parsed
+non-escalate results receive zero writes and no fence. Missing/unreadable
+evidence, parser-unavailable callers, later stages, and parsed escalation keep
+the fail-closed refusal path. No schema or task-status value changes.
+
 Checkpoint C3d2 lands the accepted R4 finalize and settle-receipt steps 1-2 on
 the same unmerged draft PR, adding exactly the three remaining approved additive
 tables. `authority_policy_v2_continue_envelopes` (E) is unique by candidate and

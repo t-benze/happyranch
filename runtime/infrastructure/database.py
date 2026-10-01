@@ -91,6 +91,7 @@ from runtime.models import (
     AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION,
     AUTHORITY_POLICY_V2_HOUSEKEEPING_PENDING_CODE,
     AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES,
+    AUTHORITY_POLICY_V2_REFUSAL_TASK_FAILED_ACTION,
     AUTHORITY_POLICY_V2_PUBLICATION_LEASE_SECONDS,
     AUTHORITY_POLICY_V2_RECOVERY_SETTLED_ACTION,
     AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
@@ -151,14 +152,17 @@ from runtime.models import (
     validate_authority_digest,
     validate_authority_version,
 )
-from runtime.reply_delivery import reply_failure_category
-from runtime.infrastructure.work_hours_store import WorkHoursStore
-from runtime.infrastructure.schedule_store import ScheduleStore
+
 from runtime.daemon.thread_mentions import (
     parse_mentions,
     resolve_wake_set,
     valid_mentions,
 )
+from runtime.infrastructure.work_hours_store import WorkHoursStore
+from runtime.infrastructure.schedule_store import ScheduleStore
+from runtime.reply_delivery import reply_failure_category
+
+logger = logging.getLogger(__name__)
 
 
 # Closed translation between the precise pre-final stage vocabulary and the
@@ -5050,6 +5054,12 @@ class Database:
         See docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.3
         (Codex review of PR #34 surfaced the residual race).
         """
+        row = self._conn.execute(
+            "SELECT parent_task_id FROM tasks WHERE id=?", (task_id,),
+        ).fetchone()
+        if row is not None and row["parent_task_id"] is not None:
+            logger.error("refused non-root escalation for task %s", task_id)
+            return False
         now = datetime.now(timezone.utc).isoformat()
         if recovery_owner is None:
             cursor = self._conn.execute(
@@ -5057,6 +5067,7 @@ class Database:
                    SET status = ?, block_kind = NULL, note = ?, updated_at = ?
                    WHERE id = ?
                      AND cancelled_at IS NULL
+                     AND parent_task_id IS NULL
                      AND status NOT IN ('completed', 'failed', 'superseded', 'cancelled')""",
                 (TaskStatus.ESCALATED.value, reason, now, task_id),
             )
@@ -5078,6 +5089,7 @@ class Database:
                 """UPDATE tasks
                    SET status = ?, block_kind = NULL, note = ?, updated_at = ?
                    WHERE id = ? AND assigned_agent = ? AND current_session_id = ?
+                     AND parent_task_id IS NULL
                      AND cancelled_at IS NULL AND status = ?
                      AND EXISTS (
                        SELECT 1 FROM task_completion_recoveries
@@ -5141,6 +5153,12 @@ class Database:
         both rows back. Re-entry after a committed escalation loses because an
         already-escalated task is excluded from the update predicate.
         """
+        row = self._conn.execute(
+            "SELECT parent_task_id FROM tasks WHERE id=?", (task_id,),
+        ).fetchone()
+        if row is not None and row["parent_task_id"] is not None:
+            logger.error("refused non-root escalation for task %s", task_id)
+            return False
         now = datetime.now(timezone.utc).isoformat()
         set_active_fanout = ", active_fanout = NULL" if clear_active_fanout else ""
         if match_expected_state:
@@ -5165,7 +5183,7 @@ class Database:
                 f"""UPDATE tasks
                     SET status = ?, block_kind = NULL, note = ?, updated_at = ?
                         {set_active_fanout}
-                    WHERE id = ? AND {state_predicate}""",
+                    WHERE id = ? AND parent_task_id IS NULL AND {state_predicate}""",
                 (TaskStatus.ESCALATED.value, reason, now, task_id, *state_args),
             )
             if cursor.rowcount != 1:
@@ -5218,12 +5236,19 @@ class Database:
         zero rows and bails. A /cancel landing in the window also moves the row
         out of the expected pre-state, so the CAS rejects it for free.
         """
+        row = self._conn.execute(
+            "SELECT parent_task_id FROM tasks WHERE id=?", (task_id,),
+        ).fetchone()
+        if row is not None and row["parent_task_id"] is not None:
+            logger.error("refused non-root escalation for task %s", task_id)
+            return False
         now = datetime.now(timezone.utc).isoformat()
         if expected_block_kind is None:
             cursor = self._conn.execute(
                 """UPDATE tasks
                    SET status = ?, block_kind = NULL, note = ?, updated_at = ?
-                   WHERE id = ? AND status = ? AND block_kind IS NULL""",
+                   WHERE id = ? AND parent_task_id IS NULL
+                     AND status = ? AND block_kind IS NULL""",
                 (TaskStatus.ESCALATED.value, reason, now,
                  task_id, expected_status.value),
             )
@@ -5231,7 +5256,8 @@ class Database:
             cursor = self._conn.execute(
                 """UPDATE tasks
                    SET status = ?, block_kind = NULL, note = ?, updated_at = ?
-                   WHERE id = ? AND status = ? AND block_kind = ?""",
+                   WHERE id = ? AND parent_task_id IS NULL
+                     AND status = ? AND block_kind = ?""",
                 (TaskStatus.ESCALATED.value, reason, now,
                  task_id, expected_status.value, expected_block_kind.value),
             )
@@ -9563,35 +9589,59 @@ class Database:
 
     def _authenticate_v2_refusal_escalation_uncommitted(
         self, attempt_row: dict, *, refusal_code: str,
-    ) -> bool:
-        """Require exactly one authentic normal escalation audit for this attempt.
-
-        Only the still-current-owner ``refused`` outcome writes the ordinary
-        task escalation audit; the ``owner_lost`` outcome that preserves a
-        different winning task must NOT require it (and this helper is simply
-        not called for that outcome).
-        """
+    ) -> str | None:
+        """Authenticate exactly one complete root-escalated or child-failed shape."""
         try:
             rows = [
                 row for row in self.get_audit_logs(attempt_row["root_task_id"])
-                if row.get("action") == "escalation"
+                if row.get("action") in (
+                    "escalation", AUTHORITY_POLICY_V2_REFUSAL_TASK_FAILED_ACTION,
+                )
                 and row.get("agent") == attempt_row["manager_agent"]
                 and isinstance(row.get("payload"), dict)
                 and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
             ]
+            task = self._conn.execute(
+                "SELECT * FROM tasks WHERE id=?", (attempt_row["root_task_id"],),
+            ).fetchone()
         except Exception:
-            return False
-        if len(rows) != 1:
-            return False
+            return None
+        if len(rows) != 1 or task is None:
+            return None
         payload = rows[0]["payload"]
+        note = f"authority_v2_refusal:{refusal_code}"
+        if rows[0]["action"] == "escalation":
+            expected = {
+                "reason": "authority_v2_refusal",
+                "refusal_code": refusal_code,
+                "attempt_id": attempt_row["attempt_id"],
+            }
+            if (
+                task["parent_task_id"] is None
+                and task["status"] == TaskStatus.ESCALATED.value
+                and task["note"] == note
+                and set(payload) == set(expected)
+                and all(payload.get(key) == value for key, value in expected.items())
+            ):
+                return "escalated"
+            return None
         expected = {
             "reason": "authority_v2_refusal",
             "refusal_code": refusal_code,
             "attempt_id": attempt_row["attempt_id"],
+            "result_id": attempt_row["result_id"],
+            "parent_task_id": task["parent_task_id"],
         }
-        if set(payload.keys()) != set(expected.keys()):
-            return False
-        return all(payload.get(key) == value for key, value in expected.items())
+        if (
+            task["parent_task_id"] is not None
+            and task["status"] == TaskStatus.FAILED.value
+            and task["note"] == note
+            and task["completed_at"] is not None
+            and set(payload) == set(expected)
+            and all(payload.get(key) == value for key, value in expected.items())
+        ):
+            return "failed"
+        return None
 
     def _authenticate_v2_obligation_uncommitted(self, attempt_row: dict) -> str | None:
         """Return the closed code of exactly one authentic failed-stage obligation."""
@@ -9686,9 +9736,10 @@ class Database:
 
         Authenticate-then-mutate: a wrong/mixed tuple, a missing binding, an
         unrelated receipt, an unauthorized contender or an unsafe attribution
-        refuses BEFORE any task/Q/J mutation.  The still-current causal owner is
-        escalated and J refused; a cancelled/terminal/replaced owner keeps the
-        winning task row exactly and records the old attempt owner_lost.  An
+        refuses BEFORE any task/Q/J mutation.  A still-current root owner is
+        escalated while a delegated owner is failed; both refuse J.  A
+        cancelled/terminal/replaced owner keeps the winning task row exactly
+        and records the old attempt owner_lost.  An
         already-finalized J returns a read-only exact replay only when its exact
         refusal/completion evidence authenticates, and is never repaired.
         """
@@ -9883,9 +9934,12 @@ class Database:
                     attempt.finalization_state
                     == AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED
                 ):
-                    terminal_ok = self._authenticate_v2_refusal_escalation_uncommitted(
+                    task_disposition = self._authenticate_v2_refusal_escalation_uncommitted(
                         attempt_row, refusal_code=attempt.refusal_code,
                     )
+                    terminal_ok = task_disposition is not None
+                else:
+                    task_disposition = None
                 if terminal_ok and candidate is not None:
                     terminal_ok = self._authenticate_v2_candidate_audit_uncommitted(
                         candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_REFUSED,
@@ -9899,6 +9953,7 @@ class Database:
                         stage=attempt.stage,
                         finalization_state=attempt.finalization_state,
                         receipt_settled=recovery_claimed,
+                        task_disposition=task_disposition,
                     )
                 return _pending("identity_mismatch")
             if attempt.finalization_state != "unfinalized":
@@ -10013,12 +10068,8 @@ class Database:
                     self._conn.rollback()
                     return _pending("owner_lost")
 
-            # Still-current causal owner: closed result-level refusal event,
-            # candidate event if K exists, normal task escalation audit and the
-            # required completion_report/recovery-refusal audit; CAS task to
-            # escalated and J to refused, settling the exact Q in the SAME
-            # transaction.  No successor/new root, envelope, notification,
-            # dispatch generation or queue effect.
+            # Still-current causal owner: roots retain the existing escalation
+            # shape; delegated tasks atomically fail with their own closed audit.
             self.insert_audit_log_uncommitted(
                 root_task_id, manager_agent,
                 AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
@@ -10033,29 +10084,96 @@ class Database:
                     owner_attempt_id=attempt.owner_attempt_id,
                     origin_boot_id=attempt.origin_boot_id, now=now,
                 )
-            self.insert_audit_log_uncommitted(
-                root_task_id, manager_agent, "escalation",
-                {
-                    "reason": "authority_v2_refusal",
-                    "refusal_code": refusal_code,
-                    "attempt_id": attempt.attempt_id,
-                },
-            )
-            cursor = self._conn.execute(
-                """UPDATE tasks SET status=?, block_kind=NULL, note=?, updated_at=?
-                   WHERE id=? AND cancelled_at IS NULL AND status=?
-                     AND block_kind IS NULL AND assigned_agent=?
-                     AND current_session_id=?""",
-                (
-                    TaskStatus.ESCALATED.value,
-                    f"authority_v2_refusal:{refusal_code}", now, root_task_id,
-                    TaskStatus.IN_PROGRESS.value, manager_agent,
-                    manager_session_id,
-                ),
-            )
+            parent_task_id = task["parent_task_id"]
+            if parent_task_id is None:
+                task_disposition = "escalated"
+                self.insert_audit_log_uncommitted(
+                    root_task_id, manager_agent, "escalation",
+                    {
+                        "reason": "authority_v2_refusal",
+                        "refusal_code": refusal_code,
+                        "attempt_id": attempt.attempt_id,
+                    },
+                )
+                cursor = self._conn.execute(
+                    """UPDATE tasks SET status=?, block_kind=NULL, note=?, updated_at=?
+                       WHERE id=? AND cancelled_at IS NULL AND status=?
+                         AND block_kind IS NULL AND assigned_agent=?
+                         AND current_session_id=? AND parent_task_id IS NULL""",
+                    (
+                        TaskStatus.ESCALATED.value,
+                        f"authority_v2_refusal:{refusal_code}", now, root_task_id,
+                        TaskStatus.IN_PROGRESS.value, manager_agent,
+                        manager_session_id,
+                    ),
+                )
+            else:
+                task_disposition = "failed"
+                self.insert_audit_log_uncommitted(
+                    root_task_id,
+                    manager_agent,
+                    AUTHORITY_POLICY_V2_REFUSAL_TASK_FAILED_ACTION,
+                    {
+                        "reason": "authority_v2_refusal",
+                        "refusal_code": refusal_code,
+                        "attempt_id": attempt.attempt_id,
+                        "result_id": result_id,
+                        "parent_task_id": parent_task_id,
+                    },
+                )
+                cursor = self._conn.execute(
+                    """UPDATE tasks
+                          SET status=?, block_kind=NULL, note=?, completed_at=?,
+                              updated_at=?, active_chain=NULL, active_fanout=NULL
+                        WHERE id=? AND cancelled_at IS NULL AND status=?
+                          AND block_kind IS NULL AND assigned_agent=?
+                          AND current_session_id=? AND parent_task_id IS NOT NULL""",
+                    (
+                        TaskStatus.FAILED.value,
+                        f"authority_v2_refusal:{refusal_code}", now, now,
+                        root_task_id, TaskStatus.IN_PROGRESS.value,
+                        manager_agent, manager_session_id,
+                    ),
+                )
             if cursor.rowcount != 1:
                 self._conn.rollback()
                 return _pending("owner_lost")
+            if task_disposition == "failed":
+                env = self._conn.execute(
+                    """SELECT * FROM authority_continue_envelopes
+                       WHERE root_task_id=? AND state='active'""",
+                    (root_task_id,),
+                ).fetchone()
+                if env is not None:
+                    consumed = self._conn.execute(
+                        """UPDATE authority_continue_envelopes
+                              SET state='violated', consumed_at=?, updated_at=?
+                            WHERE id=? AND state='active'""",
+                        (now, now, env["id"]),
+                    )
+                    if consumed.rowcount != 1:
+                        self._conn.rollback()
+                        return _pending("owner_lost")
+                    self.insert_audit_log_uncommitted(
+                        root_task_id,
+                        manager_agent,
+                        "authority_continue_envelope_violated",
+                        {
+                            "envelope_id": env["id"],
+                            "candidate_id": env["candidate_id"],
+                            "root_task_id": root_task_id,
+                            "decision_family": "aborted",
+                            "clause_id": env["clause_id"],
+                            "action": env["action"],
+                            "policy_id": env["policy_id"],
+                            "policy_version": env["policy_version"],
+                            "policy_digest": env["policy_digest"],
+                            "causal_event_id": env["causal_event_id"],
+                            "causal_event_digest": env["causal_event_digest"],
+                            "state": "violated",
+                            "error": "task failed without the permitted continued-turn decision",
+                        },
+                    )
             self.insert_audit_log_uncommitted(
                 root_task_id, manager_agent, "completion_report",
                 self._v2_refusal_completion_payload(
@@ -10088,6 +10206,7 @@ class Database:
                 stage=attempt.stage,
                 finalization_state=AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED,
                 receipt_settled=settled,
+                task_disposition=task_disposition,
             )
         except Exception:
             self._conn.rollback()

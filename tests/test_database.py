@@ -2688,6 +2688,39 @@ def test_try_escalate_rejects_missing_task(db):
     assert db.try_escalate("T-NOPE", reason="x") is False
 
 
+def test_general_escalation_writers_refuse_non_root_tasks(db, caplog):
+    """THR-277 (c): every general escalation CAS is root-only."""
+    db.insert_task(TaskRecord(id="T-PARENT", brief="parent"))
+    calls = (
+        lambda task_id: db.try_escalate(task_id, reason="child leak"),
+        lambda task_id: db.try_escalate_runtime(
+            task_id,
+            reason="child leak",
+            agent="orchestrator",
+            reason_code="test",
+        ),
+        lambda task_id: db.try_escalate_over_budget(
+            task_id,
+            expected_status=TaskStatus.PENDING,
+            expected_block_kind=None,
+            reason="child leak",
+        ),
+    )
+    for index, call in enumerate(calls):
+        task_id = f"T-CHILD-{index}"
+        db.insert_task(TaskRecord(
+            id=task_id,
+            brief="child",
+            parent_task_id="T-PARENT",
+        ))
+        assert call(task_id) is False
+        task = db.get_task(task_id)
+        assert task.status is TaskStatus.PENDING
+        assert task.note is None
+
+    assert caplog.text.count("refused non-root escalation") == 3
+
+
 def test_try_escalate_over_budget_succeeds_from_expected_state(db):
     """CAS happy path (Path B): an eligible PENDING task at the step cap
     escalates to the top-level ESCALATED status (block_kind cleared)."""
