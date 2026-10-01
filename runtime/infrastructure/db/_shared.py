@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import functools
 import logging
-import time as _time
+import sys
 from datetime import datetime
 
 
@@ -31,6 +31,7 @@ def _synchronized(method):
 
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
+        _time = sys.modules["runtime.infrastructure.database"]._time
         threshold = getattr(self, '_lock_warn_threshold_seconds', 1.0)
         t_wait_start = _time.monotonic()
         self._lock.acquire(blocking=True)
