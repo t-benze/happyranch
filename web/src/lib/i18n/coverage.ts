@@ -93,13 +93,16 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'dashboard',
     routeTokens: ['dashboard'],
-    status: 'english-only',
+    // W3a: DashboardPage and its mounted cards/narratives/states.
+    status: 'translated',
     surfaces: ['DashboardPage'],
   },
   {
     namespace: 'threads',
     routeTokens: ['threads', 'threads/:thread_id'],
-    status: 'english-only',
+    // W3a: list/detail panes, composer, strips and the directly owned dialogs
+    // (incl. the shared NewThreadDialog it mounts). Tasks/Jobs stay W3b.
+    status: 'translated',
     surfaces: [
       'ThreadsPage',
       'NewThreadDialog',

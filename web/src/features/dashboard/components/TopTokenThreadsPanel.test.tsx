@@ -1,6 +1,9 @@
 import { render, screen, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { tokens } from '@/lib/api';
+import type { ReactNode } from 'react';
+import { I18nProvider } from '@/hooks/i18n';
+import { I18nTestBoundary, savedLocaleAdapter } from '@/test/render';
 import { TopTokenThreadsPanel } from './TopTokenThreadsPanel';
 
 type TokenUsageRollup = tokens.TokenUsageRollup;
@@ -61,7 +64,7 @@ describe('TopTokenThreadsPanel', () => {
       ]),
     );
 
-    const { container } = render(<TopTokenThreadsPanel />);
+    const { container } = render(<TopTokenThreadsPanel />, { wrapper: I18nTestBoundary });
 
     const items = screen.getAllByRole('listitem');
     expect(items.map((li) => within(li).getByTitle(/THR-/).textContent)).toEqual([
@@ -92,7 +95,7 @@ describe('TopTokenThreadsPanel', () => {
 
   it('shows an empty state when the window has no usage', () => {
     mockHook.mockReturnValue(loaded([]));
-    render(<TopTokenThreadsPanel />);
+    render(<TopTokenThreadsPanel />, { wrapper: I18nTestBoundary });
     expect(screen.getByText('No token usage in window.')).toBeInTheDocument();
   });
 
@@ -103,7 +106,7 @@ describe('TopTokenThreadsPanel', () => {
       isError: true,
       error: new Error('boom'),
     });
-    render(<TopTokenThreadsPanel />);
+    render(<TopTokenThreadsPanel />, { wrapper: I18nTestBoundary });
     expect(screen.getByText('Failed to load token usage.')).toBeInTheDocument();
   });
 
@@ -126,7 +129,7 @@ describe('TopTokenThreadsPanel', () => {
       ]),
     );
 
-    render(<TopTokenThreadsPanel />);
+    render(<TopTokenThreadsPanel />, { wrapper: I18nTestBoundary });
 
     // The cache column shows the compact number (full precision preserved in
     // the StatValue title) and a "cache" label (THR-099).
@@ -153,5 +156,26 @@ describe('TopTokenThreadsPanel', () => {
     // secondary label, not part of the figure.
     // text-text-disabled is the design-system class for dimmed secondary text.
     expect(labelClass).toMatch(/text-text-disabled|text-text-muted\b.*!text/);
+  });
+
+  it('zh-CN localizes panel chrome, window labels, cache suffix and the no-thread label', () => {
+    mockHook.mockReturnValue(
+      loaded([
+        rollup({ thread_id: 'THR-7', total_tokens: 25_000, cache_read_tokens: 3 }),
+        rollup({ total_tokens: 10 }), // no thread_id → sentinel row
+      ]),
+    );
+    const zh = ({ children }: { children: ReactNode }) => (
+      <I18nProvider adapter={savedLocaleAdapter('zh-CN')}>{children}</I18nProvider>
+    );
+    render(<TopTokenThreadsPanel />, { wrapper: zh });
+    expect(screen.getByText('Token 消耗最多的会话 · 7 天')).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: '时间窗口' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '7 天' })).toHaveAttribute('aria-pressed', 'true');
+    // Thread id verbatim; compact zh-CN unit for the total; localized suffix.
+    expect(screen.getByTitle('THR-7')).toHaveTextContent('THR-7');
+    expect(screen.getByTitle('25,000')).toHaveTextContent('2.5万');
+    expect(screen.getAllByText('缓存')).toHaveLength(2);
+    expect(screen.getByTitle('（无会话）')).toHaveTextContent('（无会话）');
   });
 });

@@ -21,6 +21,7 @@ export function TypingBubble({
   nowMs,
   trailing,
   caption,
+  ariaLabel,
 }: {
   agentName: string;
   status: 'queued' | 'working';
@@ -43,6 +44,11 @@ export function TypingBubble({
    * System Assistant dock unchanged.
    */
   caption?: string;
+  /**
+   * Optional accessible-name override (THR-118 W3a localized copy). When
+   * omitted the historical English "<agent> is replying|queued" is used.
+   */
+  ariaLabel?: string;
 }): JSX.Element {
   const now = nowMs ?? Date.now();
   const working = status === 'working';
@@ -58,7 +64,7 @@ export function TypingBubble({
     // sender avatar (TurnAvatar / dock) already carries identity beside it.
     <article
       className="min-w-0"
-      aria-label={`${agentName} is ${working ? 'replying' : 'queued'}`}
+      aria-label={ariaLabel ?? `${agentName} is ${working ? 'replying' : 'queued'}`}
     >
       <div className="flex items-center gap-2">
         <span className="text-fg truncate text-sm font-semibold">{agentName}</span>

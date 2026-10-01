@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render as rtlRender, screen, within } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import type { ReplyDeliveryEntry } from '@/lib/api/types';
+import { translate, type MessageKey, type MessageParams } from '@/lib/i18n';
+import { I18nTestBoundary } from '@/test/render';
 import { ReplyDeliveryStrip, replyDeliveryCaption } from './ReplyDeliveryStrip';
+
+// THR-118 W3a: the strip reads copy from the real I18nProvider (English here).
+const render = (ui: ReactElement) => rtlRender(ui, { wrapper: I18nTestBoundary });
+const enT = (key: MessageKey, params?: MessageParams) => translate('en', key, params);
 
 const nowMs = Date.parse('2026-05-13T17:46:00Z');
 
@@ -173,6 +180,7 @@ describe('replyDeliveryCaption (shared with the transcript tail)', () => {
     expect(
       replyDeliveryCaption(
         entry({ agent_name: 'x', state: 'queued', coalesced_message_count: 3 }),
+        enT,
         nowMs,
       ),
     ).toBe('3 messages coalesced · messages 1–4');
@@ -188,12 +196,14 @@ describe('replyDeliveryCaption (shared with the transcript tail)', () => {
           through_seq: 3,
           started_at: '2026-05-13T17:45:00Z',
         }),
+        enT,
         nowMs,
       ),
     ).toBe('replying 1m · messages 1–3');
     expect(
       replyDeliveryCaption(
         entry({ agent_name: 'x', state: 'running', started_at: null }),
+        enT,
         nowMs,
       ),
     ).toBe('replying · messages 1–4');
@@ -209,13 +219,14 @@ describe('replyDeliveryCaption (shared with the transcript tail)', () => {
       state: 'retry_required',
       last_terminal_reason: 'RAW DETAIL MUST NEVER RENDER',
       current_failure_category: category,
-    }), nowMs)).toBe(`retry required · messages 1–4 · ${label}`);
+    }), enT, nowMs)).toBe(`retry required · messages 1–4 · ${label}`);
   });
 
   it('retry_required without a current category omits historical raw detail', () => {
     expect(
       replyDeliveryCaption(
         entry({ agent_name: 'x', state: 'retry_required', last_terminal_reason: 'stale raw detail' }),
+        enT,
         nowMs,
       ),
     ).toBe('retry required · messages 1–4');
