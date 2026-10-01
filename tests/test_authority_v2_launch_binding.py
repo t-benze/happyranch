@@ -24,6 +24,7 @@ activation.
 from __future__ import annotations
 
 import json
+from typing import get_args
 
 import pytest
 
@@ -31,6 +32,8 @@ from runtime.infrastructure.database import Database
 from runtime.models import (
     AuthorityPolicyLegacyControlReceipt,
     AuthorityPolicyLegacyReactivationRequest,
+    AuthorityPolicyV2Assessment,
+    AuthorityPolicyV2ManagerSelfEvaluation,
     AuthorityPolicyV2SessionBinding,
     authority_policy_v2_contract_digest,
 )
@@ -44,6 +47,10 @@ from runtime.orchestrator.active_authority_policy import (
     render_selected_team_policy,
     resolve_active_team_policy_snapshot,
     resolve_active_team_policy_section,
+)
+from runtime.orchestrator.authority_policy import (
+    AuthorityPolicyV2AssessmentOutcome,
+    derive_authority_policy_v2_assessment_outcome,
 )
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 from tests.authority_policy_test_factory import activate_test_policy, policy_manager_context
@@ -98,6 +105,13 @@ def _audit_rows(db, action, session_id="sess-1"):
         if row["action"] == action
         and (row.get("payload") or {}).get("session_id") == session_id
     ]
+
+
+def _manager_self_evaluation_example(section: str) -> dict:
+    marker = "Exact required `manager_self_evaluation` object shape"
+    start = section.index("```json\n", section.index(marker)) + len("```json\n")
+    end = section.index("\n```", start)
+    return json.loads(section[start:end])
 
 
 # ── family-aware resolution ──────────────────────────────────────────────
@@ -420,3 +434,150 @@ def test_v2_prompt_bound_identity_is_exact(tmp_path):
     assert "model_id=`opus`" in section
     assert "root_task_id=`TASK-42`" in section
     assert "manager_session_id=`sess-42`" in section
+
+
+def test_v2_prompt_renders_exact_self_evaluation_shape_and_vocabulary(tmp_path):
+    store = _store(tmp_path)
+    receipt = _v2_receipt(store)
+    snapshot = _resolve(store)
+    section = render_selected_team_policy(
+        snapshot, provider_id="claude", executor_kind="claude-code", model_id="opus",
+        root_task_id="TASK-42", manager_session_id="sess-42",
+    )
+
+    assert "top-level key" in section
+    assert "sibling of `decision`" in section
+    assert "not inside `decision`" in section
+    assert "set both assessments honestly" in section
+    assert "Escalation is assessed as `applies` when it applies." in section
+    assert "integer from 0 through 100" in section
+    assert "below 80" in section and "any uncertainty code" in section
+
+    applicability = AuthorityPolicyV2Assessment.model_fields["applicability"].annotation
+    # Assert the renderer exposes every production-model literal, without a
+    # test-side duplicate vocabulary deciding what is complete.
+    for value in get_args(applicability):
+        assert value in section
+    codes_annotation = AuthorityPolicyV2Assessment.model_fields[
+        "uncertainty_codes"
+    ].annotation
+    (code_literal,) = get_args(codes_annotation)
+    for value in get_args(code_literal):
+        assert value in section
+
+    example = _manager_self_evaluation_example(section)
+    assert example == {
+        "activation_epoch": receipt.selector_epoch,
+        "activation_id": receipt.activation_id,
+        "contract_digest": authority_policy_v2_contract_digest(),
+        "contract_id": "authority_policy_v2",
+        "contract_version": "v2",
+        "executor_kind": "claude-code",
+        "manager_session_id": "sess-42",
+        "model_id": "opus",
+        "policy_digest": receipt.policy_digest,
+        "policy_version": receipt.release_version,
+        "provider_id": "claude",
+        "release_id": receipt.release_id,
+        "root_task_id": "TASK-42",
+        "what_not_to_escalate": {
+            "applicability": "applies", "confidence": 100, "uncertainty_codes": [],
+        },
+        "what_to_escalate": {
+            "applicability": "does_not_apply", "confidence": 100,
+            "uncertainty_codes": [],
+        },
+    }
+    assert isinstance(example["policy_version"], int)
+    assert isinstance(example["activation_epoch"], int)
+
+
+def test_rendered_v2_example_round_trips_through_real_binding_admission(tmp_path):
+    from runtime.daemon.routes.tasks import CompletionBody, _completion_v2_evidence
+
+    store = _store(tmp_path)
+    _v2_receipt(store)
+    snapshot = _resolve(store)
+    task_id = "TASK-EXAMPLE"
+    session_id = "sess-example"
+    _bind(store._db, snapshot, task_id=task_id, session_id=session_id, provider="codex")
+    binding = load_session_policy_binding(
+        db=store._db, task_id=task_id, session_id=session_id, agent_name=MANAGER,
+    )
+    section = render_selected_team_policy(
+        snapshot, provider_id="codex", executor_kind="codex", model_id="default",
+        root_task_id=task_id, manager_session_id=session_id,
+    )
+    example = _manager_self_evaluation_example(section)
+
+    validated = AuthorityPolicyV2ManagerSelfEvaluation.model_validate(example)
+    body = CompletionBody(
+        session_id=session_id, agent=MANAGER, status="completed", confidence=90,
+        output_summary="escalate", decision={"action": "escalate"},
+        manager_self_evaluation=example,
+    )
+    carrier, _admission = _completion_v2_evidence(
+        org=object(), body=body, binding=binding, task_id=task_id,
+    )
+    assert "_error_code" not in carrier
+    assert carrier == validated.model_dump(mode="json")
+    assert derive_authority_policy_v2_assessment_outcome(
+        validated.what_to_escalate, validated.what_not_to_escalate,
+    ) is AuthorityPolicyV2AssessmentOutcome.CONTINUE_APPLIES
+
+
+def test_old_plain_string_v2_shape_still_fails_closed(tmp_path):
+    from pydantic import ValidationError
+    from runtime.daemon.routes.tasks import CompletionBody, _completion_v2_evidence
+
+    store = _store(tmp_path)
+    _v2_receipt(store)
+    snapshot = _resolve(store)
+    task_id = "TASK-MALFORMED"
+    session_id = "sess-malformed"
+    _bind(store._db, snapshot, task_id=task_id, session_id=session_id, provider="codex")
+    binding = load_session_policy_binding(
+        db=store._db, task_id=task_id, session_id=session_id, agent_name=MANAGER,
+    )
+    section = render_selected_team_policy(
+        snapshot, provider_id="codex", executor_kind="codex", model_id="default",
+        root_task_id=task_id, manager_session_id=session_id,
+    )
+    malformed = _manager_self_evaluation_example(section)
+    malformed.update({
+        "policy_version": str(malformed["policy_version"]),
+        "activation_epoch": str(malformed["activation_epoch"]),
+        "what_to_escalate": "does_not_apply",
+        "what_not_to_escalate": "applies",
+    })
+
+    with pytest.raises(ValidationError):
+        AuthorityPolicyV2ManagerSelfEvaluation.model_validate(malformed)
+    carrier, _admission = _completion_v2_evidence(
+        org=object(),
+        body=CompletionBody(
+            session_id=session_id, agent=MANAGER, status="completed", confidence=90,
+            output_summary="escalate", decision={"action": "escalate"},
+            manager_self_evaluation=malformed,
+        ),
+        binding=binding, task_id=task_id,
+    )
+    assert carrier["_error_code"] == "malformed_output"
+
+
+def test_rendered_v2_threshold_wording_matches_production_boundary(tmp_path):
+    store = _store(tmp_path)
+    _v2_receipt(store)
+    section = render_selected_team_policy(_resolve(store))
+    assert "below 80" in section
+
+    def outcome(confidence: int) -> AuthorityPolicyV2AssessmentOutcome:
+        return derive_authority_policy_v2_assessment_outcome(
+            {"applicability": "does_not_apply", "confidence": confidence,
+             "uncertainty_codes": []},
+            {"applicability": "applies", "confidence": confidence,
+             "uncertainty_codes": []},
+        )
+
+    assert outcome(79) is AuthorityPolicyV2AssessmentOutcome.UNCERTAIN
+    assert outcome(80) is AuthorityPolicyV2AssessmentOutcome.CONTINUE_APPLIES

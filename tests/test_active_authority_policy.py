@@ -12,6 +12,7 @@ from runtime.orchestrator.active_authority_policy import (
     assert_no_reserved_team_policy_header,
     load_session_policy_snapshot,
     persist_session_policy_binding,
+    render_active_team_policy,
     resolve_policy_manager_team,
     resolve_active_team_policy_snapshot,
     resolve_active_team_policy_section,
@@ -108,6 +109,23 @@ def test_manager_gets_exact_authenticated_section_and_worker_is_byte_absent(tmp_
         store=store, root=tmp_path, teams=teams, team="engineering",
         agent_name="dev_agent", eligible=False,
     ) == ""
+
+
+def test_legacy_v1_render_bytes_remain_frozen():
+    release = _release(1)
+    activation = AuthorityPolicyActivation.create(
+        id="APA-FROZEN", team="engineering", epoch=7, release_id=release.id,
+        action="bootstrap", actor_kind="shared_local_operator_credential",
+        request_id="REQ-FROZEN", request_digest="f" * 64,
+    )
+    rendered = render_active_team_policy(
+        release=release, activation=activation, provider_id="codex",
+        executor_kind="codex", model_id="gpt-test", root_task_id="TASK-FROZEN",
+        manager_session_id="sess-frozen",
+    )
+    assert hashlib.sha256(rendered.encode()).hexdigest() == (
+        "6deaf28836182bfca2a88e6aa5a56d457e5c89aa26d26881374436e8525afc6a"
+    )
 
 
 def test_no_active_policy_is_ordinary_empty_and_reserved_impersonation_rejected(tmp_path):

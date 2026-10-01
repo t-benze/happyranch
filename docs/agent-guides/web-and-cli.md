@@ -904,12 +904,15 @@ unknown and worker targets fail closed without an editable fallback.
 
 For a v2-bound manager escalation, the injected role guidance supplies the
 binding identities and requires one structured `manager_self_evaluation` beside
-the ordinary `decision`. `happyranch report-completion --from-file` preserves
-that member for strict server validation; omission, explicit null, malformed or
-uncertain evidence fails closed. The CLI does not embed policy prose, a clause
-identifier, a canonical continuation phrase, or a second evaluator. Worker and
-ordinary non-escalation callbacks omit this field unless their injected contract
-explicitly requires it.
+the ordinary `decision`. The active policy block is authoritative for its exact
+object shape and supplies a filled launch-bound example; managers set both
+assessments honestly rather than treating the displayed values as defaults.
+`happyranch report-completion --from-file` preserves that member for strict
+server validation; omission, explicit null, malformed or uncertain evidence
+fails closed. The CLI does not embed policy prose, a clause identifier, a
+canonical continuation phrase, or a second evaluator. Worker and ordinary
+non-escalation callbacks omit this field unless their injected contract explicitly
+requires it.
 
 The checked-in browser receipt driver is
 `web/scripts/screenshot-harness/shot-thr229-v2-policy.mjs`. It uses an owned
