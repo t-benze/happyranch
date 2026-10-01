@@ -111,25 +111,35 @@ def test_manager_gets_exact_authenticated_section_and_worker_is_byte_absent(tmp_
     ) == ""
 
 
-def test_legacy_v1_bound_and_unbound_render_bytes_remain_frozen():
+@pytest.mark.parametrize(("render_kwargs", "expected_digest"), [
+    pytest.param(
+        {
+            "provider_id": "codex", "executor_kind": "codex",
+            "model_id": "gpt-test", "root_task_id": "TASK-FROZEN",
+            "manager_session_id": "sess-frozen",
+        },
+        "6deaf28836182bfca2a88e6aa5a56d457e5c89aa26d26881374436e8525afc6a",
+        id="bound",
+    ),
+    pytest.param(
+        {},
+        "6df608ea0104ed482a94ce74ba7e70f2043640de9d5a498711c84c6b97148fdd",
+        id="unbound",
+    ),
+])
+def test_legacy_v1_bound_and_unbound_render_bytes_remain_frozen(
+    render_kwargs, expected_digest,
+):
     release = _release(1)
     activation = AuthorityPolicyActivation.create(
         id="APA-FROZEN", team="engineering", epoch=7, release_id=release.id,
         action="bootstrap", actor_kind="shared_local_operator_credential",
         request_id="REQ-FROZEN", request_digest="f" * 64,
     )
-    bound = render_active_team_policy(
-        release=release, activation=activation, provider_id="codex",
-        executor_kind="codex", model_id="gpt-test", root_task_id="TASK-FROZEN",
-        manager_session_id="sess-frozen",
+    rendered = render_active_team_policy(
+        release=release, activation=activation, **render_kwargs,
     )
-    unbound = render_active_team_policy(release=release, activation=activation)
-    assert hashlib.sha256(bound.encode()).hexdigest() == (
-        "6deaf28836182bfca2a88e6aa5a56d457e5c89aa26d26881374436e8525afc6a"
-    )
-    assert hashlib.sha256(unbound.encode()).hexdigest() == (
-        "6df608ea0104ed482a94ce74ba7e70f2043640de9d5a498711c84c6b97148fdd"
-    )
+    assert hashlib.sha256(rendered.encode()).hexdigest() == expected_digest
 
 
 def test_no_active_policy_is_ordinary_empty_and_reserved_impersonation_rejected(tmp_path):
