@@ -1,5 +1,6 @@
 import { act, render, screen } from '@testing-library/react';
-import { I18nTestBoundary } from '@/test/render';
+import { I18nTestBoundary, savedLocaleAdapter } from '@/test/render';
+import { I18nProvider } from '@/hooks/i18n';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { TaskEvent } from '@/lib/api/types';
@@ -170,5 +171,33 @@ describe('TaskEventsLog', () => {
     expect(screen.getByText('Time unavailable')).toBeInTheDocument();
     expect(screen.queryByText('Invalid Date')).not.toBeInTheDocument();
     expect(screen.queryByText('FORMATTED')).not.toBeInTheDocument();
+  });
+
+  test('zh-CN: localized states and fan-out labels; task id, raw actions, agent and payload verbatim', async () => {
+    vi.spyOn(Date.prototype, 'toLocaleString').mockReturnValue('FORMATTED');
+    const user = userEvent.setup();
+    render(
+      <I18nProvider adapter={savedLocaleAdapter('zh-CN')}>
+        <TaskEventsLog taskId="TASK-ZH" />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByText('正在加载 TASK-ZH 的事件…')).toBeInTheDocument();
+    act(() => currentSubscription('TASK-ZH').onOpen?.());
+    expect(screen.getByText('TASK-ZH 暂无事件。')).toBeInTheDocument();
+    act(() => currentSubscription('TASK-ZH').onError?.());
+    expect(screen.getByRole('alert')).toHaveTextContent('无法加载 TASK-ZH 的事件。');
+
+    emit('TASK-ZH', EVENT);
+    emit('TASK-ZH', { ...EVENT, action: 'fanout_spawned', payload: { width: 2 } } as TaskEvent);
+    emit('TASK-ZH', { type: 'task_failed', timestamp: 'not-a-date' } as unknown as TaskEvent);
+
+    expect(screen.getByText('task_started')).toBeInTheDocument();
+    expect(screen.getByText('扇出已派生')).toBeInTheDocument();
+    expect(screen.getByText('task_failed')).toBeInTheDocument();
+    expect(screen.getByText('时间不可用')).toBeInTheDocument();
+    expect(screen.getAllByText('· dev_agent')).toHaveLength(2);
+    await user.click(screen.getByRole('button', { name: /task_started/ }));
+    expect(screen.getByText(/"source": "task-tail"/)).toBeInTheDocument();
   });
 });
