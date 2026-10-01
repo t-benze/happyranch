@@ -624,6 +624,7 @@ async def manage_repo(
         description=agent_def.description,
         model=agent_def.model,
     )
+    org.workflow_authority.fence(reason="manage_repo")
     active_path = paths.agents_dir / f"{agent_name}.md"
     fd, tmp = tempfile.mkstemp(
         prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir),
@@ -638,6 +639,9 @@ async def manage_repo(
         except FileNotFoundError:
             pass
         raise
+    org.workflow_authority.publish_after_supported_change(
+        publisher="manage_repo",
+    )
 
     # Clone/remove repo dir as before
     if body.action == RepoAction.add:
@@ -721,8 +725,12 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                 description=body.description,
                 model=body.model if body.model else None,
             )
+            org.workflow_authority.fence(reason="manage_agent_enroll")
             prompt_loader.write_pending_agent(paths, agent)
             org.teams.add_worker(manager_team, body.name)
+        org.workflow_authority.publish_after_supported_change(
+            publisher="manage_agent_enroll",
+        )
         audit.log_agent_managed(
             scope_id=scope_id,
             action="enroll",
@@ -783,6 +791,7 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                 description=body.description if body.description is not None else existing.description,
                 model=resolved_model,
             )
+            org.workflow_authority.fence(reason="manage_agent_update")
             active_path = paths.agents_dir / f"{body.name}.md"
             from runtime.orchestrator.agent_def import render_agent_text
             fd, tmp = tempfile.mkstemp(prefix=f".{body.name}.", suffix=".md", dir=str(paths.agents_dir))
@@ -882,7 +891,13 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                         _logger.exception(
                             "failed to re-reconcile workspace for %s", body.name,
                         )
+                org.workflow_authority.publish_after_supported_change(
+                    publisher="manage_agent_update_compensation",
+                )
                 raise
+        org.workflow_authority.publish_after_supported_change(
+            publisher="manage_agent_update",
+        )
         # THR-095: agent.yaml executor/model sync REMOVED.
         # The .md frontmatter is the single source of truth.
         audit.log_agent_managed(
@@ -1063,6 +1078,7 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
             # that await use teams_lock, while synchronous no-await event-loop
             # writers cannot interleave this archive/cleanup segment. It does
             # not make a claim about external same-UID or multiprocess writers.
+            org.workflow_authority.fence(reason="manage_agent_terminate")
             os.rename(active_path, terminated_agent_path)
             if workspace_exists:
                 try:
@@ -1158,6 +1174,9 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                     },
                 )
 
+        org.workflow_authority.publish_after_supported_change(
+            publisher="manage_agent_terminate",
+        )
         audit.log_agent_managed(
             scope_id=scope_id,
             action="terminate",
@@ -1228,6 +1247,7 @@ async def founder_create_agent(
                     detail={"code": "unknown_team", "team": body.team},
                 )
             team_name = body.team
+            org.workflow_authority.fence(reason="founder_create_agent")
             org.teams.add_worker(team_name, body.name)
         else:
             assert body.new_team is not None
@@ -1237,6 +1257,7 @@ async def founder_create_agent(
                     detail={"code": "team_exists", "team": body.new_team},
                 )
             team_name = body.new_team
+            org.workflow_authority.fence(reason="founder_create_agent")
             try:
                 org.teams.add_team(team_name, manager=body.name)
             except ValueError:
@@ -1291,6 +1312,9 @@ async def founder_create_agent(
                 org.teams.remove_team(team_name)
             raise
 
+    org.workflow_authority.publish_after_supported_change(
+        publisher="founder_create_agent",
+    )
     # ---- workspace bootstrap (THR-095: no agent.yaml writes) ----
     workspace = paths.workspaces_dir / body.name
     workspace.mkdir(parents=True, exist_ok=True)
@@ -2166,6 +2190,7 @@ async def set_agent_executor(
         active_path = paths.agents_dir / f"{agent_name}.md"
         fd, tmp = tempfile.mkstemp(prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir))
         try:
+            org.workflow_authority.fence(reason="set_agent_executor")
             with os.fdopen(fd, "w") as fh:
                 fh.write(render_agent_text(updated))
             os.replace(tmp, active_path)
@@ -2176,6 +2201,9 @@ async def set_agent_executor(
                 pass
             raise
 
+    org.workflow_authority.publish_after_supported_change(
+        publisher="set_agent_executor",
+    )
     after_ws = before_ws
     stale_files: list[str] = []
     removed: list[str] = []
@@ -2284,6 +2312,7 @@ async def set_agent_model(
         description=existing.description,
         model=body.model if body.model else None,
     )
+    org.workflow_authority.fence(reason="set_agent_model")
     from runtime.orchestrator.agent_def import render_agent_text
     active_path = paths.agents_dir / f"{agent_name}.md"
     fd, tmp = tempfile.mkstemp(
@@ -2299,6 +2328,9 @@ async def set_agent_model(
         except FileNotFoundError:
             pass
         raise
+    org.workflow_authority.publish_after_supported_change(
+        publisher="set_agent_model",
+    )
 
     after_model = _resolve_agent_model(paths, agent_name)
 
@@ -2430,10 +2462,14 @@ async def approve_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
             },
         )
 
+    org.workflow_authority.fence(reason="approve_agent")
     try:
         agent_def = prompt_loader.approve_agent(paths, agent_name)
     except FileExistsError:
         raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
+    org.workflow_authority.publish_after_supported_change(
+        publisher="approve_agent",
+    )
 
     workspace = paths.workspaces_dir / agent_name
     workspace.mkdir(parents=True, exist_ok=True)
@@ -2472,6 +2508,7 @@ async def reject_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
 
     # Fresh-read after acquiring the lock so a promotion or replacement that
     # wins while this request waits cannot be unlinked or removed by stale team.
+    org.workflow_authority.fence(reason="reject_agent")
     async with org.teams_lock:
         pending = prompt_loader.load_pending_agent(paths, agent_name)
         if pending is None:
@@ -2492,6 +2529,10 @@ async def reject_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
         # under pending.team, so this is safe even if teams drifted.
         if org.teams is not None and pending.team in org.teams.teams():
             org.teams.remove_worker(pending.team, agent_name)
+
+    org.workflow_authority.publish_after_supported_change(
+        publisher="reject_agent",
+    )
 
     return {"ok": True}
 

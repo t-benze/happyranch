@@ -1,10 +1,13 @@
 # Product-design workflow U0 feasibility evidence
 
-This U0 patch is deliberately non-production: it adds isolated proposed-schema
+This document began as deliberately non-production U0 evidence: it added isolated proposed-schema
 and authority-limitation tests plus unexecuted study-manifest evidence. The
 study is **NOT RUN** and no detached lock has been issued. No route, daemon
 workflow, UI/CLI, migration, authority coordinator, or compatibility behavior
-is installed.
+was installed by U0 itself. U1A later shipped the inert layout, U1B shipped
+template authoring/versioning, and U2A now ships only the org-scoped production
+authority publisher described in the status note below. The study remains
+**NOT RUN**.
 
 The executable fixture calls the actual `RuntimeDir.init -> DaemonState.from_runtime
 -> OrgState.load -> Database` initializer chain on an isolated **current control**
@@ -388,6 +391,19 @@ protected implementation. U1--U6, cutover proof, and the NOT RUN study remain
 explicitly pending.
 
 ### 2026-09-15 F4/F5 publication-protocol evidence (TASK-8375 correction)
+
+**U2A production status (2026-10-01).** The org-scoped producer half is now
+implemented by `runtime/workflows/authority.py`: supported roster/team,
+repository, executor/model, reviewer-set and active-policy writers pre-fence
+and publish through the shipped U1A pointer/journal/lease tables, while
+`OrgState.load` performs cold recovery. The effective operation map below is
+retained as provenance; its "proposed, unimplemented" labels are historical
+for those org-scoped writer rows and are superseded by this status note. The
+readiness verifier exists for later units, but U2A wires no admission,
+activation, dispatch, callback or legacy task/chain/fan-out consumer.
+Machine-global `ProfileCoordinator` work remains U2B-deferred: profile changes
+do not yet fence orgs and no admission consumer may ship before U2B. Direct
+same-UID file/DB edits remain outside the cooperative guarantee.
 
 This is a concrete proposed protocol plus executable isolated evidence, not a
 production approval, migration, runtime import, or a claim that same-UID

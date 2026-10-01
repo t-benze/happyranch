@@ -38,7 +38,11 @@ def load_agent_config(workspace: Path) -> dict:
     return config
 
 
-def migrate_agent_yaml_to_frontmatter(paths) -> dict[str, str]:
+def migrate_agent_yaml_to_frontmatter(
+    paths,
+    *,
+    workflow_authority=None,
+) -> dict[str, str]:
     """One-shot idempotent reconcile: copy agent.yaml executor/repos/model
     into org/agents/<name>.md frontmatter for every org agent with a workspace.
 
@@ -75,6 +79,7 @@ def migrate_agent_yaml_to_frontmatter(paths) -> dict[str, str]:
 
     _logger = logging.getLogger(__name__)
     results: dict[str, str] = {}
+    authority_fenced = False
 
     agents_dir = paths.agents_dir
     workspaces_dir = paths.workspaces_dir
@@ -167,6 +172,9 @@ def migrate_agent_yaml_to_frontmatter(paths) -> dict[str, str]:
             )
 
             # Atomic write via tempfile + os.replace
+            if workflow_authority is not None and not authority_fenced:
+                workflow_authority.fence(reason="agent_yaml_frontmatter_migration")
+                authority_fenced = True
             active_path = agents_dir / f"{agent_name}.md"
             fd, tmp = tempfile.mkstemp(
                 prefix=f".{agent_name}.", suffix=".md", dir=str(agents_dir),
@@ -207,4 +215,8 @@ def migrate_agent_yaml_to_frontmatter(paths) -> dict[str, str]:
             _logger.warning("migrate_agent_yaml: %s — error: %s", agent_name, exc)
             results[agent_name] = f"error: {exc}"
 
+    if authority_fenced:
+        workflow_authority.publish_after_supported_change(
+            publisher="agent_yaml_frontmatter_migration",
+        )
     return results

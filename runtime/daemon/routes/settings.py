@@ -877,11 +877,19 @@ def put_org_settings(slug: str, org: OrgDep, patch: OrgSettingsPatch) -> Setting
             }
             raise HTTPException(status_code=422, detail=detail)
 
+    authority_changes = "reviewer_agents" in patch_raw
+    if authority_changes:
+        org.workflow_authority.fence(reason="put_org_settings:reviewer_agents")
+
     # THR-095: write to DB (transactional per section: upsert + audit row).
     try:
         write_org_setting_to_db(paths, org.db, patch_raw)
     except OrgConfigError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if authority_changes:
+        org.workflow_authority.publish_after_supported_change(
+            publisher="put_org_settings:reviewer_agents",
+        )
 
     # Return updated snapshot from DB-resolved values.
     return get_settings(slug, org)
@@ -1039,6 +1047,7 @@ async def put_teams(slug: str, org: OrgDep, patch: TeamsPatch) -> dict:
     m = teams.manager_for_team(patch.team)
     original_workers = m.workers
 
+    org.workflow_authority.fence(reason="put_teams")
     async with org.teams_lock:
         for agent in patch.add_workers:
             try:
@@ -1089,6 +1098,10 @@ async def put_teams(slug: str, org: OrgDep, patch: TeamsPatch) -> dict:
                 status_code=409,
                 detail={"code": "teams_worker_agent_drift", "message": "; ".join(worker_drift)},
             )
+
+    org.workflow_authority.publish_after_supported_change(
+        publisher="put_teams",
+    )
 
     # Return updated teams list (mirrors GET /teams shape)
     rows = []

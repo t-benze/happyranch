@@ -155,6 +155,18 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   process-local event-loop protection. Synchronous unlocked segments remain
   unlocked; this does not provide global workspace-generation fencing or
   serialize external same-UID/multiprocess filesystem writers.
+- **Workflow-authority participation.** Supported org-scoped authority writers
+  additionally call `WorkflowAuthorityCoordinator.fence()` before their
+  durable authority change and publish the next canonical generation after
+  commit. Publication failure leaves new workflow admission fail-closed and is
+  recovered at cold `OrgState.load`; it does not roll back or falsify the
+  existing route result after the legacy write committed. Publication never
+  spans clone/network/host-launch/callback work. Direct same-UID edits remain
+  outside the cooperative guarantee.
+- **U2A boundary.** The coordinator's readiness verifier is intentionally not
+  consumed by task, chain, fan-out, activation, or dispatch paths yet.
+  Machine-global executor-profile changes remain U2B-deferred and do not yet
+  fence orgs; no workflow admission consumer may ship before U2B.
 - **Approval.** `POST /agents/{name}/approve` atomically moves the pending file to `org/agents/<name>.md` and bootstraps the workspace under `workspaces/<name>/`. Approved agents appear in `GET /agents` and `GET /agents/enrollments?status=approved`.
 - **Termination.** `manage-agent terminate` archives an approved **non-manager worker** on the caller's team. It is refused if the agent is a manager, belongs to another team, or has live work. Live work includes non-terminal tasks assigned to the agent, already-started thread invocations, firing schedules, running work-hours wakes, running dreams, or pending/running jobs attributable to the agent. If the agent is quiescent, the route:
   - archives the active `org/agents/<name>.md` to `org/agents/_terminated/<name>.md`;

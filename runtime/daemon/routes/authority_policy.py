@@ -670,6 +670,9 @@ def activate_team_escalation_policy(
     team, _ = _manager_surface(org, agent_name)
     _legacy_policy_or_404(team)
     try:
+        org.workflow_authority.fence(
+            reason="activate_team_escalation_policy",
+        )
         store = AuthorityPolicyStore(org.db)
         # Compatible writer backstop: the serialized initializer commits BEFORE
         # the policy transaction and never implies a selection.
@@ -701,6 +704,9 @@ def activate_team_escalation_policy(
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=_STORE_UNAVAILABLE,
             )
+        org.workflow_authority.publish_after_supported_change(
+            publisher="activate_team_escalation_policy",
+        )
         return {
             **_project_legacy_control(receipt),
             "selector_id": receipt.selector_id,
@@ -764,6 +770,9 @@ async def create_and_activate_team_escalation_policy_v2(
     team, _ = _manager_surface(org, agent_name)
     data = await _decode_control_body(request, V2PairedControlBody, team=team)
     try:
+        org.workflow_authority.fence(
+            reason="create_and_activate_team_escalation_policy_v2",
+        )
         store = AuthorityPolicyStore(org.db)
         try:
             store.ensure_authority_selector(team)
@@ -773,6 +782,9 @@ async def create_and_activate_team_escalation_policy_v2(
                 detail={"code": "initialization_unavailable"},
             ) from None
         receipt = store.create_and_activate_v2(data)
+        org.workflow_authority.publish_after_supported_change(
+            publisher="create_and_activate_team_escalation_policy_v2",
+        )
     except HTTPException:
         raise
     except sqlite3.IntegrityError as exc:
@@ -812,6 +824,9 @@ async def activate_team_escalation_policy_v2(
     team, _ = _manager_surface(org, agent_name)
     data = await _decode_control_body(request, V2ActivationControlBody, team=team)
     try:
+        org.workflow_authority.fence(
+            reason="activate_team_escalation_policy_v2",
+        )
         store = AuthorityPolicyStore(org.db)
         try:
             store.ensure_authority_selector(team)
@@ -821,6 +836,9 @@ async def activate_team_escalation_policy_v2(
                 detail={"code": "initialization_unavailable"},
             ) from None
         receipt = store.activate_v2(data)
+        org.workflow_authority.publish_after_supported_change(
+            publisher="activate_team_escalation_policy_v2",
+        )
     except HTTPException:
         raise
     except sqlite3.IntegrityError as exc:

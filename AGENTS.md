@@ -177,6 +177,28 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
 
 **Failure diagnostics (THR-220).** Failed thread-invocation audits retain capped raw stdout/stderr tails as additive payload keys. Task, thread, and dream reports select one bounded human cause from complete stderr before tailing; exact known benign launcher/trust lines do not win, while meaningful stderr (including lookalikes) does. The proven API-error/session-limit envelope separately retains its bounded reset notice on those existing surfaces. This is not a comprehensive redaction guarantee and does not alter raw classifier, rate-limit, exact-eviction, retry-owner, or breaker inputs. Claude's session-limit notice is terminal but is not a short-backoff rate-limit retry signal.
 
+## Workflow authority publication (U2A)
+
+`WorkflowAuthorityCoordinator` owns the org-scoped producer half of the
+workflow authority contract. Every supported roster, team, repository,
+executor/model, reviewer-set, or active-policy writer must durably fence the
+org before its authority mutation and publish a coherent digest-addressed
+generation afterward. A post-commit publication failure preserves the legacy
+writer response but leaves the pointer fenced and machine-readable for cold
+recovery; it must never restore a stale ready pointer.
+
+Publication holds only the process-local coordinator lock and the shipped
+per-org publication lease. Its SQLite stage transactions are short and never
+span filesystem scanning, cloning, network access, host launch, or callbacks.
+Do not change the existing `org.db_lock -> binding_lease -> synchronized DB
+callback` order. Direct same-UID file/DB mutation is outside this cooperative
+guarantee.
+
+U2A provides `verify_admission_ready()` for later workflow units but wires no
+admission, activation, or dispatch consumer. Machine-global executor profiles
+remain U2B-deferred: profile changes do not yet fence orgs, and no workflow
+admission consumer may ship until that coordinator exists.
+
 ## Commands
 
 ```bash
