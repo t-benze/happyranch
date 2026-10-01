@@ -207,7 +207,7 @@ function api(pathname, search) {
       ],
     };
   }
-  if (pathname === `/api/v1/orgs/${ORG}/jobs`) {
+  if (pathname === `/api/v1/orgs/${ORG}/jobs/` || pathname === `/api/v1/orgs/${ORG}/jobs`) {
     return { jobs: [{ id: 'JOB-77', title: AUTH.job, status: 'running', task_id: 'TASK-501' }], next_cursor: null };
   }
   return {};
