@@ -5,8 +5,8 @@ Baseline: `main` `e5c60964` (2026-10-01).
 
 | Module | Lines @ e5c60964 | Shape |
 |---|---|---|
-| `runtime/infrastructure/database.py` | 26,174 | ~1,700 lines of module helpers/SQL constants, then ONE `class Database` with 552 methods |
-| `runtime/orchestrator/run_step.py` | 5,109 | 82 module-level functions around `run_step_impl` |
+| `runtime/infrastructure/database.py` | 26,174 | ~1,700 lines of module helpers/SQL constants, then ONE `class Database` with 551 direct class-body methods |
+| `runtime/orchestrator/run_step.py` | 5,109 | 72 top-level named function definitions around `run_step_impl` (80 function definitions recursively) |
 | `runtime/models.py` | 4,697 | 103 classes |
 | `runtime/orchestrator/executors.py` | 2,597 | executor adapters |
 

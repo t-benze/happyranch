@@ -54,3 +54,15 @@ def test_old_path_monkeypatch_is_observed_through_new_path(
     monkeypatch.setattr(old_module, "_PROC_ROOT", sentinel)
 
     assert new_module._PROC_ROOT is sentinel
+
+
+def test_started_monotonic_is_shared_through_old_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_module = importlib.import_module("runtime.daemon.task_scratch_report")
+    new_module = importlib.import_module("runtime.orchestrator.task_scratch_report")
+    sentinel = new_module._STARTED_MONOTONIC + 1.0
+
+    monkeypatch.setattr(old_module, "_STARTED_MONOTONIC", sentinel)
+
+    assert new_module._STARTED_MONOTONIC == sentinel
