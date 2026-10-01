@@ -1,12 +1,13 @@
 # Usage v1: parser semantics, lifecycle attribution, and reply linkage
 
-> Status: current (PR1 through PR3 of 4, including PR2b)
+> Status: current (PR1 through PR4 of 4, including PR2b)
 > Current Source: `runtime/orchestrator/executors.py`,
 > `runtime/orchestrator/usage_normalization.py`,
 > `runtime/infrastructure/database.py`,
 > `runtime/infrastructure/audit_logger.py`,
 > `runtime/orchestrator/orchestrator.py`,
-> `runtime/daemon/thread_runner.py`, `runtime/daemon/dream_runner.py`, and
+> `runtime/daemon/thread_runner.py`, `runtime/daemon/dream_runner.py`,
+> `web/src/features/usage/`, and
 > `docs/agent-guides/features-and-invariants.md`
 > Authority: THR-272 seq64; Product requirements TASK-9165, sections 6 and 10;
 > product_lead THR-272 seq68; PR2b founder THR-272 seq79 and product_lead
@@ -310,3 +311,35 @@ Otherwise Runs handles previous-zero/current-positive as `new_from_zero`,
 current-zero as an absolute negative count, and both-zero as `no_change`.
 Each token/decline metric independently uses `withheld: invalid_baseline` when
 a period has no valid observation; infinity and NaN are never emitted.
+
+## PR4 web Usage page
+
+The `/orgs/<slug>/usage` page consumes only `GET /usage/workload` and
+`GET /usage/efficiency` through `web/src/lib/api/usage.ts`; it no longer reads
+`GET /tokens`, and the dashboard and CLI token views are unchanged. One shared
+"Last 7 days" period comes from the response windows, with Data through and
+generated-at shown in the response timezone. Compare is off by default and
+refetches every view with `compare=true`.
+
+The UI computes no window, join, median, percentage or baseline. Its only
+client-side arithmetic is summing the per-agent runtime coverage and per-row
+usage coverage into the two coverage sentences, plus the unattributed total.
+The previous-window runtime sentence is scoped to the listed agents, because
+the read model omits previous-only agents. Workload renders exactly the
+returned agents. Missing runtime reads "Not recorded", and Replies show
+recorded/total-consumed coverage with the unknown portion named.
+
+Efficiency renders nothing until one CLI and one model (or the separate `CLI
+default (not pinned)` cohort) are chosen. It always shows the five run types in
+fixed order. A null class reads `Not reported`, or `Unknown` when no run in the
+row has usage, and a runless row reads `No runs in this period` with dashes.
+`partial_count > 0` labels Fresh input as partial with its `n_reported` of
+usage-known denominator. Decline waste appears only on the thread rows, and
+unattributed lifecycle counts are listed outside the rows.
+
+Deltas render only the server `UsageDelta`. An `absolute` zero reads `No
+change`. A row whose every delta is withheld for coverage or unattribution
+states that reason once, with both coverages, and shows dashes. A per-metric
+`withheld` delta shows a dash, both coverages and a plain-language reason;
+reason codes are never displayed. A failed refetch keeps earlier figures under
+a visible stale label; the page applies no time-based staleness threshold.
