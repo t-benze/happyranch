@@ -380,10 +380,14 @@ the fields your injected role contract requires:
   contract defines the vocabulary);
 - a **team-manager** session additionally sends a top-level `"decision"` object.
   Its injected role guidance conditionally requires `manager_self_evaluation`
-  for a versioned policy-bound escalation. When required, copy the complete
-  structured dual assessment and its injected binding identities beside
-  `decision`; omission, `null`, malformed, uncertain, or incomplete evidence
-  fails closed.
+  for a versioned policy-bound escalation. When required, the active policy
+  block is authoritative: it shows the exact required object and a filled
+  launch-bound example to copy beside `decision`; set both assessments honestly.
+  Policy blocks outside a manager-decision task have no bound manager-decision
+  identity and show shape/type placeholders only; never submit those placeholders.
+  Submit `manager_self_evaluation` only from the manager-decision task's
+  report-completion, using the root/session identities bound in that task's block.
+  Omission, `null`, malformed, uncertain, or incomplete evidence fails closed.
   Do not invent policy wording, clause identifiers, a canonical phrase, or a
   second evaluation. For decisions where the injected guidance
   does not require that assessment, omit the field.
