@@ -6821,10 +6821,15 @@ def test_manage_agent_terminate_archives_worker_bytes_accepted_while_waiting_for
                     session_id=_EH_SESSION,
                 ), org_state,
             ))
-            await asyncio.wait_for(terminate_waiting.wait(), timeout=1)
+            # U2A serializes supported writers before teams_lock.  The
+            # terminate request therefore cannot reach the legacy lock while
+            # the preceding update owns the coordinator interval.
+            await asyncio.sleep(0)
+            assert not terminate_waiting.is_set()
         finally:
             actual_lock.release()
         assert await asyncio.wait_for(winner, timeout=1) == {"ok": True}
+        await asyncio.wait_for(terminate_waiting.wait(), timeout=1)
         assert await asyncio.wait_for(terminate, timeout=1) == {"ok": True, "status": "terminated"}
 
     asyncio.run(exercise())
