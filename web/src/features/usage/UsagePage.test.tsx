@@ -530,20 +530,26 @@ describe('Usage v1 — Workload', () => {
 /* ================================================================== */
 
 describe('Usage v1 — Efficiency cohort selection', () => {
-  it('renders no Efficiency data before one CLI and one model are chosen, and explains why there is no combined view', async () => {
+  it('first load selects nothing: no CLI or model pressed, no cohort requested, and explains why there is no combined view', async () => {
     serve();
     renderPage();
 
     expect(
       await screen.findByText(
-        'Choose one CLI, then one model. Token reporting differs by CLI and model, so there is no combined view.',
+        'Choose one CLI. Its CLI default (not pinned) cohort is preselected and you can pick a named model. Token reporting differs by CLI and model, so there is no combined view.',
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('Choose a CLI first')).toBeInTheDocument();
+    expect(within(screen.getByRole('region', { name: 'Efficiency' })).getByRole('status')).toHaveTextContent(
+      'Choose a CLI to see Efficiency',
+    );
     expect(screen.queryByRole('table', { name: /Efficiency by run type/ })).toBeNull();
-
-    fireEvent.click(await screen.findByRole('button', { name: 'claude' }));
-    expect(screen.queryByRole('table', { name: /Efficiency by run type/ })).toBeNull();
+    const cliGroup = screen.getByRole('group', { name: 'CLI' });
+    expect(within(cliGroup).getAllByRole('button').map((b) => b.textContent)).toEqual(['claude', 'codex']);
+    for (const pill of within(cliGroup).getAllByRole('button')) {
+      expect(pill).toHaveAttribute('aria-pressed', 'false');
+    }
+    expect(within(screen.getByRole('group', { name: 'Model' })).queryAllByRole('button')).toEqual([]);
     for (const call of getEfficiency.mock.calls) {
       expect(call[1]?.executor).toBeUndefined();
     }
@@ -581,15 +587,298 @@ describe('Usage v1 — Efficiency cohort selection', () => {
     );
   });
 
-  it('switching CLI clears the model so no data renders until a model of the new CLI is chosen', async () => {
+  it('switching CLI preselects the new CLI’s unpinned cohort instead of keeping the old model', async () => {
     serve();
     renderPage();
     await selectCohort('claude', 'sonnet');
     await efficiencyTable();
 
     fireEvent.click(screen.getByRole('button', { name: 'codex' }));
+    const modelGroup = screen.getByRole('group', { name: 'Model' });
+    expect(within(modelGroup).getAllByRole('button').map((b) => b.textContent)).toEqual([
+      'CLI default (not pinned)', 'gpt-5',
+    ]);
+    expect(within(modelGroup).getByRole('button', { name: 'CLI default (not pinned)' })).toHaveAttribute('aria-pressed', 'true');
+    expect(await efficiencyTable()).toHaveAccessibleName('Efficiency by run type for codex · CLI default (not pinned)');
+    expect(getEfficiency).toHaveBeenCalledWith(SLUG, { compare: false, executor: 'codex', model_unpinned: true });
+  });
+});
+
+/* ================================================================== */
+/*  C2. Efficiency default model (THR-272 seq109 ruling)                 */
+/* ================================================================== */
+
+describe('Usage v1 — Efficiency default model', () => {
+  const UNPINNED = 'CLI default (not pinned)';
+
+  function cohort(executor: string, model: string | null, current_runs: number, previous_runs = 0): CohortOption {
+    return { executor, model, model_unpinned: model === null, current_runs, previous_runs };
+  }
+
+  function modelPill(name: string) {
+    return within(screen.getByRole('group', { name: 'Model' })).getByRole('button', { name });
+  }
+
+  function modelPills() {
+    return within(screen.getByRole('group', { name: 'Model' }))
+      .getAllByRole('button')
+      .map((b) => b.textContent);
+  }
+
+  function pressedModels() {
+    return within(screen.getByRole('group', { name: 'Model' }))
+      .getAllByRole('button')
+      .filter((b) => b.getAttribute('aria-pressed') === 'true')
+      .map((b) => b.textContent);
+  }
+
+  function efficiencyStatus() {
+    return within(screen.getByRole('region', { name: 'Efficiency' })).getByRole('status');
+  }
+
+  function zeroRunRows() {
+    return RUN_TYPES.map((t) =>
+      eRow(t, {
+        current: ePeriod({
+          runs: 0,
+          usage_coverage: { known: 0, total: 0, ratio: null },
+          fresh_input: metric(null, 0),
+          reread: metric(null, 0),
+          output: metric(null, 0),
+          decline_waste:
+            t === 'thread_reply' || t === 'thread_followup' ? { ...NO_DECLINES, total: 0, rate: null } : null,
+        }),
+      }),
+    );
+  }
+
+  it('choosing a CLI preselects its unpinned cohort even when a named model has more runs', async () => {
+    serve(); // claude: unpinned 3 runs, opus 5, sonnet 40
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'claude' }));
+
+    expect(pressedModels()).toEqual([UNPINNED]);
+    await waitFor(() =>
+      expect(getEfficiency).toHaveBeenCalledWith(SLUG, { compare: false, executor: 'claude', model_unpinned: true }),
+    );
+    expect(await efficiencyTable()).toHaveAccessibleName(`Efficiency by run type for claude · ${UNPINNED}`);
+    expect(efficiencyStatus()).toHaveTextContent(`Efficiency loaded for claude · ${UNPINNED}`);
+    for (const call of getEfficiency.mock.calls) {
+      expect(call[1]?.model).toBeUndefined();
+    }
+  });
+
+  it('changing CLI resets to the new CLI’s unpinned cohort and does not carry the picked model', async () => {
+    serve({
+      options: (compare) =>
+        efficiency(
+          { cohorts: [cohort('claude', null, 3), cohort('claude', 'sonnet', 40), cohort('codex', null, 2), cohort('codex', 'sonnet', 9)] },
+          compare,
+        ),
+    });
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'claude' }));
+    fireEvent.click(modelPill('sonnet'));
+    expect(pressedModels()).toEqual(['sonnet']);
+
+    fireEvent.click(screen.getByRole('button', { name: 'codex' }));
+
+    expect(pressedModels()).toEqual([UNPINNED]);
+    await waitFor(() =>
+      expect(getEfficiency).toHaveBeenCalledWith(SLUG, { compare: false, executor: 'codex', model_unpinned: true }),
+    );
+    expect(getEfficiency).not.toHaveBeenCalledWith(SLUG, { compare: false, executor: 'codex', model: 'sonnet' });
+    expect(await efficiencyTable()).toHaveAccessibleName(`Efficiency by run type for codex · ${UNPINNED}`);
+  });
+
+  it('a CLI with no unpinned cohort row still offers and presses the unpinned pill and shows its zero-run rows', async () => {
+    serve({
+      // codex has no model=null cohort in this window.
+      selected: (params) =>
+        params.model_unpinned ? efficiency({ rows: zeroRunRows() }) : efficiency({ rows: fullRows() }),
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'codex' }));
+
+    expect(modelPills()).toEqual([UNPINNED, 'gpt-5']);
+    expect(pressedModels()).toEqual([UNPINNED]);
+    await waitFor(() =>
+      expect(getEfficiency).toHaveBeenCalledWith(SLUG, { compare: false, executor: 'codex', model_unpinned: true }),
+    );
+    const table = await efficiencyTable();
+    expect(table).toHaveAccessibleName(`Efficiency by run type for codex · ${UNPINNED}`);
+    for (const [, label] of [
+      ['worker_task', 'Worker task'], ['manager_decision', 'Manager decision'], ['thread_reply', 'Thread reply'],
+      ['thread_followup', 'Thread follow-up'], ['dream', 'Dream'],
+    ]) {
+      const row = await rowFor(table, label);
+      expect(within(row).getByText('No runs in this period')).toBeInTheDocument();
+      expect(within(row).getAllByRole('cell')[0]).toHaveTextContent(/^0$/);
+    }
+    expect(getEfficiency).not.toHaveBeenCalledWith(SLUG, { compare: false, executor: 'codex', model: 'gpt-5' });
+
+    // The synthesized pill belongs only to the chosen CLI; there is never an aggregate option.
+    expect(within(screen.getByRole('group', { name: 'Model' })).queryByRole('button', { name: /all/i })).toBeNull();
+    expect(within(screen.getByRole('group', { name: 'CLI' })).getAllByRole('button').map((b) => b.textContent)).toEqual([
+      'claude', 'codex',
+    ]);
+  });
+
+  it('a manual named-model pick persists across the options refetch caused by a Compare toggle', async () => {
+    serve();
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'claude' }));
+    expect(pressedModels()).toEqual([UNPINNED]);
+    fireEvent.click(modelPill('opus'));
+    expect(pressedModels()).toEqual(['opus']);
+    expect(await efficiencyTable()).toHaveAccessibleName('Efficiency by run type for claude · opus');
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Compare with previous 7 days' }));
+    await waitFor(() => expect(getEfficiency).toHaveBeenCalledWith(SLUG, { compare: true }));
+    await waitFor(() =>
+      expect(getEfficiency).toHaveBeenCalledWith(SLUG, { compare: true, executor: 'claude', model: 'opus' }),
+    );
+
+    expect(pressedModels()).toEqual(['opus']);
+    expect(await efficiencyTable()).toHaveAccessibleName('Efficiency by run type for claude · opus');
+    expect(getEfficiency).not.toHaveBeenCalledWith(SLUG, { compare: true, executor: 'claude', model_unpinned: true });
+  });
+
+  it('turning Compare off falls a removed previous-only named model back to the unpinned cohort, not a top model', async () => {
+    serve({
+      options: (compare) =>
+        efficiency(
+          {
+            // No model=null row in either window: the fallback must still be the unpinned cohort.
+            cohorts: compare
+              ? [cohort('claude', 'haiku', 0, 9), cohort('claude', 'opus', 5, 2), cohort('claude', 'sonnet', 40, 30)]
+              : [cohort('claude', 'opus', 5), cohort('claude', 'sonnet', 40)],
+          },
+          compare,
+        ),
+    });
+    renderPage();
+    const compareSwitch = await screen.findByRole('switch', { name: 'Compare with previous 7 days' });
+    fireEvent.click(compareSwitch);
+    await waitFor(() => expect(getEfficiency).toHaveBeenCalledWith(SLUG, { compare: true }));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'claude' }));
+    fireEvent.click(await waitFor(() => modelPill('haiku')));
+    expect(pressedModels()).toEqual(['haiku']);
+
+    fireEvent.click(compareSwitch);
+
+    await waitFor(() => expect(within(screen.getByRole('group', { name: 'Model' })).queryByRole('button', { name: 'haiku' })).toBeNull());
+    expect(pressedModels()).toEqual([UNPINNED]);
+    await waitFor(() =>
+      expect(getEfficiency).toHaveBeenCalledWith(SLUG, { compare: false, executor: 'claude', model_unpinned: true }),
+    );
+    expect(await efficiencyTable()).toHaveAccessibleName(`Efficiency by run type for claude · ${UNPINNED}`);
+    expect(getEfficiency).not.toHaveBeenCalledWith(SLUG, { compare: false, executor: 'claude', model: 'sonnet' });
+    expect(screen.queryByText(/Choose one CLI/)).toBeNull();
+  });
+
+  it('turning Compare off clears both choices when the chosen CLI itself is no longer offered', async () => {
+    serve({
+      options: (compare) =>
+        efficiency(
+          {
+            cohorts: compare
+              ? [cohort('claude', 'sonnet', 40, 30), cohort('gemini', 'pro', 0, 4)]
+              : [cohort('claude', 'sonnet', 40)],
+          },
+          compare,
+        ),
+    });
+    renderPage();
+    const compareSwitch = await screen.findByRole('switch', { name: 'Compare with previous 7 days' });
+    fireEvent.click(compareSwitch);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'gemini' }));
+    expect(pressedModels()).toEqual([UNPINNED]);
+    fireEvent.click(modelPill('pro'));
+    expect(pressedModels()).toEqual(['pro']);
+
+    fireEvent.click(compareSwitch);
+
+    expect(await screen.findByText('Choose a CLI first')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'gemini' })).toBeNull();
+    for (const pill of within(screen.getByRole('group', { name: 'CLI' })).getAllByRole('button')) {
+      expect(pill).toHaveAttribute('aria-pressed', 'false');
+    }
     expect(screen.queryByRole('table', { name: /Efficiency by run type/ })).toBeNull();
-    expect(within(screen.getByRole('group', { name: 'Model' })).getAllByRole('button').map((b) => b.textContent)).toEqual(['gpt-5']);
+    expect(efficiencyStatus()).toHaveTextContent('Choose a CLI to see Efficiency');
+
+    // The CLI choice itself was cleared, not hidden: when gemini is offered again it
+    // is unpressed and choosing it selects its unpinned cohort.
+    fireEvent.click(compareSwitch);
+    const gemini = await screen.findByRole('button', { name: 'gemini' });
+    expect(gemini).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByText('Choose a CLI first')).toBeInTheDocument();
+    fireEvent.click(gemini);
+    expect(pressedModels()).toEqual([UNPINNED]);
+    expect(await efficiencyTable()).toHaveAccessibleName(`Efficiency by run type for gemini · ${UNPINNED}`);
+  });
+
+  it('an options refetch that drops the chosen CLI but keeps another never shows or requests the dropped CLI’s unpinned cohort', async () => {
+    serve({
+      options: (compare) =>
+        efficiency(
+          {
+            cohorts: compare
+              ? [cohort('claude', 'sonnet', 40, 30), cohort('gemini', null, 0, 4)]
+              : [cohort('claude', 'sonnet', 40)],
+          },
+          compare,
+        ),
+    });
+    const { client } = renderPage();
+    const compareSwitch = await screen.findByRole('switch', { name: 'Compare with previous 7 days' });
+    fireEvent.click(compareSwitch);
+    fireEvent.click(await screen.findByRole('button', { name: 'gemini' }));
+    expect(pressedModels()).toEqual([UNPINNED]);
+    await waitFor(() =>
+      expect(getEfficiency).toHaveBeenCalledWith(SLUG, { compare: true, executor: 'gemini', model_unpinned: true }),
+    );
+    // Make the cached compare=false options stale, so the first render after the
+    // toggle (before reconciliation runs) itself issues the options refetch.
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ['usage'] });
+    });
+
+    // From here on, record every request together with the Model pills on screen
+    // when it was made (the render that issued it), to catch the pre-reconciliation render.
+    const seen: Array<{ params: unknown; pills: Array<string | null> }> = [];
+    const respond = getEfficiency.getMockImplementation()!;
+    getEfficiency.mockImplementation(async (slug, params = {}) => {
+      seen.push({
+        params,
+        pills: within(screen.getByRole('group', { name: 'Model' }))
+          .queryAllByRole('button')
+          .map((b) => b.textContent),
+      });
+      return respond(slug, params);
+    });
+
+    fireEvent.click(compareSwitch); // the compare=false options no longer offer gemini; claude remains
+
+    expect(await screen.findByText('Choose a CLI first')).toBeInTheDocument();
+    expect(within(screen.getByRole('group', { name: 'Model' })).queryAllByRole('button')).toEqual([]);
+    expect(within(screen.getByRole('group', { name: 'CLI' })).getAllByRole('button').map((b) => b.textContent)).toEqual([
+      'claude',
+    ]);
+    expect(within(screen.getByRole('group', { name: 'CLI' })).getByRole('button', { name: 'claude' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+    expect(efficiencyStatus()).toHaveTextContent('Choose a CLI to see Efficiency');
+    expect(screen.queryByRole('table', { name: /Efficiency by run type/ })).toBeNull();
+    expect(seen.map((s) => s.params)).toContainEqual({ compare: false });
+    expect(seen.filter((s) => (s.params as { executor?: string }).executor === 'gemini')).toEqual([]);
+    expect(seen.flatMap((s) => s.pills)).not.toContain(UNPINNED);
   });
 });
 
@@ -1049,6 +1338,6 @@ describe('Usage v1 — narrow viewport and accessibility', () => {
     expect(workloadStatus).toHaveAttribute('aria-live', 'polite');
     expect(workloadStatus).toHaveTextContent('Workload loaded for 1 agent');
     const efficiencyStatus = within(screen.getByRole('region', { name: 'Efficiency' })).getByRole('status');
-    expect(efficiencyStatus).toHaveTextContent('Choose a CLI and a model to see Efficiency');
+    expect(efficiencyStatus).toHaveTextContent('Choose a CLI to see Efficiency');
   });
 });

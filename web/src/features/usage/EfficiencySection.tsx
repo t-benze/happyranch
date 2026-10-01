@@ -1,7 +1,9 @@
 /**
  * Efficiency — one homogeneous cohort (exactly one CLI and one model) broken
- * into the five fixed run types (PRD §5–§8). Nothing renders until both are
- * chosen: there is no combined or aggregate option. Every figure, coverage
+ * into the five fixed run types (PRD §5–§8). Nothing renders until a CLI is
+ * chosen; choosing one preselects its CLI default (not pinned) cohort, a named
+ * model can then be picked, and there is no combined or aggregate option. Every
+ * figure, coverage
  * fraction and delta comes from `GET /usage/efficiency`; missing usage is
  * never shown as zero.
  */
@@ -111,7 +113,12 @@ function CohortPicker({
   onModel: (model: string | null) => void;
 }): JSX.Element {
   const executors = useMemo(() => [...new Set(cohorts.map((c) => c.executor))], [cohorts]);
-  const models = cohorts.filter((c) => c.executor === executor);
+  // The unpinned cohort is always offered for the chosen CLI, even when it has
+  // no runs in this window (and so no cohort row).
+  const models: Array<string | null> = [
+    null,
+    ...cohorts.filter((c) => c.executor === executor && c.model !== null).map((c) => c.model),
+  ];
   return (
     <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-3">
       <div role="group" aria-labelledby="usage-cli-label" className="flex flex-wrap items-center gap-2">
@@ -127,13 +134,13 @@ function CohortPicker({
         {executor === null ? (
           <span className="text-caption text-text-muted">Choose a CLI first</span>
         ) : (
-          models.map((c) => (
+          models.map((model) => (
             <Pill
-              key={c.model ?? '\u0000unpinned'}
-              pressed={selection !== null && selection.executor === executor && selection.model === c.model}
-              onClick={() => onModel(c.model)}
+              key={model ?? '\u0000unpinned'}
+              pressed={selection !== null && selection.executor === executor && selection.model === model}
+              onClick={() => onModel(model)}
             >
-              {modelLabel(c.model)}
+              {modelLabel(model)}
             </Pill>
           ))
         )}
@@ -458,12 +465,18 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
   const optionsQ = useEfficiencyOptions(compare);
   const [executor, setExecutor] = useState<string | null>(null);
   const [selection, setSelection] = useState<CohortSelection | null>(null);
-  const dataQ = useEfficiency(selection, compare);
 
   const cohorts = optionsQ.data?.cohorts ?? [];
+  // Until the reconciliation effect below clears them, a stored CLI that the
+  // latest options no longer offer is treated as not chosen: no pills, no request.
+  const offered = new Set(cohorts.map((c) => c.executor));
+  const chosenExecutor = executor !== null && offered.has(executor) ? executor : null;
+  const chosen = selection !== null && offered.has(selection.executor) ? selection : null;
+  const dataQ = useEfficiency(chosen, compare);
 
-  // A cohort that is no longer offered (e.g. a previous-only cohort after
-  // Compare is switched off) is cleared rather than silently kept.
+  // A named model that is no longer offered (e.g. a previous-only cohort after
+  // Compare is switched off) is never silently kept: it falls back to the CLI's
+  // unpinned cohort, which is always offered. Both are cleared when the CLI is gone.
   useEffect(() => {
     if (!optionsQ.isSuccess || optionsQ.isPlaceholderData) return;
     const list = optionsQ.data.cohorts;
@@ -472,22 +485,23 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
       setSelection(null);
     } else if (
       selection !== null &&
+      selection.model !== null &&
       !list.some((c) => c.executor === selection.executor && c.model === selection.model)
     ) {
-      setSelection(null);
+      setSelection({ executor: selection.executor, model: null });
     }
   }, [optionsQ.isSuccess, optionsQ.isPlaceholderData, optionsQ.data, executor, selection]);
 
   const onExecutor = (ex: string) => {
     if (ex === executor) return;
     setExecutor(ex);
-    setSelection(null);
+    setSelection({ executor: ex, model: null });
   };
   const onModel = (model: string | null) => {
     if (executor !== null) setSelection({ executor, model });
   };
 
-  const shown = selection ? dataQ.data : optionsQ.data;
+  const shown = chosen ? dataQ.data : optionsQ.data;
   const meta = shown
     ? `Data through ${formatInstant(shown.data_through, shown.timezone)} (${shown.timezone}) · generated ${formatInstant(shown.generated_at, shown.timezone)}`
     : null;
@@ -509,13 +523,13 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
         No CLI/model cohort has runs in this period, so there is nothing to compare within a cohort.
       </p>
     );
-  } else if (selection === null) {
-    status = 'Choose a CLI and a model to see Efficiency';
+  } else if (chosen === null) {
+    status = 'Choose a CLI to see Efficiency';
     body = (
       <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-5">
         <p className="text-body text-text-primary">
-          Choose one CLI, then one model. Token reporting differs by CLI and model, so there is no
-          combined view.
+          Choose one CLI. Its CLI default (not pinned) cohort is preselected and you can pick a named
+          model. Token reporting differs by CLI and model, so there is no combined view.
         </p>
       </div>
     );
@@ -530,7 +544,7 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
     const stale = dataQ.isError;
     status = stale
       ? 'Efficiency is stale: the latest refresh failed'
-      : `Efficiency loaded for ${selection.executor} · ${modelLabel(selection.model)}`;
+      : `Efficiency loaded for ${chosen.executor} · ${modelLabel(chosen.model)}`;
     body = (
       <>
         {stale && (
@@ -540,7 +554,7 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
             retrying={dataQ.isFetching}
           />
         )}
-        <EfficiencyTable data={data} selection={selection} compare={compare} />
+        <EfficiencyTable data={data} selection={chosen} compare={compare} />
         <UsageSentence data={data} compare={compare} />
         <div className="text-body text-text-secondary mt-3 space-y-2">
           <UnattributedBlock counts={data.unattributed.current} period="this period" />
@@ -577,8 +591,8 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
         cohorts.length > 0 && (
           <CohortPicker
             cohorts={cohorts}
-            executor={executor}
-            selection={selection}
+            executor={chosenExecutor}
+            selection={chosen}
             onExecutor={onExecutor}
             onModel={onModel}
           />
