@@ -154,7 +154,7 @@ from runtime.models import (
 from runtime.reply_delivery import reply_failure_category
 from runtime.infrastructure.work_hours_store import WorkHoursStore
 from runtime.infrastructure.schedule_store import ScheduleStore
-from runtime.daemon.thread_mentions import (
+from runtime.infrastructure.thread_mentions import (
     parse_mentions,
     resolve_wake_set,
     valid_mentions,
