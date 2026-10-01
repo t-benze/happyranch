@@ -4,6 +4,7 @@ import json
 import hashlib
 import multiprocessing
 import os
+import queue
 import threading
 import time
 from contextlib import contextmanager
@@ -200,12 +201,202 @@ class _BusyOnceCoordinator:
         with self.delegate.operation(*args, **kwargs):
             yield
 
+    @contextmanager
+    def claimed_operation(self, *args, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            raise ProfileCoordinatorError("profile_coordinator_busy")
+        with self.delegate.claimed_operation(*args, **kwargs) as claimed:
+            yield claimed
+
 
 def _write_executable(path: Path, body: bytes) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(body)
     path.chmod(0o700)
     return hashlib.sha256(body).hexdigest()
+
+
+def _run_projection_process_contender(
+    *,
+    contender_kind: str,
+    winner: bool,
+    daemon_home: str,
+    database_path: str,
+    runtime_root: str,
+    org_root: str,
+    operation_id: str,
+    probe_barrier,
+    winner_done,
+    bind_calls,
+    outcomes,
+) -> None:
+    """Run one real process through the route or production sweep seam."""
+    os.environ["HAPPYRANCH_DAEMON_HOME"] = daemon_home
+    from runtime.daemon.direct_connect_projection_sweep import _sweep_once as sweep_once
+    from runtime.orchestrator import custom_adapter_registry
+    from runtime.orchestrator.adapter_contract import AdapterOutput
+
+    original_binding = custom_adapter_registry._perform_adapter_profile_binding
+
+    def fake_probe(_executable, adapter_id, **_kwargs):
+        probe_barrier.wait(timeout=10)
+        if not winner:
+            assert winner_done.wait(10)
+        return AdapterOutput.model_validate(
+            {
+                "success": True,
+                "duration_seconds": 0,
+                "session_id": "probe-sess-00000000-0000-0000-0000-000000000000",
+                "returncode": 0,
+                "stdout_tail": "",
+                "stderr_tail": "",
+                "adapter_metadata": {
+                    "adapter": adapter_id,
+                    "adapter_version": "9.9.9",
+                    "contract_version": 1,
+                },
+            }
+        )
+
+    def counted_binding(**kwargs):
+        with bind_calls.get_lock():
+            bind_calls.value += 1
+        return original_binding(**kwargs)
+
+    custom_adapter_registry.run_conformance_probe = fake_probe
+    custom_adapter_registry._perform_adapter_profile_binding = counted_binding
+    org = OrgState.load(slug="alpha", root=Path(org_root), settings=Settings())
+    coordinator = ProfileCoordinator(
+        daemon_home=Path(daemon_home),
+        orgs={"alpha": org},
+    )
+    store = DirectConnectAuthorityStore(
+        Path(database_path), runtime_root=Path(runtime_root),
+    )
+    try:
+        if contender_kind == "route":
+            state = DaemonState.idle(Settings())
+            assert state.direct_connect_authority_store is not None
+            state.direct_connect_authority_store.close()
+            state.direct_connect_authority_store = store
+            state.orgs = {"alpha": org}
+            state.profile_coordinator = coordinator
+            org._profile_coordinator = coordinator
+            client = TestClient(create_app(state))
+            client.headers.update({"Authorization": f"Bearer {paths.read_token()}"})
+            response = client.post(
+                f"/api/v1/runtime/custom-cli/{operation_id}/commit"
+            )
+            outcomes.put((contender_kind, response.status_code, response.json()))
+            client.close()
+        else:
+            sweep_once(store, coordinator)
+            projection = store.get_projection(operation_id)
+            outcomes.put(
+                (
+                    contender_kind,
+                    200,
+                    {"profile_state": projection.state if projection else None},
+                )
+            )
+    except BaseException as exc:
+        outcomes.put((contender_kind, 500, {"error": repr(exc)}))
+        raise
+    finally:
+        if winner:
+            winner_done.set()
+        store.close()
+        org.close()
+
+
+def _assert_projection_process_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    contenders: tuple[str, str],
+) -> None:
+    from runtime.orchestrator.executor_registry import reset_registry
+
+    reset_registry()
+    client, state, operation_id, _busy_once = _direct_connect_route_fixture(
+        tmp_path, monkeypatch,
+    )
+    first = client.post(f"/api/v1/runtime/custom-cli/{operation_id}/commit")
+    assert first.status_code == 409
+    assert state.direct_connect_authority_store is not None
+    database_path = tmp_path / "direct.db"
+    runtime_root = tmp_path / "daemon"
+    state.direct_connect_authority_store.close()
+    client.close()
+
+    profile_name = "custom-profile"
+    with _registered_profile(profile_name):
+        org_root = tmp_path / "orgs" / "alpha"
+        org = _seed_org(org_root, "alpha", {"worker": profile_name})
+        coordinator = ProfileCoordinator(
+            daemon_home=runtime_root,
+            orgs={"alpha": org},
+        )
+        coordinator.reconcile_startup()
+        before_generation = _pointer(org)[0]
+        org.close()
+
+        context = multiprocessing.get_context("spawn")
+        probe_barrier = context.Barrier(2)
+        winner_done = context.Event()
+        bind_calls = context.Value("i", 0)
+        outcomes = context.Queue()
+        workers = [
+            context.Process(
+                target=_run_projection_process_contender,
+                kwargs={
+                    "contender_kind": contender_kind,
+                    "winner": index == 0,
+                    "daemon_home": str(runtime_root),
+                    "database_path": str(database_path),
+                    "runtime_root": str(runtime_root),
+                    "org_root": str(org_root),
+                    "operation_id": operation_id,
+                    "probe_barrier": probe_barrier,
+                    "winner_done": winner_done,
+                    "bind_calls": bind_calls,
+                    "outcomes": outcomes,
+                },
+            )
+            for index, contender_kind in enumerate(contenders)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(20)
+            assert worker.exitcode == 0
+
+        results = []
+        for _ in workers:
+            try:
+                results.append(outcomes.get(timeout=5))
+            except queue.Empty:
+                pytest.fail("projection contender did not publish an outcome")
+        assert all(status == 200 for _, status, _ in results), results
+        assert all(body["profile_state"] == "committed" for _, _, body in results)
+
+        store = DirectConnectAuthorityStore(database_path, runtime_root=runtime_root)
+        with store._lock:
+            committed_events = store._conn.execute(
+                "SELECT COUNT(*) FROM direct_connect_events "
+                "WHERE operation_id=? AND event_type='committed'",
+                (operation_id,),
+            ).fetchone()[0]
+        store.close()
+        reopened = OrgState.load(slug="alpha", root=org_root, settings=Settings())
+        try:
+            assert bind_calls.value == 1
+            assert committed_events == 1
+            assert _pointer(reopened)[0] == before_generation + 1
+        finally:
+            reopened.close()
+    reset_registry()
 
 
 def _direct_connect_route_fixture(
@@ -550,6 +741,28 @@ def test_planned_direct_connect_contention_is_retried_to_one_commit(
     reset_registry()
 
 
+def test_direct_connect_route_and_sweep_processes_claim_one_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _assert_projection_process_race(
+        tmp_path,
+        monkeypatch,
+        contenders=("route", "sweep"),
+    )
+
+
+def test_direct_connect_two_sweep_processes_claim_one_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _assert_projection_process_race(
+        tmp_path,
+        monkeypatch,
+        contenders=("sweep", "sweep"),
+    )
+
+
 def test_generic_adapter_route_fences_registry_bound_profile_when_it_becomes_pending(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -868,6 +1081,139 @@ def test_profile_and_org_writer_contention_preserves_lock_order(
 
         assert not errors
         org.workflow_authority.verify_admission_ready()
+        org.close()
+
+
+def test_late_dynamic_org_waits_for_profile_operation_and_publishes_current_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    daemon_home = tmp_path / "daemon-home"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home))
+    profile_name = "late-org-profile"
+    initial = {
+        "workspace_adapter_id": "pi",
+        "command_adapter_id": f"custom-adapter:{profile_name}-adapter",
+    }
+    replacement = {
+        "workspace_adapter_id": "codex",
+        "command_adapter_id": f"custom-adapter:{profile_name}-adapter",
+    }
+    save_runtime_profile(profile_name, initial)
+    with _registered_profile(profile_name):
+        runtime = RuntimeDir.init(tmp_path / "runtime")
+        alpha = _seed_org(
+            runtime.orgs_dir / "alpha", "alpha", {"alpha_worker": profile_name},
+        )
+        beta_seed = _seed_org(
+            runtime.orgs_dir / "beta", "beta", {"beta_worker": profile_name},
+        )
+        beta_seed.close()
+        state = DaemonState(runtime=runtime, settings=Settings(), orgs={"alpha": alpha})
+        coordinator = ProfileCoordinator(
+            daemon_home=daemon_home,
+            orgs=state.orgs,
+        )
+        state.profile_coordinator = coordinator
+        alpha._profile_coordinator = coordinator
+        coordinator.reconcile_startup()
+
+        operation_entered = threading.Event()
+        allow_mutation = threading.Event()
+        operation_errors: list[BaseException] = []
+
+        def mutate_profile() -> None:
+            try:
+                with coordinator.operation(
+                    [profile_name],
+                    operation_kind="rebind",
+                    publisher="late-org-interleaving",
+                ):
+                    operation_entered.set()
+                    assert allow_mutation.wait(10)
+                    save_runtime_profile(profile_name, replacement)
+                    get_registry().replace_custom_profile(
+                        ExecutorProfile(
+                            name=profile_name,
+                            kind="custom",
+                            workspace_adapter_id="codex",
+                            command_adapter_id=(
+                                f"custom-adapter:{profile_name}-adapter"
+                            ),
+                        )
+                    )
+            except BaseException as exc:
+                operation_errors.append(exc)
+
+        operation = threading.Thread(target=mutate_profile)
+        operation.start()
+        assert operation_entered.wait(10)
+
+        attached: list[OrgState] = []
+        attach_errors: list[BaseException] = []
+
+        def attach_beta() -> None:
+            try:
+                attached.append(asyncio.run(state.add_org("beta")))
+            except BaseException as exc:
+                attach_errors.append(exc)
+
+        attachment = threading.Thread(target=attach_beta)
+        attachment.start()
+        time.sleep(0.1)
+        allow_mutation.set()
+        operation.join(10)
+        attachment.join(10)
+        assert not operation.is_alive() and not attachment.is_alive()
+        assert not operation_errors
+        assert not attach_errors
+        assert len(attached) == 1
+
+        beta = attached[0]
+        beta.workflow_authority.verify_admission_ready()
+        mirror = beta.db.execute(
+            "SELECT profile_digest FROM workflow_profile_store WHERE profile_name=?",
+            (profile_name,),
+        ).fetchone()
+        assert mirror is not None
+        assert mirror["profile_digest"] == coordinator.profile_digest(profile_name)
+        assert coordinator._closure_coherent(beta)
+        asyncio.run(state.close_all())
+
+
+def test_closure_refuses_a_stale_global_profile_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon_home = tmp_path / "daemon-home"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home))
+    profile_name = "stale-digest-profile"
+    save_runtime_profile(
+        profile_name,
+        {
+            "workspace_adapter_id": "pi",
+            "command_adapter_id": f"custom-adapter:{profile_name}-adapter",
+        },
+    )
+    with _registered_profile(profile_name):
+        org = _seed_org(
+            tmp_path / "orgs" / "alpha", "alpha", {"worker": profile_name},
+        )
+        coordinator = ProfileCoordinator(daemon_home=daemon_home, orgs={"alpha": org})
+        coordinator.reconcile_startup()
+        assert coordinator._closure_coherent(org)
+        with coordinator._transaction(org) as conn:
+            conn.execute(
+                "UPDATE workflow_profile_store SET profile_digest=? "
+                "WHERE profile_name=?",
+                ("0" * 64, profile_name),
+            )
+        assert not coordinator._closure_coherent(org)
+        assert not coordinator._publish_dependency_change(org)
+        with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+            org.workflow_authority.verify_admission_ready()
         org.close()
 
 

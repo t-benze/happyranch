@@ -22,7 +22,7 @@ import sqlite3
 import stat
 import time
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -215,7 +215,7 @@ class ProfileCoordinator:
         )
 
     def profile_digest(self, profile_name: str) -> str:
-        """Expose the canonical durable profile digest for evidence/tests."""
+        """Return the global digest used by production closure coherence."""
         return self._effective_profile(profile_name).digest
 
     @staticmethod
@@ -433,8 +433,8 @@ class ProfileCoordinator:
     def _closure_coherent(self, org: OrgState) -> bool:
         with org.db._lock:
             rows = org.db._conn.execute(
-                "SELECT d.state,d.bound_generation,s.generation,"
-                "s.state AS store_state,r.published_generation "
+                "SELECT d.profile_name,d.state,d.bound_generation,s.generation,"
+                "s.profile_digest,s.state AS store_state,r.published_generation "
                 "FROM workflow_profile_dependencies d "
                 "LEFT JOIN workflow_profile_store s "
                 "ON s.profile_name=d.profile_name "
@@ -443,28 +443,21 @@ class ProfileCoordinator:
                 "WHERE d.org_namespace=? AND d.state IN ('active','unbound')",
                 (org.workflow_authority.namespace,),
             ).fetchall()
-        if not all(
-            row["state"] == "active"
-            and row["store_state"] == "active"
-            and row["generation"] is not None
-            and int(row["generation"]) == int(row["bound_generation"])
-            and row["published_generation"] is not None
-            and int(row["published_generation"]) == int(row["bound_generation"])
-            for row in rows
-        ):
-            return False
-        profile_names = {
-            str(row["profile_name"])
-            for row in org.db.execute(
-                "SELECT profile_name FROM workflow_profile_dependencies "
-                "WHERE org_namespace=? AND state='active'",
-                (org.workflow_authority.namespace,),
-            ).fetchall()
-        }
-        return all(
-            self._effective_profile(profile_name).resolvable
-            for profile_name in profile_names
-        )
+        for row in rows:
+            profile_name = str(row["profile_name"])
+            if not (
+                row["state"] == "active"
+                and row["store_state"] == "active"
+                and row["generation"] is not None
+                and int(row["generation"]) == int(row["bound_generation"])
+                and row["published_generation"] is not None
+                and int(row["published_generation"])
+                == int(row["bound_generation"])
+                and row["profile_digest"] == self.profile_digest(profile_name)
+                and self._effective_profile(profile_name).resolvable
+            ):
+                return False
+        return True
 
     def _republish(
         self,
@@ -546,6 +539,82 @@ class ProfileCoordinator:
                 self._set_operation_state(operation, "aborted")
 
     @contextmanager
+    def _operation_with_leases_held(
+        self,
+        names: Sequence[str],
+        *,
+        operation_kind: str,
+        publisher: str,
+    ) -> Iterator[None]:
+        """Create the durable U1A claim after profile leases are held."""
+        coordinator_invocation = uuid.uuid4().hex
+        operations = tuple(
+            _ProfileOperation(
+                operation_id=f"WPO-{uuid.uuid4().hex}",
+                profile_name=name,
+                operation_kind=operation_kind,
+                members=self._required_members(name),
+                target_generation=self._max_generation(name) + 1,
+                prior=self._effective_profile(name),
+            )
+            for name in names
+        )
+        for operation in operations:
+            self._insert_operation_rows(
+                operation,
+                coordinator_invocation=coordinator_invocation,
+            )
+        bindings: dict[str, ProfileFenceBinding] = {}
+        members = sorted({slug for op in operations for slug in op.members})
+        with ExitStack() as org_stack:
+            for slug in members:
+                bindings[slug] = org_stack.enter_context(
+                    self.orgs[slug].workflow_authority.profile_change_interval(
+                        reason=f"profile:{','.join(names)}:{publisher}",
+                        coordinator_invocation=coordinator_invocation,
+                    )
+                )
+            for operation in operations:
+                self._set_operation_state(operation, "fenced")
+            try:
+                yield
+            except BaseException:
+                try:
+                    self._finalize(
+                        operations=operations,
+                        bindings=bindings,
+                        publisher=publisher,
+                        mutation_succeeded=False,
+                    )
+                except Exception:
+                    logger.exception(
+                        "profile compensation publication deferred publisher=%s",
+                        publisher,
+                    )
+                raise
+            else:
+                try:
+                    self._finalize(
+                        operations=operations,
+                        bindings=bindings,
+                        publisher=publisher,
+                        mutation_succeeded=True,
+                    )
+                except Exception:
+                    # The existing writer already committed. Preserve its
+                    # response contract while the durable operation/fence
+                    # remains discoverable for cold forward recovery.
+                    logger.exception(
+                        "profile post-commit publication deferred publisher=%s",
+                        publisher,
+                    )
+            finally:
+                self._release_diagnostic_leases(
+                    operations,
+                    coordinator_invocation=coordinator_invocation,
+                )
+
+    @contextmanager
     def operation(
         self,
         profile_names: Sequence[str],
@@ -562,72 +631,92 @@ class ProfileCoordinator:
                 return
             for name in names:
                 self._assert_no_active_operation(name)
-            coordinator_invocation = uuid.uuid4().hex
-            operations = tuple(
-                _ProfileOperation(
-                    operation_id=f"WPO-{uuid.uuid4().hex}",
-                    profile_name=name,
-                    operation_kind=operation_kind,
-                    members=self._required_members(name),
-                    target_generation=self._max_generation(name) + 1,
-                    prior=self._effective_profile(name),
-                )
-                for name in names
+            with self._operation_with_leases_held(
+                names,
+                operation_kind=operation_kind,
+                publisher=publisher,
+            ):
+                yield
+
+    @contextmanager
+    def claimed_operation(
+        self,
+        profile_names: Sequence[str],
+        *,
+        operation_kind: str,
+        publisher: str,
+        terminal_check: Callable[[], bool],
+    ) -> Iterator[bool]:
+        """Claim a retryable writer once, before any U1A fence or mutation.
+
+        The stable profile flock serializes independent processes. After it is
+        acquired, the durable terminal check lets a loser return the winner's
+        outcome without creating a second operation row, fence, or publication.
+        A winner then records the existing U1A operation/lease claim before the
+        caller can mutate adapter or profile state.
+        """
+        if operation_kind not in {"register", "rebind", "remove"}:
+            raise ProfileCoordinatorError("profile_operation_kind_invalid")
+        with self._profile_leases(profile_names, wait=True) as names:
+            if not names:
+                yield True
+                return
+            for name in names:
+                self._assert_no_active_operation(name)
+            if terminal_check():
+                yield False
+                return
+            with self._operation_with_leases_held(
+                names,
+                operation_kind=operation_kind,
+                publisher=publisher,
+            ):
+                yield True
+
+    def _dependency_profiles_for_org(self, org: OrgState) -> tuple[str, ...]:
+        """Return canonical desired and outstanding profile names for one org."""
+        definitions = list(prompt_loader.list_agents(OrgPaths(root=org.root)))
+        registry = get_registry()
+        desired = {
+            definition.name: definition.executor.lower()
+            for definition in definitions
+            if (
+                (profile := registry.get_profile(definition.executor)) is None
+                or profile.kind != "builtin"
             )
-            for operation in operations:
-                self._insert_operation_rows(
-                    operation,
-                    coordinator_invocation=coordinator_invocation,
-                )
-            bindings: dict[str, ProfileFenceBinding] = {}
-            members = sorted({slug for op in operations for slug in op.members})
-            with ExitStack() as org_stack:
-                for slug in members:
-                    bindings[slug] = org_stack.enter_context(
-                        self.orgs[slug].workflow_authority.profile_change_interval(
-                            reason=f"profile:{','.join(names)}:{publisher}",
-                            coordinator_invocation=coordinator_invocation,
-                        )
-                    )
-                for operation in operations:
-                    self._set_operation_state(operation, "fenced")
-                try:
-                    yield
-                except BaseException:
-                    try:
-                        self._finalize(
-                            operations=operations,
-                            bindings=bindings,
-                            publisher=publisher,
-                            mutation_succeeded=False,
-                        )
-                    except Exception:
-                        logger.exception(
-                            "profile compensation publication deferred publisher=%s",
-                            publisher,
-                        )
-                    raise
-                else:
-                    try:
-                        self._finalize(
-                            operations=operations,
-                            bindings=bindings,
-                            publisher=publisher,
-                            mutation_succeeded=True,
-                        )
-                    except Exception:
-                        # The existing writer already committed. Preserve its
-                        # response contract while the durable operation/fence
-                        # remains discoverable for cold forward recovery.
-                        logger.exception(
-                            "profile post-commit publication deferred publisher=%s",
-                            publisher,
-                        )
-                finally:
-                    self._release_diagnostic_leases(
-                        operations,
-                        coordinator_invocation=coordinator_invocation,
-                    )
+        }
+        with org.db._lock:
+            outstanding = {
+                str(row["profile_name"])
+                for row in org.db._conn.execute(
+                    "SELECT DISTINCT profile_name FROM workflow_profile_dependencies "
+                    "WHERE org_namespace=? AND state IN ('active','unbound')",
+                    (org.workflow_authority.namespace,),
+                ).fetchall()
+            }
+        return tuple(sorted(set(desired.values()) | outstanding))
+
+    def _dependency_mirror_snapshot(self, org: OrgState) -> tuple[tuple[object, ...], ...]:
+        """Capture every local relation that determines the profile projection."""
+        with org.db._lock:
+            dependencies = org.db._conn.execute(
+                "SELECT org_namespace,profile_name,consumer_identity,"
+                "bound_generation,state FROM workflow_profile_dependencies "
+                "ORDER BY org_namespace,profile_name,consumer_identity"
+            ).fetchall()
+            stores = org.db._conn.execute(
+                "SELECT profile_name,generation,profile_digest,state "
+                "FROM workflow_profile_store ORDER BY profile_name"
+            ).fetchall()
+            registry = org.db._conn.execute(
+                "SELECT profile_name,published_generation "
+                "FROM workflow_profile_registry ORDER BY profile_name"
+            ).fetchall()
+        return tuple(
+            [("dependency", *tuple(row)) for row in dependencies]
+            + [("store", *tuple(row)) for row in stores]
+            + [("registry", *tuple(row)) for row in registry]
+        )
 
     def _sync_org_dependencies(self, org: OrgState) -> bool:
         """Mirror canonical active-agent profile requirements into one org DB."""
@@ -647,15 +736,7 @@ class ProfileCoordinator:
             profile_name: self._effective_profile(profile_name)
             for profile_name in sorted(set(desired.values()))
         }
-        with org.db._lock:
-            before = [
-                tuple(row)
-                for row in org.db._conn.execute(
-                    "SELECT org_namespace,profile_name,consumer_identity,"
-                    "bound_generation,state FROM workflow_profile_dependencies "
-                    "ORDER BY org_namespace,profile_name,consumer_identity"
-                ).fetchall()
-            ]
+        before = self._dependency_mirror_snapshot(org)
         with self._transaction(org) as conn:
             existing_rows = conn.execute(
                 "SELECT profile_name,consumer_identity,state "
@@ -717,30 +798,64 @@ class ProfileCoordinator:
                         "active" if effective.state == "active" else "unbound",
                     ),
                 )
-        with org.db._lock:
-            after = [
-                tuple(row)
-                for row in org.db._conn.execute(
-                    "SELECT org_namespace,profile_name,consumer_identity,"
-                    "bound_generation,state FROM workflow_profile_dependencies "
-                    "ORDER BY org_namespace,profile_name,consumer_identity"
-                ).fetchall()
-            ]
+        after = self._dependency_mirror_snapshot(org)
         return before != after
 
     def synchronize_all_dependencies(self, *, publish: bool = True) -> set[str]:
-        """Scan canonical agent files before leases and mirror exact consumers."""
-        changed = {
-            slug
-            for slug, org in sorted(self.orgs.items())
-            if self._sync_org_dependencies(org)
-        }
-        if publish:
-            for slug in sorted(changed):
-                self._publish_dependency_change(self.orgs[slug])
-        return changed
+        """Mirror all consumers while holding canonical profile leases."""
+        profile_names = sorted(
+            {
+                profile_name
+                for org in self.orgs.values()
+                for profile_name in self._dependency_profiles_for_org(org)
+            }
+        )
+        with self._profile_leases(profile_names, wait=True) as names:
+            for name in names:
+                self._assert_no_active_operation(name)
+            changed = {
+                slug
+                for slug, org in sorted(self.orgs.items())
+                if self._sync_org_dependencies(org)
+            }
+            if publish:
+                for slug in sorted(changed):
+                    self._publish_dependency_change(self.orgs[slug])
+            return changed
 
-    def _publish_dependency_change(self, org: OrgState) -> None:
+    def _authority_profile_projection_coherent(self, org: OrgState) -> bool:
+        try:
+            readiness = org.workflow_authority.verify_admission_ready()
+        except Exception:
+            return False
+        snapshot = json.loads(readiness.snapshot_bytes)
+        return (
+            isinstance(snapshot, dict)
+            and snapshot.get("machine_global_profiles")
+            == org.workflow_authority._profile_projection()
+        )
+
+    @contextmanager
+    def dynamic_org_attachment(self, org: OrgState) -> Iterator[None]:
+        """Synchronize and attach one org without escaping profile capture."""
+        profile_names = self._dependency_profiles_for_org(org)
+        with self._profile_leases(profile_names, wait=True) as names:
+            for name in names:
+                self._assert_no_active_operation(name)
+            changed = self._sync_org_dependencies(org)
+            if changed or not self._authority_profile_projection_coherent(org):
+                if not self._publish_dependency_change(org):
+                    raise ProfileCoordinatorError("profile_dependency_incoherent")
+            if (
+                not self._closure_coherent(org)
+                or not self._authority_profile_projection_coherent(org)
+            ):
+                raise ProfileCoordinatorError("profile_dependency_incoherent")
+            # The caller inserts the org into the shared mapping before these
+            # profile leases are released, so the next writer must capture it.
+            yield
+
+    def _publish_dependency_change(self, org: OrgState) -> bool:
         invocation = f"dependency-sync-{uuid.uuid4().hex}"
         with org.workflow_authority.profile_change_interval(
             reason="profile:dependency-sync",
@@ -751,6 +866,8 @@ class ProfileCoordinator:
                     publisher="profile-dependency-sync",
                     binding=binding,
                 )
+                return True
+        return False
 
     def rebind_consumer(
         self,

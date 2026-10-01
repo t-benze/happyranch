@@ -196,8 +196,13 @@ def _project_once(
 
     adapter_created = False
     replaced_adapter: AdapterEntry | None = None
+
+    def projection_is_terminal() -> bool:
+        current = store.get_projection(operation_id)
+        return current is not None and current.state in {"committed", "failed"}
+
     profile_span = (
-        profile_coordinator.operation(
+        profile_coordinator.claimed_operation(
             [artifacts.intended_profile_name],
             operation_kind=(
                 "rebind"
@@ -206,11 +211,23 @@ def _project_once(
                 else "register"
             ),
             publisher="direct_connect_projection",
+            terminal_check=projection_is_terminal,
         )
         if profile_coordinator is not None
-        else nullcontext()
+        else nullcontext(True)
     )
-    with profile_span:
+    with profile_span as owns_projection:
+        if not owns_projection:
+            # The cross-process winner terminalized while this caller waited
+            # for the profile lease. Return its durable result without creating
+            # another U1A operation, fence, generation, publication, or adapter
+            # mutation.
+            outcome = _await_concurrent_outcome(store, operation_id)
+            if outcome.state == "planned":
+                raise RuntimeError(
+                    f"terminal projection claim disappeared for operation {operation_id!r}"
+                )
+            return outcome
         acquire_store_lock()
         try:
             existing_adapter = get_adapter(adapter_id)
@@ -243,12 +260,18 @@ def _project_once(
         # Close the resumable planned window before releasing the profile
         # lease, so a later route/sweep caller observes the terminal winner
         # instead of redundantly publishing another profile generation.
-        store.mark_committed(
+        if not store.mark_committed(
             operation_id,
             adapter_id=adapter_id,
             profile_name=bind_result["profile_name"],
             now=now,
-        )
+        ):
+            # This is unreachable for supported callers: the terminal re-read,
+            # durable U1A operation claim, and stable profile lease jointly own
+            # the transition. Never ignore a lost CAS after mutation.
+            raise RuntimeError(
+                f"projection terminal ownership lost for operation {operation_id!r}"
+            )
     return ProjectionOutcome(
         state="committed", adapter_id=adapter_id, profile_name=bind_result["profile_name"], reason=None,
     )

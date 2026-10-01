@@ -264,16 +264,25 @@ class DaemonState:
             except Exception:
                 org.close()
                 raise
-            org.orchestrator.attach_queue(self.queue)
-            org.orchestrator.attach_sessions(org.sessions)
-            org.orchestrator.attach_host_supervisor(self.host_supervisor)
-            self.orgs[slug] = org
-            if self.profile_coordinator is not None:
-                org._profile_coordinator = self.profile_coordinator
-                # The shared mapping already contains the new org.  Reconcile
-                # its exact agent consumers and publish before it is returned
-                # to the caller as runnable state.
-                self.profile_coordinator.synchronize_all_dependencies()
+            try:
+                org.orchestrator.attach_queue(self.queue)
+                org.orchestrator.attach_sessions(org.sessions)
+                org.orchestrator.attach_host_supervisor(self.host_supervisor)
+                if self.profile_coordinator is not None:
+                    org._profile_coordinator = self.profile_coordinator
+                    # Hold every referenced profile lease while synchronizing
+                    # and publishing this org, then insert it into the shared
+                    # map before releasing those leases. A concurrent writer
+                    # therefore completes first or captures the new org; there
+                    # is no visible stale-ready attachment window.
+                    with self.profile_coordinator.dynamic_org_attachment(org):
+                        self.orgs[slug] = org
+                else:
+                    self.orgs[slug] = org
+            except Exception:
+                self.orgs.pop(slug, None)
+                org.close()
+                raise
             self.broken_orgs.pop(slug, None)
             # Wire the thread queue + main loop so run_step workers can
             # cross the async boundary via run_coroutine_threadsafe when

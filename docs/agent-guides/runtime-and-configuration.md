@@ -348,7 +348,12 @@ approved and resolvable keeps the org fenced. The shared profile YAML's
 read/merge/replace writers additionally take one store-scoped leaf `flock`, so
 different profile leases cannot lose each other's entries. Direct-connect
 `planned` projections are production-sweep eligible after transient profile
-contention. Startup does not dispatch, activate, or admit workflow work.
+contention. Independent route/sweep contenders re-read the durable terminal row
+under the profile lease before any mutation or fence. Dynamic org attachment
+holds every canonically ordered referenced profile lease through dependency
+synchronization, coherent publication, and shared-map insertion; its mirror
+digest must equal the current global digest before readiness is exposed.
+Startup does not dispatch, activate, or admit workflow work.
 
 ## Org Config: Timezone and `current_time` Prompt Injection
 

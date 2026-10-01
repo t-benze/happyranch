@@ -237,7 +237,16 @@ an outstanding consumer unbound and the org fenced until an explicit coherent
 rebind/removal. Cold startup completes interrupted operations once; a
 post-commit republish failure preserves the writer's established response while
 leaving a machine-readable fenced recovery state. Direct same-UID file/DB edits
-remain outside the cooperative guarantee. U2B still wires no workflow
+remain outside the cooperative guarantee. Dynamic org attachment scans its
+canonical profile requirements before taking the corresponding profile leases,
+synchronizes and publishes beneath those leases, and joins the shared org map
+before releasing them; a non-terminal operation is therefore retried boundedly
+or refused and cannot be escaped. Closure coherence compares every org mirror's
+profile digest with the current global profile digest before readiness reopens.
+Direct-connect route/sweep retries take the same stable profile lease, re-read
+the durable projection terminal state before creating a U1A operation/fence,
+and only the winner records that existing durable claim and mutates/publishes.
+U2B still wires no workflow
 admission, activation, or dispatch consumer; those remain later units.
 
 ## Commands

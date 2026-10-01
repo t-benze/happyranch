@@ -193,7 +193,11 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   writer commits, and only a complete profile-and-approved-adapter closure is
   republished. Startup settles interrupted operations before returning
   `DaemonState`; direct-connect `planned` rows remain retryable by both the
-  commit route and production sweep. No workflow admission consumer ships
+  commit route and production sweep, with a terminal re-read under the shared
+  profile lease before any U1A fence or adapter/profile mutation. Dynamic org
+  attachment synchronizes beneath canonically ordered profile leases and joins
+  the shared map before releasing them; closure also binds each local profile
+  digest to the current global digest. No workflow admission consumer ships
   before its later unit.
 - **Approval.** `POST /agents/{name}/approve` atomically moves the pending file to `org/agents/<name>.md`; when that promotion makes the registered manager eligible, it initializes the team's selector in the same workflow-authority canonical change. It then bootstraps the workspace under `workspaces/<name>/`. Approved agents appear in `GET /agents` and `GET /agents/enrollments?status=approved`.
 - **Termination.** `manage-agent terminate` archives an approved **non-manager worker** on the caller's team. It is refused if the agent is a manager, belongs to another team, or has live work. Live work includes non-terminal tasks assigned to the agent, already-started thread invocations, firing schedules, running work-hours wakes, running dreams, or pending/running jobs attributable to the agent. If the agent is quiescent, the route:

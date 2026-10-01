@@ -79,7 +79,12 @@ reads, and daemon startup participate at their existing mutation/read
 boundaries. Conformance probes finish before profile leases. A direct-connect
 projection left durably `planned` by pre-mutation contention is retried by a
 later commit call or the production sweep; it is not treated as a terminal
-successful response.
+successful response. Route and sweep contenders serialize on the profile lease
+and re-read that durable row before creating the U1A operation/fence, so a
+terminal loser performs no adapter/profile mutation or second publication.
+Dynamic org attachment takes all canonically ordered referenced profile leases
+through dependency synchronization and shared-map insertion. Readiness reopens
+only when each org-local profile digest equals the current global digest.
 
 **Built-in profiles:**
 

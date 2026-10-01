@@ -814,7 +814,8 @@ and no row is compared to itself.
 machine-global coordinator cannot be represented by the org-scoped pointer
 alone. Production symbols live in
 `runtime/workflows/profile_coordinator.py` (`ProfileCoordinator.operation`,
-`.dependency_writer`, `.rebind_consumer`, `.reconcile_startup`) over
+`.claimed_operation`, `.dependency_writer`, `.dynamic_org_attachment`,
+`.rebind_consumer`, `.reconcile_startup`) over
 the U1A relations installed in each org database:
 `workflow_profile_store(profile_name, generation, profile_digest, state)`,
 `workflow_profile_registry(profile_name, published_generation)`,
@@ -870,8 +871,13 @@ complete before coordinator entry. Complete-closure publication reuses
 presence cannot publish a pending, missing, non-executable, or hash-mismatched
 adapter as ready. A direct-connect projection left `planned` by pre-mutation
 profile contention remains eligible for both a later commit and the production
-sweep, and its terminal committed transition occurs before profile-lease
-release.
+sweep. Independent route/sweep contenders acquire the same profile lease and
+re-read the durable projection terminal state before creating a U1A operation
+claim or any fence/mutation; the loser returns that terminal result with zero
+mutation, fence, generation advance, publication, or second committed event.
+The winner's U1A operation/diagnostic-lease rows are durable before adapter or
+profile mutation, and its checked terminal committed transition occurs before
+profile-lease release.
 
 Pre-fencing reuses the proved machinery: for every captured org,
 `fence_authority_namespace` sets the pointer `fenced`, increments the monotonic
@@ -885,7 +891,12 @@ A new-org activation or a rebind/removal is refused with
 `profile_operation_in_progress:<state>` while any non-terminal operation exists
 for either profile; after publication a stale `expected_generation` is refused
 with `profile_generation_stale`, so a late activation can neither escape the
-captured set nor admit stale authority.
+captured set nor admit stale authority. Dynamic attachment scans desired and
+outstanding profiles before taking their canonically ordered leases, retries
+boundedly behind a live owner, synchronizes and publishes while holding those
+leases, and enters the shared org map before release. Complete-closure
+coherence additionally compares every org-local `profile_digest` with the
+current global profile digest before readiness reopens.
 
 Failure handling is forward-only and cold-recoverable. A failure after only some
 org fences leaves `state='fenced'`; a crash after the durable store commit but
