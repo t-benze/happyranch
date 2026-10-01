@@ -517,10 +517,14 @@ def test_activation_does_not_turn_guessed_release_into_oracle(client_with_runtim
 
 
 def test_history_is_bounded_paginated_secret_free_and_activation_bootstraps(client_with_runtime):
+    from tests.workflows.authority_test_support import ensure_coherent_authority
+
     client, org = client_with_runtime
     _seed_agent(org)
+    ensure_coherent_authority(org)
     base = "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy"
     created = client.post(f"{base}/releases", json=_release_body()).json()["release"]
+    before_generation = ensure_coherent_authority(org)
     activated = client.post(f"{base}/activations", json={
         "release_id": created["id"], "expected_previous_epoch": 0,
         "expected_selector_id": None,
@@ -529,6 +533,10 @@ def test_history_is_bounded_paginated_secret_free_and_activation_bootstraps(clie
     })
     assert activated.status_code == 200
     assert activated.json()["activation"]["action"] == "bootstrap"
+    assert (
+        ensure_coherent_authority(org)
+        == before_generation + 1
+    )
     history = client.get(f"{base}/history?limit=1")
     assert history.status_code == 200
     item = history.json()["items"][0]

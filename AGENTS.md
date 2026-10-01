@@ -188,9 +188,13 @@ generation afterward. A post-commit publication failure preserves the legacy
 writer response but leaves the pointer fenced and machine-readable for cold
 recovery; it must never restore a stale ready pointer.
 
-Publication holds only the process-local coordinator lock and the shipped
-per-org publication lease. Its SQLite stage transactions are short and never
-span filesystem scanning, cloning, network access, host launch, or callbacks.
+Multi-stage async writers take the process-local coordinator gate before
+`teams_lock` and retain that gate through their terminal success or
+compensation. Startup migration retains the same process gate for its batch.
+The shipped durable publication lease is acquired only for each synchronous
+canonical mutation and released before filesystem scanning, awaited workspace
+bootstrap, cloning, network access, host launch, callbacks, snapshot capture,
+or other canonical-input scanning. SQLite stage transactions remain short.
 Do not change the existing `org.db_lock -> binding_lease -> synchronized DB
 callback` order. Direct same-UID file/DB mutation is outside this cooperative
 guarantee.

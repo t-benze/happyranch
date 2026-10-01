@@ -767,7 +767,7 @@ async def create_and_activate_team_escalation_policy_v2(
     team, _ = _manager_surface(org, agent_name)
     data = await _decode_control_body(request, V2PairedControlBody, team=team)
     try:
-        with org.workflow_authority.supported_change(
+        async with org.workflow_authority.supported_change_async(
             publisher="create_and_activate_team_escalation_policy_v2",
         ):
             store = AuthorityPolicyStore(org.db)
@@ -818,7 +818,7 @@ async def activate_team_escalation_policy_v2(
     team, _ = _manager_surface(org, agent_name)
     data = await _decode_control_body(request, V2ActivationControlBody, team=team)
     try:
-        with org.workflow_authority.supported_change(
+        async with org.workflow_authority.supported_change_async(
             publisher="activate_team_escalation_policy_v2",
         ):
             store = AuthorityPolicyStore(org.db)

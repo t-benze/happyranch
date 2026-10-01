@@ -35,7 +35,10 @@ def _base_manager(name: str = "delta_head") -> dict:
 
 
 def test_founder_create_worker_into_existing_team(client_with_runtime) -> None:
+    from tests.workflows.authority_test_support import ensure_coherent_authority
+
     client, org = client_with_runtime
+    before_generation = ensure_coherent_authority(org)
     r = _post(client, _base_worker())
     assert r.status_code == 200, r.text
     assert r.json() == {"name": "alpha_worker_1", "team": "engineering", "role": "worker"}
@@ -54,6 +57,10 @@ def test_founder_create_worker_into_existing_team(client_with_runtime) -> None:
 
     # teams.yaml updated.
     assert "alpha_worker_1" in org.teams.manager_for_team("engineering").workers
+    assert (
+        ensure_coherent_authority(org)
+        == before_generation + 1
+    )
 
     # Workspace bootstrapped.
     assert (org.root / "workspaces" / "alpha_worker_1" / "CLAUDE.md").exists()

@@ -156,13 +156,16 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   unlocked; this does not provide global workspace-generation fencing or
   serialize external same-UID/multiprocess filesystem writers.
 - **Workflow-authority participation.** Supported org-scoped authority writers
-  additionally call `WorkflowAuthorityCoordinator.fence()` before their
-  durable authority change and publish the next canonical generation after
-  commit. Publication failure leaves new workflow admission fail-closed and is
-  recovered at cold `OrgState.load`; it does not roll back or falsify the
-  existing route result after the legacy write committed. Publication never
-  spans clone/network/host-launch/callback work. Direct same-UID edits remain
-  outside the cooperative guarantee.
+  enter the coordinator gate before `teams_lock`, durably fence around each
+  synchronous canonical mutation, and publish the next generation only from
+  their terminal success/compensation state. Multi-stage update/termination
+  retains the process gate across awaited bootstrap; startup migration retains
+  it across the batch. The durable lease and SQLite transactions never span
+  scanning, clone/network/host-launch/callback work, awaited bootstrap, snapshot
+  capture, or other canonical-input scanning. Publication failure leaves new workflow
+  admission fail-closed and is recovered at cold `OrgState.load`; it does not
+  roll back or falsify the existing route result after the legacy write
+  committed. Direct same-UID edits remain outside the cooperative guarantee.
 - **U2A boundary.** The coordinator's readiness verifier is intentionally not
   consumed by task, chain, fan-out, activation, or dispatch paths yet.
   Machine-global executor-profile changes remain U2B-deferred and do not yet

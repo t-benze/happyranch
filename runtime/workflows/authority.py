@@ -11,14 +11,15 @@ short and never span snapshot capture or filesystem publication.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
 import threading
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -53,6 +54,32 @@ class AuthorityReadiness:
     generation: int
     snapshot_digest: str
     snapshot_bytes: bytes
+
+
+class _SupportedWriterInterval:
+    """One process-serialized writer with short durable mutation leases."""
+
+    def __init__(
+        self,
+        coordinator: WorkflowAuthorityCoordinator,
+        *,
+        publisher: str,
+    ) -> None:
+        self._coordinator = coordinator
+        self.publisher = publisher
+        self.fenced = False
+
+    @contextmanager
+    def canonical_change(self) -> Iterator[None]:
+        """Fence and own only one synchronous canonical mutation segment."""
+        owner = f"workflow-writer:{self.publisher}:{uuid.uuid4().hex}"
+        self._coordinator._acquire_lease(owner)
+        try:
+            self._coordinator._fence_under_lease(reason=self.publisher)
+            self.fenced = True
+            yield
+        finally:
+            self._coordinator._release_lease(owner)
 
 
 def _canonical_json(value: object) -> bytes:
@@ -117,8 +144,11 @@ class WorkflowAuthorityCoordinator:
         self._cache: dict[str, tuple[int, str]] = {}
         # Process-local serialization complements the durable cross-process
         # lease. It is never treated as protection from arbitrary same-UID
-        # mutation and is not held during snapshot capture.
+        # mutation. Async route writers first take the coroutine lock so a
+        # multi-stage writer may retain this gate across awaits without a
+        # durable lease or SQLite transaction spanning those awaits.
         self._publisher_lock = threading.RLock()
+        self._async_writer_lock = asyncio.Lock()
 
     @property
     def namespace(self) -> str:
@@ -355,8 +385,59 @@ class WorkflowAuthorityCoordinator:
                 self._release_lease(owner)
 
     @contextmanager
+    def writer_interval(
+        self,
+        *,
+        publisher: str,
+    ) -> Iterator[_SupportedWriterInterval]:
+        """Own a synchronous writer batch while leasing only mutations."""
+        with self._publisher_lock:
+            interval = _SupportedWriterInterval(self, publisher=publisher)
+            try:
+                yield interval
+            except BaseException:
+                if interval.fenced:
+                    self.publish_after_supported_change(
+                        publisher=f"{publisher}:compensation",
+                    )
+                raise
+            else:
+                if interval.fenced:
+                    self.publish_after_supported_change(publisher=publisher)
+
+    @asynccontextmanager
+    async def async_writer_interval(
+        self,
+        *,
+        publisher: str,
+    ) -> AsyncIterator[_SupportedWriterInterval]:
+        """Own one async writer through its terminal success/compensation.
+
+        The process gate may span awaits, scans, clone/network work, or host
+        bootstrap. Durable ownership is acquired separately by
+        ``canonical_change`` and therefore never spans those operations.
+        Every async participating route uses this outer lock, while the
+        thread lock also serializes synchronous startup and thread-pool
+        writers with the interval.
+        """
+        async with self._async_writer_lock:
+            with self._publisher_lock:
+                interval = _SupportedWriterInterval(self, publisher=publisher)
+                try:
+                    yield interval
+                except BaseException:
+                    if interval.fenced:
+                        self.publish_after_supported_change(
+                            publisher=f"{publisher}:compensation",
+                        )
+                    raise
+                else:
+                    if interval.fenced:
+                        self.publish_after_supported_change(publisher=publisher)
+
+    @contextmanager
     def supported_change(self, *, publisher: str) -> Iterator[None]:
-        """Fence one supported writer through its canonical mutation.
+        """Fence one synchronous supported writer through its mutation.
 
         The durable publication lease covers only the synchronous canonical
         mutation/compensation span.  It is released before snapshot capture,
@@ -365,24 +446,16 @@ class WorkflowAuthorityCoordinator:
         A failed legacy mutation is republished only when its own compensation
         has already restored a coherent snapshot; incoherence stays fenced.
         """
-        with self._publisher_lock:
-            owner = f"workflow-writer:{publisher}:{uuid.uuid4().hex}"
-            self._acquire_lease(owner)
-            try:
-                self._fence_under_lease(reason=publisher)
-                try:
-                    yield
-                except Exception:
-                    self._release_lease(owner)
-                    owner = ""
-                    self.publish_after_supported_change(
-                        publisher=f"{publisher}:compensation",
-                    )
-                    raise
-            finally:
-                if owner:
-                    self._release_lease(owner)
-            self.publish_after_supported_change(publisher=publisher)
+        with self.writer_interval(publisher=publisher) as interval:
+            with interval.canonical_change():
+                yield
+
+    @asynccontextmanager
+    async def supported_change_async(self, *, publisher: str) -> AsyncIterator[None]:
+        """Async-route form for a synchronous canonical mutation body."""
+        async with self.async_writer_interval(publisher=publisher) as interval:
+            with interval.canonical_change():
+                yield
 
     def publish_current(
         self,

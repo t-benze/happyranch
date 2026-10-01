@@ -404,6 +404,12 @@ activation, dispatch, callback or legacy task/chain/fan-out consumer.
 Machine-global `ProfileCoordinator` work remains U2B-deferred: profile changes
 do not yet fence orgs and no admission consumer may ship before U2B. Direct
 same-UID file/DB edits remain outside the cooperative guarantee.
+Multi-stage route writers retain a process-local coordinator gate through
+terminal success or compensation, ordered before their existing `teams_lock`;
+the startup AgentDef migration retains it across the batch. A durable lease is
+held only around each synchronous canonical mutation, never across scanning,
+awaited bootstrap, clone/network/host work, callbacks, snapshot capture, or
+other canonical-input scanning.
 
 This is a concrete proposed protocol plus executable isolated evidence, not a
 production approval, migration, runtime import, or a claim that same-UID

@@ -25,6 +25,12 @@ def _paths(org_state) -> OrgPaths:
     return OrgPaths(root=org_state.root)
 
 
+def _authority_generation(org_state) -> int:
+    from tests.workflows.authority_test_support import ensure_coherent_authority
+
+    return ensure_coherent_authority(org_state)
+
+
 def test_list_agents_returns_names(tmp_home, app, org_state, auth_headers) -> None:
     # The active roster is driven by org/agents/*.md, not by workspace
     # directories. Seed an active AgentDef and its workspace.
@@ -633,6 +639,7 @@ def test_manage_repo_add_creates_entry_and_clones(
     workspace.mkdir(parents=True)
     paths = _paths(org_state)
     _write_agent_md(paths, _make_agent("dev_agent"))
+    before_generation = _authority_generation(org_state)
 
     with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
         mock_ctx = MockCB.return_value
@@ -654,6 +661,7 @@ def test_manage_repo_add_creates_entry_and_clones(
     agent_def = load_agent(paths, "dev_agent")
     assert agent_def is not None
     assert agent_def.repos["docs"] == "https://github.com/t-benze/docs.git"
+    assert _authority_generation(org_state) == before_generation + 1
 
 
 def test_manage_repo_add_passes_provider_from_agent_def(
@@ -845,6 +853,7 @@ def test_set_model_set_and_clear_preserve_unrelated_agent_fields(
     ))
     before = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert before is not None
+    before_generation = _authority_generation(org_state)
     assert asyncio.run(agents_mod.set_agent_model(
         "alpha", "dev_agent", agents_mod.SetModelBody(model="new"), org_state,
     ))["after"] == "new"
@@ -858,6 +867,33 @@ def test_set_model_set_and_clear_preserve_unrelated_agent_fields(
         before.executor, before.system_prompt, before.description, before.repos,
         before.allow_rules, before.enrolled_by, before.enrolled_at_task,
     )
+    assert _authority_generation(org_state) == before_generation + 2
+
+
+def test_agent_route_publication_failure_preserves_response_and_fences(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """A committed route write stays successful while admission stays fenced."""
+    from runtime.orchestrator import prompt_loader
+    from runtime.workflows.authority import WorkflowAuthorityError
+
+    _write_agent_md(_paths(org_state), _make_agent("dev_agent", model="old"))
+    with patch.object(
+        org_state.workflow_authority,
+        "publish_current",
+        side_effect=RuntimeError("injected publication failure"),
+    ):
+        response = TestClient(app).put(
+            "/api/v1/orgs/alpha/agents/dev_agent/model",
+            json={"model": "committed"},
+            headers=auth_headers,
+        )
+    assert response.status_code == 200
+    assert response.json()["after"] == "committed"
+    persisted = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert persisted is not None and persisted.model == "committed"
+    with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+        org_state.workflow_authority.verify_admission_ready()
 
 
 def test_manage_repo_add_duplicate_returns_409(
@@ -1065,11 +1101,12 @@ def test_manage_agent_enroll_creates_pending(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     _activate_eh_session(org_state)
+    before_generation = _authority_generation(org_state)
     r = TestClient(app).post(
         "/api/v1/orgs/alpha/agents/manage",
         json={
             "action": "enroll",
-            "name": "content_writer",
+            "name": "authority_writer",
             "task_id": _EH_TASK,
             "session_id": _EH_SESSION,
             "description": "Writes destination guides",
@@ -1081,9 +1118,10 @@ def test_manage_agent_enroll_creates_pending(
     assert r.status_code == 200
     assert r.json()["status"] == "pending"
     from runtime.orchestrator import prompt_loader
-    agent = prompt_loader.load_pending_agent(_paths(org_state), "content_writer")
+    agent = prompt_loader.load_pending_agent(_paths(org_state), "authority_writer")
     assert agent is not None
     assert agent.executor == "codex"
+    assert _authority_generation(org_state) == before_generation + 1
 
 
 def test_recovery_manage_agent_is_denied_before_config_or_audit_mutation(
@@ -1349,6 +1387,7 @@ def test_manage_agent_update_changes_prompt(
     _seed_active_agent(org_state, "dev_agent", system_prompt="old prompt\n")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
+    before_generation = _authority_generation(org_state)
 
     with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
         mock_ctx = MockCB.return_value
@@ -1371,6 +1410,85 @@ def test_manage_agent_update_changes_prompt(
     assert updated is not None
     assert "new prompt" in updated.system_prompt
     assert updated.executor == "codex"
+    assert _authority_generation(org_state) == before_generation + 1
+
+
+def test_manage_agent_update_serializes_writer_without_lease_across_bootstrap(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from unittest.mock import Mock
+
+    from runtime.daemon.routes import agents as agents_mod
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    arrived, release = asyncio.Event(), asyncio.Event()
+    bootstrap = Mock()
+    real_to_thread = agents_mod.asyncio.to_thread
+    calls = 0
+
+    async def controlled_to_thread(func, *args, **kwargs):
+        nonlocal calls
+        if func is bootstrap:
+            calls += 1
+            if calls == 1:
+                arrived.set()
+                await release.wait()
+            return None
+        return await real_to_thread(func, *args, **kwargs)
+
+    before_generation = _authority_generation(org_state)
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB, patch.object(
+        agents_mod.asyncio, "to_thread", controlled_to_thread,
+    ):
+        MockCB.return_value.ensure_workspace_ready = bootstrap
+
+        async def exercise() -> None:
+            initial = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
+            assert initial is not None
+            first = asyncio.create_task(agents_mod.manage_agent(
+                "alpha",
+                agents_mod.ManageAgentBody(
+                    action="update", name="dev_agent", task_id=_EH_TASK,
+                    session_id=_EH_SESSION, expected_revision=initial,
+                    executor="codex",
+                ),
+                org_state,
+            ))
+            await arrived.wait()
+            assert org_state.db.execute(
+                "SELECT COUNT(*) FROM workflow_publication_leases"
+            ).fetchone()[0] == 0
+            assert org_state.db.execute(
+                "SELECT state FROM workflow_authority_pointers WHERE namespace=?",
+                (org_state.workflow_authority.namespace,),
+            ).fetchone()["state"] == "fenced"
+            current = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
+            assert current is not None
+            second = asyncio.create_task(agents_mod.manage_agent(
+                "alpha",
+                agents_mod.ManageAgentBody(
+                    action="update", name="dev_agent", task_id=_EH_TASK,
+                    session_id=_EH_SESSION, expected_revision=current,
+                    system_prompt="serialized winner\n",
+                ),
+                org_state,
+            ))
+            await asyncio.sleep(0)
+            assert not second.done()
+            release.set()
+            assert await first == {"ok": True}
+            assert await second == {"ok": True}
+
+        asyncio.run(exercise())
+
+    assert _authority_generation(org_state) == before_generation + 2
+    updated = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert updated is not None
+    assert updated.executor == "codex"
+    assert updated.system_prompt == "serialized winner\n"
 
 
 def test_manage_agent_update_rejects_stale_revision(
@@ -1624,6 +1742,7 @@ def test_manage_agent_terminate_removes_workspace(
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "CLAUDE.md").write_text("# test")
+    before_generation = _authority_generation(org_state)
 
     r = TestClient(app).post(
         "/api/v1/orgs/alpha/agents/manage",
@@ -1639,6 +1758,7 @@ def test_manage_agent_terminate_removes_workspace(
     assert not workspace.exists()
     from runtime.orchestrator import prompt_loader
     assert prompt_loader.load_agent(_paths(org_state), "dev_agent") is None
+    assert _authority_generation(org_state) == before_generation + 1
 
 
 def test_manage_agent_terminate_nonexistent_returns_404(
@@ -1704,6 +1824,8 @@ def test_approve_agent_bootstraps_workspace(
     from runtime.orchestrator import prompt_loader
     from runtime.orchestrator.agent_def import AgentDef
     from datetime import datetime, timezone
+    before_generation = _authority_generation(org_state)
+    (_paths(org_state).agents_dir / "content_writer.md").unlink()
     agent = AgentDef(
         name="content_writer", team="content", role="worker", executor="codex",
         allow_rules=(), repos={}, enrolled_by="engineering_head",
@@ -1727,6 +1849,7 @@ def test_approve_agent_bootstraps_workspace(
     assert prompt_loader.load_pending_agent(_paths(org_state), "content_writer") is None
     workspace = org_state.root / "workspaces" / "content_writer"
     assert workspace.exists()
+    assert _authority_generation(org_state) == before_generation + 1
 
     # THR-095: agent.yaml is no longer created by approve_agent.
     # The .md frontmatter is the single source of truth.
@@ -1867,6 +1990,8 @@ def test_reject_agent(
     from runtime.orchestrator import prompt_loader
     from runtime.orchestrator.agent_def import AgentDef
     from datetime import datetime, timezone
+    before_generation = _authority_generation(org_state)
+    (_paths(org_state).agents_dir / "content_writer.md").unlink()
     agent = AgentDef(
         name="content_writer", team="content", role="worker", executor="claude",
         allow_rules=(), repos={}, enrolled_by="engineering_head",
@@ -1880,6 +2005,7 @@ def test_reject_agent(
     )
     assert r.status_code == 200
     assert prompt_loader.load_pending_agent(_paths(org_state), "content_writer") is None
+    assert _authority_generation(org_state) == before_generation + 1
 
 
 def test_reject_agent_removes_from_teams_yaml(
@@ -2950,6 +3076,7 @@ def test_set_executor_switches_org_and_workspace(
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    before_generation = _authority_generation(org_state)
 
     with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
         mock_ctx = MockCB.return_value
@@ -2968,6 +3095,7 @@ def test_set_executor_switches_org_and_workspace(
     from runtime.orchestrator import prompt_loader
     reloaded = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert reloaded is not None and reloaded.executor == "pi"
+    assert _authority_generation(org_state) == before_generation + 1
     # bootstrap regenerated with the NEW provider
     assert mock_ctx.ensure_workspace_ready.call_args.kwargs.get("provider") == "pi"
 
@@ -3177,9 +3305,11 @@ def test_manage_agent_reset_failure_preserves_newer_canonical_bytes(
     import logging
     from fastapi import HTTPException
     from unittest.mock import Mock
+    from dataclasses import replace
     from runtime.daemon.routes import agents as agents_mod
     from runtime.infrastructure import database as db_module
     from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator.agent_def import render_agent_text
 
     _activate_eh_session(org_state)
     _seed_active_agent(org_state, "dev_agent", executor="claude")
@@ -3214,11 +3344,15 @@ def test_manage_agent_reset_failure_preserves_newer_canonical_bytes(
             await arrived.wait()
             current = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
             assert current is not None
-            # The winner is another accepted shipping route call on this loop.
-            assert await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
-                action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
-                expected_revision=current, system_prompt="newer winner\n"), org_state) == {"ok": True}
-            winning_bytes = (_paths(org_state).agents_dir / "dev_agent.md").read_bytes()
+            # Direct same-UID edits are outside the cooperative writer gate,
+            # but exact-owned compensation must still preserve their bytes.
+            current_agent = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+            assert current_agent is not None
+            active_path = _paths(org_state).agents_dir / "dev_agent.md"
+            active_path.write_text(render_agent_text(replace(
+                current_agent, system_prompt="newer winner\n",
+            )))
+            winning_bytes = active_path.read_bytes()
             release.set()
             with pytest.raises(RuntimeError, match="injected reset failure"):
                 await loser
@@ -3229,7 +3363,7 @@ def test_manage_agent_reset_failure_preserves_newer_canonical_bytes(
     assert winner.executor == "codex"
     assert winner.system_prompt == "newer winner\n"
     # Reconciliation of the stale prior definition is forbidden on conflict.
-    assert bootstrap_calls == 2
+    assert bootstrap_calls == 1
 
 
 @pytest.mark.parametrize(
@@ -3249,10 +3383,12 @@ def test_manage_agent_compensation_preserves_canonical_ownership_and_sessions(
 ) -> None:
     """Real same-loop failures restore only operation-owned canonical bytes."""
     import logging
+    from dataclasses import replace
     from unittest.mock import Mock
     from runtime.daemon.routes import agents as agents_mod
     from runtime.infrastructure import database as db_module
     from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator.agent_def import render_agent_text
 
     _activate_eh_session(org_state)
     _seed_active_agent(org_state, "dev_agent", executor="claude", model="old-model")
@@ -3325,12 +3461,13 @@ def test_manage_agent_compensation_preserves_canonical_ownership_and_sessions(
             ), org_state))
             await asyncio.wait_for(arrived.wait(), timeout=1)
             if outcome == "winner":
-                current = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
-                assert current is not None
-                assert await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
-                    action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
-                    expected_revision=current, system_prompt="winner prompt\n", description="winner metadata",
-                ), org_state) == {"ok": True}
+                current_agent = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+                assert current_agent is not None
+                active_path.write_text(render_agent_text(replace(
+                    current_agent,
+                    system_prompt="winner prompt\n",
+                    description="winner metadata",
+                )))
                 winning_bytes = active_path.read_bytes()
             elif outcome == "missing":
                 active_path.unlink()
@@ -3355,16 +3492,14 @@ def test_manage_agent_compensation_preserves_canonical_ownership_and_sessions(
     assert org_state.db._conn.in_transaction is False
     assert reset_seen["value"] is (failure_kind == "audit")
     accepted = [row for row in org_state.db.get_audit_logs(_EH_TASK) if row["action"] == "agent_managed"]
-    assert len(accepted) == (1 if outcome == "winner" else 0)
+    assert accepted == []
     if outcome == "owned":
         assert len(bootstrap_calls) == 2
         assert bootstrap_calls[-1][0][2] == original.system_prompt
         assert bootstrap_calls[-1][1]["provider"] == original.executor
         assert not any("rollback conflict" in record.message for record in caplog.records)
     elif outcome == "winner":
-        assert len(bootstrap_calls) == 2
-        assert bootstrap_calls[-1][0][2] == "winner prompt\n"
-        assert bootstrap_calls[-1][1]["provider"] == "codex"
+        assert len(bootstrap_calls) == 1
         assert any("rollback conflict for dev_agent" in record.message for record in caplog.records)
     else:
         assert len(bootstrap_calls) == 1

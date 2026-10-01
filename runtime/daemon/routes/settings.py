@@ -1045,8 +1045,13 @@ async def put_teams(slug: str, org: OrgDep, patch: TeamsPatch) -> dict:
     m = teams.manager_for_team(patch.team)
     original_workers = m.workers
 
-    async with org.teams_lock:
-        with org.workflow_authority.supported_change(publisher="put_teams"):
+    async with (
+        org.workflow_authority.async_writer_interval(
+            publisher="put_teams",
+        ) as authority_change,
+        org.teams_lock,
+    ):
+        with authority_change.canonical_change():
             for agent in patch.add_workers:
                 try:
                     teams.add_worker(patch.team, agent)
