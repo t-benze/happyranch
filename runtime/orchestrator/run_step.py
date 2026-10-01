@@ -2741,7 +2741,7 @@ def _prepare_workspace_cleanup_reclamation_context(
     from runtime.daemon.task_scratch_reclamation import (
         collect_revalidate_seal_consume_disposable,
     )
-    from runtime.daemon.task_scratch_report import _STARTED_MONOTONIC
+    from runtime.orchestrator.task_scratch_report import _STARTED_MONOTONIC
 
     facts: list[str] = []
     for candidate in selection.candidates:
