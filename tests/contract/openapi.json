@@ -3837,6 +3837,62 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/usage/efficiency": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "compare",
+            "query"
+          ],
+          [
+            "executor",
+            "query"
+          ],
+          [
+            "model",
+            "query"
+          ],
+          [
+            "model_unpinned",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/usage/workload": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "compare",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/work-hours": {
       "GET": {
         "params": [

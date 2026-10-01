@@ -20,6 +20,7 @@ export * as tasks from './tasks';
 export * as teams from './teams';
 export * as threads from './threads';
 export * as tokens from './tokens';
+export * as usage from './usage';
 export * as schedules from './schedules';
 export * as workHours from './work-hours';
 export * as workflowTemplates from './workflowTemplates';

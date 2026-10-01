@@ -345,7 +345,7 @@ async def test_run_invocation_no_callback_writes_thread_token_usage(tmp_path, mo
             pass
 
         def run(self, **kwargs):
-            return FakeExecutorResult(
+            result = FakeExecutorResult(
                 success=True,
                 token_usage=TokenUsage(
                     input_tokens=40,
@@ -353,6 +353,10 @@ async def test_run_invocation_no_callback_writes_thread_token_usage(tmp_path, mo
                     model="claude-sonnet",
                 ),
             )
+            # The real executor contract returns the runtime session_id passed
+            # by thread_runner; keep this shipping seam honest in the fake.
+            result.session_id = kwargs["session_id"]
+            return result
 
     monkeypatch.setattr(
         runner_mod,
@@ -367,10 +371,12 @@ async def test_run_invocation_no_callback_writes_thread_token_usage(tmp_path, mo
     )
 
     rows = db.list_session_token_usage(scope_type="thread", thread_id="THR-001")
+    started = db.get_invocation_any_status(inv.invocation_token)
+    assert started is not None
     assert len(rows) == 1
     assert rows[0]["task_id"] is None
     assert rows[0]["agent"] == "alice"
-    assert rows[0]["session_id"] == "sess-x"
+    assert started.session_id == rows[0]["session_id"]
     assert rows[0]["executor"] == "claude"
     assert rows[0]["scope_id"] == "THR-001"
     assert rows[0]["invocation_purpose"] == "reply"
