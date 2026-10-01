@@ -25,6 +25,8 @@ interface Props {
   className?: string;
   /** When true, strips non-roster tokens from committed positions. */
   restrictToOptions?: boolean;
+  /** Localized label for the suggestion list (English default). */
+  mentionListLabel?: string;
 }
 
 /** Slice of `value` from the last comma before `caret` to `caret`, trimmed. */
@@ -67,6 +69,7 @@ export function RecipientsInput({
   placeholder,
   className,
   restrictToOptions,
+  mentionListLabel,
 }: Props): JSX.Element {
   const inputRef = useRef<HTMLInputElement>(null);
   const [popup, setPopup] = useState<
@@ -178,6 +181,7 @@ export function RecipientsInput({
           matches={matches}
           onSelect={accept}
           onDismiss={() => setPopup(null)}
+          ariaLabel={mentionListLabel}
         />
       )}
     </>

@@ -20,6 +20,8 @@ export interface MentionAutocompleteProps {
   matches: AgentSummary[];
   onSelect: (agent: AgentSummary) => void;
   onDismiss: () => void;
+  /** Localized listbox label; defaults to the English copy. */
+  ariaLabel?: string;
 }
 
 export function MentionAutocomplete({
@@ -27,6 +29,7 @@ export function MentionAutocomplete({
   matches,
   onSelect,
   onDismiss,
+  ariaLabel = 'Mention agents',
 }: MentionAutocompleteProps): JSX.Element | null {
   const [active, setActive] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
@@ -94,7 +97,7 @@ export function MentionAutocomplete({
     <div
       ref={listRef}
       role="listbox"
-      aria-label="Mention agents"
+      aria-label={ariaLabel}
       // eslint-disable-next-line react/forbid-dom-props -- runtime pixel coordinates (anchor-derived left/top, min/maxWidth, zIndex) computed at render time; no static utility class can express a viewport-relative portal position
       style={style}
       className="border-border-default bg-surface-overlay text-text-primary text-caption rounded-md border shadow-lg"
