@@ -17593,38 +17593,6 @@ class Database:
         return [dict(r) for r in rows]
 
     @_synchronized
-    def transition_never_started_job_to_failed(
-        self, job_id: str, *, now_iso: str, reason: str,
-    ) -> None:
-        """Guarded bookkeeping transition: pending + never-started → failed.
-
-        The terminalization seam for founder-authorized reconciliation of
-        abandoned never-dispatched jobs (THR-195). Only a row that is STILL
-        ``status='pending'`` AND ``started_at IS NULL`` can be reconciled;
-        any concurrent dispatch (which first transitions to ``running`` and
-        stamps ``started_at``) makes this a no-op ValueError. Mirrors the
-        guarded UPDATE shape of ``transition_job_to_rejected`` — callers get
-        no ad-hoc SQL path.
-
-        The UPDATE is deliberately left UNCOMMITTED: the caller owns the
-        surrounding transaction so this terminalization and its
-        ``job_reconciled_orphaned`` audit row commit atomically
-        (``insert_audit_log_uncommitted`` + ``commit()``) and roll back
-        together on any failure — a terminalized job must never survive
-        without its durable non-live-proof audit record.
-        """
-        cur = self._conn.execute(
-            "UPDATE jobs SET status='failed', reason=?, finished_at=?, "
-            "duration_ms=COALESCE(duration_ms, 0) "
-            "WHERE id=? AND status='pending' AND started_at IS NULL",
-            (reason, now_iso, job_id),
-        )
-        if cur.rowcount == 0:
-            raise ValueError(
-                f"not_never_started_pending: job {job_id} cannot be reconciled"
-            )
-
-    @_synchronized
     def transition_job_to_rejected(
         self, job_id: str, *, reviewer: str, reason: str, reviewed_at: str
     ) -> None:
