@@ -1,0 +1,77 @@
+pipeline {
+    agent { label 'mac-mini' }
+
+    options {
+        timeout(time: 90, unit: 'MINUTES')
+        disableConcurrentBuilds()
+        skipDefaultCheckout(true)
+        timestamps()
+    }
+
+    parameters {
+        string(name: 'SOURCE_SHA', defaultValue: '', description: 'Exact 40-hex HappyRanch commit to test')
+    }
+
+    stages {
+        stage('Checkout job definition') {
+            steps {
+                deleteDir()
+                dir('definition') {
+                    checkout scm
+                    script {
+                        env.JOB_DEFINITION_SHA = sh(
+                            script: 'git rev-parse HEAD',
+                            returnStdout: true
+                        ).trim()
+                    }
+                }
+            }
+        }
+
+        stage('Run disposable Linux integration VM') {
+            steps {
+                sh '''
+                    set -eu
+                    exec python3 definition/scripts/jenkins_mac_integration.py \
+                      --source-sha "$SOURCE_SHA" \
+                      --build-number "$BUILD_NUMBER" \
+                      --definition-sha "$JOB_DEFINITION_SHA" \
+                      --workspace "$WORKSPACE" \
+                      --node-name "$NODE_NAME" \
+                      --build-url "$BUILD_URL"
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                env.POST_CLEANUP_STATUS = sh(
+                    script: '''
+                        set -u
+                        mkdir -p artifacts
+                        if [ ! -f definition/scripts/jenkins_mac_integration.py ]; then
+                          printf 'post_cleanup_not_required=definition_unavailable\n' \
+                            > artifacts/post-cleanup.txt
+                          exit 0
+                        fi
+                        exec python3 definition/scripts/jenkins_mac_integration.py \
+                          --cleanup-only \
+                          --source-sha "$SOURCE_SHA" \
+                          --build-number "$BUILD_NUMBER" \
+                          --workspace "$WORKSPACE"
+                    ''',
+                    returnStatus: true
+                ).toString()
+            }
+            junit allowEmptyResults: true, testResults: 'artifacts/integration.xml'
+            archiveArtifacts artifacts: 'artifacts/**', allowEmptyArchive: false
+            script {
+                if (env.POST_CLEANUP_STATUS != '0') {
+                    error("post cleanup or absence verification failed with status ${env.POST_CLEANUP_STATUS}")
+                }
+            }
+        }
+    }
+}
