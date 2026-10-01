@@ -729,7 +729,8 @@ def remove_runtime_executor_profile(
     it. Runtime-global profile mutation audit events use ``audit_log.task_id``
     scope ``profile:<name>``; this does not overload an org task id.
     """
-    coordinator = getattr(request.app.state.daemon, "profile_coordinator", None)
+    daemon = getattr(request.app.state, "daemon", None)
+    coordinator = getattr(daemon, "profile_coordinator", None)
     span = (
         coordinator.operation(
             [name],

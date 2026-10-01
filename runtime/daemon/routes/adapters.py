@@ -807,7 +807,8 @@ def approve_registered_adapter(
         if entry is not None and entry.intended_profile_name
         else None
     )
-    coordinator = getattr(request.app.state.daemon, "profile_coordinator", None)
+    daemon = getattr(request.app.state, "daemon", None)
+    coordinator = getattr(daemon, "profile_coordinator", None)
     span = (
         coordinator.operation(
             [profile_name] if profile_name is not None else [],
@@ -1128,7 +1129,8 @@ def submit_adapter(
             detail="Token is already reserved or consumed by a concurrent submission.",
         )
 
-    coordinator = getattr(request.app.state.daemon, "profile_coordinator", None)
+    daemon = getattr(request.app.state, "daemon", None)
+    coordinator = getattr(daemon, "profile_coordinator", None)
     span = (
         coordinator.operation(
             [intended_profile],
@@ -1606,7 +1608,8 @@ def bind_adapter_profile(
     Returns the created profile entry.
     """
     profile_name = body.profile_name.strip()
-    coordinator = getattr(request.app.state.daemon, "profile_coordinator", None)
+    daemon = getattr(request.app.state, "daemon", None)
+    coordinator = getattr(daemon, "profile_coordinator", None)
     span = (
         coordinator.operation(
             [profile_name],
@@ -2013,7 +2016,8 @@ def remove_adapter_entry(
     # The existing exact bound-profile guard makes every successful adapter
     # removal profile-neutral.  Still route the writer through the coordinator
     # entry point so a later relaxation cannot silently bypass U2B.
-    coordinator = getattr(request.app.state.daemon, "profile_coordinator", None)
+    daemon = getattr(request.app.state, "daemon", None)
+    coordinator = getattr(daemon, "profile_coordinator", None)
     span = (
         coordinator.operation(
             [], operation_kind="remove", publisher="remove_adapter_entry",
