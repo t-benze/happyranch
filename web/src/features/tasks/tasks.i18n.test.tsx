@@ -320,9 +320,12 @@ describe('Task detail i18n', () => {
     expect(screen.getAllByText('Child brief stays verbatim').length).toBeGreaterThan(0);
 
     const continueBtn = screen.getByRole('button', { name: '继续' });
+    const thisTaskNode = screen.getByText('当前任务').closest('li');
+    expect(thisTaskNode).not.toBeNull();
     const requests = await countRequests(async () => {
       await switchLocale('en');
       expect(screen.getByRole('button', { name: 'Continue' })).toBe(continueBtn);
+      expect(screen.getByText('This task').closest('li')).toBe(thisTaskNode);
       expect(screen.getByText('· needs-decision')).toBeInTheDocument();
       expect(screen.getByText('Revisit & dependency chain')).toBeInTheDocument();
       expect(screen.getByText(NOTE)).toBeInTheDocument();
@@ -380,6 +383,8 @@ describe('Task detail i18n', () => {
     expect(screen.getByText('APPROVE')).toBeInTheDocument();
     expect(screen.getByText('code_reviewer')).toBeInTheDocument();
     expect(screen.getByText('阻塞于：').textContent).toBe('阻塞于：等待 2 个子任务');
+    // Header + rail StatusBadge: raw status value, localized waiting qualifier.
+    expect(screen.getAllByText('· 等待子任务')).toHaveLength(2);
     await switchLocale('en');
     expect(band.textContent).toContain('Running fan-out — 1 of 2 done');
     expect(screen.getByText('Blocked on:').textContent).toBe('Blocked on: waiting on 2 subtasks');
