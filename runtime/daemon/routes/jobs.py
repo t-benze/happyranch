@@ -84,6 +84,34 @@ def _enforce_session_or_bearer(
         if not allow_recovery_read or record.task_id != task_id:
             raise HTTPException(status_code=403, detail={"code": "recovery_purpose_forbidden"})
 
+
+def _enforce_exact_receipt_session(
+    record: JobRecord,
+    *,
+    task_id: str | None,
+    session_id: str | None,
+    org,
+) -> None:
+    """Authenticate a structured receipt to the job's exact live session.
+
+    This intentionally does not accept the bearer shortcut: receipt consumers
+    need proof that the supplied task/session pair was checked by the server,
+    and the job must belong to that exact task rather than merely the same
+    agent. Existing job endpoints retain their current authorization behavior.
+    """
+    if task_id is None or record.task_id != task_id:
+        raise HTTPException(
+            status_code=409, detail={"code": "session_mismatch"},
+        )
+    _enforce_session_or_bearer(
+        record,
+        has_bearer=False,
+        task_id=task_id,
+        session_id=session_id,
+        org=org,
+        allow_recovery_read=True,
+    )
+
 _MAX_SCRIPT_BYTES = 65536
 _MAX_TITLE_LEN = 200
 _VALID_INTERPRETERS = {"bash", "sh", "zsh", "python3"}
@@ -332,7 +360,15 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
                 title=title, rationale=rationale, script_text=body.script,
                 interpreter=body.interpreter, cwd_hint=cwd_hint,
             )
-        return {"id": job_id, "status": "pending", "created_at": record.created_at}
+        return {
+            "id": job_id,
+            "status": "pending",
+            "created_at": record.created_at,
+            "authentication": {
+                "task_id": body.task_id,
+                "session_id": body.session_id,
+            },
+        }
 
     # Auto-run path: dispatch the runner immediately. _run_job_core already
     # handles validation (cwd, interpreter, transition_to_running) + spawns
@@ -358,6 +394,10 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
         "cwd_resolved": run_result.get("cwd_resolved"),
         "timeout_seconds": run_result.get("timeout_seconds"),
         "events_url": run_result.get("events_url"),
+        "authentication": {
+            "task_id": body.task_id,
+            "session_id": body.session_id,
+        },
     }
 
 
@@ -489,6 +529,100 @@ async def get_job_route(
         task_id=task_id, session_id=session_id, org=org, allow_recovery_read=True,
     )
     return record.model_dump()
+
+
+def _structured_job_identity(record: JobRecord) -> dict:
+    """Closed, non-secret job identity required by an execution receipt."""
+    return {
+        "id": record.id,
+        "task_id": record.task_id,
+        "agent_name": record.agent_name,
+        "title": record.title,
+        "rationale": record.rationale,
+        "script_text": record.script_text,
+        "interpreter": record.interpreter.value,
+        "cwd_hint": record.cwd_hint,
+        "cwd_resolved": record.cwd_resolved,
+        "status": record.status.value,
+        "exit_code": record.exit_code,
+        "reason": record.reason,
+        "duration_ms": record.duration_ms,
+        "created_at": record.created_at,
+        "started_at": record.started_at,
+        "finished_at": record.finished_at,
+    }
+
+
+def _read_job_output_payload(
+    record: JobRecord, *, stream: str, max_bytes: int,
+) -> dict:
+    if max_bytes <= 0 or max_bytes > 10 * 1_048_576:
+        raise HTTPException(status_code=422, detail={"code": "invalid_max_bytes"})
+    if record.status not in _TERMINAL_SR_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "not_terminal", "status": record.status.value},
+        )
+    if stream not in ("stdout", "stderr", "both"):
+        raise HTTPException(status_code=422, detail={"code": "invalid_stream"})
+
+    def _read(path: str | None) -> tuple[str, bool, int]:
+        if path is None:
+            return ("", False, 0)
+        output_path = Path(path)
+        if not output_path.exists():
+            return ("", False, 0)
+        total = output_path.stat().st_size
+        data = output_path.read_bytes()[:max_bytes]
+        return (data.decode("utf-8", errors="replace"), total > max_bytes, total)
+
+    out, out_trunc, out_total = (
+        _read(record.stdout_path)
+        if stream in ("stdout", "both")
+        else ("", False, 0)
+    )
+    err, err_trunc, err_total = (
+        _read(record.stderr_path)
+        if stream in ("stderr", "both")
+        else ("", False, 0)
+    )
+    return {
+        "stdout": out,
+        "stderr": err,
+        "truncated_stdout": out_trunc,
+        "truncated_stderr": err_trunc,
+        "total_stdout_bytes": out_total,
+        "total_stderr_bytes": err_total,
+    }
+
+
+@dual_router.get("/jobs/{job_id}/receipt")
+async def get_job_receipt(
+    slug: str,
+    job_id: str,
+    org: OrgDep,
+    task_id: str | None = None,
+    session_id: str | None = None,
+    stream: str = "both",
+    max_bytes: int = 1_048_576,
+) -> dict:
+    """Return a closed structured receipt bound to one exact live session."""
+    record = org.db.get_job(job_id)
+    if record is None:
+        raise HTTPException(
+            status_code=404, detail={"code": "unknown_job", "job_id": job_id},
+        )
+    _enforce_exact_receipt_session(
+        record, task_id=task_id, session_id=session_id, org=org,
+    )
+    output = _read_job_output_payload(
+        record, stream=stream, max_bytes=max_bytes,
+    )
+    return {
+        "authentication": {"task_id": task_id, "session_id": session_id},
+        "job": _structured_job_identity(record),
+        "output": output,
+    }
 
 
 @dual_router.get("/jobs/{job_id}/tail")
@@ -922,37 +1056,7 @@ async def get_job_output(
     record = org.db.get_job(job_id)
     if record is None:
         raise HTTPException(status_code=404, detail={"code": "unknown_job"})
-    if max_bytes <= 0 or max_bytes > 10 * 1_048_576:
-        raise HTTPException(status_code=422, detail={"code": "invalid_max_bytes"})
-    if record.status not in (
-        JobStatus.COMPLETED,
-        JobStatus.FAILED,
-        JobStatus.REJECTED,
-    ):
-        raise HTTPException(status_code=409, detail={"code": "not_terminal", "status": record.status.value})
-    if stream not in ("stdout", "stderr", "both"):
-        raise HTTPException(status_code=422, detail={"code": "invalid_stream"})
-
-    def _read(path: str | None) -> tuple[str, bool, int]:
-        if path is None:
-            return ("", False, 0)
-        p = Path(path)
-        if not p.exists():
-            return ("", False, 0)
-        total = p.stat().st_size
-        data = p.read_bytes()[:max_bytes]
-        return (data.decode("utf-8", errors="replace"), total > max_bytes, total)
-
-    out, out_trunc, out_total = _read(record.stdout_path) if stream in ("stdout", "both") else ("", False, 0)
-    err, err_trunc, err_total = _read(record.stderr_path) if stream in ("stderr", "both") else ("", False, 0)
-    return {
-        "stdout": out,
-        "stderr": err,
-        "truncated_stdout": out_trunc,
-        "truncated_stderr": err_trunc,
-        "total_stdout_bytes": out_total,
-        "total_stderr_bytes": err_total,
-    }
+    return _read_job_output_payload(record, stream=stream, max_bytes=max_bytes)
 
 
 def _terminal_frame_from_record(record) -> str:

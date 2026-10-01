@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -31,13 +32,13 @@ def _rows(db: Database, table: str) -> int:
     return int(db._conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"])
 
 
-def _snapshot(fixture: _ShippingFixture) -> dict:
+def _snapshot(fixture: _ShippingFixture, team: str = "engineering") -> dict:
     db = fixture.org.db
-    selector = db.get_authority_selector("engineering")
+    selector = db.get_authority_selector(team)
     history, cursor = AuthorityPolicyStore(db).list_v2_history(
-        "engineering", cursor=None, limit=100,
+        team, cursor=None, limit=100,
     )
-    audits = db.list_authority_policy_v2_control_audit("engineering")
+    audits = db.list_authority_policy_v2_control_audit(team)
     receipts = [
         json.loads(row["payload_json"])["receipt"]
         for row in audits
@@ -77,6 +78,37 @@ def main() -> int:
     if any(root.iterdir()):
         raise RuntimeError(f"owned fixture root is not empty: {root}")
     monkeypatch = pytest.MonkeyPatch()
+    original_bootstrap = _SHIPPING_MODULE._bootstrap_runtime
+
+    def bootstrap_with_content(tmp_path: Path, slugs: tuple[str, ...]):
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+
+        runtime, org_roots, agents = original_bootstrap(tmp_path, slugs)
+        content_manager = AgentDef(
+            name="content_manager", team="content", role="manager", executor="codex",
+            allow_rules=(), repos={}, enrolled_by="founder", enrolled_at_task=None,
+            enrolled_at=datetime(2026, 9, 24, tzinfo=timezone.utc),
+            system_prompt="You perform isolated Content fixture work.\n",
+            description="Isolated Content fixture",
+        )
+        for org_root in org_roots.values():
+            (org_root / "org" / "teams.yaml").write_text(
+                "teams:\n"
+                "  engineering:\n"
+                "    manager: engineering_manager\n"
+                "    workers: [dev_agent]\n"
+                "  content:\n"
+                "    manager: content_manager\n"
+                "    workers: []\n"
+            )
+            paths = OrgPaths(root=org_root)
+            (paths.agents_dir / "content_manager.md").write_text(
+                render_agent_text(content_manager)
+            )
+        return runtime, org_roots, (*agents, content_manager)
+
+    monkeypatch.setattr(_SHIPPING_MODULE, "_bootstrap_runtime", bootstrap_with_content)
     fixture = _ShippingFixture(root, monkeypatch).start()
     original_audit_insert = Database._insert_authority_policy_v2_control_audit_uncommitted
     fault_armed = False
@@ -89,6 +121,8 @@ def main() -> int:
             try:
                 if command == "snapshot":
                     result = _snapshot(fixture)
+                elif command == "snapshot_content":
+                    result = _snapshot(fixture, "content")
                 elif command == "fault_on":
                     if not fault_armed:
                         def failing_audit_insert(self, **kwargs):

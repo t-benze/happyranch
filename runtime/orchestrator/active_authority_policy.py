@@ -23,14 +23,10 @@ from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.authority_policy import CONTINUE_ROUTINE_PHRASE
 from runtime.orchestrator.authority_policy import AuthorityClause, AuthorityPolicy
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+from runtime.orchestrator.teams import TeamsRegistry
 
 
 RESERVED_TEAM_POLICY_HEADER = "## [RESERVED] Active Team Escalation Policy"
-# The one roster-eligibility rule for the Engineering policy surface. B2b2
-# reuses it at daemon startup so initialization observes exactly the roster the
-# shipping API already gates on, without widening eligibility.
-ELIGIBLE_POLICY_MANAGER_AGENT = "engineering_manager"
-ELIGIBLE_POLICY_MANAGER_TEAM = "engineering"
 _BEGIN = "<!-- BEGIN HAPPYRANCH ACTIVE TEAM POLICY -->"
 _END = "<!-- END HAPPYRANCH ACTIVE TEAM POLICY -->"
 SESSION_POLICY_BINDING_ACTION = "authority_policy_session_binding"
@@ -46,27 +42,45 @@ class ActiveAuthorityPolicyError(RuntimeError):
     """Active policy state or reserved prompt ownership is incoherent."""
 
 
-def is_eligible_policy_manager(*, root: Path, agent_name: str, team: str) -> bool:
-    """Return whether *agent_name* is the eligible Engineering manager.
+def resolve_policy_manager_team(
+    *, root: Path, agent_name: str, teams: TeamsRegistry | None = None,
+    team_hint: str | None = None,
+) -> str | None:
+    """Resolve one live manager and one unique exact registry tuple.
 
-    This is the single roster-eligibility rule shared by the shipping policy
-    routes and daemon startup: the exact eligible name/team must resolve to an
-    active agent file whose declared role is ``manager``. A missing file, a
-    parse error, or a mismatched tuple is ineligible (never an oracle, never a
-    reason to initialize an unrelated team).
+    Missing/stale files, worker roles, declared-team mismatches, registry
+    mismatches, and duplicate manager registrations are deliberately
+    indistinguishable and fail closed before policy storage is touched.
     """
-    if agent_name != ELIGIBLE_POLICY_MANAGER_AGENT or team != ELIGIBLE_POLICY_MANAGER_TEAM:
-        return False
+    registry = teams if teams is not None else TeamsRegistry.load(Path(root))
+    registered = registry.teams_for_manager(agent_name)
+    if len(registered) != 1:
+        return None
+    team = registered[0]
+    if team_hint is not None and team != team_hint:
+        return None
     try:
         agent = prompt_loader.load_agent(OrgPaths(root=Path(root)), agent_name)
     except Exception:
-        return False
-    return (
+        return None
+    if not (
         agent is not None
         and agent.name == agent_name
         and agent.role == "manager"
         and agent.team == team
-    )
+    ):
+        return None
+    return team
+
+
+def is_eligible_policy_manager(
+    *, root: Path, agent_name: str, team: str,
+    teams: TeamsRegistry | None = None,
+) -> bool:
+    """Return whether the exact live roster/registry manager tuple is valid."""
+    return resolve_policy_manager_team(
+        root=root, agent_name=agent_name, teams=teams, team_hint=team,
+    ) == team
 
 
 def assert_no_reserved_team_policy_header(text: str, *, source: str) -> None:
@@ -98,7 +112,8 @@ class ActivePolicySnapshot:
 
 
 def resolve_active_team_policy_snapshot(
-    *, store: AuthorityPolicyStore, team: str, agent_name: str, eligible: bool
+    *, store: AuthorityPolicyStore, root: Path, teams: TeamsRegistry,
+    team: str, agent_name: str, eligible: bool,
 ) -> ActivePolicySnapshot | None:
     """Resolve one authenticated, selector-derived launch identity.
 
@@ -110,7 +125,9 @@ def resolve_active_team_policy_snapshot(
     resolves exactly its immutable pair. Missing/corrupt/unsupported/mixed
     state refuses; there is never a fallback to the newest legacy activation.
     """
-    if not eligible or agent_name != ELIGIBLE_POLICY_MANAGER_AGENT or team != ELIGIBLE_POLICY_MANAGER_TEAM:
+    if not eligible or resolve_policy_manager_team(
+        root=root, agent_name=agent_name, teams=teams, team_hint=team,
+    ) != team:
         return None
     selector = store.ensure_authority_selector(team)
     if selector.family == "empty":
@@ -466,10 +483,12 @@ def policy_from_release(release: AuthorityPolicyRelease) -> AuthorityPolicy:
 
 
 def resolve_active_team_policy_section(
-    *, store: AuthorityPolicyStore, team: str, agent_name: str, eligible: bool
+    *, store: AuthorityPolicyStore, root: Path, teams: TeamsRegistry,
+    team: str, agent_name: str, eligible: bool,
 ) -> str:
     """Resolve the selected family's authenticated section; workers are byte-absent."""
     snapshot = resolve_active_team_policy_snapshot(
-        store=store, team=team, agent_name=agent_name, eligible=eligible,
+        store=store, root=root, teams=teams, team=team,
+        agent_name=agent_name, eligible=eligible,
     )
     return "" if snapshot is None else render_selected_team_policy(snapshot)

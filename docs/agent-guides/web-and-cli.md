@@ -20,6 +20,49 @@ transported remainder is exactly the returned `after` accounting or `null`, and
 publication failure stops later calls. The ordinary agent completion summary
 remains the normal callback/CLI result surface.
 
+The cleanup contract itself is the ONE shared `workspace-cleanup` TASK system
+skill (`requires_repo=false`), reachable from both workspace skill roots. Manual
+dispatch requires the exact first line `HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN
+(manual-dispatch)`; an unmarked manual request is inventory-only. Its bundled
+read-only `scripts/check_path_use.py` returns only `clear_observation`,
+`blocked`, or `unknown`, using the approved THR-259 seq171/seq185 rule (exact
+process name AND bounded cgroup role for fixed daemons; any other unreadable
+same-user process is `unknown`).
+
+Cleanup history reads use the backward-compatible `tasks --agent --all-pages
+--json` and `audit --all-pages --json` surfaces to exhaust candidate-specific
+keyset pages. Scanner execution is job-only and fail-closed on any non-exact,
+stale, spoofed, truncated, or incomplete structured receipt. `jobs submit
+--json` returns the authenticated submission identity; `jobs show --json` and
+`jobs output --json` require the current task/session and return the same closed
+receipt containing stored execution identity and complete output accounting.
+An owning origin task branch whose head equals or descends from the candidate,
+an owning-task merged PR, and a containing any-task merged PR can preserve a
+clean candidate in addition to the accepted durable ref. An existing owning
+branch is authoritative: non-containment or failed containment evidence refuses
+without merged-PR fallback. The any-task route
+uses complete stable double-read discovery, then separately confirms
+merged/default-branch state and candidate-to-PR-head containment; discovery
+alone and other-task unmerged PRs never count, while owning-branch unmerged
+evidence still refuses. Merged integration does not promise original commit
+topology. Dirty whole worktrees are never removed, while a literal root
+dependency cache can qualify under the separate 24-hour cache gates without
+changing tracked source bytes or Git status. The removable worktree must be at
+its owning primary checkout's exact registered `.claude/worktrees/<TASK>` path.
+The literal root and descendants are walked without following symlinks before
+and at action time; nested mounts, cross-device or foreign-owned entries,
+protected descendants, incomplete evidence, and identity drift refuse. A
+success receipt requires measured root-plus-descendant bytes, actual candidate
+absence, and unchanged protected-path identities.
+
+The independent forward-only terminal task-worktree hook has no Web/CLI or
+configuration surface. Its final process gate loads this same bundled scanner
+by explicit file path inside the existing task worker thread: root-owned
+processes are out of scope, only exact name-plus-expected-cgroup helpers are
+exempt, any other unreadable same-user process is uncertain, and a positive
+reference preserves. The hook retains one five-second total deadline and one
+literal non-force removal attempt.
+
 ## Web UI
 
 ### Dashboard projection
@@ -467,6 +510,44 @@ The daemon returns 422 for missing, null, or malformed revisions and 409 for a
 stale base. On 409, reread and deliberately reapply the intended field change;
 do not pair older composed content with a newer roster revision.
 
+### Workflow template authoring (U1B)
+
+U1B publishes inert immutable `product-design` template definitions; it does
+not activate or execute them. An active, uniquely registered team manager uses
+its verified task/session binding, and the server derives its organization,
+principal and `org/<org>/team/<manager-team>` namespace:
+
+```bash
+happyranch workflows templates publish --org <org> --from-file /absolute/template.json --session-id <session-id>
+```
+
+Founder omits `--session-id`, supplies `team_slug` in the JSON payload, and the
+command uses the existing daemon bearer. The payload contains
+`operation_key`, `template_name`, `expected_current_version`, `definition`,
+and (Founder only) `team_slug`; publisher, principal, namespace, org, task and
+session claims are rejected. `--from-file` must be absolute. The closed
+definition is `kind=product-design`, with `schema_version` set to the genuine
+JSON integer `1` (not a boolean, float, string or null), a Product Lead agent
+author of an immutable PRD revision, Founder/implementer/tester reviewers, all
+three required on the current revision, and request-changes returning to the
+author. A non-empty description is the only variable descriptive field;
+unknown fields and kinds fail closed.
+
+Founder reads exact immutable versions with:
+
+```bash
+happyranch workflows templates list --org <org> --team <team> [--json]
+happyranch workflows templates show --org <org> <team> <template-name> <version> [--json]
+```
+
+The matching APIs are `POST /api/v1/orgs/{slug}/workflows/templates/publish`,
+`GET /api/v1/orgs/{slug}/workflows/templates?team_slug=...`, and
+`GET /api/v1/orgs/{slug}/workflows/templates/{team_slug}/{template_name}/{version}`.
+Responses return canonical JSON, base64 of the same UTF-8 bytes, SHA-256,
+version/pins/timestamp and authenticated publisher provenance. Conflict,
+stale-CAS, duplicate-content and authorization errors retain stable
+machine-readable `detail.code` values; refusals leave no template residue.
+
 Slug resolution for per-org commands: explicit `--org <slug>` > `HAPPYRANCH_ORG_SLUG` > auto-infer only when exactly one org exists > error. Container-level commands take no `--org`.
 
 System assistant commands are container-level:
@@ -704,6 +785,24 @@ happyranch tokens --by-agent | --by-task | --by-thread | --by-purpose
 (`--since`, `--thread-id`, `--agent`, `--purpose`, `--scope-type`,
 `--scope-id`, `--task-id`) AND-compose with any view.
 
+Usage v1 efficiency cohorts do not derive historical executor/model from this
+usage view or from current agent configuration. Lifecycle records capture the
+effective launch tuple: thread invocations use nullable executor/model columns,
+task `session_start` adds runtime session ID + actual spawn purpose +
+executor/model, and `dream_started` adds executor/model. NULL remains unknown;
+there is no historical inference or `"default"` sentinel.
+
+The read-only Usage v1 API is `GET /usage/workload?compare=bool` and
+`GET /usage/efficiency?compare=bool`. Efficiency without a cohort returns
+options and unattributed counts; a selected cohort requires `executor` plus
+exactly one of `model` or `model_unpinned=true`. Both routes use the same
+bearer authentication and org scoping as `GET /tokens`. They return rolling
+seven-day UTC bounds with the resolved org timezone for display; no Usage UI
+is part of PR3. Workload emits only current-window agents. Each period's
+`reply_outcome_coverage` reports linked `recorded` replies out of
+`total_consumed` REPLY wakes; a NULL `reply_message_seq` is unknown, does not
+count as a Reply, and withholds only the Replies delta when comparison is on.
+
 Rollup modifiers (presentation-side; require a `--by-*` flag):
 
 - `--top N` — rank by churn (`total`) DESC and keep the top N; ties: sessions DESC then key ASC.
@@ -735,10 +834,13 @@ thread's Model with the same precedence as the CLI table above.
 ### Staged dual-text escalation-policy editor (THR-229, draft PR878)
 
 This surface is present only on the unmerged draft feature branch; it is not a
-running-production capability and performs no live activation. The eligible
-Engineering Manager's dedicated policy route shows exactly the editable
+running-production capability and performs no live activation. Every roster-
+confirmed manager with exactly one matching team registration has a dedicated
+policy route showing exactly the editable
 `What to escalate` and `What not to escalate` textareas. A genuinely empty
-selector begins with the approved starter bytes; an active v2 selector reads
+selector begins with the server-projected neutral starter bytes and uniform
+per-team derived ID/title; there is no client starter constant or Engineering
+special case. An active v2 selector reads
 both values and its release/version/digest, activation, selector and epoch from
 the authenticated projection. One confirmation sends both texts through the
 existing paired v2 release transaction. It never exposes the legacy split
@@ -750,10 +852,13 @@ SPA navigation and hard unload. It treats pending submission as single-flight,
 accepts success only after the paired receipt and authoritative refetch agree,
 reuses the exact request after an ambiguous outcome, and preserves the draft
 on selector conflicts until the operator deliberately reloads the current
-selector. The v2 history stream is immutable and read-only, shows both exact
+selector. Policy queries wait for both roster and team data, are keyed by the
+exact organization/manager/team tuple, and are evicted immediately on tuple loss
+or change to prevent cross-team flashes. The v2 history stream is immutable and read-only, shows both exact
 texts plus full release/activation/selector identity and timestamps, and owns
-pagination/error retry independently. Legacy history and outcomes appear only
-for an authenticated legacy-family projection. Unsupported, mixed, corrupt,
+pagination/error retry independently. The legacy history and outcome APIs/data
+remain available, but the two legacy read-only UI sections and their eager
+requests are removed. Unsupported, mixed, corrupt,
 unknown and worker targets fail closed without an editable fallback.
 
 For a v2-bound manager escalation, the injected role guidance supplies the

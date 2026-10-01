@@ -1,0 +1,10 @@
+id: hr:test-authoring-gate
+slug: test-authoring-gate
+name: Test Authoring Gate
+version: 1.0.0
+description: Evidence gate for every new or changed HappyRanch test, including four contract questions, attributable red/green proof, deletion keeper proof, and legitimate static or shape-test retention.
+when_to_use: Use when adding or changing tests, or when reviewing or QA-verifying a PR that does.
+owner: engineering_manager
+source: runtime/skills/test-authoring-gate
+policy_class: standard_operational
+status: enabled

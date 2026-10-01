@@ -132,6 +132,42 @@ def test_empty_org_initializes_before_recovery_boundary(tmp_path, monkeypatch):
     assert _count(org.db, "authority_policy_v2_releases") == 0
 
 
+def test_startup_initializes_each_unique_live_manager_and_rejects_duplicate(
+    tmp_path, monkeypatch,
+):
+    teams = (
+        "teams:\n"
+        "  engineering:\n    manager: engineering_manager\n    workers: []\n"
+        "  content:\n    manager: content_manager\n    workers: []\n"
+    )
+    _runtime, org_root = _fresh_runtime(
+        tmp_path, monkeypatch, teams=teams, seed_manager=False,
+    )
+    _seed_agent(org_root, "engineering_manager", team="engineering")
+    _seed_agent(org_root, "content_manager", team="content")
+    state = daemon_main._build_state(Settings())
+    store = AuthorityPolicyStore(state.orgs[ORG].db)
+    assert store.get_authority_selector("engineering") is not None
+    assert store.get_authority_selector("content") is not None
+
+    state.orgs[ORG].close()
+    duplicate = (
+        "teams:\n"
+        "  engineering:\n    manager: shared_manager\n    workers: []\n"
+        "  content:\n    manager: shared_manager\n    workers: []\n"
+    )
+    other = tmp_path / "duplicate"
+    other.mkdir()
+    _runtime2, org_root2 = _fresh_runtime(
+        other, monkeypatch, teams=duplicate, seed_manager=False,
+    )
+    _seed_agent(org_root2, "shared_manager", team="engineering")
+    duplicate_state = daemon_main._build_state(Settings())
+    duplicate_store = AuthorityPolicyStore(duplicate_state.orgs[ORG].db)
+    assert duplicate_store.get_authority_selector("engineering") is None
+    assert duplicate_store.get_authority_selector("content") is None
+
+
 def test_valid_historical_v1_is_observed_not_rewritten(tmp_path, monkeypatch):
     _runtime, org_root = _fresh_runtime(tmp_path, monkeypatch)
     seed = _db(org_root)

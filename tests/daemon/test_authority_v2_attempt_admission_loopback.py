@@ -5,7 +5,8 @@ real uvicorn server bound to literal ``127.0.0.1`` against a real v2 policy
 launch, and asserts the durable result, the admitted ``authority_policy_v2_attempts``
 row and the ``authority_policy_v2_result_stage`` admission audit.  The v2 launch
 binding is produced by the ordinary ``Orchestrator._run_agent`` path, never
-fabricated, and the assessment reaches the route through the strict
+fabricated, after the shared fixture seeds the canonical instruction pair, and
+the assessment reaches the route through the strict
 ``_completion_payload_from_file`` decoder.
 """
 from __future__ import annotations

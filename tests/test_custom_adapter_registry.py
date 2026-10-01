@@ -1302,17 +1302,6 @@ class TestBaselinePermissionRegression:
             executor = build_executor(name, settings)
             assert executor is not None, f"build_executor({name}) returned None"
 
-    def test_no_new_permission_flags_or_sandbox_changes(self):
-        """Verify no allow-rule, sandbox, or permission model changes."""
-        # The D3 adapter store does not touch:
-        # - runtime/config.py (Settings)
-        # - runtime/orchestrator/executors.py (permission flags)
-        # - runtime/orchestrator/workspace_adapters (permission files)
-        # - release-owned bundled skills (auth)
-        # These are all verified as D5 is a separate slice
-        pass  # Structural invariant — tested implicitly through unchanged code paths
-
-
 class TestStoreIntegrity:
     """Test atomic write + failure resilience patterns."""
 

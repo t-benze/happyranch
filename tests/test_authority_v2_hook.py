@@ -62,6 +62,9 @@ from tests.test_authority_v2_attempt_admission import (
     _seed_bound_task,
     _store,
 )
+from tests.authority_v2_historical_schema import (
+    add_historical_agent_enrollments,
+)
 
 
 class _FakeTeams:
@@ -215,6 +218,25 @@ def test_v2_hook_clear_continue_finalizes_settles_and_publishes_once(tmp_path):
     ).fetchone()
     assert raw["stage"] == "consumed_audited"
     assert raw["finalization_state"] == "continued"
+
+
+def test_v2_hook_historical_agent_enrollments_reaches_evaluation(tmp_path):
+    store, _, _, row, attempt = _admitted(tmp_path)
+    db = store._db
+    db.bind_authority_policy_v2_process_boot_id(attempt.origin_boot_id)
+    add_historical_agent_enrollments(db)
+    _log_ordinary_completion(db, row["id"])
+
+    outcome, _ = _run_hook(store, row, queue=_RecordingQueue())
+
+    assert outcome == HOOK_V2_CONTINUED
+    candidate = db.get_authority_policy_v2_candidate_for_result(row["id"])
+    evaluation = db.get_authority_policy_v2_evaluation_for_result(row["id"])
+    assert candidate is not None
+    assert evaluation is not None
+    assert evaluation.candidate_id == candidate.candidate_id
+    final = db.get_authority_policy_v2_attempt_for_result(row["id"])
+    assert final is not None and final.finalization_state == "continued"
 
 
 def test_v2_hook_ignores_caller_self_evaluation_and_uses_persisted(tmp_path):

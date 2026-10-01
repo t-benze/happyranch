@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timezone
 from enum import StrEnum
 
-from typing import Literal, Mapping
+from typing import Annotated, Literal, Mapping
 
 from pydantic import BaseModel, Field, StrictBool, StrictInt, StrictStr, field_validator, model_validator
 
@@ -597,7 +597,10 @@ AUTHORITY_POLICY_SECRET_SHAPE_RE = re.compile(
     r"(?i)(?:authorization\s*:\s*bearer|bearer\s+[a-z0-9._-]{16,}|"
     r"(?:api[_-]?key|secret|password|token)\s*[:=]\s*\S{8,})"
 )
-AUTHORITY_POLICY_V2_TEAM = "engineering"
+AuthorityPolicyTeam = Annotated[
+    StrictStr,
+    Field(min_length=1, max_length=128, pattern=r"^\S(?:.*\S)?$"),
+]
 AUTHORITY_POLICY_V2_MAX_CANONICAL_BYTES = 65536
 _AUTHORITY_POLICY_V2_MAX_TITLE = 200
 _AUTHORITY_POLICY_V2_MAX_TEXT = 20000
@@ -618,7 +621,7 @@ class AuthorityPolicyV2Release(BaseModel):
 
     contract_digest: StrictStr
     policy_id: StrictStr
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     title: StrictStr
     version: StrictInt = Field(ge=1, le=2147483647)
     what_not_to_escalate: StrictStr
@@ -859,7 +862,7 @@ class AuthorityPolicyV2SessionBinding(BaseModel):
     release_id: StrictStr
     root_task_id: StrictStr
     selector_id: StrictStr
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     created_at: datetime = Field(default_factory=_now)
 
     @field_validator("contract_digest", "policy_digest")
@@ -1333,7 +1336,7 @@ class AuthorityPolicyV2Attempt(BaseModel):
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
     attempt_id: StrictStr
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     root_task_id: StrictStr
     manager_agent: StrictStr
     manager_session_id: StrictStr
@@ -1508,7 +1511,7 @@ class AuthorityPolicyV2Candidate(BaseModel):
 
     candidate_id: StrictStr
     claim_key: StrictStr
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     root_task_id: StrictStr
     manager_agent: StrictStr
     manager_session_id: StrictStr
@@ -1531,12 +1534,11 @@ class AuthorityPolicyV2Candidate(BaseModel):
     causal_result_digest: StrictStr
     origin_boot_id: StrictStr
     owner_attempt_id: StrictStr
-    # C3b correction: the ACTUAL claim-time schema evidence and bounded
-    # read-only permission-surface evidence are frozen onto the candidate so the
-    # second boundary can recheck the ORIGINAL evidence (no recapture/rebaseline)
-    # and later evaluation/consume/finalize code reads the same authenticated
-    # values.  These are evidence only, never a clause input, and are
-    # deliberately NOT part of the frozen R2 claim preimage.
+    # The ACTUAL claim-time schema observation and bounded read-only permission
+    # evidence are frozen onto the candidate.  Schema values are retained only
+    # as diagnostics and are never compared/rechecked; permission evidence is
+    # still authenticated at later boundaries.  Neither is a clause input or
+    # part of the frozen R2 claim preimage.
     schema_raw_digest: StrictStr = ""
     schema_inventory_digest: StrictStr = ""
     schema_object_count: StrictInt = 0
@@ -1674,7 +1676,7 @@ class AuthorityPolicyV2Pin(BaseModel):
 
     candidate_id: StrictStr
     claim_key: StrictStr
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     root_task_id: StrictStr
     manager_agent: StrictStr
     manager_session_id: StrictStr
@@ -1691,8 +1693,9 @@ class AuthorityPolicyV2Pin(BaseModel):
     provider_id: StrictStr
     executor_kind: StrictStr
     model_id: StrictStr
-    # C3b correction: identity-equal to the candidate's frozen claim-time
-    # schema/permission evidence (evidence only; never a claim preimage input).
+    # Claim-time schema observation and permission evidence mirrored from K.
+    # The schema values are retained diagnostics only and are never compared;
+    # permission evidence remains an authenticated cross-row join.
     schema_raw_digest: StrictStr = ""
     schema_inventory_digest: StrictStr = ""
     schema_object_count: StrictInt = 0
@@ -1777,7 +1780,7 @@ class AuthorityPolicyV2Evaluation(BaseModel):
     evaluation_id: StrictStr
     candidate_id: StrictStr
     claim_key: StrictStr
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     root_task_id: StrictStr
     manager_agent: StrictStr
     manager_session_id: StrictStr
@@ -1917,7 +1920,7 @@ class AuthorityPolicyV2CandidateAudit(BaseModel):
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
     candidate_id: StrictStr
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     root_task_id: StrictStr
     manager_agent: StrictStr
     manager_session_id: StrictStr
@@ -2126,7 +2129,7 @@ class AuthorityPolicyV2ContinueEnvelope(BaseModel):
     envelope_id: StrictStr
     candidate_id: StrictStr
     claim_key: StrictStr
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     root_task_id: StrictStr
     manager_agent: StrictStr
     manager_session_id: StrictStr
@@ -3241,23 +3244,19 @@ class AuthorityPolicyV2CompletionDispatchContext(BaseModel):
         return value
 
 
-class AuthorityPolicyV2SchemaIntegrity(BaseModel):
-    """Bounded read-only v2 schema-integrity EVIDENCE (THR-229 checkpoint C3a).
+class AuthorityPolicyV2SchemaObservation(BaseModel):
+    """Real schema values observed when an authority-v2 claim is created.
 
-    Produced by the independent constraint-sensitive reference oracle in
-    ``runtime/orchestrator/authority.py``.  ``raw_digest`` is the candidate
-    database's ACTUAL raw ``sqlite_master`` DDL digest captured at validation
-    time, and ``inventory_digest`` is the canonical digest of the complete
-    non-internal object inventory that matched an accepted reference layout.
-    This value is integrity evidence only: it is NOT policy authority, NOT a
-    policy-clause match, and NOT a continuation grant.  A recheck denies ANY
-    later raw-digest drift; a failed or unavailable capture can never become a
-    successful recheck.
+    ``raw_digest`` is the live database's actual raw ``sqlite_master`` DDL
+    digest, ``inventory_digest`` is the digest of its complete observed
+    non-internal object inventory, and ``object_count`` is that inventory's
+    object count.  These values are retained on K/P as claim-time diagnostics
+    only.  They are never policy authority, never compared with a reference or
+    one another, and never rechecked after the claim.
     """
 
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
-    contract_version: StrictStr
     raw_digest: StrictStr
     inventory_digest: StrictStr
     object_count: StrictInt = Field(ge=0, le=100000)
@@ -3285,7 +3284,7 @@ class AuthorityPolicyV2PairedControlRequest(BaseModel):
     """Strict paired create+activate request; client version/digest/ids are rejected."""
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     policy_id: StrictStr
     title: StrictStr
     create_request_id: StrictStr
@@ -3367,7 +3366,7 @@ class AuthorityPolicyV2ActivationControlRequest(BaseModel):
     """Strict activation request for an existing v2 release."""
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     release_id: StrictStr
     request_id: StrictStr
     expected_selector_id: StrictStr | None
@@ -3406,7 +3405,7 @@ class AuthorityPolicyV2ControlReceipt(BaseModel):
     """Deterministic receipt binding both request IDs/digests of a control write."""
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     kind: Literal["v2_create_activate", "v2_activate"]
     create_request_id: StrictStr | None
     create_request_digest: StrictStr | None
@@ -3500,7 +3499,7 @@ class AuthorityPolicyLegacyActivationRequest(BaseModel):
     """
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     release_id: StrictStr
     request_id: StrictStr
     expected_selector_id: StrictStr | None
@@ -3540,7 +3539,7 @@ class AuthorityPolicyLegacyReactivationRequest(BaseModel):
     """
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     activation_id: StrictStr
     request_id: StrictStr
     expected_selector_id: StrictStr | None
@@ -3576,7 +3575,7 @@ class AuthorityPolicyLegacyControlReceipt(BaseModel):
     """Deterministic receipt for a selector-aware legacy v1 selection."""
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
-    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    team: AuthorityPolicyTeam
     kind: Literal["legacy_activate", "legacy_reactivate_rollback"]
     request_id: StrictStr
     request_digest: StrictStr
@@ -3971,6 +3970,9 @@ class ThreadInvocation(BaseModel):
     started_at: datetime | None = None
     consumed_at: datetime | None = None
     session_id: str | None = None
+    executor: str | None = None
+    model: str | None = None
+    reply_message_seq: int | None = None
     dispatched_task_id: str | None = None
     decline_reason: str | None = None
 

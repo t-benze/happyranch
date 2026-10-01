@@ -32,7 +32,35 @@ from runtime.orchestrator.authority_policy import (
     AUTHORITY_POLICY_V2_CONTRACT_VERSION,
     AuthorityPolicyV2AssessmentOutcome,
     derive_authority_policy_v2_assessment_outcome,
+    project_authority_policy_v2_starter,
 )
+
+
+def test_v2_starter_projection_is_uniform_and_team_derived():
+    engineering = project_authority_policy_v2_starter("engineering")
+    content = project_authority_policy_v2_starter("content")
+    assert engineering["policy_id"] == "team-8c85b6639e62e10b-dual-text"
+    assert engineering["title"] == "Engineering escalation policy"
+    assert content["policy_id"] == "team-ed7002b439e9ac84-dual-text"
+    assert content["title"] == "Content escalation policy"
+    assert content["what_to_escalate"] == engineering["what_to_escalate"]
+    assert content["what_not_to_escalate"] == engineering["what_not_to_escalate"]
+
+
+def test_v2_value_models_accept_strict_nonblank_content_team():
+    values = {
+        "contract_digest": authority_policy_v2_contract_digest(),
+        "policy_id": "team-ed7002b439e9ac84-dual-text",
+        "team": "content",
+        "title": "Content escalation policy",
+        "version": 1,
+        "what_to_escalate": "Escalate protected work.",
+        "what_not_to_escalate": "Continue ordinary work.",
+    }
+    release = AuthorityPolicyV2Release.model_validate(values)
+    assert release.team == "content"
+    with pytest.raises(ValidationError):
+        AuthorityPolicyV2Release.model_validate({**values, "team": ""})
 
 
 _DIGEST = "a" * 64
@@ -470,7 +498,7 @@ def test_v2_release_model_matches_approved_preimage_and_digest() -> None:
         {"version": 2147483648}, {"contract_digest": "A" * 64},
         {"contract_digest": "a" * 63}, {"policy_id": "Upper"},
         {"policy_id": "1-leading-digit"}, {"policy_id": "a" * 65},
-        {"team": "content"}, {"title": ""}, {"title": "   "},
+        {"team": ""}, {"title": ""}, {"title": "   "},
         {"what_to_escalate": ""}, {"what_not_to_escalate": " \t "},
         {"what_not_to_escalate": "a" * 20001},
         {"unexpected": "field"},

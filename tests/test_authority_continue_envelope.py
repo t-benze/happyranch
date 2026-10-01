@@ -32,6 +32,7 @@ import pytest
 
 from runtime.config import Settings
 from runtime.infrastructure.database import Database
+from runtime.infrastructure.workflow_schema import install_or_recover
 from runtime.models import TaskStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.authority import (
@@ -91,7 +92,9 @@ def runtime(tmp_path: Path) -> OrgPaths:
 
 @pytest.fixture
 def db(runtime: OrgPaths) -> Database:
-    return Database(runtime.db_path)
+    database = Database(runtime.db_path)
+    install_or_recover(database)
+    return database
 
 
 def _make_report(output_summary: str, status: str = "completed"):
@@ -318,6 +321,7 @@ def test_continued_turn_launches_without_executor_capability_refusal(
     runtime, provider, monkeypatch,
 ):
     db = Database(runtime.db_path.parent / f"continued-{provider}.db")
+    install_or_recover(db)
     _seed_root(db)
     orch = _make_orch(runtime, db, evaluator=StrictFakeAuthorityEvaluator())
     _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
@@ -511,6 +515,7 @@ def test_continued_turn_must_escalate_sentinels_fail_closed(runtime, db, monkeyp
     }
     for label, reason in sentinels.items():
         db2 = Database(runtime.db_path.parent / f"sentinel-{label}.db")
+        install_or_recover(db2)
         _seed_root(db2, task_id="T-ROOT")
         orch2 = _make_orch(runtime, db2, evaluator=StrictFakeAuthorityEvaluator())
         _run_escalate_step(orch2, "T-ROOT", CONTINUE_REASON, monkeypatch)

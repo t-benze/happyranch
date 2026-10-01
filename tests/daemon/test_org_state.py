@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -7,10 +8,13 @@ import pytest
 
 from runtime.config import Settings
 from runtime.daemon.org_state import OrgState
+from runtime.daemon.state import DaemonState
+from runtime.infrastructure.database import Database
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 from runtime.orchestrator.org_validation import OrgConsistencyError
+from runtime.runtime import RuntimeDir
 
 
 def _seed_org(org_root: Path) -> None:
@@ -22,6 +26,78 @@ def _seed_org(org_root: Path) -> None:
     (org_root / "kb").mkdir()
 
 
+_PRE_REPLY_LINK_INVOCATIONS_DDL = """
+CREATE TABLE thread_invocations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id TEXT NOT NULL,
+    agent_name TEXT NOT NULL,
+    invocation_token TEXT NOT NULL UNIQUE,
+    triggering_seq INTEGER NOT NULL,
+    purpose TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    enqueued_at TEXT NOT NULL,
+    started_at TEXT,
+    consumed_at TEXT,
+    session_id TEXT,
+    executor TEXT,
+    model TEXT,
+    dispatched_task_id TEXT,
+    decline_reason TEXT
+)
+"""
+
+
+def _database_snapshot(path: Path) -> tuple[list[tuple], dict[str, list[tuple]]]:
+    with sqlite3.connect(path) as conn:
+        schema = conn.execute(
+            "SELECT type,name,tbl_name,rootpage,sql FROM sqlite_master "
+            "ORDER BY type,name"
+        ).fetchall()
+        rows = {
+            table: conn.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall()
+            for (table,) in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ).fetchall()
+        }
+    return schema, rows
+
+
+def _seed_pre_reply_link_rows(path: Path) -> list[tuple]:
+    expected: list[tuple] = []
+    with sqlite3.connect(path) as conn:
+        conn.execute(_PRE_REPLY_LINK_INVOCATIONS_DDL)
+        ordinal = 0
+        for purpose in ("reply", "bootstrap", "task_followup"):
+            for status in ("pending", "consumed", "declined", "failed", "timeout"):
+                ordinal += 1
+                values = (
+                    ordinal,
+                    f"THR-{ordinal:03d}",
+                    f"agent-{ordinal}",
+                    f"token-{purpose}-{status}",
+                    ordinal,
+                    purpose,
+                    status,
+                    f"2026-09-30T00:00:{ordinal:02d}+00:00",
+                    f"2026-09-30T00:01:{ordinal:02d}+00:00" if status != "pending" else None,
+                    f"2026-09-30T00:02:{ordinal:02d}+00:00" if status != "pending" else None,
+                    f"session-{ordinal}" if status != "pending" else None,
+                    "codex" if ordinal % 2 else "claude",
+                    None if ordinal % 3 else "pinned-model",
+                    f"TASK-{ordinal:03d}" if purpose == "task_followup" else None,
+                    f"reason-{status}" if status in {"declined", "failed", "timeout"} else None,
+                )
+                conn.execute(
+                    "INSERT INTO thread_invocations VALUES "
+                    "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    values,
+                )
+                expected.append(values)
+        conn.commit()
+    return expected
+
+
 def test_org_state_load_opens_db_and_teams(tmp_path: Path) -> None:
     org_root = tmp_path / "rt" / "orgs" / "alpha"
     _seed_org(org_root)
@@ -31,7 +107,119 @@ def test_org_state_load_opens_db_and_teams(tmp_path: Path) -> None:
     assert org.root == org_root
     assert org.db is not None
     assert org.teams is not None
+    assert [tuple(row) for row in org.db.execute(
+        "SELECT version FROM workflow_adapter_versions"
+    ).fetchall()] == [(1,)]
     org.close()
+
+
+def test_org_state_load_migrates_reply_links_without_rewriting_legacy_rows(
+    tmp_path: Path,
+) -> None:
+    org_root = tmp_path / "rt" / "orgs" / "legacy-reply-links"
+    _seed_org(org_root)
+    path = OrgPaths(root=org_root).db_path
+    expected = _seed_pre_reply_link_rows(path)
+
+    org = OrgState.load(slug="legacy-reply-links", root=org_root, settings=Settings())
+    migrated = org.db.execute(
+        "SELECT * FROM thread_invocations ORDER BY id"
+    ).fetchall()
+    columns = org.db.execute("PRAGMA table_info(thread_invocations)").fetchall()
+    index = org.db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' "
+        "AND name='idx_thread_invocations_reply_message'"
+    ).fetchone()
+    org.close()
+
+    assert columns[-1][1:] == ("reply_message_seq", "INTEGER", 0, None, 0)
+    assert [tuple(row[:15]) for row in migrated] == expected
+    assert [row["reply_message_seq"] for row in migrated] == [None] * len(expected)
+    assert index is not None
+    assert index[0] == (
+        "CREATE UNIQUE INDEX idx_thread_invocations_reply_message "
+        "ON thread_invocations(thread_id, reply_message_seq) "
+        "WHERE reply_message_seq IS NOT NULL"
+    )
+
+    first_snapshot = _database_snapshot(path)
+    reopened = OrgState.load(
+        slug="legacy-reply-links", root=org_root, settings=Settings(),
+    )
+    reopened.close()
+    assert _database_snapshot(path) == first_snapshot
+
+
+def test_org_state_load_completes_partial_reply_link_migration(tmp_path: Path) -> None:
+    org_root = tmp_path / "rt" / "orgs" / "partial-reply-links"
+    _seed_org(org_root)
+    path = OrgPaths(root=org_root).db_path
+    with sqlite3.connect(path) as conn:
+        conn.execute(_PRE_REPLY_LINK_INVOCATIONS_DDL)
+        conn.execute("ALTER TABLE thread_invocations ADD COLUMN reply_message_seq INTEGER")
+        conn.commit()
+
+    org = OrgState.load(slug="partial-reply-links", root=org_root, settings=Settings())
+    columns = org.db.execute("PRAGMA table_info(thread_invocations)").fetchall()
+    index = org.db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' "
+        "AND name='idx_thread_invocations_reply_message'"
+    ).fetchone()
+    org.close()
+
+    assert [row["name"] for row in columns].count("reply_message_seq") == 1
+    assert index is not None
+
+
+def test_org_state_load_closes_new_database_when_workflow_install_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The approved org-only seam fails closed before teams/orchestrator load."""
+    from runtime.daemon import org_state
+
+    org_root = tmp_path / "rt" / "orgs" / "alpha"
+    _seed_org(org_root)
+    closed: list[Path] = []
+    real_close = org_state.Database.close
+
+    def close_and_record(db: Database) -> None:
+        closed.append(db.path)
+        real_close(db)
+
+    monkeypatch.setattr(org_state.Database, "close", close_and_record)
+    monkeypatch.setattr(
+        org_state,
+        "install_or_recover",
+        lambda _db: (_ for _ in ()).throw(ValueError("workflow-layout-invalid")),
+    )
+
+    with pytest.raises(ValueError, match="workflow-layout-invalid"):
+        OrgState.load(slug="alpha", root=org_root, settings=Settings())
+    assert closed == [OrgPaths(root=org_root).db_path]
+
+
+def test_daemon_state_keeps_malformed_workflow_org_fail_closed(
+    tmp_path: Path,
+) -> None:
+    runtime = RuntimeDir.init(tmp_path / "rt")
+    org_root = runtime.orgs_dir / "broken"
+    _seed_org(org_root)
+    path = OrgPaths(root=org_root).db_path
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE workflow_cutover_state(foreign_marker TEXT)")
+    conn.execute("INSERT INTO workflow_cutover_state VALUES ('preserve-me')")
+    conn.commit()
+    conn.close()
+
+    state = DaemonState.from_runtime(runtime, Settings())
+    assert "broken" not in state.orgs
+    assert "broken" in state.broken_orgs
+    assert "workflow_schema_object_set_mismatch" in state.broken_orgs["broken"]
+    check = sqlite3.connect(path)
+    assert check.execute(
+        "SELECT foreign_marker FROM workflow_cutover_state"
+    ).fetchall() == [("preserve-me",)]
+    check.close()
 
 
 def test_org_state_two_orgs_independent_dbs(tmp_path: Path) -> None:
@@ -86,6 +274,44 @@ def test_org_state_load_refuses_on_team_drift(tmp_path: Path) -> None:
     with pytest.raises(OrgConsistencyError) as exc_info:
         OrgState.load(slug="family", root=org_root, settings=Settings())
     assert "family_operations" in str(exc_info.value)
+
+
+def test_org_state_load_closes_new_database_on_team_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later consistency failure releases the handle opened by load."""
+    from runtime.daemon import org_state
+
+    org_root = tmp_path / "rt" / "orgs" / "family"
+    _seed_org(org_root)
+    paths = OrgPaths(root=org_root)
+    manager = AgentDef(
+        name="family_manager",
+        team="family_operations",
+        role="manager",
+        executor="claude",
+        allow_rules=(),
+        repos={},
+        enrolled_by="founder",
+        enrolled_at_task=None,
+        enrolled_at=datetime(2026, 5, 27, tzinfo=timezone.utc),
+        system_prompt="You are the Family Manager.\n",
+        description="Manages family ops",
+    )
+    (paths.agents_dir / "family_manager.md").write_text(render_agent_text(manager))
+
+    closed: list[Path] = []
+    real_close = org_state.Database.close
+
+    def close_and_record(db: Database) -> None:
+        closed.append(db.path)
+        real_close(db)
+
+    monkeypatch.setattr(org_state.Database, "close", close_and_record)
+
+    with pytest.raises(OrgConsistencyError, match="family_operations"):
+        OrgState.load(slug="family", root=org_root, settings=Settings())
+    assert closed == [paths.db_path]
 
 
 # ── THR-107: legacy per-org executor_profiles block no longer registers ──

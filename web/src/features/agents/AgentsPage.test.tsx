@@ -52,7 +52,7 @@ function stubBaseHandlers() {
       HttpResponse.json({}),
     ),
     http.get(`/api/v1/orgs/${SLUG}/teams`, () =>
-      HttpResponse.json({ teams: [] }),
+      HttpResponse.json({ teams: [{ name: 'engineering', manager: 'engineering_manager' }] }),
     ),
     // Executor prereqs — required by AgentDetailPane's useExecutorOptions
     http.get('/api/v1/health/prereqs', () =>
@@ -280,6 +280,7 @@ describe('AgentDetailPane — editable fields', () => {
         selector_id: 'APS-0000000000000000000000000000000000000000000000000000000000000000',
         selector_epoch: 1,
         bootstrap_template: { title: 'Canonical policy', normative_text: 'Policy', clauses: [], continuation_phrase: 'routine same-root follow-through of the already-completed slice' },
+        v2_starter: { policy_id: 'team-8c85b6639e62e10b-dual-text', title: 'Engineering escalation policy', what_to_escalate: 'Escalate starter.', what_not_to_escalate: 'Continue starter.' },
         active: {
           family: 'legacy_v1', activation_id: 'act-legacy-1', epoch: 4, action: 'activate',
           created_at: '2026-09-01T00:00:00Z',
@@ -1476,6 +1477,7 @@ describe('Team escalation policy dedicated route', () => {
     selector_epoch: 0,
     bootstrap_required: true,
     bootstrap_template: { title: 'Canonical policy', normative_text: 'Policy', clauses: [], continuation_phrase: 'routine same-root follow-through of the already-completed slice' },
+    v2_starter: { policy_id: 'team-8c85b6639e62e10b-dual-text', title: 'Engineering escalation policy', what_to_escalate: 'Escalate starter.', what_not_to_escalate: 'Continue starter.' },
   };
 
   function stubPolicy() {
@@ -1504,6 +1506,87 @@ describe('Team escalation policy dedicated route', () => {
     expect(screen.getByLabelText('What not to escalate')).toBeInTheDocument();
   });
 
+  test('registered Content manager gets the same direct route with dynamic copy and server starter', async () => {
+    stubBaseHandlers();
+    const contentManager = { ...manager, name: 'content_manager', team: 'content',
+      description: 'Owns content.' };
+    const contentPolicy = { ...policyResponse, team: 'content',
+      target_manager: 'content_manager', bootstrap_template: null,
+      v2_starter: { ...policyResponse.v2_starter,
+        policy_id: 'team-ed7002b439e9ac84-dual-text',
+        title: 'Content escalation policy',
+        what_to_escalate: 'Content server escalate bytes.',
+        what_not_to_escalate: 'Content server continue bytes.' } };
+    let policyRequests = 0;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/teams`, () => HttpResponse.json({
+        teams: [
+          { name: 'engineering', manager: 'engineering_manager' },
+          { name: 'content', manager: 'content_manager' },
+        ],
+      })),
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [contentManager] })),
+      http.get(`/api/v1/orgs/${SLUG}/agents/content_manager/team-escalation-policy`, () => {
+        policyRequests += 1;
+        return HttpResponse.json(contentPolicy);
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/agents/content_manager/team-escalation-policy/v2/history`, () =>
+        HttpResponse.json({ items: [], next_cursor: null })),
+    );
+
+    mountPolicyRoute([`/orgs/${SLUG}/agents/content_manager/team-escalation-policy`]);
+
+    expect(await screen.findByText('Content · Content Manager')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Back to Content Manager/ })).toHaveAttribute(
+      'href', `/orgs/${SLUG}/agents/content_manager`,
+    );
+    expect(await screen.findByLabelText('What to escalate')).toHaveValue(
+      contentPolicy.v2_starter.what_to_escalate,
+    );
+    expect(screen.getByLabelText('What not to escalate')).toHaveValue(
+      contentPolicy.v2_starter.what_not_to_escalate,
+    );
+    expect(policyRequests).toBe(1);
+  });
+
+  test('legacy projection fetches only immutable dual-text history and renders no removed legacy sections', async () => {
+    stubBaseHandlers();
+    let legacyHistoryRequests = 0;
+    let outcomeRequests = 0;
+    let v2HistoryRequests = 0;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [manager] })),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`, () => HttpResponse.json({
+        ...policyResponse, family: 'legacy_v1', contract_version: 'v1', selector_epoch: 1,
+        active: { family: 'legacy_v1', activation_id: 'APA-legacy', epoch: 1,
+          action: 'bootstrap', created_at: '2026-09-01T00:00:00Z',
+          actor_attribution: 'shared local operator credential',
+          release: { id: 'APR-legacy', policy_id: 'engineering/pre-escalation-authority',
+            version: 1, title: 'Canonical policy', normative_text: 'Policy', clauses: [],
+            continuation_phrase: 'routine same-root follow-through of the already-completed slice',
+            digest: 'a'.repeat(64), created_at: '2026-09-01T00:00:00Z',
+            actor_attribution: 'shared local operator credential' },
+        },
+      })),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/history`, () => {
+        legacyHistoryRequests += 1; return HttpResponse.json({ items: [], next_cursor: null });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/outcomes`, () => {
+        outcomeRequests += 1; return HttpResponse.json({ items: [], next_cursor: null });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/v2/history`, () => {
+        v2HistoryRequests += 1; return HttpResponse.json({ items: [], next_cursor: null });
+      }),
+    );
+    mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`]);
+    expect(await screen.findByText('Immutable dual-text history')).toBeInTheDocument();
+    await waitFor(() => expect(v2HistoryRequests).toBe(1));
+    expect(legacyHistoryRequests).toBe(0);
+    expect(outcomeRequests).toBe(0);
+    expect(screen.queryByText('Legacy policy history (read-only)')).not.toBeInTheDocument();
+    expect(screen.queryByText('Legacy manager self-evaluation outcomes (read-only)')).not.toBeInTheDocument();
+  });
+
   test('eligible manager exercises the shipping navigate(0) browser-refresh path without a replacement router', async () => {
     stubBaseHandlers();
     let rosterRequests = 0;
@@ -1523,7 +1606,7 @@ describe('Team escalation policy dedicated route', () => {
     );
     const user = userEvent.setup();
     mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`]);
-    expect((await screen.findByLabelText('What to escalate') as HTMLTextAreaElement).value).toContain('Escalate when');
+    expect((await screen.findByLabelText('What to escalate') as HTMLTextAreaElement).value).toBe(policyResponse.v2_starter.what_to_escalate);
     expect(rosterRequests).toBe(1);
     expect(policyRequests).toBe(1);
 
@@ -1535,7 +1618,7 @@ describe('Team escalation policy dedicated route', () => {
     expect(rosterRequests).toBe(1);
     expect(policyRequests).toBe(1);
     expect(screen.getByRole('heading', { level: 1, name: 'Team escalation policy' })).toBeInTheDocument();
-    expect((screen.getByLabelText('What to escalate') as HTMLTextAreaElement).value).toContain('Escalate when');
+    expect((screen.getByLabelText('What to escalate') as HTMLTextAreaElement).value).toBe(policyResponse.v2_starter.what_to_escalate);
   });
 
   test('shipping back Link cancel preserves the exact dirty draft; confirm discards and navigates', async () => {
@@ -1579,7 +1662,7 @@ describe('Team escalation policy dedicated route', () => {
     await user.click(await screen.findByRole('button', { name: 'Discard and continue' }));
     await waitFor(() => expect(screen.queryByRole('heading', { level: 1, name: 'Team escalation policy' })).not.toBeInTheDocument());
     await user.click(screen.getByRole('button', { name: 'Test browser forward' }));
-    expect((await screen.findByRole('textbox', { name: 'What to escalate' }) as HTMLTextAreaElement).value).toContain('Escalate when');
+    expect((await screen.findByRole('textbox', { name: 'What to escalate' }) as HTMLTextAreaElement).value).toBe(policyResponse.v2_starter.what_to_escalate);
   });
 
   test('refresh/hard unload is guarded separately while dirty', async () => {

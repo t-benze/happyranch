@@ -49,6 +49,7 @@ from tests.test_authority_v2_publication_bookkeeping import (
     _point_dispatch_at_replacement,
     _stage_events,
 )
+from tests.authority_policy_test_factory import policy_manager_context
 
 SPENT = "spent"
 
@@ -57,8 +58,10 @@ SPENT = "spent"
 
 
 def _bind_reserved(store: AuthorityPolicyStore, *, session: str = RESERVED) -> None:
+    root, teams = policy_manager_context(store)
     snapshot = resolve_active_team_policy_snapshot(
-        store=store, team=TEAM, agent_name=MANAGER, eligible=True,
+        store=store, root=root, teams=teams, team=TEAM,
+        agent_name=MANAGER, eligible=True,
     )
     assert snapshot is not None and snapshot.family == "v2"
     persist_session_policy_binding(

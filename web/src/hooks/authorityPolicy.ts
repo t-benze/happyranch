@@ -6,7 +6,6 @@ export type {
   V2PairedControlRequest,
 } from '@/lib/api/authorityPolicy';
 export {
-  AUTHORITY_POLICY_V2_STARTER,
   authorityPolicyActiveEpoch,
   isEligiblePolicyManager,
 } from '@/lib/api/authorityPolicy';

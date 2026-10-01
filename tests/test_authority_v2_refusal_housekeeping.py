@@ -267,7 +267,7 @@ def test_refusal_settles_exact_accepted_recovery_receipt(tmp_path):
 
 def test_refusal_rejects_unrelated_receipt_without_touching_it(tmp_path):
     store, _, _, _, row, attempt = _admitted(tmp_path)
-    # A receipt for a DIFFERENT recovery session must never be labelled
+    # A live receipt for a DIFFERENT recovery session must never be labelled
     # ordinary/absent nor settled as a replacement.
     store._db._conn.execute(
         """INSERT INTO task_completion_recoveries

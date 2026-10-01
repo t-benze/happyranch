@@ -36,8 +36,6 @@ from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
 from runtime.models import BlockKind, TaskStatus
 from runtime.orchestrator.active_authority_policy import (
-    ELIGIBLE_POLICY_MANAGER_AGENT,
-    ELIGIBLE_POLICY_MANAGER_TEAM,
     is_eligible_policy_manager,
 )
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
@@ -53,6 +51,7 @@ logger = logging.getLogger("happyranch.daemon")
 def _sweep_enqueue(
     queue: TaskQueue, slug: str, task_id: str,
     orchestrator: Orchestrator | None,
+    *, pending_once: bool = False,
 ) -> None:
     """Startup-sweep enqueue through the common DB-aware boundary (C3d4a).
 
@@ -62,11 +61,17 @@ def _sweep_enqueue(
     there is no durable classifier to consult and the unchanged ordinary enqueue
     is preserved.
     """
-    if orchestrator is None:
-        queue.enqueue(slug, task_id)
-        return
-    from runtime.orchestrator.authority import enqueue_task_generation_aware
-    enqueue_task_generation_aware(orchestrator, queue, slug, task_id)
+    def publish() -> None:
+        if orchestrator is None:
+            queue.enqueue(slug, task_id)
+            return
+        from runtime.orchestrator.authority import enqueue_task_generation_aware
+        enqueue_task_generation_aware(orchestrator, queue, slug, task_id)
+
+    if pending_once:
+        queue.enqueue_if_absent(slug, task_id, publisher=publish)
+    else:
+        publish()
 
 
 def _sweep_on_startup(
@@ -141,7 +146,9 @@ def _sweep_on_startup(
     from runtime.orchestrator.authority import (
         refuse_authority_policy_v2_pre_final_on_startup,
     )
-    v2_pre_final_roots = refuse_authority_policy_v2_pre_final_on_startup(db)
+    v2_pre_final_roots = refuse_authority_policy_v2_pre_final_on_startup(
+        db, orchestrator=orchestrator,
+    )
     v2_discovery_unavailable = v2_pre_final_roots is None
 
     # Accepted recovery callbacks whose effects committed just before a crash
@@ -324,6 +331,7 @@ def _sweep_on_startup(
                 _consume_completion_report(
                     orchestrator, task_id, orphaned_report,
                     result_row_id=orphaned_result_row.get("id"),
+                    reclaim_terminal_worktree=False,
                 )
                 continue
 
@@ -348,6 +356,10 @@ def _sweep_on_startup(
                     orchestrator, task_id,
                     root_auto_revisit_spawned=False,
                 )
+                from runtime.orchestrator.run_step import (
+                    _reclaim_terminal_task_worktree,
+                )
+                _reclaim_terminal_task_worktree(orchestrator, task_id)
 
         # Branch 2 — parked on children (delegated). Re-enqueue only when all
         # children are terminal (orphaned wake-up); else leave it parked.
@@ -361,11 +373,9 @@ def _sweep_on_startup(
                 # wake.  This is intentionally limited to the delegated
                 # parent path; ordinary pending-task startup enqueue behavior
                 # remains unchanged.
-                if not any(
-                    queued_slug == slug and queued_task_id == task_id
-                    for queued_slug, queued_task_id, _ in queue._queue._queue
-                ):
-                    _sweep_enqueue(queue, slug, task_id, orchestrator)
+                _sweep_enqueue(
+                    queue, slug, task_id, orchestrator, pending_once=True,
+                )
 
         # Branch 3 — parked on jobs (blocked_on_job). Re-enqueue only when all
         # blocking jobs are terminal (jobs finished while the daemon was down);
@@ -383,11 +393,9 @@ def _sweep_on_startup(
                 # before a worker claims the first wake.  Keep the ordinary
                 # resume wake one-shot in the in-memory queue, as for the
                 # delegated parked carrier above.
-                if not any(
-                    queued_slug == slug and queued_task_id == task_id
-                    for queued_slug, queued_task_id, _ in queue._queue._queue
-                ):
-                    _sweep_enqueue(queue, slug, task_id, orchestrator)
+                _sweep_enqueue(
+                    queue, slug, task_id, orchestrator, pending_once=True,
+                )
 
         # Branch 4 — pending: re-enqueue (lost the original POST enqueue).
         elif t.status == TaskStatus.PENDING:
@@ -532,14 +540,13 @@ def _build_state(settings: Settings) -> DaemonState:
         # and an initializer-audit failure rather than manufacturing empty state
         # or silently selecting legacy. A refusal propagates out of
         # ``_build_state`` so the daemon never binds the API or admits launch.
-        if is_eligible_policy_manager(
-            root=org.root,
-            agent_name=ELIGIBLE_POLICY_MANAGER_AGENT,
-            team=ELIGIBLE_POLICY_MANAGER_TEAM,
-        ):
-            AuthorityPolicyStore(org.db).ensure_authority_selector(
-                ELIGIBLE_POLICY_MANAGER_TEAM
-            )
+        selector_store = AuthorityPolicyStore(org.db)
+        for team in org.teams.teams():
+            manager = org.teams.manager_for_team(team).name
+            if is_eligible_policy_manager(
+                root=org.root, agent_name=manager, team=team, teams=org.teams,
+            ):
+                selector_store.ensure_authority_selector(team)
         recovered_tokens = _sweep_on_startup(
             org.db, state.queue, org.slug, org.orchestrator,
         )

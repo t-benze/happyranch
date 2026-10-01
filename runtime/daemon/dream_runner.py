@@ -193,7 +193,21 @@ async def run_dream(
         return
     if not transitioned:
         return
-    AuditLogger(org_state.db).log_dream_started(dream_id, dream.agent_name)
+
+    # Resolve the same effective tuple later passed to executor.run before
+    # emitting the lifecycle start event. A missing/terminated agent returned
+    # above, so this fallback applies only to an active agent whose configured
+    # provider is not registered.
+    _prov = agent_def.executor.lower()
+    if not get_registry().is_registered(_prov):
+        _prov = "claude"
+    model_name: str | None = agent_def.model
+    AuditLogger(org_state.db).log_dream_started(
+        dream_id,
+        dream.agent_name,
+        executor=_prov,
+        model=model_name,
+    )
 
     # Spec "Input Window": include the agent's audit rows since window_start,
     # not only the dream-scoped rows. window_start is set by the scheduler; fall
@@ -214,17 +228,7 @@ async def run_dream(
         paths=paths, agent_name=dream.agent_name,
     )
 
-    # TASK-2511: resolve executor name from the active AgentDef. Missing agents
-    # were already rejected above, so this path never silently falls back to
-    # claude because of a missing or terminated AgentDef.
-    _prov = agent_def.executor.lower()
-    if not get_registry().is_registered(_prov):
-        _prov = "claude"
-
     agent_team = agent_def.team
-
-    # Issue #568: forward AgentDef.model to executor.run for dream invocations.
-    model_name: str | None = agent_def.model
 
     workspace = org_state.root / "workspaces" / dream.agent_name
 
@@ -289,10 +293,12 @@ async def run_dream(
 
     from runtime.orchestrator.active_authority_policy import resolve_active_team_policy_section
     from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
-    active_policy_section = resolve_active_team_policy_section(
-        store=AuthorityPolicyStore(org_state.db), team=agent_def.team,
+    policy_teams = getattr(org_state, "teams", None)
+    active_policy_section = "" if policy_teams is None else resolve_active_team_policy_section(
+        store=AuthorityPolicyStore(org_state.db), root=org_state.root,
+        teams=policy_teams, team=agent_def.team,
         agent_name=dream.agent_name,
-        eligible=bool(getattr(org_state, "teams", None) and org_state.teams.is_team_manager(dream.agent_name)),
+        eligible=policy_teams.is_team_manager(dream.agent_name),
     )
     prompt = build_dream_prompt(
         org_slug=org_state.slug,

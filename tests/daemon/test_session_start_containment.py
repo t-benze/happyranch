@@ -181,7 +181,7 @@ class TestTaskStartContainment:
         src = tmp_path / "runtime" / "skills" / "bundled"
         for sid in [
             "create-skill", "start-task", "jobs", "make-worktree",
-            "thread", "dream", "todos",
+            "thread", "dream", "todos", "workspace-cleanup",
         ]:
             d = src / sid
             d.mkdir(parents=True)
@@ -260,7 +260,7 @@ class TestTaskStartContainment:
         src = tmp_path / "runtime" / "skills" / "bundled"
         for sid in [
             "create-skill", "start-task", "jobs", "make-worktree",
-            "thread", "dream", "todos",
+            "thread", "dream", "todos", "workspace-cleanup",
         ]:
             d = src / sid
             d.mkdir(parents=True)

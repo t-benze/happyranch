@@ -14,13 +14,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from runtime.daemon.auth import require_token
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.orchestrator.active_authority_policy import (
-    ELIGIBLE_POLICY_MANAGER_AGENT,
-    ELIGIBLE_POLICY_MANAGER_TEAM,
     SELF_EVALUATION_CONTRACT_DIGEST,
     SELF_EVALUATION_CONTRACT_ID,
     SELF_EVALUATION_CONTRACT_VERSION,
     SESSION_POLICY_BINDING_ACTION,
-    is_eligible_policy_manager,
+    resolve_policy_manager_team,
 )
 from runtime.models import (
     AuthorityPolicyLegacyActivationRequest,
@@ -36,19 +34,15 @@ from runtime.orchestrator.authority_policy import (
     PROMPT_ID,
     PROMPT_VERSION,
     POLICY_BY_TEAM,
+    project_authority_policy_v2_starter,
 )
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 
 router = APIRouter(dependencies=[require_token()])
 _logger = logging.getLogger(__name__)
 
-_ELIGIBLE_AGENT = ELIGIBLE_POLICY_MANAGER_AGENT
-_ELIGIBLE_TEAM = ELIGIBLE_POLICY_MANAGER_TEAM
 _SURFACE_UNAVAILABLE = {"code": "policy_surface_not_available"}
 _STORE_UNAVAILABLE = {"code": "policy_store_unavailable"}
-_POLICY = POLICY_BY_TEAM[_ELIGIBLE_TEAM]
-_KNOWN_CLAUSES = {clause.id: clause for clause in _POLICY.clauses}
-_CANONICAL_CLAUSE_IDS = tuple(clause.id for clause in _POLICY.clauses)
 _SECRET_SHAPE = re.compile(
     r"(?i)(?:authorization\s*:\s*bearer|bearer\s+[a-z0-9._-]{16,}|"
     r"(?:api[_-]?key|secret|password|token)\s*[:=]\s*\S{8,})"
@@ -90,7 +84,7 @@ class CreatePolicyReleaseRequest(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def validate_policy_contract(self) -> "CreatePolicyReleaseRequest":
+    def validate_policy_shape(self) -> "CreatePolicyReleaseRequest":
         if self.continuation_phrase != CONTINUE_ROUTINE_PHRASE:
             raise ValueError("continuation phrase must match the canonical phrase byte-for-byte")
         seen: set[str] = set()
@@ -99,17 +93,8 @@ class CreatePolicyReleaseRequest(BaseModel):
             if clause.id in seen:
                 raise ValueError("policy clause ids must be unique")
             seen.add(clause.id)
-            expected = _KNOWN_CLAUSES.get(clause.id)
-            if expected is None:
-                raise ValueError("policy clause id is outside the closed vocabulary")
-            if clause.category != expected.category or clause.action != expected.action:
-                raise ValueError("policy clause category/action does not match its server contract")
             if clause.action == "continue_same_root":
                 continuation_count += 1
-        if seen != set(_KNOWN_CLAUSES):
-            raise ValueError("all protected and mechanical policy clauses are required")
-        if tuple(clause.id for clause in self.clauses) != _CANONICAL_CLAUSE_IDS:
-            raise ValueError("policy clauses must use canonical server ordering")
         if continuation_count != 1:
             raise ValueError("exactly one continuation clause is required")
         material = self.model_dump_json()
@@ -153,7 +138,7 @@ class V2ActivationControlBody(AuthorityPolicyV2ActivationControlRequest):
     acknowledge_shared_credential_attribution: Literal[True]
 
 
-async def _decode_control_body(request: Request, wrapper) -> dict:
+async def _decode_control_body(request: Request, wrapper, *, team: str) -> dict:
     """Strict transport decode before any model normalization.
 
     ``decode_authority_policy_v2_json`` rejects invalid UTF-8, BOM, duplicate
@@ -164,9 +149,9 @@ async def _decode_control_body(request: Request, wrapper) -> dict:
     raw = await request.body()
     try:
         payload = decode_authority_policy_v2_json(raw)
-        if payload.get("team", _ELIGIBLE_TEAM) != _ELIGIBLE_TEAM:
+        if payload.get("team", team) != team:
             raise ValueError("team is not the eligible policy surface")
-        payload["team"] = _ELIGIBLE_TEAM
+        payload["team"] = team
         body = wrapper.model_validate(payload)
     except ValueError:
         raise HTTPException(
@@ -216,18 +201,37 @@ def _project_legacy_control(receipt) -> dict:
     }
 
 
-def _require_eligible_manager(org: OrgDep, agent_name: str) -> None:
+def _require_eligible_manager(org: OrgDep, agent_name: str) -> str:
     """Resolve the live roster on every request without creating an oracle."""
-    if not is_eligible_policy_manager(
-        root=org.root, agent_name=agent_name, team=_ELIGIBLE_TEAM
-    ):
+    team = resolve_policy_manager_team(
+        root=org.root, agent_name=agent_name, teams=org.teams,
+    )
+    if team is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_SURFACE_UNAVAILABLE)
+    return team
 
 
 def _manager_surface(org: OrgDep, agent_name: str) -> tuple[str, str]:
-    """Reusable role seam with an explicit current Engineering allowlist."""
-    _require_eligible_manager(org, agent_name)
-    return _ELIGIBLE_TEAM, _ELIGIBLE_AGENT
+    """Resolve the authenticated live manager/team tuple server-side."""
+    return _require_eligible_manager(org, agent_name), agent_name
+
+
+def _legacy_policy_or_404(team: str):
+    policy = POLICY_BY_TEAM.get(team)
+    if policy is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_SURFACE_UNAVAILABLE)
+    return policy
+
+
+def _validate_legacy_policy_body(body: CreatePolicyReleaseRequest, policy) -> None:
+    expected = {clause.id: clause for clause in policy.clauses}
+    supplied = tuple(clause.id for clause in body.clauses)
+    if supplied != tuple(clause.id for clause in policy.clauses):
+        raise HTTPException(status_code=422, detail={"code": "invalid_policy_request"})
+    for clause in body.clauses:
+        contract = expected.get(clause.id)
+        if contract is None or clause.category != contract.category or clause.action != contract.action:
+            raise HTTPException(status_code=422, detail={"code": "invalid_policy_request"})
 
 
 @router.get("/agents/{agent_name}/team-escalation-policy")
@@ -246,7 +250,8 @@ def get_team_escalation_policy(slug: str, agent_name: str, org: OrgDep) -> dict:
             "team": team,
             "target_manager": target_manager,
             "can_mutate": True,
-            "bootstrap_template": _bootstrap_template(),
+            "bootstrap_template": _bootstrap_template(POLICY_BY_TEAM.get(team)),
+            "v2_starter": project_authority_policy_v2_starter(team),
             "family": selector.family,
             "selector_id": selector.selector_id,
             "selector_epoch": selector.selector_epoch,
@@ -578,21 +583,23 @@ def create_team_escalation_policy_release(
     response: Response,
     org: OrgDep,
 ) -> dict:
-    _manager_surface(org, agent_name)
+    team, _ = _manager_surface(org, agent_name)
+    policy = _legacy_policy_or_404(team)
+    _validate_legacy_policy_body(body, policy)
     try:
         store = AuthorityPolicyStore(org.db)
         # B2b: initialize the serialized selector BEFORE creating unselected
         # legacy history, so this route's own release cannot strand its later
         # initialization. A release-only write never implies a selection.
-        store.ensure_authority_selector(_ELIGIBLE_TEAM)
+        store.ensure_authority_selector(team)
         clauses = [clause.model_dump(mode="json") for clause in body.clauses]
         clauses_json = json.dumps(
             clauses, sort_keys=True, separators=(",", ":"), ensure_ascii=False
         )
         release = AuthorityPolicyRelease(
-            team=_ELIGIBLE_TEAM,
-            policy_id=_POLICY.id,
-            version=store.next_release_version(_ELIGIBLE_TEAM, _POLICY.id),
+            team=team,
+            policy_id=policy.id,
+            version=store.next_release_version(team, policy.id),
             title=body.title,
             normative_text=body.normative_text,
             clauses_json=clauses_json,
@@ -661,6 +668,7 @@ def activate_team_escalation_policy(
     legacy-only write.
     """
     team, _ = _manager_surface(org, agent_name)
+    _legacy_policy_or_404(team)
     try:
         store = AuthorityPolicyStore(org.db)
         # Compatible writer backstop: the serialized initializer commits BEFORE
@@ -754,7 +762,7 @@ async def create_and_activate_team_escalation_policy_v2(
     there is no independent per-text save or draft-only v2 creation.
     """
     team, _ = _manager_surface(org, agent_name)
-    data = await _decode_control_body(request, V2PairedControlBody)
+    data = await _decode_control_body(request, V2PairedControlBody, team=team)
     try:
         store = AuthorityPolicyStore(org.db)
         try:
@@ -802,7 +810,7 @@ async def activate_team_escalation_policy_v2(
     saved pair).
     """
     team, _ = _manager_surface(org, agent_name)
-    data = await _decode_control_body(request, V2ActivationControlBody)
+    data = await _decode_control_body(request, V2ActivationControlBody, team=team)
     try:
         store = AuthorityPolicyStore(org.db)
         try:
@@ -842,11 +850,13 @@ def _project_release(release: AuthorityPolicyRelease) -> dict:
     }
 
 
-def _bootstrap_template() -> dict:
+def _bootstrap_template(policy) -> dict | None:
     """Project the current canonical definition; step count is not a policy limit."""
+    if policy is None:
+        return None
     return {
-        "title": _POLICY.title,
-        "normative_text": _POLICY.normative_text,
+        "title": policy.title,
+        "normative_text": policy.normative_text,
         "clauses": [
             {
                 "id": clause.id,
@@ -854,7 +864,7 @@ def _bootstrap_template() -> dict:
                 "condition": clause.condition,
                 "action": clause.action,
             }
-            for clause in _POLICY.clauses
+            for clause in policy.clauses
         ],
         "continuation_phrase": CONTINUE_ROUTINE_PHRASE,
     }

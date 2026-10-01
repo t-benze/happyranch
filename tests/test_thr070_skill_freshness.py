@@ -36,7 +36,7 @@ class TestRefreshSessionSkills:
         SessionContext values, the preflight requires every system contract
         source directory to exist on disk."""
         skills_root = settings.get_bundled_skills_dir()
-        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"):
             (skills_root / sid).mkdir(parents=True, exist_ok=True)
             if not (skills_root / sid / "SKILL.md").exists():
                 (skills_root / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
@@ -168,7 +168,7 @@ class TestRefreshSessionSkills:
     ):
         """_SKILLS_SRC override takes precedence over settings-derived path."""
         fake_src = tmp_path / "fake-skills"
-        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
+        for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"):
             (fake_src / sid).mkdir(parents=True)
             (fake_src / sid / "SKILL.md").write_text(f"# {sid}\n\nFAKE\n")
 
@@ -486,7 +486,7 @@ class TestInjectSystemContracts:
     ):
         """TASK context: start-task, jobs, make-worktree (if repos), thread."""
         skills_root = test_settings.get_bundled_skills_dir()
-        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
 
@@ -530,7 +530,7 @@ class TestInjectSystemContracts:
     ):
         """TASK context without repos: no make-worktree, todos present."""
         skills_root = test_settings.get_bundled_skills_dir()
-        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
 
@@ -553,7 +553,7 @@ class TestInjectSystemContracts:
     ):
         """DREAM context: jobs, make-worktree (if repos), dream, todos. NOT start-task or thread."""
         skills_root = test_settings.get_bundled_skills_dir()
-        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
 
@@ -577,7 +577,7 @@ class TestInjectSystemContracts:
     ):
         """THREAD context: jobs, make-worktree (if repos), thread, todos. NOT start-task or dream."""
         skills_root = test_settings.get_bundled_skills_dir()
-        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
 
@@ -601,7 +601,7 @@ class TestInjectSystemContracts:
     ):
         """WAKE context: same as TASK (start-task, jobs, make-worktree if repos, thread, todos)."""
         skills_root = test_settings.get_bundled_skills_dir()
-        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
 
@@ -626,7 +626,7 @@ class TestInjectSystemContracts:
         """An unrecognised context string is a true no-op: no links or
         directories are created under .claude/skills or .agents/skills."""
         skills_root = test_settings.get_bundled_skills_dir()
-        for name in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "workspace-cleanup"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
 
@@ -651,7 +651,7 @@ class TestInjectSystemContracts:
         """Calling both refresh_session_skills and inject_system_contracts
         is idempotent — the same skill bodies are re-copied."""
         skills_root = test_settings.get_bundled_skills_dir()
-        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name} v1\n")
 
@@ -662,7 +662,7 @@ class TestInjectSystemContracts:
         refresh_session_skills(ws, test_settings, slug="test")
 
         # All 5 system contracts present (union across all contexts)
-        for name in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+        for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "workspace-cleanup"):
             assert (ws / ".claude" / "skills" / name / "SKILL.md").exists()
 
         # Edit a source skill

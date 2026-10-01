@@ -12,7 +12,8 @@ Focused isolated evidence for the accepted C3b radius, driving the REAL
     boot, changed owner/session, missing/mutated audit or exception refuses;
   * mechanical eligibility, identity integrity and pinned-history negative
     cases refuse with the prior rows preserved;
-  * schema corruption/drift before the claim refuses.
+  * claim-time schema observations remain real diagnostics while permission
+    evidence still fails closed on drift.
 """
 from __future__ import annotations
 
@@ -501,39 +502,6 @@ def test_corrupt_pinned_selector_history_refuses(tmp_path, monkeypatch):
     assert _counts(store._db)["pins"] == 0
 
 
-# ── schema drift ─────────────────────────────────────────────────────────
-
-
-def test_schema_drift_before_claim_refuses(tmp_path):
-    store, _, _, _, row, attempt = _admitted(tmp_path)
-    store._db._conn.execute("DROP TRIGGER authority_policy_v2_candidates_no_delete")
-    store._db._conn.commit()
-    outcome = _claim(store, row, attempt)
-    assert outcome.status == "refused" and outcome.refusal_code == "schema_drift"
-    assert _counts(store._db)["candidates"] == 0
-
-
-def test_schema_drift_between_capture_and_claim_refuses(tmp_path, monkeypatch):
-    store, _, _, _, row, attempt = _admitted(tmp_path)
-    from runtime.orchestrator import authority as authority_mod
-
-    original = authority_mod.recheck_authority_policy_v2_schema_integrity
-
-    def drift(evidence, db):
-        # An independent connection commits legal-but-different DDL after the
-        # capture but before the claim transaction commits.
-        db._conn.execute("CREATE TABLE c3b_drift_marker (id INTEGER PRIMARY KEY)")
-        db._conn.commit()
-        return original(evidence, db)
-
-    monkeypatch.setattr(
-        authority_mod, "recheck_authority_policy_v2_schema_integrity", drift,
-    )
-    outcome = _claim(store, row, attempt)
-    assert outcome.status == "refused" and outcome.refusal_code == "schema_drift"
-    assert _counts(store._db)["candidates"] == 0
-
-
 # ── injected failure at every write boundary ─────────────────────────────
 
 
@@ -796,6 +764,25 @@ def test_strict_candidate_and_outcome_values():
     ).refusal_code == "owner_lost"
 
 
+def test_historical_schema_drift_refusal_code_remains_readable(tmp_path):
+    """Persisted pre-seq351 schema-drift codes retain their closed mapping."""
+    from runtime.infrastructure.database import (
+        _AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING,
+    )
+    from runtime.models import AuthorityPolicyV2StageOutcome
+
+    outcome = AuthorityPolicyV2StageOutcome(
+        status="refused", refusal_code="schema_drift",
+    )
+    assert outcome.refusal_code == "schema_drift"
+    assert (
+        _AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING[outcome.refusal_code]
+        == "identity_mismatch"
+    )
+    db = Database(tmp_path / "historical-code.db")
+    assert db._v2_finalization_reason_for(outcome.refusal_code) == "schema_drift"
+
+
 # ── C3b correction 1: respect the caller's transaction ───────────────────
 #
 # Both public writers must reject transaction nesting BEFORE they would BEGIN,
@@ -989,24 +976,39 @@ def test_duplicate_claim_loser_does_not_poison_winner(tmp_path):
     assert _audit(store, row, attempt).status == "claim_audited"
 
 
-# ── C3b correction 4: retain claim-time schema/permission evidence ────────
+# ── Retain claim-time schema observations and permission evidence ─────────
 
 
 def test_claim_freezes_and_pin_mirrors_claim_time_evidence(tmp_path):
+    from runtime.orchestrator.authority import (
+        capture_authority_policy_v2_schema_observation,
+    )
+
     store, _, _, _, row, attempt = _admitted(tmp_path)
+    observed = capture_authority_policy_v2_schema_observation(store._db)
+    assert observed is not None
     claimed = _claim(store, row, attempt)
     candidate = store.get_v2_candidate(claimed.candidate_id)
     pin = store.get_v2_pin(claimed.candidate_id)
-    assert candidate.schema_raw_digest and candidate.schema_inventory_digest
-    assert candidate.schema_object_count > 0
-    assert candidate.permission_surface_digest == "a" * 64
-    # The pin is identity-equal on the frozen evidence.
-    assert (
-        pin.schema_raw_digest == candidate.schema_raw_digest
-        and pin.schema_inventory_digest == candidate.schema_inventory_digest
-        and pin.schema_object_count == candidate.schema_object_count
-        and pin.permission_surface_digest == candidate.permission_surface_digest
+    expected_schema = (
+        observed.raw_digest,
+        observed.inventory_digest,
+        observed.object_count,
     )
+    assert (
+        candidate.schema_raw_digest,
+        candidate.schema_inventory_digest,
+        candidate.schema_object_count,
+    ) == expected_schema
+    assert candidate.permission_surface_digest == "a" * 64
+    # K and P each retain real observations; later decisions do not compare
+    # their schema fields.  Permission evidence remains an authenticated join.
+    assert (
+        pin.schema_raw_digest,
+        pin.schema_inventory_digest,
+        pin.schema_object_count,
+    ) == expected_schema
+    assert pin.permission_surface_digest == candidate.permission_surface_digest
     # The evidence fields are NOT new claim-preimage inputs.
     assert candidate.preimage() == authority_policy_v2_candidate_claim_preimage(
         activation_id=candidate.activation_id,
@@ -1027,38 +1029,22 @@ def test_claim_freezes_and_pin_mirrors_claim_time_evidence(tmp_path):
     )
 
 
-def test_schema_drift_between_claim_and_audit_refuses(tmp_path):
-    """The manager probe's ``schema_drift_after_claim`` case: a new index after
-    the K/P commit denies at the second boundary."""
+def test_unreadable_schema_observation_refuses_claim_as_claim_failed(
+    tmp_path, monkeypatch,
+):
     store, _, _, _, row, attempt = _admitted(tmp_path)
-    assert _claim(store, row, attempt).status == "claimed"
-    store._db._conn.execute("CREATE INDEX task8450_unreviewed ON tasks(brief)")
-    store._db._conn.commit()
-    before = _counts(store._db)
-    outcome = _audit(store, row, attempt)
-    assert outcome.status == "refused" and outcome.refusal_code == "schema_drift"
-    assert _counts(store._db) == before
-    assert store._db.get_authority_policy_v2_attempt_for_result(row["id"]).stage == "claimed"
-    assert store.list_v2_candidate_audits(
-        store.get_v2_candidate_for_result(row["id"]).candidate_id) == []
-
-
-def test_schema_drift_between_stages_refuses_after_another_accepted_layout(tmp_path):
-    """Switching to a DIFFERENT individually accepted layout after capture is
-    still a denial: the comparison is against the exact frozen raw digest."""
-    store, _, _, _, row, attempt = _admitted(tmp_path)
-    assert _claim(store, row, attempt).status == "claimed"
-    # Drop and recreate a legal candidate-table trigger so the raw DDL digest
-    # changes while the inventory may still resemble a layout.
-    store._db._conn.execute("DROP TRIGGER authority_policy_v2_pins_no_delete")
-    store._db._conn.execute(
-        """CREATE TRIGGER authority_policy_v2_pins_no_delete
-           BEFORE DELETE ON authority_policy_v2_pins
-           BEGIN SELECT RAISE(ABORT, 'v2 policy pin cannot be deleted'); END"""
+    monkeypatch.setattr(
+        "runtime.orchestrator.authority."
+        "capture_authority_policy_v2_schema_observation",
+        lambda _db: None,
     )
-    store._db._conn.commit()
-    outcome = _audit(store, row, attempt)
-    assert outcome.status == "refused" and outcome.refusal_code == "schema_drift"
+
+    outcome = _claim(store, row, attempt)
+
+    assert outcome.status == "refused"
+    assert outcome.refusal_code == "claim_failed"
+    assert _counts(store._db)["candidates"] == 0
+    assert _counts(store._db)["pins"] == 0
 
 
 def test_permission_change_between_stages_refuses_audit(tmp_path):
@@ -1100,26 +1086,17 @@ def test_unbound_permission_reader_refuses_claim(tmp_path):
     assert _counts(store._db)["candidates"] == 0
 
 
-def test_missing_or_empty_frozen_evidence_fails_closed(tmp_path):
+def test_missing_or_empty_frozen_permission_evidence_fails_closed(tmp_path):
     from runtime.models import (
         AuthorityPolicyV2PermissionSurface,
-        AuthorityPolicyV2SchemaIntegrity,
     )
     from runtime.orchestrator.authority import (
         V2_PERMISSION_SURFACE_CONTRACT,
-        V2_SCHEMA_INTEGRITY_CONTRACT,
         recheck_authority_policy_v2_permission_surface,
-        recheck_authority_policy_v2_schema_integrity,
     )
 
     db = Database(tmp_path / "evidence.db")
-    assert recheck_authority_policy_v2_schema_integrity(None, db) is False
     assert recheck_authority_policy_v2_permission_surface(None, db, MANAGER) is False
-    empty = AuthorityPolicyV2SchemaIntegrity(
-        contract_version=V2_SCHEMA_INTEGRITY_CONTRACT,
-        raw_digest="", inventory_digest="", object_count=0,
-    )
-    assert recheck_authority_policy_v2_schema_integrity(empty, db) is False
     empty_permission = AuthorityPolicyV2PermissionSurface(
         contract_version=V2_PERMISSION_SURFACE_CONTRACT, digest="",
     )

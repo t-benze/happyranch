@@ -8,6 +8,7 @@ import subprocess
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -1783,6 +1784,511 @@ def format_repo_refresh_note(results: dict[str, bool]) -> str:
     return "Repository freshness at session start: all cloned repositories fast-forwarded cleanly."
 
 
+# ── Canonical instruction pair (THR-262 Slice B / founder seq59) ──────
+# Every generated agent and system-assistant workspace converges
+# non-destructively on one regular ``AGENTS.md`` plus a raw relative
+# ``CLAUDE.md -> AGENTS.md`` symlink. This module owns the shared
+# classifier/writer used by the built-in workspace adapters and the
+# read-only startup readiness gate. It never writes through a symlink and
+# never mutates an external target.
+
+CANONICAL_AGENTS_NAME = "AGENTS.md"
+CANONICAL_CLAUDE_NAME = "CLAUDE.md"
+CANONICAL_CLAUDE_LINK_TARGET = "AGENTS.md"
+
+
+class InstructionPairOperation(StrEnum):
+    """Closed caller-visible classifications for canonical-pair failures."""
+
+    INPUT_INSPECTION = "input inspection failed"
+    PRESERVATION_COPY = "preservation copy failed"
+    CANONICAL_WRITE = "canonical write failed"
+    LINK_CREATION = "link creation failed"
+
+
+class InstructionPairCompensationOperation(StrEnum):
+    """Closed caller-visible classifications for pair compensation failures."""
+
+    RESTORE_PATH = "Failed to restore instruction path"
+
+
+@dataclass(frozen=True)
+class InstructionPairCompensationFailure:
+    """Structured pair rollback failure with raw detail reserved for logs."""
+
+    operation: InstructionPairCompensationOperation
+    owned_relative_path: str
+    cause: Exception
+
+    def caller_diagnostic(self) -> str:
+        """Return only stable classification and an owned relative name."""
+        return f"{self.operation.value} {self.owned_relative_path}"
+
+    def raw_diagnostic(self) -> str:
+        """Return full operator detail, including the original exception."""
+        return f"{self.caller_diagnostic()}: {self.cause}"
+
+
+class InstructionPairConflict(RuntimeError):
+    """Raised when the canonical instruction pair cannot be converged safely.
+
+    The pair-wide preservation barrier guarantees that when this is raised
+    after preflight, both instruction paths are byte/type/raw-link identical
+    to their pre-state (any completed preservation copy is retained and only
+    an owned incomplete copy is removed).
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        reason: str,
+        *,
+        operation: InstructionPairOperation,
+        compensation_failures: list[InstructionPairCompensationFailure] | None = None,
+    ) -> None:
+        self.path = Path(path)
+        self.reason = reason
+        self.operation = operation
+        self.compensation_failures = tuple(compensation_failures or ())
+        super().__init__(self.caller_diagnostic())
+
+    def caller_diagnostic(self, *, max_compensation_failures: int = 4) -> str:
+        """Return bounded caller-safe context without paths or exception text."""
+        diagnostic = (
+            f"instruction pair conflict at {self.path.name}: "
+            f"{self.operation.value}"
+        )
+        if not self.compensation_failures:
+            return diagnostic
+
+        visible = self.compensation_failures[:max_compensation_failures]
+        if len(self.compensation_failures) > max_compensation_failures:
+            visible = self.compensation_failures[:max_compensation_failures - 1]
+        nested = [failure.caller_diagnostic() for failure in visible]
+        omitted = len(self.compensation_failures) - len(visible)
+        if omitted > 0:
+            nested.append(f"... and {omitted} more compensation failure(s)")
+        return f"{diagnostic}; nested compensation incomplete: {'; '.join(nested)}"
+
+    def raw_diagnostic(self) -> str:
+        """Return complete operator detail for daemon logs only."""
+        diagnostic = (
+            f"instruction pair conflict at {self.path}: "
+            f"{self.operation.value}: {self.reason}"
+        )
+        if self.compensation_failures:
+            nested = "; ".join(
+                failure.raw_diagnostic()
+                for failure in self.compensation_failures
+            )
+            diagnostic = f"{diagnostic}; pair rollback failed: {nested}"
+        return diagnostic
+
+
+@dataclass(frozen=True)
+class _InstructionPathState:
+    kind: str  # absent | regular | symlink | unsupported
+    data: bytes | None = None
+    mode: int | None = None
+    uid: int | None = None
+    raw_link: str | None = None
+    detail: str | None = None
+
+
+def _classify_instruction_path(path: Path) -> _InstructionPathState:
+    """Classify one instruction path with ``lstat`` and never follow links."""
+    import stat as _stat
+
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return _InstructionPathState(kind="absent")
+    except OSError as exc:
+        return _InstructionPathState(kind="unsupported", detail=f"lstat failed: {exc}")
+    if _stat.S_ISLNK(st.st_mode):
+        try:
+            raw = os.readlink(path)
+        except OSError as exc:
+            return _InstructionPathState(
+                kind="unsupported", detail=f"readlink failed: {exc}"
+            )
+        return _InstructionPathState(
+            kind="symlink",
+            mode=st.st_mode & 0o7777,
+            uid=st.st_uid,
+            raw_link=raw,
+        )
+    if _stat.S_ISREG(st.st_mode):
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            return _InstructionPathState(kind="unsupported", detail=f"read failed: {exc}")
+        return _InstructionPathState(
+            kind="regular",
+            data=data,
+            mode=st.st_mode & 0o7777,
+            uid=st.st_uid,
+        )
+    return _InstructionPathState(kind="unsupported", detail="not a regular file")
+
+
+def _timestamp_suffix() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+
+
+def _reserve_sibling(directory: Path, stem: str) -> Path:
+    """Reserve a collision-safe owned name in *directory* via ``O_EXCL``."""
+    candidate = directory / stem
+    counter = 0
+    while True:
+        try:
+            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            counter += 1
+            candidate = directory / f"{stem}-{counter}"
+            continue
+        os.close(fd)
+        return candidate
+
+
+def _write_preservation_copy(path: Path, state: _InstructionPathState) -> Path:
+    """Write and verify one collision-safe preservation copy.
+
+    Returns the retained backup path. On failure the incomplete owned copy is
+    removed and ``OSError`` is raised; a pre-existing collided/foreign path is
+    never removed because reservation used ``O_EXCL``.
+    """
+    backup = _reserve_sibling(
+        path.parent, f"{path.name}.happyranch-{_timestamp_suffix()}.bak"
+    )
+    assert state.data is not None
+    try:
+        with open(backup, "wb") as fh:
+            fh.write(state.data)
+        os.chmod(backup, state.mode or 0o644)
+        if backup.read_bytes() != state.data:
+            raise OSError("preservation copy byte verification failed")
+        if (backup.stat().st_mode & 0o7777) != ((state.mode or 0o644) & 0o7777):
+            raise OSError("preservation copy mode verification failed")
+    except OSError:
+        try:
+            backup.unlink()
+        except OSError:
+            pass
+        raise
+    return backup
+
+
+def _atomic_write_regular(path: Path, data: bytes, mode: int = 0o644) -> None:
+    """Write *data* to a same-directory temp then atomically ``os.replace``."""
+    temp = _reserve_sibling(
+        path.parent, f"{path.name}.happyranch-{_timestamp_suffix()}.tmp"
+    )
+    try:
+        with open(temp, "wb") as fh:
+            fh.write(data)
+        os.chmod(temp, mode)
+        os.replace(temp, path)
+    except OSError:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _restore_instruction_path(path: Path, state: _InstructionPathState) -> None:
+    """Restore one snapshotted instruction path without following links.
+
+    Restoration uses a same-directory owned sibling plus ``os.replace`` for
+    regular files and symlinks. An absent pre-state removes only the live path
+    written by this attempt. Any unexpected non-regular live object fails
+    closed; external link targets are never opened or mutated.
+    """
+    current = _classify_instruction_path(path)
+    if current == state:
+        return
+
+    if state.kind == "absent":
+        if current.kind == "absent":
+            return
+        if current.kind not in {"regular", "symlink"}:
+            raise OSError(
+                f"refusing to remove unexpected {current.kind} at {path}"
+            )
+        path.unlink()
+    elif state.kind == "regular":
+        assert state.data is not None
+        staged = _reserve_sibling(
+            path.parent, f"{path.name}.happyranch-{_timestamp_suffix()}.restore.tmp"
+        )
+        try:
+            with open(staged, "wb") as fh:
+                fh.write(state.data)
+            os.chmod(staged, state.mode if state.mode is not None else 0o644)
+            if state.uid is not None and state.uid != os.getuid():
+                os.chown(staged, state.uid, -1)
+            os.replace(staged, path)
+        except Exception:
+            try:
+                staged.unlink()
+            except OSError:
+                pass
+            raise
+    elif state.kind == "symlink":
+        assert state.raw_link is not None
+        staged: Path | None = None
+        for _ in range(64):
+            candidate = path.parent / (
+                f"{path.name}.happyranch-{_timestamp_suffix()}.restore.lnk"
+            )
+            try:
+                os.symlink(state.raw_link, candidate)
+            except FileExistsError:
+                continue
+            staged = candidate
+            break
+        if staged is None:
+            raise OSError("could not reserve an owned instruction-link restore name")
+        try:
+            if state.uid is not None and state.uid != os.getuid():
+                os.lchown(staged, state.uid, -1)
+            os.replace(staged, path)
+        except Exception:
+            try:
+                staged.unlink()
+            except OSError:
+                pass
+            raise
+    else:  # unsupported input is rejected before the preservation barrier
+        raise OSError(f"cannot restore unsupported instruction state at {path}")
+
+    restored = _classify_instruction_path(path)
+    if restored != state:
+        raise OSError(
+            f"instruction-path restore verification failed at {path}: "
+            f"expected {state!r}, got {restored!r}"
+        )
+
+
+def _restore_instruction_pair(
+    agents: Path,
+    agents_state: _InstructionPathState,
+    claude: Path,
+    claude_state: _InstructionPathState,
+) -> list[InstructionPairCompensationFailure]:
+    """Best-effort exact compensation for a caught post-barrier failure."""
+    errors: list[InstructionPairCompensationFailure] = []
+    # Restore CLAUDE.md first so a captured reverse AGENTS.md -> CLAUDE.md
+    # never temporarily resolves through the new canonical link.
+    for path, state in ((claude, claude_state), (agents, agents_state)):
+        try:
+            _restore_instruction_path(path, state)
+        except Exception as exc:
+            errors.append(
+                InstructionPairCompensationFailure(
+                    InstructionPairCompensationOperation.RESTORE_PATH,
+                    path.name,
+                    exc,
+                )
+            )
+    return errors
+
+
+def _claude_link_is_canonical(workspace: Path, state: _InstructionPathState) -> bool:
+    """True when *state* is exactly raw relative ``CLAUDE.md -> AGENTS.md``.
+
+    The raw link text must be exactly ``AGENTS.md`` and its resolution must
+    equal a regular same-directory ``AGENTS.md``.
+    """
+    import stat as _stat
+
+    if state.kind != "symlink" or state.raw_link != CANONICAL_CLAUDE_LINK_TARGET:
+        return False
+    agents = workspace / CANONICAL_AGENTS_NAME
+    try:
+        if not _stat.S_ISREG(os.lstat(agents).st_mode):
+            return False
+        return os.path.realpath(workspace / CANONICAL_CLAUDE_NAME) == os.path.realpath(
+            agents
+        )
+    except OSError:
+        return False
+
+
+def instruction_pair_refusal(workspace: Path) -> str | None:
+    """Return the refusal reason for a non-canonical pair, else ``None``.
+
+    Read-only: classifies both paths with ``lstat`` and never follows,
+    creates, repairs or mutates anything. Startup uses this before launch.
+    """
+    import stat as _stat
+
+    agents = workspace / CANONICAL_AGENTS_NAME
+    claude = workspace / CANONICAL_CLAUDE_NAME
+    try:
+        agents_st = os.lstat(agents)
+    except FileNotFoundError:
+        return f"{CANONICAL_AGENTS_NAME} is missing"
+    except OSError as exc:
+        return f"{CANONICAL_AGENTS_NAME} cannot be inspected: {exc}"
+    if not _stat.S_ISREG(agents_st.st_mode):
+        return f"{CANONICAL_AGENTS_NAME} is not a regular file"
+    try:
+        claude_st = os.lstat(claude)
+    except FileNotFoundError:
+        return f"{CANONICAL_CLAUDE_NAME} is missing"
+    except OSError as exc:
+        return f"{CANONICAL_CLAUDE_NAME} cannot be inspected: {exc}"
+    if not _stat.S_ISLNK(claude_st.st_mode):
+        return f"{CANONICAL_CLAUDE_NAME} is not a symlink to {CANONICAL_AGENTS_NAME}"
+    try:
+        raw = os.readlink(claude)
+    except OSError as exc:
+        return f"{CANONICAL_CLAUDE_NAME} link text cannot be read: {exc}"
+    if raw != CANONICAL_CLAUDE_LINK_TARGET:
+        return (
+            f"{CANONICAL_CLAUDE_NAME} link text is {raw!r}, expected "
+            f"{CANONICAL_CLAUDE_LINK_TARGET!r}"
+        )
+    try:
+        if os.path.realpath(claude) != os.path.realpath(agents):
+            return f"{CANONICAL_CLAUDE_NAME} does not resolve to {CANONICAL_AGENTS_NAME}"
+    except OSError as exc:
+        return f"{CANONICAL_CLAUDE_NAME} cannot be resolved: {exc}"
+    return None
+
+
+def canonical_instruction_pair_ok(workspace: Path) -> bool:
+    """True when the workspace holds the accepted canonical instruction pair."""
+    return instruction_pair_refusal(workspace) is None
+
+
+def write_canonical_instruction_pair(workspace: Path, content: str) -> None:
+    """Converge *workspace* on the canonical instruction pair (non-destructive).
+
+    Preflight classifies both paths without following links. Every required
+    preservation copy for both paths is written and verified before either
+    path is mutated. ``AGENTS.md`` becomes the regular canonical file holding
+    *content*; ``CLAUDE.md`` becomes the raw relative link ``AGENTS.md``.
+    Raises :class:`InstructionPairConflict` on unreadable/unsupported input or
+    a preservation-copy failure, leaving both paths unchanged.
+    """
+    workspace.mkdir(parents=True, exist_ok=True)
+    data = content.encode("utf-8")
+    agents = workspace / CANONICAL_AGENTS_NAME
+    claude = workspace / CANONICAL_CLAUDE_NAME
+    agents_state = _classify_instruction_path(agents)
+    claude_state = _classify_instruction_path(claude)
+
+    if agents_state.kind == "unsupported":
+        raise InstructionPairConflict(
+            agents,
+            agents_state.detail or "unsupported input",
+            operation=InstructionPairOperation.INPUT_INSPECTION,
+        )
+    if claude_state.kind == "unsupported":
+        raise InstructionPairConflict(
+            claude,
+            claude_state.detail or "unsupported input",
+            operation=InstructionPairOperation.INPUT_INSPECTION,
+        )
+
+    # ── Preservation barrier: ALL required copies for BOTH paths first ──
+    if agents_state.kind == "regular" and agents_state.data != data:
+        try:
+            _write_preservation_copy(agents, agents_state)
+        except OSError as exc:
+            raise InstructionPairConflict(
+                agents,
+                str(exc),
+                operation=InstructionPairOperation.PRESERVATION_COPY,
+            )
+    if claude_state.kind == "regular" and claude_state.data != data:
+        try:
+            _write_preservation_copy(claude, claude_state)
+        except OSError as exc:
+            # A completed AGENTS.md copy (if any) is retained and identified;
+            # only an owned incomplete CLAUDE.md copy is removed.
+            raise InstructionPairConflict(
+                claude,
+                str(exc),
+                operation=InstructionPairOperation.PRESERVATION_COPY,
+            )
+
+    # ── Live pair transaction: compensate BOTH paths on caught failure ──
+    failure_path = agents
+    failure_operation = InstructionPairOperation.CANONICAL_WRITE
+    try:
+        # AGENTS.md: regular canonical file.
+        if agents_state.kind == "absent":
+            _atomic_write_regular(agents, data)
+        elif agents_state.kind == "regular":
+            if agents_state.data != data:
+                _atomic_write_regular(agents, data, agents_state.mode or 0o644)
+        else:  # symlink — atomic replace, never write through it
+            _atomic_write_regular(agents, data)
+
+        # CLAUDE.md: raw relative link to AGENTS.md.
+        failure_path = claude
+        failure_operation = InstructionPairOperation.LINK_CREATION
+        if not _claude_link_is_canonical(workspace, claude_state):
+            _replace_with_canonical_claude_link(claude)
+    except Exception as exc:
+        rollback_errors = _restore_instruction_pair(
+            agents, agents_state, claude, claude_state,
+        )
+        raise InstructionPairConflict(
+            failure_path,
+            str(exc),
+            operation=failure_operation,
+            compensation_failures=rollback_errors,
+        ) from exc
+
+
+def _stage_canonical_claude_link(workspace: Path) -> Path:
+    """Create an owned sibling raw relative ``CLAUDE.md -> AGENTS.md`` link.
+
+    Returns the staging path. The staging name is reserved collision-safely via
+    ``os.symlink`` (``FileExistsError`` retries); the caller owns and must
+    clean up the returned sibling if it is not moved into place.
+    """
+    for _ in range(64):
+        candidate = workspace / (
+            f"{CANONICAL_CLAUDE_NAME}.happyranch-{_timestamp_suffix()}.lnk"
+        )
+        try:
+            os.symlink(CANONICAL_CLAUDE_LINK_TARGET, candidate)
+        except FileExistsError:
+            continue
+        return candidate
+    raise OSError("could not reserve an owned instruction-link staging name")
+
+
+def _replace_with_canonical_claude_link(claude: Path) -> None:
+    """Atomically replace *claude* with the canonical raw relative link.
+
+    The new link is fully created under an owned sibling first and only then
+    ``os.replace``d into place (``rename(2)``), so no unlink-before-success
+    window exists: a failed creation or replacement leaves the pre-existing
+    path — regular file, foreign link or absent — exactly as it was. On any
+    ``OSError`` the owned staging sibling is removed and the error propagates.
+    """
+    staged: Path | None = None
+    try:
+        staged = _stage_canonical_claude_link(claude.parent)
+        os.replace(staged, claude)
+    except OSError:
+        if staged is not None:
+            try:
+                staged.unlink()
+            except OSError:
+                pass
+        raise
+
+
 class ClaudeWorkspaceAdapter:
     """Bootstrap and maintain Claude Code workspaces."""
 
@@ -1817,12 +2323,14 @@ class ClaudeWorkspaceAdapter:
         system_prompt: str,
         repo_names: list[str] | None = None,
     ) -> None:
-        """Write CLAUDE.md to workspace with system prompt and context pointers.
+        """Write the canonical instruction pair with system prompt and pointers.
 
-        ``repo_names`` is accepted for API compatibility but is not listed
-        inline — CLAUDE.md points at the agent's authoritative
-        ``org/agents/<name>.md`` frontmatter (``AgentDef.repos``) so the repo
-        list doesn't drift between the two files.
+        The active-executor content is written to the regular canonical
+        ``AGENTS.md``; ``CLAUDE.md`` becomes the raw relative link
+        ``AGENTS.md``. ``repo_names`` is accepted for API compatibility but is
+        not listed inline — the canonical file points at the agent's
+        authoritative ``org/agents/<name>.md`` frontmatter (``AgentDef.repos``)
+        so the repo list doesn't drift between the two files.
         """
         _assert_no_reserved_headers_in_body(agent_name, system_prompt)
         workspace.mkdir(parents=True, exist_ok=True)
@@ -1847,7 +2355,7 @@ class ClaudeWorkspaceAdapter:
             ],
             skills_dir=".claude/skills",
         )
-        (workspace / "CLAUDE.md").write_text("\n".join(sections))
+        write_canonical_instruction_pair(workspace, "\n".join(sections))
 
     def _build_sections(
         self,
@@ -1997,7 +2505,7 @@ class CodexWorkspaceAdapter:
             ],
             skills_dir=".agents/skills",
         )
-        (workspace / "AGENTS.md").write_text("\n".join(sections))
+        write_canonical_instruction_pair(workspace, "\n".join(sections))
 
     def _copy_skills(self, workspace: Path) -> None:
         """No-op: canonical store + symlinks supersede wholesale copy."""

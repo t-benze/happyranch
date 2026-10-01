@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -486,6 +487,47 @@ ENGINEERING_PRE_ESCALATION_POLICY = AuthorityPolicy(
 POLICY_BY_TEAM: dict[str, AuthorityPolicy] = {
     ENGINEERING_PRE_ESCALATION_POLICY.team: ENGINEERING_PRE_ESCALATION_POLICY,
 }
+
+AUTHORITY_POLICY_V2_STARTER_WHAT_TO_ESCALATE = (
+    "Escalate when the next action requires a product or external-contract change, "
+    "significant architecture change, or substantial development effort beyond the "
+    "approved scope. Also escalate decisions explicitly reserved for the founder that "
+    "lack applicable authorization. Existing approval carries through ordinary "
+    "implementation and recovery within its scope."
+)
+AUTHORITY_POLICY_V2_STARTER_WHAT_NOT_TO_ESCALATE = (
+    "Continue implementation, debugging, review corrections, testing, CI waits, "
+    "evidence collection and worker reassignment within approved scope. Failed reviews, "
+    "retries, incomplete worker results and recoverable execution failures alone do not "
+    "require founder escalation. Continue to enforce the required review, QA and merge gates."
+)
+
+
+def _authority_policy_team_display(team: str) -> str:
+    tokens = [token for token in re.split(r"[_-]+", team) if token]
+    if not tokens:
+        raise ValueError("team must contain a displayable token")
+    return " ".join(
+        (chr(ord(token[0]) - 32) if "a" <= token[0] <= "z" else token[0])
+        + token[1:]
+        for token in tokens
+    )
+
+
+def project_authority_policy_v2_starter(team: str) -> dict[str, str]:
+    """Project the one server-owned neutral starter for an exact team."""
+    if (
+        not isinstance(team, str) or not team or len(team) > 128
+        or team != team.strip()
+    ):
+        raise ValueError("team must be a nonblank bounded string")
+    suffix = hashlib.sha256(team.encode("utf-8")).hexdigest()[:16]
+    return {
+        "policy_id": f"team-{suffix}-dual-text",
+        "title": f"{_authority_policy_team_display(team)} escalation policy",
+        "what_to_escalate": AUTHORITY_POLICY_V2_STARTER_WHAT_TO_ESCALATE,
+        "what_not_to_escalate": AUTHORITY_POLICY_V2_STARTER_WHAT_NOT_TO_ESCALATE,
+    }
 
 # Stable evaluator prompt identity. ``PROMPT_VERSION``/``PROMPT_DIGEST`` are
 # part of the candidate claim tuple; a prompt change re-derives every claim

@@ -316,6 +316,19 @@ self-registration) — then auto-configures with no separate approval.
 `happyranch assistant` tells the user to run `happyranch assistant init` when
 no assistant config exists.
 
+Register and repair also reconcile the canonical system-contract union into
+both `<workspace>/.agents/skills/` and `<workspace>/.claude/skills/`. The
+runtime-global assistant has no repository or org custom-skill context, so the
+exact set is `dream`, `jobs`, `start-task`, `thread`, `todos`, and
+`workspace-cleanup`. Repeated repair preserves the instruction pair, config,
+knowledge, learnings, logs, and other assistant workspace content. Existing
+corrupt canonical packages and unsafe, non-link, or wrong-target skill entries
+are detected by a read-only preflight before any workspace write. Refusal leaves
+both skill roots, instructions, metadata, knowledge, learnings, logs, and config
+unchanged. A later materializer-only failure removes only links and empty parent
+directories that were absent before that call; bootstrap never reconstructs a
+corrupt package or rewrites/removes pre-existing operator content on refusal.
+
 entry keyed by the profile name before launch (THR-107 seq155). Custom-adapter
 profiles (``command_adapter_id: custom-adapter:<id>``) are an exception — they
 use the exact founder-APPROVED, hash-verified absolute adapter executable as
@@ -392,6 +405,76 @@ recovery. `false` prevents those action admissions and affects later admissions
 only; it cannot revoke an already admitted call. Malformed values retain the
 shared loader's existing error behavior.
 
+The daemon-composed daily brief and manual dispatch both follow the ONE shared
+`workspace-cleanup` TASK system contract (`requires_repo=false`; source
+`runtime/skills/bundled/workspace-cleanup/SKILL.md`), whose exact manual first
+line is `HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)` (an unmarked
+manual request is inventory-only). Its bundled read-only
+`scripts/check_path_use.py` applies the approved THR-259 seq171/seq185
+observation: an authoritative recorded terminal status plus a fresh complete
+same-user process scan replaces separate live-session/task-to-process identity,
+and a fixed login/session daemon (sshd-session, systemd --user, (sd-pam),
+ssh-agent, gpg-agent, gcr-ssh-agent) qualifies only by exact readable process
+name AND exact bounded cgroup role and is deliberately uninspected; any other
+unreadable same-user process is `unknown` and skips.
+
+The shared procedure executes that scanner only through a task-bound,
+host-visible HappyRanch job and validates a closed-schema, non-truncated receipt
+binding task/session, actual job, stored execution identity, terminal result,
+complete output totals, and scanner coverage; direct in-session fallback is
+forbidden. Candidate-related task and trigger evidence uses complete paging
+rather than an org-wide history cap. PR evidence is completely paginated and
+repeated, with every open, closed-unmerged, duplicate, changing, conflicting,
+or malformed result refusing. Preservation accepts the existing durable ref,
+an owning origin task branch whose head equals or descends from the candidate,
+an owning-task merged PR, or an any-task merged PR whose confirmed head
+contains the candidate. An existing owning branch is authoritative:
+non-containment or failed containment evidence refuses without merged-PR
+fallback. The last route requires complete stable double-read
+discovery, merged/default-branch confirmation, and a separate complete stable
+compare; discovery alone and other-task unmerged PRs never count, while an
+owning-branch unmerged PR still refuses. Merged integration may not preserve
+original commit topology. Dirty whole worktrees remain protected, with the sole narrow exception
+of a literal root `.venv`/`node_modules` cache whose removal leaves tracked
+source bytes and Git status unchanged.
+The containing worktree must be at the owning primary's exact registered
+`.claude/worktrees/<TASK>` location on `task/<TASK>`. A complete no-follow
+`lstat` walk before and at action time refuses nested mounts, cross-device or
+foreign-owned entries, protected descendants, incomplete evidence, and drift.
+Root-plus-descendant byte accounting precedes action; a success receipt requires
+literal absence and unchanged protected-path identities.
+
+## Terminal task-worktree reclamation
+
+Terminal task-worktree reclamation has no configuration key or cadence. On the
+approved ordinary `completed`, `failed`, and `cancelled` writer seams, after
+durable terminal state and applicable process/session/control/job teardown, the
+runtime makes one bounded attempt for only the assigned registered agent's
+literal `repos/happyranch/.claude/worktrees/<task-id>` candidate. It requires a
+canonical non-symlink same-device primary and worktree, exact Git registration
+and branch identity, clean status, durable remote containment, no open or
+closed-unmerged PR, no live session/control/PID or shared-scanner process reference, no recorded
+`worktree-deferred:` risk, and a shared deadline. Unknown, unavailable,
+malformed, timed-out, dirty, unpublished, live, foreign, or ambiguous evidence
+preserves the worktree.
+
+The process gate loads the bundled `workspace-cleanup` scanner by explicit file
+path, so its seq171/seq185 exact name-plus-expected-cgroup exception table is
+the single source for both paths. Root-owned processes are out of scope; any
+other unreadable same-user process is uncertain; a positive
+cwd/root/exe/maps/fd reference is live. `run_step` already executes in the
+queue's worker thread, and the terminal hook retains one five-second total
+deadline.
+
+Successful removal is literal non-force `git worktree remove`; no branch is
+deleted. A failed gate or removal is a typed/logged preservation outcome and
+never changes terminal semantics or schedules a retry. `superseded`,
+`blocked_on_job`, accepted/restart completion-recovery settlement, legacy
+normalization, and historical cleanup remain outside this mechanism. This is
+separate from `workspace_cleanup.enabled` and
+`workspace_cleanup.reclamation_actions_enabled`; neither switch expands or
+disables the terminal hook.
+
 ## Agent Configuration: Single Source of Truth (THR-095)
 
 **Founder-ratified invariant (THR-095 option B):** Every piece of agent
@@ -414,8 +497,8 @@ are now read and written **exclusively** through ``AgentDef``:
 The workspace ``agent.yaml`` file is **no longer read or written** by any
 org-agent path. A one-shot startup migration (``migrate_agent_yaml_to_frontmatter``,
 idempotent, runs on every daemon start) copies any residual ``agent.yaml``
-values into their owning ``.md`` exactly once, then the ``agent.yaml`` is
-left untouched. The system assistant (``runtime/system_assistant.py``) is a
+values into their owning ``.md`` exactly once, then deletes ``agent.yaml`` and
+writes the ``.agent_yaml_consumed`` sentinel. The system assistant (``runtime/system_assistant.py``) is a
 **separate subsystem** and writes its own ``agent.yaml`` directly — it has no
 ``org/agents/`` file and is unaffected.
 
@@ -578,6 +661,9 @@ happyranch web [--no-open]
 The full founder-facing CLI is documented in `skills/happyranch/SKILL.md`.
 
 ## Running Tests
+
+For where new test files belong, see the forward-only
+[test-placement rule](project-layout.md#test-placement).
 
 ```bash
 uv run pytest tests/ -v -n 4              # unit tests only (default; -n 4 = pytest-xdist parallel)
