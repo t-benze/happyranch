@@ -6,6 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import get_args
 
 from runtime.models import (
     AUTHORITY_POLICY_V2_CONTRACT_ID,
@@ -13,7 +14,9 @@ from runtime.models import (
     AuthorityPolicyActivation,
     AuthorityPolicyRelease,
     AuthorityPolicySelector,
+    AuthorityPolicyV2Assessment,
     AuthorityPolicyV2Activation,
+    AuthorityPolicyV2ManagerSelfEvaluation,
     AuthorityPolicyV2Release,
     AuthorityPolicyV2SessionBinding,
     authority_policy_v2_contract_digest,
@@ -416,6 +419,104 @@ def render_active_team_policy_v2(
     contract_digest = authority_policy_v2_contract_digest()
     if release.contract_digest != contract_digest:
         raise ActiveAuthorityPolicyError("v2 release contract digest is incoherent")
+    assessment_fields = AuthorityPolicyV2Assessment.model_fields
+    applicability_values = get_args(assessment_fields["applicability"].annotation)
+    (uncertainty_code_literal,) = get_args(
+        assessment_fields["uncertainty_codes"].annotation
+    )
+    uncertainty_code_values = get_args(uncertainty_code_literal)
+    unbound_manager_decision = root_task_id is None or manager_session_id is None
+    if unbound_manager_decision:
+        bound_provider_id = provider_id or "<manager-decision-provider-id>"
+        bound_executor_kind = (
+            executor_kind or provider_id or "<manager-decision-executor-kind>"
+        )
+        bound_model_id = model_id or "<manager-decision-model-id>"
+        bound_root_task_id = root_task_id or "<manager-decision-root-task-id>"
+        bound_manager_session_id = (
+            manager_session_id or "<manager-decision-session-id>"
+        )
+    else:
+        bound_provider_id = provider_id or "unknown"
+        bound_executor_kind = executor_kind or provider_id or "unknown"
+        bound_model_id = model_id or "default"
+        bound_root_task_id = root_task_id
+        bound_manager_session_id = manager_session_id
+    self_evaluation_example = AuthorityPolicyV2ManagerSelfEvaluation(
+        activation_epoch=selector.selector_epoch,
+        activation_id=activation.id,
+        contract_digest=contract_digest,
+        contract_id=AUTHORITY_POLICY_V2_CONTRACT_ID,
+        contract_version=AUTHORITY_POLICY_V2_CONTRACT_VERSION,
+        executor_kind=bound_executor_kind,
+        manager_session_id=bound_manager_session_id,
+        model_id=bound_model_id,
+        policy_digest=release.policy_digest,
+        policy_version=release.version,
+        provider_id=bound_provider_id,
+        release_id=release.release_id,
+        root_task_id=bound_root_task_id,
+        what_not_to_escalate={
+            "applicability": "applies",
+            "confidence": 100,
+            "uncertainty_codes": [],
+        },
+        what_to_escalate={
+            "applicability": "does_not_apply",
+            "confidence": 100,
+            "uncertainty_codes": [],
+        },
+    ).model_dump(mode="json")
+    example_json = json.dumps(
+        self_evaluation_example, ensure_ascii=False, indent=2, sort_keys=True,
+    )
+    applicability_json = json.dumps(applicability_values, separators=(",", ":"))
+    uncertainty_codes_json = json.dumps(
+        uncertainty_code_values, separators=(",", ":"),
+    )
+    if unbound_manager_decision:
+        completion_guidance = (
+            "Manager-decision completion shape reference: include one "
+            "`manager_self_evaluation` object beside `decision`, with no rationale, "
+            "prose, transcript, credentials, or secrets. "
+            f"Contract `{AUTHORITY_POLICY_V2_CONTRACT_ID}` "
+            f"`{AUTHORITY_POLICY_V2_CONTRACT_VERSION}` digest `{contract_digest}`. "
+            "Required fields: contract_id, contract_version, contract_digest, "
+            "root_task_id, manager_session_id, release_id, policy_version, "
+            "policy_digest, activation_id, activation_epoch, provider_id, "
+            "executor_kind, model_id, what_to_escalate, and what_not_to_escalate. "
+            "There is no clause id, canonical continuation phrase, or keyword unlock. "
+            "This context has no bound manager-decision identity. Do not submit a "
+            "`manager_self_evaluation` from this context. A `manager_self_evaluation` "
+            "is submitted only in a manager-decision task's report-completion, using "
+            "the root_task_id/manager_session_id bound in that task's policy block. "
+            "`manager_self_evaluation` is a top-level key in that report-completion "
+            "JSON file, a sibling of `decision`, not inside `decision`.\n\n"
+            "Exact required `manager_self_evaluation` object shape and types only; "
+            "the placeholder manager-decision identity tokens are not values to copy:\n"
+        )
+    else:
+        completion_guidance = (
+            "Completion requirement: include one `manager_self_evaluation` object "
+            "beside your `decision`, with no rationale, prose, transcript, credentials, "
+            "or secrets. "
+            f"Contract `{AUTHORITY_POLICY_V2_CONTRACT_ID}` "
+            f"`{AUTHORITY_POLICY_V2_CONTRACT_VERSION}` digest `{contract_digest}`. "
+            "Required fields: contract_id, contract_version, contract_digest, "
+            "root_task_id, manager_session_id, release_id, policy_version, "
+            "policy_digest, activation_id, activation_epoch, provider_id, "
+            "executor_kind, model_id, what_to_escalate, and what_not_to_escalate. "
+            "There is no clause id, canonical continuation phrase, or keyword unlock. "
+            "Bound manager runtime identity: provider_id="
+            f"`{bound_provider_id}`, executor_kind=`{bound_executor_kind}`, "
+            f"model_id=`{bound_model_id}`, root_task_id=`{bound_root_task_id}`, "
+            f"manager_session_id=`{bound_manager_session_id}`. "
+            "`manager_self_evaluation` must be a top-level key in the "
+            "report-completion JSON file, a sibling of `decision`, not inside "
+            "`decision`.\n\n"
+            "Exact required `manager_self_evaluation` object shape, filled with this "
+            "launch's bound values:\n"
+        )
     return (
         f"{_BEGIN}\n{RESERVED_TEAM_POLICY_HEADER}\n"
         f"Contract: `{AUTHORITY_POLICY_V2_CONTRACT_ID}` "
@@ -430,18 +531,15 @@ def render_active_team_policy_v2(
         "otherwise conflicting, escalate. Only a clear `what_to_escalate` "
         "`does_not_apply` together with a clear `what_not_to_escalate` `applies` "
         "permits continuing the same root.\n\n"
-        "Completion requirement: include one `manager_self_evaluation` object beside "
-        "your `decision`, with no rationale, prose, transcript, credentials, or secrets. "
-        f"Contract `{AUTHORITY_POLICY_V2_CONTRACT_ID}` "
-        f"`{AUTHORITY_POLICY_V2_CONTRACT_VERSION}` digest `{contract_digest}`. Required "
-        "fields: contract_id, contract_version, contract_digest, root_task_id, "
-        "manager_session_id, release_id, policy_version, policy_digest, activation_id, "
-        "activation_epoch, provider_id, executor_kind, model_id, what_to_escalate, and "
-        "what_not_to_escalate. There is no clause id, canonical continuation phrase, or "
-        "keyword unlock. Bound manager runtime identity: provider_id="
-        f"`{provider_id or 'unknown'}`, executor_kind=`{executor_kind or provider_id or 'unknown'}`, "
-        f"model_id=`{model_id or 'default'}`, root_task_id=`{root_task_id or 'unknown'}`, "
-        f"manager_session_id=`{manager_session_id or 'unknown'}`.\n{_END}\n"
+        f"{completion_guidance}"
+        f"```json\n{example_json}\n```\n"
+        "The assessment values shown demonstrate the shape, not a default: set both "
+        "assessments honestly and do not copy the continue-shaped values unless they "
+        "are true. Escalation is assessed as `applies` when it applies. "
+        f"Allowed applicability values: `{applicability_json}`. Allowed "
+        f"uncertainty_codes values: `{uncertainty_codes_json}`. `confidence` must be "
+        "an integer from 0 through 100. Confidence below 80 or any uncertainty code "
+        f"makes the assessment fail closed (escalate).\n{_END}\n"
     )
 
 
