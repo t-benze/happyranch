@@ -286,13 +286,24 @@ def test_procedure_uses_the_documented_gate_commands(body):
     assert "_wc_gate_block" not in procedure
     assert "eval " not in procedure
     names = re.findall(r"^\s*# gate (.+)$", _shipped_gate_text(body), re.M)
-    assert len(names) >= 12, names
-    for required in ("workspace-scope", "canonical-shape", "non-primary", "registration",
-                     "ownership", "filesystem-ownership", "protected-task",
-                     "not-symlink", "same-filesystem", "clean",
-                     "durable-preservation-and-pr", "retention-age",
-                     "current-use-scan"):
-        assert required in names
+    assert names == [
+        "workspace-scope", "canonical-shape", "non-primary", "ownership",
+        "filesystem-ownership", "protected-task", "retention-age",
+        "not-symlink", "same-filesystem", "cache-immediate-parent-manifest",
+        "registration", "clean", "cache-gitignored-and-untracked",
+        "durable-preservation-and-pr", "current-use-scan",
+        "recursive-boundary",
+    ]
+
+
+def test_every_gate_sets_its_own_specific_refusal_reason(body):
+    gates = _shipped_gate_map(body)
+    assert gates
+    for gate_id, commands in gates.items():
+        if gate_id == "cache-gitignored-and-untracked":
+            assert 'WC_GATE_REASON="cache_not_gitignored"' in commands
+        else:
+            assert f'WC_GATE_REASON="${{reason_prefix}}:{gate_id}"' in commands
 
 
 def _shipped_gate_map(body: str) -> dict:
@@ -425,6 +436,7 @@ def _write_stubs(bin_dir: Path) -> None:
         "    [ \"${WC_TASKS_FAIL:-0}\" = \"1\" ] && exit 1\n"
         "    n=$(cat \"$WC_TASKS_COUNT\"); n=$((n+1)); echo \"$n\" > \"$WC_TASKS_COUNT\"\n"
         "    if [ \"$n\" -gt 1 ] && [ \"${WC_ACTION_DRIFT:-}\" = replace-cache ]; then mv \"$WC_REAL_CANDIDATE\" \"$WC_REAL_CANDIDATE.before\" && mkdir \"$WC_REAL_CANDIDATE\"; fi\n"
+        "    if [ \"$n\" -gt 1 ] && [ \"${WC_ACTION_DRIFT:-}\" = dirty-worktree ]; then printf 'pre-action drift\\n' > \"$WC_REAL_CANDIDATE/pre-action-dirty.txt\"; fi\n"
         "    if [ \"$n\" -gt 1 ] && [ -n \"$WC_TASKS_SECOND\" ]; then exec cat \"$WC_TASKS_SECOND\"; fi\n"
         "    exec cat \"$WC_TASKS_FIRST\" ;;\n"
         "  audit)\n"
@@ -878,14 +890,14 @@ def test_f5_procedure_refuses_before_action_for_each_branch(tmp_path, body):
                        candidate=fx["dirty"], containing=fx["dirty"],
                        task_map=dirty_map,
                        audit=_occurrences("TASK-OCC-1", "TASK-OCC-2"))
-    assert r["rc"] == 2 and "eligibility_gate" in r["stdout"], r
+    assert r["rc"] == 2 and '"reason":"gate:clean"' in r["stdout"], r
     assert "worktree remove" not in r["git_log"]
 
     # R4: an UNKNOWN real scan (this sandbox's PID1 is not the host init) is a
     # refusal, never a positive control -- the previous unconditional removal is
     # exactly what this asserts can no longer happen.
     r = run(task_map=good_map, audit=_occurrences("TASK-OCC-1", "TASK-OCC-2"))
-    assert r["rc"] == 2 and "eligibility_gate" in r["stdout"], r
+    assert r["rc"] == 2 and '"reason":"gate:current-use-scan"' in r["stdout"], r
     assert "worktree remove" not in r["git_log"]
     assert fx["eligible"].exists()
     assert _git("worktree", "list", "--porcelain",
@@ -980,6 +992,79 @@ def test_r4_exact_marker_two_distinct_terminal_joins_runs_literal_action(
     assert not fx["eligible"].exists()
     assert result["git_log"].count("worktree remove") == 1
     assert (tmp_path / "scan.log").read_text().splitlines() == ["scan"] * 4
+    assert (tmp_path / "tasks-count").read_text().strip() == "2"
+    assert (tmp_path / "trigger-count").read_text().strip() == "2"
+    assert result["git_log"].count("worktree list --porcelain") == 2
+    assert result["gh_log"].count("api graphql") == 4
+
+
+def test_specific_gate_reasons_and_cheap_retention_precedes_expensive_probes(
+        tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    agent = "dev_agent"
+    occurrences = _occurrences("TASK-OCC-1", "TASK-OCC-2")
+    peers = {
+        "TASK-OCC-1": _terminal_task(agent),
+        "TASK-OCC-2": _terminal_task(agent),
+    }
+
+    dirty_root = tmp_path / "dirty"
+    dirty_root.mkdir()
+    dirty = _run_procedure(
+        dirty_root, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["dirty"], containing=fx["dirty"],
+        task_map={**peers, "TASK-DIRTY": _terminal_task(agent)},
+        audit=occurrences,
+    )
+    assert dirty["rc"] == 2
+    assert '"reason":"gate:clean"' in dirty["stdout"]
+
+    young_root = tmp_path / "young"
+    young_root.mkdir()
+    young = _run_procedure(
+        young_root, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map={**peers, "TASK-ELIGIBLE": _terminal_task(agent, age_days=1)},
+        audit=occurrences,
+    )
+    assert young["rc"] == 2
+    assert '"reason":"gate:retention-age"' in young["stdout"]
+    assert (young_root / "tasks-count").read_text().strip() == "0"
+    assert (young_root / "trigger-count").read_text().strip() == "0"
+    assert "worktree list --porcelain" not in young["git_log"]
+    assert young["gh_log"] == ""
+    assert not (young_root / "scan.log").exists()
+
+    # Make the worktree dirty only during the second authoritative join so the
+    # pre-action pass names itself.
+    pre_action_root = tmp_path / "pre-action"
+    pre_action_root.mkdir()
+    pre_action = _run_procedure(
+        pre_action_root, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map={**peers, "TASK-ELIGIBLE": _terminal_task(agent)},
+        audit=occurrences, scan_state="clear_observation",
+        action_drift="dirty-worktree",
+    )
+    assert pre_action["rc"] == 2
+    assert '"reason":"pre_action_gate:clean"' in pre_action["stdout"]
+    assert "worktree remove" not in pre_action["git_log"]
+
+    durable_root = tmp_path / "durable"
+    durable_root.mkdir()
+    _git("add", "-A", cwd=fx["eligible"])
+    _git("commit", "-m", "local only", cwd=fx["eligible"])
+    durable = _run_procedure(
+        durable_root, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map={**peers, "TASK-ELIGIBLE": _terminal_task(agent)},
+        audit=occurrences,
+    )
+    assert durable["rc"] == 2
+    assert '"reason":"gate:durable-preservation-and-pr"' in durable["stdout"]
 
 
 @pytest.mark.parametrize(

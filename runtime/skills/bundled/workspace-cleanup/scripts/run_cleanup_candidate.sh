@@ -1174,16 +1174,38 @@ print(r)' "$CANDIDATE" "$CONTAINING")" || return 1
 }
 
 _wc_run_gates() {
+  local reason_prefix="${1:?reason prefix}"
 # eligibility-commands:begin
   # gate workspace-scope
   python3 -c 'import os,sys
 c,k,p,w=map(os.path.abspath,sys.argv[1:5]); t=sys.argv[5]; repo_parent=os.path.join(w,"repos")
 ok=(all(x==os.path.realpath(x) for x in (c,k,p,w)) and os.path.dirname(p)==repo_parent and os.path.basename(p) not in ("",".") and k==os.path.join(p,".claude","worktrees",t) and (c==k or (os.path.basename(c) in ("node_modules",".venv") and os.path.dirname(c)==k)))
-raise SystemExit(0 if ok else 1)' "$CANDIDATE" "$CONTAINING" "$PRIMARY" "$WORKSPACE" "$TASK" || return 1
+raise SystemExit(0 if ok else 1)' "$CANDIDATE" "$CONTAINING" "$PRIMARY" "$WORKSPACE" "$TASK" || { WC_GATE_REASON="${reason_prefix}:workspace-scope"; export WC_GATE_REASON; return 1; }
   # gate canonical-shape
-  python3 -c 'import os,sys; c=os.path.abspath(sys.argv[1]); w=os.path.abspath(sys.argv[2]); cr=os.path.realpath(c); wr=os.path.realpath(w); cache=os.path.basename(c) in ("node_modules",".venv"); immediate=os.path.dirname(c)==w; sys.exit(0 if c==cr and w==wr and (c==w or (cache and immediate and c!=w)) else 1)' "$CANDIDATE" "$CONTAINING" || return 1
+  python3 -c 'import os,sys; c=os.path.abspath(sys.argv[1]); w=os.path.abspath(sys.argv[2]); cr=os.path.realpath(c); wr=os.path.realpath(w); cache=os.path.basename(c) in ("node_modules",".venv"); immediate=os.path.dirname(c)==w; sys.exit(0 if c==cr and w==wr and (c==w or (cache and immediate and c!=w)) else 1)' "$CANDIDATE" "$CONTAINING" || { WC_GATE_REASON="${reason_prefix}:canonical-shape"; export WC_GATE_REASON; return 1; }
   # gate non-primary
-  python3 -c 'import os,sys; sys.exit(0 if os.path.realpath(sys.argv[1])!=os.path.realpath(sys.argv[2]) else 1)' "$CONTAINING" "$PRIMARY" || return 1
+  python3 -c 'import os,sys; sys.exit(0 if os.path.realpath(sys.argv[1])!=os.path.realpath(sys.argv[2]) else 1)' "$CONTAINING" "$PRIMARY" || { WC_GATE_REASON="${reason_prefix}:non-primary"; export WC_GATE_REASON; return 1; }
+  # gate ownership
+  python3 -c 'import json,os,sys; d=json.load(open(os.environ["TASK_JSON"])); sys.exit(0 if d.get("assigned_agent")==sys.argv[1] else 1)' "$AGENT" || { WC_GATE_REASON="${reason_prefix}:ownership"; export WC_GATE_REASON; return 1; }
+  # gate filesystem-ownership
+  python3 -c 'import os,sys; uid=os.getuid(); sys.exit(0 if os.stat(sys.argv[1],follow_symlinks=False).st_uid==uid and os.stat(sys.argv[2],follow_symlinks=False).st_uid==uid else 1)' "$CANDIDATE" "$CONTAINING" || { WC_GATE_REASON="${reason_prefix}:filesystem-ownership"; export WC_GATE_REASON; return 1; }
+  # gate protected-task
+  python3 -c 'import json,os,sys; d=json.load(open(os.environ["TASK_JSON"])); text=" ".join(str(d.get(k) or "") for k in ("output_summary","note")); sys.exit(1 if "worktree-deferred:" in text else 0)' || { WC_GATE_REASON="${reason_prefix}:protected-task"; export WC_GATE_REASON; return 1; }
+  # gate retention-age
+  python3 -c 'import datetime,json,os,sys; d=json.load(open(os.environ["TASK_JSON"])); ca=d.get("completed_at"); term=("completed","failed","cancelled","superseded"); sys.exit(1) if d.get("status") not in term or not ca else None; t=datetime.datetime.fromisoformat(str(ca).replace("Z","+00:00")); t=(t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)); age=(datetime.datetime.now(datetime.timezone.utc)-t).total_seconds(); sys.exit(0 if age>=float(sys.argv[1]) else 1)' "$AGE_SECONDS" || { WC_GATE_REASON="${reason_prefix}:retention-age"; export WC_GATE_REASON; return 1; }
+  # gate not-symlink
+  python3 -c 'import os,pathlib,sys; p=pathlib.Path(os.path.abspath(sys.argv[1])); w=os.path.abspath(sys.argv[2]).rstrip("/"); anc=[str(p)]+[str(p.parents[i]) for i in range(len(p.parents))]; ins=[a for a in anc if a==w or a.startswith(w+"/")]; sys.exit(0 if all(not os.path.islink(a) for a in ins) else 1)' "$CANDIDATE" "$WORKSPACE" || { WC_GATE_REASON="${reason_prefix}:not-symlink"; export WC_GATE_REASON; return 1; }
+  # gate same-filesystem
+  python3 -c 'import os,sys; sys.exit(0 if os.stat(sys.argv[1]).st_dev==os.stat(sys.argv[2]).st_dev else 1)' "$CANDIDATE" "$PRIMARY" || { WC_GATE_REASON="${reason_prefix}:same-filesystem"; export WC_GATE_REASON; return 1; }
+  # gate cache-immediate-parent-manifest
+  if _wc_is_cache; then
+    test -f "$(dirname "$CANDIDATE")/package-lock.json" || test -f "$(dirname "$CANDIDATE")/pnpm-lock.yaml" || test -f "$(dirname "$CANDIDATE")/yarn.lock" || test -f "$(dirname "$CANDIDATE")/uv.lock" || test -f "$(dirname "$CANDIDATE")/poetry.lock" || test -f "$(dirname "$CANDIDATE")/requirements.txt" || { WC_GATE_REASON="${reason_prefix}:cache-immediate-parent-manifest"; export WC_GATE_REASON; return 1; }
+  fi
+  if [ "$reason_prefix" = "gate" ]; then
+    # The first authoritative peer/history join follows only the cheap,
+    # candidate-local gates and still precedes every expensive gate.
+    if ! _wc_join; then return 2; fi
+  fi
   # gate registration
   python3 -c 'import os,subprocess,sys
 primary,want,task=sys.argv[1:]
@@ -1201,38 +1223,24 @@ def common(path):
  q=subprocess.run(["git","-C",path,"rev-parse","--git-common-dir"],capture_output=True,text=True)
  if q.returncode or len(q.stdout.splitlines())!=1: raise SystemExit(1)
  value=q.stdout.strip(); return os.path.realpath(value if os.path.isabs(value) else os.path.join(path,value))
-raise SystemExit(0 if common(primary)==common(want) else 1)' "$PRIMARY" "$CONTAINING" "$TASK" || return 1
-  # gate ownership
-  python3 -c 'import json,os,sys; d=json.load(open(os.environ["TASK_JSON"])); sys.exit(0 if d.get("assigned_agent")==sys.argv[1] else 1)' "$AGENT" || return 1
-  # gate filesystem-ownership
-  python3 -c 'import os,sys; uid=os.getuid(); sys.exit(0 if os.stat(sys.argv[1],follow_symlinks=False).st_uid==uid and os.stat(sys.argv[2],follow_symlinks=False).st_uid==uid else 1)' "$CANDIDATE" "$CONTAINING" || return 1
-  # gate protected-task
-  python3 -c 'import json,os,sys; d=json.load(open(os.environ["TASK_JSON"])); text=" ".join(str(d.get(k) or "") for k in ("output_summary","note")); sys.exit(1 if "worktree-deferred:" in text else 0)' || return 1
-  # gate not-symlink
-  python3 -c 'import os,pathlib,sys; p=pathlib.Path(os.path.abspath(sys.argv[1])); w=os.path.abspath(sys.argv[2]).rstrip("/"); anc=[str(p)]+[str(p.parents[i]) for i in range(len(p.parents))]; ins=[a for a in anc if a==w or a.startswith(w+"/")]; sys.exit(0 if all(not os.path.islink(a) for a in ins) else 1)' "$CANDIDATE" "$WORKSPACE" || return 1
-  # gate same-filesystem
-  python3 -c 'import os,sys; sys.exit(0 if os.stat(sys.argv[1]).st_dev==os.stat(sys.argv[2]).st_dev else 1)' "$CANDIDATE" "$PRIMARY" || return 1
+raise SystemExit(0 if common(primary)==common(want) else 1)' "$PRIMARY" "$CONTAINING" "$TASK" || { WC_GATE_REASON="${reason_prefix}:registration"; export WC_GATE_REASON; return 1; }
   # gate clean
   if ! _wc_is_cache; then
-    python3 -c 'import subprocess,sys; p=subprocess.run(["git","-C",sys.argv[1],"status","--porcelain"],capture_output=True,text=True); sys.exit(1 if p.returncode or p.stdout else 0)' "$CONTAINING" || return 1
+    python3 -c 'import subprocess,sys; p=subprocess.run(["git","-C",sys.argv[1],"status","--porcelain"],capture_output=True,text=True); sys.exit(1 if p.returncode or p.stdout else 0)' "$CONTAINING" || { WC_GATE_REASON="${reason_prefix}:clean"; export WC_GATE_REASON; return 1; }
   fi
-  # gate durable-preservation-and-pr
-  _wc_git_preserved || return 1
-  # gate retention-age
-  python3 -c 'import datetime,json,os,sys; d=json.load(open(os.environ["TASK_JSON"])); ca=d.get("completed_at"); term=("completed","failed","cancelled","superseded"); sys.exit(1) if d.get("status") not in term or not ca else None; t=datetime.datetime.fromisoformat(str(ca).replace("Z","+00:00")); t=(t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)); age=(datetime.datetime.now(datetime.timezone.utc)-t).total_seconds(); sys.exit(0 if age>=float(sys.argv[1]) else 1)' "$AGE_SECONDS" || return 1
-  # gate cache-immediate-parent-manifest
+  # gate cache-gitignored-and-untracked
   if _wc_is_cache; then
-    test -f "$(dirname "$CANDIDATE")/package-lock.json" || test -f "$(dirname "$CANDIDATE")/pnpm-lock.yaml" || test -f "$(dirname "$CANDIDATE")/yarn.lock" || test -f "$(dirname "$CANDIDATE")/uv.lock" || test -f "$(dirname "$CANDIDATE")/poetry.lock" || test -f "$(dirname "$CANDIDATE")/requirements.txt" || return 1
-    # gate cache-gitignored-and-untracked
     if ! _wc_cache_is_gitignored; then
       WC_GATE_REASON="cache_not_gitignored"; export WC_GATE_REASON
       return 1
     fi
   fi
+  # gate durable-preservation-and-pr
+  _wc_git_preserved || { WC_GATE_REASON="${reason_prefix}:durable-preservation-and-pr"; export WC_GATE_REASON; return 1; }
   # gate current-use-scan
-  _wc_scan_job || return 1
+  _wc_scan_job || { WC_GATE_REASON="${reason_prefix}:current-use-scan"; export WC_GATE_REASON; return 1; }
   # gate recursive-boundary
-  _wc_snapshot_tree || return 1
+  _wc_snapshot_tree || { WC_GATE_REASON="${reason_prefix}:recursive-boundary"; export WC_GATE_REASON; return 1; }
 # eligibility-commands:end
   return 0
 }
@@ -1240,7 +1248,8 @@ raise SystemExit(0 if common(primary)==common(want) else 1)' "$PRIMARY" "$CONTAI
 _wc_join() {
   # R6.5 reads the authoritative same-owner task set through complete keyset
   # pages. R7 independently reads the filtered trigger audit through complete
-  # keyset pages. Called before gates and again immediately before action.
+  # keyset pages. The first call follows the cheap candidate-local gates; the
+  # second remains immediately before the full pre-action gate pass.
   local tasks="$WC_TMP/peer-tasks.json" trigger="$WC_TMP/trigger-audit.json"
   local ids="$WC_TMP/peer-ids.tsv" tid kind join_digest
   if ! happyranch tasks --org "$ORG" --agent "$AGENT" --limit 1000 \
@@ -1317,7 +1326,7 @@ run_cleanup_candidate() {
     TASK-*) ;;
     *) { _wc_refuse "task_mapping"; return 2; } ;;
   esac
-  local branch
+  local branch gate_rc
   if ! branch="$(git -C "$CONTAINING" rev-parse --abbrev-ref HEAD 2>/dev/null)"; then
     { _wc_refuse "containing_unreadable"; return 2; }
   fi
@@ -1345,16 +1354,21 @@ run_cleanup_candidate() {
   if _wc_is_cache; then AGE_SECONDS=86400; else AGE_SECONDS=604800; fi
   export AGE_SECONDS
 
-  if ! _wc_join; then return 2; fi
   WC_GATE_REASON=""; export WC_GATE_REASON
-  if ! _wc_run_gates; then
+  if _wc_run_gates gate; then
+    :
+  else
+    gate_rc=$?
+    if [ "$gate_rc" -eq 2 ]; then return 2; fi
     { _wc_refuse "${WC_GATE_REASON:-eligibility_gate}"; return 2; }
   fi
   if ! _wc_join; then return 2; fi
   # The same-context fresh scan and every other gate immediately precede the
   # literal action. Unknown/refusal never falls through to mutation.
   WC_GATE_REASON=""; export WC_GATE_REASON
-  if ! _wc_run_gates; then
+  if _wc_run_gates pre_action_gate; then
+    :
+  else
     { _wc_refuse "${WC_GATE_REASON:-pre_action_eligibility_gate}"; return 2; }
   fi
 

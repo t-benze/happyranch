@@ -414,6 +414,43 @@ def test_v2_hook_missing_diagnostic_refuses_durably(tmp_path):
 # ── mid-stage failure: refusal-only, prior residue retained ──────────────
 
 
+def test_v2_hook_records_non_success_final_status_before_unchanged_refusal(
+    tmp_path,
+):
+    """A bounded final return is visible without changing refusal semantics."""
+    carrier = {
+        "_error_code": "malformed_output",
+        "payload_digest": "a" * 64,
+    }
+    store, _, _, row, attempt = _admitted(tmp_path, carrier=carrier)
+    db = store._db
+    db.bind_authority_policy_v2_process_boot_id(attempt.origin_boot_id)
+
+    outcome, _ = _run_hook(store, row, queue=_RecordingQueue())
+
+    assert outcome == HOOK_V2_REFUSED
+    capture_failures = [
+        audit["payload"]
+        for audit in db.get_audit_logs(TASK_ID)
+        if audit["action"] == "authority_hook"
+        and audit["payload"].get("outcome") == "capture_failure"
+    ]
+    assert capture_failures == [
+        {
+            "outcome": "capture_failure",
+            "error": (
+                "v2 final continuation returned "
+                "status='finalization_pending' reason='evidence_drift'"
+            ),
+        }
+    ]
+    refused = db.get_authority_policy_v2_attempt_for_result(row["id"])
+    assert refused is not None
+    assert refused.finalization_state == "refused"
+    assert refused.refusal_code == "final_commit_failed"
+    assert db.get_task(TASK_ID).status is TaskStatus.ESCALATED
+
+
 def test_v2_hook_stage_failure_requests_refusal_and_retains_residue(
     tmp_path, monkeypatch,
 ):

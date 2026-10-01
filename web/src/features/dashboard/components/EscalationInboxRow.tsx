@@ -142,6 +142,11 @@ export function EscalationInboxRow({
         )}
       </div>
       <p className="text-text-primary mt-1 text-sm">{row.question}</p>
+      {row.escalation_reason?.refusal_code && row.escalation_reason.secondary && (
+        <p className="text-text-muted mt-1 text-xs">
+          {row.escalation_reason.secondary}
+        </p>
+      )}
 
       {expanded && (
         <div className="mt-3 space-y-2" onClick={(e) => e.stopPropagation()}>

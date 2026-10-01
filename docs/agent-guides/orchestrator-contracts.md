@@ -732,6 +732,31 @@ non-escalate results receive zero writes and no fence. Missing/unreadable
 evidence, parser-unavailable callers, later stages, and parsed escalation keep
 the fail-closed refusal path. No schema or task-status value changes.
 
+#### Current-episode refusal reason projection
+
+For a root refusal, the retained `escalation` audit carries only
+`reason=authority_v2_refusal`, the closed `refusal_code`, and `attempt_id`, and
+`tasks.note` remains `authority_v2_refusal:<code>`. Founder-facing reads derive
+an additive `escalation_reason` without rewriting either invariant. A non-root
+refusal is terminal `failed`, writes no `escalation` audit, and therefore has no
+founder-facing escalation-reason projection. Two consecutive exact-task
+`escalation` audit IDs delimit the current root episode. For a root v2 refusal,
+only an intervening `orchestration_step` with
+`decision.action=escalate` may supply the manager-authored primary reason; a
+delegate/done/fanout callback therefore yields no primary and never reaches
+back to an older episode. Ordinary escalations keep their stored reason and no
+secondary explanation. Non-escalated tasks return no projection.
+
+The database read selects only `escalation` and `orchestration_step` rows with
+exact `task_id` equality, newest primary-key order, and a 256-row cap. Under the
+writer contract, the causal decision and refusal are adjacent in that
+action-filtered stream. If evidence is not inside the bounded tail, the primary
+stays absent rather than consulting older rows. Scope-prefixed rows such as
+`config:*` cannot match a `TASK-*` row.
+The refusal-code explanation map is server-owned,
+covers the complete closed housekeeping refusal vocabulary, and falls back to
+the raw code for forward compatibility.
+
 Checkpoint C3d2 lands the accepted R4 finalize and settle-receipt steps 1-2 on
 the same unmerged draft PR, adding exactly the three remaining approved additive
 tables. `authority_policy_v2_continue_envelopes` (E) is unique by candidate and
@@ -791,6 +816,12 @@ forwarders (`finalize_v2_continuation`, `settle_v2_continuation_receipt`,
 envelope spend, the startup/reaper/run-step wiring and the production
 authority-hook continuation remain separate units; the shipping hook still
 fail-closes to ESCALATE and the dual-text feature remains unaccepted.
+
+In the shipping automatic hook, a bounded non-success finalization return is
+recorded best-effort as an `authority_hook` `capture_failure` carrying its
+closed status and reason before the unchanged `final_commit_failed` refusal
+housekeeping runs. A raised finalizer exception retains its existing distinct
+raised-exception diagnostic and the same refusal code.
 
 C3d2 correction (same unmerged draft PR). The exact post-final causal replay and
 settlement now authenticate the COMPLETE durable evidence read-only through ONE
