@@ -2016,6 +2016,14 @@ def _run_authority_hook_v2(
         )
     final_status = getattr(final, "status", None)
     if final_status not in ("continued", "already_continued"):
+        final_reason = getattr(final, "reason", None)
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            error=(
+                "v2 final continuation returned "
+                f"status={final_status!r} reason={final_reason!r}"
+            ),
+        )
         return _v2_request_refusal(
             orch, task, agent, result_row_id=result_row_id,
             owner_attempt_id=attempt.owner_attempt_id,
