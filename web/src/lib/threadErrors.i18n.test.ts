@@ -9,24 +9,27 @@ import { describe, expect, test } from 'vitest';
 import { ApiError } from '@/lib/api/client';
 import { translate, type MessageKey, type MessageParams } from '@/lib/i18n';
 import { MAX_THREAD_ATTACHMENTS } from './threadAttachments';
-import {
-  THREAD_ERROR_KEYS,
-  THREAD_ERROR_STRINGS,
-  classifyThreadError,
-  renderThreadError,
-} from './threadErrors';
+import { THREAD_ERROR_STRINGS, classifyThreadError, renderThreadError } from './threadErrors';
 
 const tEn = (k: MessageKey, p?: MessageParams) => translate('en', k, p);
 const tZh = (k: MessageKey, p?: MessageParams) => translate('zh-CN', k, p);
 
 describe('classifyThreadError / renderThreadError', () => {
-  test('every legacy mapped code has a catalog key whose English is byte-identical', () => {
-    expect(Object.keys(THREAD_ERROR_KEYS).sort()).toEqual(Object.keys(THREAD_ERROR_STRINGS).sort());
-    for (const code of Object.keys(THREAD_ERROR_STRINGS)) {
+  test('every legacy mapped code classifies as keyed and renders localized copy, never the raw code', () => {
+    const codes = Object.keys(THREAD_ERROR_STRINGS);
+    expect(codes.length).toBeGreaterThan(0);
+    for (const code of codes) {
       const detail = classifyThreadError(new ApiError(400, code, null));
-      expect(detail.kind).toBe('mapped');
-      expect(renderThreadError({ detail }, tEn)).toBe(THREAD_ERROR_STRINGS[code]);
-      expect(renderThreadError({ detail }, tZh)).not.toBe(THREAD_ERROR_STRINGS[code]);
+      expect(detail.kind, code).toBe('mapped');
+      const en = renderThreadError({ detail }, tEn);
+      const zh = renderThreadError({ detail }, tZh);
+      expect(en, code).toBe(THREAD_ERROR_STRINGS[code]);
+      for (const text of [en, zh]) {
+        expect(text, code).not.toBe('');
+        expect(text, code).not.toBe(code);
+        expect(text, code).not.toBe('HTTP 400');
+      }
+      expect(zh, code).not.toBe(en);
     }
   });
 

@@ -71,6 +71,18 @@ function mkMessage(seq: number, speaker: string, body: string, attachments: unkn
   };
 }
 
+/**
+ * The Composer's send-error slot, located through existing structure only:
+ * Send button -> input pill -> Composer root -> its direct-child danger `<span>`
+ * (the abort control shares the colour class but is a `<button>` in the pill).
+ * Returns null when no error is set.
+ */
+function composerErrorSlot(): HTMLElement | null {
+  const send = screen.getByRole('button', { name: /^(Send|发送)$/ });
+  const root = send.parentElement?.parentElement;
+  return root?.querySelector<HTMLElement>(':scope > span.text-feedback-danger') ?? null;
+}
+
 function stubBase() {
   server.use(
     http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] })),
@@ -446,13 +458,15 @@ describe('ThreadsPage composer across a locale switch', () => {
     mount(`/orgs/${SLUG}/threads/THR-1`, 'en');
     const textarea = await screen.findByRole('textbox', { name: 'Compose follow-up' });
     await user.type(textarea, 'draft');
+    expect(composerErrorSlot()).toBeNull();
 
     // (1) Raw `HTTP 500` from an unmapped send code — no attachment, no label.
     await user.click(screen.getByRole('button', { name: 'Send' }));
-    const rawSlot = await screen.findByTestId('composer-error');
+    const rawSlot = await screen.findByText('HTTP 500');
+    expect(composerErrorSlot()).toBe(rawSlot);
     expect(rawSlot.textContent).toBe('HTTP 500');
     await switchLocale('zh-CN');
-    expect(screen.getByTestId('composer-error')).toBe(rawSlot);
+    expect(composerErrorSlot()).toBe(rawSlot);
     expect(rawSlot.textContent).toBe('HTTP 500');
     await switchLocale('en');
 
@@ -463,13 +477,12 @@ describe('ThreadsPage composer across a locale switch', () => {
     );
     await user.click(screen.getByRole('button', { name: 'Send' }));
     await waitFor(() =>
-      expect(screen.getByTestId('composer-error').textContent).toBe(
-        'note.txt: That file is too large to upload.',
-      ),
+      expect(composerErrorSlot()?.textContent).toBe('note.txt: That file is too large to upload.'),
     );
-    const slot = screen.getByTestId('composer-error');
+    const slot = composerErrorSlot();
+    if (!slot) throw new Error('composer error slot is not rendered');
     await switchLocale('zh-CN');
-    expect(screen.getByTestId('composer-error')).toBe(slot);
+    expect(composerErrorSlot()).toBe(slot);
     expect(slot.textContent).toBe('note.txt：文件过大，无法上传。');
     await switchLocale('en');
     expect(slot.textContent).toBe('note.txt: That file is too large to upload.');
@@ -483,9 +496,7 @@ describe('ThreadsPage composer across a locale switch', () => {
     await waitFor(() => expect(setSpy).toHaveBeenCalled());
     await switchLocale('zh-CN');
     await waitFor(() =>
-      expect(screen.getByTestId('composer-error').textContent).toBe(
-        'note.txt：That file is too large to upload.',
-      ),
+      expect(composerErrorSlot()?.textContent).toBe('note.txt：That file is too large to upload.'),
     );
 
     // (4) Empty raw diagnostic: the slot still renders; detail is exactly ''.
@@ -494,10 +505,10 @@ describe('ThreadsPage composer across a locale switch', () => {
     });
     await user.click(screen.getByRole('button', { name: '发送' }));
     await waitFor(() =>
-      expect(screen.getByTestId('composer-error').textContent).toBe('note.txt：'),
+      expect(composerErrorSlot()?.textContent).toBe('note.txt：'),
     );
     await switchLocale('en');
-    expect(screen.getByTestId('composer-error').textContent).toBe('note.txt: ');
+    expect(composerErrorSlot()?.textContent).toBe('note.txt: ');
     setSpy.mockRestore();
     expect(FormData.prototype.set).toBe(originalSet);
   });

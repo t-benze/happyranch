@@ -51,7 +51,7 @@ export function describeError(code: string | null | undefined, fallback?: string
 // text is empty or happens to equal a catalog value.
 // ---------------------------------------------------------------------------
 /** Daemon error code → catalog key. Same code set as THREAD_ERROR_STRINGS. */
-export const THREAD_ERROR_KEYS: Record<string, MessageKey> = {
+const THREAD_ERROR_KEYS: Record<string, MessageKey> = {
   empty_subject: 'threads.error.emptySubject',
   empty_recipients: 'threads.error.emptyRecipients',
   empty_body: 'threads.error.emptyBody',

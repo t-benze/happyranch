@@ -360,9 +360,7 @@ export function Composer({
           Rendered whenever an error is SET (non-null), not by text truthiness,
           so a raw diagnostic that is the empty string still owns its slot. */}
       {errorMessage != null && (
-        <span data-testid="composer-error" className="text-caption text-feedback-danger">
-          {errorMessage}
-        </span>
+        <span className="text-caption text-feedback-danger">{errorMessage}</span>
       )}
     </div>
   );
