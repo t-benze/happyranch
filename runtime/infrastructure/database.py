@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-import functools
+# Database facade domain map:
+# - db/dreams.py: dream records and dream KB candidates, except the _now keeper
+# - db/knowledge.py: KB stats, skill validation reads, and org settings
+# - database.py: schema, remaining domains, and patched-global write keepers
+
 import hashlib
 import json
-import logging
 import sqlite3
 import threading
 import time as _time
@@ -16,6 +19,9 @@ from typing import Callable
 
 from pydantic import ValidationError
 
+from runtime.infrastructure.db._shared import _parse_dt, _synchronized
+from runtime.infrastructure.db.dreams import DreamsMixin
+from runtime.infrastructure.db.knowledge import KnowledgeMixin
 from runtime.models import (
     AuthorityAuditEvent,
     AuthorityAuditEventType,
@@ -120,8 +126,6 @@ from runtime.models import (
     authority_policy_v2_selector_id,
     authority_policy_v2_sha256,
     BlockKind,
-    DreamKbCandidate,
-    DreamRecord,
     DreamStatus,
     LocalCiEvidence,
     NextStep,
@@ -189,10 +193,6 @@ _AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING = {
     "already_evaluated": "interrupted_pre_final",
     "already_consumed": "interrupted_pre_final",
 }
-
-
-def _parse_dt(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def _iso_datetime_separator_index(value: str) -> int | None:
@@ -1356,55 +1356,6 @@ def completion_result_payload_matches(
     )
 
 
-def _synchronized(method):
-    """Serialize every public ``Database`` call through ``self._lock``.
-
-    Why: the daemon shares ONE sqlite3 connection across the event-loop thread
-    (async routes) and the threadpool thread running ``Orchestrator.run_step``
-    (see ``src/daemon/queue.py``). ``DaemonState.db_lock`` is an ``asyncio.Lock``
-    and can't serialize against threads; ``check_same_thread=False`` on the
-    connection allows cross-thread access but not concurrent cursor/exec ops —
-    overlap raises ``sqlite3.InterfaceError`` or hands back rows with None-valued
-    columns. A ``threading.RLock`` inside ``Database`` closes that gap without
-    per-thread connections or a migration.
-
-    Lock instrumentation (THR-129): times wait duration (acquire) and hold
-    duration (method body). Warns when either exceeds the instance's
-    ``_lock_warn_threshold_seconds`` (default 1.0 s). RLock reentrancy is
-    respected — nested acquires show near-zero wait time.
-    """
-    _db_logger = logging.getLogger("happyranch.database.lock")
-
-    @functools.wraps(method)
-    def wrapper(self, *args, **kwargs):
-        threshold = getattr(self, '_lock_warn_threshold_seconds', 1.0)
-        t_wait_start = _time.monotonic()
-        self._lock.acquire(blocking=True)
-        wait_sec = _time.monotonic() - t_wait_start
-        if wait_sec > threshold:
-            _db_logger.warning(
-                "Database._lock wait %.3fs > threshold %.3fs "
-                "for %s.%s (lock convoy may stall other routes)",
-                wait_sec, threshold,
-                type(self).__name__, method.__name__,
-            )
-        try:
-            t_hold_start = _time.monotonic()
-            result = method(self, *args, **kwargs)
-            hold_sec = _time.monotonic() - t_hold_start
-            if hold_sec > threshold:
-                _db_logger.warning(
-                    "Database._lock hold %.3fs > threshold %.3fs "
-                    "for %s.%s",
-                    hold_sec, threshold,
-                    type(self).__name__, method.__name__,
-                )
-            return result
-        finally:
-            self._lock.release()
-    return wrapper
-
-
 def _rebuild_indexes_for(
     table: str,
     conn: sqlite3.Connection,
@@ -1687,7 +1638,7 @@ _V2_ALL_RESULT_STAGE_KEY_SETS[AUTHORITY_POLICY_V2_RESULT_STAGE_SPENT] = (
 )
 
 
-class Database:
+class Database(DreamsMixin, KnowledgeMixin):
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -5889,77 +5840,6 @@ class Database:
                 item["payload"] = json.loads(item["payload"])
             result.append(item)
         return result
-
-    # --- Org Settings (THR-095) ---
-
-    @_synchronized
-    def upsert_org_setting(
-        self,
-        section: str,
-        value_json: str,
-        *,
-        before: dict | None = None,
-        after: dict | None = None,
-        actor: str = "founder",
-    ) -> None:
-        """Upsert an org_settings row AND insert its config:<section> audit
-        row in one atomic transaction (same connection, single commit).
-
-        A crash/failure before commit rolls BOTH back — no split-brain."""
-        now = datetime.now(timezone.utc).isoformat()
-        # F4 fix: emit only the actually-changed tiers, not the full before dict.
-        if isinstance(before, dict) and isinstance(after, dict):
-            _tiers = sorted(
-                k for k in set(before) | set(after)
-                if before.get(k) != after.get(k)
-            )
-        elif before is not None:
-            _tiers = list(before) if isinstance(before, dict) else [section]
-        else:
-            _tiers = [section]
-        audit_payload = json.dumps({
-            "section": section,
-            "tiers": _tiers,
-            "before": before or {},
-            "after": after or {},
-        })
-        self._conn.execute("BEGIN")
-        try:
-            self._conn.execute(
-                "INSERT INTO org_settings (section, value_json, updated_at, updated_by) "
-                "VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(section) DO UPDATE SET "
-                "value_json = excluded.value_json, "
-                "updated_at = excluded.updated_at, "
-                "updated_by = excluded.updated_by",
-                (section, value_json, now, actor),
-            )
-            self._conn.execute(
-                "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
-                "VALUES (?, ?, 'org_config_write', ?, ?)",
-                (f"config:{section}", actor, audit_payload, now),
-            )
-            self._conn.commit()
-        except Exception:
-            self._conn.rollback()
-            raise
-
-    @_synchronized
-    def get_org_setting(self, section: str) -> str | None:
-        """Return the value_json for *section* or None if no row exists."""
-        row = self._conn.execute(
-            "SELECT value_json FROM org_settings WHERE section = ?",
-            (section,),
-        ).fetchone()
-        return row["value_json"] if row else None
-
-    @_synchronized
-    def get_all_org_settings(self) -> dict[str, str]:
-        """Return {section: value_json} for every row in org_settings."""
-        rows = self._conn.execute(
-            "SELECT section, value_json FROM org_settings"
-        ).fetchall()
-        return {row["section"]: row["value_json"] for row in rows}
 
     @_synchronized
     def fetch_one_readonly(
@@ -17199,20 +17079,6 @@ class Database:
         )
         self._conn.commit()
 
-    @_synchronized
-    def kb_view_stats(self) -> list[dict]:
-        """Return per-slug view tallies, most-viewed first.
-
-        Ordered by view_count DESC, then last_viewed_at DESC so ties surface
-        the most recently read entry first.
-        """
-        rows = self._conn.execute(
-            """SELECT slug, view_count, last_viewed_at
-               FROM kb_views
-               ORDER BY view_count DESC, last_viewed_at DESC"""
-        ).fetchall()
-        return [dict(r) for r in rows]
-
     # --- Skill validation events ---
 
     @_synchronized
@@ -17253,111 +17119,6 @@ class Database:
         )
         self._conn.commit()
         return cursor.lastrowid
-
-    @_synchronized
-    def list_skill_validation_events(
-        self,
-        *,
-        skill_id: str | None = None,
-        agent: str | None = None,
-        source: str | None = None,
-        since: str | None = None,
-        severity: str | None = None,
-        limit: int = 100,
-    ) -> list[dict]:
-        """List skill validation events with optional filters."""
-        clauses = ["1=1"]
-        params: list = []
-        if skill_id is not None:
-            clauses.append("skill_id = ?")
-            params.append(skill_id)
-        if agent is not None:
-            clauses.append("agent = ?")
-            params.append(agent)
-        if source is not None:
-            clauses.append("source = ?")
-            params.append(source)
-        if since is not None:
-            clauses.append("created_at >= ?")
-            params.append(since)
-        if severity is not None:
-            clauses.append("severity = ?")
-            params.append(severity)
-        params.append(limit)
-        rows = self._conn.execute(
-            f"""SELECT id, skill_id, slug, agent, source, severity, ok, version,
-                       findings, reason_codes, created_at
-                FROM skill_validation_events
-                WHERE {' AND '.join(clauses)}
-                ORDER BY created_at DESC
-                LIMIT ?""",
-            params,
-        ).fetchall()
-        result: list[dict] = []
-        for r in rows:
-            d = dict(r)
-            d["ok"] = bool(d["ok"])
-            d["findings"] = json.loads(d["findings"] or "[]")
-            d["reason_codes"] = json.loads(d["reason_codes"] or "[]")
-            result.append(d)
-        return result
-
-    @_synchronized
-    def get_latest_skill_validation(
-        self, skill_id: str, version: str | None = None
-    ) -> dict | None:
-        """Return the latest validation event for a skill, optionally for a specific version."""
-        if version is not None:
-            row = self._conn.execute(
-                """SELECT id, skill_id, slug, agent, source, severity, ok, version,
-                           findings, reason_codes, created_at
-                    FROM skill_validation_events
-                    WHERE skill_id = ? AND version = ?
-                    ORDER BY created_at DESC LIMIT 1""",
-                (skill_id, version),
-            ).fetchone()
-        else:
-            row = self._conn.execute(
-                """SELECT id, skill_id, slug, agent, source, severity, ok, version,
-                           findings, reason_codes, created_at
-                    FROM skill_validation_events
-                    WHERE skill_id = ?
-                    ORDER BY created_at DESC LIMIT 1""",
-                (skill_id,),
-            ).fetchone()
-        if row is None:
-            return None
-        d = dict(row)
-        d["ok"] = bool(d["ok"])
-        d["findings"] = json.loads(d["findings"] or "[]")
-        d["reason_codes"] = json.loads(d["reason_codes"] or "[]")
-        return d
-
-    @_synchronized
-    def get_latest_skill_materialization(
-        self, skill_id: str, agent: str
-    ) -> dict | None:
-        """Return the latest materialization event for a skill+agent pair.
-
-        Used by effective-state computation (§7.1): a skill is effective for an
-        agent iff the latest materialization event's version matches the current
-        store version.
-        """
-        row = self._conn.execute(
-            """SELECT id, skill_id, slug, agent, source, severity, ok, version,
-                       findings, reason_codes, created_at
-                FROM skill_validation_events
-                WHERE skill_id = ? AND agent = ? AND source = 'materialization'
-                ORDER BY created_at DESC LIMIT 1""",
-            (skill_id, agent),
-        ).fetchone()
-        if row is None:
-            return None
-        d = dict(row)
-        d["ok"] = bool(d["ok"])
-        d["findings"] = json.loads(d["findings"] or "[]")
-        d["reason_codes"] = json.loads(d["reason_codes"] or "[]")
-        return d
 
     # --- Thread IDs ---
 
@@ -22744,184 +22505,6 @@ class Database:
         return inv, new_cap
 
     @_synchronized
-    # --- Dreams ---
-
-    @_synchronized
-    def next_dream_id(self) -> str:
-        cursor = self._conn.execute(
-            "SELECT MAX(CAST(SUBSTR(id, 7) AS INTEGER)) AS m "
-            "FROM dreams WHERE id GLOB 'DREAM-[0-9]*'"
-        )
-        n = (cursor.fetchone()["m"] or 0) + 1
-        return f"DREAM-{n:03d}"
-
-    def _dream_row_to_model(self, row) -> DreamRecord:
-        return DreamRecord(
-            id=row["id"],
-            agent_name=row["agent_name"],
-            local_date=row["local_date"],
-            scheduled_for=_parse_dt(row["scheduled_for"]),
-            window_start=_parse_dt(row["window_start"]) if row["window_start"] else None,
-            window_end=_parse_dt(row["window_end"]),
-            started_at=_parse_dt(row["started_at"]) if row["started_at"] else None,
-            ended_at=_parse_dt(row["ended_at"]) if row["ended_at"] else None,
-            status=DreamStatus(row["status"]),
-            summary=row["summary"],
-            transcript_path=row["transcript_path"],
-            new_learnings_count=row["new_learnings_count"],
-            kb_candidate_count=row["kb_candidate_count"],
-            founder_thread_id=row["founder_thread_id"],
-            session_id=row["session_id"],
-            error=row["error"],
-            created_at=_parse_dt(row["created_at"]),
-        )
-
-    @_synchronized
-    def insert_dream(self, dream: DreamRecord) -> None:
-        self._conn.execute(
-            """INSERT INTO dreams (
-                id, agent_name, local_date, scheduled_for, window_start, window_end,
-                started_at, ended_at, status, summary, transcript_path,
-                new_learnings_count, kb_candidate_count, founder_thread_id,
-                session_id, error, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                dream.id, dream.agent_name, dream.local_date,
-                dream.scheduled_for.isoformat(),
-                dream.window_start.isoformat() if dream.window_start else None,
-                dream.window_end.isoformat(),
-                dream.started_at.isoformat() if dream.started_at else None,
-                dream.ended_at.isoformat() if dream.ended_at else None,
-                dream.status.value, dream.summary, dream.transcript_path,
-                dream.new_learnings_count, dream.kb_candidate_count,
-                dream.founder_thread_id, dream.session_id, dream.error,
-                dream.created_at.isoformat(),
-            ),
-        )
-        self._conn.commit()
-
-    @_synchronized
-    def get_dream(self, dream_id: str) -> DreamRecord | None:
-        row = self._conn.execute("SELECT * FROM dreams WHERE id = ?", (dream_id,)).fetchone()
-        return self._dream_row_to_model(row) if row else None
-
-    @_synchronized
-    def get_dream_for_agent_date(self, agent_name: str, local_date: str) -> DreamRecord | None:
-        row = self._conn.execute(
-            "SELECT * FROM dreams WHERE agent_name = ? AND local_date = ?",
-            (agent_name, local_date),
-        ).fetchone()
-        return self._dream_row_to_model(row) if row else None
-
-    @_synchronized
-    def list_dreams(self, *, agent: str | None = None, limit: int = 50) -> list[DreamRecord]:
-        limit = max(1, min(limit, 500))
-        params: list[object] = []
-        where = ""
-        if agent is not None:
-            where = "WHERE agent_name = ?"
-            params.append(agent)
-        rows = self._conn.execute(
-            f"SELECT * FROM dreams {where} ORDER BY scheduled_for DESC LIMIT ?",
-            (*params, limit),
-        ).fetchall()
-        return [self._dream_row_to_model(row) for row in rows]
-
-    @_synchronized
-    def list_dream_ids_by_status(self, statuses: set[str]) -> list[str]:
-        """Exhaustive status-filtered dream-id query (no cap, DB-side filter).
-
-        ``list_dreams`` is a presentation list capped at 500 and ordered
-        newest-first; using it for a liveness check can hide an old active row
-        behind 500 newer terminal rows. This returns every dream id whose
-        status is in ``statuses`` so a portability preflight cannot miss an
-        active dream. Read-only.
-        """
-        if not statuses:
-            return []
-        placeholders = ",".join("?" * len(statuses))
-        rows = self._conn.execute(
-            f"SELECT id FROM dreams WHERE status IN ({placeholders})",
-            tuple(sorted(statuses)),
-        ).fetchall()
-        return [row["id"] for row in rows]
-
-    @_synchronized
-    def get_last_successful_dream(self, agent_name: str) -> DreamRecord | None:
-        row = self._conn.execute(
-            "SELECT * FROM dreams WHERE agent_name = ? AND status = 'completed' "
-            "ORDER BY ended_at DESC LIMIT 1",
-            (agent_name,),
-        ).fetchone()
-        return self._dream_row_to_model(row) if row else None
-
-    @_synchronized
-    def update_dream(self, dream_id: str, **fields: object) -> None:
-        allowed = {
-            "started_at", "ended_at", "status", "summary", "transcript_path",
-            "new_learnings_count", "kb_candidate_count", "founder_thread_id",
-            "session_id", "error",
-        }
-        bad = set(fields) - allowed
-        if bad:
-            raise ValueError(f"unsupported dream fields: {sorted(bad)}")
-        if not fields:
-            return
-        values = []
-        assignments = []
-        for key, value in fields.items():
-            assignments.append(f"{key} = ?")
-            if hasattr(value, "value"):
-                value = value.value
-            if hasattr(value, "isoformat"):
-                value = value.isoformat()
-            values.append(value)
-        values.append(dream_id)
-        self._conn.execute(
-            f"UPDATE dreams SET {', '.join(assignments)} WHERE id = ?",
-            values,
-        )
-        self._conn.commit()
-
-    @_synchronized
-    def update_dream_status_if(
-        self,
-        dream_id: str,
-        expected_status: DreamStatus,
-        new_status: DreamStatus,
-        **fields: object,
-    ) -> bool:
-        """Atomically transition a dream only if it is still ``expected_status``.
-
-        Returns ``True`` if the row was updated, ``False`` if the expected
-        status no longer matched (e.g. a concurrent termination set it to
-        SKIPPED). Extra fields are persisted only on a successful transition.
-        """
-        allowed = {
-            "started_at", "ended_at", "summary", "transcript_path",
-            "new_learnings_count", "kb_candidate_count", "founder_thread_id",
-            "session_id", "error",
-        }
-        bad = set(fields) - allowed
-        if bad:
-            raise ValueError(f"unsupported dream fields: {sorted(bad)}")
-        assignments = ["status = ?"]
-        values: list[object] = [new_status.value]
-        for key, value in fields.items():
-            assignments.append(f"{key} = ?")
-            if hasattr(value, "isoformat"):
-                value = value.isoformat()
-            values.append(value)
-        values.append(dream_id)
-        values.append(expected_status.value)
-        cursor = self._conn.execute(
-            f"UPDATE dreams SET {', '.join(assignments)} WHERE id = ? AND status = ?",
-            values,
-        )
-        self._conn.commit()
-        return cursor.rowcount == 1
-
-    @_synchronized
     def terminate_agent_cleanups(
         self, agent_name: str,
         *,
@@ -23043,65 +22626,6 @@ class Database:
         except Exception:
             self._conn.rollback()
             raise
-
-    def _dream_candidate_row_to_model(self, row) -> DreamKbCandidate:
-        return DreamKbCandidate(
-            id=row["id"],
-            dream_id=row["dream_id"],
-            agent_name=row["agent_name"],
-            slug=row["slug"],
-            title=row["title"],
-            topic=row["topic"],
-            rationale=row["rationale"],
-            body_markdown=row["body_markdown"],
-            status=row["status"],
-            promoted_kb_slug=row["promoted_kb_slug"],
-            created_at=_parse_dt(row["created_at"]),
-            updated_at=_parse_dt(row["updated_at"]),
-        )
-
-    @_synchronized
-    def insert_dream_kb_candidate(self, candidate: DreamKbCandidate) -> None:
-        self._conn.execute(
-            """INSERT INTO dream_kb_candidates (
-                dream_id, agent_name, slug, title, topic, rationale,
-                body_markdown, status, promoted_kb_slug, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                candidate.dream_id, candidate.agent_name, candidate.slug,
-                candidate.title, candidate.topic, candidate.rationale,
-                candidate.body_markdown, candidate.status,
-                candidate.promoted_kb_slug, candidate.created_at.isoformat(),
-                candidate.updated_at.isoformat(),
-            ),
-        )
-        self._conn.commit()
-
-    @_synchronized
-    def list_dream_kb_candidates(
-        self,
-        *,
-        dream_id: str | None = None,
-        agent: str | None = None,
-        candidate_id: int | None = None,
-    ) -> list[DreamKbCandidate]:
-        clauses = []
-        params: list[object] = []
-        if dream_id is not None:
-            clauses.append("dream_id = ?")
-            params.append(dream_id)
-        if agent is not None:
-            clauses.append("agent_name = ?")
-            params.append(agent)
-        if candidate_id is not None:
-            clauses.append("id = ?")
-            params.append(candidate_id)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        rows = self._conn.execute(
-            f"SELECT * FROM dream_kb_candidates {where} ORDER BY created_at DESC",
-            params,
-        ).fetchall()
-        return [self._dream_candidate_row_to_model(row) for row in rows]
 
     @_synchronized
     def update_dream_kb_candidate(
