@@ -335,6 +335,34 @@ describe('Task detail i18n', () => {
     expect(requests).toEqual([]);
   });
 
+  test('authority-v2 escalation labels localized; daemon primary/secondary verbatim in both locales', async () => {
+    const PRIMARY = 'Founder must choose the supported host action.';
+    const SECONDARY = "Automatic continuation couldn't be committed, so this was escalated to you.";
+    const task = rootTask({
+      status: 'escalated',
+      block_kind: null,
+      note: 'authority_v2_refusal:final_commit_failed',
+    });
+    stubDetail(task, {
+      escalation_reason: { primary: PRIMARY, refusal_code: 'final_commit_failed', secondary: SECONDARY },
+    });
+    mount(`/orgs/${SLUG}/tasks/TASK-77`, 'zh-CN');
+
+    expect(await screen.findByText('升级原因：')).toBeInTheDocument();
+    expect(screen.getByText('自动升级：')).toBeInTheDocument();
+    expect(screen.getByText('升级原因：').nextElementSibling?.textContent).toBe(PRIMARY);
+    expect(screen.getByText('自动升级：').nextElementSibling?.textContent).toBe(SECONDARY);
+    expect(screen.queryByText('Escalation reason:')).not.toBeInTheDocument();
+    expect(screen.queryByText('Automatic escalation:')).not.toBeInTheDocument();
+    expect(screen.queryByText('authority_v2_refusal:final_commit_failed')).not.toBeInTheDocument();
+
+    await switchLocale('en');
+    expect(screen.getByText('Escalation reason:').nextElementSibling?.textContent).toBe(PRIMARY);
+    expect(screen.getByText('Automatic escalation:').nextElementSibling?.textContent).toBe(SECONDARY);
+    expect(screen.queryByText('升级原因：')).not.toBeInTheDocument();
+    expect(screen.queryByText('自动升级：')).not.toBeInTheDocument();
+  });
+
   test('unknown flavor, block_kind, work-status state and reason render verbatim', async () => {
     const task = rootTask({ status: 'in_progress', block_kind: 'awaiting_quorum' });
     stubDetail(task, {
