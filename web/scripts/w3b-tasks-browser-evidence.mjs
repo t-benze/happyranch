@@ -413,7 +413,7 @@ async function main() {
         return {
           sameDialog: Boolean(d && d === fd && d.isConnected), sameField: Boolean(t && t === ft && t.isConnected),
           value: t ? t.value : null, focused: document.activeElement === t,
-          title: fd ? (fd.querySelector('h2') || {}).textContent : null,
+          title: fd && document.getElementById(fd.getAttribute('aria-labelledby')) ? document.getElementById(fd.getAttribute('aria-labelledby')).textContent : null,
           placeholder: ft ? ft.placeholder : null, lang: document.documentElement.lang,
         };
       })()`;
