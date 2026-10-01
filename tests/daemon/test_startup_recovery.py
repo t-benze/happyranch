@@ -222,6 +222,104 @@ def test_accepted_recovery_continue_settles_exact_receipt_once_across_restart(tm
     assert reopened.execute("SELECT state FROM task_completion_recoveries WHERE task_id=?", (task_id,)).fetchone()["state"] == "callback_consumed"
 
 
+def test_accepted_recovery_delegate_claim_uses_only_recovery_result_row(
+    tmp_path, monkeypatch,
+):
+    """The spawn claim is bound to the ledger-selected recovery result row."""
+    from runtime.infrastructure.database import Committed, LostClaim, RetryClaim
+    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+    from runtime.orchestrator.run_step import _consume_accepted_completion_recovery
+
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    task_id = "TASK-RECOVERY-DELEGATE"
+    origin_session = "origin-manager"
+    recovery_session = "recovery-manager"
+    orch._paths.workspaces_dir.joinpath("dev_agent").mkdir(parents=True)
+    db.insert_task(TaskRecord(
+        id=task_id, brief="delegate after recovery", team="engineering",
+        assigned_agent="engineering_head", status=TaskStatus.IN_PROGRESS,
+        task_type="task", current_session_id=origin_session,
+        orchestration_step_count=1,
+    ))
+    assert db.claim_task_completion_recovery(
+        task_id=task_id, agent="engineering_head",
+        origin_session_id=origin_session,
+        recovery_session_id=recovery_session,
+        provider_session_id="provider-conversation",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2999-01-01T00:02:00+00:00",
+    )
+    db.update_task(task_id, current_session_id=recovery_session)
+    decision_json = json.dumps({
+        "action": "delegate", "agent": "dev_agent", "prompt": "bounded child",
+    })
+    db.insert_task_result(
+        task_id=task_id, agent="engineering_head", session_id=origin_session,
+        status="completed", confidence_score=90, output_summary="late origin",
+        decision_json=decision_json,
+    )
+    origin_result = db.get_latest_task_result(
+        task_id, "engineering_head", origin_session,
+    )
+    assert origin_result is not None
+    assert db.admit_task_completion_callback(
+        task_id=task_id, agent="engineering_head", session_id=recovery_session,
+        status="completed", confidence_score=100,
+        output_summary="recovered delegate", decision_json=decision_json,
+    )
+    accepted = db.get_accepted_task_completion_recovery_result(
+        task_id=task_id, agent="engineering_head",
+    )
+    assert accepted is not None
+    assert accepted["session_id"] == recovery_session
+
+    original_try_delegate = db.try_delegate
+    observed_claims: list[RetryClaim] = []
+    committed_outcomes: list[Committed] = []
+
+    def assert_result_binding(parent_id, child, **kwargs):
+        claim = kwargs["expected_claim"]
+        observed_claims.append(claim)
+        assert claim.result_row_id == accepted["id"]
+        assert claim.current_session_id == recovery_session
+
+        origin_claim = RetryClaim.from_task(
+            db.get_task(task_id), result_row_id=origin_result["id"],
+        )
+        origin_child = TaskRecord(
+            id="TASK-ORIGIN-RESULT-CHILD", brief="must not spawn",
+            team="engineering", assigned_agent="dev_agent",
+            parent_task_id=task_id, task_type="subtask",
+        )
+        origin_outcome = original_try_delegate(
+            task_id, origin_child, parent_note="must not commit",
+            expected_claim=origin_claim,
+        )
+        assert isinstance(origin_outcome, LostClaim)
+        assert db.get_task(origin_child.id) is None
+        outcome = original_try_delegate(parent_id, child, **kwargs)
+        assert isinstance(outcome, Committed)
+        committed_outcomes.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(db, "try_delegate", assert_result_binding)
+    report = completion_report_from_result_row(
+        task_id, accepted, fallback_agent="engineering_head",
+    )
+    _consume_accepted_completion_recovery(
+        orch, task_id, report, agent="engineering_head",
+        session_id=recovery_session, result_row_id=accepted["id"],
+    )
+
+    assert len(observed_claims) == 1
+    children = db.get_children(task_id)
+    assert len(children) == 1
+    assert children[0] != "TASK-ORIGIN-RESULT-CHILD"
+    assert committed_outcomes == [Committed((children[0],))]
+    assert queue._queue.get_nowait() == ("test", children[0], None)
+    assert queue._queue.empty()
+
+
 def _accepted_root_escalation_recovery(tmp_path):
     """Admit a real root callback whose authority hook must escalate."""
     from runtime.orchestrator.authority import StrictFakeAuthorityEvaluator

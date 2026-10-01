@@ -972,10 +972,12 @@ def test_actual_manage_agent_route_serializes_same_hash_writers_at_lock(tmp_path
     assert len([r for r in org_state.db.get_audit_logs("TASK-U0") if r["action"] == "agent_managed"]) == 1
 
 
-def test_diagnostic_parent_dispatches_child_through_real_queue(tmp_path, monkeypatch) -> None:
-    """Diagnostic queue control only: replacing `_run_agent` bypasses launch proof."""
+def _run_diagnostic_parent_dispatch(
+    tmp_path, monkeypatch, *, publish_session_binding: bool,
+):
+    """Drive the queue diagnostic with or without the executor-owned binding."""
     from runtime.daemon.dispatcher import Dispatcher
-    from runtime.models import CompletionReport, NextStep, TaskRecord, TaskStatus
+    from runtime.models import CompletionReport, NextStep, TaskRecord
     from runtime.orchestrator.executors import ExecutorResult
 
     org_state = _org_state(tmp_path)
@@ -993,13 +995,23 @@ def test_diagnostic_parent_dispatches_child_through_real_queue(tmp_path, monkeyp
 
     def recording_executor(task_id, agent, prompt, on_session_started=None):
         launches.append((task_id, agent))
+        result = ExecutorResult(
+            success=True, session_id=f"sess-{task_id}", duration_seconds=0,
+        )
+        if publish_session_binding:
+            org_state.db.update_task(
+                task_id, assigned_agent=agent,
+                current_session_id=result.session_id,
+            )
+            if on_session_started is not None:
+                on_session_started(task_id, agent, result.session_id)
         decision = (
             NextStep(action="delegate", agent="dev_agent", prompt="bounded child")
             if task_id == "TASK-U0-PARENT" and launches.count((task_id, agent)) == 1
             else NextStep(action="done", summary="child completed")
         )
         return (
-            ExecutorResult(success=True, session_id=f"sess-{task_id}", duration_seconds=0),
+            result,
             CompletionReport(
                 task_id=task_id, agent=agent, status="completed", confidence=100,
                 output_summary=decision.summary or "delegate", decision=decision,
@@ -1007,11 +1019,22 @@ def test_diagnostic_parent_dispatches_child_through_real_queue(tmp_path, monkeyp
         )
 
     monkeypatch.setattr(org_state.orchestrator, "_run_agent", recording_executor)
-    # This is the actual daemon queue/dispatcher path, but this deliberately
-    # replaces `_run_agent`; it cannot establish session binding, scratch,
-    # validator, contained supervisor launch, or DB completion readback.
+    # This is the actual daemon queue/dispatcher path.  The positive variant
+    # mirrors the real launch's durable session binding, but replacing
+    # `_run_agent` still bypasses scratch, validation, contained supervisor
+    # launch, and DB completion readback.
     org_state._u0_daemon_state.queue.enqueue("alpha", parent.id)
     asyncio.run(org_state._u0_daemon_state.queue.drain_sync(Dispatcher(org_state._u0_daemon_state)))
+    return org_state, parent, launches
+
+
+def test_diagnostic_parent_dispatches_child_through_real_queue(tmp_path, monkeypatch) -> None:
+    """The diagnostic fake publishes the same durable binding as a real launch."""
+    from runtime.models import TaskStatus
+
+    org_state, parent, launches = _run_diagnostic_parent_dispatch(
+        tmp_path, monkeypatch, publish_session_binding=True,
+    )
 
     children = org_state.db.get_children(parent.id)
     assert len(children) == 1
@@ -1023,6 +1046,26 @@ def test_diagnostic_parent_dispatches_child_through_real_queue(tmp_path, monkeyp
         (parent.id, "engineering_head"),
     ]
     assert child.status is TaskStatus.COMPLETED
+
+
+def test_diagnostic_parent_missing_session_binding_drops_lost_claim(
+    tmp_path, monkeypatch,
+) -> None:
+    """A fake that omits launch publication cannot persist or enqueue a child."""
+    from runtime.models import BlockKind, TaskStatus
+
+    org_state, parent, launches = _run_diagnostic_parent_dispatch(
+        tmp_path, monkeypatch, publish_session_binding=False,
+    )
+
+    assert org_state.db.get_children(parent.id) == []
+    assert org_state._u0_daemon_state.queue._queue.empty()
+    current = org_state.db.get_task(parent.id)
+    assert current is not None
+    assert current.status is TaskStatus.IN_PROGRESS
+    assert current.block_kind is None
+    assert current.current_session_id is None
+    assert launches == [(parent.id, "engineering_head")]
 
 
 def test_contained_queue_dispatch_callback_readback_and_parent_resume(tmp_path, monkeypatch) -> None:
