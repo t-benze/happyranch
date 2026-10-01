@@ -717,6 +717,18 @@ def remove_runtime_executor_profile(
     name: str,
     request: Request,
 ) -> RemoveRuntimeProfileResponse:
+    """Remove a custom executor profile (durable store + in-memory registry).
+
+    Symmetric inverse of the register path: registration writes the durable
+    store before publishing to the registry; removal deletes from the durable
+    store before unregistering from the registry. If registry removal fails,
+    the durable entry is restored before returning an error.
+
+    Built-in profiles cannot be removed. A custom profile cannot be removed
+    while any org agent references it or while an approved adapter still owns
+    it. Runtime-global profile mutation audit events use ``audit_log.task_id``
+    scope ``profile:<name>``; this does not overload an org task id.
+    """
     coordinator = getattr(request.app.state.daemon, "profile_coordinator", None)
     span = (
         coordinator.operation(
