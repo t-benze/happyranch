@@ -154,6 +154,30 @@ class DaemonState:
                 state.broken_orgs[slug] = str(exc)
                 logger.error("org %r failed consistency check: %s", slug, exc)
                 continue
+            # U2A: every whole-runtime construction path (normal startup and
+            # live register/switch) initializes eligible selectors before the
+            # resulting DaemonState is returned or published. Raw
+            # ``OrgState.load`` retains its generation-1 recovery seam; this
+            # containing lifecycle owner makes it launch-ready.
+            from runtime.orchestrator.active_authority_policy import (
+                is_eligible_policy_manager,
+            )
+            try:
+                for team in org.teams.teams():
+                    manager = org.teams.manager_for_team(team).name
+                    if is_eligible_policy_manager(
+                        root=org.root,
+                        agent_name=manager,
+                        team=team,
+                        teams=org.teams,
+                    ):
+                        org.workflow_authority.ensure_authority_selector(
+                            team=team,
+                            publisher="daemon-state-load:selector-initialization",
+                        )
+            except Exception:
+                org.close()
+                raise
             # Attach the global queue + per-org sessions + daemon-wide host
             # supervisor so the orchestrator can re-enqueue tasks (e.g. parent
             # wake-up after a child resolves) and run task sessions through

@@ -49,8 +49,10 @@ from runtime.models import (
 )
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.active_authority_policy import is_eligible_policy_manager
 from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.agent_def import AgentDef, AgentParseError, Executor
+from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 from runtime.orchestrator.context_builder import ContextBuilder
 from runtime.orchestrator.workspace_adapters import (
     InstructionPairConflict,
@@ -1300,15 +1302,30 @@ async def founder_create_agent(
                 prefix=f".{body.name}.", suffix=".md",
                 dir=str(paths.agents_dir),
             )
+            active_landed = False
             try:
                 with os.fdopen(fd, "w") as fh:
                     fh.write(render_agent_text(agent_def))
                 os.replace(tmp, active_path)
+                active_landed = True
+                if body.role == "manager":
+                    # The new team and its now-live eligible manager become
+                    # launchable in this SAME coordinator-owned canonical
+                    # mutation. Publication therefore observes the initialized
+                    # selector and advances exactly one authority generation.
+                    AuthorityPolicyStore(org.db).ensure_authority_selector(
+                        team_name,
+                    )
             except Exception:
                 try:
                     os.unlink(tmp)
                 except FileNotFoundError:
                     pass
+                if active_landed:
+                    try:
+                        active_path.unlink()
+                    except FileNotFoundError:
+                        pass
                 # Roll back the registry mutation (add_worker or add_team)
                 # so we don't leave a phantom team-membership entry without
                 # the corresponding agent file. Without this rollback the
@@ -2470,10 +2487,35 @@ async def approve_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
     async with org.workflow_authority.supported_change_async(
         publisher="approve_agent",
     ):
+        promoted = False
         try:
             agent_def = prompt_loader.approve_agent(paths, agent_name)
+            promoted = True
+            if (
+                agent_def.role == "manager"
+                and is_eligible_policy_manager(
+                    root=org.root,
+                    agent_name=agent_name,
+                    team=agent_def.team,
+                    teams=org.teams,
+                )
+            ):
+                # Bootstrap-manager approval is the supported lifecycle that
+                # can make an already-registered team's manager eligible.
+                # Initialize inside this same supported canonical change so
+                # the published snapshot and launch resolver cannot diverge.
+                AuthorityPolicyStore(org.db).ensure_authority_selector(
+                    agent_def.team,
+                )
         except FileExistsError:
             raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
+        except Exception:
+            if promoted:
+                active_path = paths.agents_dir / f"{agent_name}.md"
+                pending_path = paths.pending_agents_dir / f"{agent_name}.md"
+                if active_path.exists() and not pending_path.exists():
+                    os.replace(active_path, pending_path)
+            raise
 
     workspace = paths.workspaces_dir / agent_name
     workspace.mkdir(parents=True, exist_ok=True)

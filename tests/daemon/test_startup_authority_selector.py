@@ -31,6 +31,7 @@ from runtime.config import Settings
 from runtime.daemon import __main__ as daemon_main
 from runtime.daemon import paths as paths_mod
 from runtime.daemon import runtimes
+from runtime.daemon.state import DaemonState
 from runtime.infrastructure.database import Database
 from runtime.models import AuthorityPolicyActivation, AuthorityPolicyRelease
 from runtime.orchestrator._paths import OrgPaths
@@ -141,6 +142,28 @@ def test_empty_org_initializes_before_recovery_boundary(tmp_path, monkeypatch):
     assert _count(org.db, "authority_policy_releases") == 0
     assert _count(org.db, "authority_policy_activations") == 0
     assert _count(org.db, "authority_policy_v2_releases") == 0
+
+
+def test_daemon_state_load_initializes_selector_once_for_every_runtime_path(
+    tmp_path, monkeypatch,
+):
+    runtime, org_root = _fresh_runtime(tmp_path, monkeypatch)
+
+    first = DaemonState.from_runtime(runtime, Settings()).orgs[ORG]
+    first_selector = AuthorityPolicyStore(first.db).get_authority_selector(TEAM)
+    assert first_selector is not None and first_selector.family == "empty"
+    first_ready = first.workflow_authority.verify_admission_ready()
+    assert first_ready.generation == 2
+    assert _count(first.db, "authority_policy_active_selector_history") == 1
+    first.close()
+
+    second = DaemonState.from_runtime(runtime, Settings()).orgs[ORG]
+    second_selector = AuthorityPolicyStore(second.db).get_authority_selector(TEAM)
+    assert second_selector is not None
+    assert second_selector.selector_id == first_selector.selector_id
+    assert second.workflow_authority.verify_admission_ready() == first_ready
+    assert _count(second.db, "authority_policy_active_selector_history") == 1
+    second.close()
 
 
 def test_startup_initializes_each_unique_live_manager_and_rejects_duplicate(

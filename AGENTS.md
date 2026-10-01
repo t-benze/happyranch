@@ -196,9 +196,14 @@ replacement, and the pointer CAS all require the original journal and
 return old authority bytes to ready. Cold recovery re-captures against that
 same pre-file journal without replacing it; an incoherent re-capture is
 read-only and remains fenced, while concurrent supersession is refused by the
-same binding checks. Selector initialization at daemon startup, before dynamic
-org attachment, and in the legacy policy GET/release compatibility handlers
-uses the same conditional interval. Every task/thread/dream/wake/schedule
+same binding checks. Selector initialization during whole-runtime state loading
+(covering daemon startup and runtime register/switch before state publication),
+before dynamic org attachment, founder creation
+of a new-team manager, pending bootstrap-manager approval, and the legacy
+policy GET/release compatibility handlers uses the same coordinated canonical
+change. Repeated startup/dynamic checks and existing-team worker creation do
+not advance the generation or selector history beyond their own authority
+write. Every task/thread/dream/wake/schedule
 launch resolver is read-only and refuses an uninitialized selector; it never
 initializes authority while launching. An authenticated existing selector
 remains a read and does not fence or advance the generation.
