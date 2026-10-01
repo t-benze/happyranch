@@ -406,12 +406,15 @@ async function main() {
       await evaluate(page, `(() => { const t = document.querySelector('[role="dialog"] textarea'); t.focus(); return true; })()`);
       await cdp.send('Input.insertText', { text: DRAFT }, page.sessionId);
       await sleep(200);
-      await evaluate(page, `(() => { window.__w3bDialog = new WeakRef(document.querySelector('[role="dialog"]')); window.__w3bField = new WeakRef(document.querySelector('[role="dialog"] textarea')); return true; })()`);
+      // The always-mounted assistant dock is also role="dialog": anchor on the
+      // dialog that owns the draft textarea, never the first role="dialog".
+      const DIALOG = `(document.querySelector('[role="dialog"] textarea') || { closest: () => null }).closest('[role="dialog"]')`;
+      await evaluate(page, `(() => { window.__w3bDialog = new WeakRef(${DIALOG}); window.__w3bField = new WeakRef(document.querySelector('[role="dialog"] textarea')); return true; })()`);
       const state = `(() => {
         const d = window.__w3bDialog.deref(); const t = window.__w3bField.deref();
-        const fd = document.querySelector('[role="dialog"]'); const ft = document.querySelector('[role="dialog"] textarea');
+        const fd = ${DIALOG}; const ft = document.querySelector('[role="dialog"] textarea');
         return {
-          sameDialog: Boolean(d && d === fd && d.isConnected), sameField: Boolean(t && t === ft && t.isConnected),
+          sameDialog: Boolean(d && d === fd && d.isConnected && d.contains(t)), sameField: Boolean(t && t === ft && t.isConnected),
           value: t ? t.value : null, focused: document.activeElement === t,
           title: fd && document.getElementById(fd.getAttribute('aria-labelledby')) ? document.getElementById(fd.getAttribute('aria-labelledby')).textContent : null,
           placeholder: ft ? ft.placeholder : null, lang: document.documentElement.lang,
