@@ -6274,6 +6274,33 @@ class Database:
             result.append(d)
         return result
 
+    @_synchronized
+    def get_escalation_episode_audit_tail(
+        self, task_id: str, *, limit: int = 256,
+    ) -> list[dict]:
+        """Return the bounded audit subset needed for escalation display.
+
+        Exact ``task_id`` equality keeps task rows separate from ``config:``,
+        thread, and other scope-prefixed audit ids. The primary-key ``id``
+        order makes the newest rows authoritative. The refusal writer's causal
+        decision is adjacent in this action-filtered stream; the hard cap keeps
+        a task with a long audit history from expanding the read model without
+        bound and fails absent rather than consulting older rows.
+        """
+        cursor = self._conn.execute(
+            "SELECT * FROM audit_log "
+            "WHERE task_id = ? AND action IN ('escalation', 'orchestration_step') "
+            "ORDER BY id DESC LIMIT ?",
+            (task_id, limit),
+        )
+        result: list[dict] = []
+        for row in cursor.fetchall():
+            item = dict(row)
+            if item.get("payload"):
+                item["payload"] = json.loads(item["payload"])
+            result.append(item)
+        return result
+
     # --- Org Settings (THR-095) ---
 
     @_synchronized

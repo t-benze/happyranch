@@ -667,6 +667,32 @@ def test_escalations_reads_question_from_audit_payload(db: Database) -> None:
     assert rows[0].flavor == "needs-decision"
 
 
+def test_escalations_v2_refusal_uses_current_manager_reason(db: Database) -> None:
+    now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    raised = now - timedelta(minutes=10)
+    db._conn.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, team, status, created_at, updated_at) "
+        "VALUES ('TASK-V2', 'b', 'engineering_manager', 'engineering', 'escalated', ?, ?)",
+        (raised.isoformat(), raised.isoformat()),
+    )
+    db.insert_audit_log(
+        "TASK-V2", "engineering_manager", "orchestration_step",
+        {"decision": {"action": "escalate", "reason": "Founder must choose A or B"}},
+    )
+    db.insert_audit_log(
+        "TASK-V2", "engineering_manager", "escalation",
+        {"reason": "authority_v2_refusal", "refusal_code": "claim_failed", "attempt_id": "A"},
+    )
+
+    row = compute_escalations_open(db, now=now)[0]
+    assert row.question == "Founder must choose A or B"
+    assert row.escalation_reason.primary == "Founder must choose A or B"
+    assert row.escalation_reason.refusal_code == "claim_failed"
+    assert row.escalation_reason.secondary == (
+        "The authority attempt couldn't claim its decision record, so this was escalated to you."
+    )
+
+
 def test_escalations_flavor_derived_from_reason(db: Database) -> None:
     """§G: the single stored `escalated` status derives a display flavor from
     the escalation audit reason (exhausted / over-budget / needs-decision)."""
