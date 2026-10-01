@@ -186,10 +186,15 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   advances only its roster generation and adds no selector-history churn. Common task,
   thread, dream, wake, and schedule launch resolution is read-only and refuses
   an uninitialized selector rather than mutating authority during launch.
-- **U2A boundary.** The coordinator's readiness verifier is intentionally not
-  consumed by task, chain, fan-out, activation, or dispatch paths yet.
-  Machine-global executor-profile changes remain U2B-deferred and do not yet
-  fence orgs; no workflow admission consumer may ship before U2B.
+- **U2A/U2B boundary.** The readiness verifier is intentionally not consumed
+  by task, chain, fan-out, activation, or dispatch paths yet. U2B now routes
+  supported machine-global executor-profile and adapter writers through
+  `ProfileCoordinator`: dependent orgs are pre-fenced, the existing durable
+  writer commits, and only a complete profile-and-approved-adapter closure is
+  republished. Startup settles interrupted operations before returning
+  `DaemonState`; direct-connect `planned` rows remain retryable by both the
+  commit route and production sweep. No workflow admission consumer ships
+  before its later unit.
 - **Approval.** `POST /agents/{name}/approve` atomically moves the pending file to `org/agents/<name>.md`; when that promotion makes the registered manager eligible, it initializes the team's selector in the same workflow-authority canonical change. It then bootstraps the workspace under `workspaces/<name>/`. Approved agents appear in `GET /agents` and `GET /agents/enrollments?status=approved`.
 - **Termination.** `manage-agent terminate` archives an approved **non-manager worker** on the caller's team. It is refused if the agent is a manager, belongs to another team, or has live work. Live work includes non-terminal tasks assigned to the agent, already-started thread invocations, firing schedules, running work-hours wakes, running dreams, or pending/running jobs attributable to the agent. If the agent is quiescent, the route:
   - archives the active `org/agents/<name>.md` to `org/agents/_terminated/<name>.md`;

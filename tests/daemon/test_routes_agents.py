@@ -3028,7 +3028,29 @@ def test_set_executor_accepts_registered_custom_profile_via_route(
     """A registered custom executor profile must be accepted by the real
     PUT /agents/{agent}/executor route end-to-end — authentication, body
     handling, validation, and persistence included."""
+    from runtime.orchestrator.adapter_store import AdapterEntry, save_adapter
     from runtime.orchestrator.executor_registry import ExecutorProfile, get_registry
+
+    executable = tmp_home / "testcustom-adapter"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o700)
+    save_adapter(
+        AdapterEntry(
+            id="testcustom",
+            name="testcustom",
+            executable=str(executable),
+            executable_hash=hashlib.sha256(executable.read_bytes()).hexdigest(),
+            version="1.0.0",
+            capabilities=[],
+            contract_version=1,
+            workspace_adapter="pi",
+            status="approved",
+            registered_at="2026-10-01T00:00:00+00:00",
+            registered_by="test",
+            approved_at="2026-10-01T00:00:00+00:00",
+            approved_by="test",
+        )
+    )
 
     registry = get_registry()
     registry.register_custom_profile(

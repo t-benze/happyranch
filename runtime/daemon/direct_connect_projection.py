@@ -15,6 +15,7 @@ daemon-owned periodic projection sweep. It is never invoked by receipt-only
 """
 from __future__ import annotations
 
+import threading
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -22,6 +23,10 @@ from typing import Literal
 
 from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
 from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
+
+
+_ACTIVE_PROJECTIONS: set[tuple[int, str]] = set()
+_ACTIVE_PROJECTIONS_LOCK = threading.Lock()
 
 @dataclass(frozen=True)
 class ProjectionOutcome:
@@ -41,6 +46,15 @@ def _await_concurrent_outcome(store: DirectConnectAuthorityStore, operation_id: 
     """
     projection = store.get_projection(operation_id)
     if projection is None:
+        # A same-process owner may have claimed the operation immediately
+        # before its durable plan insert. Keep this bounded and do not start a
+        # second probe while that tiny publication window closes.
+        for _ in range(50):
+            threading.Event().wait(0.02)
+            projection = store.get_projection(operation_id)
+            if projection is not None:
+                break
+    if projection is None:
         raise RuntimeError(f"concurrent projection disappeared for operation {operation_id!r}")
     if projection.state == "committed":
         return ProjectionOutcome(
@@ -53,6 +67,31 @@ def _await_concurrent_outcome(store: DirectConnectAuthorityStore, operation_id: 
 
 
 def project(
+    store: DirectConnectAuthorityStore,
+    operation_id: str,
+    *,
+    now: float | None = None,
+    profile_coordinator=None,
+) -> ProjectionOutcome:
+    """Serialize same-process owners while durable planned rows stay retryable."""
+    claim = (id(store), operation_id)
+    with _ACTIVE_PROJECTIONS_LOCK:
+        if claim in _ACTIVE_PROJECTIONS:
+            return _await_concurrent_outcome(store, operation_id)
+        _ACTIVE_PROJECTIONS.add(claim)
+    try:
+        return _project_once(
+            store,
+            operation_id,
+            now=now,
+            profile_coordinator=profile_coordinator,
+        )
+    finally:
+        with _ACTIVE_PROJECTIONS_LOCK:
+            _ACTIVE_PROJECTIONS.discard(claim)
+
+
+def _project_once(
     store: DirectConnectAuthorityStore,
     operation_id: str,
     *,
@@ -83,7 +122,6 @@ def project(
         )
     if existing is not None and existing.state == "failed":
         return ProjectionOutcome(state="failed", adapter_id=None, profile_name=None, reason=existing.reason)
-
     artifacts = store.get_receipt_artifacts(operation_id)
     if artifacts is None:
         raise RuntimeError(f"no receipt found for direct-connect operation {operation_id!r}")
@@ -109,11 +147,18 @@ def project(
             return _await_concurrent_outcome(store, active_other)
         return ProjectionOutcome(state="planned", adapter_id=None, profile_name=None, reason=None)
 
-    if not store.plan_projection(operation_id, now=now):
+    if existing is None and not store.plan_projection(operation_id, now=now):
         # Another caller won the plan race between our read of `existing`
-        # and now. Reconcile its durable state instead of racing the
-        # conformance probe / durable writes a second time.
-        return _await_concurrent_outcome(store, operation_id)
+        # and now. Terminalize from its durable result when possible. A
+        # durable planned row is intentionally resumable: a previous owner may
+        # have lost ordinary profile-lease contention before any mutation.
+        raced = store.get_projection(operation_id)
+        if raced is None:
+            raise RuntimeError(
+                f"concurrent projection disappeared for operation {operation_id!r}"
+            )
+        if raced.state != "planned":
+            return _await_concurrent_outcome(store, operation_id)
 
     adapter_id = custom_adapter_registry.generate_adapter_id(
         f"{artifacts.intended_profile_name}-adapter"
@@ -195,10 +240,15 @@ def project(
                 )
         finally:
             release_store_lock()
-
-    store.mark_committed(
-        operation_id, adapter_id=adapter_id, profile_name=bind_result["profile_name"], now=now,
-    )
+        # Close the resumable planned window before releasing the profile
+        # lease, so a later route/sweep caller observes the terminal winner
+        # instead of redundantly publishing another profile generation.
+        store.mark_committed(
+            operation_id,
+            adapter_id=adapter_id,
+            profile_name=bind_result["profile_name"],
+            now=now,
+        )
     return ProjectionOutcome(
         state="committed", adapter_id=adapter_id, profile_name=bind_result["profile_name"], reason=None,
     )

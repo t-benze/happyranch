@@ -405,6 +405,21 @@ Machine-global `ProfileCoordinator` work shipped in U2B: supported profile and
 adapter writers now fence dependent orgs and publish a coherent profile closure.
 No workflow admission consumer ships in U2B. Direct
 same-UID file/DB edits remain outside the cooperative guarantee.
+
+The following U2B overlay is the current supported-operation map for the
+machine-global rows later in this historical census; it replaces their old
+`proposed, unimplemented` cells without changing the still-deferred consumer
+rows:
+
+| Production symbols | Shipped coordination status |
+|---|---|
+| `DaemonState.from_runtime`; `ProfileCoordinator.reconcile_startup` | Recovers interrupted profile operations exactly once, reconciles durable dependencies, and fences or publishes each attached org before admission. |
+| `runtime_executor_store.save_runtime_profile` / `remove_runtime_profile` | Participating writers. Per-profile lease then org publication lease; the shared `executor_profiles.yaml` flock is the innermost leaf around read/merge/replace. |
+| executor register/remove routes and registry register/unregister | Participating writers. Dependents are pre-fenced and a coherent closure is published only while every referenced profile and custom adapter is currently resolvable. |
+| `register_custom_adapter`, approve/bind/remove adapter routes | Participating writers. The coordinator spans the adapter-store mutation and dependent-org publication; existing adapter/profile store locks remain inner leaves. |
+| direct-connect projection route and sweep | Participating writers. A durable `planned` projection is retryable after pre-mutation lease contention and terminalizes under the profile lease. |
+| list/read-only profile and adapter routes | Read-only; no mutation span. They expose durable/current state and do not establish admission readiness. |
+
 Multi-stage route writers retain a process-local coordinator gate through
 terminal success or compensation, ordered before their existing `teams_lock`;
 the startup AgentDef migration retains it across the batch. A durable lease is
@@ -810,8 +825,12 @@ coordinator_invocation, compensation_generation, created_at)`, and
 `workflow_profile_leases(profile_name, owner_token, owner_pid)`. Unlike the
 earlier isolated model's separate SQLite file, production reuses those shipped
 org-local relations and serializes the machine-global edge with stable
-owner-only `fcntl.flock` files under daemon home. No U2B DDL, store file, or
-authority-layout change is required; the dependent-organization authority
+owner-only `fcntl.flock` files under daemon home. Because different profiles
+take different leases but rewrite the same `executor_profiles.yaml`, every
+`save_runtime_profile`/`remove_runtime_profile` mutation also takes one stable
+mode-0600 store-scoped `flock` only around read/merge/`os.replace`. It is an
+innermost leaf: its holder acquires no profile/publication/adapter lock or
+SQLite transaction. No U2B DDL, store file, or authority-layout change is required; the dependent-organization authority
 remains the existing per-org pointer/journal/lease/canonical-file/cache
 relations above.
 
@@ -840,11 +859,19 @@ reclaim only) -> short SQLite operation transactions -> per-org
 `workflow_publication_leases` one at a time during the pre-fence pass -> store
 commit -> registry commit -> per-org republish, each under its own publication
 lease **taken while the coordinator lease is still held** -> coordinator
-release. The graph is acyclic: profile lease -> org publication lease; no path
-takes the profile lease while holding an org publication lease, and the
-publication path never acquires the profile lease; the existing callback order
+release. The graph is acyclic: profile lease -> org publication lease ->
+existing writer lock(s) -> executor-profile store lock leaf; no path takes the
+profile lease while holding an org publication lease, and neither publication
+nor store-lock paths acquire a profile lease; the existing callback order
 `org.db_lock -> binding_lease -> synchronized DB callback` is untouched and no
-coordinator spans clone/network/host-launch/callback.
+coordinator spans clone/network/host-launch/callback. Adapter conformance probes
+complete before coordinator entry. Complete-closure publication reuses
+`ExecutorRegistry._resolve_custom_adapter_eligibility`, so registry-object
+presence cannot publish a pending, missing, non-executable, or hash-mismatched
+adapter as ready. A direct-connect projection left `planned` by pre-mutation
+profile contention remains eligible for both a later commit and the production
+sweep, and its terminal committed transition occurs before profile-lease
+release.
 
 Pre-fencing reuses the proved machinery: for every captured org,
 `fence_authority_namespace` sets the pointer `fenced`, increments the monotonic

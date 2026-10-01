@@ -343,8 +343,12 @@ profile operation before the state is exposed to routes. It uses the U1A
 org-local profile relations plus an owner-only same-host `flock`; there is no
 new machine-global database or schema. A coherent dependency change publishes
 a new org authority generation, while an absent, removed, or otherwise
-unpublished required profile keeps the org fenced. Startup does not dispatch,
-activate, or admit workflow work.
+unpublished required profile or a profile whose custom adapter is not currently
+approved and resolvable keeps the org fenced. The shared profile YAML's
+read/merge/replace writers additionally take one store-scoped leaf `flock`, so
+different profile leases cannot lose each other's entries. Direct-connect
+`planned` projections are production-sweep eligible after transient profile
+contention. Startup does not dispatch, activate, or admit workflow work.
 
 ## Org Config: Timezone and `current_time` Prompt Injection
 

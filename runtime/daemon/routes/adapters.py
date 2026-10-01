@@ -701,7 +701,10 @@ def _extract_registration_token(request: Request) -> str:
 
 
 @router.post("/runtime/adapters/register")
-def register_adapter(body: AdapterRegisterRequest) -> AdapterEntryResponse:
+def register_adapter(
+    body: AdapterRegisterRequest,
+    request: Request,
+) -> AdapterEntryResponse:
     """Register a custom adapter executable.
 
     Validates the executable (absolute path, regular file, executable),
@@ -719,7 +722,9 @@ def register_adapter(body: AdapterRegisterRequest) -> AdapterEntryResponse:
     (D4) and profile binding (D7) are separate, founder-gated slices.
     """
     try:
-        entry = register_custom_adapter(
+        daemon = getattr(request.app.state, "daemon", None)
+        coordinator = getattr(daemon, "profile_coordinator", None)
+        kwargs = dict(
             executable=body.executable,
             version=body.version,
             capabilities=body.capabilities,
@@ -729,11 +734,23 @@ def register_adapter(body: AdapterRegisterRequest) -> AdapterEntryResponse:
             dependencies=body.dependencies,
             verify_thread_resume=body.verify_thread_resume,
         )
+        if coordinator is not None:
+            kwargs["profile_coordinator"] = coordinator
+        entry = register_custom_adapter(**kwargs)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         )
+    except Exception as exc:
+        from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+
+        if isinstance(exc, ProfileCoordinatorError):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": exc.code},
+            ) from None
+        raise
     return _entry_to_response(entry)
 
 
@@ -1131,32 +1148,21 @@ def submit_adapter(
 
     daemon = getattr(request.app.state, "daemon", None)
     coordinator = getattr(daemon, "profile_coordinator", None)
-    span = (
-        coordinator.operation(
-            [intended_profile],
-            operation_kind=(
-                "rebind"
-                if intended_profile in load_runtime_profiles()
-                else "register"
-            ),
-            publisher="submit_adapter",
-        )
-        if coordinator is not None
-        else nullcontext()
-    )
     try:
-        with span:
-            entry = register_custom_adapter(
-                executable=body.executable,
-                version=body.version,
-                capabilities=body.capabilities,
-                workspace_adapter=body.workspace_adapter,
-                registered_by=f"adapter-submission:{intended_profile}",
-                intended_profile_name=intended_profile,
-                dependency_manifest_version=body.dependency_manifest_version,
-                dependencies=body.dependencies,
-                verify_thread_resume=body.verify_thread_resume,
-            )
+        kwargs = dict(
+            executable=body.executable,
+            version=body.version,
+            capabilities=body.capabilities,
+            workspace_adapter=body.workspace_adapter,
+            registered_by=f"adapter-submission:{intended_profile}",
+            intended_profile_name=intended_profile,
+            dependency_manifest_version=body.dependency_manifest_version,
+            dependencies=body.dependencies,
+            verify_thread_resume=body.verify_thread_resume,
+        )
+        if coordinator is not None:
+            kwargs["profile_coordinator"] = coordinator
+        entry = register_custom_adapter(**kwargs)
     except ValueError as exc:
         # Release the token on failure so it remains retryable
         store.release_runtime(raw_token)

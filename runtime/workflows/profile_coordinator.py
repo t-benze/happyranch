@@ -178,26 +178,36 @@ class ProfileCoordinator:
 
     def _effective_profile(self, profile_name: str) -> _EffectiveProfile:
         profiles = load_runtime_profiles()
+        registry = get_registry()
         config = profiles.get(profile_name)
         if config is None:
             # Preserve the existing in-process registry seam used by callers
             # that install an already-validated custom profile directly.  It
             # is deliberately only a compatibility projection: a restart
             # still requires the durable runtime profile store.
-            registered = get_registry().get_profile(profile_name)
+            registered = registry.get_profile(profile_name)
             if registered is not None and registered.kind != "builtin":
                 return _EffectiveProfile(
                     digest=_digest(asdict(registered)),
                     state="active",
-                    resolvable=True,
+                    resolvable=(
+                        registry._resolve_custom_adapter_eligibility(registered)
+                        is not None
+                    ),
                 )
             return _EffectiveProfile(
                 digest=_digest({"profile_name": profile_name, "state": "removed"}),
                 state="removed",
                 resolvable=False,
             )
-        profile = get_registry().get_profile(profile_name)
-        resolvable = profile is not None
+        profile = registry.get_profile(profile_name)
+        resolvable = (
+            profile is not None
+            and (
+                profile.kind == "builtin"
+                or registry._resolve_custom_adapter_eligibility(profile) is not None
+            )
+        )
         return _EffectiveProfile(
             digest=_digest(config),
             state="active",
@@ -420,8 +430,7 @@ class ProfileCoordinator:
                     )
         return publishable
 
-    @staticmethod
-    def _closure_coherent(org: OrgState) -> bool:
+    def _closure_coherent(self, org: OrgState) -> bool:
         with org.db._lock:
             rows = org.db._conn.execute(
                 "SELECT d.state,d.bound_generation,s.generation,"
@@ -434,7 +443,7 @@ class ProfileCoordinator:
                 "WHERE d.org_namespace=? AND d.state IN ('active','unbound')",
                 (org.workflow_authority.namespace,),
             ).fetchall()
-        return all(
+        if not all(
             row["state"] == "active"
             and row["store_state"] == "active"
             and row["generation"] is not None
@@ -442,6 +451,19 @@ class ProfileCoordinator:
             and row["published_generation"] is not None
             and int(row["published_generation"]) == int(row["bound_generation"])
             for row in rows
+        ):
+            return False
+        profile_names = {
+            str(row["profile_name"])
+            for row in org.db.execute(
+                "SELECT profile_name FROM workflow_profile_dependencies "
+                "WHERE org_namespace=? AND state='active'",
+                (org.workflow_authority.namespace,),
+            ).fetchall()
+        }
+        return all(
+            self._effective_profile(profile_name).resolvable
+            for profile_name in profile_names
         )
 
     def _republish(

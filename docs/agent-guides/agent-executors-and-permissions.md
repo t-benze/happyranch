@@ -60,14 +60,26 @@ Machine-global profile mutations use the U2B same-host cooperative coordinator.
 Each supported adapter/profile writer takes a stable owner-only per-profile
 file lease, pre-fences only orgs with consumers of that profile, commits through
 the existing durable-first writer, and republishes each org only after its full
-profile dependency closure is coherent. The lock order is always profile lease
-before org publication lease. Multiple agents using one profile remain distinct
+profile dependency closure is coherent, including the existing central
+approved/current custom-adapter eligibility check. The lock order is profile
+lease before org publication lease before existing writer locks; the shared
+`executor_profiles.yaml` mutation lock is the innermost leaf and covers only
+read/merge/atomic-replace. Multiple agents using one profile remain distinct
 consumer rows; removing one cannot erase another. A removed profile leaves its
 remaining consumers unbound and their org fenced until an explicit valid rebind
 or removal. Live contention returns `profile_coordinator_busy`; process death
 releases the kernel lease and startup resumes the durable operation exactly
 once. Existing admitted work is not killed, and U2B adds no workflow admission
 or activation surface.
+
+Both adapter registration entry points (`register_adapter` and
+`submit_adapter`), approval/bind/removal, executor-profile removal,
+direct-connect projection/retry, agent executor rebinding, paired profile
+reads, and daemon startup participate at their existing mutation/read
+boundaries. Conformance probes finish before profile leases. A direct-connect
+projection left durably `planned` by pre-mutation contention is retried by a
+later commit call or the production sweep; it is not treated as a terminal
+successful response.
 
 **Built-in profiles:**
 

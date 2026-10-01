@@ -225,10 +225,14 @@ same-host `ProfileCoordinator`: every supported machine-global profile/adapter
 writer acquires the stable owner-only per-profile `flock` before any affected
 org publication gate, pre-fences exactly the orgs with active or outstanding
 consumers, commits through the existing durable-first writer, and republishes
-only a complete coherent closure. The only lock order is profile lease -> org
-publication lease; publication paths never acquire a profile lease, and no
-lease or SQLite transaction spans filesystem scanning, network, host launch, or
-callbacks. Multiple consumers remain separate dependency rows. Removal leaves
+only a complete coherent closure. The complete acyclic lock order is profile
+lease -> org publication lease -> existing writer lock(s) -> the shared
+`executor_profiles.yaml` store lock as an innermost leaf. Every save/remove
+holds that stable mode-0600 `flock` only around its read/merge/`os.replace`
+critical section; the store-lock holder never acquires another lease, writer
+lock, or SQLite transaction. Publication paths never acquire a profile or
+store lease, and no profile/publication lease or SQLite transaction spans
+filesystem scanning, network, host launch, or callbacks. Multiple consumers remain separate dependency rows. Removal leaves
 an outstanding consumer unbound and the org fenced until an explicit coherent
 rebind/removal. Cold startup completes interrupted operations once; a
 post-commit republish failure preserves the writer's established response while
