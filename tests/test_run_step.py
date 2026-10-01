@@ -2,6 +2,7 @@
 a task one subprocess call at a time under the new async execution model."""
 from __future__ import annotations
 
+from collections.abc import Iterator
 import importlib.util
 import json
 import os
@@ -255,8 +256,12 @@ def runtime(tmp_path: Path) -> OrgPaths:
 
 
 @pytest.fixture
-def db(runtime: OrgPaths) -> Database:
-    return Database(runtime.db_path)
+def db(runtime: OrgPaths) -> Iterator[Database]:
+    database = Database(runtime.db_path)
+    try:
+        yield database
+    finally:
+        database.close()
 
 
 def test_run_step_silent_noop_when_task_missing(runtime, db):

@@ -223,7 +223,7 @@ def test_accepted_recovery_continue_settles_exact_receipt_once_across_restart(tm
 
 
 def test_accepted_recovery_delegate_claim_uses_only_recovery_result_row(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, request,
 ):
     """The spawn claim is bound to the ledger-selected recovery result row."""
     from runtime.infrastructure.database import Committed, LostClaim, RetryClaim
@@ -231,6 +231,7 @@ def test_accepted_recovery_delegate_claim_uses_only_recovery_result_row(
     from runtime.orchestrator.run_step import _consume_accepted_completion_recovery
 
     db, orch, queue = _seed_org_with_orch(tmp_path)
+    request.addfinalizer(db.close)
     task_id = "TASK-RECOVERY-DELEGATE"
     origin_session = "origin-manager"
     recovery_session = "recovery-manager"

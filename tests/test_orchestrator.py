@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Iterator
 import hashlib
 import json
 import os
@@ -46,14 +47,18 @@ def _seed_active_agents_for_orchestrator(test_runtime):
 
 
 @pytest.fixture
-def orchestrator(test_settings, test_runtime):
+def orchestrator(test_settings, test_runtime) -> Iterator[Orchestrator]:
     test_runtime.root.mkdir(parents=True, exist_ok=True)
     db = _open_live_org_database(test_runtime.db_path)
     teams = TeamsRegistry.load(test_runtime.root)
-    return Orchestrator(
+    orch = Orchestrator(
         db=db, settings=test_settings,
         paths=test_runtime, slug="test", teams=teams,
     )
+    try:
+        yield orch
+    finally:
+        db.close()
 
 
 def _open_live_org_database(path: Path) -> Database:

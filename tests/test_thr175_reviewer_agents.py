@@ -5,6 +5,7 @@ fail-closed for configured reviewer legs that omit ``expect_verdict``.
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 import json
 from pathlib import Path
 
@@ -33,8 +34,12 @@ def runtime(tmp_path: Path) -> OrgPaths:
 
 
 @pytest.fixture
-def db(runtime: OrgPaths) -> Database:
-    return Database(runtime.db_path)
+def db(runtime: OrgPaths) -> Iterator[Database]:
+    database = Database(runtime.db_path)
+    try:
+        yield database
+    finally:
+        database.close()
 
 
 def _make_orch(db: Database, runtime: OrgPaths):

@@ -30,6 +30,7 @@ real ``StrictFakeAuthorityEvaluator`` / policy):
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 import hashlib
 import json
 from pathlib import Path
@@ -91,10 +92,13 @@ def runtime(tmp_path: Path) -> OrgPaths:
 
 
 @pytest.fixture
-def db(runtime: OrgPaths) -> Database:
+def db(runtime: OrgPaths) -> Iterator[Database]:
     database = Database(runtime.db_path)
     install_or_recover(database)
-    return database
+    try:
+        yield database
+    finally:
+        database.close()
 
 
 def _make_report(output_summary: str, status: str = "completed"):

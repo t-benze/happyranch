@@ -424,7 +424,7 @@ def test_chain_step_count_not_bumped_on_auto_advance(tmp_path):
     ids=["completed-rejected-verdict", "failed-leg"],
 )
 def test_verified_retry_carrier_f4_f6_preserves_leaf_outcome(
-    tmp_path, leaf_status, verdict, expected_note,
+    tmp_path, leaf_status, verdict, expected_note, request,
 ):
     """C5/F4/F6: a rejected verdict and a failed leg are distinct facts."""
     from runtime.infrastructure.database import Database
@@ -437,6 +437,7 @@ def test_verified_retry_carrier_f4_f6_preserves_leaf_outcome(
     )
 
     db = Database(tmp_path / "x.db")
+    request.addfinalizer(db.close)
     db.insert_task(TaskRecord(
         id="TASK-P", brief="outer", team="engineering",
         assigned_agent="engineering_head", status=TaskStatus.IN_PROGRESS,

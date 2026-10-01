@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -194,5 +195,9 @@ def paths(tmp_path: Path) -> OrgPaths:
 
 
 @pytest.fixture
-def db(paths: OrgPaths) -> Database:
-    return Database(paths.db_path)
+def db(paths: OrgPaths) -> Iterator[Database]:
+    database = Database(paths.db_path)
+    try:
+        yield database
+    finally:
+        database.close()
