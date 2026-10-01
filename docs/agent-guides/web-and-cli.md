@@ -795,7 +795,10 @@ options and unattributed counts; a selected cohort requires `executor` plus
 exactly one of `model` or `model_unpinned=true`. Both routes use the same
 bearer authentication and org scoping as `GET /tokens`. They return rolling
 seven-day UTC bounds with the resolved org timezone for display; no Usage UI
-is part of PR3.
+is part of PR3. Workload emits only current-window agents. Each period's
+`reply_outcome_coverage` reports linked `recorded` replies out of
+`total_consumed` REPLY wakes; a NULL `reply_message_seq` is unknown, does not
+count as a Reply, and withholds only the Replies delta when comparison is on.
 
 Rollup modifiers (presentation-side; require a `--by-*` flag):
 

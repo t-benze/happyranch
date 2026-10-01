@@ -16622,7 +16622,7 @@ class Database:
         thread_rows = self._conn.execute(
             """SELECT id, thread_id, agent_name, invocation_token, purpose,
                       status, started_at, consumed_at, session_id, executor,
-                      model, decline_reason
+                      model, decline_reason, reply_message_seq
                FROM thread_invocations
                WHERE (started_at >= ? AND started_at < ?)
                   OR (purpose = 'reply'

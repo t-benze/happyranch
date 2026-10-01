@@ -41,6 +41,11 @@ class RuntimeMetric(BaseModel):
     total: int
 
 
+class ReplyOutcomeCoverage(BaseModel):
+    recorded: int
+    total_consumed: int
+
+
 class WorkloadPeriod(BaseModel):
     task_runs: int
     thread_wakes: int
@@ -48,6 +53,7 @@ class WorkloadPeriod(BaseModel):
     deliveries: int
     delivery_unclassified_results: int
     replies: int
+    reply_outcome_coverage: ReplyOutcomeCoverage
 
 
 class WorkloadAgent(BaseModel):

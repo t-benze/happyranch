@@ -261,6 +261,13 @@ UTC intervals, including across local DST changes.
 
 Workload reads task `session_start`, ordered task `session_end`, started
 `thread_invocations`, accepted `task_results`, and consumed reply invocations.
+It emits only agents with activity in the selected current window; prior-window
+facts attach to those rows only and never create synthetic previous-only rows.
+Replies count only consumed REPLY wakes with a non-NULL `reply_message_seq`.
+A consumed REPLY with NULL linkage is an unknown “reply outcome not recorded,”
+including manual escalation resolution and legacy history; it is neither a
+reply nor a non-reply. Each period exposes recorded and total-consumed reply
+wake counts, and no historical inference or backfill is performed.
 An end closes the starts since the prior end only when that segment has exactly
 one start; otherwise every start in the segment lacks runtime. Deliveries are
 distinct completed task IDs whose completed result session maps to a
@@ -294,7 +301,9 @@ agent declines; system closures (`participant_removed`, `agent_terminated`,
 and founder-abort paths) are failures. The three reported token classes remain
 separate known totals.
 
-Comparison is server-computed. Workload uses absolute native-unit movement.
+Comparison is server-computed. Workload uses absolute native-unit movement,
+except that its Replies delta is explicitly withheld when either period has an
+unknown reply outcome; every other Workload comparison remains available.
 Efficiency withholds every row delta if either non-empty period has usage
 coverage below 95%, or unattributed lifecycle facts could belong to the row.
 Otherwise Runs handles previous-zero/current-positive as `new_from_zero`,

@@ -20,6 +20,11 @@ export interface RuntimeMetric {
   total: number;
 }
 
+export interface ReplyOutcomeCoverage {
+  recorded: number;
+  total_consumed: number;
+}
+
 export interface WorkloadPeriod {
   task_runs: number;
   thread_wakes: number;
@@ -27,6 +32,7 @@ export interface WorkloadPeriod {
   deliveries: number;
   delivery_unclassified_results: number;
   replies: number;
+  reply_outcome_coverage: ReplyOutcomeCoverage;
 }
 
 export interface WorkloadAgent {

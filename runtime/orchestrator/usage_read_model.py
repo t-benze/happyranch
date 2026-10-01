@@ -220,6 +220,7 @@ def _empty_workload() -> dict[str, Any]:
         "task_runs": 0, "thread_wakes": 0,
         "recorded_runtime": {"seconds": 0, "known": 0, "total": 0},
         "deliveries": 0, "delivery_unclassified_results": 0, "replies": 0,
+        "reply_outcome_coverage": {"recorded": 0, "total_consumed": 0},
     }
 
 
@@ -294,8 +295,16 @@ def read_workload(
                 target["recorded_runtime"]["seconds"] += (consumed - started).total_seconds()
         consumed = _parse_dt(row.get("consumed_at"))
         reply_period = _period(consumed, current_window, previous_window) if consumed else None
-        if reply_period is not None and row.get("purpose") == "reply" and row.get("status") == "consumed":
-            values[row["agent_name"]][reply_period]["replies"] += 1
+        if (
+            reply_period is not None
+            and row.get("purpose") == "reply"
+            and row.get("status") == "consumed"
+        ):
+            target = values[row["agent_name"]][reply_period]
+            target["reply_outcome_coverage"]["total_consumed"] += 1
+            if row.get("reply_message_seq") is not None:
+                target["replies"] += 1
+                target["reply_outcome_coverage"]["recorded"] += 1
     delivered: set[tuple[str, str, str]] = set()
     purposes = {
         (row["task_id"], row["agent"], _payload(row.get("payload")).get("session_id")):
@@ -320,14 +329,31 @@ def read_workload(
     for agent in sorted(values):
         current = values[agent]["current"]
         previous = values[agent]["previous"]
+        if not (
+            current["task_runs"]
+            or current["thread_wakes"]
+            or current["deliveries"]
+            or current["delivery_unclassified_results"]
+            or current["reply_outcome_coverage"]["total_consumed"]
+        ):
+            continue
         deltas = None
         if compare:
+            reply_unknown = any(
+                period["reply_outcome_coverage"]["recorded"]
+                < period["reply_outcome_coverage"]["total_consumed"]
+                for period in (current, previous)
+            )
             deltas = {
                 "task_runs": _absolute_delta(current["task_runs"], previous["task_runs"]),
                 "thread_wakes": _absolute_delta(current["thread_wakes"], previous["thread_wakes"]),
                 "recorded_runtime_seconds": _absolute_delta(current["recorded_runtime"]["seconds"], previous["recorded_runtime"]["seconds"]),
                 "deliveries": _absolute_delta(current["deliveries"], previous["deliveries"]),
-                "replies": _absolute_delta(current["replies"], previous["replies"]),
+                "replies": (
+                    _withheld("reply_outcome_not_recorded")
+                    if reply_unknown
+                    else _absolute_delta(current["replies"], previous["replies"])
+                ),
             }
         output["agents"].append({"agent": agent, "current": current, "previous": previous if compare else None, "deltas": deltas})
     return output

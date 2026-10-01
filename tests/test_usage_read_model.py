@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
 from runtime.models import (
@@ -60,10 +62,11 @@ def _task_start(
     purpose: str = "worker_execution",
     executor: str | None = "codex",
     model: str | None = "gpt-5",
+    agent: str = "dev_agent",
 ) -> None:
     AuditLogger(db).log_session_start(
         task_id,
-        "dev_agent",
+        agent,
         "/workspace",
         session_id=session_id,
         invocation_purpose=purpose,
@@ -139,6 +142,47 @@ def _thread_usage(
     _move_latest_usage(db, when)
 
 
+def _set_invocation_consumed_at(
+    db: Database, invocation: ThreadInvocation, when: datetime,
+) -> None:
+    with db._lock:
+        db._conn.execute(
+            "UPDATE thread_invocations SET consumed_at=? WHERE invocation_token=?",
+            (when.isoformat(), invocation.invocation_token),
+        )
+        db._conn.commit()
+
+
+def _persist_linked_reply(
+    db: Database, *, seq: int, started_at: datetime, consumed_at: datetime,
+    session_id: str | None = None,
+) -> ThreadInvocation:
+    invocation = _thread_start(
+        db, seq=seq, started_at=started_at, session_id=session_id,
+    )
+    db.reply_conversational(
+        thread_id="THR-001",
+        speaker="dev_agent",
+        body_markdown=f"reply {seq}",
+        attachments=[],
+        token=invocation.invocation_token,
+        token_purpose=ThreadInvocationPurpose.REPLY,
+    )
+    _set_invocation_consumed_at(db, invocation, consumed_at)
+    return invocation
+
+
+def _consume_reply_without_message(
+    db: Database, *, seq: int, started_at: datetime, consumed_at: datetime,
+) -> ThreadInvocation:
+    invocation = _thread_start(db, seq=seq, started_at=started_at)
+    # This is the production writer used by manual escalation resolution and
+    # is also the durable shape of legacy consumed replies: terminal, no link.
+    assert db.consume_invocation(invocation.invocation_token)
+    _set_invocation_consumed_at(db, invocation, consumed_at)
+    return invocation
+
+
 def test_workload_runtime_pairing_bounds_and_left_join_coverage(db: Database) -> None:
     # Exact lower bound is included and exact upper bound is excluded.
     _task_start(db, task_id="TASK-LOWER", session_id="lower", when=NOW - timedelta(days=7))
@@ -187,25 +231,158 @@ def test_workload_pairs_single_segments_and_keeps_trailing_start_missing(db: Dat
     assert row["recorded_runtime"] == {"seconds": 3600, "known": 1, "total": 2}
 
 
-def test_reply_is_timed_by_consumed_at_even_when_wake_started_before_windows(db: Database) -> None:
+def test_linked_reply_is_timed_by_consumed_at_even_when_wake_started_before_windows(
+    db: Database,
+) -> None:
     db.insert_thread(ThreadRecord(id="THR-001", subject="usage"))
-    invocation = _thread_start(
-        db,
-        seq=1,
-        started_at=NOW - timedelta(days=15),
+    db.add_thread_participant("THR-001", "dev_agent", added_by="founder")
+    _persist_linked_reply(
+        db, seq=1, started_at=NOW - timedelta(days=15),
+        consumed_at=NOW - timedelta(hours=1),
     )
-    assert db.consume_invocation(invocation.invocation_token)
-    with db._lock:
-        db._conn.execute(
-            "UPDATE thread_invocations SET consumed_at=? WHERE invocation_token=?",
-            ((NOW - timedelta(hours=1)).isoformat(), invocation.invocation_token),
-        )
-        db._conn.commit()
 
     row = read_workload(db, now=NOW, timezone_name="UTC")["agents"][0]["current"]
 
     assert row["thread_wakes"] == 0
     assert row["replies"] == 1
+    assert row["reply_outcome_coverage"] == {"recorded": 1, "total_consumed": 1}
+
+
+@pytest.mark.parametrize("compare", [False, True])
+def test_workload_excludes_agents_active_only_in_previous_window(
+    db: Database, compare: bool,
+) -> None:
+    _task_start(
+        db,
+        task_id="TASK-PREVIOUS-ONLY",
+        session_id="previous-only",
+        when=NOW - timedelta(days=8),
+        agent="previous_agent",
+    )
+
+    result = read_workload(db, now=NOW, timezone_name="UTC", compare=compare)
+
+    assert result["agents"] == []
+
+
+def test_workload_empty_current_window_does_not_synthesize_rows(db: Database) -> None:
+    db.insert_thread(ThreadRecord(id="THR-001", subject="usage"))
+    _thread_start(db, seq=1, started_at=NOW - timedelta(days=8))
+
+    result = read_workload(db, now=NOW, timezone_name="UTC", compare=True)
+
+    assert result["agents"] == []
+
+
+def test_workload_records_linked_replies_and_treats_manual_resolution_as_unknown(
+    db: Database,
+) -> None:
+    db.insert_thread(ThreadRecord(id="THR-001", subject="usage"))
+    db.add_thread_participant("THR-001", "dev_agent", added_by="founder")
+    _persist_linked_reply(
+        db, seq=1, started_at=NOW - timedelta(hours=3),
+        consumed_at=NOW - timedelta(hours=2),
+    )
+    _consume_reply_without_message(
+        db, seq=2, started_at=NOW - timedelta(hours=2),
+        consumed_at=NOW - timedelta(hours=1),
+    )
+
+    row = read_workload(db, now=NOW, timezone_name="UTC")["agents"][0]["current"]
+
+    assert row["replies"] == 1
+    assert row["reply_outcome_coverage"] == {"recorded": 1, "total_consumed": 2}
+
+
+def test_workload_legacy_null_reply_outcome_is_unknown(db: Database) -> None:
+    db.insert_thread(ThreadRecord(id="THR-001", subject="usage"))
+    _consume_reply_without_message(
+        db, seq=1, started_at=NOW - timedelta(hours=2),
+        consumed_at=NOW - timedelta(hours=1),
+    )
+
+    row = read_workload(db, now=NOW, timezone_name="UTC")["agents"][0]["current"]
+
+    assert row["replies"] == 0
+    assert row["reply_outcome_coverage"] == {"recorded": 0, "total_consumed": 1}
+
+
+@pytest.mark.parametrize("unknown_period", ["current", "previous"])
+def test_workload_withholds_reply_comparison_when_either_window_has_unknown_outcome(
+    db: Database, unknown_period: str,
+) -> None:
+    db.insert_thread(ThreadRecord(id="THR-001", subject="usage"))
+    db.add_thread_participant("THR-001", "dev_agent", added_by="founder")
+    _persist_linked_reply(
+        db, seq=1, started_at=NOW - timedelta(hours=3),
+        consumed_at=NOW - timedelta(hours=2),
+    )
+    _persist_linked_reply(
+        db, seq=2, started_at=NOW - timedelta(days=8, hours=1),
+        consumed_at=NOW - timedelta(days=8),
+    )
+    offset = timedelta(hours=1) if unknown_period == "current" else timedelta(days=8)
+    _consume_reply_without_message(
+        db, seq=3, started_at=NOW - offset - timedelta(minutes=30),
+        consumed_at=NOW - offset,
+    )
+
+    row = read_workload(
+        db, now=NOW, timezone_name="UTC", compare=True,
+    )["agents"][0]
+
+    assert row["deltas"]["replies"] == {
+        "kind": "withheld",
+        "value": None,
+        "withheld_reason": "reply_outcome_not_recorded",
+    }
+
+
+def test_workload_compares_replies_when_both_windows_are_fully_recorded(
+    db: Database,
+) -> None:
+    db.insert_thread(ThreadRecord(id="THR-001", subject="usage"))
+    db.add_thread_participant("THR-001", "dev_agent", added_by="founder")
+    for seq, consumed_at in (
+        (1, NOW - timedelta(hours=3)),
+        (2, NOW - timedelta(hours=1)),
+        (3, NOW - timedelta(days=8)),
+    ):
+        _persist_linked_reply(
+            db,
+            seq=seq,
+            started_at=consumed_at - timedelta(minutes=30),
+            consumed_at=consumed_at,
+        )
+
+    row = read_workload(
+        db, now=NOW, timezone_name="UTC", compare=True,
+    )["agents"][0]
+
+    assert row["current"]["reply_outcome_coverage"] == {
+        "recorded": 2, "total_consumed": 2,
+    }
+    assert row["previous"]["reply_outcome_coverage"] == {
+        "recorded": 1, "total_consumed": 1,
+    }
+    assert row["deltas"]["replies"] == {
+        "kind": "absolute", "value": 1, "withheld_reason": None,
+    }
+
+
+def test_workload_excludes_non_consumed_reply_wakes_from_reply_outcomes(
+    db: Database,
+) -> None:
+    db.insert_thread(ThreadRecord(id="THR-001", subject="usage"))
+    _thread_start(db, seq=1, started_at=NOW - timedelta(hours=2))
+    declined = _thread_start(db, seq=2, started_at=NOW - timedelta(hours=1))
+    assert db.mark_invocation_declined(declined.invocation_token)
+
+    row = read_workload(db, now=NOW, timezone_name="UTC")["agents"][0]["current"]
+
+    assert row["thread_wakes"] == 2
+    assert row["replies"] == 0
+    assert row["reply_outcome_coverage"] == {"recorded": 0, "total_consumed": 0}
 
 
 def test_dream_join_uses_dream_id_not_session_ids_and_refuses_ambiguity(db: Database) -> None:
@@ -646,10 +823,14 @@ def test_thread_fallback_join_and_system_declines_are_not_decline_waste(db: Data
 
 def test_thread_runtime_replies_normal_join_and_no_declines(db: Database) -> None:
     db.insert_thread(ThreadRecord(id="THR-001", subject="usage"))
-    replied = _thread_start(
-        db, seq=1, session_id="normal-runtime", started_at=NOW - timedelta(hours=4),
+    db.add_thread_participant("THR-001", "dev_agent", added_by="founder")
+    _persist_linked_reply(
+        db,
+        seq=1,
+        session_id="normal-runtime",
+        started_at=NOW - timedelta(hours=4),
+        consumed_at=NOW - timedelta(hours=1),
     )
-    assert db.consume_invocation(replied.invocation_token)
     declined = _thread_start(db, seq=2, started_at=NOW - timedelta(hours=3))
     assert db.mark_invocation_declined(declined.invocation_token, decline_reason="no thanks")
     failed = _thread_start(db, seq=3, started_at=NOW - timedelta(hours=2))
@@ -658,12 +839,6 @@ def test_thread_runtime_replies_normal_join_and_no_declines(db: Database) -> Non
         status=ThreadInvocationStatus.FAILED,
         decline_reason="provider failure",
     )
-    with db._lock:
-        db._conn.execute(
-            "UPDATE thread_invocations SET consumed_at=? WHERE invocation_token=?",
-            ((NOW - timedelta(hours=1)).isoformat(), replied.invocation_token),
-        )
-        db._conn.commit()
     _thread_usage(db, session_id="normal-runtime", when=NOW - timedelta(minutes=30), value=9)
 
     workload = read_workload(db, now=NOW, timezone_name="UTC")["agents"][0]["current"]
