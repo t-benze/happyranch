@@ -122,7 +122,7 @@ export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
         )}
       </div>
 
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
         <div className="text-fg-muted flex min-w-0 items-center gap-1.5 text-xs">
           <span className="inline-flex items-center gap-1">
             <span
@@ -138,7 +138,7 @@ export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
           </span>
           <span className="truncate">{scheduleLine(schedule, t, locale)}</span>
         </div>
-        <div className="text-fg-subtle flex shrink-0 items-center gap-3 text-xs">
+        <div className="text-fg-subtle ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-1 text-xs">
           {expiry && <span>{expiry}</span>}
           {schedule.fire_count > 0 && (
             <span>
@@ -148,7 +148,7 @@ export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
               })}
             </span>
           )}
-          <span className="text-fg-subtle font-mono text-xs">
+          <span className="text-fg-subtle font-mono text-xs break-all">
             {schedule.schedule_id}
           </span>
         </div>

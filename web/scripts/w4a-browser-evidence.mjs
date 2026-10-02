@@ -14,7 +14,8 @@
  *   G  the ordinary bundle carries every VIEW_ROUTES row's zh-CN catalog copy;
  *   V  each VIEW_ROUTES row in en and zh-CN at 1440x900 and 390x844:
  *      <html lang>, localized chrome, daemon values verbatim, no document-level
- *      horizontal overflow, PNG + sha256;
+ *      horizontal overflow, optional `contained` (every clipping card holds
+ *      its rows: scrollWidth <= clientWidth), PNG + sha256;
  *   S  each SWITCH_ROUTES row (an input/dialog surface): focus the control,
  *      switch en -> zh-CN -> en via the storage-event path; the SAME container
  *      and control nodes, focus (and draft, when the row types one), localized
@@ -338,6 +339,11 @@ const CHINESE_NAVIGATOR = `(() => {
 const bodyHas = (s) => `document.body.textContent.includes(${JSON.stringify(s)})`;
 const langIs = (l) => `document.documentElement.lang === ${JSON.stringify(l)}`;
 const noOverflow = `document.documentElement.scrollWidth <= innerWidth + 1`;
+/** Cards (parents of rows matching `rowSel`) whose content is wider than the card; `cards` keeps it non-vacuous. */
+const cardsContain = (rowSel) => `(() => {
+  const cards = [...new Set([...document.querySelectorAll(${JSON.stringify(rowSel)})].map((a) => a.parentElement))];
+  return { cards: cards.length > 0, over: cards.filter((c) => c.scrollWidth > c.clientWidth).map((c) => \`clientW=\${c.clientWidth} scrollW=\${c.scrollWidth}\`) };
+})()`;
 
 // ------------------------------------------------------------------ route tables
 const DREAM_CARD = (id) => `[...document.querySelectorAll('li > button')].find((b) => b.textContent.includes(${JSON.stringify(id)}))`;
@@ -395,6 +401,7 @@ const VIEW_ROUTES = [
       ['todos.recurrence.endsAfter', { count: '6' }],
     ],
     verbatim: ['SCHEDULE-042', 'investment_advisor', 'portfolio_agent', 'Send the weekly market update — «raw» brief', 'Asia/Shanghai'],
+    contained: () => cardsContain(`a[href^="/orgs/${ORG}/todos/"]`),
   },
   {
     id: 'todo-detail', route: 'todos/:scheduleId', path: `/orgs/${ORG}/todos/SCHEDULE-042`,
@@ -695,6 +702,7 @@ async function main() {
           }
           for (const value of row.verbatim) check(`V ${row.id} ${locale} ${w} verbatim ${value}`, await evaluate(page, bodyHas(value)), true);
           check(`V ${row.id} ${locale} ${w} no document horizontal overflow`, await evaluate(page, noOverflow), true);
+          if (row.contained) check(`V ${row.id} ${locale} ${w} cards contain their rows`, await evaluate(page, row.contained()), { cards: true, over: [] });
           await capture(page, `${short}-${row.id}-${w}`, { viewport: `${w}x${ht}`, locale, route: row.route });
           await closePage(page);
         }

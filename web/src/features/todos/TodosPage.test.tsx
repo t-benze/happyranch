@@ -461,6 +461,22 @@ describe('TodosPage — list view', () => {
     expect(rowLink?.getAttribute('href')).toBe(`/orgs/${ORG_SLUG}/todos/SCHEDULE-042`)
   })
 
+  it('row metadata wraps inside the card instead of overflowing it (TASK-9471 zh-CN 390px clip)', async () => {
+    mockSchedules(ALL_SCHEDULES)
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
+    await screen.findByText('Send the weekly market update')
+    const idSpan = screen.getAllByText('SCHEDULE-042')[0]
+    // The id may break, never ellipsize: daemon bytes stay fully readable.
+    expect(idSpan.classList.contains('break-all')).toBe(true)
+    expect(idSpan.classList.contains('truncate')).toBe(false)
+    const group = idSpan.parentElement as HTMLElement
+    expect(group.classList.contains('shrink-0')).toBe(false)
+    expect(group.classList.contains('min-w-0')).toBe(true)
+    expect(group.classList.contains('flex-wrap')).toBe(true)
+    const line = group.parentElement as HTMLElement
+    expect(line.classList.contains('flex-wrap')).toBe(true)
+  })
+
   it('rows are navigable Links to the detail route', async () => {
     mockSchedules(ALL_SCHEDULES)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
