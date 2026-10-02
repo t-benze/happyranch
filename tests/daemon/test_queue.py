@@ -209,6 +209,25 @@ async def test_queue_start_workers_spawns_n_tasks_and_stop_cancels_them():
     assert all(t.done() for t in q._worker_tasks)
 
 
+@pytest.mark.asyncio
+async def test_stop_permanently_refuses_all_queue_producers(caplog):
+    """S1/case 16a: a stopped queue cannot buffer a later resume claim."""
+    q = TaskQueue()
+
+    await q.stop()
+    q.enqueue("alpha", "TASK-ENQUEUE")
+    q.put_nowait("alpha", "TASK-PUT")
+    admitted = q.enqueue_if_absent("alpha", "TASK-ABSENT")
+
+    assert admitted is False
+    assert q._queue.empty()
+    assert q._pending_counts == {}
+    assert q._admission_reservations == set()
+    assert caplog.messages.count("task queue is stopping; refusing alpha/TASK-ENQUEUE") == 1
+    assert caplog.messages.count("task queue is stopping; refusing alpha/TASK-PUT") == 1
+    assert caplog.messages.count("task queue is stopping; refusing alpha/TASK-ABSENT") == 1
+
+
 def test_daemon_state_carries_a_task_queue(daemon_state):
     from runtime.daemon.queue import TaskQueue
     assert isinstance(daemon_state.queue, TaskQueue)

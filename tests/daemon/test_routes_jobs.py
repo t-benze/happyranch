@@ -381,6 +381,24 @@ def test_get_script_detail(client_with_runtime):
     assert body["script_text"] == "echo 1"
 
 
+def test_get_job_detail_carries_existing_reason_field(client_with_runtime):
+    """S4: the existing API shape carries reason; no new field is added."""
+    client, org = client_with_runtime
+    job_id = _submit_pending(client, org)
+    org.db._conn.execute(
+        "UPDATE jobs SET status='failed', reason='daemon_shutdown', exit_code=-15 "
+        "WHERE id=?",
+        (job_id,),
+    )
+    org.db._conn.commit()
+
+    response = client.get(f"/api/v1/orgs/alpha/jobs/{job_id}")
+
+    assert response.status_code == 200
+    assert response.json()["reason"] == "daemon_shutdown"
+    assert response.json()["exit_code"] == -15
+
+
 def test_get_script_detail_404(client_with_runtime):
     client, _org = client_with_runtime
     r = client.get("/api/v1/orgs/alpha/jobs/SR-999")

@@ -221,8 +221,11 @@ entirely** when there is no live job wait.
 The system resumes your task automatically once **every** listed job reaches a
 terminal state (`completed`, `failed`, or `rejected`). When you resume, your
 bootstrap doc will include a `BLOCKED-JOBS-RESULTS` section listing each job's
-status and `happyranch jobs show JOB-NNN` / `happyranch jobs output JOB-NNN`
-commands to fetch full output. **You don't poll.**
+status and, when stored, its reason and exit code, plus
+`happyranch jobs show JOB-NNN` / `happyranch jobs output JOB-NNN` commands to
+fetch full output. A job killed by graceful daemon shutdown therefore reads
+`failed (daemon_shutdown, exit -15)` (platform signal codes may differ); the
+task resumes once on the next startup, not during teardown. **You don't poll.**
 
 If you need to stay in-session for a fast `review_required=false` job, the
 existing `happyranch jobs wait JOB-NNN --timeout-seconds 30` pattern still works.

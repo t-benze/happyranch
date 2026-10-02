@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -110,3 +111,126 @@ async def test_terminate_jobs_for_task_kills_inflight(tmp_path: Path) -> None:
     result = await run_task
     assert result.status == "failed"
     assert result.reason == "task_ended"
+
+
+@pytest.mark.asyncio
+async def test_terminate_all_inflight_marks_signalled_job_daemon_shutdown(
+    tmp_path: Path,
+) -> None:
+    """S2: SIGTERM at daemon teardown persists its cause and real exit code."""
+    from runtime.daemon import jobs_runner
+
+    out = tmp_path / "shutdown.out"
+    err = tmp_path / "shutdown.err"
+    run_task = asyncio.create_task(jobs_runner.run_job(
+        job_id="JOB-SHUTDOWN",
+        script_text="sleep 30\n",
+        interpreter="bash",
+        cwd=str(tmp_path),
+        stdout_path=str(out),
+        stderr_path=str(err),
+        max_runtime_seconds=None,
+        max_output_bytes=1024,
+        publish=lambda e: None,
+    ))
+    try:
+        for _ in range(100):
+            if "JOB-SHUTDOWN" in jobs_runner._INFLIGHT:
+                break
+            await asyncio.sleep(0.01)
+        assert "JOB-SHUTDOWN" in jobs_runner._INFLIGHT
+
+        await jobs_runner.terminate_all_inflight(grace_seconds=0)
+        result = await run_task
+
+        assert result.status == "failed"
+        assert result.reason == "daemon_shutdown"
+        assert result.exit_code == -15
+    finally:
+        jobs_runner._INFLIGHT.pop("JOB-SHUTDOWN", None)
+        jobs_runner._KILL_REASON_OVERRIDE.pop("JOB-SHUTDOWN", None)
+
+
+@pytest.mark.asyncio
+async def test_terminate_all_inflight_does_not_relabel_natural_exit_in_signal_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M6: ProcessLookup means shutdown never signalled this natural exit."""
+    from runtime.daemon import jobs_runner
+
+    out = tmp_path / "natural.out"
+    err = tmp_path / "natural.err"
+    run_task = asyncio.create_task(jobs_runner.run_job(
+        job_id="JOB-NATURAL",
+        script_text="sleep 0.05\nexit 7\n",
+        interpreter="bash",
+        cwd=str(tmp_path),
+        stdout_path=str(out),
+        stderr_path=str(err),
+        max_runtime_seconds=None,
+        max_output_bytes=1024,
+        publish=lambda e: None,
+    ))
+    for _ in range(100):
+        if "JOB-NATURAL" in jobs_runner._INFLIGHT:
+            break
+        await asyncio.sleep(0.001)
+    assert "JOB-NATURAL" in jobs_runner._INFLIGHT
+
+    real_killpg = os.killpg
+
+    def observe_natural_exit_before_signal(pid: int, sig: int) -> None:
+        if sig == jobs_runner.signal.SIGTERM:
+            raise ProcessLookupError
+        real_killpg(pid, sig)
+
+    monkeypatch.setattr(jobs_runner.os, "killpg", observe_natural_exit_before_signal)
+    try:
+        await jobs_runner.terminate_all_inflight(grace_seconds=0)
+        result = await run_task
+
+        assert result.status == "completed"
+        assert result.reason is None
+        assert result.exit_code == 7
+    finally:
+        jobs_runner._INFLIGHT.pop("JOB-NATURAL", None)
+        jobs_runner._KILL_REASON_OVERRIDE.pop("JOB-NATURAL", None)
+
+
+@pytest.mark.asyncio
+async def test_terminate_all_inflight_preserves_task_ended_override(
+    tmp_path: Path,
+) -> None:
+    """Case 16b: the task terminal cause wins over daemon shutdown."""
+    from runtime.daemon import jobs_runner
+
+    out = tmp_path / "task-ended.out"
+    err = tmp_path / "task-ended.err"
+    run_task = asyncio.create_task(jobs_runner.run_job(
+        job_id="JOB-TASK-ENDED",
+        script_text="sleep 30\n",
+        interpreter="bash",
+        cwd=str(tmp_path),
+        stdout_path=str(out),
+        stderr_path=str(err),
+        max_runtime_seconds=None,
+        max_output_bytes=1024,
+        publish=lambda e: None,
+    ))
+    try:
+        for _ in range(100):
+            if "JOB-TASK-ENDED" in jobs_runner._INFLIGHT:
+                break
+            await asyncio.sleep(0.01)
+        assert "JOB-TASK-ENDED" in jobs_runner._INFLIGHT
+        jobs_runner._KILL_REASON_OVERRIDE["JOB-TASK-ENDED"] = "task_ended"
+
+        await jobs_runner.terminate_all_inflight(grace_seconds=0)
+        result = await run_task
+
+        assert result.status == "failed"
+        assert result.reason == "task_ended"
+        assert result.exit_code == -15
+    finally:
+        jobs_runner._INFLIGHT.pop("JOB-TASK-ENDED", None)
+        jobs_runner._KILL_REASON_OVERRIDE.pop("JOB-TASK-ENDED", None)

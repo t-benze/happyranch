@@ -585,6 +585,10 @@ Traps:
 - Submit auth path: `(task_id + session_id)`.
 - `review_required` and `persistent` are honor-system on submit.
 - Auto-resume on terminal supersedes founder revisit for blocked-on-job tasks.
+- Graceful daemon teardown stops task-queue admission before signalling jobs.
+  A job actually signalled there persists `failed/daemon_shutdown` with its
+  real exit code; a natural pre-signal exit keeps its natural result and
+  `task_ended` has precedence. Non-JSON `jobs show` prints a non-null reason.
 
 ## Task Blocked By Job
 
@@ -598,6 +602,9 @@ Traps:
 - Three resume callers must stay symmetric: job terminal hook, immediate block branch check, and startup recovery.
 - Predicate is all-terminal, not any-terminal.
 - `metadata` is a function parameter, not shared state.
+- Shutdown leaves the task and session parked. Branch 3 and the lifespan scan
+  converge through `enqueue_if_absent`; the resume header renders status plus
+  available reason/exit details without changing audit `job_outcomes` values.
 
 ## PR CI Wait / Guarded Merge
 

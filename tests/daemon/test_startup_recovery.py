@@ -3528,6 +3528,151 @@ def test_terminate_all_inflight_awaits_runner_tasks(tmp_home, daemon_state):
     )
 
 
+def test_lifespan_shutdown_keeps_job_waiter_parked_until_one_restart_resume(
+    tmp_home, runtime, daemon_state, monkeypatch,
+):
+    """S5/case 15: graceful shutdown cannot claim a just-killed job waiter."""
+    import time
+    from datetime import datetime, timezone
+
+    from fastapi.testclient import TestClient
+
+    from runtime.config import Settings
+    from runtime.daemon import jobs_runner, paths as paths_mod
+    from runtime.daemon.__main__ import _sweep_on_startup
+    from runtime.daemon.app import create_app
+    from runtime.daemon.state import DaemonState
+    from runtime.models import (
+        BlockKind,
+        JobInterpreter,
+        JobRecord,
+        JobStatus,
+        TaskRecord,
+        TaskStatus,
+    )
+
+    monkeypatch.setattr(jobs_runner, "_INFLIGHT", {})
+    monkeypatch.setattr(jobs_runner, "_RUNNER_TASKS", {})
+    monkeypatch.setattr(jobs_runner, "_KILL_REASON_OVERRIDE", {})
+
+    task_id = "TASK-SHUTDOWN-WAITER"
+    job_id = "JOB-SHUTDOWN-WAITER"
+    original_session = "sess-before-shutdown"
+    org = daemon_state.orgs["alpha"]
+    workspace = org.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True, exist_ok=True)
+    org.db.insert_task(TaskRecord(
+        id=task_id,
+        assigned_agent="dev_agent",
+        team="engineering",
+        brief="wait for shutdown job",
+        status=TaskStatus.IN_PROGRESS,
+        current_session_id=original_session,
+    ))
+    org.db.update_task(
+        task_id,
+        status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.BLOCKED_ON_JOB,
+        blocked_on_job_ids=json.dumps([job_id]),
+    )
+    org.db.insert_job(JobRecord(
+        id=job_id,
+        task_id=task_id,
+        agent_name="dev_agent",
+        title="long job",
+        rationale="exercise lifespan shutdown",
+        script_text="sleep 30\n",
+        interpreter=JobInterpreter.BASH,
+        review_required=True,
+        persistent=True,
+        created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    ))
+
+    shutdown_claims: list[str] = []
+
+    def reject_shutdown_claim(task_id_arg, *_args, **_kwargs):
+        shutdown_claims.append(task_id_arg)
+        raise RuntimeError("shutdown queue must not claim the blocked waiter")
+
+    org.orchestrator._run_agent = reject_shutdown_claim
+
+    with TestClient(create_app(daemon_state)) as client:
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+        response = client.post(
+            f"/api/v1/orgs/alpha/jobs/{job_id}/run",
+            json={"cwd_override": None, "timeout_seconds": None},
+        )
+        assert response.status_code == 202, response.text
+        for _ in range(200):
+            if job_id in jobs_runner._INFLIGHT:
+                break
+            time.sleep(0.01)
+        assert job_id in jobs_runner._INFLIGHT
+
+    # The first lifespan is now fully torn down: queue.stop() fenced the
+    # runner's terminal resume notification before the real DB writer fired.
+    assert jobs_runner._INFLIGHT == {}
+    assert jobs_runner._RUNNER_TASKS == {}
+    assert jobs_runner._KILL_REASON_OVERRIDE == {}
+    assert shutdown_claims == []
+
+    fresh_state = DaemonState.from_runtime(runtime, Settings())
+    fresh_org = fresh_state.orgs["alpha"]
+    after_shutdown = fresh_org.db.get_task(task_id)
+    shutdown_job = fresh_org.db.get_job(job_id)
+    assert shutdown_job is not None
+    assert shutdown_job.status == JobStatus.FAILED
+    assert shutdown_job.reason == "daemon_shutdown"
+    assert shutdown_job.exit_code == -15
+    assert after_shutdown is not None
+    assert after_shutdown.status == TaskStatus.IN_PROGRESS
+    assert after_shutdown.block_kind == BlockKind.BLOCKED_ON_JOB
+    assert after_shutdown.current_session_id == original_session
+    assert not any(
+        row["action"] in {"task_resumed_from_jobs", "session_start"}
+        for row in fresh_org.db.get_audit_logs(task_id)
+    )
+
+    # Pin the restart owner: Branch 3 publishes the first wake. A repeated
+    # Branch 3 pass stays at one pending item, and the subsequent lifespan
+    # list_tasks_blocked_on_jobs publication is deduped before workers run.
+    _sweep_on_startup(
+        fresh_org.db, fresh_state.queue, "alpha", fresh_org.orchestrator,
+    )
+    assert fresh_state.queue._queue.qsize() == 1
+    _sweep_on_startup(
+        fresh_org.db, fresh_state.queue, "alpha", fresh_org.orchestrator,
+    )
+    assert fresh_state.queue._queue.qsize() == 1
+
+    delivered_prompts: list[str] = []
+
+    def capture_resumed_prompt(*_args, **kwargs):
+        delivered_prompts.append(kwargs.get("prompt") or _args[2])
+        raise RuntimeError("stop after observing resumed provider prompt")
+
+    fresh_org.orchestrator._run_agent = capture_resumed_prompt
+    with TestClient(create_app(fresh_state)):
+        for _ in range(300):
+            if delivered_prompts:
+                break
+            time.sleep(0.01)
+        assert len(delivered_prompts) == 1
+        assert (
+            f"{job_id}  failed (daemon_shutdown, exit -15)"
+            in delivered_prompts[0]
+        )
+        resumed = [
+            row for row in fresh_org.db.get_audit_logs(task_id)
+            if row["action"] == "task_resumed_from_jobs"
+        ]
+        assert len(resumed) == 1
+
+    assert jobs_runner._INFLIGHT == {}
+    assert jobs_runner._RUNNER_TASKS == {}
+    assert jobs_runner._KILL_REASON_OVERRIDE == {}
+
+
 # ── Thread invocation sweep (THR-046 message-112) ────────────────────────
 
 def test_sweep_reconciles_pending_invocation_to_failed(tmp_path):

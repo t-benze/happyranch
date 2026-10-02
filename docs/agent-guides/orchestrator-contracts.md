@@ -1722,6 +1722,14 @@ worker they create before another sweep, inspecting the queue, or restoring
 shared `jobs_runner` state; durable job settlement alone is not cleanup-tail
 completion.
 
+Graceful shutdown uses the same blocked-job recovery ownership without adding
+a resume mechanism: lifespan teardown stops `TaskQueue` first, so terminal job
+hooks are refused while in-flight jobs are classified and persisted as
+`failed/daemon_shutdown`. The parked task retains its session and Branch 3
+publishes the restart wake; the lifespan blocked-job scan loses to the pending
+item. Resume prompt rendering reads nullable reason/exit detail from the job
+row while preserving the audit payload's existing status-string map.
+
 Branch 1 (in_progress + block_kind IS NULL — a live subprocess killed by the restart):
 
 1. **Mark failed with restart context.** The killed child's note is enriched to

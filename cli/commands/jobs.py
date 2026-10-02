@@ -148,6 +148,8 @@ def cmd_jobs_show(args: argparse.Namespace) -> None:
         print()
         print(f"Exit code:    {d['exit_code']}")
         print(f"Duration:     {d['duration_ms']}ms")
+        if d.get("reason") is not None:
+            print(f"Reason:       {d['reason']}")
         if d["stdout_head"]:
             print("Stdout (head):")
             for line in d["stdout_head"].splitlines():

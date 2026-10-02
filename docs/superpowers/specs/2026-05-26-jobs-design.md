@@ -254,11 +254,22 @@ Non-persistent jobs (`persistent=false`) are bound by their `max_runtime_seconds
 
 ### 5.2 Daemon shutdown
 
-Same shape as the current SR shutdown path (`terminate_all_inflight`):
+Implemented shutdown protocol (`TaskQueue.stop` + `terminate_all_inflight`):
 
-1. Snapshot in-flight subprocess registry, SIGTERM each.
-2. 5 s grace, then SIGKILL any still alive.
-3. Await runner background tasks (with timeout) so they persist terminal state before per-org DBs close.
+1. Permanently stop task-queue consumers and producer admission first. A job's
+   terminal resume hook therefore cannot claim or buffer its blocked waiter
+   during teardown.
+2. Snapshot the in-flight subprocess registry and install
+   `daemon_shutdown` overrides for the whole snapshot before the first
+   SIGTERM. An existing/concurrent `task_ended` override has precedence.
+3. Signal each process that is still running. If it exited naturally in the
+   snapshot-to-signal window or the process group is already gone, remove only
+   the shutdown override installed here and retain the natural result.
+4. After the 5 s grace, SIGKILL any survivor, then await runner background
+   tasks (with timeout) so `failed/daemon_shutdown` plus the real exit code is
+   persisted before per-org DBs close.
+5. Leave the waiter `in_progress(blocked_on_job)` for the existing startup
+   Branch 3 / lifespan scan to resume once through queue deduplication.
 
 ### 5.3 Startup recovery
 
@@ -614,7 +625,11 @@ Rename of `scripts_runner.py` with three behavioral changes:
 2. **Output-size cap.** The `_pump_stream` helper gains a `max_bytes: int | None` parameter. When `byte_counter[0] >= max_bytes`, the pump triggers a kill signal back to the parent (via an `asyncio.Event` shared with the runner), and the runner SIGTERM-then-SIGKILL the subprocess with `kill_reason=output_cap`. The pump continues draining whatever's already buffered, then exits.
 3. **Task-terminal kill API.** A new module-level function `terminate_jobs_for_task(task_id: str)` returns the in-flight JOB-NNN ids matching that task, sends SIGTERM to each (5 s grace), then SIGKILL. Called from the task-status update path (§11).
 
-The in-flight registry, `register_runner_task`, `terminate_all_inflight`, the shutdown await pattern, and `recover_orphaned_running_scripts` (renamed `recover_orphaned_running_jobs`) all carry over unchanged in behavior.
+The in-flight registry, `register_runner_task`, shutdown await pattern, and
+`recover_orphaned_running_scripts` (renamed
+`recover_orphaned_running_jobs`) carry over. `terminate_all_inflight` now
+implements §5.2's explicit `failed/daemon_shutdown` classification and queue-
+first ordering rather than recording a signal death as a natural completion.
 
 ## 11. Task-lifecycle integration
 

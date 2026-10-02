@@ -36,6 +36,10 @@ stale, spoofed, truncated, or incomplete structured receipt. `jobs submit
 --json` returns the authenticated submission identity; `jobs show --json` and
 `jobs output --json` require the current task/session and return the same closed
 receipt containing stored execution identity and complete output accounting.
+Human-readable `happyranch jobs show` keeps its existing layout and adds a
+`Reason:` line only when the existing job `reason` field is non-null; graceful
+daemon-shutdown kills therefore show `failed`, `daemon_shutdown`, and the real
+exit code without an API-field change.
 An owning origin task branch whose head equals or descends from the candidate,
 an owning-task merged PR, and a containing any-task merged PR can preserve a
 clean candidate in addition to the accepted durable ref. An existing owning
