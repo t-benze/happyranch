@@ -7,14 +7,15 @@
  * REAL production SPA bundles served same-origin next to a synthetic
  * `/api/v1` stub whose every request is recorded in a server-side ledger:
  *
- *   --preview-dist  built with VITE_ENABLE_I18N_PREFERENCES=true (explicit
- *                   test activation of the closed W2c gate)
- *   --dist          the ordinary shipping build (gate closed)
+ *   --preview-dist  the build used for cases B–I (since W3b-2 removed the
+ *                   VITE_ENABLE_I18N_PREFERENCES gate this is simply an
+ *                   ordinary build of the head; the flag is a no-op)
+ *   --dist          the ordinary shipping build (case A)
  *
  * Cases (each recorded in receipt.json; exit code 1 if any required case fails):
- *   A  ordinary dist: /settings/preferences redirects to /settings/assistant,
- *      no panel, no sub-nav link, and the gated strings are absent from the
- *      shipped JS (positive control: present in the preview JS);
+ *   A  ordinary dist (W3b-2 contract): the shipped JS contains the
+ *      Preferences markers; /settings/preferences renders the panel, both
+ *      radios and the sub-nav link; an unset preference stays English;
  *   B  preview dist with settings API ok | error | loading: real CDP
  *      mouse/keyboard switching en→zh-CN→en and zh-CN→en→zh-CN asserting
  *      heading, <html lang>, retained radio node identity, actual focus,
@@ -42,7 +43,7 @@
  *      fails the same raw predicate (causal negative).
  *
  * Build + run (from web/):
- *   VITE_ENABLE_I18N_PREFERENCES=true ./node_modules/.bin/vite build --outDir <tmp>/dist-w2c-preview
+ *   ./node_modules/.bin/vite build --outDir <tmp>/dist-w2c-preview
  *   ./node_modules/.bin/vite build --outDir <tmp>/dist-ordinary
  *   node scripts/w2c-preferences-browser-evidence.mjs \
  *     --preview-dist <tmp>/dist-w2c-preview --dist <tmp>/dist-ordinary \
@@ -338,7 +339,7 @@ const zeroApiPredicate = (delta) => delta.length === 0;
 
 // ------------------------------------------------------------------ main
 async function main() {
-  if (!previewDist || !existsSync(join(previewDist, 'index.html'))) throw new Error('missing --preview-dist <dir> (gate-enabled build)');
+  if (!previewDist || !existsSync(join(previewDist, 'index.html'))) throw new Error('missing --preview-dist <dir> (build for cases B–I)');
   if (!ordinaryDist || !existsSync(join(ordinaryDist, 'index.html'))) throw new Error('missing --dist <dir> (ordinary build)');
   mkdirSync(outDir, { recursive: true });
 
@@ -605,29 +606,33 @@ async function main() {
     }
 
     // ============================================================ A: ordinary dist
-    beginCase('A', 'ordinary dist keeps the Preferences gate closed');
+    beginCase('A', 'ordinary dist mounts Preferences (W3b-2); an unset preference stays English');
     {
-      for (const s of GATED_STRINGS) {
-        check(`A ordinary JS lacks "${s}"`, fpOrdinary.gatedStrings[s], false);
-        check(`A preview JS contains "${s}" (positive control)`, fpPreview.gatedStrings[s], true);
-      }
+      for (const s of GATED_STRINGS) check(`A ordinary JS contains "${s}"`, fpOrdinary.gatedStrings[s], true);
       SYNTH.settingsMode = 'ok';
-      const page = await openPage({ url: `${ordinary.url}${PREFS_PATH}`, init: `${seedLocale('en')}\n${seedTheme('light')}` });
-      await waitForValue(page, `location.pathname === ${JSON.stringify(ASSISTANT_PATH)}`, 'redirect to assistant').catch(() => null);
+      const unset = `try { localStorage.removeItem(${JSON.stringify(LOCALE_KEY)}); } catch (e) {}`;
+      const page = await openPage({ url: `${ordinary.url}${PREFS_PATH}`, init: `${unset}\n${seedTheme('light')}` });
+      await waitForValue(page, `Boolean(document.querySelector(${JSON.stringify(PANEL)}))`, 'preferences panel').catch(() => null);
       await sleep(800);
       const result = await evaluate(page, `(() => ({
         pathname: location.pathname,
         panel: Boolean(document.querySelector(${JSON.stringify(PANEL)})),
         radios: document.querySelectorAll(${JSON.stringify(RADIO)}).length,
-        prefsLinks: [...document.querySelectorAll('a')].filter((a) => (a.getAttribute('href') || '').endsWith('/settings/preferences') || a.textContent.trim() === 'Preferences').length,
+        prefsLinks: [...document.querySelectorAll('aside a')].filter((a) => a.getAttribute('href') === ${JSON.stringify(PREFS_PATH)}).length,
         subNavLinks: [...document.querySelectorAll('aside a')].map((a) => a.textContent.trim()),
+        navLang: navigator.language,
       }))()`);
-      check('A pathname ends at assistant', result.pathname, ASSISTANT_PATH);
-      check('A no preferences panel', result.panel, false);
-      check('A no language radios', result.radios, 0);
-      check('A sub-nav has no Preferences link', result.prefsLinks, 0);
-      current.observed = result;
-      await capture(page, 'ordinary-preferences-redirect-1440-light-en', { dist: 'ordinary', viewport: '1440x900', theme: 'light', locale: 'en', state: 'redirected-to-assistant' });
+      const state = await evaluate(page, STATE);
+      check('A pathname stays at preferences', result.pathname, PREFS_PATH);
+      check('A preferences panel rendered', result.panel, true);
+      check('A both language radios', result.radios, 2);
+      check('A sub-nav has the Preferences link', result.prefsLinks, 1);
+      check('A unset: no stored preference', state.stored, null);
+      check('A unset: <html lang> en', state.lang, 'en');
+      check('A unset: English heading', state.heading, COPY.en.heading);
+      check('A unset: English radio checked', state.checked, 'en');
+      current.observed = { ...result, ...state };
+      await capture(page, 'ordinary-preferences-unset-1440-light-en', { dist: 'ordinary', viewport: '1440x900', theme: 'light', locale: 'unset', state: 'preferences-unset-english' });
       await closePage(page);
     }
     endCase();

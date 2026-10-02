@@ -8,21 +8,19 @@
  * `/api/v1` stub whose every request is recorded in a server-side ledger. The
  * app carries NO evidence instrumentation: locale switches use the supported
  * `happyranch.ui.locale` preference written by a second same-origin tab (the
- * `storage` event path), because the Preferences selector stays gated closed.
+ * `storage` event path); this keeps the switch independent of the Preferences
+ * selector, which W3b-2 mounts in ordinary builds (case G).
  * Node/tag identity probes are injected by CDP at run time only.
  *
  * Expected copy is read from the real typed catalogs (Node 24 strips the TS
  * types), so every predicate compares against the shipped en/zh-CN strings.
  *
  *   --dist          ordinary shipping build (all W3a cases)
- *   --preview-dist  VITE_ENABLE_I18N_PREFERENCES=true build — ONLY the positive
- *                   control that the Preferences markers exist when the gate is
- *                   opened (the ordinary dist must lack them)
  *
  * Cases (receipt.json; exit 1 if any fails):
- *   G   gate: ordinary JS lacks Preferences/evidence markers (preview control has
- *       the Preferences markers); /settings/preferences redirects; an unset
- *       preference under a Chinese navigator renders English;
+ *   G   gate (W3b-2 contract): ordinary JS contains the Preferences markers and
+ *       lacks the evidence markers; /settings/preferences renders the selector;
+ *       an unset preference under a Chinese navigator renders English;
  *   D   Dashboard loading / error→Retry / first-run empty / populated in en and
  *       zh-CN; an en→zh-CN→en and zh-CN→en→zh-CN switch keeps tagged nodes,
  *       entity/ID and raw audit event_kind bytes and issues no mutation or
@@ -47,9 +45,8 @@
  *
  * Build + run (from web/):
  *   ./node_modules/.bin/vite build --outDir <tmp>/dist-ordinary
- *   VITE_ENABLE_I18N_PREFERENCES=true ./node_modules/.bin/vite build --outDir <tmp>/dist-preview
  *   node scripts/w3a-core-browser-evidence.mjs --dist <tmp>/dist-ordinary \
- *     --preview-dist <tmp>/dist-preview --out <evidence dir> --head <sha>
+ *     --out <evidence dir> --head <sha>
  */
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -79,7 +76,6 @@ function arg(name, fallback) {
 }
 
 const ordinaryDist = arg('dist') && resolve(arg('dist'));
-const previewDist = arg('preview-dist') && resolve(arg('preview-dist'));
 const outDir = resolve(arg('out', '.w3a-core-evidence'));
 const head = arg('head', 'unknown');
 const chromeBin = arg('chrome', process.env.CHROME_BIN || 'google-chrome');
@@ -444,7 +440,6 @@ const q = {
 // ------------------------------------------------------------------ main
 async function main() {
   if (!ordinaryDist || !existsSync(join(ordinaryDist, 'index.html'))) throw new Error('missing --dist <dir> (ordinary build)');
-  if (!previewDist || !existsSync(join(previewDist, 'index.html'))) throw new Error('missing --preview-dist <dir> (Preferences gate positive control)');
   mkdirSync(outDir, { recursive: true });
 
   const cases = [];
@@ -475,9 +470,7 @@ async function main() {
   }
 
   const fpOrdinary = fingerprint(ordinaryDist);
-  const fpPreview = fingerprint(previewDist);
   const ordinary = await startServer(ordinaryDist, 'ordinary');
-  const preview = await startServer(previewDist, 'preview');
   const base = ordinary.url;
   const userDataDir = `/tmp/w3a-${process.pid}`; // short: Chrome's singleton socket path limit
   rmSync(userDataDir, { recursive: true, force: true });
@@ -630,21 +623,19 @@ async function main() {
     const short = (l) => (l === 'en' ? 'en' : 'zh');
     const composerSrc = (l) => `document.querySelector('textarea[aria-label=${JSON.stringify(tr(l, 'threads.page.composer.textareaAria'))}]')`;
 
-    // ============================================================ G: gate closed
-    beginCase('G', 'ordinary build keeps Preferences closed, excludes evidence markers; unset + Chinese navigator stays English');
+    // ============================================================ G: Preferences mounted (W3b-2)
+    beginCase('G', 'ordinary build mounts Preferences, excludes evidence markers; unset + Chinese navigator stays English');
     {
-      for (const s of GATED_STRINGS) {
-        check(`G ordinary JS lacks "${s}"`, fpOrdinary.gatedStrings[s], false);
-        check(`G preview JS contains "${s}" (positive control)`, fpPreview.gatedStrings[s], true);
-      }
+      for (const s of GATED_STRINGS) check(`G ordinary JS contains "${s}"`, fpOrdinary.gatedStrings[s], true);
       for (const s of EVIDENCE_MARKERS) check(`G ordinary JS lacks evidence marker "${s}"`, fpOrdinary.evidenceMarkers[s], false);
-      const page = await open(`/orgs/${ORG}/settings/preferences`, { locale: null, until: `location.pathname.endsWith('/settings/assistant')` });
+      const page = await open(`/orgs/${ORG}/settings/preferences`, { locale: null, until: `document.querySelectorAll('input[name="happyranch-ui-language"]').length === 2` });
       await sleep(500);
-      const r = await evaluate(page, `({ path: location.pathname, lang: document.documentElement.lang, navLang: navigator.language, radios: document.querySelectorAll('input[name="happyranch-ui-language"]').length, prefsLinks: [...document.querySelectorAll('a')].filter((a) => (a.getAttribute('href') || '').endsWith('/settings/preferences')).length, stored: localStorage.getItem(${JSON.stringify(LOCALE_KEY)}) })`);
-      check('G direct /settings/preferences redirected', r.path, `/orgs/${ORG}/settings/assistant`);
+      const r = await evaluate(page, `({ path: location.pathname, lang: document.documentElement.lang, navLang: navigator.language, radios: document.querySelectorAll('input[name="happyranch-ui-language"]').length, checked: (document.querySelector('input[name="happyranch-ui-language"]:checked') || {}).value || null, prefsLinks: [...document.querySelectorAll('a')].filter((a) => (a.getAttribute('href') || '').endsWith('/settings/preferences')).length, stored: localStorage.getItem(${JSON.stringify(LOCALE_KEY)}) })`);
+      check('G direct /settings/preferences renders (no redirect)', r.path, `/orgs/${ORG}/settings/preferences`);
       check('G navigator is Chinese (precondition)', r.navLang, 'zh-CN');
       check('G unset preference renders <html lang=en>', r.lang, 'en');
-      check('G no selector radios / Preferences link', [r.radios, r.prefsLinks], [0, 0]);
+      check('G selector radios / Preferences link present', [r.radios, r.prefsLinks > 0], [2, true]);
+      check('G unset: English radio checked', r.checked, 'en');
       check('G no preference written', r.stored, null);
       await closePage(page);
       const dash = await open(`/orgs/${ORG}/dashboard`, { locale: null, until: PRED.bodyHas(tr('en', 'dashboard.today.title')) });
@@ -982,7 +973,7 @@ async function main() {
     for (const response of SYNTH.hung) { try { response.destroy(); } catch { /* gone */ } }
     if (cdp) cdp.close();
     if (chrome && !chrome.killed) chrome.kill('SIGKILL');
-    for (const s of [ordinary, preview]) { s.server.closeAllConnections?.(); s.server.close(); }
+    for (const s of [ordinary]) { s.server.closeAllConnections?.(); s.server.close(); }
     rmSync(userDataDir, { recursive: true, force: true });
     rmSync(join(outDir, '.upload'), { recursive: true, force: true });
   }
@@ -993,7 +984,7 @@ async function main() {
     generatedAt: new Date().toISOString(),
     node: process.version,
     chrome: { path: chromeBin, version: chromeVersion, lang: 'zh-CN (Chrome --lang + navigator override: environment never defaults the locale)' },
-    dists: { ordinary: fpOrdinary, preview: fpPreview },
+    dists: { ordinary: fpOrdinary },
     gatedStringsChecked: GATED_STRINGS,
     evidenceMarkersChecked: EVIDENCE_MARKERS,
     notes: [...notes, ...(chromeStderr.trim() ? [{ chromeStderrTail: chromeStderr.slice(-1500) }] : [])],

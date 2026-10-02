@@ -23,20 +23,24 @@ import { Link, useParams } from 'react-router-dom';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { TONE_CLASS, toneClass } from '@/design-system/patterns/semanticTone';
 import { useJobsList } from '@/hooks/jobs';
+import { useTranslation } from '@/hooks/i18n';
+import type { MessageKey, MessageParams } from '@/lib/i18n';
 import type { JobRecord, JobStatus } from '@/lib/api/types';
+
+type Translate = (key: MessageKey, params?: MessageParams) => string;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
 /** Relative age of an ISO timestamp ("just now" / "12m" / "3h" / "2d"). */
-function relativeAge(iso: string): string {
+function relativeAge(iso: string, t: Translate): string {
   const ms = Date.now() - new Date(iso).getTime();
   const min = Math.round(ms / 60000);
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min}m`;
+  if (min < 1) return t('jobs.age.justNow');
+  if (min < 60) return t('jobs.age.minutes', { count: min });
   const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr}h`;
+  if (hr < 24) return t('jobs.age.hours', { count: hr });
   const d = Math.round(hr / 24);
-  return `${d}d`;
+  return t('jobs.age.days', { count: d });
 }
 
 /** Two-letter avatar initials from an agent name (dev_agent → "DA"). Derived
@@ -71,21 +75,22 @@ const CARD_COL = {
 // row outcome pills — no new tokens, no raw hex) + the group count.
 const STATUS_GROUP_ORDER: JobStatus[] = ['pending', 'running', 'completed', 'failed', 'rejected'];
 
-const STATUS_GROUP_META: Record<JobStatus, { label: string; dot: string }> = {
-  pending: { label: 'Awaiting your approval', dot: 'bg-status-archiving' },
-  running: { label: 'Running', dot: 'bg-feedback-info' },
-  completed: { label: 'Completed', dot: 'bg-status-open' },
-  failed: { label: 'Failed', dot: 'bg-status-abandoned' },
-  rejected: { label: 'Rejected', dot: 'bg-text-muted' },
+const STATUS_GROUP_META: Record<JobStatus, { labelKey: MessageKey; dot: string }> = {
+  pending: { labelKey: 'jobs.group.pending', dot: 'bg-status-archiving' },
+  running: { labelKey: 'jobs.group.running', dot: 'bg-feedback-info' },
+  completed: { labelKey: 'jobs.group.completed', dot: 'bg-status-open' },
+  failed: { labelKey: 'jobs.group.failed', dot: 'bg-status-abandoned' },
+  rejected: { labelKey: 'jobs.group.rejected', dot: 'bg-text-muted' },
 };
 
 /** Colored lifecycle dot + status label + per-group count. */
 function StatusGroupHeader({ status, count }: { status: JobStatus; count: number }): JSX.Element {
-  const { label, dot } = STATUS_GROUP_META[status];
+  const { t } = useTranslation();
+  const { labelKey, dot } = STATUS_GROUP_META[status];
   return (
     <div className="flex items-center gap-2 px-1">
       <span aria-hidden="true" className={`inline-block h-2 w-2 shrink-0 rounded-full ${dot}`} />
-      <span className="text-text-primary text-sm font-medium">{label}</span>
+      <span className="text-text-primary text-sm font-medium">{t(labelKey)}</span>
       <span className="text-mono-sm text-text-muted tabular-nums">{count}</span>
     </div>
   );
@@ -95,9 +100,10 @@ function StatusGroupHeader({ status, count }: { status: JobStatus; count: number
 
 /** Green "NEEDS REVIEW" pill — only on pending, still-gated jobs. */
 function NeedsReviewPill(): JSX.Element {
+  const { t } = useTranslation();
   return (
     <span className="text-mono-sm text-status-open bg-tier-green-tint inline-flex shrink-0 items-center rounded-full px-2 py-0.5 font-medium tracking-wide uppercase">
-      needs review
+      {t('jobs.list.needsReview')}
     </span>
   );
 }
@@ -118,8 +124,11 @@ function AgentAvatar({ name }: { name: string }): JSX.Element {
  * OPENED column — a lifecycle-tinted outcome pill for terminal/running jobs,
  * or the relative age for a pending job. Outcome colours read the shared
  * semanticTone vocabulary (exit 0 green / non-zero red) — Batch 2 settled that.
+ * The status tokens and `exit <code>` are daemon values and stay verbatim in
+ * every locale (THR-118 W3b-2); only the pending relative age is localized.
  */
 function OutcomeCell({ job }: { job: JobRecord }): JSX.Element {
+  const { t } = useTranslation();
   const pill = 'text-mono-sm inline-flex items-center rounded-full px-2.5 py-0.5 font-medium';
   switch (job.status) {
     case 'running':
@@ -140,7 +149,7 @@ function OutcomeCell({ job }: { job: JobRecord }): JSX.Element {
     case 'rejected':
       return <span className="text-mono-sm text-text-muted">rejected</span>;
     default:
-      return <span className="text-mono-sm text-text-muted tabular-nums">{relativeAge(job.created_at)}</span>;
+      return <span className="text-mono-sm text-text-muted tabular-nums">{relativeAge(job.created_at, t)}</span>;
   }
 }
 
@@ -193,13 +202,14 @@ function JobCard({ job, to }: { job: JobRecord; to: string }): JSX.Element {
 
 /** Column-header row above the cards — aligns to the shared card row. */
 function ColumnHeader(): JSX.Element {
+  const { t } = useTranslation();
   return (
     <div className={`${CARD_ROW} text-text-muted px-5 pb-1 text-xs font-medium tracking-wider uppercase`}>
-      <span className={CARD_COL.job}>Job</span>
-      <span className={CARD_COL.command}>Command</span>
-      <span className={CARD_COL.requestedBy}>Requested by</span>
-      <span className={CARD_COL.task}>Task</span>
-      <span className={`${CARD_COL.opened} text-right`}>Opened</span>
+      <span className={CARD_COL.job}>{t('jobs.list.column.job')}</span>
+      <span className={CARD_COL.command}>{t('jobs.list.column.command')}</span>
+      <span className={CARD_COL.requestedBy}>{t('jobs.list.column.requestedBy')}</span>
+      <span className={CARD_COL.task}>{t('jobs.list.column.task')}</span>
+      <span className={`${CARD_COL.opened} text-right`}>{t('jobs.list.column.opened')}</span>
     </div>
   );
 }
@@ -210,11 +220,12 @@ function ColumnHeader(): JSX.Element {
  * pending. Count is derived from existing data (no new field).
  */
 function NeedsYouCallout({ pendingCount }: { pendingCount: number }): JSX.Element {
+  const { t } = useTranslation();
   if (pendingCount === 0) {
     return (
       <div className="text-accent-text flex items-center gap-2 text-sm">
         <span aria-hidden="true" className="bg-accent-default inline-block h-2 w-2 rounded-full" />
-        Queue clear · nothing waiting on you
+        {t('jobs.list.queueClear')}
       </div>
     );
   }
@@ -223,12 +234,9 @@ function NeedsYouCallout({ pendingCount }: { pendingCount: number }): JSX.Elemen
       <Lock aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />
       <div className="min-w-0">
         <p className="text-sm font-semibold">
-          {pendingCount} {pendingCount === 1 ? 'job needs' : 'jobs need'} you
+          {t('jobs.list.needsYou', { count: pendingCount })}
         </p>
-        <p className="text-sm opacity-90">
-          Every job is a verbatim command an agent can&apos;t run without your sign-off. Same
-          two-step confirm for all — no risk tiers.
-        </p>
+        <p className="text-sm opacity-90">{t('jobs.list.needsYouBody')}</p>
       </div>
     </div>
   );
@@ -238,6 +246,7 @@ function NeedsYouCallout({ pendingCount }: { pendingCount: number }): JSX.Elemen
 
 export function JobsPage(): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
+  const { t } = useTranslation();
   // status:'all' is REQUIRED — GET /jobs/ defaults to status=pending, which
   // would hide every non-pending job and empty out the status groups.
   const query = useJobsList({ status: 'all', limit: 200 });
@@ -250,21 +259,21 @@ export function JobsPage(): JSX.Element {
       <ContentWrap>
         <header className="mb-5">
           <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
-            Founder-gated commands · agents propose, you approve
+            {t('jobs.list.eyebrow')}
           </p>
           <h1 className="font-display text-text-primary mt-1 text-2xl font-medium">
-            Commands awaiting a decision
+            {t('jobs.list.title')}
           </h1>
         </header>
 
         {query.isLoading ? (
-          <p className="text-text-muted py-12 text-center text-sm">Loading jobs…</p>
+          <p className="text-text-muted py-12 text-center text-sm">{t('jobs.list.loading')}</p>
         ) : query.isError ? (
-          <p className="text-text-muted py-12 text-center text-sm">Could not load jobs.</p>
+          <p className="text-text-muted py-12 text-center text-sm">{t('jobs.list.loadError')}</p>
         ) : jobs.length === 0 ? (
           <>
             <NeedsYouCallout pendingCount={0} />
-            <p className="text-text-muted py-12 text-center text-sm">No jobs yet.</p>
+            <p className="text-text-muted py-12 text-center text-sm">{t('jobs.list.empty')}</p>
           </>
         ) : (
           <>
@@ -279,7 +288,7 @@ export function JobsPage(): JSX.Element {
                 return (
                   <section
                     key={status}
-                    aria-label={STATUS_GROUP_META[status].label}
+                    aria-label={t(STATUS_GROUP_META[status].labelKey)}
                     className="flex flex-col gap-2"
                   >
                     <StatusGroupHeader status={status} count={rows.length} />

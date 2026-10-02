@@ -5,6 +5,9 @@ from __future__ import annotations
 # - db/knowledge.py: KB stats, skill validation reads, and org settings
 # - db/jobs.py: job records, transitions, and recovery
 # - db/attachments.py: thread-scoped and task attachment reads/deletes
+# - db/audit.py: generic audit-log writes and reads
+# - db/sessions.py: token usage, aggregation, and thread session state
+# - db/workspace_cleanup.py: cleanup selection and stale-pending observation
 # - database.py: schema, remaining domains, and patched-global write keepers
 
 import hashlib
@@ -15,7 +18,7 @@ import threading
 import time as _time
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -23,10 +26,27 @@ from typing import Callable
 from pydantic import ValidationError
 
 from runtime.infrastructure.db._shared import _parse_dt, _synchronized
+from runtime.infrastructure.db.audit import AuditMixin
 from runtime.infrastructure.db.attachments import AttachmentsMixin
 from runtime.infrastructure.db.dreams import DreamsMixin
 from runtime.infrastructure.db.jobs import JobsMixin
 from runtime.infrastructure.db.knowledge import KnowledgeMixin
+from runtime.infrastructure.db.sessions import SessionsMixin
+from runtime.infrastructure.db.workspace_cleanup import (
+    WorkspaceCleanupMarkerHistorySummary,
+    WorkspaceCleanupMixin,
+    WorkspaceCleanupReclamationCandidate,
+    WorkspaceCleanupReclamationSelection,
+    _CLEANUP_HISTORY_PAGE_SIZE,
+    _STALE_PENDING_JOBS_SCAN_SQL,
+    _WORKSPACE_CLEANUP_BRIEF_MARKER,
+    _WORKSPACE_CLEANUP_TERMINAL_STATUSES,
+    _has_raw_iso_hour_24,
+    _is_aware_datetime,
+    _iso_datetime_separator_index,
+    _scan_stale_pending_jobs_direct_wal,
+    scan_stale_pending_jobs_readonly,
+)
 from runtime.models import (
     AuthorityAuditEvent,
     AuthorityAuditEventType,
@@ -200,123 +220,8 @@ _AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING = {
 }
 
 
-def _iso_datetime_separator_index(value: str) -> int | None:
-    """Return CPython's single ISO date/time boundary for raw-hour checks.
-
-    This intentionally mirrors only the standard parser's date-boundary
-    choice, not its timestamp parser.  In the extended week-date overlap,
-    ``YYYY-Www-`` is the separator at offset 8 when a digit at offset 10
-    makes both readings possible.  Guessing both offsets would turn a valid
-    minute field into an apparent hour 24.
-    """
-    if len(value) <= 7:
-        return None
-    if value[4] == "-":
-        if len(value) > 5 and value[5] == "W":
-            if len(value) > 8 and value[8] == "-":
-                if len(value) > 10 and value[10].isascii() and value[10].isdigit():
-                    return 8
-                return 10
-            return 8
-        return 10
-    if value[4] == "W":
-        index = 7
-        while index < len(value) and value[index].isascii() and value[index].isdigit():
-            index += 1
-        if index < 9:
-            return index
-        return 7 if index % 2 == 0 else 8
-    return 8
 
 
-def _has_raw_iso_hour_24(value: str) -> bool:
-    """Identify parser-selected raw hour 24 without narrowing ISO parsing."""
-    # ``_parse_dt`` replaces Z before delegating to the standard parser; that
-    # replacement is after the date/time boundary and cannot alter this index.
-    boundary = _iso_datetime_separator_index(value)
-    return boundary is not None and value[boundary + 1:boundary + 3] == "24"
-
-
-def _is_aware_datetime(value: object) -> bool:
-    """Return whether one persisted ordering value is a usable aware ISO time.
-
-    This deliberately shares the helper's existing parser rather than treating
-    SQLite's permissive date functions as the timestamp authority.  It is used
-    both inside the bounded newer-owner query and after bounded reads; it never
-    creates a second lookup.
-    """
-    if not isinstance(value, str):
-        return False
-    # CPython 3.14 normalizes ISO hour 24 to the next day's midnight.  The
-    # finite selector instead has an explicit persisted-ordering contract: an
-    # hour-24 value is malformed.  Keep this a narrow exception around the
-    # standard parser rather than a format whitelist, so all other parser-valid
-    # ISO forms retain their existing behavior.
-    try:
-        parsed = _parse_dt(value)
-    except (TypeError, ValueError):
-        return False
-    return parsed.tzinfo is not None and not _has_raw_iso_hour_24(value)
-
-
-_WORKSPACE_CLEANUP_BRIEF_MARKER = "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)"
-_WORKSPACE_CLEANUP_TERMINAL_STATUSES = frozenset({
-    TaskStatus.COMPLETED.value,
-    TaskStatus.FAILED.value,
-    TaskStatus.CANCELLED.value,
-    TaskStatus.SUPERSEDED.value,
-})
-
-
-@dataclass(frozen=True)
-class WorkspaceCleanupReclamationCandidate:
-    """One conservatively selected dormant scratch root.
-
-    This is a read-only planning shape.  In particular, a candidate is not an
-    action permit: the later hook must still make its fresh owner/config and
-    unchanged consumer admissions.
-    """
-
-    task_id: str
-    session_id: str
-    scratch_path: Path
-    result: dict
-
-
-@dataclass(frozen=True)
-class WorkspaceCleanupReclamationSelection:
-    """Bounded output for the future cleanup-action hook.
-
-    ``read_observations`` is deliberately exposed so the hook can account for
-    its own config/owner observations without guessing at helper internals.
-    """
-
-    owner_task_id: str
-    candidates: tuple[WorkspaceCleanupReclamationCandidate, ...]
-    read_observations: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class WorkspaceCleanupMarkerHistorySummary:
-    """Complete per-agent marker-row summary for the daily trigger decision.
-
-    Read-only planning shape; grants no action authority.  ``count`` is the
-    exact all-history marker-row count (no saturation/cutoff),
-    ``newest_created_at`` is the newest marker instant by UTC comparison with
-    microsecond precision (never the SQL text-sort winner), and
-    ``has_unfinished`` is true when ANY marker row in the complete history is
-    non-terminal.
-    """
-
-    count: int
-    newest_created_at: datetime | None
-    has_unfinished: bool
-
-
-# Bounded PER-PAGE materialization for the complete marker-history reader —
-# explicitly not a logical history cap.  Completeness is independent of this
-# value: the rowid keyset loop ends only on a short/empty page.
-_CLEANUP_HISTORY_PAGE_SIZE = 1000
 
 
 # ── TASK-5966 strict mention-led exchange bounds (founder-ratified) ──────
@@ -328,6 +233,68 @@ EXCHANGE_GRACE_SECONDS = 5 * 60
 # MAX_PRIORITY_WAIT: absolute fail-open bound from exchange open — the reaper
 # closes any exchange older than this (retained approved G1 = 4 hours).
 MAX_PRIORITY_WAIT_SECONDS = 4 * 60 * 60
+
+
+@dataclass(frozen=True)
+class VerifiedRetry:
+    """Read-only provenance result; final spawn must revalidate under its writer lock."""
+
+    path: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class InvalidLineage:
+    reason: str
+
+
+@dataclass(frozen=True)
+class RetryClaim:
+    """Original report ownership, captured before preflight or preparation."""
+
+    task_id: str
+    assigned_agent: str | None
+    team: str
+    current_session_id: str | None
+    step: int
+    active_chain: str | None
+    active_fanout: str | None
+    revision: int
+    note: str | None
+    status: TaskStatus
+    block_kind: BlockKind | None
+    cancelled_at: str | None
+    result_row_id: int | None = None
+
+    @classmethod
+    def from_task(cls, task: TaskRecord, *, result_row_id: int | None = None):
+        return cls(task.id, task.assigned_agent, task.team, task.current_session_id,
+                   task.orchestration_step_count, task.active_chain, task.active_fanout,
+                   task.revision_count, task.note, task.status, task.block_kind,
+                   task.cancelled_at, result_row_id)
+
+
+@dataclass(frozen=True)
+class Committed:
+    child_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LostClaim:
+    """No durable mutation or enqueue is permitted for this stale input."""
+
+
+SpawnOutcome = Committed | InvalidLineage | LostClaim
+
+
+@dataclass(frozen=True)
+class PendingRetry:
+    claim: RetryClaim
+    result_id: int
+    feedback: str
+
+
+class _RetryEvidenceRefusal(Exception):
+    """Internal control flow for invalid recorded evidence, never SQLite errors."""
 
 
 class LineageTooDeep(Exception):
@@ -1413,123 +1380,6 @@ def _decode_cursor(cursor: str) -> tuple[str, int]:
         raise ValueError(f"Invalid cursor: {cursor!r}")
 
 
-# Shared SELECT for the stale never-started pending observation (THR-195): the
-# single source of truth for BOTH the managed-store scan
-# (``Database.list_stale_pending_jobs``) and the read-only registry scan
-# (``scan_stale_pending_jobs_readonly``), so the observation predicate
-# (``status='pending' AND started_at IS NULL AND created_at <= cutoff``) can
-# never drift between the two paths.
-_STALE_PENDING_JOBS_SCAN_SQL = (
-    "SELECT id, task_id, agent_name, title, review_required, created_at "
-    "FROM jobs WHERE status='pending' AND started_at IS NULL "
-    "AND created_at <= ? ORDER BY created_at, id"
-)
-
-# Active-WAL observation is a DIRECT read of the source store (founder
-# ruling TASK-5542/TASK-5544): the temporary snapshot/copy machinery is
-# retired entirely. An active-WAL source is opened in place with a genuine
-# SQLite read-only connection (``mode=ro``) which consults the ``-wal`` so
-# WAL-only committed candidates are observed. The FOUNDER CONTRACT protects
-# the durable source ``happyranch.db`` and ``happyranch.db-wal`` BYTES ONLY:
-# SQLite's WAL reader — even ``mode=ro`` — initializes WAL shared memory and
-# may CREATE, MODIFY, or REMOVE the WAL-index ``happyranch.db-shm`` as
-# transient reader/lock/index behavior, and that is explicitly permitted
-# (TASK-5544 ruling; creation/modification/removal are all allowed, and no
-# ``-shm`` existence/hash/mtime identity is ever asserted). The source main
-# DB and ``-wal`` are NEVER written: a read-only connection cannot append WAL
-# frames, checkpoint, recover, or run DDL/DML, so both stay byte-identical
-# before/after every observation. No snapshot, no copy, no temp directory
-# anywhere.
-
-
-def _scan_stale_pending_jobs_direct_wal(
-    db_path: Path, cutoff_iso: str,
-) -> list[dict]:
-    """Read-only WAL-aware observation directly on the SOURCE store.
-
-    Founder-authorized fourth-round correction (TASK-5542): the active-WAL
-    source is opened in place with a genuine SQLite read-only connection
-    (``file:...?mode=ro``) for the duration of one query and closed. The
-    reader consults the ``-wal`` so candidates committed only to the WAL are
-    observed; SQLite's own WAL-reader protocol gives every reader a coherent
-    committed view without any copy or stat-guard. The source main DB and
-    ``-wal`` are never written (a read-only connection cannot append WAL
-    frames, checkpoint, or recover), so both files stay byte-identical
-    before/after every observation and no row/schema/audit state can change.
-
-    SQLite's WAL reader may CREATE, MODIFY, or REMOVE the source
-    ``-shm`` (WAL-index shared memory) as transient reader/lock/index
-    behavior — explicitly permitted by the founder contract (TASK-5544); no
-    ``-shm`` existence/hash/mtime identity is asserted. Only the durable
-    source ``happyranch.db`` and ``happyranch.db-wal`` bytes are protected
-    (byte-identical before/after).
-
-    Fail closed: a missing main DB is handled by the caller (``[]``); a
-    malformed main file raises ``sqlite3.DatabaseError`` and a schema without
-    a ``jobs`` table raises ``sqlite3.OperationalError`` — observation never
-    fabricates candidates and never mutates the source.
-    """
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    try:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            _STALE_PENDING_JOBS_SCAN_SQL, (cutoff_iso,),
-        ).fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        conn.close()
-
-
-def scan_stale_pending_jobs_readonly(
-    db_path: Path, cutoff_iso: str,
-) -> list[dict]:
-    """Read-only stale-pending observation over one org store.
-
-    THR-195 observation MUST NOT durably mutate any store: it never creates a
-    missing DB, never enables WAL, never runs the schema migration guards, and
-    never writes the source ``-wal``. The founder contract (TASK-5544)
-    protects the durable source ``happyranch.db`` and ``happyranch.db-wal``
-    BYTES ONLY — the SQLite WAL-index ``happyranch.db-shm`` may be created,
-    modified, or removed by read-side WAL access and that is explicitly
-    permitted, so no ``-shm`` identity is ever asserted. This helper
-    therefore never opens the source with ``Database(db_path)`` (whose
-    ``__init__`` creates the file, enables WAL, and runs migrations).
-
-    Route selection: a cleanly-closed store has no ``-wal``/``-shm`` (SQLite
-    checkpoints and removes them on the last close), so the main file holds
-    every committed row — ``immutable=1`` reads it fully and provably cannot
-    create sidecars. When sidecars exist (store open in this process — e.g. a
-    loaded org — or crash leftovers), the scan opens the SOURCE directly with
-    a genuine read-only WAL-aware connection (``mode=ro``): WAL-only
-    committed candidates are observed, the source main DB and ``-wal`` stay
-    byte-identical before/after, and the source ``-shm`` is the explicitly
-    permitted shared-memory surface (creation/modification/removal by the
-    WAL reader allowed; founder ruling TASK-5544; no snapshot/copy/temp
-    directory is used). Either way the scan sees every committed candidate
-    row and durably writes only the permitted ``-shm`` shared-memory surface
-    (which it may create or remove) — never the source ``.db``/``-wal``.
-
-    A missing DB file returns ``[]`` — nothing to observe, nothing created.
-    A store that cannot be read (malformed file, or a pre-migration/
-    irrelevant schema without a ``jobs`` table) raises
-    ``sqlite3.DatabaseError``/``OperationalError``: fail closed at this leaf —
-    never mutate, never fabricate candidates; the all-org coordinator
-    (``scan_all_org_stale_pending``) isolates and logs such a failure so it
-    cannot abort daemon startup or suppress other org roots.
-    """
-    if not db_path.is_file():
-        return []
-    wal = Path(f"{db_path}-wal")
-    shm = Path(f"{db_path}-shm")
-    if wal.exists() or shm.exists():
-        return _scan_stale_pending_jobs_direct_wal(db_path, cutoff_iso)
-    conn = sqlite3.connect(f"file:{db_path}?immutable=1", uri=True)
-    try:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(_STALE_PENDING_JOBS_SCAN_SQL, (cutoff_iso,)).fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        conn.close()
 
 
 # Closed key sets of every result-stage event that is NOT the ``spent`` receipt.
@@ -1643,7 +1493,15 @@ _V2_ALL_RESULT_STAGE_KEY_SETS[AUTHORITY_POLICY_V2_RESULT_STAGE_SPENT] = (
 )
 
 
-class Database(DreamsMixin, KnowledgeMixin, JobsMixin, AttachmentsMixin):
+class Database(
+    DreamsMixin,
+    KnowledgeMixin,
+    JobsMixin,
+    AttachmentsMixin,
+    AuditMixin,
+    SessionsMixin,
+    WorkspaceCleanupMixin,
+):
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1684,38 +1542,46 @@ class Database(DreamsMixin, KnowledgeMixin, JobsMixin, AttachmentsMixin):
         # value to verify instrumentation fires.
         self._lock_warn_threshold_seconds = 1.0
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        from runtime.infrastructure.remote_job_schema import (
-            migrate_identity_enrollment_schema,
-            validate_identity_enrollment_schema_preflight,
-        )
+        try:
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA foreign_keys=ON")
+            from runtime.infrastructure.remote_job_schema import (
+                migrate_identity_enrollment_schema,
+                validate_identity_enrollment_schema_preflight,
+            )
 
-        # TASK-6611: this fail-closed guard and six-stage convergence are the
-        # first database-open schema/data operation.  In particular they run
-        # before WAL selection and every legacy/jobs/S2/open-path mutator.
-        validate_identity_enrollment_schema_preflight(self._conn)
-        migrate_identity_enrollment_schema(
-            self._conn,
-            stage_hook=getattr(self, "_remote_identity_schema_stage_hook", None),
-        )
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._migrate_jobs_table_if_needed()
-        self._migrate_drop_talk_surface_if_needed()
-        self._retire_skill_lifecycle_if_present()
-        self._create_tables()
-        self._migrate_remote_job_schema()
-        self._migrate_dark_authority_activation_seal_if_needed()
-        self._create_authority_tables()
-        self._retrofit_authority_policy_activation_trigger_if_needed()
-        self._retrofit_authority_audit_fk_if_needed()
-        self._retrofit_authority_lifecycle_trigger_if_needed()
-        self._ensure_task_attachments_storage_key_unique()
-        # Working-hours CRUD lives in its own module but shares THIS connection
-        # and lock so the single-connection serialization invariant (see
-        # `_synchronized`) is preserved across both surfaces.
-        self.work_hours = WorkHoursStore(self._conn, self._lock)
-        self.schedules = ScheduleStore(self._conn, self._lock)
+            # TASK-6611: this fail-closed guard and six-stage convergence are the
+            # first database-open schema/data operation.  In particular they run
+            # before WAL selection and every legacy/jobs/S2/open-path mutator.
+            validate_identity_enrollment_schema_preflight(self._conn)
+            migrate_identity_enrollment_schema(
+                self._conn,
+                stage_hook=getattr(self, "_remote_identity_schema_stage_hook", None),
+            )
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._migrate_jobs_table_if_needed()
+            self._migrate_drop_talk_surface_if_needed()
+            self._retire_skill_lifecycle_if_present()
+            self._create_tables()
+            self._migrate_remote_job_schema()
+            self._migrate_dark_authority_activation_seal_if_needed()
+            self._create_authority_tables()
+            self._retrofit_authority_policy_activation_trigger_if_needed()
+            self._retrofit_authority_audit_fk_if_needed()
+            self._retrofit_authority_lifecycle_trigger_if_needed()
+            self._ensure_task_attachments_storage_key_unique()
+            # Working-hours CRUD lives in its own module but shares THIS connection
+            # and lock so the single-connection serialization invariant (see
+            # `_synchronized`) is preserved across both surfaces.
+            self.work_hours = WorkHoursStore(self._conn, self._lock)
+            self.schedules = ScheduleStore(self._conn, self._lock)
+        except BaseException:
+            # Database owns the connection as soon as connect() succeeds.  A
+            # fail-closed schema check or interrupted migration can raise before
+            # callers receive an instance, so close here rather than depending
+            # on exception-frame collection to release SQLite descriptors.
+            self._conn.close()
+            raise
 
     def _migrate_remote_job_schema(self) -> None:
         """Install the exact additive generic remote-job S2 schema."""
@@ -4768,6 +4634,394 @@ class Database(DreamsMixin, KnowledgeMixin, JobsMixin, AttachmentsMixin):
         )
         self._conn.commit()
 
+    @staticmethod
+    def _retry_object(raw: str) -> dict:
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise _RetryEvidenceRefusal("malformed_evidence") from exc
+        if not isinstance(value, dict):
+            raise _RetryEvidenceRefusal("malformed_evidence")
+        return value
+
+    def _retry_audits(self, task_id: str, action: str) -> list[tuple[str, dict]]:
+        # These are the actual org-local records, without a CLI pagination cap.
+        return [
+            (row["agent"], self._retry_object(row["payload"]))
+            for row in self._conn.execute(
+                "SELECT agent, payload FROM audit_log WHERE task_id=? AND action=?",
+                (task_id, action),
+            )
+        ]
+
+    def _retry_require_audit(
+        self, task_id: str, action: str, agent: str, expected: dict, *,
+        decision: str | None = None,
+    ) -> None:
+        observations = self._retry_audits(task_id, action)
+        if decision is not None:
+            # Earlier manual continues belong to this root's history, but do
+            # not describe its eventual supersession. Malformed JSON still
+            # fails in _retry_audits, rather than silently losing evidence.
+            observations = [(actor, payload) for actor, payload in observations
+                            if payload.get("decision") != "continue"]
+        if not observations or any(
+            actual_agent != agent or any(payload.get(k) != v for k, v in expected.items())
+            for actual_agent, payload in observations
+        ):
+            raise _RetryEvidenceRefusal("malformed_evidence")
+
+    def _retry_manager_edge(self, predecessor, successor, records: list) -> None:
+        normalized = {tuple(row) for row in records}
+        if len(normalized) != 1:
+            raise _RetryEvidenceRefusal("ambiguous_predecessor")
+        row = records[0]
+        actor = successor["assigned_agent"]
+        evidence = self._retry_object(row["attestation_evidence"])
+        attestation = evidence.get("attestation")
+        fields = (
+            "policy_product_intent_unchanged", "no_budget_or_external_commitment",
+            "no_permission_or_cross_team_change",
+            "no_schema_auth_security_privacy_or_data_access_change",
+            "no_unresolved_founder_gate",
+        )
+        if (
+            row["actor_agent"] != actor
+            or row["original_root_task_id"] != predecessor["id"]
+            or not isinstance(row["actor_session_id"], str) or not row["actor_session_id"]
+            or evidence.get("rule_version") != "manager_supersession_attestation.v1"
+            or evidence.get("actor_agent") != actor
+            or evidence.get("actor_session_id") != row["actor_session_id"]
+            or not isinstance(attestation, dict)
+            or not isinstance(attestation.get("recovery_reason"), str)
+            or not attestation["recovery_reason"].strip()
+            or any(attestation.get(field) is not True for field in fields)
+        ):
+            raise _RetryEvidenceRefusal("malformed_evidence")
+        for name in ("predecessor_brief", "successor_brief"):
+            if (not isinstance(row[name], str)
+                or hashlib.sha256(row[name].encode()).hexdigest() != row[name + "_sha256"]):
+                raise _RetryEvidenceRefusal("malformed_evidence")
+        payload = {key: row[key] for key in (
+            "original_root_task_id", "actor_session_id", "rationale",
+            "predecessor_brief_sha256", "successor_brief_sha256",
+        )}
+        payload["attestation_evidence"] = evidence
+        for task, other in ((predecessor, successor), (successor, predecessor)):
+            self._retry_require_audit(task["id"], "manager_supersession", actor, {
+                **payload, "counterpart_task_id": other["id"],
+            })
+
+    def _retry_dispatch_edge(self, predecessor, successor, evidence: dict) -> None:
+        thread_id = evidence.get("thread_id")
+        actor = successor["assigned_agent"]
+        if (
+            not isinstance(thread_id, str) or not thread_id
+            or successor["dispatched_from_thread_id"] != thread_id
+            or successor["revisit_of_task_id"] is not None
+            or evidence.get("founder_note") != f"thread {thread_id} dispatch by {actor}"
+        ):
+            raise _RetryEvidenceRefusal("invocation_binding")
+        bindings = self._conn.execute(
+            "SELECT invocation_token FROM thread_invocations "
+            "WHERE dispatched_task_id=? AND thread_id=? AND agent_name=?",
+            (successor["id"], thread_id, actor),
+        ).fetchall()
+        if len(bindings) != 1:
+            raise _RetryEvidenceRefusal("invocation_binding")
+        try:
+            inv = self.get_invocation_any_status(bindings[0]["invocation_token"])
+        except ValueError as exc:
+            raise _RetryEvidenceRefusal("invocation_binding") from exc
+        if (
+            inv is None or inv.dispatched_task_id != successor["id"]
+            or inv.thread_id != thread_id or inv.agent_name != actor
+            or inv.purpose not in (ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP)
+            or inv.status not in (
+                ThreadInvocationStatus.PENDING, ThreadInvocationStatus.CONSUMED,
+                ThreadInvocationStatus.DECLINED, ThreadInvocationStatus.TIMEOUT,
+                ThreadInvocationStatus.FAILED,
+            )
+            or self._conn.execute(
+                "SELECT 1 FROM thread_messages WHERE thread_id=? AND seq=?",
+                (thread_id, inv.triggering_seq),
+            ).fetchone() is None
+            or self._conn.execute("SELECT 1 FROM threads WHERE id=?", (thread_id,)).fetchone() is None
+        ):
+            raise _RetryEvidenceRefusal("invocation_binding")
+        expected = {"task_id": successor["id"], "dispatcher": actor,
+                    "target_agent": actor, "team": successor["team"]}
+        # Other dispatches in this thread are unrelated to this edge.
+        audits = self._conn.execute(
+            "SELECT agent, payload FROM audit_log WHERE task_id=? AND action='thread_dispatch' "
+            "AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.task_id') END=?",
+            (thread_id, successor["id"]),
+        ).fetchall()
+        if not audits or any(
+            row["agent"] != actor or any(self._retry_object(row["payload"]).get(k) != v
+                                          for k, v in expected.items()) for row in audits
+        ):
+            raise _RetryEvidenceRefusal("invocation_binding")
+        messages = self._conn.execute(
+            "SELECT speaker, kind, seq, system_payload_json FROM thread_messages "
+            "WHERE thread_id=? AND CASE WHEN json_valid(system_payload_json) "
+            "THEN json_extract(system_payload_json,'$.task_id') END=?",
+            (thread_id, successor["id"]),
+        ).fetchall()
+        messages = [row for row in messages if self._retry_object(row["system_payload_json"]).get("kind_tag") == "task_dispatched"]
+        if not messages or any(
+            row["speaker"] != actor or row["kind"] != "system" or row["seq"] <= inv.triggering_seq
+            or any(self._retry_object(row["system_payload_json"]).get(k) != v for k, v in expected.items())
+            for row in messages
+        ):
+            raise _RetryEvidenceRefusal("invocation_binding")
+
+    def _retry_escalation_edge(self, predecessor, successor, evidence: dict) -> None:
+        actor = evidence.get("actor")
+        prior = evidence.get("prior_block_kind")
+        if prior not in ("escalated", "delegated"):
+            raise _RetryEvidenceRefusal("malformed_evidence")
+        if actor == "thread-dispatch":
+            self._retry_dispatch_edge(predecessor, successor, evidence)
+        elif actor == "cli":
+            if successor["revisit_of_task_id"] != predecessor["id"]:
+                raise _RetryEvidenceRefusal("malformed_evidence")
+            audits = self._retry_audits(successor["id"], "revisit_of")
+            if not audits:
+                raise _RetryEvidenceRefusal("malformed_evidence")
+            for audit_actor, payload in audits:
+                cascade = payload.get("cascade")
+                if (
+                    audit_actor != "founder" or payload.get("actor") != "cli"
+                    or payload.get("predecessor_root") != predecessor["id"]
+                    or payload.get("prior_status") != "blocked-" + prior
+                    or not isinstance(cascade, list) or not cascade
+                    or not all(isinstance(item, str) for item in cascade)
+                    or len(set(cascade)) != len(cascade)
+                    or cascade[0] != predecessor["id"] or cascade[-1] != payload.get("flagged")
+                ):
+                    raise _RetryEvidenceRefusal("malformed_evidence")
+                for parent_id, child_id in zip(cascade, cascade[1:]):
+                    child = self._conn.execute("SELECT parent_task_id FROM tasks WHERE id=?", (child_id,)).fetchone()
+                    if child is None or child[0] != parent_id:
+                        raise _RetryEvidenceRefusal("malformed_evidence")
+            self._retry_require_audit(predecessor["id"], "revisit_spawned", "founder", {"new_root": successor["id"]})
+        elif actor in ("founder", successor["assigned_agent"]):
+            thread_id = evidence.get("thread_id")
+            expected = {"decision": "supersede", "resolution_path": "manual_break_glass"}
+            if actor != "founder":
+                if (
+                    not isinstance(thread_id, str) or not thread_id
+                    or successor["dispatched_from_thread_id"] != thread_id
+                    or predecessor["dispatched_from_thread_id"] != thread_id
+                    or self._conn.execute("SELECT 1 FROM threads WHERE id=?", (thread_id,)).fetchone() is None
+                ):
+                    raise _RetryEvidenceRefusal("malformed_evidence")
+                # Thread manual resolution has no stored token-to-successor join.
+                # The actual producer's resolution and supersession rows are authority.
+                expected.update(resolution_path="thread_manual_supersede", thread_id=thread_id)
+            if prior != "escalated" or successor["revisit_of_task_id"] is not None:
+                raise _RetryEvidenceRefusal("malformed_evidence")
+            self._retry_require_audit(
+                predecessor["id"], "escalation_resolved", actor, expected, decision="supersede",
+            )
+        else:
+            raise _RetryEvidenceRefusal("malformed_evidence")
+
+    @_synchronized
+    def verify_retry_link(self, parent_id: str, target_agent: str, failed_id: str | None) -> VerifiedRetry | InvalidLineage:
+        """Verify an explicit retry through recorded supersessions in this org DB.
+
+        Inclusive limit: twenty root task records, at most nineteen edges.
+        This read-only check is advisory until repeated inside the spawn transaction.
+        Brief text, task numbering and arbitrary revisit links confer no authority.
+        """
+        try:
+            local_failed = {row[0] for row in self._conn.execute(
+                "SELECT id FROM tasks WHERE parent_task_id=? AND assigned_agent=? AND status='failed'",
+                (parent_id, target_agent),
+            )}
+            if failed_id is None:
+                if local_failed:
+                    raise _RetryEvidenceRefusal("retry_link_required")
+                return VerifiedRetry((parent_id,))
+            failed = self._conn.execute("SELECT * FROM tasks WHERE id=?", (failed_id,)).fetchone()
+            if failed is None:
+                raise _RetryEvidenceRefusal("retry_not_found")
+            if failed["status"] != "failed":
+                raise _RetryEvidenceRefusal("retry_not_failed")
+            if failed["assigned_agent"] != target_agent:
+                raise _RetryEvidenceRefusal("retry_agent_mismatch")
+            if failed["parent_task_id"] == parent_id:
+                return VerifiedRetry((parent_id,))
+            # A remote historical link cannot retire an unresolved local retry.
+            retired = {row[0] for row in self._conn.execute(
+                "SELECT revisit_of_task_id FROM tasks WHERE parent_task_id=? AND revisit_of_task_id IS NOT NULL",
+                (parent_id,),
+            )}
+            if local_failed - retired:
+                raise _RetryEvidenceRefusal("retry_link_required")
+            current = self._conn.execute("SELECT * FROM tasks WHERE id=?", (parent_id,)).fetchone()
+            if current is None:
+                raise _RetryEvidenceRefusal("no_verified_supersession")
+            team, manager = current["team"], current["assigned_agent"]
+            path: list[str] = []
+            while True:
+                if current["id"] in path:
+                    raise _RetryEvidenceRefusal("lineage_cycle")
+                if len(path) == 20:
+                    raise _RetryEvidenceRefusal("lineage_record_limit_20")
+                if current["parent_task_id"] is not None or current["task_type"] != "task":
+                    raise _RetryEvidenceRefusal("no_verified_supersession")
+                if current["team"] != team:
+                    raise _RetryEvidenceRefusal("team_mismatch")
+                if current["assigned_agent"] != manager:
+                    raise _RetryEvidenceRefusal("manager_mismatch")
+                path.append(current["id"])
+                if current["id"] == failed["parent_task_id"]:
+                    return VerifiedRetry(tuple(path))
+                if len(path) == 20:
+                    raise _RetryEvidenceRefusal("lineage_record_limit_20")
+                manager_rows = self._conn.execute(
+                    "SELECT * FROM manager_supersessions WHERE successor_task_id=?", (current["id"],),
+                ).fetchall()
+                escalation_rows = self._conn.execute(
+                    "SELECT task_id,agent,payload FROM audit_log WHERE action='escalation_superseded' "
+                    "AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.successor_root') END=?",
+                    (current["id"],),
+                ).fetchall()
+                predecessors = {r["predecessor_task_id"] for r in manager_rows} | {r["task_id"] for r in escalation_rows}
+                if not predecessors:
+                    raise _RetryEvidenceRefusal("no_verified_supersession")
+                if len(predecessors) != 1:
+                    raise _RetryEvidenceRefusal("ambiguous_predecessor")
+                predecessor_id = predecessors.pop()
+                if predecessor_id in path:
+                    raise _RetryEvidenceRefusal("lineage_cycle")
+                predecessor = self._conn.execute("SELECT * FROM tasks WHERE id=?", (predecessor_id,)).fetchone()
+                if predecessor is None or predecessor["status"] != "superseded":
+                    raise _RetryEvidenceRefusal("predecessor_not_superseded")
+                outgoing = {r[0] for r in self._conn.execute(
+                    "SELECT successor_task_id FROM manager_supersessions WHERE predecessor_task_id=?", (predecessor_id,),
+                )}
+                outgoing_audits = self._retry_audits(predecessor_id, "escalation_superseded")
+                for audit_actor, payload in outgoing_audits:
+                    successor_id = payload.get("successor_root")
+                    if audit_actor != "founder" or not isinstance(successor_id, str) or not successor_id:
+                        raise _RetryEvidenceRefusal("malformed_evidence")
+                    outgoing.add(successor_id)
+                if len(outgoing) > 1:
+                    raise _RetryEvidenceRefusal("competing_successors")
+                if manager_rows and escalation_rows:
+                    raise _RetryEvidenceRefusal("ambiguous_predecessor")
+                if manager_rows:
+                    self._retry_manager_edge(predecessor, current, manager_rows)
+                else:
+                    normalized = {json.dumps(payload, sort_keys=True) for _, payload in outgoing_audits}
+                    if len(normalized) != 1:
+                        raise _RetryEvidenceRefusal("ambiguous_predecessor")
+                    self._retry_escalation_edge(predecessor, current, outgoing_audits[0][1])
+                current = predecessor
+        except _RetryEvidenceRefusal as exc:
+            return InvalidLineage(str(exc))
+
+    def _retry_claim_matches(self, claim: RetryClaim, *, pending: bool = False) -> bool:
+        if claim.status != TaskStatus.IN_PROGRESS or claim.block_kind is not None or claim.cancelled_at is not None:
+            return False
+        task = self.get_task(claim.task_id)
+        if (task is None or task.status != (TaskStatus.PENDING if pending else TaskStatus.IN_PROGRESS)
+                or task.block_kind is not None or task.cancelled_at is not None
+                or not claim.current_session_id or not claim.assigned_agent
+                or replace(RetryClaim.from_task(task, result_row_id=claim.result_row_id),
+                           status=TaskStatus.IN_PROGRESS if pending else task.status) != claim):
+            return False
+        if claim.result_row_id is not None:
+            row = self._conn.execute(
+                "SELECT task_id, agent, session_id FROM task_results WHERE id = ?",
+                (claim.result_row_id,),
+            ).fetchone()
+            if row is None or tuple(row) != (claim.task_id, claim.assigned_agent, claim.current_session_id):
+                return False
+        return True
+
+    def _retry_spawn_check(self, parent_id: str, children: list, claim: RetryClaim,
+                           revision_delta: int = 0, revision_cap: int = 0,
+                           *, ordinary: bool = False) -> InvalidLineage | LostClaim | None:
+        if parent_id != claim.task_id or not self._retry_claim_matches(claim):
+            return LostClaim()
+        for child in children:
+            if child.parent_task_id != parent_id:
+                return InvalidLineage("child_parent_mismatch")
+            outcome = self.verify_retry_link(parent_id, child.assigned_agent, child.revisit_of_task_id)
+            if isinstance(outcome, InvalidLineage):
+                return outcome
+        delta = 0
+        if ordinary:
+            row = self._conn.execute(
+                "SELECT assigned_agent FROM tasks WHERE parent_task_id = ? "
+                "AND status IN ('completed', 'failed') ORDER BY created_at, id LIMIT 1",
+                (parent_id,),
+            ).fetchone()
+            delta = int(row is not None and row[0] == children[0].assigned_agent
+                        and row[0] != claim.assigned_agent)
+        if delta != revision_delta or (delta and revision_cap > 0 and claim.revision >= revision_cap):
+            return LostClaim()
+        return None
+
+    @_synchronized
+    def try_retry_feedback(self, expected_claim: RetryClaim, feedback: str) -> PendingRetry | LostClaim:
+        """A: commit existing feedback result/audit and PENDING as one owned write."""
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            if not self._retry_claim_matches(expected_claim):
+                self._conn.rollback()
+                return LostClaim()
+            self._insert_task_result(
+                task_id=expected_claim.task_id, agent=expected_claim.assigned_agent,
+                session_id="", status="completed", confidence_score=0,
+                output_summary=feedback, risks_flagged=[],
+            )
+            result_id = self._conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            self.insert_audit_log_uncommitted(
+                task_id=expected_claim.task_id, agent="orchestrator", action="orchestration_step",
+                payload={"step_number": expected_claim.step,
+                         "decision": {"action": "feedback", "reason": feedback}},
+            )
+            self._conn.execute(
+                "UPDATE tasks SET status = 'pending', block_kind = NULL, updated_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), expected_claim.task_id),
+            )
+            self._conn.commit()
+            return PendingRetry(expected_claim, result_id, feedback)
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def admit_retry_feedback(self, pending: PendingRetry, enqueue) -> str | LostClaim:
+        """B: no-write admission; hold the writer reservation through synchronous enqueue.
+
+        Queue insertion is not a claim and is not crash-atomic with SQLite.
+        Startup may enqueue PENDING again after either side of this boundary.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            if not self._retry_claim_matches(pending.claim, pending=True):
+                return LostClaim()
+            row = self._conn.execute(
+                "SELECT task_id, agent, session_id, status, output_summary FROM task_results WHERE id = ?",
+                (pending.result_id,),
+            ).fetchone()
+            if row is None or tuple(row) != (pending.claim.task_id, pending.claim.assigned_agent,
+                                             "", "completed", pending.feedback):
+                return LostClaim()
+            if enqueue is None:
+                return "not_configured"
+            enqueue()
+            return "enqueued"
+        finally:
+            self._conn.rollback()
+
     @_synchronized
     def try_delegate_many(
         self, parent_id: str, children: list, *, parent_note: str,
@@ -4775,7 +5029,8 @@ class Database(DreamsMixin, KnowledgeMixin, JobsMixin, AttachmentsMixin):
         children_attachments: list[list[dict] | None] | None = None,
         carrier_chains: list[dict] | None = None,
         uploaded_by: str = "orchestrator",
-    ) -> bool:
+        expected_claim: RetryClaim,
+    ) -> SpawnOutcome:
         """Atomic CAS: insert N child tasks + transition parent to
         IN_PROGRESS(DELEGATED) under a single explicit SQL transaction.
 
@@ -4800,27 +5055,24 @@ class Database(DreamsMixin, KnowledgeMixin, JobsMixin, AttachmentsMixin):
         status, session_timeout_seconds, task_type). The first leg is
         inserted as a child of the carrier within the same transaction.
 
-        On True: all children (and carrier first legs) exist and parent has
-        transitioned.  On False: no DB changes were made.
+        Committed carries direct child/carrier IDs. InvalidLineage and
+        LostClaim carry no writes; the original claim is checked before
+        lineage. BEGIN IMMEDIATE precedes both authoritative rereads.
 
         Children must already have their IDs allocated (caller calls
         next_task_id() N times before invoking this method). Carrier first
         leg IDs must also be pre-allocated.
         """
-        cursor = self._conn.execute(
-            "SELECT status, cancelled_at FROM tasks WHERE id = ?", (parent_id,)
-        )
-        row = cursor.fetchone()
-        if row is None:
-            return False
-        if row["cancelled_at"] is not None or row["status"] in (
-            "completed", "failed", "superseded", "cancelled",
-        ):
-            return False
-        now = datetime.now(timezone.utc).isoformat()
         try:
-            # One explicit transaction: all child inserts + parent transition.
             self._conn.execute("BEGIN IMMEDIATE")
+            refusal = self._retry_spawn_check(
+                parent_id, children, expected_claim,
+
+            )
+            if refusal is not None:
+                self._conn.rollback()
+                return refusal
+            now = now_ts = datetime.now(timezone.utc).isoformat()
             for i, child in enumerate(children):
                 self._conn.execute(
                     """INSERT INTO tasks (id, status, assigned_agent, team, brief,
@@ -4907,12 +5159,11 @@ class Database(DreamsMixin, KnowledgeMixin, JobsMixin, AttachmentsMixin):
                  active_fanout_json, now, parent_id),
             )
             self._conn.commit()
-            return True
-        except Exception:
+            return Committed(tuple(child.id for child in children))
+        except BaseException:
             self._conn.rollback()
             raise
 
-    @_synchronized
     @_synchronized
     def try_claim_for_step(
         self,
@@ -5523,47 +5774,28 @@ class Database(DreamsMixin, KnowledgeMixin, JobsMixin, AttachmentsMixin):
         attachments: list[dict] | None = None,
         active_chain_json: str | None = None,
         uploaded_by: str = "orchestrator",
-    ) -> bool:
-        """Atomic CAS: insert child task + transition parent to
-        IN_PROGRESS(DELEGATED) (Path B: a parent waiting on its own children is
-        in progress, with the waiting reason kept in block_kind), rejecting if
-        parent is cancelled or already terminal.
+        expected_claim: RetryClaim,
+        revision_delta: int = 0,
+        revision_cap: int = 0,
+    ) -> SpawnOutcome:
+        """Commit the child, attachments, chain and ordinary revision atomically.
 
-        Closes the spawn-new-work race documented in
-        docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.3.
-        Atomicity guarantee: both the child INSERT and the parent UPDATE
-        happen under a single @_synchronized acquisition (threading.RLock,
-        reentrant). The cancel route's update_task also acquires this lock,
-        so the only two interleavings are:
-        - cancel before us: our SELECT sees cancelled_at != NULL → bail, no writes
-        - us before cancel: cancel sees parent in in_progress(delegated), transitions
-          to FAILED, and its cascade walks our newly-inserted child for cleanup
-
-        When ``attachments`` is provided, attachment links + audit rows
-        are inserted in the same transaction as the child task. A duplicate
-        storage_key raises sqlite3.IntegrityError (rolled back by caller).
-
-        When ``active_chain_json`` is provided, it is written to the parent's
-        active_chain column in the same transaction as the child insert +
-        parent status update. A crash or write failure rolls back everything
-        — no orphan chain state, no orphan child, no broken parent state.
-
-        On True: parent has transitioned and child exists.
-        On False: no DB changes were made (no orphan child, no parent overwrite).
+        BEGIN IMMEDIATE under RLock precedes original claim, callback binding,
+        lineage and worker-of-record rereads. LostClaim takes precedence over
+        InvalidLineage. Neither refusal writes; Committed alone permits enqueue.
+        All actual write/serialization errors roll back and propagate, preserving
+        prior callback results, decisions and parent state.
         """
-        cursor = self._conn.execute(
-            "SELECT status, cancelled_at FROM tasks WHERE id = ?", (parent_id,)
-        )
-        row = cursor.fetchone()
-        if row is None:
-            return False
-        if row["cancelled_at"] is not None or row["status"] in (
-            "completed", "failed", "superseded",
-        ):
-            return False
-        # Single transaction: child insert + attachment links/audit + parent update.
         try:
-            now_ts = datetime.now(timezone.utc).isoformat()
+            self._conn.execute("BEGIN IMMEDIATE")
+            refusal = self._retry_spawn_check(
+                parent_id, [child], expected_claim,
+                revision_delta, revision_cap, ordinary=True,
+            )
+            if refusal is not None:
+                self._conn.rollback()
+                return refusal
+            now = now_ts = datetime.now(timezone.utc).isoformat()
             self._conn.execute(
                 """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
@@ -5609,14 +5841,14 @@ class Database(DreamsMixin, KnowledgeMixin, JobsMixin, AttachmentsMixin):
             now = datetime.now(timezone.utc).isoformat()
             self._conn.execute(
                 """UPDATE tasks
-                   SET status = ?, block_kind = ?, note = ?, updated_at = ?
+                   SET status = ?, block_kind = ?, note = ?, updated_at = ?, revision_count = revision_count + ?
                    WHERE id = ?""",
                 (TaskStatus.IN_PROGRESS.value, BlockKind.DELEGATED.value, parent_note,
-                 now, parent_id),
+                 now, revision_delta, parent_id),
             )
             self._conn.commit()
-            return True
-        except Exception:
+            return Committed((child.id,))
+        except BaseException:
             self._conn.rollback()
             raise
 
@@ -5756,60 +5988,6 @@ class Database(DreamsMixin, KnowledgeMixin, JobsMixin, AttachmentsMixin):
     # --- Audit Log ---
 
     @_synchronized
-    def insert_audit_log(
-        self,
-        task_id: str,
-        agent: str,
-        action: str,
-        payload: dict | None = None,
-    ) -> int:
-        cur = self._conn.execute(
-            "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) VALUES (?, ?, ?, ?, ?)",
-            (
-                task_id,
-                agent,
-                action,
-                json.dumps(payload) if payload else None,
-                datetime.now(timezone.utc).isoformat(),
-            ),
-        )
-        self._conn.commit()
-        return cur.lastrowid
-
-    @_synchronized
-    def insert_audit_log_uncommitted(
-        self,
-        task_id: str,
-        agent: str,
-        action: str,
-        payload: dict | None = None,
-    ) -> int:
-        """Insert an audit row WITHOUT committing the transaction.
-
-        The caller must call ``commit()`` to make the row durable.
-        If the connection is closed without a commit (or an exception
-        propagates through a context manager that closes the handle),
-        the row is rolled back — no audit residue.
-
-        This exists so that compound operations (e.g. adapter-profile
-        binding) can batch the durable profile write, in-memory registry
-        update, and audit write in a single logical transaction with a
-        clean rollback path.  The standard ``insert_audit_log`` (which
-        commits inline) is retained for all existing callers.
-        """
-        cur = self._conn.execute(
-            "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) VALUES (?, ?, ?, ?, ?)",
-            (
-                task_id,
-                agent,
-                action,
-                json.dumps(payload) if payload else None,
-                datetime.now(timezone.utc).isoformat(),
-            ),
-        )
-        return cur.lastrowid
-
-    @_synchronized
     def commit(self) -> None:
         """Commit the current transaction — public companion to insert_audit_log_uncommitted."""
         self._conn.commit()
@@ -5849,47 +6027,6 @@ class Database(DreamsMixin, KnowledgeMixin, JobsMixin, AttachmentsMixin):
         self._conn.rollback()
 
     @_synchronized
-    def get_audit_logs(self, task_id: str) -> list[dict]:
-        cursor = self._conn.execute(
-            "SELECT * FROM audit_log WHERE task_id = ? ORDER BY id", (task_id,)
-        )
-        rows = cursor.fetchall()
-        result = []
-        for row in rows:
-            d = dict(row)
-            if d.get("payload"):
-                d["payload"] = json.loads(d["payload"])
-            result.append(d)
-        return result
-
-    @_synchronized
-    def get_escalation_episode_audit_tail(
-        self, task_id: str, *, limit: int = 256,
-    ) -> list[dict]:
-        """Return the bounded audit subset needed for escalation display.
-
-        Exact ``task_id`` equality keeps task rows separate from ``config:``,
-        thread, and other scope-prefixed audit ids. The primary-key ``id``
-        order makes the newest rows authoritative. The refusal writer's causal
-        decision is adjacent in this action-filtered stream; the hard cap keeps
-        a task with a long audit history from expanding the read model without
-        bound and fails absent rather than consulting older rows.
-        """
-        cursor = self._conn.execute(
-            "SELECT * FROM audit_log "
-            "WHERE task_id = ? AND action IN ('escalation', 'orchestration_step') "
-            "ORDER BY id DESC LIMIT ?",
-            (task_id, limit),
-        )
-        result: list[dict] = []
-        for row in cursor.fetchall():
-            item = dict(row)
-            if item.get("payload"):
-                item["payload"] = json.loads(item["payload"])
-            result.append(item)
-        return result
-
-    @_synchronized
     def fetch_one_readonly(
         self, sql: str, params: tuple = ()
     ) -> "sqlite3.Row | None":
@@ -5910,27 +6047,6 @@ class Database(DreamsMixin, KnowledgeMixin, JobsMixin, AttachmentsMixin):
         See ``fetch_one_readonly`` for the threading rationale.
         """
         return self._conn.execute(sql, params).fetchall()
-
-    @_synchronized
-    def get_audit_logs_by_action(self, action: str, since: str | None = None) -> list[dict]:
-        """Get audit logs filtered by action, optionally since a date."""
-        if since:
-            cursor = self._conn.execute(
-                "SELECT * FROM audit_log WHERE action = ? AND timestamp >= ? ORDER BY id",
-                (action, since),
-            )
-        else:
-            cursor = self._conn.execute(
-                "SELECT * FROM audit_log WHERE action = ? ORDER BY id", (action,)
-            )
-        rows = cursor.fetchall()
-        result = []
-        for row in rows:
-            d = dict(row)
-            if d.get("payload"):
-                d["payload"] = json.loads(d["payload"])
-            result.append(d)
-        return result
 
     @_synchronized
     def query_audit_logs(
@@ -6022,20 +6138,6 @@ class Database(DreamsMixin, KnowledgeMixin, JobsMixin, AttachmentsMixin):
         result.sort(key=lambda d: d["id"])
 
         return result, next_cursor
-
-    def get_audit_logs_for_agent_since(
-        self, agent: str, since: str, *, limit: int = 200,
-    ) -> list[dict]:
-        """Audit rows authored by ``agent`` with ``timestamp >= since`` (ISO),
-        capped to the most recent ``limit`` in chronological order.
-
-        Window-scoped accessor for the dream input window (spec "Input Window":
-        "audit rows involving the agent since window_start"). Distinct from
-        ``get_audit_logs(task_id)``, which is keyed on the scope-id column.
-        Delegates to ``query_audit_logs`` to avoid duplicating the filter SQL.
-        """
-        entries, _ = self.query_audit_logs(agent=agent, since=since, limit=limit)
-        return entries
 
     # --- Task Results ---
 
@@ -6277,36 +6379,6 @@ class Database(DreamsMixin, KnowledgeMixin, JobsMixin, AttachmentsMixin):
         except Exception:
             self._conn.rollback()
             raise
-
-    @_synchronized
-    def has_task_completion_report_audit(self, *, task_id: str, agent: str, session_id: str, result_row_id: int) -> bool:
-        """Whether recovery re-entry already has a completion-report receipt."""
-        row = self._conn.execute(
-            """SELECT 1 FROM audit_log WHERE task_id=? AND agent=?
-               AND action='completion_report'
-               AND json_extract(payload, '$._recovery_session_id')=?
-               AND json_extract(payload, '$._result_row_id')=? LIMIT 1""",
-            (task_id, agent, session_id, result_row_id),
-        ).fetchone()
-        return row is not None
-
-    @_synchronized
-    def has_orchestration_step_audit(self, *, task_id: str, step_number: int) -> bool:
-        """Return whether this durable manager step was already recorded.
-
-        Recovery has one immutable accepted result but the ordinary manager
-        consumer records its step audit before applying its decision.  A
-        process loss in that gap must re-enter the decision without minting a
-        second step audit; the task's already-incremented step number is the
-        established durable key for that audit.
-        """
-        row = self._conn.execute(
-            """SELECT 1 FROM audit_log WHERE task_id=? AND agent='orchestrator'
-               AND action='orchestration_step'
-               AND json_extract(payload, '$.step_number')=? LIMIT 1""",
-            (task_id, step_number),
-        ).fetchone()
-        return row is not None
 
     @_synchronized
     def complete_task_if_current_recovery_owner(
@@ -16077,121 +16149,7 @@ class Database(DreamsMixin, KnowledgeMixin, JobsMixin, AttachmentsMixin):
             result.append(d)
         return result
 
-    @_synchronized
-    def list_workspace_cleanup_activity(self, agent: str, limit: int = 5) -> list[dict]:
-        """Return the newest distinct scheduler-triggered cleanup tasks for an agent.
 
-        The audit action is the sole eligibility marker.  Joining it before the
-        limit avoids a bounded audit-page scan and duplicate trigger rows cannot
-        displace another task.  A correlated result lookup keeps the task's
-        current lifecycle status separate from its latest agent result.
-        """
-        rows = self._conn.execute(
-            """SELECT t.id AS task_id, t.status, t.created_at,
-                      (SELECT r.status FROM task_results r
-                       WHERE r.task_id=t.id AND r.agent=?
-                       ORDER BY r.id DESC LIMIT 1) AS result_status,
-                      (SELECT r.output_summary FROM task_results r
-                       WHERE r.task_id=t.id AND r.agent=?
-                       ORDER BY r.id DESC LIMIT 1) AS output_summary
-               FROM tasks t
-               JOIN (SELECT DISTINCT task_id FROM audit_log
-                     WHERE action='workspace_cleanup_triggered' AND agent=?) a
-                 ON a.task_id=t.id
-               WHERE t.assigned_agent=?
-               ORDER BY t.created_at DESC, t.id DESC LIMIT ?""",
-            (agent, agent, agent, agent, limit),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-    @_synchronized
-    def summarize_workspace_cleanup_marker_history(
-        self,
-        brief_prefix: str,
-        *,
-        assigned_agent: str,
-        page_size: int = _CLEANUP_HISTORY_PAGE_SIZE,
-    ) -> WorkspaceCleanupMarkerHistorySummary:
-        """Complete read-only summary of one agent's daemon-cleanup marker rows.
-
-        Predicate is exactly the existing marker/agent semantics
-        (``assigned_agent = ? AND brief LIKE ? ESCAPE '\\'`` with the same
-        ``\\ % _`` escaping as :meth:`list_tasks_by_brief_prefix`), but this
-        reader scans ALL matching rows in bounded ``rowid`` keyset pages and
-        computes the exact count, the newest UTC instant (microsecond
-        precision, never the SQL text-sort winner) and whether ANY row is
-        non-terminal.  ``page_size`` bounds materialization per page only; it
-        is never a logical history cutoff.
-
-        Snapshot semantics: the complete page loop is one synchronous
-        ``_synchronized`` call with no awaits.  When the connection is not
-        already in a transaction the reader begins its own read transaction,
-        pins the snapshot with its first SELECT, and rolls it back in
-        ``finally`` on success or failure.  When a caller already owns a
-        transaction the reader neither begins, commits nor rolls it back; it
-        preserves the caller's transaction and pending writes.
-
-        Any SQLite/query/fetch failure or timestamp that cannot yield a
-        datetime propagates — a partial or fabricated summary is never
-        returned.
-        """
-        if isinstance(page_size, bool) or not isinstance(page_size, int):
-            raise ValueError("page_size must be a positive integer")
-        if page_size <= 0:
-            raise ValueError("page_size must be a positive integer")
-
-        escaped = (
-            brief_prefix.replace("\\", "\\\\")
-            .replace("%", "\\%")
-            .replace("_", "\\_")
-        )
-        pattern = escaped + "%"
-        owned = not self._conn.in_transaction
-        if owned:
-            self._conn.execute("BEGIN")
-        try:
-            count = 0
-            newest: datetime | None = None
-            has_unfinished = False
-            last_rowid: int | None = None
-            while True:
-                if last_rowid is None:
-                    cursor = self._conn.execute(
-                        "SELECT rowid, created_at, status FROM tasks "
-                        "WHERE assigned_agent = ? AND brief LIKE ? ESCAPE '\\' "
-                        "ORDER BY rowid ASC LIMIT ?",
-                        (assigned_agent, pattern, page_size),
-                    )
-                else:
-                    cursor = self._conn.execute(
-                        "SELECT rowid, created_at, status FROM tasks "
-                        "WHERE assigned_agent = ? AND brief LIKE ? ESCAPE '\\' "
-                        "AND rowid > ? ORDER BY rowid ASC LIMIT ?",
-                        (assigned_agent, pattern, last_rowid, page_size),
-                    )
-                rows = cursor.fetchall()
-                for row in rows:
-                    count += 1
-                    last_rowid = row["rowid"]
-                    parsed = _parse_dt(row["created_at"])
-                    if parsed.tzinfo is None:
-                        parsed = parsed.replace(tzinfo=timezone.utc)
-                    else:
-                        parsed = parsed.astimezone(timezone.utc)
-                    if newest is None or parsed > newest:
-                        newest = parsed
-                    if row["status"] not in _WORKSPACE_CLEANUP_TERMINAL_STATUSES:
-                        has_unfinished = True
-                if len(rows) < page_size:
-                    break
-            return WorkspaceCleanupMarkerHistorySummary(
-                count=count,
-                newest_created_at=newest,
-                has_unfinished=has_unfinished,
-            )
-        finally:
-            if owned:
-                self._conn.rollback()
 
     @_synchronized
     def get_latest_task_result(
@@ -16213,317 +16171,6 @@ class Database(DreamsMixin, KnowledgeMixin, JobsMixin, AttachmentsMixin):
             d["waiting_on_job_ids"] = json.loads(d["waiting_on_job_ids"])
         return d
 
-    @_synchronized
-    def select_workspace_cleanup_reclamation_candidates(
-        self,
-        *,
-        owner_task_id: str,
-        agent: str,
-        stale_orchestration_step_count: int,
-        claimed_next_step_count: int,
-        canonical_workspace: Path,
-        authoritative_workspace: Path,
-        admit_observation: Callable[[str], bool] | None = None,
-    ) -> WorkspaceCleanupReclamationSelection | None:
-        """Validate one claimed cleanup owner and build its finite shortlist.
-
-        Every database read has a named pre-admission.  The later run-step
-        hook supplies its monotonic deadline/read-budget callback; this helper
-        neither starts a clock nor performs config, consumer, audit, or write
-        work.  Refusal is intentionally represented by ``None`` so callers
-        cannot confuse a partial shortlist with a safe action.
-        """
-        observations: list[str] = []
-
-        def admit(name: str) -> bool:
-            if admit_observation is not None and not admit_observation(name):
-                return False
-            observations.append(name)
-            return True
-
-        # These are invocation-local CAS inputs, not durable-owner facts.
-        # Refuse malformed supplied claim context before even admitting the
-        # owner read; a valid supplied pair still requires that fresh read.
-        if stale_orchestration_step_count != 0 or claimed_next_step_count != 1:
-            return None
-
-        # 1. Current durable owner.  The registered identity and canonical
-        # workspace are supplied by the authoritative caller; no roster read
-        # is invented here.  The stale count and CAS-written next count bind
-        # this read-only helper to the invocation that actually won the
-        # initial (0 -> 1) claim; cleanup ordinal is not a claim count.
-        if not admit("owner"):
-            return None
-        try:
-            owner = self.get_task(owner_task_id)
-        except (sqlite3.Error, ValidationError, TypeError, ValueError):
-            return None
-        if (
-            owner is None
-            or owner.id != owner_task_id
-            or owner.assigned_agent != agent
-            or owner.status is not TaskStatus.IN_PROGRESS
-            or owner.block_kind is not None
-            or owner.cancelled_at is not None
-            or owner.orchestration_step_count != 1
-            or canonical_workspace != authoritative_workspace
-            or not owner.brief.startswith(_WORKSPACE_CLEANUP_BRIEF_MARKER)
-        ):
-            return None
-
-        # 2. Exactly one marker on this owner, without an agent prefilter.
-        if not admit("marker"):
-            return None
-        try:
-            marker_rows = self._conn.execute(
-                """SELECT agent, payload FROM audit_log
-                   WHERE task_id=? AND action='workspace_cleanup_triggered'
-                   ORDER BY id ASC LIMIT 2""",
-                (owner_task_id,),
-            ).fetchall()
-        except sqlite3.Error:
-            return None
-        if len(marker_rows) != 1 or marker_rows[0]["agent"] != agent:
-            return None
-        try:
-            marker_payload = json.loads(marker_rows[0]["payload"])
-            run_number = marker_payload["run_number"]
-            brief_kind = marker_payload["brief_kind"]
-        except (TypeError, KeyError, UnicodeDecodeError, json.JSONDecodeError):
-            return None
-        if type(run_number) is not int or run_number < 3 or brief_kind != "cleanup":
-            return None
-
-        # 3. Complete bounded history.  Tuple comparison uses the stored
-        # bytewise strings, never numeric TASK suffixes.
-        if not admit("history"):
-            return None
-        escaped_marker = _WORKSPACE_CLEANUP_BRIEF_MARKER.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        try:
-            history = self._conn.execute(
-                """SELECT id, created_at FROM tasks
-                   WHERE assigned_agent=? AND brief LIKE ? ESCAPE '\\'
-                   ORDER BY created_at DESC, id DESC LIMIT 1001""",
-                (agent, escaped_marker + "%"),
-            ).fetchall()
-        except sqlite3.Error:
-            return None
-        if len(history) == 1001:
-            return None
-        try:
-            history_tuples = [(str(row["created_at"]), str(row["id"])) for row in history]
-            if any(not _is_aware_datetime(created_at) for created_at, _ in history_tuples):
-                return None
-        except (TypeError, ValueError):
-            return None
-        if len(set(history_tuples)) != len(history_tuples) or history_tuples != sorted(history_tuples, reverse=True):
-            return None
-        owner_matches = [item for item in history_tuples if item[1] == owner.id]
-        if len(owner_matches) != 1:
-            return None
-        owner_tuple = owner_matches[0]
-        older_count = sum(1 for item in history_tuples if item < owner_tuple)
-        if run_number != older_count + 1:
-            return None
-
-        # 4. A delayed original is permitted only when no later marker-bearing
-        # owner (including an unreadable/orphaned one) exists.
-        if not admit("newer_owner"):
-            return None
-        # SQLite's date functions accept and normalize values that the
-        # history/candidate parser rejects, and they recognize only a subset
-        # of accepted ISO representations.  Register the same pure validator
-        # for this one bounded query, then immediately unregister it.  This
-        # adds no SQL observation or connection-wide policy.
-        timestamp_predicate = "_workspace_cleanup_is_aware_datetime"
-        registered_timestamp_predicate = False
-        try:
-            self._conn.create_function(
-                timestamp_predicate, 1, lambda value: int(_is_aware_datetime(value)),
-            )
-            registered_timestamp_predicate = True
-            newer = self._conn.execute(
-            f"""SELECT a.task_id, a.agent, a.payload, t.created_at, t.status
-               FROM audit_log a LEFT JOIN tasks t ON t.id=a.task_id
-               WHERE a.action='workspace_cleanup_triggered' AND a.task_id<>?
-                 AND (t.id IS NULL OR {timestamp_predicate}(t.created_at)=0
-                      OR t.created_at>? OR (t.created_at=? AND t.id>?))
-               ORDER BY CASE WHEN t.id IS NULL OR {timestamp_predicate}(t.created_at)=0 THEN 0 ELSE 1 END,
-                        t.created_at DESC, a.task_id DESC LIMIT 2""",
-                (owner_task_id, owner_tuple[0], owner_tuple[0], owner_task_id),
-            ).fetchall()
-        except sqlite3.Error:
-            return None
-        finally:
-            if registered_timestamp_predicate:
-                self._conn.create_function(timestamp_predicate, 1, None)
-        if newer:
-            return None
-
-        # 5. Read six raw terminal candidates before applying the age filter.
-        if not admit("candidates"):
-            return None
-        try:
-            raw_candidates = self._conn.execute(
-                """SELECT id, status, assigned_agent, created_at, completed_at,
-                          current_session_id
-                   FROM tasks
-                   WHERE assigned_agent=?
-                     AND status IN ('completed','failed','cancelled','superseded')
-                   ORDER BY completed_at ASC, id ASC LIMIT 6""",
-                (agent,),
-            ).fetchall()
-        except sqlite3.Error:
-            return None
-        if len(raw_candidates) == 6:
-            return None
-        candidate_rows: list[sqlite3.Row] = []
-        try:
-            for row in raw_candidates:
-                created_at = row["created_at"]
-                completed_at = row["completed_at"]
-                if (
-                    not isinstance(created_at, str)
-                    or not isinstance(completed_at, str)
-                    or not _is_aware_datetime(created_at)
-                    or not _is_aware_datetime(completed_at)
-                ):
-                    return None
-                if row["status"] not in _WORKSPACE_CLEANUP_TERMINAL_STATUSES:
-                    return None
-                if (completed_at, str(row["id"])) < owner_tuple:
-                    candidate_rows.append(row)
-        except (TypeError, ValueError):
-            return None
-
-        # 6/7. Complete graph snapshots.  Only components touching the owner
-        # or selected candidates are validated; unrelated malformed data is
-        # deliberately ignored.
-        if not admit("graph_tasks"):
-            return None
-        try:
-            graph_tasks = self._conn.execute(
-                """SELECT id, assigned_agent, status FROM tasks ORDER BY id ASC LIMIT 10001""",
-            ).fetchall()
-        except sqlite3.Error:
-            return None
-        if len(graph_tasks) == 10001:
-            return None
-        if not admit("graph_edges"):
-            return None
-        try:
-            graph_edges = self._conn.execute(
-                """SELECT child_id, relative_id FROM (
-                        SELECT id AS child_id, parent_task_id AS relative_id FROM tasks
-                        WHERE parent_task_id IS NOT NULL
-                        UNION ALL
-                        SELECT id AS child_id, revisit_of_task_id AS relative_id FROM tasks
-                        WHERE revisit_of_task_id IS NOT NULL
-                    ) ORDER BY child_id ASC, relative_id ASC LIMIT 20001""",
-            ).fetchall()
-        except sqlite3.Error:
-            return None
-        if len(graph_edges) == 20001:
-            return None
-        nodes = {str(row["id"]): row for row in graph_tasks}
-        adjacency: dict[str, set[str]] = {node_id: set() for node_id in nodes}
-        directed: dict[str, set[str]] = {node_id: set() for node_id in nodes}
-        for edge in graph_edges:
-            child_id, relative_id = str(edge["child_id"]), str(edge["relative_id"])
-            if child_id in adjacency:
-                adjacency[child_id].add(relative_id)
-                directed[child_id].add(relative_id)
-            if relative_id in adjacency:
-                adjacency[relative_id].add(child_id)
-
-        selected_ids = {str(row["id"]) for row in candidate_rows}
-        required_roots = {owner_task_id, *selected_ids}
-        for root in required_roots:
-            if root not in nodes:
-                return None
-            visited: set[str] = set()
-            stack: list[tuple[str, str | None]] = [(root, None)]
-            while stack:
-                node_id, parent_id = stack.pop()
-                if node_id in visited:
-                    return None
-                node = nodes.get(node_id)
-                if node is None or node["status"] not in {
-                    "pending", "in_progress", "escalated", * _WORKSPACE_CLEANUP_TERMINAL_STATUSES,
-                }:
-                    return None
-                visited.add(node_id)
-                for neighbour in adjacency.get(node_id, ()):
-                    if neighbour not in nodes:
-                        return None
-                    if neighbour == parent_id:
-                        continue
-                    relative = nodes[neighbour]
-                    if relative["assigned_agent"] != agent and relative["status"] not in _WORKSPACE_CLEANUP_TERMINAL_STATUSES:
-                        return None
-                    stack.append((neighbour, node_id))
-            if root != owner_task_id and owner_task_id in visited:
-                return None
-            # Directed parent/revisit cycles need a second traversal because
-            # undirected deduplication intentionally suppresses reciprocal
-            # edges.  Keep it iterative: a valid component may contain all
-            # 10,000 admitted rows and must not depend on Python's recursion
-            # limit.
-            directed_state: dict[str, int] = {}
-            for start in visited:
-                if directed_state.get(start, 0) == 2:
-                    continue
-                directed_state[start] = 1
-                directed_stack: list[tuple[str, object]] = [
-                    (start, iter(relative for relative in directed.get(start, ()) if relative in visited)),
-                ]
-                while directed_stack:
-                    node_id, relatives = directed_stack[-1]
-                    try:
-                        relative_id = next(relatives)
-                    except StopIteration:
-                        directed_state[node_id] = 2
-                        directed_stack.pop()
-                        continue
-                    state = directed_state.get(relative_id, 0)
-                    if state == 1:
-                        return None
-                    if state == 0:
-                        directed_state[relative_id] = 1
-                        directed_stack.append((
-                            relative_id,
-                            iter(relative for relative in directed.get(relative_id, ()) if relative in visited),
-                        ))
-
-        # One and only one exact persisted-result read follows for each
-        # selected target.  A refusal starts no later result read.
-        candidates: list[WorkspaceCleanupReclamationCandidate] = []
-        for row in candidate_rows:
-            task_id = str(row["id"])
-            session_id = row["current_session_id"]
-            if not isinstance(session_id, str) or not session_id:
-                return None
-            if not admit(f"result:{task_id}"):
-                return None
-            if not task_id.startswith("TASK-") or not task_id[5:].isdigit():
-                return None
-            try:
-                result = self.get_latest_task_result(task_id, agent, session_id)
-            except (sqlite3.Error, json.JSONDecodeError, ValidationError, TypeError, ValueError):
-                return None
-            if result is None or result.get("status") != row["status"]:
-                return None
-            candidates.append(WorkspaceCleanupReclamationCandidate(
-                task_id=task_id,
-                session_id=session_id,
-                scratch_path=canonical_workspace / ".happyranch" / "task-tmp" / task_id,
-                result=result,
-            ))
-        return WorkspaceCleanupReclamationSelection(
-            owner_task_id=owner_task_id,
-            candidates=tuple(candidates),
-            read_observations=tuple(observations),
-        )
 
     @_synchronized
     def get_latest_completion_report(
@@ -16636,474 +16283,6 @@ class Database(DreamsMixin, KnowledgeMixin, JobsMixin, AttachmentsMixin):
         )
 
     # --- Session Token Usage ---
-
-    @_synchronized
-    def insert_session_token_usage(
-        self,
-        task_id: str | None,
-        agent: str,
-        session_id: str,
-        executor: str,
-        token_usage: TokenUsage,
-        scope_type: str = "task",
-        scope_id: str | None = None,
-        thread_id: str | None = None,
-        invocation_purpose: str | None = None,
-    ) -> None:
-        """Insert one token usage row. INSERT OR IGNORE: first write wins."""
-        if scope_id is None and scope_type == "task":
-            scope_id = task_id
-        self._conn.execute(
-            """INSERT OR IGNORE INTO session_token_usage
-               (task_id, agent, session_id, executor, model,
-                input_tokens, output_tokens, cache_read_tokens,
-                cache_creation_tokens, reasoning_tokens,
-                usage_raw_json, scope_type, scope_id, thread_id,
-                invocation_purpose, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                task_id, agent, session_id, executor, token_usage.model,
-                token_usage.input_tokens, token_usage.output_tokens,
-                token_usage.cache_read_tokens, token_usage.cache_creation_tokens,
-                token_usage.reasoning_tokens, token_usage.usage_raw_json,
-                scope_type, scope_id, thread_id, invocation_purpose,
-                datetime.now(timezone.utc).isoformat(),
-            ),
-        )
-        self._conn.commit()
-
-    @_synchronized
-    def query_usage_lifecycle_snapshot(
-        self, *, start_utc: str, end_utc: str,
-    ) -> dict[str, list[dict]]:
-        """Return the bounded, read-only lifecycle facts used by Usage v1.
-
-        Membership is selected from lifecycle tables first.  Usage rows are
-        optional candidates for those lifecycle rows; callers resolve the
-        documented task/thread/dream keys and reject ambiguous candidates.
-        """
-        audit_rows = self._conn.execute(
-            """SELECT id, task_id, agent, action, payload, timestamp
-               FROM audit_log
-               WHERE (action IN ('session_start', 'session_end')
-                      AND timestamp < ?)
-                  OR (action = 'dream_started'
-                      AND timestamp >= ? AND timestamp < ?)
-               ORDER BY id""",
-            (end_utc, start_utc, end_utc),
-        ).fetchall()
-        thread_rows = self._conn.execute(
-            """SELECT id, thread_id, agent_name, invocation_token, purpose,
-                      status, started_at, consumed_at, session_id, executor,
-                      model, decline_reason, reply_message_seq
-               FROM thread_invocations
-               WHERE (started_at >= ? AND started_at < ?)
-                  OR (purpose = 'reply'
-                      AND consumed_at >= ? AND consumed_at < ?)
-               ORDER BY id""",
-            (start_utc, end_utc, start_utc, end_utc),
-        ).fetchall()
-        usage_rows = self._conn.execute(
-            """SELECT * FROM session_token_usage
-               WHERE created_at >= ? AND created_at < ?
-                 AND COALESCE(scope_type, 'task') IN ('task', 'thread', 'dream')
-               ORDER BY id""",
-            (start_utc, end_utc),
-        ).fetchall()
-        result_rows = self._conn.execute(
-            """SELECT r.id, r.task_id, r.agent, r.session_id, r.status,
-                      r.created_at, t.status AS task_status
-               FROM task_results AS r
-               JOIN tasks AS t ON t.id = r.task_id
-               WHERE r.created_at >= ? AND r.created_at < ?
-               ORDER BY r.id""",
-            (start_utc, end_utc),
-        ).fetchall()
-        recovery_rows = self._conn.execute(
-            """SELECT task_id, agent, recovery_session_id
-               FROM task_completion_recoveries"""
-        ).fetchall()
-        return {
-            "audit": [dict(row) for row in audit_rows],
-            "threads": [dict(row) for row in thread_rows],
-            "usage": [dict(row) for row in usage_rows],
-            "results": [dict(row) for row in result_rows],
-            "recoveries": [dict(row) for row in recovery_rows],
-        }
-
-    def _session_token_usage_filters(
-        self,
-        *,
-        since: str | None = None,
-        task_id: str | None = None,
-        agent: str | None = None,
-        scope_type: str | None = None,
-        scope_id: str | None = None,
-        thread_id: str | None = None,
-        purpose: str | None = None,
-    ) -> tuple[list[str], list[object]]:
-        where: list[str] = []
-        params: list[object] = []
-        if since is not None:
-            where.append("created_at >= ?")
-            params.append(since)
-        if task_id is not None:
-            where.append("task_id = ?")
-            params.append(task_id)
-        if agent is not None:
-            where.append("agent = ?")
-            params.append(agent)
-        if scope_type is not None:
-            where.append("COALESCE(scope_type, 'task') = ?")
-            params.append(scope_type)
-        if scope_id is not None:
-            where.append("COALESCE(scope_id, task_id) = ?")
-            params.append(scope_id)
-        if thread_id is not None:
-            where.append("thread_id = ?")
-            params.append(thread_id)
-        if purpose is not None:
-            where.append("invocation_purpose = ?")
-            params.append(purpose)
-        return where, params
-
-    @staticmethod
-    def _token_usage_rollup_select(
-        group_expr: str,
-        group_alias: str,
-        *,
-        include_model_classification: bool = False,
-    ) -> str:
-        # Cutover-INDEPENDENT primitives a renderer applies the model-name
-        # precedence over (the MODEL_FIX_CUTOVER_TS comparison itself is a
-        # presentation concern, never in SQL). total_tokens is unaffected.
-        model_cols = ""
-        if include_model_classification:
-            model_cols = """,
-                         COUNT(DISTINCT model) AS model_distinct,
-                         MAX(model) AS model_any,
-                         SUM(CASE WHEN model IS NOT NULL THEN 1 ELSE 0 END) AS non_null_sessions,
-                         SUM(CASE WHEN model IS NULL AND executor = 'codex' THEN 1 ELSE 0 END) AS null_codex_sessions,
-                         SUM(CASE WHEN model IS NULL AND executor = 'claude' THEN 1 ELSE 0 END) AS null_claude_sessions,
-                         MIN(CASE WHEN model IS NULL AND executor = 'claude' THEN created_at END) AS null_claude_min_created_at,
-                         MAX(CASE WHEN model IS NULL AND executor = 'claude' THEN created_at END) AS null_claude_max_created_at"""
-        return f"""SELECT {group_expr} AS {group_alias},
-                         COUNT(*) AS sessions,
-                         COALESCE(SUM(input_tokens), 0)          AS input_tokens,
-                         COALESCE(SUM(output_tokens), 0)         AS output_tokens,
-                         COALESCE(SUM(cache_read_tokens), 0)     AS cache_read_tokens,
-                         COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
-                         COALESCE(SUM(reasoning_tokens), 0)      AS reasoning_tokens,
-                         COALESCE(SUM(input_tokens), 0)
-                           + COALESCE(SUM(output_tokens), 0)
-                           + COALESCE(SUM(reasoning_tokens), 0)  AS total_tokens,
-                         COALESCE(SUM(input_tokens), 0)
-                           + COALESCE(SUM(output_tokens), 0)
-                           + COALESCE(SUM(reasoning_tokens), 0)  AS churn_tokens,
-                         COALESCE(SUM(input_tokens), 0)
-                           + COALESCE(SUM(output_tokens), 0)
-                           + COALESCE(SUM(reasoning_tokens), 0)
-                           + COALESCE(SUM(cache_read_tokens), 0)
-                           + COALESCE(SUM(cache_creation_tokens), 0)  AS context_tokens{model_cols}
-                  FROM session_token_usage"""
-
-    @_synchronized
-    def list_session_token_usage(
-        self,
-        task_id: str | None = None,
-        agent: str | None = None,
-        since: str | None = None,
-        limit: int | None = None,
-        scope_type: str | None = None,
-        scope_id: str | None = None,
-        thread_id: str | None = None,
-        purpose: str | None = None,
-    ) -> list[dict]:
-        """Return per-session rows, newest first."""
-        where, params = self._session_token_usage_filters(
-            since=since,
-            task_id=task_id,
-            agent=agent,
-            scope_type=scope_type,
-            scope_id=scope_id,
-            thread_id=thread_id,
-            purpose=purpose,
-        )
-        sql = """SELECT *,
-                        COALESCE(scope_type, 'task') AS scope_type,
-                        COALESCE(scope_id, task_id) AS scope_id,
-                        COALESCE(input_tokens, 0)
-                          + COALESCE(output_tokens, 0)
-                          + COALESCE(reasoning_tokens, 0) AS total_tokens,
-                        COALESCE(input_tokens, 0)
-                          + COALESCE(output_tokens, 0)
-                          + COALESCE(reasoning_tokens, 0) AS churn_tokens,
-                        COALESCE(input_tokens, 0)
-                          + COALESCE(output_tokens, 0)
-                          + COALESCE(reasoning_tokens, 0)
-                          + COALESCE(cache_read_tokens, 0)
-                          + COALESCE(cache_creation_tokens, 0) AS context_tokens
-                 FROM session_token_usage"""
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY created_at DESC, id DESC"
-        if limit is not None:
-            sql += " LIMIT ?"
-            params.append(limit)
-        rows = self._conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
-
-    @_synchronized
-    def aggregate_session_token_usage_by_agent(
-        self,
-        since: str | None = None,
-        task_id: str | None = None,
-        agent: str | None = None,
-        scope_type: str | None = None,
-        scope_id: str | None = None,
-        thread_id: str | None = None,
-        purpose: str | None = None,
-    ) -> list[dict]:
-        where, params = self._session_token_usage_filters(
-            since=since,
-            task_id=task_id,
-            agent=agent,
-            scope_type=scope_type,
-            scope_id=scope_id,
-            thread_id=thread_id,
-            purpose=purpose,
-        )
-        sql = self._token_usage_rollup_select(
-            "agent", "agent", include_model_classification=True
-        )
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " GROUP BY agent ORDER BY agent"
-        rows = self._conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
-
-    @_synchronized
-    def aggregate_session_token_usage_by_task(
-        self,
-        since: str | None = None,
-        agent: str | None = None,
-        task_id: str | None = None,
-        scope_type: str | None = None,
-        scope_id: str | None = None,
-        thread_id: str | None = None,
-        purpose: str | None = None,
-    ) -> list[dict]:
-        where, params = self._session_token_usage_filters(
-            since=since,
-            task_id=task_id,
-            agent=agent,
-            scope_type=scope_type,
-            scope_id=scope_id,
-            thread_id=thread_id,
-            purpose=purpose,
-        )
-        sql = self._token_usage_rollup_select("task_id", "task_id")
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " GROUP BY task_id ORDER BY task_id"
-        rows = self._conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
-
-    @_synchronized
-    def aggregate_session_token_usage_by_failed_task(
-        self,
-        since: str | None = None,
-        agent: str | None = None,
-        task_id: str | None = None,
-        scope_type: str | None = None,
-        scope_id: str | None = None,
-        thread_id: str | None = None,
-        purpose: str | None = None,
-    ) -> list[dict]:
-        """Per-(task, agent) token rollup for FAILED tasks only.
-
-        Read-only INNER JOIN of ``session_token_usage`` to ``tasks`` on the
-        canonical ``task_id`` (= ``tasks.id``), keeping only usage tied to a
-        task in the terminal ``failed`` status. Caller filters AND-compose via
-        the shared filter helper, applied inside the subquery so the JOIN
-        cannot collide on ``created_at`` (a column both tables carry).
-        """
-        where, params = self._session_token_usage_filters(
-            since=since,
-            task_id=task_id,
-            agent=agent,
-            scope_type=scope_type,
-            scope_id=scope_id,
-            thread_id=thread_id,
-            purpose=purpose,
-        )
-        subquery = "SELECT * FROM session_token_usage"
-        if where:
-            subquery += " WHERE " + " AND ".join(where)
-        sql = f"""SELECT s.task_id AS task_id,
-                         s.agent AS agent,
-                         COUNT(*) AS sessions,
-                         COALESCE(SUM(s.input_tokens), 0)          AS input_tokens,
-                         COALESCE(SUM(s.output_tokens), 0)         AS output_tokens,
-                         COALESCE(SUM(s.cache_read_tokens), 0)     AS cache_read_tokens,
-                         COALESCE(SUM(s.cache_creation_tokens), 0) AS cache_creation_tokens,
-                         COALESCE(SUM(s.reasoning_tokens), 0)      AS reasoning_tokens,
-                         COALESCE(SUM(s.input_tokens), 0)
-                           + COALESCE(SUM(s.output_tokens), 0)
-                           + COALESCE(SUM(s.reasoning_tokens), 0)  AS total_tokens,
-                         COALESCE(SUM(s.input_tokens), 0)
-                           + COALESCE(SUM(s.output_tokens), 0)
-                           + COALESCE(SUM(s.reasoning_tokens), 0)  AS churn_tokens,
-                         COALESCE(SUM(s.input_tokens), 0)
-                           + COALESCE(SUM(s.output_tokens), 0)
-                           + COALESCE(SUM(s.reasoning_tokens), 0)
-                           + COALESCE(SUM(s.cache_read_tokens), 0)
-                           + COALESCE(SUM(s.cache_creation_tokens), 0)  AS context_tokens
-                  FROM ({subquery}) s
-                  JOIN tasks t ON t.id = s.task_id
-                  WHERE t.status = ?
-                  GROUP BY s.task_id, s.agent
-                  ORDER BY s.task_id, s.agent"""
-        params.append(TaskStatus.FAILED.value)
-        rows = self._conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
-
-    @_synchronized
-    def aggregate_session_token_usage_by_scope(
-        self,
-        since: str | None = None,
-        task_id: str | None = None,
-        agent: str | None = None,
-        scope_type: str | None = None,
-        scope_id: str | None = None,
-        thread_id: str | None = None,
-        purpose: str | None = None,
-    ) -> list[dict]:
-        where, params = self._session_token_usage_filters(
-            since=since,
-            task_id=task_id,
-            agent=agent,
-            scope_type=scope_type,
-            scope_id=scope_id,
-            thread_id=thread_id,
-            purpose=purpose,
-        )
-        sql = """SELECT COALESCE(scope_type, 'task') AS scope_type,
-                        COALESCE(scope_id, task_id) AS scope_id,
-                        COUNT(*) AS sessions,
-                        COALESCE(SUM(input_tokens), 0)          AS input_tokens,
-                        COALESCE(SUM(output_tokens), 0)         AS output_tokens,
-                        COALESCE(SUM(cache_read_tokens), 0)     AS cache_read_tokens,
-                        COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
-                        COALESCE(SUM(reasoning_tokens), 0)      AS reasoning_tokens,
-                        COALESCE(SUM(input_tokens), 0)
-                          + COALESCE(SUM(output_tokens), 0)
-                          + COALESCE(SUM(reasoning_tokens), 0)  AS total_tokens,
-                        COALESCE(SUM(input_tokens), 0)
-                          + COALESCE(SUM(output_tokens), 0)
-                          + COALESCE(SUM(reasoning_tokens), 0)  AS churn_tokens,
-                        COALESCE(SUM(input_tokens), 0)
-                          + COALESCE(SUM(output_tokens), 0)
-                          + COALESCE(SUM(reasoning_tokens), 0)
-                          + COALESCE(SUM(cache_read_tokens), 0)
-                          + COALESCE(SUM(cache_creation_tokens), 0)  AS context_tokens
-                 FROM session_token_usage"""
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " GROUP BY COALESCE(scope_type, 'task'), COALESCE(scope_id, task_id)"
-        sql += " ORDER BY scope_type, scope_id"
-        rows = self._conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
-
-    @_synchronized
-    def aggregate_session_token_usage_by_thread(
-        self,
-        since: str | None = None,
-        task_id: str | None = None,
-        agent: str | None = None,
-        scope_type: str | None = None,
-        scope_id: str | None = None,
-        thread_id: str | None = None,
-        purpose: str | None = None,
-    ) -> list[dict]:
-        where, params = self._session_token_usage_filters(
-            since=since,
-            task_id=task_id,
-            agent=agent,
-            scope_type=scope_type,
-            scope_id=scope_id,
-            thread_id=thread_id,
-            purpose=purpose,
-        )
-        where.append("thread_id IS NOT NULL")
-        sql = self._token_usage_rollup_select(
-            "thread_id", "thread_id", include_model_classification=True
-        )
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " GROUP BY thread_id ORDER BY thread_id"
-        rows = self._conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
-
-    @_synchronized
-    def aggregate_session_token_usage_by_purpose(
-        self,
-        since: str | None = None,
-        task_id: str | None = None,
-        agent: str | None = None,
-        scope_type: str | None = None,
-        scope_id: str | None = None,
-        thread_id: str | None = None,
-        purpose: str | None = None,
-    ) -> list[dict]:
-        where, params = self._session_token_usage_filters(
-            since=since,
-            task_id=task_id,
-            agent=agent,
-            scope_type=scope_type,
-            scope_id=scope_id,
-            thread_id=thread_id,
-            purpose=purpose,
-        )
-        where.append("invocation_purpose IS NOT NULL")
-        sql = self._token_usage_rollup_select("invocation_purpose", "purpose")
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " GROUP BY invocation_purpose ORDER BY invocation_purpose"
-        rows = self._conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
-
-    @_synchronized
-    def aggregate_session_token_usage_by_model(
-        self,
-        since: str | None = None,
-        task_id: str | None = None,
-        agent: str | None = None,
-        scope_type: str | None = None,
-        scope_id: str | None = None,
-        thread_id: str | None = None,
-        purpose: str | None = None,
-    ) -> list[dict]:
-        """Roll up session_token_usage grouped by model.
-
-        NULL models are honest (not blank, not a guessed correction).
-        The ``since`` window AND-composes with every other filter.
-        """
-        where, params = self._session_token_usage_filters(
-            since=since,
-            task_id=task_id,
-            agent=agent,
-            scope_type=scope_type,
-            scope_id=scope_id,
-            thread_id=thread_id,
-            purpose=purpose,
-        )
-        sql = self._token_usage_rollup_select("model", "model")
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " GROUP BY model ORDER BY COALESCE(model, '')"
-        rows = self._conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
 
     # --- KB views ---
 
@@ -17434,212 +16613,6 @@ class Database(DreamsMixin, KnowledgeMixin, JobsMixin, AttachmentsMixin):
         )
         self._conn.commit()
         return cursor.rowcount == 1
-
-    @_synchronized
-    def get_thread_session(
-        self, thread_id: str, agent_name: str
-    ) -> tuple[str | None, int]:
-        """Return (agent_session_id, last_resumed_seq) for a (thread, agent).
-
-        Returns (None, 0) when the participant row is absent — the safe
-        turn-1 default that drives a full-context first invocation.
-        """
-        cursor = self._conn.execute(
-            "SELECT agent_session_id, last_resumed_seq FROM thread_participants "
-            "WHERE thread_id = ? AND agent_name = ?",
-            (thread_id, agent_name),
-        )
-        row = cursor.fetchone()
-        if row is None:
-            return (None, 0)
-        return (row["agent_session_id"], row["last_resumed_seq"] or 0)
-
-    @_synchronized
-    def update_thread_session(
-        self,
-        thread_id: str,
-        agent_name: str,
-        *,
-        agent_session_id: str | None,
-        last_resumed_seq: int,
-    ) -> None:
-        """Persist the resumable session id + delta watermark for a participant."""
-        self._conn.execute(
-            "UPDATE thread_participants SET agent_session_id = ?, last_resumed_seq = ? "
-            "WHERE thread_id = ? AND agent_name = ?",
-            (agent_session_id, last_resumed_seq, thread_id, agent_name),
-        )
-        self._conn.commit()
-
-    @_synchronized
-    def invalidate_thread_session_evicted(
-        self,
-        thread_id: str,
-        agent_name: str,
-        *,
-        stale_session_id: str,
-        error: str,
-        executor: str = "claude",
-    ) -> None:
-        """One transaction: eviction audit + durable session-id invalidation.
-
-        THR-200: fires at the provider-declared session-not-found boundary,
-        BEFORE the full-prompt fallback launch. The audit row and the
-        ``agent_session_id = NULL`` update commit atomically, so a failed
-        fallback can never leave the stale id durable for the next wake.
-        ``last_resumed_seq`` is intentionally preserved — a failed fallback
-        must not advance delivery state; the next wake re-attempts the same
-        required range (the id being NULL forces a full-prompt launch).
-        """
-        payload = {
-            "executor": executor,
-            "stale_session_id": stale_session_id,
-            "error": (error or "")[:500],
-        }
-        now = datetime.now(timezone.utc).isoformat()
-        try:
-            self._conn.execute("BEGIN IMMEDIATE")
-            self._conn.execute(
-                "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (
-                    thread_id,
-                    agent_name,
-                    "agent_session_evicted_fallback",
-                    json.dumps(payload),
-                    now,
-                ),
-            )
-            self._conn.execute(
-                "UPDATE thread_participants SET agent_session_id = NULL "
-                "WHERE thread_id = ? AND agent_name = ?",
-                (thread_id, agent_name),
-            )
-            self._conn.commit()
-        except Exception:
-            self._conn.rollback()
-            raise
-
-    @_synchronized
-    def reset_thread_session(
-        self, thread_id: str, agent_name: str
-    ) -> None:
-        """Clear one participant's resume state: id NULL, watermark 0.
-
-        Used by lifecycle invalidation (archive, executor switch, agent
-        termination) where any later thread resume must start fresh with a
-        full-prompt launch.
-        """
-        self._conn.execute(
-            "UPDATE thread_participants SET agent_session_id = NULL, "
-            "last_resumed_seq = 0 WHERE thread_id = ? AND agent_name = ?",
-            (thread_id, agent_name),
-        )
-        self._conn.commit()
-
-    @_synchronized
-    def reset_thread_sessions_for_agent(
-        self,
-        agent_name: str,
-        *,
-        audit_scope_id: str | None = None,
-        audit_agent: str | None = None,
-        audit_reason: str | None = None,
-    ) -> int:
-        """Clear resume state (id NULL, watermark 0) for every thread
-        participant row owned by ``agent_name``. Returns the row count.
-
-        Executor-switch and agent-termination lifecycle: a participant whose
-        executor changes must not resume a provider session minted under a
-        different executor profile; a terminated agent must not resume at all.
-
-        THR-200: when ``audit_scope_id`` is given, the participant reset and
-        the ``thread_session_invalidated`` audit row commit in ONE database
-        transaction, so a reset/audit failure can never leave a partially
-        committed lifecycle state (a new executor installed over stale
-        sessions, or cleared sessions with no audit). The audit is only
-        written when at least one row was reset.
-        """
-        self._conn.execute("BEGIN IMMEDIATE")
-        try:
-            rows = self._reset_thread_sessions_for_agent_uncommitted(agent_name)
-            if rows and audit_scope_id is not None:
-                self.insert_audit_log_uncommitted(
-                    task_id=audit_scope_id,
-                    agent=audit_agent,
-                    action="thread_session_invalidated",
-                    payload={
-                        "reason": audit_reason,
-                        "rows": rows,
-                        "name": agent_name,
-                    },
-                )
-            self._conn.commit()
-            return rows
-        except Exception:
-            self._conn.rollback()
-            raise
-
-    @_synchronized
-    def _reset_thread_sessions_for_agent_uncommitted(self, agent_name: str) -> int:
-        """UPDATE every participant row owned by ``agent_name`` WITHOUT
-        committing. The owning transaction (``reset_thread_sessions_for_agent``,
-        ``terminate_agent_cleanups``) commits or rolls back."""
-        cursor = self._conn.execute(
-            "UPDATE thread_participants SET agent_session_id = NULL, "
-            "last_resumed_seq = 0 WHERE agent_name = ?",
-            (agent_name,),
-        )
-        return cursor.rowcount
-
-    @_synchronized
-    def reset_thread_sessions_for_thread(
-        self,
-        thread_id: str,
-        *,
-        audit_scope_id: str | None = None,
-        audit_agent: str | None = None,
-        audit_reason: str | None = None,
-    ) -> int:
-        """Clear resume state (id NULL, watermark 0) for every participant of
-        one thread. Returns the row count.
-
-        Archive lifecycle: the thread is closed; if it is ever re-opened,
-        every participant resumes from a fresh full-prompt launch.
-
-        THR-200: when ``audit_scope_id`` is given, the participant reset and
-        the ``thread_session_invalidated`` audit row commit in ONE database
-        transaction, so a reset/audit failure can never leave a partially
-        committed lifecycle state (cleared sessions with no audit). The audit
-        is only written when at least one row was reset.
-        """
-        self._conn.execute("BEGIN IMMEDIATE")
-        try:
-            rows = self._reset_thread_sessions_for_thread_uncommitted(thread_id)
-            if rows and audit_scope_id is not None:
-                self.insert_audit_log_uncommitted(
-                    task_id=audit_scope_id,
-                    agent=audit_agent,
-                    action="thread_session_invalidated",
-                    payload={"reason": audit_reason, "rows": rows},
-                )
-            self._conn.commit()
-            return rows
-        except Exception:
-            self._conn.rollback()
-            raise
-
-    @_synchronized
-    def _reset_thread_sessions_for_thread_uncommitted(self, thread_id: str) -> int:
-        """UPDATE every participant row of one thread WITHOUT committing. The
-        owning transaction (``reset_thread_sessions_for_thread``,
-        ``archive_thread_and_reset_sessions``) commits or rolls back."""
-        cursor = self._conn.execute(
-            "UPDATE thread_participants SET agent_session_id = NULL, "
-            "last_resumed_seq = 0 WHERE thread_id = ?",
-            (thread_id,),
-        )
-        return cursor.rowcount
 
     @_synchronized
     def archive_thread_and_reset_sessions(

@@ -79,6 +79,14 @@ In `POST /tasks/{task_id}/revisit` (see `src/daemon/routes/tasks.py:319-403`), i
 
 No change to any other write path. Plain `opc run` inserts leave the column NULL.
 
+Later verified-supersession retry support does not reinterpret this root-link
+write path. A delegated child may carry `revisit_of_task_id` to a same-agent
+FAILED child under its current parent, or under a predecessor root whose
+recorded D/R/H/HT/M supersession chain is independently authenticated within
+the 20-root-record / 19-edge bound. A root `revisit_of_task_id` value by itself
+is never that authority. The child keeps the current parent; the historical
+FAILED row is never reparented or rewritten.
+
 ## 5. Traversal
 
 **`walk_ancestors` — unchanged.** Still follows `parent_task_id` only. Still used by `_enqueue_parent_if_waiting` and `revisit_task` itself to resolve the predecessor root. Regression test asserts the new column is not followed.

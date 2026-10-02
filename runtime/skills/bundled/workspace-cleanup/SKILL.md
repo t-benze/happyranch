@@ -267,6 +267,12 @@ evaluate commands from this Markdown file:
 bash "$SKILL/scripts/run_cleanup_candidate.sh" "$CANDIDATE" "$CONTAINING"
 ```
 
+Here `$SKILL` is only the caller's path to the installed skill directory used
+to locate the runner. Once launched, the runner resolves its own installed
+directory from the real path of its script location and uses that directory for
+its sibling `scripts/check_path_use.py`; an inherited `$SKILL` never selects a
+sibling helper.
+
 `CANDIDATE` is the literal cache or worktree path and `CONTAINING` is its
 registered containing worktree (the same path for a whole-worktree candidate).
 The script uses the environment contract above and prints one JSON receipt. It
@@ -290,6 +296,10 @@ python3 "$SKILL/scripts/run_cleanup_batch.py" \
   --manifest "$MANIFEST" --journal "$JOURNAL" \
   --max-candidates 40 --deadline-seconds 2400
 ```
+
+Here too `$SKILL` is only the caller's path used to locate the installed batch
+driver. The driver and each runner resolve their packaged sibling scripts from
+their own locations rather than from that shell variable.
 
 The manifest is a JSON array or JSONL with exactly `candidate`, `containing`,
 `kind` (`worktree` or `cache`), and inventory `allocated_bytes`. The driver
