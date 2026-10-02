@@ -8,12 +8,12 @@
  * same-origin next to a synthetic `/api/v1` stub whose every request lands in a
  * server-side ledger. The app carries no evidence instrumentation: locale
  * switches use the supported `happyranch.ui.locale` preference written by a
- * second same-origin tab (the `storage` event path), because the Preferences
- * selector stays gated closed. Expected copy is read from the shipped typed
- * catalogs (Node 24 strips the TS types).
+ * second same-origin tab (the `storage` event path), independent of the
+ * Preferences selector (mounted in ordinary builds since W3b-2). Expected copy
+ * is read from the shipped typed catalogs (Node 24 strips the TS types).
  *
  * Cases (receipt.json; exit 1 if any fails):
- *   G  the ordinary bundle excludes the Preferences gate markers;
+ *   G  the ordinary bundle contains the Preferences markers (W3b-2 contract);
  *   V  Tasks list + task detail in en and zh-CN at 1440x900 and 390x844:
  *      <html lang>, localized chrome, authored brief/IDs/agent verbatim, no
  *      document-level horizontal overflow, PNG + sha256;
@@ -349,8 +349,8 @@ async function main() {
     }
 
     // ============================================================ G
-    beginCase('G', 'ordinary bundle excludes the Preferences gate markers');
-    for (const s of GATED_STRINGS) check(`G ordinary JS lacks "${s}"`, fingerprint.gatedStrings[s], false);
+    beginCase('G', 'ordinary bundle contains the Preferences markers (W3b-2)');
+    for (const s of GATED_STRINGS) check(`G ordinary JS contains "${s}"`, fingerprint.gatedStrings[s], true);
     endCase();
 
     // ============================================================ V
