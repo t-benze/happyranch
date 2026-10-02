@@ -65,6 +65,7 @@ type TSNetEngine struct {
 	server           tsnetServer
 	newServer        func(EngineConfig, []byte) tsnetServer
 	peerPollInterval time.Duration
+	now              func() time.Time
 }
 
 func NewTSNetEngine() *TSNetEngine {
@@ -73,6 +74,7 @@ func NewTSNetEngine() *TSNetEngine {
 			return productionTSNetServer{server: &tsnet.Server{Dir: c.StateDir, Hostname: c.RoleIdentity, ControlURL: c.ControlURL, AuthKey: string(credential), Ephemeral: false}}
 		},
 		peerPollInterval: 200 * time.Millisecond,
+		now:              time.Now,
 	}
 }
 
@@ -94,6 +96,16 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 	}
 	if err := e.server.Start(); err != nil {
 		return RedemptionReceipt{}, ErrEngineStart
+	}
+	now := e.now
+	if now == nil {
+		now = time.Now
+	}
+	if ctx.Err() != nil {
+		return RedemptionReceipt{}, ErrNetworkJoin
+	}
+	if deadline, ok := ctx.Deadline(); ok && !now().Before(deadline) {
+		return RedemptionReceipt{}, ErrNetworkJoin
 	}
 	e.server.ClearAuthKey()
 	if readyCtx.Err() != nil {

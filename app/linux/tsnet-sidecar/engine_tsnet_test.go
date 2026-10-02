@@ -135,7 +135,7 @@ func runningWithPeer(host, dns string) *ipnstate.Status {
 	return &ipnstate.Status{BackendState: "Running", Peer: map[key.NodePublic]*ipnstate.PeerStatus{{}: {HostName: host, DNSName: dns}}}
 }
 func testTSNetEngine(server *fakeTSNetServer) *TSNetEngine {
-	return &TSNetEngine{newServer: func(EngineConfig, []byte) tsnetServer { return server }, peerPollInterval: time.Millisecond}
+	return &TSNetEngine{newServer: func(EngineConfig, []byte) tsnetServer { return server }, peerPollInterval: time.Millisecond, now: time.Now}
 }
 func engineConfig() EngineConfig {
 	return EngineConfig{StateDir: "/state", ControlURL: "https://control.invalid", RoleIdentity: "home-sidecar-test", ExpectedPeers: []string{"expected"}}
@@ -305,22 +305,19 @@ func TestTSNetEngineDoesNotRenewBudgetAfterContextlessStart(t *testing.T) {
 	releaseStart := releaseSignal(t, release)
 	server := &fakeTSNetServer{startEntered: make(chan struct{}), startRelease: release, upStatus: runningWithPeer("expected", "")}
 	engine := testTSNetEngine(server)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	deadline := time.Now().Add(time.Hour)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
+	engine.now = func() time.Time { return deadline.Add(time.Nanosecond) }
 	result := make(chan error, 1)
 	go func() { _, err := engine.Start(ctx, engineConfig(), []byte("one-use")); result <- err }()
 	waitSignal(t, server.startEntered, "Start")
-	select {
-	case <-ctx.Done():
-	case <-time.After(testWaitTimeout):
-		t.Fatal("timed out waiting for caller cancellation")
-	}
 	releaseStart()
 	if err := waitResult(t, result); !errors.Is(err, ErrNetworkJoin) {
 		t.Fatalf("err=%v", err)
 	}
-	if server.upCalls != 0 {
-		t.Fatalf("late start minted readiness work: up=%d", server.upCalls)
+	if server.clearAuthKeyCalls != 0 || server.upCalls != 0 || server.statusCalls != 0 {
+		t.Fatalf("late start minted post-start work: clear=%d up=%d status=%d", server.clearAuthKeyCalls, server.upCalls, server.statusCalls)
 	}
 }
 

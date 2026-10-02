@@ -213,6 +213,94 @@ capture_completed_jobs() {
   done
   rm -f "$journal_file" "$helper_file"
 }
+capture_sidecar_failure_lines() {
+  # This is the first failure observation and owns its whole allowance. Filter
+  # journal prose in-stream before either cap so unrelated output cannot evict
+  # a category-only receipt or the two closed sidecar exit messages.
+  local filtered_file json_file status filter_status bytes lines json_status restore_errexit=0
+  local -a pipeline_status
+  case "$-" in *e*) restore_errexit=1 ;; esac
+  sidecar_failure_lines='[]'; sidecar_failure_lines_loss=unattempted
+  filtered_file="$(mktemp "$diagnostics/.n3-sidecar-lines.XXXXXX")" || { sidecar_failure_lines_loss=launch_failure; return; }
+  json_file="$(mktemp "$diagnostics/.n3-sidecar-lines-json.XXXXXX")" || { rm -f "$filtered_file"; sidecar_failure_lines_loss=launch_failure; return; }
+  set +e
+  timeout --kill-after=1 3 journalctl -u happyranch-tsnet-sidecar.service -b "$snapshot_boot_id" --since "@$snapshot_since_journal" --until "@$sidecar_failure_until_journal" -o cat --no-pager 2>/dev/null \
+    | python -c '
+import json, sys
+allowed = {
+    ("credential_input", "input_acquisition"),
+    ("engine_start", "engine_initialization"),
+    ("network_join", "peer_establishment"),
+    ("durable_commit", "receipt_commit"),
+    ("unknown", "unknown"),
+}
+for raw in sys.stdin:
+    line = raw.rstrip("\n")
+    if line in {"readiness_unavailable", "watchdog_unavailable"}:
+        print(line)
+        continue
+    if not line.startswith("diagnostic_receipt="):
+        continue
+    try:
+        value = json.loads(line.removeprefix("diagnostic_receipt="))
+    except (json.JSONDecodeError, UnicodeError):
+        continue
+    if (
+        isinstance(value, dict)
+        and set(value) == {"category", "phase", "actor", "unit", "outcome", "terminal", "assertion"}
+        and (value["category"], value["phase"]) in allowed
+        and value["actor"] == "tsnet-sidecar"
+        and value["unit"] == "happyranch-tsnet-sidecar.service"
+        and value["outcome"] == "failed"
+        and value["terminal"] is True
+        and value["assertion"] == {"status": "completed"}
+    ):
+        print(line)
+' 2>/dev/null \
+    | head -n 33 \
+    | head -c 4097 >"$filtered_file"
+  pipeline_status=("${PIPESTATUS[@]}")
+  (( restore_errexit )) && set -e || set +e
+  status="${pipeline_status[0]}"
+  filter_status="${pipeline_status[1]}"
+  bytes="$(wc -c <"$filtered_file")"
+  lines="$(wc -l <"$filtered_file")"
+  if (( bytes > 4096 || lines > 32 )); then
+    rm -f "$filtered_file" "$json_file"
+    sidecar_failure_lines_loss=truncated
+    return
+  fi
+  if (( status == 124 )); then
+    rm -f "$filtered_file" "$json_file"
+    sidecar_failure_lines_loss=timeout
+    return
+  fi
+  if (( status != 0 )); then
+    rm -f "$filtered_file" "$json_file"
+    sidecar_failure_lines_loss=query_error
+    return
+  fi
+  if (( filter_status != 0 && filter_status != 141 )); then
+    rm -f "$filtered_file" "$json_file"
+    sidecar_failure_lines_loss=parse_loss
+    return
+  fi
+  if (( bytes == 0 )); then
+    rm -f "$filtered_file" "$json_file"
+    sidecar_failure_lines_loss=empty
+    return
+  fi
+  set +e
+  timeout --kill-after=1 1 python -c 'import json,sys; lines=open(sys.argv[1], encoding="utf-8").read().splitlines(); assert all(line in {"readiness_unavailable", "watchdog_unavailable"} or line.startswith("diagnostic_receipt={") and line.endswith("}") for line in lines); print(json.dumps(lines,separators=(",",":")))' "$filtered_file" >"$json_file" 2>/dev/null
+  json_status=$?
+  (( restore_errexit )) && set -e || set +e
+  rm -f "$filtered_file"
+  if (( json_status == 124 )); then rm -f "$json_file"; sidecar_failure_lines_loss=timeout; return; fi
+  if (( json_status != 0 )); then rm -f "$json_file"; sidecar_failure_lines_loss=parse_loss; return; fi
+  sidecar_failure_lines="$(<"$json_file")"
+  rm -f "$json_file"
+  sidecar_failure_lines_loss=observed
+}
 capture_diagnostic_receipts() {
   # The sidecar is the sole diagnostic receipt producer. Journal records are
   # accepted only when their unit, invocation, boot, and collection window all
@@ -293,10 +381,20 @@ capture_failure_snapshot() {
   snapshot_since_us="${capture_window_since_us:-$(capture_now_us)}"
   [[ "$snapshot_since_us" =~ ^[0-9]{16}$ ]] || snapshot_since_us="$(capture_now_us)"
   snapshot_since_seconds=$((snapshot_since_us / 1000000))
+  snapshot_since_journal="${snapshot_since_us:0:10}.${snapshot_since_us:10:6}"
   snapshot_boot_id="$(compact_boot_id)"
+  sidecar_failure_until_us="$(capture_now_us)"
+  (( sidecar_failure_until_us >= snapshot_since_us )) || sidecar_failure_until_us="$snapshot_since_us"
+  sidecar_failure_until_journal="${sidecar_failure_until_us:0:10}.${sidecar_failure_until_us:10:6}"
 
-  # Founder seq305 ordering: sidecar state, completed jobs, and attributed
-  # sidecar receipt are collected before connector, target, or credentials.
+  # Founder seq305 ordering: the independently reserved, filter-first sidecar
+  # text channel precedes every JSON, connector, target, and credential read.
+  # Sidecar state, completed jobs, and the invocation-attributed JSON receipt
+  # continue to precede connector, target, and credential observations.
+  sidecar_failure_lines='[]'; sidecar_failure_lines_loss=unattempted
+  if [[ "$name" == first-positive-start-failure || "$name" == failure-before-teardown ]]; then
+    capture_sidecar_failure_lines
+  fi
   begin_observation_section 8 1024
   observe_systemctl_value happyranch-tsnet-sidecar.service ActiveState; side_active="$observation_value"; side_active_loss="$observation_loss"
   observe_systemctl_value happyranch-tsnet-sidecar.service SubState; side_sub="$observation_value"; side_sub_loss="$observation_loss"
@@ -341,7 +439,7 @@ capture_failure_snapshot() {
     observe_presence /run/credentials/happyranch-tsnet-sidecar.service -d; staging="$presence_value"; staging_loss="$presence_loss"
     snapshot_until_us="$(capture_now_us)"
     (( snapshot_until_us >= snapshot_since_us )) || snapshot_until_us="$snapshot_since_us"
-    printf '},"jobs":%s,"diagnostic_receipts":%s,"credential_presence":{"source":%s,"held_source":%s,"consumed_marker":%s,"transient_dropin":%s,"staged_directory":%s},"collection":{"run_id":"%s","boot_id":"%s","window_start_us":%s,"window_end_us":%s,"journal_since_epoch_seconds":%s,"window_seconds":45,"output_cap_bytes":19968,"budget_model":"reserved-sections","source":"systemctl-and-attributed-systemd-journals"},"observation_loss":{' "$completed_jobs" "$diagnostic_receipts" "$source" "$held" "$marker" "$dropin" "$staging" "${run_id:-unknown}" "$snapshot_boot_id" "$snapshot_since_us" "$snapshot_until_us" "$snapshot_since_seconds"
+    printf '},"jobs":%s,"diagnostic_receipts":%s,"sidecar_failure_lines":%s,"credential_presence":{"source":%s,"held_source":%s,"consumed_marker":%s,"transient_dropin":%s,"staged_directory":%s},"collection":{"run_id":"%s","boot_id":"%s","window_start_us":%s,"window_end_us":%s,"journal_since_epoch_seconds":%s,"window_seconds":45,"output_cap_bytes":24064,"budget_model":"reserved-sections","source":"systemctl-filtered-sidecar-text-and-attributed-systemd-journals","sidecar_failure_capture":{"unit":"happyranch-tsnet-sidecar.service","window_start_us":%s,"window_end_us":%s,"line_cap":32,"output_cap_bytes":4096}},"observation_loss":{' "$completed_jobs" "$diagnostic_receipts" "$sidecar_failure_lines" "$source" "$held" "$marker" "$dropin" "$staging" "${run_id:-unknown}" "$snapshot_boot_id" "$snapshot_since_us" "$snapshot_until_us" "$snapshot_since_seconds" "$snapshot_since_us" "$sidecar_failure_until_us"
     for property_loss in "credential.source:$source_loss" "credential.held_source:$held_loss" "credential.consumed_marker:$marker_loss" "credential.transient_dropin:$dropin_loss" "credential.staged_directory:$staging_loss"; do
       [[ "$property_loss" == *:observed_present || "$property_loss" == *:observed_absent ]] && continue
       (( loss_first )) || printf ',' >>"$losses_file"; loss_first=0
@@ -350,7 +448,7 @@ capture_failure_snapshot() {
     cat "$losses_file"
     [[ "$jobs_loss" == observed ]] || { (( loss_first )) || printf ','; loss_first=0; printf '"jobs":"%s"' "$jobs_loss"; }
     (( loss_first )) || printf ','
-    printf '"diagnostic_receipts":%s}}\n' "$diagnostic_receipt_loss"
+    printf '"diagnostic_receipts":%s,"sidecar_failure_lines":"%s"}}\n' "$diagnostic_receipt_loss" "$sidecar_failure_lines_loss"
   } >"$snapshot" || true
   rm -f "$losses_file"
 }

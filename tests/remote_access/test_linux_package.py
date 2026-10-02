@@ -545,9 +545,9 @@ def test_real_systemd_failure_snapshot_executes_shipping_source_and_is_secret_fr
         "source": False, "held_source": False, "consumed_marker": False,
         "transient_dropin": False, "staged_directory": False,
     }
-    assert snapshot["collection"]["source"] == "systemctl-and-attributed-systemd-journals"
+    assert snapshot["collection"]["source"] == "systemctl-filtered-sidecar-text-and-attributed-systemd-journals"
     assert snapshot["collection"]["window_seconds"] == 45
-    assert snapshot["collection"]["output_cap_bytes"] == 19968
+    assert snapshot["collection"]["output_cap_bytes"] == 24064
     assert snapshot["collection"]["budget_model"] == "reserved-sections"
     assert snapshot["diagnostic_receipts"] == [{"category": "network_join", "phase": "peer_establishment"}]
     assert snapshot["observation_loss"]["diagnostic_receipts"] == ["parse_loss"]
@@ -631,6 +631,11 @@ if [[ " $* " == *" JOB_TYPE=start "* ]]; then
     malformed) printf '%s\n' 'not-json TOKEN_CANARY';; empty) exit 0;;
   esac
 else
+  if [[ " $* " == *" -o cat "* ]]; then
+    printf 'journal:plain\n' >>"$EVENT_LOG"
+    printf '%s\n' 'diagnostic_receipt={"actor":"tsnet-sidecar","assertion":{"status":"completed"},"category":"network_join","outcome":"failed","phase":"peer_establishment","terminal":true,"unit":"happyranch-tsnet-sidecar.service"}'
+    exit 0
+  fi
   printf 'journal:receipt\n' >>"$EVENT_LOG"
   printf '%s\n' "$RECEIPT"
 fi
@@ -671,6 +676,9 @@ def test_seq305_run_failure_shape_captures_sidecar_failed_jobs_and_receipt_befor
         {"id": 73, "unit": "happyranch-connector.service", "type": "start", "result": "failed"},
     ]
     assert snapshot["diagnostic_receipts"] == [{"category": "network_join", "phase": "peer_establishment"}]
+    assert snapshot["sidecar_failure_lines"] == [
+        'diagnostic_receipt={"actor":"tsnet-sidecar","assertion":{"status":"completed"},"category":"network_join","outcome":"failed","phase":"peer_establishment","terminal":true,"unit":"happyranch-tsnet-sidecar.service"}',
+    ]
     events = event_log.read_text().splitlines()
     sidecar_last = max(
         index for index, event in enumerate(events)
@@ -679,7 +687,8 @@ def test_seq305_run_failure_shape_captures_sidecar_failed_jobs_and_receipt_befor
     jobs_index = events.index("journal:jobs")
     receipt_index = events.index("journal:receipt")
     later_first = min(index for index, event in enumerate(events) if event.startswith(("show:happyranch-connector.service:", "show:happyranch-managed.target:", "presence:")))
-    assert sidecar_last < jobs_index < receipt_index < later_first
+    plain_index = events.index("journal:plain")
+    assert plain_index < sidecar_last < jobs_index < receipt_index < later_first
     assert not any(event.endswith(":ExecStartPre") for event in events)
 
 
@@ -736,7 +745,12 @@ def test_real_systemd_failure_snapshot_bounds_malformed_observations(tmp_path: P
     assert "SECRET_CANARY" not in result.stdout + result.stderr
     snapshot = json.loads(result.stdout)
     assert {unit["active"] for unit in snapshot["units"].values()} == {"unknown"}
-    assert {value for key, value in snapshot["observation_loss"].items() if key != "diagnostic_receipts"} == {"parse_loss", "not_collected"}
+    assert {
+        value
+        for key, value in snapshot["observation_loss"].items()
+        if key not in {"diagnostic_receipts", "sidecar_failure_lines"}
+    } == {"parse_loss", "not_collected"}
+    assert snapshot["observation_loss"]["sidecar_failure_lines"] == "empty"
 
 
 def test_real_systemd_barriers_use_restrictive_service_state_directory_and_controller_sudo() -> None:
@@ -967,6 +981,134 @@ def test_real_systemd_failure_capture_precedes_teardown_and_preserves_exit_37() 
     assert "trap cleanup EXIT\ntrap 'cleanup 130' INT\ntrap 'cleanup 143' TERM" in harness
 
 
+@pytest.mark.parametrize(
+    ("capture_mode", "expected_lines", "expected_outcome"),
+    [
+        (
+            "receipt",
+            ['diagnostic_receipt={"actor":"tsnet-sidecar","assertion":{"status":"completed"},"category":"network_join","outcome":"failed","phase":"peer_establishment","terminal":true,"unit":"happyranch-tsnet-sidecar.service"}'],
+            "observed",
+        ),
+        ("empty", [], "empty"),
+        ("query_error", [], "query_error"),
+        ("timeout", [], "timeout"),
+        (
+            "oversized_unrelated",
+            ['diagnostic_receipt={"actor":"tsnet-sidecar","assertion":{"status":"completed"},"category":"network_join","outcome":"failed","phase":"peer_establishment","terminal":true,"unit":"happyranch-tsnet-sidecar.service"}'],
+            "observed",
+        ),
+        ("known_exit_messages", ["readiness_unavailable", "watchdog_unavailable"], "observed"),
+        ("malformed_receipt_canary", [], "empty"),
+        ("matched_overflow", [], "truncated"),
+    ],
+)
+def test_real_systemd_filter_first_sidecar_capture_is_bounded_secret_free_and_preserves_exit(
+    tmp_path: Path,
+    capture_mode: str,
+    expected_lines: list[str],
+    expected_outcome: str,
+) -> None:
+    """Drive the actual shipping capture/start/trap path through PATH doubles."""
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    snapshot = "safe_systemctl_value() {" + harness.split("safe_systemctl_value() {", 1)[1].split("\ncleanup() {", 1)[0]
+    unit_helpers = "systemctl_absent_value() {" + harness.split("systemctl_absent_value() {", 1)[1].split("\ndiagnostics=", 1)[0]
+    cleanup = harness.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup EXIT", 1)[0]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "date").write_text("#!/bin/bash\nprintf '1700000000123456000\\n'\n")
+    (fake_bin / "systemctl").write_text("""#!/bin/bash
+printf 'systemctl:%s\\n' "$1" >>"$EVENT_LOG"
+case "$1" in
+  start) exit 37 ;;
+  show) case "$4" in InvocationID) echo 12345678-1234-1234-1234-123456789abc;; ActiveState) echo failed;; SubState) echo failed;; Result) echo exit-code;; ExecMainStatus) echo 37;; MainPID) echo 0;; *) echo unknown;; esac ;;
+  stop|disable|reset-failed|daemon-reload|list-unit-files|list-jobs) exit 0 ;;
+  *) exit 97 ;;
+esac
+""")
+    (fake_bin / "sudo").write_text("""#!/bin/bash
+if [[ $1 == systemctl ]]; then shift; exec systemctl "$@"; fi
+if [[ $1 == test ]]; then exit 1; fi
+exit 0
+""")
+    (fake_bin / "timeout").write_text("""#!/bin/bash
+printf 'timeout:%s\\n' "$*" >>"$EVENT_LOG"
+while [[ $1 == --* ]]; do shift; done
+shift
+if [[ ${CAPTURE_MODE:?} == timeout && $1 == journalctl && " $* " == *" -o cat "* ]]; then exit 124; fi
+exec "$@"
+""")
+    (fake_bin / "journalctl").write_text("""#!/bin/bash
+printf 'journal:%s\\n' "$*" >>"$EVENT_LOG"
+if [[ " $* " == *" JOB_TYPE=start "* ]]; then exit 0; fi
+if [[ " $* " != *" -o cat "* ]]; then exit 0; fi
+[[ " $* " == *" -u happyranch-tsnet-sidecar.service "* ]] || exit 91
+[[ " $* " == *" -b $BOOT "* ]] || exit 92
+[[ " $* " == *" --since @1700000000.123456 "* ]] || exit 93
+[[ " $* " == *" --until @1700000000.123456 "* ]] || exit 94
+case "${CAPTURE_MODE:?}" in
+  receipt) printf '%s\\n' 'diagnostic_receipt={"actor":"tsnet-sidecar","assertion":{"status":"completed"},"category":"network_join","outcome":"failed","phase":"peer_establishment","terminal":true,"unit":"happyranch-tsnet-sidecar.service"}' ;;
+  empty) printf '%s\\n' 'TOKEN_CANARY unrelated' ;;
+  query_error) exit 17 ;;
+  oversized_unrelated)
+    printf 'TOKEN_CANARY'; printf '%10000s\\n' unrelated
+    printf '%s\\n' 'diagnostic_receipt={"actor":"tsnet-sidecar","assertion":{"status":"completed"},"category":"network_join","outcome":"failed","phase":"peer_establishment","terminal":true,"unit":"happyranch-tsnet-sidecar.service"}' ;;
+  known_exit_messages) printf '%s\\n' readiness_unavailable watchdog_unavailable ;;
+  malformed_receipt_canary) printf '%s\\n' 'diagnostic_receipt={TOKEN_CANARY=never-retain}' ;;
+  matched_overflow) i=0; while (( i < 80 )); do echo readiness_unavailable; i=$((i + 1)); done ;;
+  timeout) exit 95 ;;
+esac
+""")
+    (fake_bin / "pgrep").write_text("#!/bin/bash\nexit 1\n")
+    for executable in fake_bin.iterdir():
+        executable.chmod(0o700)
+    work = tmp_path / "work"
+    (work / "hs").mkdir(parents=True)
+    (work / "headscale").write_text("#!/bin/bash\nprintf '[]'\n")
+    (work / "headscale").chmod(0o700)
+    script = f'''set -euo pipefail
+diagnostics={tmp_path!s}; work={work!s}; evidence_driver=/missing; evidence_artifact=/missing
+failure_capture_driver={Path("app/linux/package/n3_failure_capture.py").resolve()!s}
+peer_pid=""; daemon_pid=""; headscale_pid=""; sidecar_ip=""; run_id=test
+port_open() {{ return 1; }}
+tsnet_open() {{ return 1; }}
+evidence() {{ return 0; }}
+{snapshot}
+{unit_helpers}
+cleanup() {{
+{cleanup}
+}}
+trap cleanup EXIT
+start_managed_target || exit "$?"
+'''
+    event_log = tmp_path / "events.log"
+    boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip().replace("-", "")
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=os.environ
+        | {
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "EVENT_LOG": str(event_log),
+            "CAPTURE_MODE": capture_mode,
+            "BOOT": boot,
+            "N3_RESIDUE_ROOT": str(tmp_path),
+            "N3_UNIT_ROOT": str(tmp_path),
+        },
+    )
+    assert result.returncode == 37, result.stderr
+    document_text = (tmp_path / "first-positive-start-failure.json").read_text()
+    document = json.loads(document_text)
+    assert document["sidecar_failure_lines"] == expected_lines
+    assert document["observation_loss"]["sidecar_failure_lines"] == expected_outcome
+    assert "TOKEN_CANARY" not in document_text + result.stdout + result.stderr
+    events = event_log.read_text().splitlines()
+    plain_capture = next(index for index, event in enumerate(events) if " -o cat " in f" {event} " and event.startswith(("journal:", "timeout:")))
+    assert plain_capture < events.index("systemctl:stop")
+    assert (tmp_path / "cleanup-events.log").read_text().splitlines() == ["cleanup"]
+
+
 def test_real_systemd_positive_start_exit_trap_preserves_exit_37_despite_capture_and_cleanup_failures(tmp_path: Path) -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
     snapshot = "safe_systemctl_value() {" + harness.split("safe_systemctl_value() {", 1)[1].split("\ncleanup() {", 1)[0]
@@ -1126,7 +1268,7 @@ if [[ $1 == show ]]; then echo failed; exit 0; fi
 exit 0
 """)
     (fake_bin / "sudo").write_text("#!/bin/bash\n[[ $1 == test ]] && exit 1\nexec \"$@\"\n")
-    (fake_bin / "journalctl").write_text("#!/bin/bash\n[[ \" $* \" == *\" JOB_TYPE=start \"* ]] && exit 0\nprintf 'receipt-journal-called\\n' >>\"$EVENT_LOG\"\nexit 0\n")
+    (fake_bin / "journalctl").write_text("#!/bin/bash\n[[ \" $* \" == *\" JOB_TYPE=start \"* ]] && exit 0\nprintf 'journal:%s\\n' \"$*\" >>\"$EVENT_LOG\"\nexit 0\n")
     for executable in fake_bin.iterdir(): executable.chmod(0o700)
     event_log = tmp_path / "events.log"
     script = f'''set -euo pipefail
@@ -1141,7 +1283,7 @@ cat "$diagnostics/nonzero-invocation.json"
     assert result.returncode == 0, result.stderr
     document = json.loads(result.stdout)
     assert document["observation_loss"]["diagnostic_receipts"] == ["query_error"]
-    assert not event_log.exists()
+    assert all(" -o cat " in f" {event} " for event in event_log.read_text().splitlines())
 
 
 @pytest.mark.parametrize(("capture_mode", "expected_loss"), [
