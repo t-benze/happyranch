@@ -66,6 +66,7 @@ const sha256 = (buffer) => createHash('sha256').update(buffer).digest('hex');
 const ORG = 'test-org';
 const LOCALE_KEY = 'happyranch.ui.locale';
 const PREFERENCE_MARKERS = ['settings-preferences', 'happyranch-ui-language'];
+const EXTERNAL_BLOCK = ['https://*', 'http://*.com/*', 'http://*.net/*'];
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png',
@@ -281,7 +282,11 @@ async function main() {
     async function openPage(url, { init = '', width = 1440, height = 900 } = {}) {
       const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
       const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
-      for (const domain of ['Page', 'Runtime']) await cdp.send(`${domain}.enable`, {}, sessionId);
+      for (const domain of ['Page', 'Runtime', 'Network']) await cdp.send(`${domain}.enable`, {}, sessionId);
+      // Offline isolation: every non-loopback request (the external webfont
+      // CSS/woff2) is refused, so a hung third-party fetch can never stall the
+      // load event. Fonts fall back to local faces; recorded in the receipt.
+      await cdp.send('Network.setBlockedURLs', { urls: EXTERNAL_BLOCK }, sessionId);
       await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, sessionId);
       if (init) await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: init }, sessionId);
       const loaded = cdp.waitFor('Page.loadEventFired', { sessionId });
@@ -423,7 +428,10 @@ async function main() {
     // ============================================================ P
     beginCase('P', 'Preferences in the ordinary build: unset stays English on a Chinese browser; disclosure; zh-CN switch in place with zero /api');
     {
-      const page = await openPage(`${base}/orgs/${ORG}/settings/preferences`, { init: CHINESE_NAVIGATOR });
+      // Earlier cases share this profile's localStorage: remove the saved
+      // preference before the app boots so this page starts genuinely UNSET.
+      const unset = `try { localStorage.removeItem(${JSON.stringify(LOCALE_KEY)}); } catch (e) {}`;
+      const page = await openPage(`${base}/orgs/${ORG}/settings/preferences`, { init: `${unset}\n${CHINESE_NAVIGATOR}` });
       await waitTrue(page, `Boolean(document.querySelector('[data-testid="settings-preferences"]'))`, 'preferences panel');
       await sleep(400);
       const radio = (value) => `document.querySelector('input[name="happyranch-ui-language"][value="${value}"]')`;
@@ -463,6 +471,7 @@ async function main() {
   const receipt = {
     head, generatedAt: new Date().toISOString(), node: process.version,
     chrome: { path: chromeBin, version: chromeVersion, lang: 'zh-CN (Chrome --lang + navigator override: environment never defaults the locale)' },
+    externalRequestsBlocked: EXTERNAL_BLOCK,
     dist: fingerprint,
     summary: cases.map((c) => ({ id: c.id, title: c.title, pass: c.pass, checks: c.checks.length, failedChecks: c.checks.filter((x) => !x.ok).map((x) => x.name) })),
     cases, screenshots, ledger: LEDGER, passed: cases.length - failed.length, failed: failed.length,
