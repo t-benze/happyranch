@@ -5288,6 +5288,49 @@ class Database(DreamsMixin, KnowledgeMixin, JobsMixin, AttachmentsMixin):
         ).fetchone() is not None
 
     @_synchronized
+    def try_fail_nonroot_manager_supersede(
+        self,
+        task_id: str,
+        *,
+        actor_agent: str,
+        actor_session_id: str,
+        expected_team: str,
+        note: str,
+    ) -> bool:
+        """Fail one still-current non-root supersede claim atomically.
+
+        Non-root identity is an explicit predicate, not an interpretation of
+        ``try_manager_supersede`` returning ``None``.  A cancelled, replaced,
+        blocked, terminal, root, or otherwise non-current row is untouched.
+        The caller owns the ordinary FAILED terminal tail and parent handoff
+        only after this transition succeeds.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = self._conn.execute(
+            """UPDATE tasks
+                  SET status = ?, block_kind = NULL, note = ?, completed_at = ?,
+                      updated_at = ?, active_chain = NULL, active_fanout = NULL
+                WHERE id = ? AND parent_task_id IS NOT NULL
+                  AND status = ? AND block_kind IS NULL
+                  AND cancelled_at IS NULL AND task_type = 'task'
+                  AND assigned_agent = ? AND team = ?
+                  AND current_session_id = ?""",
+            (
+                TaskStatus.FAILED.value,
+                note,
+                now,
+                now,
+                task_id,
+                TaskStatus.IN_PROGRESS.value,
+                actor_agent,
+                expected_team,
+                actor_session_id,
+            ),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
     def try_manager_supersede(
         self,
         task_id: str,

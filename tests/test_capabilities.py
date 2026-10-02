@@ -310,13 +310,15 @@ def test_manager_prompt_no_longer_claims_only_delegate_done_escalate():
     assert "fanout" in tail.lower()
 
 
-def test_manager_prompt_marks_supersede_as_always_available_manager_action():
+def test_manager_prompt_marks_supersede_root_only_and_nonroot_failure():
     p = build_capabilities_prompt(
         agents=[], step_number=1, manager_name="engineering_manager",
     )
     assert '"action": "supersede"' in p
     assert "Manager root replanning" in p
-    assert "Available to the assigned manager of its currently claimed root, for any team." in p
+    assert "Available only to the assigned manager of its currently claimed root, for any team." in p
+    assert "If a non-root manager task returns this decision, that task fails" in p
+    assert "its delegated parent is woken; no successor is created" in p
     assert "default OFF" not in p
     assert "kill switch" not in p
     assert '"attestation"' in p

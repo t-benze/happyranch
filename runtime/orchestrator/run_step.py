@@ -1875,6 +1875,76 @@ def _consume_completion_report_body(
                 orch, task_id, status=TaskStatus.FAILED, auto_revisit_spawned=False,
             )
             return
+        if task.parent_task_id is not None:
+            # THR-277 PR3: non-root is its own refusal reason.  Do not call
+            # try_manager_supersede and reinterpret its generic None result;
+            # that result also covers unrelated root races/ineligibility.
+            # The atomic writer rechecks this exact current claim.  A stale,
+            # cancelled, blocked, terminal, or replaced owner therefore gets
+            # no failure and no parent wake.
+            note = f"manager supersede refused: non-root task {task_id}"
+            decision_session_id = task.current_session_id
+            if recovery_owner is not None:
+                decision_session_id = recovery_owner[1]
+            elif result_row_id is not None:
+                result_owner = db.execute(
+                    "SELECT agent, session_id FROM task_results "
+                    "WHERE id = ? AND task_id = ?",
+                    (result_row_id, task_id),
+                ).fetchone()
+                if result_owner is not None and result_owner["agent"] == agent:
+                    # Bind the terminal decision to the session that produced
+                    # its immutable result, never to a replacement owner from
+                    # the fresh task read above.
+                    decision_session_id = result_owner["session_id"]
+            if not isinstance(decision_session_id, str) or not decision_session_id:
+                return
+            if db.try_fail_nonroot_manager_supersede(
+                task_id,
+                actor_agent=agent,
+                actor_session_id=decision_session_id,
+                expected_team=task.team,
+                note=note,
+            ):
+                if recovery_owner is None:
+                    _fail_terminal_tail(
+                        orch,
+                        task_id,
+                        expected_note=note,
+                        reclaim_terminal_worktree=reclaim_kwargs.get(
+                            "reclaim_terminal_worktree", True,
+                        ),
+                    )
+                    if _task_matches_authority_v2_refusal_failure(
+                        orch, task_id, note,
+                    ):
+                        _enqueue_parent_if_waiting(orch, task_id)
+                    if _task_matches_authority_v2_refusal_failure(
+                        orch, task_id, note,
+                    ):
+                        _maybe_post_thread_followup(
+                            orch,
+                            task_id,
+                            status=TaskStatus.FAILED,
+                            auto_revisit_spawned=False,
+                        )
+                else:
+                    _handoff_consumed_recovery_terminal_effects(
+                        orch,
+                        task_id,
+                        recovery_owner[0],
+                        recovery_owner[1],
+                        recovery_result_id,
+                        TaskStatus.FAILED.value,
+                        after_recovery_cleanup=lambda: (
+                            _enqueue_parent_if_waiting(orch, task_id)
+                            if _task_matches_authority_v2_refusal_failure(
+                                orch, task_id, note,
+                            )
+                            else None
+                        ),
+                    )
+            return
         if task.dispatched_from_thread_id:
             reason = (
                 "manager supersession rejected: thread-origin roots are not "
@@ -1910,6 +1980,9 @@ def _consume_completion_report_body(
             rationale=decision.rationale or "",
             attestation=decision.attestation.model_dump() if decision.attestation else {},
         )
+        # Root-only policy is unchanged: a generic None is a silent refusal;
+        # the writer's stale-claim RuntimeError rolls back and propagates.  It
+        # is never reclassified as the non-root fail-and-wake case above.
         if successor_id is None:
             # The claim may have been superseded by cancellation or a competing
             # consumer.  Never cancel/alter live work just to make it eligible.

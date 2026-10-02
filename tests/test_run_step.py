@@ -531,6 +531,380 @@ def _claimed_manager_root(
     ))
 
 
+def _manager_decision_report(task_id: str, *, action: str = "supersede"):
+    """Build a manager callback for shipping decision-consumer tests."""
+    from runtime.models import CompletionReport, NextStep
+
+    if action == "done":
+        decision = NextStep(action="done", summary="joined")
+    else:
+        decision = NextStep(
+            action="supersede",
+            successor_brief="replacement plan",
+            rationale="new evidence",
+            attestation={
+                "recovery_reason": "Evidence invalidated the old plan.",
+                "policy_product_intent_unchanged": True,
+                "no_budget_or_external_commitment": True,
+                "no_permission_or_cross_team_change": True,
+                "no_schema_auth_security_privacy_or_data_access_change": True,
+                "no_unresolved_founder_gate": True,
+            },
+        )
+    return CompletionReport(
+        task_id=task_id,
+        agent="engineering_head",
+        status="completed",
+        confidence=90,
+        output_summary="manager decision",
+        decision=decision,
+    )
+
+
+def test_nonroot_manager_supersede_fails_fanout_child_and_wakes_join_once(
+    runtime, db, monkeypatch,
+):
+    """P1: non-root supersede is a failed fan-out result, never a successor."""
+    from runtime.orchestrator.fanout import FanoutState
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    parent_id = "T-SUP-FANOUT-PARENT"
+    child_id = "T-SUP-FANOUT-CHILD"
+    db.insert_task(TaskRecord(
+        id=parent_id,
+        brief="fan-out parent",
+        assigned_agent="engineering_head",
+        status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED,
+    ))
+    db.insert_task(TaskRecord(
+        id=child_id,
+        brief="manager child",
+        assigned_agent="engineering_head",
+        parent_task_id=parent_id,
+        task_type="task",
+    ))
+    db.update_task_active_fanout(
+        parent_id,
+        FanoutState(
+            children_ids=[child_id],
+            children_details=[{"agent": "engineering_head", "prompt": "decide"}],
+            width=1,
+            manager_agent="engineering_head",
+        ).serialize(),
+    )
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+    queue = _SlugQueue()
+    orch._queue = queue
+    prompts: list[str] = []
+
+    def fake_run_agent(task_id, agent, prompt, **kwargs):
+        db.update_task(task_id, current_session_id="sess-x")
+        if task_id == child_id:
+            return _make_result(), _manager_decision_report(task_id)
+        prompts.append(prompt)
+        return _make_result(), _manager_decision_report(task_id, action="done")
+
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step(child_id)
+
+    child = db.get_task(child_id)
+    assert child.status is TaskStatus.FAILED
+    assert child.note == f"manager supersede refused: non-root task {child_id}"
+    assert db.get_task("TASK-001") is None
+    assert db.execute("SELECT COUNT(*) FROM manager_supersessions").fetchone()[0] == 0
+    assert not [
+        row for row in db.get_audit_logs(child_id)
+        if row["action"] == "manager_supersession"
+    ]
+    assert queue.qsize() == 1
+    assert queue.get_nowait() == ("test", parent_id)
+
+    orch.run_step(parent_id)
+
+    assert len(prompts) == 1
+    assert f"{child_id} (engineering_head)" in prompts[0]
+    assert "Status: failed" in prompts[0]
+    assert child.note in prompts[0]
+
+
+def test_nonroot_manager_supersede_fails_serial_child_clears_chain_and_wakes_once(
+    runtime, db, monkeypatch,
+):
+    """P2: serial delegated failure clears the chain and returns its reason."""
+    from runtime.orchestrator.chain import ChainState
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    parent_id = "T-SUP-SERIAL-PARENT"
+    child_id = "T-SUP-SERIAL-CHILD"
+    db.insert_task(TaskRecord(
+        id=parent_id,
+        brief="serial parent",
+        assigned_agent="engineering_head",
+        status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED,
+        active_chain=ChainState(
+            step_index=0,
+            first_leg_expect_verdict=None,
+            legs=[],
+            step_audit_id=1,
+        ).serialize(),
+    ))
+    db.insert_task(TaskRecord(
+        id=child_id,
+        brief="manager child",
+        assigned_agent="engineering_head",
+        parent_task_id=parent_id,
+        task_type="task",
+    ))
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+    queue = _SlugQueue()
+    orch._queue = queue
+    prompts: list[str] = []
+
+    def fake_run_agent(task_id, agent, prompt, **kwargs):
+        db.update_task(task_id, current_session_id="sess-x")
+        if task_id == child_id:
+            return _make_result(), _manager_decision_report(task_id)
+        prompts.append(prompt)
+        return _make_result(), _manager_decision_report(task_id, action="done")
+
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step(child_id)
+
+    child = db.get_task(child_id)
+    parent = db.get_task(parent_id)
+    assert child.status is TaskStatus.FAILED
+    assert child.note == f"manager supersede refused: non-root task {child_id}"
+    assert parent.active_chain is None
+    assert parent.status is TaskStatus.IN_PROGRESS
+    assert parent.block_kind is BlockKind.DELEGATED
+    assert queue.qsize() == 1
+    assert queue.get_nowait() == ("test", parent_id)
+
+    orch.run_step(parent_id)
+
+    assert len(prompts) == 1
+    assert child.note in prompts[0]
+
+
+@pytest.mark.parametrize("race", ["cancelled", "replaced_session"])
+def test_nonroot_manager_supersede_losing_current_claim_has_no_effect(
+    runtime, db, monkeypatch, race: str,
+):
+    """P3: a late non-root decision cannot fail or wake a replaced claim."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    parent_id = f"T-SUP-RACE-PARENT-{race}"
+    child_id = f"T-SUP-RACE-CHILD-{race}"
+    db.insert_task(TaskRecord(
+        id=parent_id,
+        brief="parent",
+        assigned_agent="engineering_head",
+        status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED,
+    ))
+    db.insert_task(TaskRecord(
+        id=child_id,
+        brief="manager child",
+        assigned_agent="engineering_head",
+        parent_task_id=parent_id,
+        task_type="task",
+    ))
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+    queue = _SlugQueue()
+    orch._queue = queue
+    returned_supersede = 0
+
+    def fake_run_agent(task_id, agent, prompt, **kwargs):
+        nonlocal returned_supersede
+        db.update_task(task_id, current_session_id="sess-x")
+        report = _manager_decision_report(task_id)
+        db.insert_task_result(
+            task_id=task_id,
+            agent=agent,
+            session_id="sess-x",
+            status="completed",
+            confidence_score=report.confidence,
+            output_summary=report.output_summary,
+            decision_json=report.decision.model_dump_json(),
+        )
+        if race == "cancelled":
+            db.update_task(
+                task_id,
+                cancelled_at="2026-10-02T00:00:00+00:00",
+                note="cancel won",
+            )
+        else:
+            db.update_task(
+                task_id,
+                current_session_id="sess-replacement",
+                note="replacement won",
+            )
+        returned_supersede += 1
+        return _make_result(), report
+
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step(child_id)
+
+    child = db.get_task(child_id)
+    assert returned_supersede == 1, "the agent returned the supersede decision"
+    assert child.status is TaskStatus.IN_PROGRESS
+    assert child.note == ("cancel won" if race == "cancelled" else "replacement won")
+    assert db.get_task("TASK-001") is None
+    assert db.execute("SELECT COUNT(*) FROM manager_supersessions").fetchone()[0] == 0
+    assert queue.qsize() == 0
+
+
+def test_root_manager_supersede_nonparent_refusal_remains_in_progress(
+    runtime, db, monkeypatch,
+):
+    """M8: an unrelated root refusal is not reclassified as non-root failure."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    root_id = "T-SUP-ROOT-LIVE-FAMILY"
+    _claimed_manager_root(db, root_id)
+    db.update_task(root_id, status=TaskStatus.PENDING, current_session_id=None)
+    db.insert_task(TaskRecord(
+        id="T-SUP-LIVE-CHILD",
+        brief="still live",
+        assigned_agent="dev_agent",
+        parent_task_id=root_id,
+        task_type="subtask",
+    ))
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+    queue = _SlugQueue()
+    orch._queue = queue
+
+    def fake_run_agent(task_id, agent, prompt, **kwargs):
+        db.update_task(task_id, current_session_id="sess-x")
+        return _make_result(), _manager_decision_report(task_id)
+
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step(root_id)
+
+    root = db.get_task(root_id)
+    assert root.status is TaskStatus.IN_PROGRESS
+    assert root.completed_at is None
+    assert db.get_task("T-SUP-LIVE-CHILD").status is TaskStatus.PENDING
+    assert db.get_task("TASK-001") is None
+    assert db.execute("SELECT COUNT(*) FROM manager_supersessions").fetchone()[0] == 0
+    assert queue.qsize() == 0
+
+
+def test_nonroot_manager_supersede_restart_recovers_lost_parent_wake_20x(
+    runtime, db, monkeypatch,
+):
+    """M9: Branch 2 reconstructs one parent wake after 20 enqueue crashes."""
+    from runtime.daemon.__main__ import _sweep_on_startup
+    from runtime.daemon.queue import TaskQueue
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    class CrashingQueue:
+        def put_nowait(self, slug, task_id):
+            raise RuntimeError("injected crash before parent enqueue")
+
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+    orch._queue = CrashingQueue()
+
+    def fake_run_agent(task_id, agent, prompt, **kwargs):
+        db.update_task(task_id, current_session_id="sess-x")
+        return _make_result(), _manager_decision_report(task_id)
+
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    parent_ids = []
+    for index in range(20):
+        parent_id = f"T-SUP-CRASH-PARENT-{index}"
+        child_id = f"T-SUP-CRASH-CHILD-{index}"
+        parent_ids.append(parent_id)
+        db.insert_task(TaskRecord(
+            id=parent_id,
+            brief="parent",
+            assigned_agent="engineering_head",
+            status=TaskStatus.IN_PROGRESS,
+            block_kind=BlockKind.DELEGATED,
+        ))
+        db.insert_task(TaskRecord(
+            id=child_id,
+            brief="manager child",
+            assigned_agent="engineering_head",
+            parent_task_id=parent_id,
+            task_type="task",
+        ))
+        with pytest.raises(RuntimeError, match="injected crash"):
+            orch.run_step(child_id)
+        assert db.get_task(child_id).status is TaskStatus.FAILED
+
+    recovered_queue = TaskQueue()
+    orch._queue = recovered_queue
+    _sweep_on_startup(db, recovered_queue, "test", orch)
+    _sweep_on_startup(db, recovered_queue, "test", orch)
+
+    recovered = [recovered_queue._queue.get_nowait() for _ in range(20)]
+    assert recovered_queue._queue.qsize() == 0
+    assert sorted((slug, task_id) for slug, task_id, _ in recovered) == [
+        ("test", task_id) for task_id in sorted(parent_ids)
+    ]
+
+
+def test_root_manager_supersede_still_mints_and_enqueues_one_successor(
+    runtime, db, monkeypatch,
+):
+    """P4 keeper: an eligible root still follows the supersession writer."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    root_id = "T-SUP-ROOT-KEEPER"
+    db.insert_task(TaskRecord(
+        id=root_id,
+        brief="original root",
+        assigned_agent="engineering_head",
+        task_type="task",
+    ))
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+    queue = _SlugQueue()
+    orch._queue = queue
+
+    def fake_run_agent(task_id, agent, prompt, **kwargs):
+        db.update_task(task_id, current_session_id="sess-x")
+        return _make_result(), _manager_decision_report(task_id)
+
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step(root_id)
+
+    root = db.get_task(root_id)
+    successor = db.get_task("TASK-001")
+    assert root.status is TaskStatus.SUPERSEDED
+    assert successor is not None and successor.status is TaskStatus.PENDING
+    assert successor.parent_task_id is None
+    assert db.execute("SELECT COUNT(*) FROM manager_supersessions").fetchone()[0] == 1
+    assert queue.qsize() == 1
+    assert queue.get_nowait() == ("test", successor.id)
+
+
 def test_persisted_null_supersede_attestation_never_reaches_write_path(runtime, db):
     """A malformed persisted callback must not create a successor or audit row."""
     from runtime.orchestrator.orchestrator import Orchestrator
@@ -610,9 +984,9 @@ def test_completion_consumer_ignores_legacy_supersession_env_gate(runtime, db, m
     [
         ("assigned_agent", "dev_agent", TaskStatus.FAILED),
         ("current_session_id", None, TaskStatus.FAILED),
-        ("parent_task_id", "T-PARENT", TaskStatus.IN_PROGRESS),
+        ("parent_task_id", "T-PARENT", TaskStatus.FAILED),
     ],
-    ids=["current_manager", "current_session", "root"],
+    ids=["current_manager", "current_session", "nonroot"],
 )
 def test_completion_consumer_enforces_manager_session_and_root_gates(
     runtime, db, field: str, value: str | None, expected_status: TaskStatus,

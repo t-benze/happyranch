@@ -208,6 +208,19 @@ Agents self-report `status="completed"|"blocked"` via `happyranch report-complet
 
 `superseded` is a terminal state, peer to `completed`/`failed`. An `escalated` / `in_progress(delegated)` task transitions here when a human-authorized continuation (founder `revisit`, or a founder/manager thread-dispatch) names it in lineage: the predecessor is closed (block_kind cleared, audit cites the continuation root task_id) instead of being re-run. The close never re-enqueues the superseded task; it still wakes a delegated parent via the normal parent-wake path, and the delegated close is gated on all children being terminal so no live sibling is abandoned or SIGTERM'd. It joins every terminal predicate (`TERMINAL_STATES`, `_TERMINAL_TASK_STATUSES`, `_TERMINAL_STATUS_TO_EVENT`) and is completion-class for the thread task-followup: a thread-originated task that is superseded emits its `_maybe_post_thread_followup` system message (`task_completed` kind) just like a normal completion. The thread-dispatch supersede is manager-authorized only — a worker self-dispatch naming `resolves` is rejected (`403 thread_supersede_not_authorized`); the predecessor is never auto-closed by an unauthorized dispatch. Query the backlog with `happyranch tasks --status escalated` or `happyranch tasks --status in_progress --block-kind delegated`.
 
+Manager `supersede` decisions are root-only. The completion consumer identifies a
+non-root from the claimed task's `parent_task_id` before calling the generic root
+supersession writer; it never infers that cause from the writer's `None` result.
+A still-current non-root claim atomically becomes `failed`, clears its own
+chain/fan-out state, retains the durable note `manager supersede refused:
+non-root task <id>`, and uses the existing failed terminal tail plus delegated
+parent wake. Fan-out join context therefore lists the child as failed, and a
+serial parent clears `active_chain` before its one wake. If cancellation or a
+replacement session wins, neither failure nor wake occurs. Unrelated root
+refusals remain silent, while an eligible root still creates and enqueues one
+successor. A crash after the child commit but before enqueue is recovered by
+startup Branch 2 from the terminal-child/delegated-parent state.
+
 ## Derived Work-Status Summary (TASK-5522)
 
 `GET /tasks/{task_id}` carries a read-only `work_status` envelope key derived
