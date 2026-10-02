@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * W4a browser-evidence harness (THR-118 W4a-1 health + dreams; W4b todos + work-hours + audit; later W4 slices add rows).
+ * W4a browser-evidence harness (THR-118 W4a-1 health + dreams; W4b todos + work-hours + audit; W4c agents + skills; later W4 slices add rows).
  *
  * Same mechanism as `w3b-jobs-browser-evidence.mjs` (no new dependency): ONE
  * isolated headless Chrome driven over the DevTools Protocol against the
@@ -257,6 +257,51 @@ const AUDIT_ENTRIES = [
     payload: { duration_seconds: 80, token_usage: { total: 1500 } }, timestamp: iso(63e3) },
 ];
 
+
+// W4c agents — a team manager (`lead`) so team-escalation-policy renders; a pending enrollment.
+const W4C_LEAD = { name: 'lead', team: 'eng', role: 'manager', executor: 'claude', description: 'Leads «raw» engineering', repos: {}, system_prompt: 'You lead the eng team.' };
+const W4C_ENROLLMENT = { name: 'new_hire_bot', team: 'eng', role: 'worker', executor: 'codex', description: 'Pending «raw» enrollment', status: 'pending', enrolled_by: 'lead', created_at: '2026-09-30T08:00:00Z' };
+const W4C_POLICY = {
+  team: 'eng', target_manager: 'lead', can_mutate: true,
+  family: 'v2', contract_version: 'v2', selector_id: `APS-${'b'.repeat(64)}`, selector_epoch: 4,
+  bootstrap_template: { title: 'Canonical legacy policy', normative_text: 'Normative text', clauses: [{ id: 'esc-one', category: 'protected', condition: 'Stop.', action: 'escalate_to_founder' }], continuation_phrase: 'routine follow-through' },
+  v2_starter: { policy_id: 'team-eng-dual-text', title: 'Engineering escalation policy', what_to_escalate: 'Escalate starter.', what_not_to_escalate: 'Continue starter.' },
+  active: {
+    family: 'v2', activation_id: `APV2A-${'e'.repeat(64)}`, selector_epoch: 4, action: 'activate',
+    created_at: '2026-09-03T00:00:00Z', actor_attribution: 'shared local operator credential',
+    release: { id: `APV2-${'d'.repeat(64)}`, policy_id: 'team-eng-dual-text', version: 2, title: 'Eng «raw» policy title',
+      what_to_escalate: 'Escalate «raw» scope changes.', what_not_to_escalate: 'Continue «raw» ordinary work.',
+      digest: 'd'.repeat(64), actor_attribution: 'shared local operator credential' },
+  },
+};
+
+// W4c skills
+const W4C_SKILL = (o) => ({
+  skill_id: 'pdf-tools', name: 'PDF Tools «raw»', type: 'managed', source: 'bundled', system_contract: false,
+  visibility_category: 'toggleable', policy_class: 'standard', status: 'active', version: '1.4.2',
+  validation_state: 'validated', assigned_agent_count: 1, effective_agent_count: 1, has_assigned_not_yet_effective: false,
+  summary: 'Read and fill «raw» PDF forms.', ...o,
+});
+const W4C_SKILL_DETAIL = { ...W4C_SKILL({}), description: 'Full «raw» description of PDF tools.', when_to_use: 'When a «raw» PDF arrives.', owner: 'platform',
+  validation: { ok: true, errors: [] }, assignments: [{ agent: 'dev_agent', assigned: true, effective: true, state: 'effective' }] };
+const W4C_SKILL_STATUS = { skill_id: 'pdf-tools', source: 'bundled', in_catalog: true, validated: true, current_version: '1.4.2',
+  assignments: [{ agent: 'dev_agent', assigned: true, effective: true, materialized_version: '1.4.2', state: 'effective' }],
+  last_validation: null };
+const W4C_VALIDATION = { label: 'Recent', events: [
+  { id: 2, skill_id: 'pdf-tools', slug: 'pdf-tools', agent: 'dev_agent', source: 'first_party', severity: 'error', ok: false, version: '1.4.2',
+    findings: ['Missing «raw» frontmatter field'], reason_codes: ['frontmatter_missing'], created_at: iso(5 * 60e3) },
+  { id: 1, skill_id: 'pdf-tools', slug: 'pdf-tools', agent: null, source: 'materialization', severity: 'info', ok: true, version: '1.4.1',
+    findings: [], reason_codes: [], created_at: iso(2 * 3600e3) },
+] };
+const W4C_CUSTOM = { skill_id: 'CS-1', slug: 'release-notes', name: 'Release Notes «raw»', description: 'Draft «raw» release notes.',
+  current_version_id: 3, retired_at: null, validation_state: 'validated', content_hash: 'f'.repeat(64),
+  skill_md_cache: '---\nname: release-notes\n---\n# Release «raw» notes', hidden_reason: null };
+const W4C_POLICY_HISTORY = { items: [], next_cursor: null };
+// The shared /agents roster. W4c adds the `lead` manager (the policy page and
+// entry card require a live manager with a unique teams.yaml registration);
+// the W4b EligibilityEditor S row derives its expected live count from this list.
+const ROSTER = [WH_AGENT('dev_agent', '## Routine Tasks\n- Review open PRs\n- Triage bugs'), WH_AGENT('support_bot', 'No routine section here.'), W4C_LEAD];
+
 /** pathname -> payload (or (search) => payload). Later W4 slices add rows here. */
 const API_ROUTES = {
   '/api/v1/auth/bootstrap': { token: 'w4a-evidence-token' },
@@ -276,7 +321,7 @@ const API_ROUTES = {
   [`/api/v1/orgs/${ORG}/schedules/SCHEDULE-120`]: TODO_MONTHLY,
   // W4b work-hours
   [`/api/v1/orgs/${ORG}/settings`]: WH_SETTINGS,
-  [`/api/v1/orgs/${ORG}/agents`]: { agents: [WH_AGENT('dev_agent', '## Routine Tasks\n- Review open PRs\n- Triage bugs'), WH_AGENT('support_bot', 'No routine section here.')] },
+  [`/api/v1/orgs/${ORG}/agents`]: { agents: ROSTER },
   [`/api/v1/orgs/${ORG}/teams`]: { teams: [{ name: 'eng', manager: 'lead', workers: ['dev_agent', 'support_bot'] }] },
   [`/api/v1/orgs/${ORG}/work-hours`]: { work_hours: [
     WH_WAKE({}),
@@ -286,6 +331,27 @@ const API_ROUTES = {
   [`/api/v1/orgs/${ORG}/work-hours/next-wakes`]: { agent: 'dev_agent', enabled: true, timezone: 'America/Los_Angeles', mode: 'windowed', next_wakes: ['2026-10-01T15:00:00-07:00'], error: null },
   // W4b audit
   [`/api/v1/orgs/${ORG}/audit`]: { entries: AUDIT_ENTRIES, next_cursor: null },
+  // W4c agents
+  [`/api/v1/orgs/${ORG}/agents/enrollments`]: { enrollments: [W4C_ENROLLMENT] },
+  ...Object.fromEntries(ROSTER.flatMap((a) => [
+    [`/api/v1/orgs/${ORG}/agents/${a.name}/memory/entries/`, { entries: [] }],
+    [`/api/v1/orgs/${ORG}/agents/${a.name}/cleanup-activity`, { activities: [] }],
+  ])),
+  [`/api/v1/orgs/${ORG}/tasks`]: { tasks: [], next_cursor: null },
+  [`/api/v1/orgs/${ORG}/jobs/`]: { jobs: [] },
+  '/api/v1/executors/runtime/profiles': { profiles: [] },
+  '/api/v1/health/prereqs': { prereqs: ['claude', 'codex'].map((tool) => ({ tool, present: true, path: `/usr/bin/${tool}`, hint: '' })) },
+  [`/api/v1/orgs/${ORG}/agents/lead/team-escalation-policy`]: W4C_POLICY,
+  [`/api/v1/orgs/${ORG}/agents/lead/team-escalation-policy/v2/history`]: W4C_POLICY_HISTORY,
+  // W4c skills
+  [`/api/v1/orgs/${ORG}/skills/catalog`]: { items: [W4C_SKILL({})] },
+  [`/api/v1/orgs/${ORG}/skills/catalog/pdf-tools`]: W4C_SKILL_DETAIL,
+  [`/api/v1/orgs/${ORG}/skills/pdf-tools/status`]: W4C_SKILL_STATUS,
+  [`/api/v1/orgs/${ORG}/skills/validation`]: W4C_VALIDATION,
+  [`/api/v1/orgs/${ORG}/custom-skills/catalog`]: { skills: [W4C_CUSTOM] },
+  [`/api/v1/orgs/${ORG}/custom-skills/CS-1`]: W4C_CUSTOM,
+  [`/api/v1/orgs/${ORG}/custom-skills/CS-1/eligibility`]: { rules: [{ scope_type: 'team', scope_target: 'eng', effect: 'allow' }], revision: 2 },
+  [`/api/v1/orgs/${ORG}/custom-skills/CS-1/versions`]: { versions: [{ id: 3, content_hash: 'f'.repeat(64), created_at: '2026-09-30T08:00:00Z', author_kind: 'founder', validation_state: 'validated' }] },
 };
 
 function api(pathname, search) {
@@ -346,6 +412,8 @@ const cardsContain = (rowSel) => `(() => {
 })()`;
 
 // ------------------------------------------------------------------ route tables
+/** W4c: every bordered rounded card on the page (parent of any child) must hold its content. */
+const BORDERED_CARD_CHILD = '[class*="rounded"][class*="border"] > *';
 const DREAM_CARD = (id) => `[...document.querySelectorAll('li > button')].find((b) => b.textContent.includes(${JSON.stringify(id)}))`;
 
 /**
@@ -482,6 +550,77 @@ const VIEW_ROUTES = [
     ],
     verbatim: ['dev_agent', 'code_reviewer', 'engineering_manager', 'qa_engineer', 'TASK-1', 'TASK-410', 'APPROVE', 'completed · '],
   },
+  {
+    id: 'agents', route: 'agents', path: `/orgs/${ORG}/agents`,
+    ready: () => `${bodyHas('support_bot')} && ${bodyHas('dev_agent')}`,
+    keys: ['agents.page.title', 'agents.page.meta', 'agents.page.newAgent', 'agents.tab.active', 'agents.tab.pending'],
+    verbatim: ['dev_agent', 'support_bot', 'lead'],
+    contained: () => cardsContain('li > button > *'),
+  },
+  {
+    id: 'agent-detail', route: 'agents/:agent_name', path: `/orgs/${ORG}/agents/lead`,
+    ready: (locale) => `${bodyHas(tr(locale, 'agents.policy.entryTitle'))}`,
+    keys: [
+      'agents.page.title', 'agents.field.description', 'agents.field.systemPrompt', 'agents.executor.label', 'agents.detail.model',
+      'agents.detail.repos', 'agents.detail.learnings', 'agents.detail.recentTasks',
+      'agents.policy.entryTitle', ['agents.policy.entryMeta', { team: 'Eng', name: 'lead' }], 'agents.policy.open',
+    ],
+    verbatim: ['lead', 'support_bot'],
+    contained: () => cardsContain(BORDERED_CARD_CHILD),
+  },
+  {
+    id: 'agent-policy', route: 'agents/:agent_name/team-escalation-policy', path: `/orgs/${ORG}/agents/lead/team-escalation-policy`,
+    ready: (locale) => `${bodyHas(tr(locale, 'agents.policy.history.empty'))}`,
+    keys: [
+      // The page title-cases the agent/team names (pre-existing displayName(), unchanged by W4c).
+      'agents.policy.title', ['agents.policy.backTo', { name: 'Lead' }], 'agents.policy.teamOwned', ['agents.policy.ownedBy', { team: 'Eng' }],
+      'agents.policy.whatTo', 'agents.policy.whatNot', 'agents.policy.save', 'agents.policy.history.title', 'agents.policy.history.empty',
+    ],
+    verbatim: ['Eng «raw» policy title', 'team-eng-dual-text', `APV2-${'d'.repeat(64)}`, `APS-${'b'.repeat(64)}`],
+    contained: () => cardsContain(BORDERED_CARD_CHILD),
+  },
+  {
+    id: 'skills', route: 'skills', path: `/orgs/${ORG}/skills`,
+    ready: () => `${bodyHas('PDF Tools «raw»')}`,
+    keys: ['skills.catalog.heading', 'skills.catalog.runtimeValidation', 'skills.addCustom', 'skills.card.assigned', 'skills.card.effective'],
+    verbatim: ['PDF Tools «raw»', 'Read and fill «raw» PDF forms.', '1.4.2'],
+    contained: () => cardsContain(BORDERED_CARD_CHILD),
+  },
+  {
+    id: 'skill-detail', route: 'skills/:skillId', path: `/orgs/${ORG}/skills/pdf-tools`,
+    ready: () => `${bodyHas('Full «raw» description of PDF tools.')}`,
+    keys: ['skills.detail.back', 'skills.detail.whenToUse', 'skills.detail.whereEffective', 'skills.detail.perAgent', 'skills.catalog.source'],
+    verbatim: ['PDF Tools «raw»', 'When a «raw» PDF arrives.', 'dev_agent', '1.4.2'],
+    contained: () => cardsContain(BORDERED_CARD_CHILD),
+  },
+  {
+    id: 'skills-validation', route: 'skills/validation', path: `/orgs/${ORG}/skills/validation`,
+    ready: () => `${bodyHas('Missing «raw» frontmatter field')}`,
+    keys: ['skills.validation.description', 'skills.validation.filters'],
+    verbatim: ['Missing «raw» frontmatter field', 'pdf-tools', 'dev_agent', '1.4.2'],
+    contained: () => cardsContain('article[data-event-id] > *'),
+  },
+  {
+    id: 'skills-custom', route: 'skills/custom', path: `/orgs/${ORG}/skills/custom`,
+    ready: () => `${bodyHas('Release Notes «raw»')}`,
+    keys: ['skills.customList.title', 'skills.addCustom', 'skills.view.current'],
+    verbatim: ['Release Notes «raw»', 'Draft «raw» release notes.', 'v3'],
+    contained: () => cardsContain('article[data-source="custom"] > *'),
+  },
+  {
+    id: 'skills-custom-new', route: 'skills/custom/new', path: `/orgs/${ORG}/skills/custom/new`,
+    ready: (locale) => `${bodyHas(tr(locale, 'skills.create.title'))}`,
+    keys: ['skills.create.title', 'skills.create.name', 'skills.create.slug', 'skills.create.descriptionLabel', 'skills.backToCustom'],
+    verbatim: [],
+    contained: () => cardsContain(BORDERED_CARD_CHILD),
+  },
+  {
+    id: 'skills-custom-detail', route: 'skills/custom/:skillId', path: `/orgs/${ORG}/skills/custom/CS-1`,
+    ready: (locale) => `${bodyHas(tr(locale, 'skills.customDetail.versions'))}`,
+    keys: ['skills.backToCustom', 'skills.customDetail.metadata', 'skills.customDetail.versions', 'skills.customDetail.eligibility', 'skills.customDetail.currentGuidance', 'skills.customDetail.retire'],
+    verbatim: ['release-notes'],
+    contained: () => cardsContain(BORDERED_CARD_CHILD),
+  },
 ];
 
 /**
@@ -569,10 +708,46 @@ const SWITCH_ROUTES = [
       tr(locale, 'workHours.eligibilityEditor.title'),
       tr(locale, 'workHours.eligibilityEditor.description'),
       tr(locale, 'workHours.eligibilityEditor.exclude'),
-      tr(locale, 'workHours.eligibilityEditor.liveResult', { count: 2, n: 2 }),
+      // W4c added the `lead` manager to the shared roster: mode 'all' with support_bot
+      // toggled off the exclude list makes EVERY roster agent eligible (was 2, now 3).
+      tr(locale, 'workHours.eligibilityEditor.liveResult', { count: ROSTER.length, n: ROSTER.length }),
       tr(locale, 'workHours.dialog.reviewImpact'),
     ],
     shot: 'zh-eligibility-editor-switch-1440',
+  },
+  {
+    // AddAgentDialog (Agents page "New agent"): the agent-name input.
+    id: 'add-agent-dialog', path: `/orgs/${ORG}/agents`,
+    open: async (page, h) => {
+      await h.waitTrue(page, bodyHas('support_bot'), 'agents roster');
+      await h.clickSrc(page, `[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === ${JSON.stringify(tr('en', 'agents.page.newAgent'))})`);
+      await h.waitTrue(page, `Boolean(document.getElementById('agent-name'))`, 'add agent dialog');
+      await sleep(400);
+    },
+    control: `document.getElementById('agent-name')`,
+    container: `(CONTROL || { closest: () => null }).closest('[role="dialog"]')`,
+    draft: 'new_bot',
+    copy: (locale) => [tr(locale, 'agents.add.title'), tr(locale, 'agents.add.name'), tr(locale, 'agents.add.team'), tr(locale, 'agents.add.role'), tr(locale, 'agents.add.create')],
+    shot: 'zh-add-agent-dialog-switch-1440',
+  },
+  {
+    // Team escalation policy draft: the "What to escalate" textarea, cleared via the
+    // React-compatible native setter so the typed draft equals the control value exactly.
+    id: 'agent-policy-draft', path: `/orgs/${ORG}/agents/lead/team-escalation-policy`,
+    open: async (page, h) => {
+      await h.waitTrue(page, `Boolean(document.querySelector('[data-testid="team-escalation-policy"] textarea'))`, 'policy editor');
+      await h.evaluate(page, `(() => {
+        const i = document.querySelector('[data-testid="team-escalation-policy"] textarea');
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(i, '');
+        i.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+      })()`);
+    },
+    control: `document.querySelector('[data-testid="team-escalation-policy"] textarea')`,
+    container: `(CONTROL || { closest: () => null }).closest('[data-testid="team-escalation-policy"]')`,
+    draft: 'Escalate draft «raw» change.',
+    copy: (locale) => [tr(locale, 'agents.policy.title'), tr(locale, 'agents.policy.whatTo'), tr(locale, 'agents.policy.whatNot'), tr(locale, 'agents.policy.save')],
+    shot: 'zh-agent-policy-draft-switch-1440',
   },
 ];
 

@@ -126,6 +126,26 @@ function policyCacheEntries(client: QueryClient) {
 }
 
 describe('AgentsPage — two-pane roster list', () => {
+  test('W4c 390: roster stacks above the detail below md instead of squeezing it beside a fixed rail', async () => {
+    // At 390x844 the fixed 244px roster rail left the detail pane ~90px wide and
+    // the zh-CN policy entry card clipped (harness V agent-detail zh-CN 390).
+    stubBaseHandlers();
+    stubDetailHandlers();
+    mountAt(`/orgs/${SLUG}/agents`);
+    await waitFor(() => expect(screen.getByText('support_agent')).toBeInTheDocument());
+    const rosterAside = document.querySelectorAll('aside')[1]!;
+    const body = rosterAside.parentElement!;
+    // Column below md, side by side from md up.
+    expect(body.classList.contains('flex-col')).toBe(true);
+    expect(body.classList.contains('md:flex-row')).toBe(true);
+    // Full-width, height-capped roster below md; the 244px rail only from md up.
+    expect(rosterAside.classList.contains('w-full')).toBe(true);
+    expect(rosterAside.classList.contains('max-h-48')).toBe(true);
+    expect(rosterAside.classList.contains('md:w-rail')).toBe(true);
+    expect(rosterAside.classList.contains('md:max-h-none')).toBe(true);
+    expect(rosterAside.classList.contains('w-rail')).toBe(false);
+  });
+
   test('renders the agent roster with role meta + description in left pane', async () => {
     stubBaseHandlers();
     // The first agent auto-selects on mount (AGENTS-01), so the detail pane

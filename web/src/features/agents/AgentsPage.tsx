@@ -154,9 +154,11 @@ export function AgentsPage(): JSX.Element {
           the grid). The topbar stays full-bleed, matching the mockup .topbar;
           the 720px inner cap lives inside AgentDetailPane, not here. Panes keep
           their own overflow — presentational cap only, nothing functional. */}
-      <div className="max-w-content mx-auto flex w-full flex-1 overflow-hidden">
-        {/* LEFT: Roster list — Pasture w-rail (244px) */}
-        <aside className="border-border-subtle bg-surface-sunken w-rail shrink-0 overflow-y-auto border-r">
+      {/* W4c: below md the roster stacks above the detail (height-capped, scrolls)
+          instead of a fixed 244px rail squeezing the detail to ~90px at 390. */}
+      <div className="max-w-content mx-auto flex w-full flex-1 flex-col overflow-hidden md:flex-row">
+        {/* LEFT: Roster list — Pasture w-rail (244px) from md up */}
+        <aside className="border-border-subtle bg-surface-sunken max-h-48 w-full shrink-0 overflow-y-auto border-b md:max-h-none md:w-rail md:border-r md:border-b-0">
           <Tabs value={tab}>
             <TabsContent value="active" className="mt-0">
               {agentsQuery.isLoading ? (
@@ -246,7 +248,7 @@ export function AgentsPage(): JSX.Element {
         </aside>
 
         {/* RIGHT: Detail/Edit pane */}
-        <main className="bg-surface-canvas flex-1 overflow-hidden">
+        <main className="bg-surface-canvas min-h-0 flex-1 overflow-hidden">
           {selectedAgent ? (
             <AgentDetailPane
               agentName={selectedAgent}
