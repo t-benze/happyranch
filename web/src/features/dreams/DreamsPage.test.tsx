@@ -21,7 +21,9 @@ function renderPage(ui: React.ReactElement) {
   vi.spyOn(qc, 'invalidateQueries');
   const rendered = render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/orgs/test-org/dreams']}>{ui}</MemoryRouter>
+      <MemoryRouter initialEntries={['/orgs/test-org/dreams']}>
+        <I18nTestBoundary>{ui}</I18nTestBoundary>
+      </MemoryRouter>
     </QueryClientProvider>,
   );
   return { ...rendered, qc };
@@ -38,8 +40,12 @@ vi.mock('react-router-dom', async () => {
 
 import { useDreamsList, useDream, useAcceptCandidate, useDismissCandidate } from '@/hooks/dreams';
 import { DreamsPage } from './DreamsPage';
-import { DREAM_STRINGS } from './strings';
+import { translate } from '@/lib/i18n';
+import { I18nTestBoundary } from '@/test/render';
 import type { DreamRecord } from '@/hooks/dreams';
+
+// English copy comes from the typed catalog (THR-118 W4a-1).
+const QUIET_TITLE = translate('en', 'dreams.quiet.title');
 
 const mockDreamsList = vi.mocked(useDreamsList);
 const mockDream = vi.mocked(useDream);
@@ -672,7 +678,7 @@ describe('DreamsPage', () => {
     renderPage(<DreamsPage />);
 
     // Exactly one quiet indicator (the valid QUIET_DREAM).
-    expect(screen.getAllByText(DREAM_STRINGS.quietTitle)).toHaveLength(1);
+    expect(screen.getAllByText(QUIET_TITLE)).toHaveLength(1);
   });
 
   it('does not sum invalid counts into the rail totals', () => {
@@ -733,7 +739,7 @@ describe('DreamsPage', () => {
     fireEvent.click(card);
 
     // The dream is completed with no candidates, but learnings are invalid -> not quiet.
-    expect(screen.queryByText(DREAM_STRINGS.quietTitle)).toBeNull();
+    expect(screen.queryByText(QUIET_TITLE)).toBeNull();
   });
 
   it('does not claim quiet in opened drawer when kb_candidate_count is invalid even with empty kb_candidates', () => {
@@ -754,7 +760,7 @@ describe('DreamsPage', () => {
     // zero or quiet claim (the card strip and rail may also show it).
     const drawer = screen.getByRole('dialog');
     expect(within(drawer).getByText('Candidates unavailable')).toBeDefined();
-    expect(within(drawer).queryByText(DREAM_STRINGS.quietTitle)).toBeNull();
+    expect(within(drawer).queryByText(QUIET_TITLE)).toBeNull();
     expect(within(drawer).queryByText('0 candidates')).toBeNull();
   });
 });

@@ -34,9 +34,15 @@ import {
   useDismissCandidate,
 } from '@/hooks/dreams';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
-import { DREAM_STRINGS } from './strings';
-import { isValidCount } from './count-helpers';
+import {
+  classifyDreamError,
+  dreamStatusLabel,
+  renderDreamError,
+  type DreamErrorView,
+} from './strings';
+import { isValidCount, formatCount } from './count-helpers';
 import type { DreamKbCandidate } from '@/hooks/dreams';
+import { useTranslation } from '@/hooks/i18n';
 
 /* ------------------------------------------------------------------ */
 /*  Status pill                                                        */
@@ -69,24 +75,25 @@ function CandidateCard({
   acceptPending: boolean;
   dismissPending: boolean;
 }): JSX.Element {
+  const { t } = useTranslation();
   const isPending = candidate.status === 'pending';
   const isPromoted = candidate.status === 'promoted';
   const isRejected = candidate.status === 'rejected';
   const anyPending = acceptPending || dismissPending;
 
   const label = isPending
-    ? DREAM_STRINGS.candidatePendingLabel(candidate.agent_name)
+    ? t('dreams.candidate.pending', { agent: candidate.agent_name })
     : isPromoted
-      ? DREAM_STRINGS.candidateAcceptedLabel(candidate.agent_name)
+      ? t('dreams.candidate.accepted', { agent: candidate.agent_name })
       : isRejected
-        ? DREAM_STRINGS.candidateRejectedLabel(candidate.agent_name)
+        ? t('dreams.candidate.rejected', { agent: candidate.agent_name })
         : candidate.status;
 
   return (
     <div className="kb-cand bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
       {/* Header with dream marker */}
       <div className="mb-2 flex items-center gap-2">
-        <CrescentMoonBadge className="h-3 w-3" />
+        <CrescentMoonBadge className="h-3 w-3" label={t('dreams.badge')} />
         <span className="text-text-muted text-xs italic">{label}</span>
       </div>
 
@@ -120,26 +127,26 @@ function CandidateCard({
         <div className="mt-3 flex gap-2">
           <Button
             size="sm"
-            aria-label={DREAM_STRINGS.acceptButton}
+            aria-label={t('dreams.candidate.accept')}
             disabled={anyPending}
             onClick={(e) => {
               e.stopPropagation();
               onAccept(candidate.id);
             }}
           >
-            {DREAM_STRINGS.acceptButton}
+            {t('dreams.candidate.accept')}
           </Button>
           <Button
             size="sm"
             variant="ghost"
-            aria-label={DREAM_STRINGS.dismissButton}
+            aria-label={t('dreams.candidate.dismiss')}
             disabled={anyPending}
             onClick={(e) => {
               e.stopPropagation();
               onDismiss(candidate.id);
             }}
           >
-            {DREAM_STRINGS.dismissButton}
+            {t('dreams.candidate.dismiss')}
           </Button>
         </div>
       )}
@@ -147,11 +154,13 @@ function CandidateCard({
       {/* Resolved indicator */}
       {isPromoted && (
         <p className="text-accent-text mt-2 text-xs">
-          Promoted to KB{candidate.promoted_kb_slug ? ` — ${candidate.promoted_kb_slug}` : ''}
+          {candidate.promoted_kb_slug
+            ? t('dreams.candidate.promotedSlug', { slug: candidate.promoted_kb_slug })
+            : t('dreams.candidate.promoted')}
         </p>
       )}
       {isRejected && (
-        <p className="text-text-muted mt-2 text-xs">Dismissed</p>
+        <p className="text-text-muted mt-2 text-xs">{t('dreams.candidate.dismissed')}</p>
       )}
     </div>
   );
@@ -173,7 +182,8 @@ export function DreamDetailPane({
   const dreamQ = useDream(dreamId);
   const acceptMutation = useAcceptCandidate();
   const dismissMutation = useDismissCandidate();
-  const [actionError, setActionError] = useState<string | null>(null);
+  const { t } = useTranslation();
+  const [actionError, setActionError] = useState<DreamErrorView | null>(null);
 
   const dream = dreamQ.data;
 
@@ -181,8 +191,8 @@ export function DreamDetailPane({
     setActionError(null);
     try {
       await acceptMutation.mutateAsync(candidateId);
-    } catch {
-      setActionError('Accept failed — retry');
+    } catch (err) {
+      setActionError(classifyDreamError(err, 'dreams.action.acceptFailed'));
     }
   };
 
@@ -190,8 +200,8 @@ export function DreamDetailPane({
     setActionError(null);
     try {
       await dismissMutation.mutateAsync(candidateId);
-    } catch {
-      setActionError('Dismiss failed — retry');
+    } catch (err) {
+      setActionError(classifyDreamError(err, 'dreams.action.dismissFailed'));
     }
   };
 
@@ -216,11 +226,11 @@ export function DreamDetailPane({
         {/* Header */}
         <header className="border-border-default border-b p-4">
           <div className="mb-1 flex items-center gap-2">
-            <CrescentMoonBadge className="h-3.5 w-3.5" />
+            <CrescentMoonBadge className="h-3.5 w-3.5" label={t('dreams.badge')} />
             <span className="text-text-primary font-mono text-xs font-medium tabular-nums">{dreamId}</span>
           </div>
           <DrawerTitle className="text-text-primary font-display mt-1 text-lg">
-            {dream ? `${dream.agent_name} · ${dream.local_date}` : DREAM_STRINGS.drawerLoading}
+            {dream ? `${dream.agent_name} · ${dream.local_date}` : t('dreams.drawer.loading')}
           </DrawerTitle>
           {dream && (
             <div className="mt-1 flex items-center gap-2">
@@ -228,7 +238,7 @@ export function DreamDetailPane({
                 'text-overline px-1.5 py-0.5 rounded-full font-medium uppercase tracking-wide',
                 statusPill(dream.status),
               ].join(' ')}>
-                {DREAM_STRINGS.statusLabel(dream.status)}
+                {dreamStatusLabel(dream.status, t)}
               </span>
               {dream.ended_at && (
                 <span className="text-text-muted text-xs">
@@ -264,7 +274,7 @@ export function DreamDetailPane({
             </div>
           ) : dreamQ.isError ? (
             <div className="space-y-3 p-4 text-center">
-              <p className="text-feedback-danger text-sm">{DREAM_STRINGS.errorTitle}</p>
+              <p className="text-feedback-danger text-sm">{t('dreams.error.load')}</p>
               <Button
                 size="sm"
                 variant="outline"
@@ -274,7 +284,7 @@ export function DreamDetailPane({
                   })
                 }
               >
-                {DREAM_STRINGS.retry}
+                {t('common.retry')}
               </Button>
             </div>
           ) : dream ? (
@@ -289,25 +299,27 @@ export function DreamDetailPane({
               {/* Quiet-dream indicator — Pasture card */}
               {isQuiet && (
                 <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
-                  <p className="text-text-primary text-sm font-medium">{DREAM_STRINGS.quietTitle}</p>
-                  <p className="text-text-muted mt-1 text-xs">{DREAM_STRINGS.quietBody}</p>
+                  <p className="text-text-primary text-sm font-medium">{t('dreams.quiet.title')}</p>
+                  <p className="text-text-muted mt-1 text-xs">{t('dreams.quiet.body')}</p>
                 </div>
               )}
 
               {/* Stat strip — font-mono tabular-nums */}
               <div className="text-text-muted border-border-default flex items-center gap-4 border-b pb-3 font-mono text-xs tabular-nums">
-                <span>{DREAM_STRINGS.learningsCount(dream.new_learnings_count)}</span>
+                <span>
+                  {formatCount(dream.new_learnings_count, t, 'dreams.count.learnings', 'dreams.count.learningsUnavailable')}
+                </span>
                 <span>·</span>
                 <span>
-                  {DREAM_STRINGS.candidatesCount(dream.kb_candidate_count)}
+                  {formatCount(dream.kb_candidate_count, t, 'dreams.count.candidates', 'dreams.count.candidatesUnavailable')}
                   {pendingCount > 0 && (
-                    <span className="text-accent-default ml-1 font-medium">{pendingCount} to review</span>
+                    <span className="text-accent-default ml-1 font-medium">{t('dreams.detail.toReview', { count: pendingCount })}</span>
                   )}
                 </span>
                 {dream.scheduled_for && (
                   <>
                     <span>·</span>
-                    <span>Scheduled {new Date(dream.scheduled_for).toLocaleString()}</span>
+                    <span>{t('dreams.detail.scheduled', { when: new Date(dream.scheduled_for).toLocaleString() })}</span>
                   </>
                 )}
               </div>
@@ -322,7 +334,7 @@ export function DreamDetailPane({
               {/* Action error — Pasture error panel */}
               {actionError && (
                 <div className="border-feedback-danger/30 bg-feedback-danger/5 rounded-lg border p-4">
-                  <p className="text-feedback-danger text-xs">{actionError}</p>
+                  <p className="text-feedback-danger text-xs">{renderDreamError(actionError, t)}</p>
                 </div>
               )}
 
@@ -330,7 +342,7 @@ export function DreamDetailPane({
               {candidates.length > 0 && (
                 <div className="space-y-3">
                   <h3 className="text-text-muted text-xs font-medium tracking-wider uppercase">
-                    Knowledge candidates
+                    {t('dreams.rail.candidates')}
                   </h3>
                   {candidates.map((c) => (
                     <CandidateCard
@@ -351,11 +363,11 @@ export function DreamDetailPane({
                   to={orgSlug ? `/orgs/${orgSlug}/threads/${dream.founder_thread_id}` : '#'}
                   className="text-accent-default inline-block text-sm hover:underline"
                 >
-                  {DREAM_STRINGS.openReflectionThread} &rarr;
+                  {t('dreams.thread.open')} &rarr;
                 </Link>
               ) : (
                 <p className="text-text-muted text-xs italic">
-                  {DREAM_STRINGS.noReflectionThread}
+                  {t('dreams.thread.none')}
                 </p>
               )}
             </div>

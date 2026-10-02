@@ -1,6 +1,6 @@
-# Web i18n — foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs/preview contract
+# Web i18n — foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs/preview + W4a-1 Health/Dreams contract
 
-> Status: current (W1 foundation + W2a mounted-shell + W2b onboarding + W2c Settings/Preferences + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs migration and opt-in preview)
+> Status: current (W1 foundation + W2a mounted-shell + W2b onboarding + W2c Settings/Preferences + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs migration and opt-in preview + W4a-1 Health/Dreams)
 > Current Source: `web/src/lib/i18n/`, `web/src/hooks/i18n.tsx`, the mounted
 > shell/onboarding consumers, this spec.
 > Supersedes: the `Internationalization layer` non-goal in
@@ -78,7 +78,8 @@ Delivery status at W1 (keep separate from later phases):
 | Dashboard + Threads route families (W3a: DashboardPage, ThreadsPage list/detail/composer/strips, Archive/Invite/RemoveParticipant dialogs, shared NewThreadDialog) | **shipped — W3a** |
 | Tasks route family (W3b-1: TasksPage/TaskListRow, TaskDetailPage incl. recall/events/fan-out/rail, Cancel/Revisit/ResolveEscalation dialogs) | **shipped — W3b-1** |
 | Jobs route family (W3b-2: JobsPage, JobDetailPage incl. cascade/gated notice/rail/output, Run/Reject dialogs) | **shipped — W3b-2** |
-| Other route/page translation | **W4** — not shipped (other route families and the assistant dock body) |
+| Runtime Health + Dreams (W4a-1: HealthPage; DreamsPage feed/rail + DreamDetailPane drawer) | **shipped — W4a-1** |
+| Other route/page translation | **W4** — not shipped (artifacts = W4a-2, usage = W4a-3, other route families and the assistant dock body) |
 | Public language selector / opt-in preview | **shipped — W3b-2** (English when unset; secondary-pages coverage disclosure) |
 | Full-mode automatic environment detection | implemented + unit-tested, **not enabled** in production (W5) |
 | Native preference persistence (Swift/message handler) | **N0/N1** — not shipped |
@@ -324,9 +325,9 @@ anchors them to the real consumer sources (e.g. `ThreadsPage.tsx` mounts
 `TaskDetailPage.tsx` mounts `CancelTaskDialog`/`RevisitTaskDialog`/
 `ResolveEscalationDialog`; `JobDetailPage.tsx` mounts
 `RunJobDialog`/`RejectJobDialog`), so an invented or unreachable name fails the
-test. After W3b-2 exactly ten namespaces are `translated` (`root-shell`,
+test. After W4a-1 exactly twelve namespaces are `translated` (`root-shell`,
 `not-found`, `onboarding`, `app-shell`, `help-and-palette`, `settings`,
-`dashboard`, `threads`, `tasks`, `jobs`); every
+`dashboard`, `threads`, `tasks`, `jobs`, `health`, `dreams`); every
 later slice and route family is still visibly `english-only`, so English
 fallback is never mistaken for coverage. The `settings` namespace includes the
 (production-enabled since W3b-2) `preferences` token and `PreferencesSection`; the shared
@@ -507,9 +508,9 @@ raw-`Error.message` and prompt-byte negatives deterministically.
 
 Frontend readiness map (actual evidence):
 
-| Readiness item | W1 | W2a/W2b/W2c/W3a/W3b-1/W3b-2 |
+| Readiness item | W1 | W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1 |
 | --- | --- | --- |
-| Route-wide Chinese rendering | N/A — no route translated in W1 (manifest marks every namespace `english-only`) | mounted shell + onboarding (W2a/W2b), Settings (W2c), Dashboard/Threads (W3a), Tasks (W3b-1) and Jobs (W3b-2); other route families and the assistant dock body (W4) still `english-only` |
+| Route-wide Chinese rendering | N/A — no route translated in W1 (manifest marks every namespace `english-only`) | mounted shell + onboarding (W2a/W2b), Settings (W2c), Dashboard/Threads (W3a), Tasks (W3b-1), Jobs (W3b-2) and Health/Dreams (W4a-1); other route families and the assistant dock body (W4) still `english-only` |
 | Public language selector | N/A — W3b-2 | W3b-2: Settings ▸ Preferences mounted in ordinary builds; Vitest proves sub-nav + direct URL without a flag, unset-on-Chinese-browser stays English, disclosure visible, zh-CN switch keeps nodes/focus with zero requests; browser: `web/scripts/w3b-jobs-browser-evidence.mjs` against the ordinary dist |
 | Browser two-tab live evidence | covered by unit/integration storage-event tests AND captured same-origin two-tab change/delete/clear/no-echo browser evidence at the head SHA | W1 behavior retained (no native adapter added) |
 | Bilingual foundation browser capture | captured: real-browser story screenshots for saved-en-in-Chinese-env, saved `zh-CN` (CJK font glyphs) and preview-unset English | W2a/W2b add real-app shell/dialog and onboarding captures across en/zh, 1440x900/390x844 and light/dark (exact count bound to the pushed `receipt.json`) |
@@ -520,16 +521,19 @@ Frontend readiness map (actual evidence):
 | Dashboard + Threads (W3a) | N/A | Vitest: Dashboard loading/error+Retry/first-run/populated in both locales with entity values verbatim; Threads list/detail states, composer and NewThreadDialog draft/attachment/focus/node identity across both switch directions with zero requests then exactly one create/reply; dialogs open across switches; mapped errors re-translate while raw (catalog-equal/empty/`HTTP <status>`) diagnostics stay verbatim; browser: `web/scripts/w3a-core-browser-evidence.mjs` against the ordinary dist only (gate case G: the bundle mounts Preferences, `/settings/preferences` renders, unset on a Chinese navigator stays English) with receipt/PNG hashes bound to the pushed head |
 | Tasks (W3b-1) | N/A | Vitest (`features/tasks/tasks.i18n.test.tsx`, `TaskEventsLog.test.tsx`, `fanout.test.ts`): routed list populated/grouping/filter/empty/error and detail header/lineage/rail/execution-status/fan-out/chain in both locales with authored and machine values verbatim; same row/heading/dialog/field nodes, draft value and focus across both switch directions with zero requests; mapped dialog errors and the Revisit validation re-translate while unmapped (incl. catalog-equal) codes stay verbatim; StatusBadge English default; browser: `web/scripts/w3b-tasks-browser-evidence.mjs` against the ordinary dist (Tasks list + detail, en/zh-CN, 1440/390, one dialog-draft switch check, ordinary-bundle Preferences markers present since W3b-2) |
 | Jobs (W3b-2) | N/A | Vitest (`features/jobs/jobs.i18n.test.tsx`): routed list populated/empty/error and detail pending/completed/load-error in both locales with daemon values verbatim; same card/button/field nodes, Run/Reject draft value and focus across both switch directions with zero requests; the F1 diagnostic boundary through the routed Run dialog (recognized code re-translates in place, unknown code and code-less string detail verbatim, empty code / blank detail fall back), Reject mapped code and Stop mapped code; browser: `web/scripts/w3b-jobs-browser-evidence.mjs` against the ordinary dist (Jobs list + detail + Run dialog draft switch, Preferences unset-English + disclosure + zero-request switch) |
+| Health + Dreams (W4a-1) | N/A | Vitest (`features/health/health.i18n.test.tsx`, `features/dreams/dreams.i18n.test.tsx`; `HealthPage.test.tsx`/`DreamsPage.test.tsx` now assert through the catalog): routed Health populated/empty-history/live-error/history-error and Dreams feed populated/empty/error + rail + detail drawer in both locales with daemon values verbatim; same loop-cell/window-button/card/drawer/Accept nodes and focus across both switch directions with zero requests; the F1 boundary through the routed Accept action (recognized `candidate_*` code re-translates in place, unknown code and code-less string detail verbatim, empty code falls back to the localized failure copy); browser: `web/scripts/w4a-browser-evidence.mjs` against the ordinary dist (G ordinary-bundle zh-CN copy, V health/dreams/dream-drawer en+zh-CN at 1440/390, S drawer Accept-focus switch with zero /api requests) |
 | Native Mac persistence receipt | N/A — N0/N1 (Linux host; not claimed) | NOT RUN — N0/N1 still open |
 
 ## 10. Exclusions
 
 No new dependency, daemon/API/schema/auth/permission/transport change, theme or
 draft migration, native chrome, CLI/manual translation, route-family
-translation campaign beyond W3a/W3b-1/W3b-2 (W4 remains open), browser-language
+translation campaign beyond W3a/W3b-1/W3b-2/W4a-1 (W4a-1 translated Health
+and Dreams; W4a-2 artifacts, W4a-3 usage and the remaining W4 surfaces stay
+open), browser-language
 default resolution (W5), deployment, or caller migration of display
 formatters beyond the translated shell, onboarding and the W3a Dashboard/Threads,
-W3b-1 Tasks and W3b-2 Jobs route families. Existing query/data/auth
+W3b-1 Tasks, W3b-2 Jobs and W4a-1 Health/Dreams route families. Existing query/data/auth
 bootstrap
 semantics are preserved; locale switching issues no `PUT /settings/org` and no
 `POST /api/v1/orgs`, and the command palette's cache-only switch issues no

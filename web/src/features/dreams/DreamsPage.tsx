@@ -39,9 +39,13 @@ import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { cn } from '@/lib/utils';
 import { DreamDetailPane } from './DreamDetailPane';
-import { DREAM_STRINGS } from './strings';
-import { isValidCount, formatTotalCount } from './count-helpers';
+import { dreamStatusLabel } from './strings';
+import { isValidCount, formatCount, formatTotalCount } from './count-helpers';
 import type { DreamRecord } from '@/hooks/dreams';
+import { useTranslation } from '@/hooks/i18n';
+import type { MessageKey, MessageParams } from '@/lib/i18n';
+
+type Translate = (key: MessageKey, params?: MessageParams) => string;
 
 /* ------------------------------------------------------------------ */
 /*  Status pill                                                        */
@@ -61,15 +65,15 @@ function statusPill(status: string): string {
 /*  Relative time helper                                               */
 /* ------------------------------------------------------------------ */
 
-function relativeAge(iso: string): string {
+function relativeAge(iso: string, t: Translate): string {
   const ms = Date.now() - new Date(iso).getTime();
   const min = Math.round(ms / 60000);
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min}m`;
+  if (min < 1) return t('dreams.age.justNow');
+  if (min < 60) return t('dreams.age.minutes', { count: min });
   const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr}h`;
+  if (hr < 24) return t('dreams.age.hours', { count: hr });
   const d = Math.round(hr / 24);
-  return `${d}d`;
+  return t('dreams.age.days', { count: d });
 }
 
 /* ------------------------------------------------------------------ */
@@ -87,6 +91,7 @@ function DreamCard({
   active: boolean;
   onClick: () => void;
 }): JSX.Element {
+  const { t } = useTranslation();
   // Quiet-dream state is only shown when both counts are valid: a malformed
   // value must not be silently treated as "no candidates / some learnings".
   const isQuiet =
@@ -109,7 +114,7 @@ function DreamCard({
       >
         {/* Header row — dream ID + agent + status pill */}
         <div className="mb-1.5 flex items-center gap-2">
-          <CrescentMoonBadge className="h-3.5 w-3.5" />
+          <CrescentMoonBadge className="h-3.5 w-3.5" label={t('dreams.badge')} />
           <span className="text-text-primary font-mono text-xs font-medium tabular-nums">{dream.dream_id}</span>
           <span className="text-text-muted text-xs">·</span>
           <span className="text-text-secondary text-xs">{dream.agent_name}</span>
@@ -117,7 +122,7 @@ function DreamCard({
             'ml-auto text-overline px-1.5 py-0.5 rounded-full font-medium uppercase tracking-wide',
             statusPill(dream.status),
           ].join(' ')}>
-            {DREAM_STRINGS.statusLabel(dream.status)}
+            {dreamStatusLabel(dream.status, t)}
           </span>
         </div>
 
@@ -134,7 +139,7 @@ function DreamCard({
         {/* Quiet-dream state — positive first-class */}
         {isQuiet && (
           <p className="text-text-muted mb-2 text-xs italic">
-            {DREAM_STRINGS.quietTitle}
+            {t('dreams.quiet.title')}
           </p>
         )}
 
@@ -142,13 +147,13 @@ function DreamCard({
         <div className="text-text-muted flex items-center gap-3 font-mono text-xs tabular-nums">
           <span>{dream.local_date}</span>
           <span>·</span>
-          <span>{DREAM_STRINGS.learningsCount(dream.new_learnings_count)}</span>
+          <span>{formatCount(dream.new_learnings_count, t, 'dreams.count.learnings', 'dreams.count.learningsUnavailable')}</span>
           <span>·</span>
-          <span>{DREAM_STRINGS.candidatesCount(dream.kb_candidate_count)}</span>
+          <span>{formatCount(dream.kb_candidate_count, t, 'dreams.count.candidates', 'dreams.count.candidatesUnavailable')}</span>
           {dream.ended_at && (
             <>
               <span>·</span>
-              <span>{relativeAge(dream.ended_at)} ago</span>
+              <span>{relativeAge(dream.ended_at, t)}</span>
             </>
           )}
         </div>
@@ -166,11 +171,11 @@ function DreamCard({
               className="text-accent-default inline-block text-xs hover:underline"
               onClick={(e) => e.stopPropagation()}
             >
-              {DREAM_STRINGS.openReflectionThread} &rarr;
+              {t('dreams.thread.open')} &rarr;
             </Link>
           ) : (
             <span className="text-text-muted text-xs italic">
-              {DREAM_STRINGS.noReflectionThread}
+              {t('dreams.thread.none')}
             </span>
           )}
         </div>
@@ -184,8 +189,9 @@ function DreamCard({
 /* ------------------------------------------------------------------ */
 
 function LoadingSkeleton(): JSX.Element {
+  const { t } = useTranslation();
   return (
-    <div className="flex flex-col gap-3 p-4" aria-label="Loading dreams">
+    <div className="flex flex-col gap-3 p-4" aria-label={t('dreams.loading')}>
       {[1, 2, 3].map((i) => (
         <div
           key={i}
@@ -215,10 +221,11 @@ function LoadingSkeleton(): JSX.Element {
  * omitted because no field on the dreams payload backs it.
  */
 function DreamsRail({ dreams }: { dreams: DreamRecord[] }): JSX.Element {
+  const { t } = useTranslation();
   const learningValues = dreams.map((d) => d.new_learnings_count);
   const candidateValues = dreams.map((d) => d.kb_candidate_count);
-  const totalLearnings = formatTotalCount(learningValues, 'learning', 'learnings');
-  const totalCandidates = formatTotalCount(candidateValues, 'candidate', 'candidates');
+  const totalLearnings = formatTotalCount(learningValues, t, 'dreams.count.learnings', 'dreams.count.learningsUnavailable');
+  const totalCandidates = formatTotalCount(candidateValues, t, 'dreams.count.candidates', 'dreams.count.candidatesUnavailable');
   const allCandidatesValid = candidateValues.every(isValidCount);
   const totalCandidateNumber = allCandidatesValid
     ? candidateValues.reduce((sum, d) => sum + (d as number), 0)
@@ -226,17 +233,17 @@ function DreamsRail({ dreams }: { dreams: DreamRecord[] }): JSX.Element {
 
   return (
     <aside
-      aria-label={`Dreams ${DREAM_STRINGS.railOverviewTitle.toLowerCase()}`}
+      aria-label={t('dreams.rail.label')}
       className="lg:w-rail lg:shrink-0"
     >
       <div className="border-border-default bg-surface-raised space-y-4 rounded-xl border p-4">
         {/* Overview — totals summed from the loaded feed (data-backed) */}
         <section>
           <h2 className="text-text-muted mb-2 text-xs font-semibold tracking-wider uppercase">
-            {DREAM_STRINGS.railOverviewTitle}
+            {t('dreams.rail.overview')}
           </h2>
           <ul className="text-text-secondary space-y-1 font-mono text-xs tabular-nums">
-            <li>{DREAM_STRINGS.reflectionsCount(dreams.length)}</li>
+            <li>{formatCount(dreams.length, t, 'dreams.count.reflections', 'dreams.count.reflectionsUnavailable')}</li>
             <li>{totalLearnings}</li>
           </ul>
         </section>
@@ -244,23 +251,23 @@ function DreamsRail({ dreams }: { dreams: DreamRecord[] }): JSX.Element {
         {/* Knowledge candidates — data-backed count; calm empty when none */}
         <section className="border-border-default border-t pt-4">
           <h2 className="text-text-muted mb-2 text-xs font-semibold tracking-wider uppercase">
-            {DREAM_STRINGS.railCandidatesTitle}
+            {t('dreams.rail.candidates')}
           </h2>
           <p className="text-text-secondary text-xs">
             {totalCandidateNumber === null
               ? totalCandidates
               : totalCandidateNumber > 0
-                ? DREAM_STRINGS.candidatesCount(totalCandidateNumber)
-                : DREAM_STRINGS.railCandidatesEmpty}
+                ? t('dreams.count.candidates', { count: totalCandidateNumber })
+                : t('dreams.rail.candidatesEmpty')}
           </p>
         </section>
 
         {/* Schedule — calm guidance; next-run time honestly omitted (unbacked) */}
         <section className="border-border-default border-t pt-4">
           <h2 className="text-text-muted mb-2 text-xs font-semibold tracking-wider uppercase">
-            {DREAM_STRINGS.railScheduleTitle}
+            {t('dreams.rail.schedule')}
           </h2>
-          <p className="text-text-muted text-xs">{DREAM_STRINGS.railScheduleNote}</p>
+          <p className="text-text-muted text-xs">{t('dreams.rail.scheduleNote')}</p>
         </section>
       </div>
     </aside>
@@ -275,6 +282,7 @@ export function DreamsPage(): JSX.Element {
   const { slug: orgSlug } = useParams<{ slug: string }>();
   const queryClient = useQueryClient();
   const dreamsQ = useDreamsList();
+  const { t } = useTranslation();
   const [selectedDreamId, setSelectedDreamId] = useState<string | null>(null);
 
   const dreams = dreamsQ.data?.dreams ?? [];
@@ -291,10 +299,10 @@ export function DreamsPage(): JSX.Element {
             next-run field is on the dreams payload the page loads. */}
         <header className="border-border-default mb-6 border-b pb-4">
           <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
-            {DREAM_STRINGS.headerEyebrow(nightCount)}
+            {t('dreams.header.eyebrow', { count: nightCount })}
           </p>
           <h1 className="font-display text-display text-text-primary mt-1 font-medium">
-            {DREAM_STRINGS.headerStatement}
+            {t('dreams.header.statement')}
           </h1>
         </header>
 
@@ -306,7 +314,7 @@ export function DreamsPage(): JSX.Element {
               <LoadingSkeleton />
             ) : dreamsQ.isError ? (
               <div className="space-y-3 p-4 text-center">
-                <p className="text-feedback-danger text-sm">{DREAM_STRINGS.errorTitle}</p>
+                <p className="text-feedback-danger text-sm">{t('dreams.error.load')}</p>
                 <Button
                   size="sm"
                   variant="outline"
@@ -316,19 +324,19 @@ export function DreamsPage(): JSX.Element {
                     })
                   }
                 >
-                  {DREAM_STRINGS.retry}
+                  {t('common.retry')}
                 </Button>
               </div>
             ) : dreams.length === 0 ? (
               <EmptyState
-                title={DREAM_STRINGS.emptyTitle}
-                body={DREAM_STRINGS.emptyBody}
+                title={t('dreams.empty.title')}
+                body={t('dreams.empty.body')}
               />
             ) : (
               <div className="flex flex-col gap-1">
                 {/* Count eyebrow — Pasture label */}
                 <p className="text-text-secondary mb-1 px-1 text-xs font-semibold tracking-wider uppercase">
-                  {dreams.length} dream{dreams.length !== 1 ? 's' : ''}
+                  {t('dreams.feed.count', { count: dreams.length })}
                 </p>
                 <ul className="flex flex-col gap-3">
                   {dreams.map((d) => (

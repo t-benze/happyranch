@@ -15,8 +15,9 @@
  * English until W4. W3a migrates Dashboard + Threads and W3b-1 migrates the
  * Tasks route family (`tasks`, `tasks/:task_id` and its owned dialogs); W3b-2
  * migrates the Jobs route family (`jobs`, `jobs/:job_id` and its owned
- * dialogs) and opens the Preferences language preview in production. The
- * other mounted product surfaces and the later slices
+ * dialogs) and opens the Preferences language preview in production. W4a-1
+ * migrates Runtime Health (`health`) and Dreams (`dreams`, incl. the dream
+ * detail drawer). The other mounted product surfaces and the later slices
  * (assistant dock body = W4, route families = W3/W4) remain `english-only` —
  * fallback English is never treated as coverage.
  * Redirect-only/catch-all
@@ -183,7 +184,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'health',
     routeTokens: ['health'],
-    status: 'english-only',
+    status: 'translated',
     surfaces: ['HealthPage'],
   },
   {
@@ -195,7 +196,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'dreams',
     routeTokens: ['dreams'],
-    status: 'english-only',
+    status: 'translated',
     surfaces: ['DreamsPage'],
   },
   {
