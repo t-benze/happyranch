@@ -94,7 +94,7 @@ def test_fresh_db_defines_both_columns(tmp_path):
     # so fresh-CREATE and ALTER paths converge (behaviorally proven by
     # test_migrated_and_fresh_column_metadata_are_identical).
     src = Path(
-        "runtime/infrastructure/database.py"
+        "runtime/infrastructure/db/schema.py"
     ).read_text()
     assert "ALTER TABLE threads ADD COLUMN " in src
     assert "mention_routing_enabled INTEGER NOT NULL DEFAULT 1" in src
