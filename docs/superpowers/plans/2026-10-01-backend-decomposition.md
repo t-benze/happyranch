@@ -61,7 +61,7 @@ Serial, one slice in flight per hot file, each its own PR from fresh `origin/mai
 |---|---|---|---|
 | S1 | Remove the two legacy lower→daemon edges | `runtime/daemon/thread_mentions.py` → `runtime/infrastructure/thread_mentions.py`; `runtime/daemon/task_scratch_{report,coverage,evidence}.py` → `runtime/orchestrator/` (beside `task_scratch.py`; report depends on the other two); identity aliases at the old paths; lower-layer importers switched to new paths; `ALLOWED_DAEMON_IMPORTS` = empty; this plan doc | MEDIUM |
 | S2 | `Database` mixin scaffolding + small domains | `runtime/infrastructure/db/__init__.py`, `db/dreams.py`, `db/knowledge.py` (kb, skills, org settings) | MEDIUM |
-| S3 | Jobs, schedules, attachments | `db/jobs.py`, `db/attachments.py` | MEDIUM |
+| S3 | Jobs and attachments (erratum: `Database` has no schedule methods; schedules remain owned by `ScheduleStore`) | `db/jobs.py`, `db/attachments.py` | MEDIUM |
 | S4 | Audit, sessions, token aggregation | `db/audit.py`, `db/sessions.py` | MEDIUM-HIGH (audit-row shapes are load-bearing; moved verbatim only) |
 | S5 | Workspace-cleanup selection | `db/workspace_cleanup.py` (+ its dataclasses and `scan_stale_pending_jobs_readonly`, re-exported) | MEDIUM |
 | S6 | Threads core (threads, participants, invocations, messages) | `db/threads.py` | HIGH |
