@@ -549,9 +549,12 @@ const SWITCH_ROUTES = [
       const editLabel = (l) => tr(l, 'settings.organization.operating.editEligibility');
       await h.waitTrue(page, `[...document.querySelectorAll('button')].some((b) => b.textContent === ${JSON.stringify(editLabel('en'))})`, 'org section');
       await h.clickSrc(page, `[...document.querySelectorAll('button')].find((b) => b.textContent === ${JSON.stringify(editLabel('en'))})`);
-      await h.waitTrue(page, `Boolean(document.querySelector('[role="dialog"]'))`, 'eligibility dialog');
+      const CHIP = `[...document.querySelectorAll('[role="dialog"] button[aria-pressed]')].find((b) => b.textContent === 'support_bot')`;
+      await h.waitTrue(page, `Boolean(${CHIP})`, 'eligibility dialog chip');
+      await sleep(400); // let the dialog open animation settle so the click lands on the chip
       // toggle support_bot OFF the exclude list (mode 'all' => only the exclude picker renders)
-      await h.clickSrc(page, `[...document.querySelectorAll('[role="dialog"] button[aria-pressed]')].find((b) => b.textContent === 'support_bot')`);
+      await h.clickSrc(page, CHIP);
+      await h.waitTrue(page, `${CHIP}.getAttribute('aria-pressed') === 'false'`, 'support_bot toggled');
     },
     control: `[...document.querySelectorAll('[role="dialog"] button[aria-pressed]')].find((b) => b.textContent === 'support_bot')`,
     container: `(CONTROL || { closest: () => null }).closest('[role="dialog"]')`,
