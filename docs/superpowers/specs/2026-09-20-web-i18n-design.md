@@ -115,9 +115,12 @@ end-of-list states; the owned Cancel/Revisit/ResolveEscalation dialogs; and
 their accessibility names. The shared `StatusBadge` takes an optional localized
 `waitingLabels` prop whose English default keeps the Jobs and TaskCard callers
 unchanged. Dialog errors are held as `TaskErrorView` descriptors
-(`features/tasks/strings.ts`: `classifyTaskError` keeps the legacy
-`code ? (map[code] ?? code) : fallback` semantics as a mapped catalog key or the
-unmapped daemon code verbatim, even when it equals catalog copy) and the Revisit
+(`features/tasks/strings.ts`: `classifyTaskError` maps a recognized product
+code to its catalog key; an unmapped daemon code, or — with no/empty code — a
+non-empty string diagnostic (an `ApiError` string `detail`, a plain `Error`
+message or a thrown string, never `ApiError`'s synthetic `API <status>` message)
+renders verbatim, even when it equals catalog copy; only an absent or blank
+diagnostic falls back to the localized per-dialog failure key) and the Revisit
 session-timeout validation is a state-held key, so both re-translate in place
 without resubmission. Briefs, summaries, failure/escalation notes, agent names,
 task/thread/job IDs, job titles, status/block-kind/verdict/reason machine

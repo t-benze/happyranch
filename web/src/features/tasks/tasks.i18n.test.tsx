@@ -11,7 +11,8 @@
  *    focus, and issues zero requests;
  *  - a mapped daemon error and a state-held validation message re-translate in
  *    place while an unmapped daemon code (including one equal to catalog text)
- *    renders verbatim.
+ *    renders verbatim; a code-less string diagnostic is verbatim too, and only
+ *    a blank or non-string one falls back to the localized failure copy.
  */
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -477,6 +478,89 @@ describe('Task detail i18n', () => {
     expect(await within(dialog).findByText('Task not found.')).toBeInTheDocument();
     expect(within(dialog).queryByText('未找到任务。')).toBeNull();
     expect(textarea).toHaveValue('draft reason');
+  });
+
+  test('code-less errors: a string diagnostic stays verbatim, a blank or non-string one falls back', async () => {
+    stubDetail(rootTask());
+    type Reply =
+      | { kind: 'http'; status: number; body: string }
+      | { kind: 'reject'; value: unknown };
+    let reply: Reply = { kind: 'http', status: 500, body: '' };
+    let attempts = 0;
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (!url.endsWith(`/tasks/TASK-77/cancel`)) return realFetch(input, init);
+      attempts += 1;
+      if (reply.kind === 'reject') return Promise.reject(reply.value);
+      return Promise.resolve(
+        new Response(reply.body, {
+          status: reply.status,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    });
+    const user = userEvent.setup();
+    mount(`/orgs/${SLUG}/tasks/TASK-77`, 'en');
+
+    await user.click(await screen.findByRole('button', { name: 'Cancel' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Cancel task' });
+    const textarea = within(dialog).getByPlaceholderText('Reason for cancellation (optional)');
+
+    /** Submit once (en), then read the shown error in en and in zh-CN. */
+    async function attempt(next: Reply): Promise<{ en: string; zh: string }> {
+      reply = next;
+      const before = attempts;
+      const shown = () => textarea.nextElementSibling;
+      const previous = shown();
+      await user.click(within(dialog).getByRole('button', { name: 'Cancel task' }));
+      await waitFor(() => expect(attempts).toBe(before + 1));
+      // setError(null) unmounts the old message first, so a new node is a new result.
+      await waitFor(() => {
+        expect(shown()?.tagName).toBe('P');
+        expect(shown()).not.toBe(previous);
+      });
+      const en = shown()!.textContent ?? '';
+      await switchLocale('zh-CN');
+      const zh = shown()!.textContent ?? '';
+      await switchLocale('en');
+      return { en, zh };
+    }
+    const json = (status: number, body: unknown): Reply => ({
+      kind: 'http',
+      status,
+      body: JSON.stringify(body),
+    });
+
+    // (c) ApiError with a null code and a plain-string daemon detail: verbatim.
+    const DIAG = 'TASK-77 is already terminal (completed); nothing to cancel';
+    expect(await attempt(json(409, { detail: DIAG }))).toEqual({ en: DIAG, zh: DIAG });
+    // (c) detail equal to English catalog text is still raw — never retranslated.
+    expect(await attempt(json(409, { detail: 'Cancel failed.' }))).toEqual({
+      en: 'Cancel failed.',
+      zh: 'Cancel failed.',
+    });
+    // (c) a plain Error and a plain string rejection: their text, verbatim.
+    expect(await attempt({ kind: 'reject', value: new Error('socket hang up') })).toEqual({
+      en: 'socket hang up',
+      zh: 'socket hang up',
+    });
+    expect(await attempt({ kind: 'reject', value: 'upstream reset' })).toEqual({
+      en: 'upstream reset',
+      zh: 'upstream reset',
+    });
+
+    // (d) no code and no non-empty string diagnostic: the localized fallback,
+    // never ApiError's synthetic 'API 500' message and never a blank error.
+    const FALLBACK = { en: 'Cancel failed.', zh: '取消失败。' };
+    expect(await attempt({ kind: 'http', status: 500, body: '' })).toEqual(FALLBACK);
+    expect(await attempt(json(500, { detail: '' }))).toEqual(FALLBACK);
+    expect(await attempt(json(500, { detail: '   ' }))).toEqual(FALLBACK);
+    expect(await attempt(json(500, { detail: { message: 'object detail' } }))).toEqual(FALLBACK);
+    expect(await attempt(json(500, { detail: { code: '' } }))).toEqual(FALLBACK);
+    expect(await attempt({ kind: 'reject', value: new Error('   ') })).toEqual(FALLBACK);
+    expect(await attempt({ kind: 'reject', value: null })).toEqual(FALLBACK);
+    expect(screen.queryByText(/^API 500/)).toBeNull();
   });
 
   test('revisit validation message is state-held and retranslates without a request', async () => {
