@@ -19,3 +19,8 @@ after `BEGIN IMMEDIATE`; `Committed` alone permits enqueue, `InvalidLineage`
 uses owned atomic feedback, and `LostClaim` writes nothing. The failed child
 keeps its original parent and history, and an unresolved local failure cannot
 be bypassed by a remote historical link.
+
+Authority-v2 refusal is also a bounded delegated-failure source (THR-277).
+Non-root refusal records `authority_v2_refusal_task_failed`, terminalizes the
+child as FAILED, and wakes the same owning manager; only structural roots enter
+the founder-escalation lifecycle.

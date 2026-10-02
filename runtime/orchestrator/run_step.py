@@ -1708,9 +1708,8 @@ def _consume_completion_report_body(
         if not is_root(task):
             # THR-033 Change A defensive guard: a non-root task never escalates
             # directly to the founder — it fails and hands back to its parent
-            # (bounded failure-recovery carries it up). Currently inert (only a
-            # task_type='task' parses a decision, and in production those are
-            # roots), but locks the invariant against future regressions.
+            # (bounded failure-recovery carries it up). Manager-owned fan-out
+            # and chained children make this a live shipping guard.
             _fail(
                 orch, task_id,
                 note=f"non-root escalation requested ({reason}); routed to parent",
@@ -1751,15 +1750,74 @@ def _consume_completion_report_body(
             # publication may still be pending); no ordinary escalation runs.
             return
         if hook_outcome == "v2_refused":
-            # Refusal housekeeping atomically committed the ESCALATED task and
-            # its single escalation audit.  Surface that committed transition
-            # through the ordinary post-commit notification/thread tail; do not
-            # run try_escalate again and therefore never mint a second audit.
-            orch.notify_escalated(
-                task_id=task_id, agent=agent, reason=reason,
-                last_summary=getattr(report, "output_summary", "") or "",
-            )
-            _maybe_post_thread_escalation(orch, task_id, reason=reason)
+            refusal_status = getattr(hook_outcome, "status", None)
+            task_disposition = getattr(hook_outcome, "task_disposition", None)
+            refused_task = orch._db.get_task(task_id)
+            expected_prefix = "authority_v2_refusal:"
+            if (
+                refusal_status == "refused"
+                and task_disposition == "failed"
+                and refused_task is not None
+                and refused_task.parent_task_id is not None
+                and refused_task.status == TaskStatus.FAILED
+                and refused_task.completed_at is not None
+                and (refused_task.note or "").startswith(expected_prefix)
+            ):
+                expected_note = refused_task.note or ""
+                if recovery_owner is None:
+                    _fail_terminal_tail(
+                        orch,
+                        task_id,
+                        expected_note=expected_note,
+                        reclaim_terminal_worktree=reclaim_kwargs.get(
+                            "reclaim_terminal_worktree", True,
+                        ),
+                    )
+                    if _task_matches_authority_v2_refusal_failure(
+                        orch, task_id, expected_note,
+                    ):
+                        _enqueue_parent_if_waiting(orch, task_id)
+                    if _task_matches_authority_v2_refusal_failure(
+                        orch, task_id, expected_note,
+                    ):
+                        _maybe_post_thread_followup(
+                            orch,
+                            task_id,
+                            status=TaskStatus.FAILED,
+                            auto_revisit_spawned=False,
+                        )
+                else:
+                    _handoff_consumed_recovery_terminal_effects(
+                        orch,
+                        task_id,
+                        recovery_owner[0],
+                        recovery_owner[1],
+                        recovery_result_id,
+                        TaskStatus.FAILED.value,
+                        after_recovery_cleanup=lambda: (
+                            _enqueue_parent_if_waiting(orch, task_id)
+                            if _task_matches_authority_v2_refusal_failure(
+                                orch, task_id, expected_note,
+                            )
+                            else None
+                        ),
+                    )
+                return
+            if (
+                refusal_status == "refused"
+                and task_disposition == "escalated"
+                and refused_task is not None
+                and refused_task.parent_task_id is None
+                and refused_task.status == TaskStatus.ESCALATED
+                and refused_task.completed_at is None
+                and (refused_task.note or "").startswith(expected_prefix)
+            ):
+                # Root refusal retains the pre-existing escalation projection.
+                orch.notify_escalated(
+                    task_id=task_id, agent=agent, reason=reason,
+                    last_summary=getattr(report, "output_summary", "") or "",
+                )
+                _maybe_post_thread_escalation(orch, task_id, reason=reason)
             return
         # A bounded v2_pending outcome means refusal housekeeping did not
         # commit.  Failing closed must still terminate and surface the root, so
@@ -2688,7 +2746,7 @@ def _prepare_workspace_cleanup_reclamation_context(
     from runtime.daemon.task_scratch_reclamation import (
         collect_revalidate_seal_consume_disposable,
     )
-    from runtime.daemon.task_scratch_report import _STARTED_MONOTONIC
+    from runtime.orchestrator.task_scratch_report import _STARTED_MONOTONIC
 
     facts: list[str] = []
     for candidate in selection.candidates:
@@ -3358,10 +3416,49 @@ def _fail(
         note=note,
         completed_at=datetime.now(timezone.utc).isoformat(),
     )
-    _log_verdict_if_delegated(orch, task_id, success=False)
-    orch._update_task_history(task_id)
-    _kill_jobs_for_terminating_task(orch, task_id)
-    if reclaim_terminal_worktree:
+    _fail_terminal_tail(
+        orch,
+        task_id,
+        reclaim_terminal_worktree=reclaim_terminal_worktree,
+    )
+
+
+def _task_matches_authority_v2_refusal_failure(
+    orch: "Orchestrator", task_id: str, expected_note: str,
+) -> bool:
+    """Fence each refusal tail effect to the exact committed FAILED owner."""
+    task = orch._db.get_task(task_id)
+    return bool(
+        task is not None
+        and task.status == TaskStatus.FAILED
+        and task.note == expected_note
+        and task.completed_at is not None
+    )
+
+
+def _fail_terminal_tail(
+    orch: "Orchestrator",
+    task_id: str,
+    *,
+    reclaim_terminal_worktree: bool = True,
+    expected_note: str | None = None,
+) -> None:
+    """Run `_fail`'s post-transition effects, optionally owner-fenced."""
+    def current() -> bool:
+        return (
+            expected_note is None
+            or _task_matches_authority_v2_refusal_failure(
+                orch, task_id, expected_note,
+            )
+        )
+
+    if current():
+        _log_verdict_if_delegated(orch, task_id, success=False)
+    if current():
+        orch._update_task_history(task_id)
+    if current():
+        _kill_jobs_for_terminating_task(orch, task_id)
+    if reclaim_terminal_worktree and current():
         _reclaim_terminal_task_worktree(orch, task_id)
 
 
@@ -4114,7 +4211,10 @@ def _enqueue_parent_if_waiting(
         # clear the chain.
         is_chain_trigger = (
             child.status == TaskStatus.COMPLETED
-            or _child_has_landed_terminal_result(orch, child)
+            or (
+                child.status not in TERMINAL_STATES
+                and _child_has_landed_terminal_result(orch, child)
+            )
         )
         if is_chain_trigger:
             children_ids = orch._db.get_children(parent.id)

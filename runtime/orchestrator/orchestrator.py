@@ -42,7 +42,7 @@ from runtime.orchestrator.task_scratch import (
     prepare_task_scratch,
     reset_task_scratch,
 )
-from runtime.daemon.task_scratch_report import report_task_scratch
+from runtime.orchestrator.task_scratch_report import report_task_scratch
 from runtime.orchestrator.org_config import (
     load_org_config,
     render_current_time_line,

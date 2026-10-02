@@ -1083,6 +1083,11 @@ AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED = "refused"
 AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION = (
     "authority_policy_v2_housekeeping_obligation"
 )
+# THR-277: a refusal that terminalizes a delegated task is a distinct closed
+# lifecycle fact, never an escalation row.
+AUTHORITY_POLICY_V2_REFUSAL_TASK_FAILED_ACTION = (
+    "authority_v2_refusal_task_failed"
+)
 
 AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES = frozenset({
     "interrupted_pre_final", "claim_failed", "claim_audit_missing",
@@ -2079,6 +2084,7 @@ class AuthorityPolicyV2HousekeepingOutcome(BaseModel):
     stage: StrictStr | None = None
     finalization_state: StrictStr | None = None
     receipt_settled: bool = False
+    task_disposition: Literal["escalated", "failed"] | None = None
 
     @field_validator("status")
     @classmethod
@@ -2108,6 +2114,14 @@ class AuthorityPolicyV2HousekeepingOutcome(BaseModel):
                 raise ValueError("a terminal housekeeping outcome requires a refusal code")
         elif self.refusal_code is None:
             raise ValueError("a pending housekeeping outcome requires a bounded reason")
+        if self.status == "refused" or (
+            self.status == "already_refused"
+            and self.finalization_state == AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED
+        ):
+            if self.task_disposition is None:
+                raise ValueError("a refused task outcome requires its disposition")
+        elif self.task_disposition is not None:
+            raise ValueError("only a refused task outcome carries a disposition")
         return self
 
 

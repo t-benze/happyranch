@@ -144,8 +144,10 @@ OUTCOME_CAPTURE_FAILURE = "capture_failure"
 # escalation/notification must NOT run:
 #   * ``v2_continued`` -- the final continuation committed (or was exactly
 #     replayed) and post-final settlement/publication was attempted;
-#   * ``v2_refused``   -- durable refusal housekeeping committed a terminal
-#     refusal for the unfinalized attempt;
+#   * ``v2_refused``   -- refusal housekeeping returned a bounded structured
+#     result.  Its string value preserves this vocabulary while ``status`` and
+#     ``task_disposition`` identify a fresh terminal writer versus owner loss
+#     or an exact replay;
 #   * ``v2_pending``   -- the attempt/stage identity could not be safely
 #     finalized and refusal itself could not commit; the prior durable state is
 #     preserved as a bounded housekeeping obligation (later discovery unit).
@@ -154,6 +156,31 @@ HOOK_CONTINUE_SAME_ROOT = "continue_same_root"
 HOOK_V2_CONTINUED = "v2_continued"
 HOOK_V2_REFUSED = "v2_refused"
 HOOK_V2_PENDING = "v2_pending"
+
+
+class AuthorityHookV2RefusalOutcome(str):
+    """String-compatible v2 refusal result with the writer's disposition.
+
+    Existing callers/tests may continue comparing the result with
+    ``HOOK_V2_REFUSED``.  The run-step consumer additionally uses these
+    bounded fields to distinguish a refusal committed by this call from an
+    owner-lost or replay result, so only the exact fresh terminal writer owns
+    a post-commit projection.
+    """
+
+    status: str
+    task_disposition: str | None
+
+    def __new__(
+        cls,
+        *,
+        status: str,
+        task_disposition: str | None = None,
+    ) -> "AuthorityHookV2RefusalOutcome":
+        value = super().__new__(cls, HOOK_V2_REFUSED)
+        value.status = status
+        value.task_disposition = task_disposition
+        return value
 
 AUDIT_ACTION_HOOK_OUTCOME = "authority_hook"
 AUDIT_ACTION_CONTINUED_SAME_ROOT = "authority_continued_same_root"
@@ -1788,7 +1815,6 @@ def refuse_authority_policy_v2_pre_final_on_startup(
         return None
     fenced_roots: set[str] = set()
     for discovered in targets:
-        fenced_roots.add(discovered.root_task_id)
         try:
             target = store.get_v2_housekeeping_target(
                 root_task_id=discovered.root_task_id,
@@ -1797,7 +1823,44 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                 result_id=discovered.result_id,
             )
             if target is None or target.attempt_id != discovered.attempt_id:
+                fenced_roots.add(discovered.root_task_id)
                 continue
+            if target.stage == "admitted" and orchestrator is not None:
+                try:
+                    from runtime.orchestrator.orchestrator import (
+                        completion_report_from_result_row,
+                    )
+                    result = next(
+                        (
+                            row for row in db.get_task_results(target.root_task_id)
+                            if row.get("id") == target.result_id
+                            and row.get("agent") == target.manager_agent
+                            and row.get("session_id") == target.manager_session_id
+                        ),
+                        None,
+                    )
+                    if result is None:
+                        raise ValueError("causal result is missing")
+                    report = completion_report_from_result_row(
+                        target.root_task_id,
+                        result,
+                        fallback_agent=target.manager_agent,
+                    )
+                    non_escalate = (
+                        report.status == "blocked"
+                        or orchestrator._parse_next_step(report).action != "escalate"
+                    )
+                except Exception:
+                    # Missing/unreadable causal evidence fails closed through
+                    # the existing refusal path below.
+                    non_escalate = False
+                if non_escalate:
+                    # D2-B': the admission is inert residue.  Do not touch J,
+                    # Q, audits, or the task, and do not fence later branches.
+                    continue
+            # orchestrator=None cannot reproduce shipping parsing semantics and
+            # therefore fails closed to the existing refusal path (M4).
+            fenced_roots.add(discovered.root_task_id)
             refusal_code = (
                 target.obligation_code
                 or _V2_INTERRUPTED_STAGE_REFUSAL.get(
@@ -1812,6 +1875,59 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                 refusal_code=refusal_code,
             )
             if outcome.status == "refused" and orchestrator is not None:
+                if outcome.task_disposition == "failed":
+                    from runtime.orchestrator.run_step import (
+                        _enqueue_parent_if_waiting,
+                        _fail_terminal_tail,
+                        _handoff_consumed_recovery_terminal_effects,
+                        _task_matches_authority_v2_refusal_failure,
+                        _maybe_post_thread_followup,
+                    )
+                    expected_note = f"authority_v2_refusal:{refusal_code}"
+                    if outcome.receipt_settled:
+                        _handoff_consumed_recovery_terminal_effects(
+                            orchestrator,
+                            target.root_task_id,
+                            target.manager_agent,
+                            target.manager_session_id,
+                            target.result_id,
+                            "failed",
+                            after_recovery_cleanup=lambda: (
+                                _enqueue_parent_if_waiting(
+                                    orchestrator,
+                                    target.root_task_id,
+                                    root_auto_revisit_spawned=False,
+                                )
+                                if _task_matches_authority_v2_refusal_failure(
+                                    orchestrator, target.root_task_id, expected_note,
+                                )
+                                else None
+                            ),
+                        )
+                    else:
+                        _fail_terminal_tail(
+                            orchestrator,
+                            target.root_task_id,
+                            expected_note=expected_note,
+                        )
+                        if _task_matches_authority_v2_refusal_failure(
+                            orchestrator, target.root_task_id, expected_note,
+                        ):
+                            _enqueue_parent_if_waiting(
+                                orchestrator,
+                                target.root_task_id,
+                                root_auto_revisit_spawned=False,
+                            )
+                        if _task_matches_authority_v2_refusal_failure(
+                            orchestrator, target.root_task_id, expected_note,
+                        ):
+                            _maybe_post_thread_followup(
+                                orchestrator,
+                                target.root_task_id,
+                                status=TaskStatus.FAILED,
+                                auto_revisit_spawned=False,
+                            )
+                    continue
                 result = db.get_latest_task_result(
                     target.root_task_id,
                     target.manager_agent,
@@ -1855,8 +1971,9 @@ def _v2_request_refusal(
 ) -> str:
     """Request durable refusal housekeeping for one unfinalized v2 attempt.
 
-    This never falls back to the ordinary escalation path.  ``v2_refused``
-    means the terminal refusal committed (or was exactly replayed);
+    This never falls back to the ordinary escalation path.  ``v2_refused`` is
+    string-compatible structured output whose bounded fields distinguish a
+    fresh terminal refusal from owner loss or an exact replay;
     ``v2_pending`` means safe attribution could not be established (or the
     refusal transaction itself failed), so the prior durable state is preserved
     and a later discovery unit owns the bounded obligation.
@@ -1886,7 +2003,10 @@ def _v2_request_refusal(
         return HOOK_V2_PENDING
     status = getattr(outcome, "status", None)
     if status in ("refused", "owner_lost", "already_refused"):
-        return HOOK_V2_REFUSED
+        return AuthorityHookV2RefusalOutcome(
+            status=status,
+            task_disposition=getattr(outcome, "task_disposition", None),
+        )
     # housekeeping_pending (or an unknown bounded value): prior state intact.
     return HOOK_V2_PENDING
 
@@ -1952,7 +2072,10 @@ def _run_authority_hook_v2(
         )
         return HOOK_V2_CONTINUED
     if attempt.finalization_state in ("refused", "owner_lost"):
-        return HOOK_V2_REFUSED
+        return AuthorityHookV2RefusalOutcome(
+            status="already_refused",
+            task_disposition=None,
+        )
 
     from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
     store = AuthorityPolicyStore(db)

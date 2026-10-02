@@ -26,7 +26,7 @@ import sqlite3
 import pytest
 
 from runtime.infrastructure.database import Database
-from runtime.models import TaskStatus
+from runtime.models import TaskRecord, TaskStatus
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 from tests.test_authority_v2_attempt_admission import (
     MANAGER,
@@ -155,6 +155,23 @@ class _FailingConn:
         return getattr(self._real, name)
 
 
+class _LostChildCasConn:
+    """Return a zero-row child terminal CAS after earlier writes were staged."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def execute(self, sql, *args, **kwargs):
+        if "UPDATE tasks" in sql and "parent_task_id IS NOT NULL" in sql:
+            class _Cursor:
+                rowcount = 0
+            return _Cursor()
+        return self._real.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
 # ── refusal from every committed pre-final stage (ordinary Q absent) ─────
 
 
@@ -229,6 +246,113 @@ def test_refusal_does_not_create_a_candidate_for_a_failed_claim(tmp_path):
     assert outcome.candidate_id is None
     assert _counts(store._db)["candidates"] == 0
     assert _attempt_row(store, row["id"])["finalization_state"] == "refused"
+
+
+def test_non_root_refusal_fails_task_with_closed_disposition_audit(tmp_path):
+    """THR-277 D1 regression: the writer never escalates a child."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store._db.insert_task(TaskRecord(id="TASK-PARENT", brief="parent"))
+    store._db._conn.execute(
+        "UPDATE tasks SET parent_task_id=?, active_chain=?, active_fanout=? WHERE id=?",
+        ("TASK-PARENT", '{"active":true}', '{"active":true}', TASK_ID),
+    )
+    store._db._conn.commit()
+
+    outcome = _refuse(store, row, attempt)
+
+    assert outcome.status == "refused"
+    assert outcome.task_disposition == "failed"
+    task = store._db.get_task(TASK_ID)
+    assert task.status is TaskStatus.FAILED
+    assert task.completed_at is not None
+    assert task.active_chain is None
+    assert task.active_fanout is None
+    audits = store._db.get_audit_logs(TASK_ID)
+    assert [a["action"] for a in audits].count("escalation") == 0
+    failed = [
+        a for a in audits
+        if a["action"] == "authority_v2_refusal_task_failed"
+    ]
+    assert [a["payload"] for a in failed] == [{
+        "reason": "authority_v2_refusal",
+        "refusal_code": "interrupted_pre_final",
+        "attempt_id": attempt.attempt_id,
+        "result_id": row["id"],
+        "parent_task_id": "TASK-PARENT",
+    }]
+
+    before = _counts(store._db)
+    replay = _refuse(store, row, attempt)
+    assert replay.status == "already_refused"
+    assert replay.task_disposition == "failed"
+    assert _counts(store._db) == before
+
+    store._db.insert_audit_log(
+        TASK_ID,
+        MANAGER,
+        "escalation",
+        {
+            "reason": "authority_v2_refusal",
+            "refusal_code": "interrupted_pre_final",
+            "attempt_id": attempt.attempt_id,
+        },
+    )
+    assert _refuse(store, row, attempt).status == "housekeeping_pending"
+
+
+@pytest.mark.parametrize("winner", ["owner_lost", "cancelled"])
+def test_non_current_non_root_refusal_never_fails_or_escalates(tmp_path, winner):
+    """M1: a losing child owner preserves the winning task row and parent."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store._db.insert_task(TaskRecord(id="TASK-PARENT", brief="parent"))
+    store._db._conn.execute(
+        "UPDATE tasks SET parent_task_id=? WHERE id=?",
+        ("TASK-PARENT", TASK_ID),
+    )
+    store._db._conn.commit()
+    if winner == "owner_lost":
+        store._db.update_task(TASK_ID, current_session_id="new-owner")
+    else:
+        store._db.update_task(
+            TASK_ID,
+            status=TaskStatus.CANCELLED,
+            cancelled_at="2026-01-01T00:00:00+00:00",
+        )
+    before = store._db.get_task(TASK_ID)
+
+    outcome = _refuse(store, row, attempt)
+
+    assert outcome.status == "owner_lost"
+    after = store._db.get_task(TASK_ID)
+    assert after.status is before.status
+    assert after.current_session_id == before.current_session_id
+    actions = [a["action"] for a in store._db.get_audit_logs(TASK_ID)]
+    assert "authority_v2_refusal_task_failed" not in actions
+    assert "escalation" not in actions
+
+
+def test_non_root_failed_cas_loss_rolls_back_all_refusal_writes(tmp_path):
+    """M2: rowcount zero at the child FAILED CAS leaves no partial audit."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store._db.insert_task(TaskRecord(id="TASK-PARENT", brief="parent"))
+    store._db._conn.execute(
+        "UPDATE tasks SET parent_task_id=? WHERE id=?",
+        ("TASK-PARENT", TASK_ID),
+    )
+    store._db._conn.commit()
+    before = _counts(store._db)
+    real = store._db._conn
+    store._db._conn = _LostChildCasConn(real)
+    try:
+        outcome = _refuse(store, row, attempt)
+    finally:
+        store._db._conn = real
+
+    assert outcome.status == "housekeeping_pending"
+    assert outcome.refusal_code == "owner_lost"
+    assert _counts(store._db) == before
+    assert store._db.get_task(TASK_ID).status is TaskStatus.IN_PROGRESS
+    assert _attempt_row(store, row["id"])["finalization_state"] == "unfinalized"
 
 
 # ── exact recovery receipt (Q) settlement in the SAME transaction ────────

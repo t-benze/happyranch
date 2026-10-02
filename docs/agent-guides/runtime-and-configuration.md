@@ -634,6 +634,13 @@ Contract (founder-approved in THR-028, refined in THR-078):
    the configured THR-181 hook; inactive/static policy is not evaluator
    CONTINUE, and committed escalations remain human-resolved.
 
+   Authority-v2 refusal follows the same structural split (THR-277): a
+   non-root writes `authority_v2_refusal_task_failed`, terminalizes as FAILED,
+   and wakes its parent through the fenced ordinary/recovery cleanup tail;
+   roots retain the existing founder escalation. Startup classification of an
+   `admitted` non-escalate causal result is read-only and does not fence the
+   task from ordinary recovery in that boot.
+
 4. **Chain-leg failure.** A failed chain leg clears the chain and returns a
    decision owner to bounded wake. Passive pipeline carriers instead fail
    closed and settle through their outer fan-out barrier with causal-leaf

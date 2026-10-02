@@ -50,9 +50,10 @@ Tracked source is split by product surface:
 |-- runtime/                     # Python runtime package shipped by pyproject
 |   |-- config.py, models.py, runtime.py, system_assistant.py
 |   |-- adapters/                # Claude, Codex, opencode, and Pi adapters
-|   |-- daemon/                  # FastAPI app, routes, queue, sessions, jobs/thread runners
-|   |-- infrastructure/          # SQLite, audit, KB, learnings, threads, artifacts
-|   |-- orchestrator/            # task state machine, executors, prompts, teams, workspaces, chains
+|   |-- daemon/                  # FastAPI app, routes, queue, sessions, runners, compatibility aliases
+|   |-- infrastructure/          # SQLite, audit, KB, learnings, threads, artifacts, mention routing
+|   |   `-- db/                  # Capability mixins behind the database.py Database facade
+|   |-- orchestrator/            # task state machine, executors, prompts, teams, workspaces, task-scratch reports
 |   |-- platform/                # process/session backends and platform enforcement
 |   |-- portability/             # org portability classification helpers
 |   |-- remote_access/           # managed remote-access client and packaging support
@@ -86,6 +87,16 @@ Tracked source is split by product surface:
 ```
 
 `pyproject.toml` packages `runtime` and `cli`; imports in tests and app code should use those packages. Do not treat top-level `src/` as canonical source unless tracked `.py` files are added there and packaging/imports are updated.
+
+The task-scratch report, coverage, and evidence implementations live under
+`runtime/orchestrator/`, and the pure thread-mention resolver lives under
+`runtime/infrastructure/`. Their former `runtime/daemon/` module paths are
+identity aliases retained for import and monkeypatch compatibility.
+
+`runtime/infrastructure/database.py` remains the stable `Database` facade.
+Capability-owned methods move incrementally into mixins under
+`runtime/infrastructure/db/`; callers continue importing and instantiating the
+facade from its original module.
 
 ## Test placement
 

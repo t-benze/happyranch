@@ -1,5 +1,15 @@
 # Authority v2 schema-refusal recovery correction
 
+> **Scope update (THR-277):** this spec's statements that every committed
+> refusal writes one root escalation describe roots only. A still-current
+> non-root refusal now atomically writes `authority_v2_refusal_task_failed`,
+> becomes FAILED, and wakes its parent without an `escalation` audit or founder
+> notification. At startup, an `admitted` causal result reconstructed as
+> blocked/non-escalate is left unfinalized with zero writes and no fence;
+> missing/unreadable evidence, unavailable parser context, later stages, and
+> parsed escalation retain the fail-closed refusal path. No schema migration or
+> new task status is involved.
+
 Status: historical implementation contract for THR-229 / GitHub issue #918.
 The v2 schema-gate portion was superseded by founder THR-229 seq351; the
 recovery and idempotency portions remain current.

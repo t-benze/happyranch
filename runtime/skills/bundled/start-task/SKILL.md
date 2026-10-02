@@ -233,6 +233,8 @@ Parameters:
      decision; no runtime retry-ceiling successor is created.
    - `done` — the task is complete; requires `summary` of the outcome.
    - `escalate` — the task needs founder intervention; requires `reason`.
+     This founder-facing disposition is root-scoped: if a non-root task owner
+     returns it, the runtime fails that child and wakes its parent to decide.
 
    Use the decision shapes below; the daemon validates them at submission and consumption.
 

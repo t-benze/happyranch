@@ -153,6 +153,11 @@ and consumed ledger marker; owned-job cleanup and the bounded parent wake stay
 post-commit and reconstructible. Its ownership proofs install cancellation
 through the shipping cancel route, or a replacement/reassignment, immediately
 before the real final transaction; replacement winners remain in-progress.
+
+Authority-v2 refusal now obeys the same root/non-root split (THR-277): an exact
+recovery-owned child refusal atomically settles the accepted receipt with the
+FAILED transition, then passes its parent wake through
+`after_recovery_cleanup`; roots retain the existing recovery-aware escalation.
 Selector proofs begin from a real consumed receipt, then change only
 cancellation metadata, session, or agent and exclude stale recovery cleanup
 and parent delivery while allowing separately identified ordinary startup work.
