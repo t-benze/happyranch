@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Iterator
 import hashlib
 import json
 import os
@@ -46,14 +47,18 @@ def _seed_active_agents_for_orchestrator(test_runtime):
 
 
 @pytest.fixture
-def orchestrator(test_settings, test_runtime):
+def orchestrator(test_settings, test_runtime) -> Iterator[Orchestrator]:
     test_runtime.root.mkdir(parents=True, exist_ok=True)
     db = _open_live_org_database(test_runtime.db_path)
     teams = TeamsRegistry.load(test_runtime.root)
-    return Orchestrator(
+    orch = Orchestrator(
         db=db, settings=test_settings,
         paths=test_runtime, slug="test", teams=teams,
     )
+    try:
+        yield orch
+    finally:
+        db.close()
 
 
 def _open_live_org_database(path: Path) -> Database:
@@ -3597,7 +3602,7 @@ class TestDecisionAttachments:
         store.put("da-key", b"data")
 
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         decision = NextStep(action="delegate", agent="dev_agent", prompt="build",
@@ -3631,7 +3636,7 @@ class TestDecisionAttachments:
             created_at=now, updated_at=now,
         ))
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         decision = NextStep(action="delegate", agent="dev_agent", prompt="build",
@@ -3659,7 +3664,7 @@ class TestDecisionAttachments:
             created_at=now, updated_at=now,
         ))
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         decision = NextStep(action="delegate", agent="dev_agent", prompt="build")
@@ -3701,16 +3706,17 @@ class TestDecisionAttachments:
         child = TaskRecord(id="T-ATOMIC-C", team="engineering", brief="child",
                            assigned_agent="dev_agent", parent_task_id=pid,
                            status=TaskStatus.PENDING, created_at=now, updated_at=now)
-        try:
+        expected_claim = _fixture_retry_claim(db, pid)
+        owned_parent_before = db.get_task(pid)
+        import sqlite3
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
             db.try_delegate(pid, child, parent_note="test",
                           attachments=[{"ordinal": 0, "storage_key": "atom-dup",
                                        "display_name": "x.png", "size_bytes": 1,
                                        "content_type": "image/png"}],
-                          uploaded_by="test")
-        except Exception:
-            pass
+                          uploaded_by="test", expected_claim=expected_claim)
         assert db.get_task("T-ATOMIC-C") is None, "Child must not exist after rollback"
-        assert db.get_task(pid).status == TaskStatus.PENDING
+        assert db.get_task(pid) == owned_parent_before
 
     def test_chain_leg_attachment_persists(self, test_settings, test_runtime):
         """Chain leg attachments persist when auto-advancing."""
@@ -3798,10 +3804,11 @@ class TestDecisionAttachments:
             {"agent": "qa_engineer", "prompt": "task B",
              "attachments": [{"storage_key": "fan-k2", "display_name": "b.png"}]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=2,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         children = db.get_children(pid)
         assert len(children) == 2
@@ -3836,10 +3843,11 @@ class TestDecisionAttachments:
             {"agent": "qa_engineer", "prompt": "task B",
              "attachments": [{"storage_key": "fan-dup-key", "display_name": "b.png"}]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=2,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         parent = db.get_task(pid)
         assert parent.status == TaskStatus.FAILED
@@ -3874,10 +3882,11 @@ class TestDecisionAttachments:
              "then": [{"agent": "qa_engineer", "prompt": "qa", "expect_verdict": "PASS"}],
              "attachments": [{"storage_key": "pipe-key", "display_name": "spec.md"}]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=1,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         children = db.get_children(pid)
         assert len(children) == 1
@@ -3939,7 +3948,7 @@ class TestDecisionAttachments:
             created_at=now, updated_at=now,
         ))
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         # Direct leg has NO attachments, but later chain leg references
@@ -4065,10 +4074,11 @@ class TestDecisionAttachments:
              "attachments": [{"storage_key": "pipe-carrier-key",
                               "display_name": "spec.md"}]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=1,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         children = db.get_children(pid)
         assert len(children) == 1
@@ -4127,10 +4137,11 @@ class TestDecisionAttachments:
                  {"storage_key": "fam-b3", "display_name": "b3.png"},
              ]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=2,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         parent_after = db.get_task(pid)
         assert parent_after.status == TaskStatus.IN_PROGRESS
@@ -4229,18 +4240,18 @@ class TestDecisionAttachments:
         # Call try_delegate_many — the first leg INSERT should collide and
         # the entire transaction should roll back.
         import sqlite3
+        expected_claim = _fixture_retry_claim(db, pid)
+        owned_parent_before = db.get_task(pid)
         with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint"):
             db.try_delegate_many(
                 pid, [child], parent_note="test",
                 children_attachments=[child_atts],
                 carrier_chains=carrier_chains,
-                uploaded_by="test",
-            )
+                uploaded_by="test", expected_claim=expected_claim)
 
         # Verify nothing was committed.
         parent_after = db.get_task(pid)
-        assert parent_after.status == TaskStatus.PENDING, \
-            f"Parent should still be PENDING, got {parent_after.status}"
+        assert db.get_task(pid) == owned_parent_before
         assert parent_after.active_fanout is None
         assert db.get_task(carrier_id) is None
         # Our pre-inserted row still exists (was committed before the test).
@@ -4275,7 +4286,7 @@ class TestDecisionAttachments:
         store.put("dup-key", b"data")
 
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         # Same key in both direct and later leg — must reject whole decision.
@@ -4314,7 +4325,7 @@ class TestDecisionAttachments:
         ))
 
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         decision = NextStep(
@@ -4353,7 +4364,7 @@ class TestDecisionAttachments:
         ))
 
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         decision = NextStep(
@@ -4402,7 +4413,7 @@ class TestDecisionAttachments:
                                    content_type="image/png", uploaded_by="founder")
 
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         # Later leg references an already-claimed key — must reject before child.
@@ -4453,10 +4464,11 @@ class TestDecisionAttachments:
                   "attachments": [{"storage_key": "nonexistent-pipe-nested"}]},
              ]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=1,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         parent = db.get_task(pid)
         assert parent.status == TaskStatus.FAILED
@@ -4504,10 +4516,11 @@ class TestDecisionAttachments:
                                    "display_name": "x.png"}]},
              ]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=1,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         parent = db.get_task(pid)
         assert parent.status == TaskStatus.FAILED
@@ -4549,10 +4562,11 @@ class TestDecisionAttachments:
                                    "display_name": "spec.md"}]},
              ]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=1,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         parent = db.get_task(pid)
         assert parent.status == TaskStatus.FAILED
@@ -4599,10 +4613,11 @@ class TestDecisionAttachments:
                                    "display_name": "x.png"}]},
              ]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=2,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         parent = db.get_task(pid)
         assert parent.status == TaskStatus.FAILED
@@ -4663,7 +4678,7 @@ class TestDecisionAttachments:
         )
 
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         decision = NextStep(
@@ -4680,13 +4695,8 @@ class TestDecisionAttachments:
 
         # try_delegate catches the ABORT, rolls back, and re-raises.
         # The exception propagates out of run_step_impl → run_step.
-        error_raised = False
-        try:
+        with pytest.raises(sqlite3.IntegrityError, match="injected transaction failure"):
             run_task_to_completion(orch, task_id=pid)
-        except Exception:
-            error_raised = True
-        assert error_raised, \
-            "Expected db.try_delegate to raise after trigger ABORT"
 
         # Verify the trigger fired — proves the real DB write path was
         # reached (child + link INSERT happened before the abort).
@@ -5664,3 +5674,20 @@ def test_prompt_time_line_shared_loader_config_failure_escapes(
     test_runtime.org_config_path.write_text("workspace_cleanup: {\n")
     with pytest.raises(OrgConfigError):
         orchestrator._current_time_line(None)
+
+
+from runtime.infrastructure.database import RetryClaim, Committed, LostClaim
+
+
+def _fixture_retry_claim(db, task_id):
+    """Establish the direct caller's owned fixture before entering the writer."""
+    from runtime.models import TaskRecord, TaskStatus
+    task = db.get_task(task_id)
+    if task is None:
+        return RetryClaim.from_task(TaskRecord(id=task_id, brief="missing claim",
+            assigned_agent="engineering_head", current_session_id="fixture-owner"))
+    if task.status == TaskStatus.PENDING:
+        db.update_task(task_id, status=TaskStatus.IN_PROGRESS, block_kind=None,
+                       assigned_agent=task.assigned_agent or "engineering_head",
+                       current_session_id="fixture-owner", orchestration_step_count=1)
+    return RetryClaim.from_task(db.get_task(task_id))
