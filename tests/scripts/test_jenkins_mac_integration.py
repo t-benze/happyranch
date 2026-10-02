@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
 
 import pytest
 
@@ -13,6 +15,89 @@ from scripts import jenkins_mac_integration as job
 
 ROOT = Path(__file__).resolve().parents[2]
 JENKINSFILE = ROOT / "ci" / "jenkins" / "mac-integration" / "Jenkinsfile"
+
+
+def _run_emitted_uv_check(
+    tmp_path: Path, reported_version: str
+) -> subprocess.CompletedProcess[str]:
+    lines = job._INNER_SCRIPT.splitlines()
+    observed_index = lines.index('  observed_uv="$(uv --version)"')
+    start_index = observed_index - 1
+    assert lines[start_index] == 'if [ "$workload_status" -eq 0 ]; then'
+    end_index = lines.index("fi", observed_index)
+    fragment = "\n".join(lines[start_index : end_index + 1])
+
+    identity = tmp_path / "identity.txt"
+    assert fragment.count("/workspace/artifacts/identity.txt") == 1
+    fragment = fragment.replace(
+        "/workspace/artifacts/identity.txt", str(identity)
+    )
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_uv = fake_bin / "uv"
+    fake_uv.write_text(
+        "#!/bin/sh\nprintf '%s\\n' \"$FAKE_UV_VERSION\"\n",
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+    shell = shutil.which("sh")
+    assert shell is not None
+    return subprocess.run(
+        [shell, "-c", f'workload_status=0\n{fragment}\nexit "$workload_status"\n'],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "FAKE_UV_VERSION": reported_version,
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "reported_version",
+    [
+        "uv 0.12.21",
+        "uv 0.12.21 (aarch64-unknown-linux-gnu)",
+        "uv 0.12.21 (x86_64-unknown-linux-gnu)",
+    ],
+)
+def test_emitted_uv_check_accepts_exact_version_with_optional_target_triple(
+    tmp_path: Path, reported_version: str
+) -> None:
+    result = _run_emitted_uv_check(tmp_path, reported_version)
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert (tmp_path / "identity.txt").read_text(encoding="utf-8") == (
+        f"uv_version={reported_version}\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "reported_version",
+    [
+        "uv 0.12.210",
+        "uv 0.12.2",
+        "uv 0.12.210 (aarch64-unknown-linux-gnu)",
+        "uv 0.12.2 (aarch64-unknown-linux-gnu)",
+        "uv 0.12.21 ()",
+        "uv 0.12.21 (a b)",
+        "uv 0.12.21 (triple) extra",
+        "uv 0.12.21-foo",
+        "",
+    ],
+)
+def test_emitted_uv_check_rejects_wrong_or_malformed_version(
+    tmp_path: Path, reported_version: str
+) -> None:
+    result = _run_emitted_uv_check(tmp_path, reported_version)
+
+    assert result.returncode == 82
+    assert result.stderr == f"unexpected uv version: {reported_version}\n"
+    assert not (tmp_path / "identity.txt").exists()
 
 
 def _fake_container(tmp_path: Path) -> tuple[Path, Path]:

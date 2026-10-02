@@ -154,9 +154,10 @@ The runtime pins are:
   Accept types, then selected `platform.os=linux`,
   `platform.architecture=arm64`, `platform.variant=v8`. The job records the
   pinned reference and `container image inspect` result.
-- uv exactly `0.12.21`, installed inside the disposable VM, verified with
-  `uv --version`, and used for `uv sync --frozen`. The venv and uv caches live
-  under container-local `/tmp`, never the host-mounted source.
+- uv exactly `0.12.21`, installed inside the disposable VM; its `uv --version`
+  output must be exactly `uv 0.12.21`, optionally followed by uv's
+  ` (<target triple>)` suffix. It is used for `uv sync --frozen`. The venv and uv
+  caches live under container-local `/tmp`, never the host-mounted source.
 - The image's Debian repositories supply `bash` and `curl`, which the existing
   integration fixtures invoke; their resolved package versions and Python's
   effective version are recorded in `identity.txt`. This changes only the
