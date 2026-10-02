@@ -41,15 +41,18 @@ import { useJob, useStopJob } from '@/hooks/jobs';
 import { listTasks } from '@/lib/api/tasks';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { JobRecord, TaskRecord } from '@/lib/api/types';
+import { useTranslation } from '@/hooks/i18n';
+import type { Locale, MessageKey } from '@/lib/i18n';
+import { classifyJobError, renderJobError, type JobErrorView } from './strings';
 import { RejectJobDialog } from './RejectJobDialog';
 import { RunJobDialog } from './RunJobDialog';
 import { OutputPanel } from './OutputPanel';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-function formatDateTime(iso: string | null | undefined): string | null {
+function formatDateTime(iso: string | null | undefined, locale: Locale): string | null {
   if (!iso) return null;
-  return new Date(iso).toLocaleString();
+  return new Date(iso).toLocaleString(locale);
 }
 
 // ── Sub-components ───────────────────────────────────────────────────
@@ -72,13 +75,14 @@ function Eyebrow({ children }: { children: ReactNode }): JSX.Element {
  * fabricated value).
  */
 function ScriptBlock({ job }: { job: JobRecord }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <section className="border-border-default overflow-hidden rounded-lg border">
       <div className="bg-surface-sunken border-border-default flex items-center gap-2 border-b px-3 py-2">
         <span aria-hidden="true" className="text-text-muted font-mono text-xs select-none">
           ›_
         </span>
-        <span className="text-text-muted text-xs font-medium tracking-wider uppercase">command</span>
+        <span className="text-text-muted text-xs font-medium tracking-wider uppercase">{t('jobs.detail.commandHeader')}</span>
       </div>
       <pre className="bg-surface-canvas text-text-primary overflow-x-auto p-3 font-mono text-xs whitespace-pre">
         <span aria-hidden="true" className="text-accent-default select-none">$ </span>
@@ -128,19 +132,32 @@ function MonoValue({ children }: { children: ReactNode }): JSX.Element {
  * payload, so they are honestly omitted rather than fabricated.
  */
 function PropertyRail({ job, slug }: { job: JobRecord; slug: string | undefined }): JSX.Element {
+  const { locale, t } = useTranslation();
+  const seconds = (value: string): string => t('jobs.rail.seconds', { value });
+  const yesNo = (flag: boolean): string => (flag ? t('jobs.rail.yes') : t('jobs.rail.no'));
   // Secondary execution-telemetry fields, in the prior grid's order; only non-null shown.
-  const telemetry: { label: string; value: string | null }[] = [
-    { label: 'Interpreter', value: job.interpreter },
-    { label: 'CWD hint', value: job.cwd_hint },
-    { label: 'CWD resolved', value: job.cwd_resolved },
-    { label: 'Started', value: formatDateTime(job.started_at) },
-    { label: 'Finished', value: formatDateTime(job.finished_at) },
-    { label: 'Reviewed at', value: formatDateTime(job.reviewed_at) },
-    { label: 'Exit code', value: job.exit_code !== null ? String(job.exit_code) : null },
-    { label: 'Duration', value: job.duration_ms !== null ? `${(job.duration_ms / 1000).toFixed(1)}s` : null },
-    { label: 'Max runtime', value: job.max_runtime_seconds !== null ? `${job.max_runtime_seconds}s` : 'unbounded' },
-    { label: 'Persistent', value: job.persistent ? 'yes' : 'no' },
-    { label: 'Review required', value: job.review_required ? 'yes' : 'no' },
+  // The catalog key doubles as the locale-neutral React key.
+  const telemetry: { labelKey: MessageKey; value: string | null }[] = [
+    { labelKey: 'jobs.rail.interpreter', value: job.interpreter },
+    { labelKey: 'jobs.rail.cwdHint', value: job.cwd_hint },
+    { labelKey: 'jobs.rail.cwdResolved', value: job.cwd_resolved },
+    { labelKey: 'jobs.rail.started', value: formatDateTime(job.started_at, locale) },
+    { labelKey: 'jobs.rail.finished', value: formatDateTime(job.finished_at, locale) },
+    { labelKey: 'jobs.rail.reviewedAt', value: formatDateTime(job.reviewed_at, locale) },
+    { labelKey: 'jobs.rail.exitCode', value: job.exit_code !== null ? String(job.exit_code) : null },
+    {
+      labelKey: 'jobs.rail.duration',
+      value: job.duration_ms !== null ? seconds((job.duration_ms / 1000).toFixed(1)) : null,
+    },
+    {
+      labelKey: 'jobs.rail.maxRuntime',
+      value:
+        job.max_runtime_seconds !== null
+          ? seconds(String(job.max_runtime_seconds))
+          : t('jobs.rail.unbounded'),
+    },
+    { labelKey: 'jobs.rail.persistent', value: yesNo(job.persistent) },
+    { labelKey: 'jobs.rail.reviewRequired', value: yesNo(job.review_required) },
   ];
 
   return (
@@ -148,33 +165,33 @@ function PropertyRail({ job, slug }: { job: JobRecord; slug: string | undefined 
       <div className="border-border-default bg-surface-raised rounded-xl border p-4">
         {/* Curated approval-context — leads the rail per Direction-A. */}
         <dl className="space-y-3 text-sm">
-          <RailRow label="Requested by">
+          <RailRow label={t('jobs.rail.requestedBy')}>
             <AgentChip name={job.agent_name} role={chipRole(job.agent_name)} />
           </RailRow>
           {job.reviewed_by && (
-            <RailRow label="Reviewed by">
+            <RailRow label={t('jobs.rail.reviewedBy')}>
               <AgentChip name={job.reviewed_by} role={chipRole(job.reviewed_by)} />
             </RailRow>
           )}
-          <RailRow label="Task">
+          <RailRow label={t('jobs.rail.task')}>
             <IdBadge
               id={job.task_id}
               kind="task"
               to={slug ? `/orgs/${slug}/tasks/${job.task_id}` : undefined}
             />
           </RailRow>
-          <RailRow label="Created">
-            <span className="text-text-primary text-xs">{formatDateTime(job.created_at)}</span>
+          <RailRow label={t('jobs.rail.created')}>
+            <span className="text-text-primary text-xs">{formatDateTime(job.created_at, locale)}</span>
           </RailRow>
         </dl>
 
         {/* Execution telemetry — kept present, secondary to the curated context. */}
         <div className="border-border-default mt-4 border-t pt-4">
-          <Eyebrow>Execution</Eyebrow>
+          <Eyebrow>{t('jobs.rail.execution')}</Eyebrow>
           <dl className="mt-3 space-y-3 text-sm">
-            {telemetry.map(({ label, value }) =>
+            {telemetry.map(({ labelKey, value }) =>
               value !== null ? (
-                <RailRow key={label} label={label}>
+                <RailRow key={labelKey} label={t(labelKey)}>
                   <MonoValue>{value}</MonoValue>
                 </RailRow>
               ) : null,
@@ -189,6 +206,7 @@ function PropertyRail({ job, slug }: { job: JobRecord; slug: string | undefined 
 /** "If approved" cascade — DERIVE: lists tasks blocked on this job, carded
  *  with impact dots per the Direction-A reference. */
 function IfApprovedCascade({ slug, jobId }: { slug: string; jobId: string }): JSX.Element {
+  const { t } = useTranslation();
   const blockedTasksQuery = useQuery({
     queryKey: ['tasks-blocked-on-job', slug, jobId],
     queryFn: () =>
@@ -212,30 +230,30 @@ function IfApprovedCascade({ slug, jobId }: { slug: string; jobId: string }): JS
 
   if (blockedTasksQuery.isLoading) {
     return (
-      <Card title="If approved">
-        <p className="text-text-muted text-sm">Loading blocked tasks…</p>
+      <Card title={t('jobs.cascade.title')}>
+        <p className="text-text-muted text-sm">{t('jobs.cascade.loading')}</p>
       </Card>
     );
   }
 
   if (blockedTasksQuery.isError) {
     return (
-      <Card title="If approved">
-        <p className="text-text-muted text-sm">Could not load blocked tasks.</p>
+      <Card title={t('jobs.cascade.title')}>
+        <p className="text-text-muted text-sm">{t('jobs.cascade.loadError')}</p>
       </Card>
     );
   }
 
   if (tasks.length === 0) {
     return (
-      <Card title="If approved">
-        <p className="text-text-muted text-sm">No tasks are currently blocked on this job.</p>
+      <Card title={t('jobs.cascade.title')}>
+        <p className="text-text-muted text-sm">{t('jobs.cascade.empty')}</p>
       </Card>
     );
   }
 
   return (
-    <Card title={`If approved — ${tasks.length} task${tasks.length !== 1 ? 's' : ''} unblocks`}>
+    <Card title={t('jobs.cascade.titleCount', { count: tasks.length })}>
       <ul className="space-y-2">
         {tasks.map((t) => (
           <li key={t.task_id} className="flex items-center gap-2.5 text-sm">
@@ -265,20 +283,20 @@ function IfApprovedCascade({ slug, jobId }: { slug: string; jobId: string }): JS
  *  Approve & run / Reject controls live in the header and route to the EXISTING
  *  single RunJobDialog confirm + RejectJobDialog. */
 function GatedNotice(): JSX.Element {
+  const { t } = useTranslation();
   return (
     <div className="bg-attention-soft mt-5 rounded-xl p-4">
       <div className="mb-2 flex items-center gap-2">
         <span className="bg-attention text-attention-text inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium">
           <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />
-          flagged for review
+          {t('jobs.gated.chip')}
         </span>
       </div>
       <p className="text-attention-text text-sm font-semibold">
-        This action is gated — use “Approve &amp; run” above.
+        {t('jobs.gated.title')}
       </p>
       <p className="text-attention-text/85 mt-1 text-xs leading-relaxed">
-        One confirm shows the exact command before it runs — no risk tiers. The
-        assistant can propose this; only you approve it.
+        {t('jobs.gated.body')}
       </p>
     </div>
   );
@@ -293,8 +311,9 @@ export function JobDetailPage(): JSX.Element {
   const query = useJob(jobId);
   const qc = useQueryClient();
   const stop = useStopJob();
+  const { t } = useTranslation();
   const [openDialog, setOpenDialog] = useState<OpenDialog>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<JobErrorView | null>(null);
 
   const job = query.data;
 
@@ -304,7 +323,7 @@ export function JobDetailPage(): JSX.Element {
     try {
       await stop.mutateAsync({ jobId: jobId ?? '' });
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
+      setActionError(classifyJobError(err, 'jobs.stop.failed'));
     }
   };
 
@@ -316,7 +335,7 @@ export function JobDetailPage(): JSX.Element {
   if (query.isLoading) {
     return (
       <div className="flex h-full items-center justify-center">
-        <p className="text-text-muted">Loading {jobId}…</p>
+        <p className="text-text-muted">{t('jobs.detail.loading', { jobId: jobId ?? '' })}</p>
       </div>
     );
   }
@@ -325,9 +344,9 @@ export function JobDetailPage(): JSX.Element {
   if (query.isError) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-8">
-        <p className="text-text-muted">Failed to load {jobId}.</p>
+        <p className="text-text-muted">{t('jobs.detail.loadError', { jobId: jobId ?? '' })}</p>
         <Button variant="ghost" size="sm" onClick={handleRetry}>
-          Retry
+          {t('common.retry')}
         </Button>
       </div>
     );
@@ -337,8 +356,8 @@ export function JobDetailPage(): JSX.Element {
   if (!job) {
     return (
       <EmptyState
-        title="Job not found"
-        body={`Job ${jobId ?? 'unknown'} does not exist or was removed.`}
+        title={t('jobs.detail.notFoundTitle')}
+        body={t('jobs.detail.notFoundBody', { jobId: jobId ?? t('jobs.detail.unknownId') })}
       />
     );
   }
@@ -352,17 +371,17 @@ export function JobDetailPage(): JSX.Element {
   if (job.status === 'running') {
     headerActions = (
       <Button variant="destructive" size="sm" onClick={onStop} disabled={stop.isPending}>
-        {stop.isPending ? 'Stopping…' : 'Stop'}
+        {stop.isPending ? t('jobs.action.stopping') : t('jobs.action.stop')}
       </Button>
     );
   } else if (job.status === 'pending') {
     headerActions = (
       <>
         <Button variant="secondary" size="sm" onClick={() => setOpenDialog('reject')}>
-          Reject
+          {t('jobs.action.reject')}
         </Button>
         <Button size="sm" onClick={() => setOpenDialog('run')}>
-          {job.review_required ? 'Approve & run' : 'Run'}
+          {job.review_required ? t('jobs.action.approveRun') : t('jobs.action.run')}
         </Button>
       </>
     );
@@ -382,7 +401,7 @@ export function JobDetailPage(): JSX.Element {
             to={`/orgs/${slug}/tasks/${job.task_id}`}
             className="text-text-muted hover:text-text-primary text-xs transition-colors"
           >
-            ← Back to {job.task_id}
+            {t('jobs.detail.back', { taskId: job.task_id })}
           </Link>
         </nav>
 
@@ -413,20 +432,19 @@ export function JobDetailPage(): JSX.Element {
 
             {/* Verbatim command */}
             <div>
-              <Eyebrow>Verbatim command · runs exactly this</Eyebrow>
+              <Eyebrow>{t('jobs.detail.commandEyebrow')}</Eyebrow>
               <div className="mt-3">
                 <ScriptBlock job={job} />
               </div>
               <p className="text-text-muted mt-2.5 text-xs leading-relaxed">
-                No diff is stored — what you approve is the exact command above. Its
-                effect is the downstream cascade below.
+                {t('jobs.detail.commandNote')}
               </p>
             </div>
 
             {/* Rejection reason */}
             {job.status === 'rejected' && job.reject_reason && (
               <section>
-                <Eyebrow>Rejection reason</Eyebrow>
+                <Eyebrow>{t('jobs.detail.rejectionReason')}</Eyebrow>
                 <p className="text-text-primary mt-2 text-sm whitespace-pre-wrap">{job.reject_reason}</p>
               </section>
             )}
@@ -434,7 +452,7 @@ export function JobDetailPage(): JSX.Element {
             {/* Failure reason */}
             {job.status === 'failed' && job.reason && (
               <section>
-                <Eyebrow>Failure reason</Eyebrow>
+                <Eyebrow>{t('jobs.detail.failureReason')}</Eyebrow>
                 <p className="text-text-primary mt-2 font-mono text-sm">{job.reason}</p>
               </section>
             )}
@@ -451,8 +469,8 @@ export function JobDetailPage(): JSX.Element {
             )}
 
             {/* Running job: stop error feedback (Stop button is in the header) */}
-            {job.status === 'running' && actionError && (
-              <p className="text-feedback-danger text-sm">{actionError}</p>
+            {job.status === 'running' && actionError !== null && (
+              <p className="text-feedback-danger text-sm">{renderJobError(actionError, t)}</p>
             )}
 
             {/* Output panel */}

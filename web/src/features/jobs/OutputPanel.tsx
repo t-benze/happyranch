@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useJobOutput } from '@/hooks/jobs';
+import { useTranslation } from '@/hooks/i18n';
 // eslint-disable-next-line no-restricted-imports -- no @/hooks accessor exposes the job tail/SSE helpers; routed direct per THR-011 founder ruling (option 3), pending a future hook
 import { jobEventsPath, tailJob } from '@/lib/api/jobs';
 import { useJobEventStream } from './jobEventsHook';
@@ -14,6 +15,7 @@ interface Props {
 const TAIL_LINES = 200;
 
 export function OutputPanel({ job, slug }: Props): JSX.Element | null {
+  const { t } = useTranslation();
   const isLive = job.status === 'running';
   const qc = useQueryClient();
 
@@ -80,7 +82,7 @@ export function OutputPanel({ job, slug }: Props): JSX.Element | null {
   return (
     <section>
       <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
-        Output
+        {t('jobs.output.title')}
       </h3>
 
       {isLive && (
@@ -89,7 +91,7 @@ export function OutputPanel({ job, slug }: Props): JSX.Element | null {
           className="bg-surface-sunken border-border-default h-64 overflow-y-auto rounded-lg border p-3 font-mono text-xs whitespace-pre-wrap"
         >
           {seedLines.length === 0 && events.length === 0 && !terminal && (
-            <span className="text-text-muted">Waiting for output…</span>
+            <span className="text-text-muted">{t('jobs.output.waiting')}</span>
           )}
           {seedLines.map((e, i) => (
             <div key={`seed-${i}`} className={e.kind === 'stderr' ? 'text-feedback-danger' : ''}>
@@ -110,7 +112,7 @@ export function OutputPanel({ job, slug }: Props): JSX.Element | null {
       )}
 
       {!isLive && outputQuery.isLoading && (
-        <p className="text-text-muted text-sm">Loading output…</p>
+        <p className="text-text-muted text-sm">{t('jobs.output.loading')}</p>
       )}
 
       {!isLive && outputQuery.data && (
@@ -118,13 +120,13 @@ export function OutputPanel({ job, slug }: Props): JSX.Element | null {
           <div>
             <h4 className="text-text-muted mb-1 text-xs uppercase">stdout</h4>
             <pre className="bg-surface-sunken border-border-default overflow-x-auto rounded-lg border p-3 text-xs whitespace-pre-wrap">
-              {outputQuery.data.stdout || '(empty)'}
+              {outputQuery.data.stdout || t('jobs.output.empty')}
             </pre>
           </div>
           <div>
             <h4 className="text-text-muted mb-1 text-xs uppercase">stderr</h4>
             <pre className="bg-surface-sunken border-border-default overflow-x-auto rounded-lg border p-3 text-xs whitespace-pre-wrap">
-              {outputQuery.data.stderr || '(empty)'}
+              {outputQuery.data.stderr || t('jobs.output.empty')}
             </pre>
           </div>
         </div>

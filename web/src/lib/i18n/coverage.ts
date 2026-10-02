@@ -9,11 +9,14 @@
  * route (`/onboarding`: OnboardingPage, ConnectRuntimeStep and the shared
  * ConnectFlow). W2c (THR-118) migrates the Settings surface (page chrome and
  * the Assistant/Organization/Executors/Daemon-Capacity sections) and adds the
- * production-gated `preferences` route (`PreferencesSection`). The shared
+ * `preferences` route (`PreferencesSection`), production-gated until W3b-2.
+ * The shared
  * Work Hours-owned `EligibilityEditorDialog` mounted by Organization stays
  * English until W4. W3a migrates Dashboard + Threads and W3b-1 migrates the
- * Tasks route family (`tasks`, `tasks/:task_id` and its owned dialogs); Jobs
- * is W3b-2. The other mounted product surfaces and the later slices
+ * Tasks route family (`tasks`, `tasks/:task_id` and its owned dialogs); W3b-2
+ * migrates the Jobs route family (`jobs`, `jobs/:job_id` and its owned
+ * dialogs) and opens the Preferences language preview in production. The
+ * other mounted product surfaces and the later slices
  * (assistant dock body = W4, route families = W3/W4) remain `english-only` —
  * fallback English is never treated as coverage.
  * Redirect-only/catch-all
@@ -174,7 +177,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'jobs',
     routeTokens: ['jobs', 'jobs/:job_id'],
-    status: 'english-only',
+    status: 'translated',
     surfaces: ['JobsPage', 'JobDetailPage', 'RunJobDialog', 'RejectJobDialog'],
   },
   {
@@ -209,8 +212,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   },
   {
     namespace: 'settings',
-    // `preferences` is mounted only when the W2c closed gate is opened
-    // (`VITE_ENABLE_I18N_PREFERENCES=true`, test/evidence builds); W3 exposes it.
+    // `preferences` (W2c) is mounted in ordinary production builds since W3b-2.
     routeTokens: [
       'settings/*',
       'assistant',

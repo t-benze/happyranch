@@ -16,8 +16,9 @@
  * THR-118 W2c: the shell copy is translated, and a client-only Preferences
  * (language) panel is mounted OUTSIDE the settings-API gate so it renders and
  * works while `useSettings` is loading, has failed or has no data. The other
- * panels keep the existing loading/error/data gate unchanged. Preferences is
- * closed in production builds until W3 (see `languagePreferenceGate.ts`).
+ * panels keep the existing loading/error/data gate unchanged. THR-118 W3b-2
+ * enables Preferences in ordinary production builds (opt-in language preview;
+ * an unset preference stays English).
  */
 import {
   Navigate,
@@ -39,7 +40,6 @@ import { useSettings } from '@/hooks/settings';
 import { useTranslation } from '@/hooks/i18n';
 import type { MessageKey } from '@/lib/i18n';
 import { PageHeader } from '@/design-system/patterns/PageHeader';
-import { isLanguagePreferenceEnabled } from './languagePreferenceGate';
 
 const SECTIONS = [
   { key: 'daemon-capacity', labelKey: 'settings.nav.daemonCapacity', icon: Gauge },
@@ -52,7 +52,7 @@ const SECTIONS = [
   icon: LucideIcon;
 }>;
 
-/** Client-only section; listed last and only when the W2c gate is open. */
+/** Client-only section; listed last (W3b-2: always mounted). */
 const PREFERENCES_SECTION = {
   key: 'preferences',
   labelKey: 'settings.nav.preferences',
@@ -73,7 +73,6 @@ export function SettingsPage(): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
   const settingsQuery = useSettings();
   const { t } = useTranslation();
-  const preferencesEnabled = isLanguagePreferenceEnabled();
 
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
@@ -86,16 +85,14 @@ export function SettingsPage(): JSX.Element {
 
       <Routes>
         {/* Client-only Preferences: outside the settings-API gate. */}
-        {preferencesEnabled && (
-          <Route
-            path="preferences"
-            element={
-              <SettingsContent preferencesEnabled>
-                <PreferencesPanel />
-              </SettingsContent>
-            }
-          />
-        )}
+        <Route
+          path="preferences"
+          element={
+            <SettingsContent>
+              <PreferencesPanel />
+            </SettingsContent>
+          }
+        />
         <Route
           path="*"
           element={
@@ -113,7 +110,7 @@ export function SettingsPage(): JSX.Element {
               )}
 
               {settingsQuery.data && (
-                <SettingsContent preferencesEnabled={preferencesEnabled}>
+                <SettingsContent>
                   <Routes>
                     <Route index element={<Navigate to={`/orgs/${slug}/settings/assistant`} replace />} />
                     <Route path="assistant" element={<AssistantPanel />} />
@@ -138,19 +135,13 @@ export function SettingsPage(): JSX.Element {
 }
 
 /** a-settings set-wrap: nav + content column capped at 1000, centered. */
-function SettingsContent({
-  preferencesEnabled,
-  children,
-}: {
-  preferencesEnabled: boolean;
-  children: ReactNode;
-}): JSX.Element {
+function SettingsContent({ children }: { children: ReactNode }): JSX.Element {
   return (
     <div
       className="max-w-content-narrow mx-auto flex w-full flex-1 overflow-hidden"
       data-testid="settings-content"
     >
-      <SettingsSubNav preferencesEnabled={preferencesEnabled} />
+      <SettingsSubNav />
       <main className="flex-1 overflow-y-auto">{children}</main>
     </div>
   );
@@ -162,10 +153,10 @@ function SettingsContent({
  * Each link carries a leading icon (per design ref `a-settings`).
  * Active link uses Pasture rounded-full pill style.
  */
-function SettingsSubNav({ preferencesEnabled }: { preferencesEnabled: boolean }): JSX.Element {
+function SettingsSubNav(): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
   const { t } = useTranslation();
-  const sections = preferencesEnabled ? [...SECTIONS, PREFERENCES_SECTION] : SECTIONS;
+  const sections = [...SECTIONS, PREFERENCES_SECTION];
 
   return (
     <aside className="border-border-default bg-surface-sunken w-50 shrink-0 overflow-y-auto border-r p-3">
