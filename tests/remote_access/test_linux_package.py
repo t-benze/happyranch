@@ -1283,7 +1283,7 @@ cat "$diagnostics/nonzero-invocation.json"
     assert result.returncode == 0, result.stderr
     document = json.loads(result.stdout)
     assert document["observation_loss"]["diagnostic_receipts"] == ["query_error"]
-    assert all(" -o cat " in f" {event} " for event in event_log.read_text().splitlines())
+    assert not event_log.exists(), "journal must not be queried without an attributable invocation"
 
 
 @pytest.mark.parametrize(("capture_mode", "expected_loss"), [
