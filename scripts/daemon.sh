@@ -98,7 +98,7 @@ _preflight_uv() {
 }
 
 cmd_start() {
-    local start_timeout="${HAPPYRANCH_DAEMON_START_TIMEOUT:-30}"
+    local start_timeout="${HAPPYRANCH_DAEMON_START_TIMEOUT-30}"
     local bind_host probe_host bg_pid port deadline
 
     if [[ ! "$start_timeout" =~ ^[1-9][0-9]*$ ]]; then

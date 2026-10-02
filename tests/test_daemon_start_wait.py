@@ -215,14 +215,14 @@ def test_stale_port_file_does_not_count_as_success(
     assert not (home / "daemon.port").exists()
 
 
-@pytest.mark.parametrize("value", ["0", "abc"])
+@pytest.mark.parametrize("value", ["0", "abc", ""])
 def test_invalid_timeout_refuses_before_launch(
     fake_daemon_env: tuple[Path, dict[str, str]],
     value: str,
 ) -> None:
     home, env = fake_daemon_env
     env.update(
-        FAKE_DAEMON_MODE="never_healthy",
+        FAKE_DAEMON_MODE="exit",
         HAPPYRANCH_DAEMON_START_TIMEOUT=value,
     )
 
@@ -230,6 +230,9 @@ def test_invalid_timeout_refuses_before_launch(
 
     assert result.returncode == 1
     assert elapsed < 1
-    assert "HAPPYRANCH_DAEMON_START_TIMEOUT must be a positive integer" in result.stderr
+    assert result.stderr == (
+        "ERROR: HAPPYRANCH_DAEMON_START_TIMEOUT must be a positive integer "
+        f"(got '{value}').\n"
+    )
     assert not Path(env["FAKE_LAUNCH_MARKER"]).exists()
     assert not home.exists()
