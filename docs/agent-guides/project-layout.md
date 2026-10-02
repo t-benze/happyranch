@@ -52,7 +52,7 @@ Tracked source is split by product surface:
 |   |-- adapters/                # Claude, Codex, opencode, and Pi adapters
 |   |-- daemon/                  # FastAPI app, routes, queue, sessions, runners, compatibility aliases
 |   |-- infrastructure/          # SQLite, audit, KB, learnings, threads, artifacts, mention routing
-|   |   `-- db/                  # Database facade mixins: dreams, knowledge, jobs, attachments, audit, sessions, workspace cleanup, threads, reply delivery/exchange, schema bootstrap/migrations
+|   |   `-- db/                  # Database facade mixins: dreams, knowledge, jobs, attachments, audit, sessions, workspace cleanup, threads, reply delivery/exchange, schema bootstrap/migrations, authority v1 claims/fences
 |   |-- orchestrator/            # task state machine, executors, prompts, teams, workspaces, task-scratch reports
 |   |-- platform/                # process/session backends and platform enforcement
 |   |-- portability/             # org portability classification helpers
