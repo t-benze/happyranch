@@ -138,3 +138,27 @@ def test_show_and_output_json_use_exact_receipt_route(capsys):
         assert path.endswith("/jobs/JOB-7/receipt")
         assert client.get.call_args.kwargs["params"]["task_id"] == "TASK-1"
         assert client.get.call_args.kwargs["params"]["session_id"] == "sess-1"
+
+
+def test_jobs_show_prints_reason_only_when_present(capsys):
+    """S4: human job detail exposes a non-null terminal reason minimally."""
+    base = {
+        "id": "JOB-7", "status": "failed", "created_at": "2026-10-02T00:00:00Z",
+        "agent_name": "dev_agent", "task_id": "TASK-1", "interpreter": "bash",
+        "cwd_hint": None, "title": "verify", "rationale": "needed",
+        "script_text": "false", "exit_code": -15, "duration_ms": 12,
+        "stdout_head": "", "stderr_head": "", "reject_reason": None,
+    }
+    args = argparse.Namespace(org="alpha", job_id="JOB-7", json=False)
+
+    for reason, expected in (("daemon_shutdown", True), (None, False)):
+        client = Mock()
+        client.get.return_value = _response({**base, "reason": reason})
+        with patch("cli.commands.jobs.OpcClient.from_env", return_value=client), patch(
+            "cli.commands.jobs._shared._fetch_available_orgs", return_value=["alpha"]
+        ):
+            cmd_jobs_show(args)
+        output = capsys.readouterr().out
+        assert ("Reason:" in output) is expected
+        if expected:
+            assert "Reason:       daemon_shutdown" in output

@@ -3132,7 +3132,25 @@ def _blocked_jobs_resume_header_if_applicable(
     ]
     for jid in job_ids:
         status = outcomes.get(jid, "unknown")
-        lines.append(f"  {jid}  {status}")
+        try:
+            detail = orch._db.get_job(jid)
+        except Exception:
+            # Legacy/test-crafted rows can predate required JobRecord fields.
+            # The status string in the audit payload remains the durable
+            # compatibility floor; optional presentation detail must never
+            # make a resumed task fail before its provider launch.
+            logger.warning(
+                "resume header could not load optional job detail for %s/%s",
+                task_id, jid,
+            )
+            detail = None
+        detail_parts: list[str] = []
+        if detail is not None and detail.reason is not None:
+            detail_parts.append(detail.reason)
+        if detail is not None and detail.exit_code is not None:
+            detail_parts.append(f"exit {detail.exit_code}")
+        detail_suffix = f" ({', '.join(detail_parts)})" if detail_parts else ""
+        lines.append(f"  {jid}  {status}{detail_suffix}")
         lines.append(f"          → happyranch jobs show {jid}")
         lines.append(f"          → happyranch jobs output {jid}")
     lines.append("")

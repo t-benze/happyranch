@@ -388,9 +388,12 @@ async def _lifespan(app: FastAPI):
         zombie_reaper_task.cancel()
         direct_connect_projection_sweep_task.cancel()
         workspace_cleanup_scheduler_task.cancel()
+        # Fence task consumers and every producer entrypoint before job
+        # shutdown can fire a blocked-task resume check. The parked task then
+        # stays blocked_on_job until the next startup recovery pass.
+        await state.queue.stop()
         from runtime.daemon.jobs_runner import terminate_all_inflight
         await terminate_all_inflight(grace_seconds=5)
-        await state.queue.stop()
         await state.close_all()
 
 
