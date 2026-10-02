@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import { translate, type MessageKey } from '@/lib/i18n';
 import {
   agentProvenance,
   agentProvenanceList,
@@ -11,6 +12,9 @@ import {
   skillSource,
   validationIssues,
 } from './skills-detail';
+
+/** Copy assertions run against the rendered English catalog text (THR-118 W4c). */
+const en = (key: MessageKey | null): string => (key === null ? '' : translate('en', key));
 
 describe('skills-detail — source gating', () => {
   test('user_authored is custom + editable', () => {
@@ -26,7 +30,7 @@ describe('skills-detail — source gating', () => {
     expect(skillSource(facts)).toBe('bundled');
     expect(isEditableSkill(facts)).toBe(false);
     expect(isReadOnlySkill(facts)).toBe(true);
-    const reason = readOnlyReason(facts);
+    const reason = en(readOnlyReason(facts));
     expect(reason).toMatch(/managed by the platform/i);
     expect(reason).not.toMatch(/unassign/i);
   });
@@ -35,7 +39,7 @@ describe('skills-detail — source gating', () => {
     const facts = { type: 'system_contract', system_contract: true };
     expect(skillSource(facts)).toBe('bundled');
     expect(isEditableSkill(facts)).toBe(false);
-    expect(readOnlyReason(facts)).toMatch(/cannot be edited or unassigned/i);
+    expect(en(readOnlyReason(facts))).toMatch(/cannot be edited or unassigned/i);
   });
 });
 
@@ -71,13 +75,13 @@ describe('skills-detail — per-agent provenance (guidance-visibility language)'
       state: 'effective',
     });
     expect(p.status).toBe('effective');
-    expect(p.statusLabel).toBe('Effective');
+    expect(en(p.statusLabel)).toBe('Effective');
     expect(p.tone).toBe('positive');
     expect(p.takesEffectNextSession).toBe(false);
-    expect(p.reason).not.toMatch(/\bactive\b/i);
-    expect(p.reason).toMatch(/shown to this agent as guidance/i);
+    expect(en(p.reason)).not.toMatch(/\bactive\b/i);
+    expect(en(p.reason)).toMatch(/shown to this agent as guidance/i);
     // Guidance-visibility copy only — never backend lifecycle jargon.
-    expect(p.reason).not.toMatch(/materializ/i);
+    expect(en(p.reason)).not.toMatch(/materializ/i);
   });
 
   test('assigned-not-yet-effective: attention + takes-effect-next-session', () => {
@@ -88,18 +92,18 @@ describe('skills-detail — per-agent provenance (guidance-visibility language)'
       state: 'assigned_not_yet_effective',
     });
     expect(p.status).toBe('not_yet_effective');
-    expect(p.statusLabel).toBe('Takes effect next session');
+    expect(en(p.statusLabel)).toBe('Takes effect next session');
     expect(p.tone).toBe('attention');
     expect(p.takesEffectNextSession).toBe(true);
-    expect(p.reason).toMatch(/next session/i);
-    expect(p.reason).not.toMatch(/\bactive\b/i);
+    expect(en(p.reason)).toMatch(/next session/i);
+    expect(en(p.reason)).not.toMatch(/\bactive\b/i);
   });
 
   test('not-assigned: neutral, explains it is not shown as guidance', () => {
     const p = agentProvenance({ agent: 'ops_agent', assigned: false, effective: false });
     expect(p.status).toBe('not_assigned');
-    expect(p.statusLabel).toBe('Not assigned');
-    expect(p.reason).toMatch(/not shown to this agent as guidance/i);
+    expect(en(p.statusLabel)).toBe('Not assigned');
+    expect(en(p.reason)).toMatch(/not shown to this agent as guidance/i);
   });
 
   test('no provenance label or reason leaks lifecycle / permission jargon', () => {
@@ -113,12 +117,12 @@ describe('skills-detail — per-agent provenance (guidance-visibility language)'
     // wording. Broadened from the literal 'materialize now' to the families.
     const forbidden = /materializ|admit|permission|approve|grant|\bpending\b/i;
     for (const p of agentProvenanceList(rows)) {
-      expect(p.reason).not.toMatch(forbidden);
-      expect(p.statusLabel).not.toMatch(forbidden);
+      expect(en(p.reason)).not.toMatch(forbidden);
+      expect(en(p.statusLabel)).not.toMatch(forbidden);
       // "active" is never user-facing for an assigned agent (spec §3.1).
       if (p.status !== 'not_assigned') {
-        expect(p.reason).not.toMatch(/\bactive\b/i);
-        expect(p.statusLabel).not.toMatch(/\bactive\b/i);
+        expect(en(p.reason)).not.toMatch(/\bactive\b/i);
+        expect(en(p.statusLabel)).not.toMatch(/\bactive\b/i);
       }
     }
   });

@@ -5,6 +5,7 @@
  * permission / approve / admit language — skills are guidance visibility only.
  */
 import type { CatalogSkillItem } from '@/hooks/skills';
+import type { MessageKey } from '@/lib/i18n';
 
 /**
  * Catalog source filter. `Bundled` and `Custom` map 1:1 to the daemon's
@@ -47,7 +48,8 @@ export function isReadOnly(item: CatalogSkillItem): boolean {
 export type ValidationTone = 'positive' | 'neutral' | 'attention';
 
 export interface ValidationLabel {
-  text: string;
+  /** Catalog key for the product-language status label (THR-118 W4c). */
+  key: MessageKey;
   tone: ValidationTone;
 }
 
@@ -59,14 +61,20 @@ export function validationLabel(
 ): ValidationLabel {
   switch (state) {
     case 'validated':
-      return { text: 'Validated', tone: 'positive' };
+      return { key: 'skills.status.validated', tone: 'positive' };
     case 'failed_validation':
-      return { text: 'Needs attention', tone: 'attention' };
+      return { key: 'skills.status.needsAttention', tone: 'attention' };
     case 'in_catalog':
     default:
-      return { text: 'In catalog', tone: 'neutral' };
+      return { key: 'skills.status.inCatalog', tone: 'neutral' };
   }
 }
+
+/** Source token → catalog key for the (CSS-uppercased) source badge. */
+export const SOURCE_LABEL_KEYS: Record<'bundled' | 'custom', MessageKey> = {
+  bundled: 'skills.source.bundled',
+  custom: 'skills.source.custom',
+};
 
 /** Source badge label — lowercase per the catalog visual direction. */
 export function sourceLabel(item: CatalogSkillItem): 'bundled' | 'custom' {

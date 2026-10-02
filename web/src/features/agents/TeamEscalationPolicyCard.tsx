@@ -14,6 +14,15 @@ import {
   useTeamEscalationPolicyV2History,
 } from '@/hooks/authorityPolicy';
 import { useAgentsRoutes } from '@/hooks/agents';
+import { useTranslation } from '@/hooks/i18n';
+import type { MessageKey, MessageParams } from '@/lib/i18n';
+import { classifyAgentError, renderAgentError, type Translate } from './strings';
+
+/** A locale-neutral status message, rendered through `t` on every render. */
+interface PolicyMessage {
+  key: MessageKey;
+  params?: MessageParams;
+}
 
 interface V2Draft {
   policyId: string;
@@ -33,12 +42,13 @@ interface V2EditorState {
 export function TeamEscalationPolicyEntryCard({ agent }: { agent: { name: string; team: string; role: string } }): JSX.Element {
   const query = useTeamEscalationPolicy(agent);
   const routes = useAgentsRoutes();
+  const { t } = useTranslation();
   return (
     <PolicyShell>
-      <h3 className="font-display text-text-primary text-base font-medium">Manager-only team escalation policy</h3>
-      <p className="text-text-muted mt-1 text-xs">{formatTeam(agent.team)} manager · {agent.name}</p>
-      {query.isLoading ? <p className="text-text-muted mt-3 text-xs">Loading active policy status…</p> : query.isError || !query.data ? <p role="alert" className="text-tier-red mt-3 text-xs">Could not load policy status.</p> : query.data.family === 'empty' ? <p className="text-text-muted mt-3 text-xs">No active release. Canonical dual-text bootstrap is available.</p> : <p className="text-text-muted mt-3 text-xs">Active {query.data.family === 'v2' ? 'dual-text ' : 'legacy '}v{query.data.active.release.version} · epoch {authorityPolicyActiveEpoch(query.data.active)} · {query.data.active.release.digest.slice(0, 12)}</p>}
-      <Button asChild size="sm" className="mt-3"><Link to={routes.policy(agent.name)}>Open team escalation policy</Link></Button>
+      <h3 className="font-display text-text-primary text-base font-medium">{t('agents.policy.entryTitle')}</h3>
+      <p className="text-text-muted mt-1 text-xs">{t('agents.policy.entryMeta', { team: formatTeam(agent.team), name: agent.name })}</p>
+      {query.isLoading ? <p className="text-text-muted mt-3 text-xs">{t('agents.policy.statusLoading')}</p> : query.isError || !query.data ? <p role="alert" className="text-tier-red mt-3 text-xs">{renderAgentError(classifyAgentError(query.error, 'agents.policy.statusError'), t)}</p> : query.data.family === 'empty' ? <p className="text-text-muted mt-3 text-xs">{t('agents.policy.noActive')}</p> : <p className="text-text-muted mt-3 text-xs">{t(query.data.family === 'v2' ? 'agents.policy.activeV2' : 'agents.policy.activeLegacy', { version: query.data.active.release.version, epoch: authorityPolicyActiveEpoch(query.data.active), digest: query.data.active.release.digest.slice(0, 12) })}</p>}
+      <Button asChild size="sm" className="mt-3"><Link to={routes.policy(agent.name)}>{t('agents.policy.open')}</Link></Button>
     </PolicyShell>
   );
 }
@@ -51,10 +61,11 @@ export function TeamEscalationPolicyCard({
   onDirtyChange?: (dirty: boolean) => void;
 }): JSX.Element {
   const query = useTeamEscalationPolicy(agent);
+  const { t, render } = useTranslation();
   const createV2Release = useCreateTeamEscalationPolicyV2Release();
   const v2History = useTeamEscalationPolicyV2History(agent);
   const [editor, setEditor] = useState<V2EditorState | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<PolicyMessage | null>(null);
   const [confirm, setConfirm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [reviewingConflict, setReviewingConflict] = useState(false);
@@ -88,12 +99,12 @@ export function TeamEscalationPolicyCard({
     return () => window.removeEventListener('beforeunload', warn);
   }, [dirty]);
 
-  if (query.isLoading) return <PolicyShell><p className="text-text-muted text-sm">Loading team policy…</p></PolicyShell>;
+  if (query.isLoading) return <PolicyShell><p className="text-text-muted text-sm">{t('agents.policy.loading')}</p></PolicyShell>;
   if (query.isError || !data) {
-    return <PolicyShell><div role="alert" className="text-tier-red flex flex-wrap items-center gap-2 text-sm"><AlertCircle size={14} /><span>Could not load the team policy.</span><Button size="sm" variant="ghost" onClick={() => void query.refetch()}>Retry</Button></div></PolicyShell>;
+    return <PolicyShell><div role="alert" className="text-tier-red flex flex-wrap items-center gap-2 text-sm"><AlertCircle size={14} /><span>{renderAgentError(classifyAgentError(query.error, 'agents.policy.loadError'), t)}</span><Button size="sm" variant="ghost" onClick={() => void query.refetch()}>{t('common.retry')}</Button></div></PolicyShell>;
   }
   if (!editor) {
-    return <PolicyShell><p className="text-text-muted text-sm">Preparing dual-text editor…</p></PolicyShell>;
+    return <PolicyShell><p className="text-text-muted text-sm">{t('agents.policy.preparing')}</p></PolicyShell>;
   }
 
   const validationError = validateV2Draft(editor.draft);
@@ -129,36 +140,44 @@ export function TeamEscalationPolicyCard({
     setSubmitting(true);
     setConfirm(false);
     setConflict(false);
-    setMessage('Saving and verifying the paired policy…');
+    setMessage({ key: 'agents.policy.msg.saving' });
     try {
       const control = await createV2Release.mutateAsync({ agentName: agent.name, body: request });
       if (!receiptMatchesRequest(control, request)) {
         setRetryRequest(request);
-        setMessage('The server receipt did not match this paired request. No local success was recorded; retry or reload after checking the server.');
+        setMessage({ key: 'agents.policy.msg.receiptMismatch' });
         return;
       }
       const refetched = await query.refetch();
       const readback = refetchedData(refetched);
       if (!readback || !readbackMatches(control, request, readback)) {
         setRetryRequest(request);
-        setMessage('The paired receipt was returned, but authoritative readback did not match it. No local success was recorded; retry the exact request or reload.');
+        setMessage({ key: 'agents.policy.msg.readbackMismatch' });
         return;
       }
       setEditor(editorFromProjection(readback));
       setRetryRequest(null);
-      setMessage(`Saved and activated immutable v2 release ${control.receipt.release_id}; activation ${control.receipt.activation_id}; selector ${control.receipt.selector_id}; digest ${control.receipt.policy_digest}.`);
+      setMessage({
+        key: 'agents.policy.msg.saved',
+        params: {
+          release: control.receipt.release_id,
+          activation: control.receipt.activation_id,
+          selector: control.receipt.selector_id,
+          digest: control.receipt.policy_digest,
+        },
+      });
     } catch (error) {
       const api = error instanceof ApiError ? error : null;
       if (api?.status === 409) {
         setRetryRequest(null);
         setConflict(true);
-        setMessage('The active selector changed or the request conflicted. Your paired draft was preserved. Review the current selector before choosing whether to save again.');
+        setMessage({ key: 'agents.policy.msg.conflict' });
       } else if (api?.status === 422) {
         setRetryRequest(null);
-        setMessage('The server rejected the paired policy contract. Both draft texts were preserved; review the required values and bounds.');
+        setMessage({ key: 'agents.policy.msg.rejected' });
       } else {
         setRetryRequest(request);
-        setMessage('The save result is unknown. No local success was recorded; retry the exact paired request to use its idempotency receipt.');
+        setMessage({ key: 'agents.policy.msg.unknown' });
       }
     } finally {
       submittingRef.current = false;
@@ -173,7 +192,7 @@ export function TeamEscalationPolicyCard({
       const result = await query.refetch();
       const current = refetchedData(result);
       if (!current) {
-        setMessage('The current selector could not be loaded. Your paired draft was preserved.');
+        setMessage({ key: 'agents.policy.msg.selectorLoadFailed' });
         return;
       }
       const source = editorFromProjection(current);
@@ -189,9 +208,9 @@ export function TeamEscalationPolicyCard({
         sourceKey: source.sourceKey,
       } : source);
       setConflict(false);
-      setMessage('The authoritative current selector was loaded. Your draft is preserved; review both texts before saving again.');
+      setMessage({ key: 'agents.policy.msg.selectorLoaded' });
     } catch {
-      setMessage('The current selector could not be loaded. Your paired draft was preserved.');
+      setMessage({ key: 'agents.policy.msg.selectorLoadFailed' });
     } finally {
       setReviewingConflict(false);
     }
@@ -201,52 +220,52 @@ export function TeamEscalationPolicyCard({
     <PolicyShell>
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h3 className="font-display text-text-primary text-base font-medium">Team escalation policy</h3>
-          <p className="text-text-muted mt-1 text-xs">Owned by the {formatTeam(data.team)} team, not by this agent.</p>
+          <h3 className="font-display text-text-primary text-base font-medium">{t('agents.policy.title')}</h3>
+          <p className="text-text-muted mt-1 text-xs">{t('agents.policy.ownedBy', { team: formatTeam(data.team) })}</p>
         </div>
-        <span className="bg-accent-soft text-accent-text rounded-full px-2 py-1 text-xs">Team-owned</span>
+        <span className="bg-accent-soft text-accent-text rounded-full px-2 py-1 text-xs">{t('agents.policy.teamOwned')}</span>
       </div>
       <div className="bg-tier-amber-soft text-text-secondary mt-3 rounded-md p-3 text-xs">
-        Changes are attributed only to the <strong>shared local operator credential</strong>. Individual operator identity is not available.
+        {render('agents.policy.attribution', { credential: <strong>{t('agents.policy.sharedCredential')}</strong> })}
       </div>
 
       {data.family === 'empty' ? (
-        <p className="text-text-muted mt-3 text-xs">No active release. This genuinely empty selector starts from the approved dual-text policy.</p>
+        <p className="text-text-muted mt-3 text-xs">{t('agents.policy.emptySelector')}</p>
       ) : data.family === 'legacy_v1' ? (
-        <p className="text-text-muted mt-3 text-xs">Active legacy v{data.active.release.version} · legacy activation {data.active.activation_id} · selector epoch {data.selector_epoch} · selector {data.selector_id}. Saving replaces the active selector with one atomic dual-text v2 release; legacy history remains read-only.</p>
+        <p className="text-text-muted mt-3 text-xs">{t('agents.policy.legacySelector', { version: data.active.release.version, activation: data.active.activation_id, epoch: data.selector_epoch, selector: data.selector_id })}</p>
       ) : (
-        <p className="text-text-muted mt-3 break-all text-xs">Active release v{data.active.release.version} · release {data.active.release.id} · activation {data.active.activation_id} · selector epoch {data.selector_epoch} · selector {data.selector_id} · digest {data.active.release.digest}.</p>
+        <p className="text-text-muted mt-3 break-all text-xs">{t('agents.policy.v2Selector', { version: data.active.release.version, release: data.active.release.id, activation: data.active.activation_id, epoch: data.selector_epoch, selector: data.selector_id, digest: data.active.release.digest })}</p>
       )}
 
       <dl className="bg-surface-sunken mt-4 rounded-md p-3 text-xs">
-        <div><dt className="text-text-muted inline">Title: </dt><dd className="text-text-primary inline">{editor.draft.title}</dd></div>
-        <div className="mt-1"><dt className="text-text-muted inline">Policy: </dt><dd className="text-text-primary inline font-mono">{editor.draft.policyId}</dd></div>
+        <div><dt className="text-text-muted inline">{t('agents.policy.titleLabel')} </dt><dd className="text-text-primary inline">{editor.draft.title}</dd></div>
+        <div className="mt-1"><dt className="text-text-muted inline">{t('agents.policy.policyLabel')} </dt><dd className="text-text-primary inline font-mono">{editor.draft.policyId}</dd></div>
       </dl>
 
-      <label className="text-text-secondary mt-4 block text-xs font-medium">What to escalate
+      <label className="text-text-secondary mt-4 block text-xs font-medium">{t('agents.policy.whatTo')}
         <textarea className="border-border-subtle bg-surface mt-1 min-h-32 w-full rounded-md border px-3 py-2 font-mono text-xs" value={editor.draft.whatToEscalate} onChange={(event) => updateText('whatToEscalate', event.target.value)} />
       </label>
-      <label className="text-text-secondary mt-3 block text-xs font-medium">What not to escalate
+      <label className="text-text-secondary mt-3 block text-xs font-medium">{t('agents.policy.whatNot')}
         <textarea className="border-border-subtle bg-surface mt-1 min-h-32 w-full rounded-md border px-3 py-2 font-mono text-xs" value={editor.draft.whatNotToEscalate} onChange={(event) => updateText('whatNotToEscalate', event.target.value)} />
       </label>
 
-      {(validationError || message) && <p role="status" className={`mt-3 break-all text-xs ${validationError ? 'text-tier-red' : 'text-text-secondary'}`}>{validationError ?? message}</p>}
+      {(validationError || message) && <p role="status" className={`mt-3 break-all text-xs ${validationError ? 'text-tier-red' : 'text-text-secondary'}`}>{validationError ? renderValidation(validationError, t) : message ? t(message.key, message.params) : null}</p>}
       <Dialog open={confirm} onOpenChange={(open) => { if (!pending) setConfirm(open); }}>
-        <DialogContent aria-label="activate dual-text policy confirmation">
+        <DialogContent aria-label={t('agents.policy.confirmAria')} closeLabel={t('common.close')}>
           <DialogHeader>
-            <DialogTitle>Save and activate both policy texts?</DialogTitle>
-            <DialogDescription>One atomic control request creates one immutable release and selects it. Both texts change together or neither changes.</DialogDescription>
+            <DialogTitle>{t('agents.policy.confirmTitle')}</DialogTitle>
+            <DialogDescription>{t('agents.policy.confirmBody')}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button size="sm" disabled={pending} onClick={() => void submit()}>Confirm save &amp; activate</Button>
-            <Button size="sm" variant="ghost" disabled={pending} onClick={() => setConfirm(false)}>Cancel</Button>
+            <Button size="sm" disabled={pending} onClick={() => void submit()}>{t('agents.policy.confirmSave')}</Button>
+            <Button size="sm" variant="ghost" disabled={pending} onClick={() => setConfirm(false)}>{t('common.cancel')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
       <div className="mt-4 flex flex-wrap gap-2">
-        <Button size="sm" disabled={!canSave || !!validationError || pending} onClick={() => setConfirm(true)}>{pending ? 'Saving & activating…' : 'Save & activate'}</Button>
-        {retryRequest && <Button size="sm" variant="ghost" disabled={pending} onClick={() => void submit(retryRequest)}>Retry exact save &amp; activate</Button>}
-        {conflict && <Button size="sm" variant="ghost" disabled={reviewingConflict} onClick={() => void reviewCurrentSelector()}>{reviewingConflict ? 'Loading current selector…' : 'Review current selector'}</Button>}
+        <Button size="sm" disabled={!canSave || !!validationError || pending} onClick={() => setConfirm(true)}>{pending ? t('agents.policy.saving') : t('agents.policy.save')}</Button>
+        {retryRequest && <Button size="sm" variant="ghost" disabled={pending} onClick={() => void submit(retryRequest)}>{t('agents.policy.retryExact')}</Button>}
+        {conflict && <Button size="sm" variant="ghost" disabled={reviewingConflict} onClick={() => void reviewCurrentSelector()}>{reviewingConflict ? t('agents.policy.loadingSelector') : t('agents.policy.reviewSelector')}</Button>}
       </div>
 
       <V2HistorySection history={v2History} items={v2HistoryItems} />
@@ -258,19 +277,20 @@ function V2HistorySection({ history, items }: {
   history: ReturnType<typeof useTeamEscalationPolicyV2History>;
   items: NonNullable<ReturnType<typeof useTeamEscalationPolicyV2History>['data']>['pages'][number]['items'];
 }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <section aria-labelledby="v2-policy-history-heading" className="border-border-subtle mt-5 border-t pt-4">
-      <h4 id="v2-policy-history-heading" className="text-text-primary text-sm font-medium">Immutable dual-text history</h4>
-      {history.isLoading ? <p className="text-text-muted mt-2 text-xs">Loading dual-text history…</p> : history.isError && !items.length ? <div className="mt-2 flex items-center gap-2"><p role="alert" className="text-tier-red text-xs">Could not load dual-text history.</p><Button size="sm" variant="ghost" onClick={() => void history.refetch()}>Retry dual-text history</Button></div> : !items.length ? <p className="text-text-muted mt-2 text-xs">No immutable dual-text releases yet.</p> : <ul className="mt-2 space-y-3">{items.map((item) => <li key={`${item.release_id}-${item.activation?.id ?? 'inactive'}`} className="bg-surface-sunken rounded p-3 text-xs">
+      <h4 id="v2-policy-history-heading" className="text-text-primary text-sm font-medium">{t('agents.policy.history.title')}</h4>
+      {history.isLoading ? <p className="text-text-muted mt-2 text-xs">{t('agents.policy.history.loading')}</p> : history.isError && !items.length ? <div className="mt-2 flex items-center gap-2"><p role="alert" className="text-tier-red text-xs">{renderAgentError(classifyAgentError(history.error, 'agents.policy.history.error'), t)}</p><Button size="sm" variant="ghost" onClick={() => void history.refetch()}>{t('agents.policy.history.retry')}</Button></div> : !items.length ? <p className="text-text-muted mt-2 text-xs">{t('agents.policy.history.empty')}</p> : <ul className="mt-2 space-y-3">{items.map((item) => <li key={`${item.release_id}-${item.activation?.id ?? 'inactive'}`} className="bg-surface-sunken rounded p-3 text-xs">
         <div className="font-medium">v{item.version} · {item.title}</div>
-        <div className="text-text-muted mt-1 break-all font-mono">release {item.release_id} · policy digest {item.policy_digest} · contract {item.contract_digest} · created {item.release_created_at}</div>
-        <div className="text-text-muted mt-1 break-all font-mono">{item.activation ? `activation ${item.activation.id} · selector epoch ${item.activation.selector_epoch} · ${item.activation.action} · activation digest ${item.activation.digest} · activated ${item.activation.created_at}` : 'never activated'}</div>
-        <div className="mt-2"><span className="font-medium">What to escalate</span><p className="mt-1 whitespace-pre-wrap font-mono">{item.what_to_escalate}</p></div>
-        <div className="mt-2"><span className="font-medium">What not to escalate</span><p className="mt-1 whitespace-pre-wrap font-mono">{item.what_not_to_escalate}</p></div>
+        <div className="text-text-muted mt-1 break-all font-mono">{t('agents.policy.history.release', { release: item.release_id, policyDigest: item.policy_digest, contract: item.contract_digest, created: item.release_created_at })}</div>
+        <div className="text-text-muted mt-1 break-all font-mono">{item.activation ? t('agents.policy.history.activation', { activation: item.activation.id, epoch: item.activation.selector_epoch, action: item.activation.action, digest: item.activation.digest, created: item.activation.created_at }) : t('agents.policy.history.neverActivated')}</div>
+        <div className="mt-2"><span className="font-medium">{t('agents.policy.whatTo')}</span><p className="mt-1 whitespace-pre-wrap font-mono">{item.what_to_escalate}</p></div>
+        <div className="mt-2"><span className="font-medium">{t('agents.policy.whatNot')}</span><p className="mt-1 whitespace-pre-wrap font-mono">{item.what_not_to_escalate}</p></div>
         <div className="text-text-muted mt-2">{item.actor_attribution}</div>
       </li>)}</ul>}
-      {history.isError && items.length > 0 && <p role="alert" className="text-tier-red mt-2 text-xs">Could not load more dual-text history. Loaded releases are preserved.</p>}
-      {!history.isLoading && items.length > 0 && <Button size="sm" variant="ghost" disabled={!history.hasNextPage || history.isFetchingNextPage} aria-label={history.isError ? 'Retry loading dual-text history' : 'Load more dual-text history'} onClick={() => void history.fetchNextPage()}>{history.isFetchingNextPage ? 'Loading more dual-text history…' : history.isError ? 'Retry loading dual-text history' : history.hasNextPage ? 'Load more dual-text history' : 'End of dual-text history'}</Button>}
+      {history.isError && items.length > 0 && <p role="alert" className="text-tier-red mt-2 text-xs">{t('agents.policy.history.moreError')}</p>}
+      {!history.isLoading && items.length > 0 && <Button size="sm" variant="ghost" disabled={!history.hasNextPage || history.isFetchingNextPage} aria-label={history.isError ? t('agents.policy.history.retryMore') : t('agents.policy.history.loadMore')} onClick={() => void history.fetchNextPage()}>{history.isFetchingNextPage ? t('agents.policy.history.loadingMore') : history.isError ? t('agents.policy.history.retryMore') : history.hasNextPage ? t('agents.policy.history.loadMore') : t('agents.policy.history.end')}</Button>}
     </section>
   );
 }
@@ -307,16 +327,28 @@ function formatTeam(team: string): string {
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
 }
 
-function validateV2Draft(draft: V2Draft): string | null {
-  return validateV2Text('What to escalate', draft.whatToEscalate)
-    ?? validateV2Text('What not to escalate', draft.whatNotToEscalate);
+const V2_TEXT_MAX = 20_000;
+
+/** A locale-neutral validation failure; `label` names the offending field. */
+interface V2ValidationError {
+  key: 'agents.policy.validation.required' | 'agents.policy.validation.unsupported' | 'agents.policy.validation.tooLong';
+  label: 'agents.policy.whatTo' | 'agents.policy.whatNot';
 }
 
-function validateV2Text(label: string, value: string): string | null {
-  if (!value.length || !value.trim().length) return `${label} is required.`;
-  if (value.includes('\0') || hasUnpairedSurrogate(value)) return `${label} contains an unsupported character.`;
-  if ([...value].length > 20_000) return `${label} must be at most 20000 characters.`;
+function validateV2Draft(draft: V2Draft): V2ValidationError | null {
+  return validateV2Text('agents.policy.whatTo', draft.whatToEscalate)
+    ?? validateV2Text('agents.policy.whatNot', draft.whatNotToEscalate);
+}
+
+function validateV2Text(label: V2ValidationError['label'], value: string): V2ValidationError | null {
+  if (!value.length || !value.trim().length) return { key: 'agents.policy.validation.required', label };
+  if (value.includes('\0') || hasUnpairedSurrogate(value)) return { key: 'agents.policy.validation.unsupported', label };
+  if ([...value].length > V2_TEXT_MAX) return { key: 'agents.policy.validation.tooLong', label };
   return null;
+}
+
+function renderValidation(error: V2ValidationError, t: Translate): string {
+  return t(error.key, { label: t(error.label), count: V2_TEXT_MAX });
 }
 
 function hasUnpairedSurrogate(value: string): boolean {

@@ -10,8 +10,16 @@
  * family (materializ… / admit / permission / approve / grant / pending) or a
  * user-facing "active". Raw daemon enum strings (severity codes, reason codes,
  * sources) are mapped to human copy here and never rendered verbatim.
+ *
+ * THR-118 W4c: every product-language string resolves through the typed
+ * catalog (`skills.validation.*`). Mappers take the active `t` (and `locale`
+ * for dates) so a locale switch re-renders them in place; a humanized
+ * fallback for an unknown daemon token is derived from the daemon value itself
+ * and therefore stays untranslated.
  */
 import type { ValidationEvent } from '@/hooks/skills';
+import { formatDateShapeFor, type Locale, type MessageKey } from '@/lib/i18n';
+import type { Translate } from './strings';
 
 // ── severity → product badge ────────────────────────────────────────────
 
@@ -24,9 +32,9 @@ export interface SeverityBadge {
 
 /** Turn a machine severity into a title-case word without leaking the raw
  *  enum. Used as the fallback for a severity the daemon adds later. */
-function humanize(code: string): string {
+function humanize(code: string, t: Translate): string {
   const words = code.trim().replace(/[_-]+/g, ' ').trim();
-  if (!words) return 'Event';
+  if (!words) return t('skills.validation.event');
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
@@ -40,22 +48,22 @@ function humanize(code: string): string {
  * permission/approval wording. `warn` + a humanized fallback stay as defensive
  * coverage for any severity a future daemon build might add.
  */
-export function severityBadge(severity: string): SeverityBadge {
+export function severityBadge(severity: string, t: Translate): SeverityBadge {
   switch (severity) {
     case 'pass':
     case 'ok':
-      return { text: 'Passed', tone: 'positive' };
+      return { text: t('skills.validation.severity.passed'), tone: 'positive' };
     case 'error':
     case 'fail':
     case 'failed':
-      return { text: 'Needs attention', tone: 'attention' };
+      return { text: t('skills.status.needsAttention'), tone: 'attention' };
     case 'warn':
     case 'warning':
-      return { text: 'Warning', tone: 'attention' };
+      return { text: t('skills.validation.severity.warning'), tone: 'attention' };
     case 'info':
-      return { text: 'Info', tone: 'neutral' };
+      return { text: t('skills.validation.severity.info'), tone: 'neutral' };
     default:
-      return { text: humanize(severity), tone: 'neutral' };
+      return { text: humanize(severity, t), tone: 'neutral' };
   }
 }
 
@@ -65,59 +73,50 @@ export function severityBadge(severity: string): SeverityBadge {
 // (routes/skills.py), plus the materialization / contract-predicate codes the
 // Runtime Validation surface is specced to explain in product language (spec
 // v3 §8). Anything unmapped is humanized — a raw enum is never rendered.
-const REASON_COPY: Record<string, string> = {
-  skill_md_empty: 'The skill guide (SKILL.md) is empty.',
-  missing_id: 'The skill is missing an id.',
-  missing_slug: 'The skill is missing a slug.',
-  missing_name: 'The skill is missing a name.',
-  missing_version: 'The skill guide is missing a version.',
-  skill_md_no_heading: 'The skill guide needs a top-level heading.',
-  skill_md_no_frontmatter:
-    'The skill guide must start with YAML frontmatter.',
-  skill_md_unclosed_frontmatter:
-    'The skill guide frontmatter is missing its closing fence.',
-  skill_md_malformed_frontmatter: 'The skill guide frontmatter is not valid YAML.',
-  skill_md_frontmatter_not_mapping: 'The skill guide frontmatter must be a mapping.',
-  frontmatter_duplicate_key: 'The skill guide frontmatter repeats a field.',
-  admission_field_not_allowed:
-    'The skill guide frontmatter uses a field that is not supported here.',
-  frontmatter_missing_name: 'The skill guide frontmatter needs a name.',
-  frontmatter_invalid_name:
-    'The skill guide name must be lower-case ASCII letters, digits or hyphens, and match the slug.',
-  frontmatter_name_slug_mismatch: 'The skill guide name must match the slug.',
-  frontmatter_missing_description: 'The skill guide frontmatter needs a description.',
-  frontmatter_invalid_description:
-    'The skill guide description must be a non-empty line of at most 1024 characters.',
-  frontmatter_invalid_license: 'The skill guide license must be text.',
-  frontmatter_invalid_compatibility:
-    'The skill guide compatibility field must be 1-500 characters of text.',
-  frontmatter_invalid_metadata:
-    'The skill guide metadata must be text keys mapped to text values.',
-  invalid_references_type: 'The references section is not formatted correctly.',
-  invalid_reference_value: 'A reference entry has an invalid value.',
-  invalid_reference_filename: 'A reference points to an invalid file name.',
-  invalid_assets_type: 'The assets section is not formatted correctly.',
-  invalid_asset_value: 'An asset entry has an invalid value.',
-  invalid_asset_filename: 'An asset points to an invalid file name.',
-  slug_collision: 'This slug is already used by another skill.',
-  // THR-262 seq43 Option A: the request-identity admission code. The logical
-  // slug must be literal ASCII; this is a HappyRanch rule, not a skill-guide
-  // syntax error, so the copy stays plain-language and copy-gate-safe.
-  invalid_slug:
-    'The slug can use only lower-case ASCII letters a-z, digits 0-9 and single hyphens, and must be 1-64 characters.',
-  system_contract_forbidden:
-    'A custom skill cannot be saved as a system contract.',
-  materialization_error:
-    'The skill could not be prepared for the next session.',
-  contract_predicate_error:
-    'A system-contract rule could not be checked for this agent.',
-  next_session_materialization: 'Takes effect next session.',
-};
+// Copy for every code lives in the catalog under
+// `skills.validation.reason.<code>` (THR-262 seq43 Option A: `invalid_slug` is
+// the request-identity admission code, a HappyRanch rule).
+const REASON_CODES: ReadonlySet<string> = new Set([
+  'skill_md_empty',
+  'missing_id',
+  'missing_slug',
+  'missing_name',
+  'missing_version',
+  'skill_md_no_heading',
+  'skill_md_no_frontmatter',
+  'skill_md_unclosed_frontmatter',
+  'skill_md_malformed_frontmatter',
+  'skill_md_frontmatter_not_mapping',
+  'frontmatter_duplicate_key',
+  'admission_field_not_allowed',
+  'frontmatter_missing_name',
+  'frontmatter_invalid_name',
+  'frontmatter_name_slug_mismatch',
+  'frontmatter_missing_description',
+  'frontmatter_invalid_description',
+  'frontmatter_invalid_license',
+  'frontmatter_invalid_compatibility',
+  'frontmatter_invalid_metadata',
+  'invalid_references_type',
+  'invalid_reference_value',
+  'invalid_reference_filename',
+  'invalid_assets_type',
+  'invalid_asset_value',
+  'invalid_asset_filename',
+  'slug_collision',
+  'invalid_slug',
+  'system_contract_forbidden',
+  'materialization_error',
+  'contract_predicate_error',
+  'next_session_materialization',
+]);
 
 /** reason_code → one plain-language line. Unknown codes are humanized so the
  *  raw enum jargon is never shown to an operator. */
-export function reasonCodeLabel(code: string): string {
-  return REASON_COPY[code] ?? humanize(code) + '.';
+export function reasonCodeLabel(code: string, t: Translate): string {
+  return REASON_CODES.has(code)
+    ? t(`skills.validation.reason.${code}` as MessageKey)
+    : humanize(code, t) + '.';
 }
 
 // ── agent / source labels ───────────────────────────────────────────────
@@ -125,30 +124,32 @@ export function reasonCodeLabel(code: string): string {
 /** A null agent means the event came from a context-applied rule (e.g. a
  *  system contract shown to every agent), not a per-agent assignment — render
  *  a product label, NEVER a blank cell. */
-export function agentLabel(agent: string | null): string {
-  return agent ?? 'Applied by context — all agents';
+export function agentLabel(agent: string | null, t: Translate): string {
+  return agent ?? t('skills.validation.appliedByContext');
 }
 
-const SOURCE_COPY: Record<string, string> = {
-  user_authored: 'Custom',
-  first_party: 'Bundled',
+const SOURCE_COPY: Record<string, MessageKey> = {
+  user_authored: 'skills.validation.source.custom',
+  first_party: 'skills.validation.source.bundled',
   // A skill applied / loaded into a workspace at session spawn
   // (workspace_adapters.py insert_skill_validation_event source="materialization").
   // Product-safe label: contains no forbidden lifecycle/permission token
   // (materializ… / admit / permission / approve / grant / pending) and no
   // user-facing "active", so it passes the routed copy gate.
-  materialization: 'Applied at session spawn',
+  materialization: 'skills.validation.source.appliedAtSpawn',
   // Dead keys — these are skill.source TYPES, never event `source` values, so
   // the daemon never emits them here. Kept only as defensive fallbacks so a
   // stray value renders a word, never a raw enum.
-  system_contract: 'System contract',
-  runtime: 'Runtime',
+  system_contract: 'skills.validation.source.systemContract',
+  runtime: 'skills.validation.source.runtime',
 };
 
 /** source → product-language label mirroring the catalog's Bundled/Custom
  *  vocabulary. */
-export function sourceLabel(source: string): string {
-  return SOURCE_COPY[source] ?? humanize(source);
+export function sourceLabel(source: string, t: Translate): string {
+  return Object.prototype.hasOwnProperty.call(SOURCE_COPY, source)
+    ? t(SOURCE_COPY[source])
+    : humanize(source, t);
 }
 
 // ── time formatting ─────────────────────────────────────────────────────
@@ -161,27 +162,27 @@ export interface EventTime {
 }
 
 /** Format an event's `created_at`. `nowMs` is passed in (not read from the
- *  clock) so the relative age is deterministic under test. */
-export function formatEventTime(iso: string, nowMs: number): EventTime {
+ *  clock) so the relative age is deterministic under test. The absolute
+ *  tooltip uses the central `dateTime` display shape in the viewer's local
+ *  time; the relative age is a catalog template. An unparseable timestamp is
+ *  a daemon value and renders verbatim. */
+export function formatEventTime(
+  iso: string,
+  nowMs: number,
+  locale: Locale,
+  t: Translate,
+): EventTime {
   const then = Date.parse(iso);
-  const absolute = Number.isNaN(then)
-    ? iso
-    : new Date(then).toLocaleString(undefined, {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      });
-  if (Number.isNaN(then)) return { relative: iso, absolute };
+  if (Number.isNaN(then)) return { relative: iso, absolute: iso };
+  const absolute = formatDateShapeFor(locale, then, 'dateTime');
   const min = Math.floor((nowMs - then) / 60000);
   let relative: string;
-  if (min < 1) relative = 'just now';
-  else if (min < 60) relative = `${min}m`;
+  if (min < 1) relative = t('skills.validation.justNow');
+  else if (min < 60) relative = t('skills.validation.ageMinutes', { count: min });
   else {
     const hr = Math.round(min / 60);
-    if (hr < 24) relative = `${hr}h`;
-    else relative = `${Math.round(hr / 24)}d`;
+    if (hr < 24) relative = t('skills.validation.ageHours', { count: hr });
+    else relative = t('skills.validation.ageDays', { count: Math.round(hr / 24) });
   }
   return { relative, absolute };
 }
@@ -195,6 +196,8 @@ export interface ValidationRow {
   agentLabel: string;
   source: string;
   sourceLabel: string;
+  /** Raw daemon severity token (machine value, used as a data attribute). */
+  severityCode: string;
   severity: SeverityBadge;
   ok: boolean;
   okLabel: string;
@@ -209,21 +212,24 @@ export interface ValidationRow {
 export function toValidationRow(
   event: ValidationEvent,
   nowMs: number,
+  locale: Locale,
+  t: Translate,
 ): ValidationRow {
   return {
     id: event.id,
     skillId: event.skill_id,
     skillName: event.slug,
-    agentLabel: agentLabel(event.agent),
+    agentLabel: agentLabel(event.agent, t),
     source: event.source,
-    sourceLabel: sourceLabel(event.source),
-    severity: severityBadge(event.severity),
+    sourceLabel: sourceLabel(event.source, t),
+    severityCode: event.severity,
+    severity: severityBadge(event.severity, t),
     ok: event.ok,
-    okLabel: event.ok ? 'Passed' : 'Not passed',
+    okLabel: t(event.ok ? 'skills.validation.severity.passed' : 'skills.validation.notPassed'),
     version: event.version,
     findings: event.findings ?? [],
-    reasonLines: (event.reason_codes ?? []).map(reasonCodeLabel),
-    time: formatEventTime(event.created_at, nowMs),
+    reasonLines: (event.reason_codes ?? []).map((code) => reasonCodeLabel(code, t)),
+    time: formatEventTime(event.created_at, nowMs, locale, t),
   };
 }
 
@@ -329,24 +335,24 @@ export function agentOptions(events: ValidationEvent[]): FilterOption[] {
 // real source with no option (materialization) would leave those rows
 // unfilterable. Labels are product-safe; "Applied at session spawn" mirrors the
 // row badge and passes the routed copy gate.
-export const SOURCE_OPTIONS: { value: SourceFilter; label: string }[] = [
-  { value: 'all', label: 'All sources' },
-  { value: 'user_authored', label: 'Custom' },
-  { value: 'first_party', label: 'Bundled' },
-  { value: 'materialization', label: 'Applied at session spawn' },
+export const SOURCE_OPTIONS: { value: SourceFilter; labelKey: MessageKey }[] = [
+  { value: 'all', labelKey: 'skills.validation.source.all' },
+  { value: 'user_authored', labelKey: 'skills.validation.source.custom' },
+  { value: 'first_party', labelKey: 'skills.validation.source.bundled' },
+  { value: 'materialization', labelKey: 'skills.validation.source.appliedAtSpawn' },
 ];
 
-export const SEVERITY_OPTIONS: { value: SeverityFilter; label: string }[] = [
-  { value: 'all', label: 'All results' },
-  { value: 'pass', label: 'Passed' },
-  { value: 'error', label: 'Needs attention' },
-  { value: 'warn', label: 'Warning' },
-  { value: 'info', label: 'Info' },
+export const SEVERITY_OPTIONS: { value: SeverityFilter; labelKey: MessageKey }[] = [
+  { value: 'all', labelKey: 'skills.validation.severity.all' },
+  { value: 'pass', labelKey: 'skills.validation.severity.passed' },
+  { value: 'error', labelKey: 'skills.status.needsAttention' },
+  { value: 'warn', labelKey: 'skills.validation.severity.warning' },
+  { value: 'info', labelKey: 'skills.validation.severity.info' },
 ];
 
-export const TIME_OPTIONS: { value: TimeFilter; label: string }[] = [
-  { value: 'all', label: 'Any time' },
-  { value: '24h', label: 'Last 24 hours' },
-  { value: '7d', label: 'Last 7 days' },
-  { value: '30d', label: 'Last 30 days' },
+export const TIME_OPTIONS: { value: TimeFilter; labelKey: MessageKey }[] = [
+  { value: 'all', labelKey: 'skills.validation.time.all' },
+  { value: '24h', labelKey: 'skills.validation.time.24h' },
+  { value: '7d', labelKey: 'skills.validation.time.7d' },
+  { value: '30d', labelKey: 'skills.validation.time.30d' },
 ];

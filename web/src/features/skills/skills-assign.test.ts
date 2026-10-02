@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import { translate, type MessageKey, type MessageParams } from '@/lib/i18n';
 import type { AgentAssignmentFacts } from './skills-detail';
 import {
   CONFIG_REVIEW_NOTE,
@@ -12,6 +13,9 @@ import {
   toggleLabel,
   type PendingAssignments,
 } from './skills-assign';
+
+/** Copy assertions run against the rendered English catalog text (THR-118 W4c). */
+const en = (key: MessageKey, params?: MessageParams): string => translate('en', key, params);
 
 // Committed per-agent facts spanning the full vocabulary: an effective agent,
 // an assigned-not-yet-effective agent, and a not-assigned agent.
@@ -130,13 +134,13 @@ describe('toggleAssignment', () => {
 
 describe('toggleLabel — product language only', () => {
   test('an assigned agent offers Unassign; a not-assigned agent offers Assign', () => {
-    expect(toggleLabel(EFFECTIVE, {})).toBe('Unassign');
-    expect(toggleLabel(UNASSIGNED, {})).toBe('Assign');
+    expect(en(toggleLabel(EFFECTIVE, {}))).toBe('Unassign');
+    expect(en(toggleLabel(UNASSIGNED, {}))).toBe('Assign');
   });
 
   test('follows the queued desired state', () => {
     const q = toggleAssignment(UNASSIGNED, {}); // now desired-assigned
-    expect(toggleLabel(UNASSIGNED, q)).toBe('Unassign');
+    expect(en(toggleLabel(UNASSIGNED, q))).toBe('Unassign');
   });
 });
 
@@ -151,7 +155,7 @@ describe('previewProvenance — optimistic state under the queue (reuses agentPr
     const q = toggleAssignment(UNASSIGNED, {});
     const p = previewProvenance(UNASSIGNED, q);
     expect(p.status).toBe('not_yet_effective');
-    expect(p.statusLabel).toBe('Takes effect next session');
+    expect(en(p.statusLabel)).toBe('Takes effect next session');
     expect(p.takesEffectNextSession).toBe(true);
   });
 
@@ -159,7 +163,7 @@ describe('previewProvenance — optimistic state under the queue (reuses agentPr
     const q = toggleAssignment(EFFECTIVE, {});
     const p = previewProvenance(EFFECTIVE, q);
     expect(p.status).toBe('not_assigned');
-    expect(p.statusLabel).toBe('Not assigned');
+    expect(en(p.statusLabel)).toBe('Not assigned');
   });
 });
 
@@ -176,13 +180,13 @@ describe('reviewChanges / changeCount — config-review summary', () => {
 
     const assign = changes.find((c) => c.agent === 'ops_agent')!;
     expect(assign.action).toBe('allow'); // REQUEST-ONLY verb
-    expect(assign.label).toBe('Assign');
-    expect(assign.summary).toMatch(/shown this skill as guidance at its next session/i);
+    expect(en(assign.label)).toBe('Assign');
+    expect(en(assign.summary, { agent: assign.agent })).toMatch(/shown this skill as guidance at its next session/i);
 
     const unassign = changes.find((c) => c.agent === 'partner_liaison')!;
     expect(unassign.action).toBe('remove'); // REQUEST-ONLY verb
-    expect(unassign.label).toBe('Unassign');
-    expect(unassign.summary).toMatch(/no longer be shown this skill as guidance/i);
+    expect(en(unassign.label)).toBe('Unassign');
+    expect(en(unassign.summary, { agent: unassign.agent })).toMatch(/no longer be shown this skill as guidance/i);
   });
 
   test('preserves the input agent order', () => {
@@ -204,13 +208,15 @@ describe('copy discipline — no forbidden token families in rendered strings', 
   test('toggle labels, change summaries, and the commit note are clean', () => {
     const queue: PendingAssignments = { ops_agent: true, partner_liaison: false };
     const rendered: string[] = [
-      CONFIG_REVIEW_NOTE,
-      toggleLabel(EFFECTIVE, {}),
-      toggleLabel(UNASSIGNED, {}),
-      ...reviewChanges(ALL, queue).flatMap((c) => [c.label, c.summary]),
+      en(CONFIG_REVIEW_NOTE),
+      en(toggleLabel(EFFECTIVE, {})),
+      en(toggleLabel(UNASSIGNED, {})),
+      // Agent names are daemon values; render with a neutral one so only the
+      // catalog copy is scanned.
+      ...reviewChanges(ALL, queue).flatMap((c) => [en(c.label), en(c.summary, { agent: 'x' })]),
       ...ALL.flatMap((a) => [
-        previewProvenance(a, queue).statusLabel,
-        previewProvenance(a, queue).reason,
+        en(previewProvenance(a, queue).statusLabel),
+        en(previewProvenance(a, queue).reason),
       ]),
     ];
     for (const t of rendered) {
@@ -219,7 +225,7 @@ describe('copy discipline — no forbidden token families in rendered strings', 
   });
 
   test('the commit note states guidance-visibility, not a tool/command change', () => {
-    expect(CONFIG_REVIEW_NOTE).toMatch(/guidance/i);
-    expect(CONFIG_REVIEW_NOTE).toMatch(/do not change available tools or commands/i);
+    expect(en(CONFIG_REVIEW_NOTE)).toMatch(/guidance/i);
+    expect(en(CONFIG_REVIEW_NOTE)).toMatch(/do not change available tools or commands/i);
   });
 });

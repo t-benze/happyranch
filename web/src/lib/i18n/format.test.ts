@@ -176,6 +176,8 @@ describe('W4b display sites route dates through @/lib/i18n/format (THR-118 W4b)'
   const here = dirname(fileURLToPath(import.meta.url));
   const srcRoot = join(here, '../..');
   const W4B_DIRS = ['features/todos', 'features/work-hours-config', 'features/audit', 'shared/work-hours'];
+  // THR-118 W4c extends the same guard to the Agents and Skills route families.
+  const W4C_DIRS = ['features/agents', 'features/skills'];
   // Presentation calls: any toLocale*String, or an Intl date formatter whose
   // locale is NOT a fixed machine literal ('en-US'/'en-CA' formatToParts
   // parsing for timezone conversion and <input> values stays feature-local).
@@ -189,6 +191,19 @@ describe('W4b display sites route dates through @/lib/i18n/format (THR-118 W4b)'
 
   it('no W4b feature file formats a visible date/time directly', () => {
     const files = W4B_DIRS.flatMap(sources);
+    expect(files.length).toBeGreaterThan(20);
+    const offenders = files.flatMap((file) =>
+      readFileSync(join(srcRoot, file), 'utf8')
+        .split('\n')
+        .map((line, i) => [line, i + 1] as const)
+        .filter(([line]) => DISPLAY_CALL.test(line) && !line.trim().startsWith('*') && !line.trim().startsWith('//'))
+        .map(([, n]) => `${file}:${n}`),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it('no W4c (agents/skills) feature file formats a visible date/time directly', () => {
+    const files = W4C_DIRS.flatMap(sources);
     expect(files.length).toBeGreaterThan(20);
     const offenders = files.flatMap((file) =>
       readFileSync(join(srcRoot, file), 'utf8')

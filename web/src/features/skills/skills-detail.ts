@@ -18,6 +18,7 @@
  * types) so this pure module stays decoupled from the data layer and clear of
  * the features/* no-restricted-imports rule (MEM-032).
  */
+import type { MessageKey } from '@/lib/i18n';
 import type { ValidationTone } from './skills-catalog';
 
 /** Minimal structural shape of a skill's source/kind facts. */
@@ -52,12 +53,10 @@ export function isReadOnlySkill(facts: SkillSourceFacts): boolean {
  * "cannot be unassigned", while a system contract (applied by context
  * predicate, never per-agent) is. Returns `null` for editable custom skills.
  */
-export function readOnlyReason(facts: SkillSourceFacts): string | null {
+export function readOnlyReason(facts: SkillSourceFacts): MessageKey | null {
   if (isEditableSkill(facts)) return null;
-  if (facts.system_contract) {
-    return 'Read-only system contract — its guidance is applied by context and cannot be edited or unassigned.';
-  }
-  return 'Bundled skill — its guidance is managed by the platform and cannot be edited here.';
+  if (facts.system_contract) return 'skills.detail.readOnlyContract';
+  return 'skills.detail.readOnlyBundled';
 }
 
 /** Minimal structural shape of the skill-level validation facts. */
@@ -100,15 +99,15 @@ export type AgentEffectiveStatus =
 export interface AgentProvenance {
   agent: string;
   status: AgentEffectiveStatus;
-  /** Short state chip label — product language, never "active". */
-  statusLabel: string;
+  /** Catalog key for the short state chip label — never "active". */
+  statusLabel: MessageKey;
   tone: ValidationTone;
   /** True only for assigned-but-not-yet-effective — drives the
    *  "takes effect next session" indicator. */
   takesEffectNextSession: boolean;
   /** One-sentence "why this skill is / isn't effective for this agent",
-   *  in guidance-visibility language (never permission wording). */
-  reason: string;
+   *  in guidance-visibility language (never permission wording) — a catalog key. */
+  reason: MessageKey;
 }
 
 function isEffective(a: AgentAssignmentFacts): boolean {
@@ -133,31 +132,29 @@ export function agentProvenance(a: AgentAssignmentFacts): AgentProvenance {
     return {
       agent: a.agent,
       status: 'not_assigned',
-      statusLabel: 'Not assigned',
+      statusLabel: 'skills.provenance.notAssigned',
       tone: 'neutral',
       takesEffectNextSession: false,
-      reason:
-        'Not assigned — this skill is not shown to this agent as guidance.',
+      reason: 'skills.provenance.reason.notAssigned',
     };
   }
   if (isEffective(a)) {
     return {
       agent: a.agent,
       status: 'effective',
-      statusLabel: 'Effective',
+      statusLabel: 'skills.provenance.effective',
       tone: 'positive',
       takesEffectNextSession: false,
-      reason: 'The current version is shown to this agent as guidance.',
+      reason: 'skills.provenance.reason.effective',
     };
   }
   return {
     agent: a.agent,
     status: 'not_yet_effective',
-    statusLabel: 'Takes effect next session',
+    statusLabel: 'skills.provenance.takesEffect',
     tone: 'attention',
     takesEffectNextSession: true,
-    reason:
-      'Assigned — the current version takes effect at this agent’s next session.',
+    reason: 'skills.provenance.reason.notYetEffective',
   };
 }
 

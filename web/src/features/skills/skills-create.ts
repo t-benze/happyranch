@@ -20,7 +20,14 @@
  * Inputs are minimal STRUCTURAL shapes (not the `@/lib/api/skills` types) so
  * this module stays decoupled from the data layer and clear of the features/*
  * no-restricted-imports rule (MEM-032).
+ *
+ * THR-118 W4c: rendered copy resolves through the typed catalog
+ * (`skills.create.*`): helpers return catalog keys or take the active `t`.
+ * An unrecognised backend validation error is a daemon value and passes
+ * through verbatim.
  */
+import type { MessageKey } from '@/lib/i18n';
+import type { Translate } from './strings';
 
 // ── Form → request ──────────────────────────────────────────────────────
 
@@ -114,12 +121,11 @@ export function buildCreateSkillRequest(
  *  body must be present. Version is optional. This mirrors the daemon's
  *  malformed-request 422 (missing required request field) so the operator gets
  *  an inline nudge instead of a round-trip. */
-export function createFormErrors(values: CreateSkillFormValues): string[] {
-  const errors: string[] = [];
-  if (values.slug.trim().length === 0) errors.push('Add a slug / id.');
-  if (values.name.trim().length === 0) errors.push('Add a name.');
-  if (values.skillMd.trim().length === 0)
-    errors.push('Add the SKILL.md guidance body.');
+export function createFormErrors(values: CreateSkillFormValues): MessageKey[] {
+  const errors: MessageKey[] = [];
+  if (values.slug.trim().length === 0) errors.push('skills.create.form.slugRequired');
+  if (values.name.trim().length === 0) errors.push('skills.create.form.nameRequired');
+  if (values.skillMd.trim().length === 0) errors.push('skills.create.form.skillMdRequired');
   return errors;
 }
 
@@ -156,29 +162,29 @@ export function isValidationPassed(facts: ValidationResultFacts): boolean {
  * unrecognised passes through trimmed (the backend errors are already
  * human-readable). Never emits permission / approval wording.
  */
-export function plainValidationError(raw: string): string {
+export function plainValidationError(raw: string, t: Translate): string {
   const e = raw.trim();
   const l = e.toLowerCase();
   if (/(system[_-]?contract|reserved field)/.test(l)) {
-    return 'Custom skills can’t declare a system contract — remove that field. A custom skill stays a custom skill.';
+    return t('skills.create.plain.systemContract');
   }
   if (/collide|collision|already (used|exists)|release skill/.test(l)) {
-    return 'Choose a different slug — this one is already used by a bundled skill.';
+    return t('skills.create.plain.collision');
   }
   if (/skill\.?md/.test(l) && /(missing|heading|empty|present)/.test(l)) {
-    return 'Add the SKILL.md guidance body, including a heading, so agents know what the skill is.';
+    return t('skills.create.plain.skillMd');
   }
   if (/version/.test(l) && /(missing|required|invalid)/.test(l)) {
-    return 'Add a version to the skill’s details.';
+    return t('skills.create.plain.version');
   }
   if (/(id|slug|name)/.test(l) && /(missing|required)/.test(l)) {
-    return 'Fill in the required details: id / slug, name, and version.';
+    return t('skills.create.plain.required');
   }
   if (/(reference|asset|could not.*resolv|unresolved|not.*found)/.test(l)) {
-    return 'A referenced file couldn’t be found — include it, or remove the reference.';
+    return t('skills.create.plain.reference');
   }
   if (/(parse|yaml|malformed|read)/.test(l)) {
-    return 'The skill package couldn’t be read — check the formatting of skill.yaml and SKILL.md.';
+    return t('skills.create.plain.parse');
   }
   return e;
 }
@@ -186,30 +192,30 @@ export function plainValidationError(raw: string): string {
 /** Map + clean the whole error list (dropping blanks). */
 export function plainValidationErrors(
   errors: string[] | undefined,
+  t: Translate,
 ): string[] {
   return (errors ?? [])
     .filter((e) => e.trim().length > 0)
-    .map(plainValidationError);
+    .map((e) => plainValidationError(e, t));
 }
 
 /** Head line for a PASSED validation — a saved, shown-as-guidance custom skill. */
-export function successHeadline(): string {
-  return 'Validated — technical checks passed. Your custom skill is saved to the catalog.';
+export function successHeadline(t: Translate): string {
+  return t('skills.create.successHeadline');
 }
 
 /** Head line for a FAILED validation — a fixable technical check, never a
  *  rejection. The draft is kept and stays editable. */
-export function failureHeadline(issueCount: number): string {
-  const noun = issueCount === 1 ? 'item' : 'items';
-  return `${issueCount} ${noun} to fix — this is a technical check, not a review gate. Your draft is kept in the catalog; fix the ${noun} below and re-validate.`;
+export function failureHeadline(issueCount: number, t: Translate): string {
+  return t('skills.create.failureHeadline', { count: issueCount });
 }
 
 // ── The validation-check explanation (guidance-only product language) ────
 
 export interface ValidationCheck {
   key: string;
-  title: string;
-  description: string;
+  titleKey: MessageKey;
+  descriptionKey: MessageKey;
 }
 
 /**
@@ -223,44 +229,37 @@ export interface ValidationCheck {
 export const VALIDATION_CHECKS: ValidationCheck[] = [
   {
     key: 'parses',
-    title: 'The package reads cleanly',
-    description:
-      'Your skill.yaml and SKILL.md are well-formed, with no broken formatting.',
+    titleKey: 'skills.create.check.parses.title',
+    descriptionKey: 'skills.create.check.parses.description',
   },
   {
     key: 'metadata',
-    title: 'The required details are filled in',
-    description:
-      'The skill carries an id / slug, a name, and a version so it can be listed and referenced.',
+    titleKey: 'skills.create.check.metadata.title',
+    descriptionKey: 'skills.create.check.metadata.description',
   },
   {
     key: 'skill_md',
-    title: 'The guidance itself is present',
-    description:
-      'SKILL.md holds the actual guidance text an agent will be shown — it is not empty.',
+    titleKey: 'skills.create.check.skillMd.title',
+    descriptionKey: 'skills.create.check.skillMd.description',
   },
   {
     key: 'files_resolve',
-    title: 'References and assets resolve',
-    description:
-      'Every file the skill points to is included in the package and can be found.',
+    titleKey: 'skills.create.check.filesResolve.title',
+    descriptionKey: 'skills.create.check.filesResolve.description',
   },
   {
     key: 'slug_unique',
-    title: 'The slug doesn’t clash with a bundled skill',
-    description:
-      'Your slug is distinct from every platform-bundled skill, so the right guidance always loads.',
+    titleKey: 'skills.create.check.slugUnique.title',
+    descriptionKey: 'skills.create.check.slugUnique.description',
   },
   {
     key: 'stays_custom',
-    title: 'It stays a custom skill',
-    description:
-      'A custom skill can’t declare itself a system contract — that class is reserved for the platform.',
+    titleKey: 'skills.create.check.staysCustom.title',
+    descriptionKey: 'skills.create.check.staysCustom.description',
   },
   {
     key: 'dry_assembly',
-    title: 'It assembles cleanly',
-    description:
-      'A trial assembly of the package into a skill folder succeeds, so agents can be shown it without error.',
+    titleKey: 'skills.create.check.dryAssembly.title',
+    descriptionKey: 'skills.create.check.dryAssembly.description',
   },
 ];

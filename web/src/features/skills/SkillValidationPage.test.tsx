@@ -2,6 +2,7 @@ import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
+import { translate } from '@/lib/i18n';
 import { AppRoutes } from '@/routes';
 import type { ValidationEvent } from '@/hooks/skills';
 import { renderWithProviders } from '@/test/render';
@@ -101,7 +102,7 @@ describe('SkillValidationPage — Runtime Validation (THR-092 Slice 6)', () => {
   test('titles the surface from the endpoint label, never "Audit"', async () => {
     mount();
     expect(
-      await screen.findByRole('heading', { name: 'Runtime Validation' }),
+      await screen.findByRole('heading', { name: translate('en', 'skills.catalog.runtimeValidation') }),
     ).toBeInTheDocument();
     const main = document.querySelector('main')?.textContent ?? '';
     expect(main).not.toMatch(/\baudit\b/i);
@@ -116,18 +117,18 @@ describe('SkillValidationPage — Runtime Validation (THR-092 Slice 6)', () => {
     ).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'kb-curation' })).toBeInTheDocument();
     // severity → product badges
-    expect(screen.getAllByText('Needs attention').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Passed').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(translate('en', 'skills.status.needsAttention')).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(translate('en', 'skills.validation.severity.passed')).length).toBeGreaterThan(0);
     // source → Bundled / Custom / "Applied at session spawn" (materialization)
-    expect(screen.getAllByText('Bundled').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Applied at session spawn').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(translate('en', 'skills.validation.source.bundled')).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(translate('en', 'skills.validation.source.appliedAtSpawn')).length).toBeGreaterThan(0);
   });
 
   test('null-agent event renders the applied-by-context label, never blank', async () => {
     mount();
     await screen.findByRole('link', { name: 'founder-escalation-protocol' });
     expect(
-      screen.getByText('Applied by context — all agents'),
+      screen.getByText(translate('en', 'skills.validation.appliedByContext')),
     ).toBeInTheDocument();
   });
 
@@ -135,7 +136,7 @@ describe('SkillValidationPage — Runtime Validation (THR-092 Slice 6)', () => {
     mount();
     await screen.findByRole('link', { name: 'vendor-comms-style' });
     expect(
-      screen.getByText('The skill guide is missing a version.'),
+      screen.getByText(translate('en', 'skills.validation.reason.missing_version')),
     ).toBeInTheDocument();
     const main = document.querySelector('main')?.textContent ?? '';
     expect(main).not.toMatch(/missing_version|contract_predicate_error/);
@@ -206,7 +207,7 @@ describe('SkillValidationPage — Runtime Validation (THR-092 Slice 6)', () => {
   test('shows the guidance empty state when there are no events', async () => {
     mount([]);
     expect(
-      await screen.findByText('No runtime validation events yet'),
+      await screen.findByText(translate('en', 'skills.validation.emptyTitle')),
     ).toBeInTheDocument();
   });
 

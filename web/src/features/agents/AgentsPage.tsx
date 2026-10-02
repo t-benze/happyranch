@@ -32,23 +32,20 @@ import { AgentDetailPane } from './AgentDetailPane';
 import type { AgentSummary } from '@/lib/api/types';
 import { AddAgentDialog } from './AddAgentDialog';
 import { AgentAvatar } from './AgentAvatar';
+import { roleLabelKey } from './strings';
+import { useTranslation } from '@/hooks/i18n';
 
 /**
- * AGENTS-02: capitalized role label for the roster meta line. The
- * Direction-A meta is `role · status`, but `status` is NOT a field on the
- * AgentSummary roster payload — so the meta is built role-only: the absent
- * half is omitted, never fabricated.
+ * AGENTS-02: the roster meta line is role-only — `status` is NOT a field on
+ * the AgentSummary roster payload, so the absent half is omitted, never
+ * fabricated. The localized label comes from `roleLabelKey` (strings.ts).
  */
-function roleLabel(role: string | null): string {
-  if (role === 'manager') return 'Manager';
-  if (role === 'worker') return 'Worker';
-  return 'No role';
-}
 
 export function AgentsPage(): JSX.Element {
   const { agent_name: openAgentName, slug } = useParams<{ agent_name?: string; slug?: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const { t } = useTranslation();
   const routes = useAgentsRoutes();
   const agentsQuery = useAgentsList();
   const { density } = useDensity();
@@ -126,8 +123,8 @@ export function AgentsPage(): JSX.Element {
       <header className="border-border-subtle border-b p-4">
         <div className="flex items-start justify-between gap-3">
           <PageHeader
-            title="Agents"
-            meta="Editable roster — click an agent to view and edit details."
+            title={t('agents.page.title')}
+            meta={t('agents.page.meta')}
           />
           {/* AGENTS-03: align the primary action to the Direction-A
               `a-agents` reference — leading "+" glyph + "New agent" label
@@ -136,13 +133,13 @@ export function AgentsPage(): JSX.Element {
               change held out of this presentation-only single-surface fix. */}
           <Button onClick={() => setAddOpen(true)}>
             <Plus aria-hidden="true" />
-            New agent
+            {t('agents.page.newAgent')}
           </Button>
         </div>
         <Tabs value={tab} onValueChange={onTabChange} className="mt-3">
           <TabsList>
-            <TabsTrigger value="active">Active</TabsTrigger>
-            <TabsTrigger value="pending">Pending</TabsTrigger>
+            <TabsTrigger value="active">{t('agents.tab.active')}</TabsTrigger>
+            <TabsTrigger value="pending">{t('agents.tab.pending')}</TabsTrigger>
           </TabsList>
         </Tabs>
       </header>
@@ -174,10 +171,10 @@ export function AgentsPage(): JSX.Element {
               ) : agents.length === 0 ? (
                 <div className="p-4">
                   <EmptyState
-                    title="No agents enrolled"
-                    body="Add a manager to create your first team."
+                    title={t('agents.empty.title')}
+                    body={t('agents.empty.body')}
                     cta={{
-                      label: 'Add agent',
+                      label: t('agents.empty.cta'),
                       onClick: () => setAddOpen(true),
                     }}
                   />
@@ -226,7 +223,7 @@ export function AgentsPage(): JSX.Element {
                                 />
                               </div>
                               <div className="text-text-muted mt-0.5 text-xs">
-                                {roleLabel(a.role)}
+                                {t(roleLabelKey(a.role))}
                               </div>
                               {a.description && (
                                 <p className="text-text-muted mt-0.5 truncate text-xs leading-relaxed">
@@ -265,13 +262,13 @@ export function AgentsPage(): JSX.Element {
               <div className="text-center">
                 <p className="font-display text-text-primary text-lg font-medium">
                   {agents.length > 0
-                    ? 'Select an agent'
-                    : 'No agents yet'}
+                    ? t('agents.select.title')
+                    : t('agents.noAgents.title')}
                 </p>
                 <p className="text-text-muted mt-2 text-sm">
                   {agents.length > 0
-                    ? 'Select an agent from the roster to view and edit details.'
-                    : 'Add a manager to create your first team.'}
+                    ? t('agents.select.body')
+                    : t('agents.empty.body')}
                 </p>
               </div>
             </div>
