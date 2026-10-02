@@ -10,6 +10,11 @@ def _parse_dt(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def _late_database_now() -> datetime:
+    """Resolve the facade clock late for patched-global rule 3."""
+    return sys.modules["runtime.infrastructure.database"]._now()
+
+
 def _synchronized(method):
     """Serialize every public ``Database`` call through ``self._lock``.
 
