@@ -39,6 +39,7 @@ SKILL_DIR = (
 SKILL_MD = SKILL_DIR / "SKILL.md"
 HELPER = SKILL_DIR / "scripts" / "check_path_use.py"
 PROCEDURE = SKILL_DIR / "scripts" / "run_cleanup_candidate.sh"
+BATCH_DRIVER = SKILL_DIR / "scripts" / "run_cleanup_batch.py"
 MANUAL_FIRST_LINE = "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)"
 DAEMON_MARKER = "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)"
 
@@ -452,8 +453,11 @@ def _write_stubs(bin_dir: Path) -> None:
         "        payload=; prev=; for a in \"$@\"; do [ \"$prev\" = --from-file ] && payload=\"$a\"; prev=\"$a\"; done\n"
         "        [ -n \"$payload\" ] || exit 1\n"
         "        cp \"$payload\" \"$WC_JOB_PAYLOAD\"\n"
-        "        exec python3 -c 'import datetime,json,os\n"
+        "        exec python3 -c 'import datetime,json,os,subprocess\n"
         "p=json.load(open(os.environ[\"WC_JOB_PAYLOAD\"])); now=datetime.datetime.now(datetime.timezone.utc).isoformat()\n"
+        "if os.environ.get(\"WC_EXECUTE_SCAN\")==\"1\":\n"
+        " r=subprocess.run([\"bash\",\"-c\",p[\"script\"]],cwd=os.environ[\"WORKSPACE\"],capture_output=True,text=True,env=os.environ)\n"
+        " json.dump({\"stdout\":r.stdout,\"stderr\":r.stderr,\"returncode\":r.returncode},open(os.environ[\"WC_JOB_EXECUTION\"],\"w\"),sort_keys=True)\n"
         "print(json.dumps({\"id\":\"JOB-1\",\"status\":\"running\",\"created_at\":now,\"started_at\":now,\"cwd_resolved\":os.path.realpath(os.environ[\"WORKSPACE\"]),\"timeout_seconds\":20,\"events_url\":\"/events\",\"authentication\":{\"task_id\":p[\"task_id\"],\"session_id\":p[\"session_id\"]}},sort_keys=True))' ;;\n"
         "      wait)\n"
         "        case \"$WC_JOB_SCENARIO\" in\n"
@@ -467,10 +471,11 @@ def _write_stubs(bin_dir: Path) -> None:
         "        exec python3 -c 'import datetime,json,os\n"
         "p=json.load(open(os.environ[\"WC_JOB_PAYLOAD\"])); scenario=os.environ[\"WC_JOB_SCENARIO\"]; now=datetime.datetime.fromtimestamp(os.stat(os.environ[\"WC_JOB_PAYLOAD\"]).st_mtime,datetime.timezone.utc).isoformat(); created=(\"2000-01-01T00:00:00+00:00\" if scenario==\"stale\" else now)\n"
         "target=os.path.realpath(os.environ[\"WC_REAL_CANDIDATE\"]); containing=os.path.realpath(os.environ[\"CONTAINING\"]); st=os.stat(target); is_cache=os.path.basename(target) in (\"node_modules\",\".venv\"); cst=os.stat(containing)\n"
+        "execution=json.load(open(os.environ[\"WC_JOB_EXECUTION\"])) if os.environ.get(\"WC_EXECUTE_SCAN\")==\"1\" else None\n"
         "coverage={\"agent_uid\":os.getuid(),\"self_pid\":\"123\",\"target_dev_ino\":[st.st_dev,st.st_ino],\"containing_worktree\":containing if is_cache else None,\"containing_worktree_dev_ino\":[cst.st_dev,cst.st_ino] if is_cache else None,\"target_present\":True,\"containing_worktree_present\":is_cache,\"total_pids\":1,\"same_user\":1,\"root\":0,\"other_user\":0,\"exempt\":0,\"scanned\":1,\"exited\":0,\"unreadable_same_user\":0,\"unreadable_unknown_uid\":0,\"identity_read_errors\":0,\"role_mismatch\":0,\"denied\":0,\"vanished\":0,\"errors\":0,\"truncated\":0,\"maps_truncated\":0,\"fd_truncated\":0,\"threads_truncated\":0,\"new_pids_after\":0,\"reused_pids\":0,\"mnt_ns_differs\":0,\"mnt_ns_path_unverified\":0,\"host_context\":{\"pid1_comm\":\"systemd\",\"pid_ns_agree\":True,\"mnt_agree\":True,\"proc_mounts\":1,\"stacked\":False,\"mountinfo\":\"ok\",\"pid1_ns_readable\":True,\"ok\":True},\"enum_passes\":2}\n"
         "state=\"blocked\" if scenario==\"use\" else (\"unknown\" if scenario==\"unknown\" else \"clear_observation\"); scan={\"state\":state,\"target\":\"/wrong\" if scenario==\"output_mismatch\" else target,\"hits\":[{\"pid\":\"9\"}] if state==\"blocked\" else [],\"reasons\":[\"unknown\"] if state==\"unknown\" else [],\"coverage\":coverage,\"exempt\":[],\"cycles\":[{\"phase\":\"enumerate_pass\",\"pass\":0,\"new\":1}]}\n"
-        "stdout=\"\" if scenario==\"missing_output\" else json.dumps(scan,sort_keys=True)+\"\\n\"; task=\"TASK-WRONG\" if scenario==\"wrong_task\" else p[\"task_id\"]; auth={\"task_id\":p[\"task_id\"],\"session_id\":\"sess-wrong\" if scenario==\"wrong_session\" else p[\"session_id\"]}; job={\"id\":\"JOB-2\" if scenario==\"wrong_job\" else \"JOB-1\",\"task_id\":task,\"agent_name\":\"other\" if scenario==\"wrong_agent\" else \"dev_agent\",\"title\":p[\"title\"],\"rationale\":p[\"rationale\"],\"script_text\":\"echo spoof\" if scenario==\"wrong_script\" else p[\"script\"],\"interpreter\":\"zsh\" if scenario==\"wrong_interpreter\" else p[\"interpreter\"],\"cwd_hint\":None,\"cwd_resolved\":\"/wrong\" if scenario==\"wrong_cwd\" else os.path.realpath(os.environ[\"WORKSPACE\"]),\"status\":\"failed\" if scenario==\"wrong_status\" else \"completed\",\"exit_code\":3 if scenario in (\"completed_nonzero\",\"wrong_exit\") else 0,\"reason\":\"spoof\" if scenario==\"wrong_reason\" else None,\"duration_ms\":1,\"created_at\":created,\"started_at\":now,\"finished_at\":\"1999-01-01T00:00:00+00:00\" if scenario==\"wrong_time\" else now}\n"
-        "output={\"stdout\":stdout,\"stderr\":\"\",\"truncated_stdout\":scenario==\"output_cap\",\"truncated_stderr\":False,\"total_stdout_bytes\":len(stdout.encode())+(1 if scenario==\"total_mismatch\" else 0),\"total_stderr_bytes\":0}; receipt={\"authentication\":auth,\"job\":job,\"output\":output}; receipt=({\"job\":job} if scenario==\"minimal\" else receipt); receipt[\"extra\"]=1 if scenario==\"extra\" else receipt.get(\"extra\"); receipt.pop(\"extra\",None) if scenario!=\"extra\" else None; print(json.dumps(receipt,sort_keys=True))' ;;\n"
+        "stdout=execution[\"stdout\"] if execution is not None else (\"\" if scenario==\"missing_output\" else json.dumps(scan,sort_keys=True)+\"\\n\"); stderr=execution[\"stderr\"] if execution is not None else \"\"; task=\"TASK-WRONG\" if scenario==\"wrong_task\" else p[\"task_id\"]; auth={\"task_id\":p[\"task_id\"],\"session_id\":\"sess-wrong\" if scenario==\"wrong_session\" else p[\"session_id\"]}; job={\"id\":\"JOB-2\" if scenario==\"wrong_job\" else \"JOB-1\",\"task_id\":task,\"agent_name\":\"other\" if scenario==\"wrong_agent\" else \"dev_agent\",\"title\":p[\"title\"],\"rationale\":p[\"rationale\"],\"script_text\":\"echo spoof\" if scenario==\"wrong_script\" else p[\"script\"],\"interpreter\":\"zsh\" if scenario==\"wrong_interpreter\" else p[\"interpreter\"],\"cwd_hint\":None,\"cwd_resolved\":\"/wrong\" if scenario==\"wrong_cwd\" else os.path.realpath(os.environ[\"WORKSPACE\"]),\"status\":\"failed\" if scenario==\"wrong_status\" else \"completed\",\"exit_code\":execution[\"returncode\"] if execution is not None else (3 if scenario in (\"completed_nonzero\",\"wrong_exit\") else 0),\"reason\":\"spoof\" if scenario==\"wrong_reason\" else None,\"duration_ms\":1,\"created_at\":created,\"started_at\":now,\"finished_at\":\"1999-01-01T00:00:00+00:00\" if scenario==\"wrong_time\" else now}\n"
+        "output={\"stdout\":stdout,\"stderr\":stderr,\"truncated_stdout\":scenario==\"output_cap\",\"truncated_stderr\":False,\"total_stdout_bytes\":len(stdout.encode())+(1 if scenario==\"total_mismatch\" else 0),\"total_stderr_bytes\":len(stderr.encode())}; receipt={\"authentication\":auth,\"job\":job,\"output\":output}; receipt=({\"job\":job} if scenario==\"minimal\" else receipt); receipt[\"extra\"]=1 if scenario==\"extra\" else receipt.get(\"extra\"); receipt.pop(\"extra\",None) if scenario!=\"extra\" else None; print(json.dumps(receipt,sort_keys=True))' ;;\n"
         "      *) exit 1 ;;\n"
         "    esac ;;\n"
         "  *) echo 'unsupported' >&2; exit 1 ;;\n"
@@ -665,7 +670,10 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
                    action_drift: str = "", rm_scenario: str = "normal",
                    mv_scenario: str = "normal",
                    action_scenario: str = "normal",
-                   shell: str = "bash"):
+                   shell: str = "bash", skill_env: str | None = None,
+                   execute_scan: bool = False,
+                   procedure: Path = PROCEDURE, via_batch: bool = False,
+                   batch_driver: Path = BATCH_DRIVER):
     task_map = task_map if task_map is not None else {}
     audit = audit if audit is not None else []
     audit_all = audit if audit_all is None else audit_all
@@ -723,7 +731,6 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
         "PRIMARY": str(fx["primary"]),
         "AGENT": agent,
         "ORG": "test-org",
-        "SKILL": str(fixture_skill),
         "ACTING_TASK": acting,
         "SESSION_ID": "sess-fixture",
         "GIT_LOG": str(git_log),
@@ -739,6 +746,8 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
         "WC_AUDIT_FAIL": "1" if audit_fail else "0",
         "WC_SCAN_LOG": str(tmp_path / "scan.log"),
         "WC_JOB_PAYLOAD": str(tmp_path / "job-payload.json"),
+        "WC_JOB_EXECUTION": str(tmp_path / "job-execution.json"),
+        "WC_EXECUTE_SCAN": "1" if execute_scan else "0",
         "WC_JOB_SCENARIO": job_scenario or scan_state,
         "WC_REAL_CANDIDATE": str(candidate.resolve()),
         "AGE_SECONDS": (
@@ -774,6 +783,9 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
         ),
         "TMPDIR": str(wc_tmp),
     })
+    env.pop("SKILL", None)
+    if skill_env is not None:
+        env["SKILL"] = skill_env
     if fail_removed_receipt:
         python = bin_dir / "python3"
         python.write_text(
@@ -785,17 +797,31 @@ def _run_procedure(tmp_path: Path, body: str, fx: dict, bin_dir: Path, *,
             f"exec {shlex.quote(sys.executable)} \"$@\"\n"
         )
         python.chmod(0o755)
-    script = (
-        f'bash {shlex.quote(str(PROCEDURE))} {shlex.quote(str(candidate))} '
-        f'{shlex.quote(str(containing))}\n'
-        'printf "RC=%s\\n" "$?"\n'
-    )
+    if via_batch:
+        manifest = tmp_path / "runner-manifest.json"
+        journal = tmp_path / "runner-journal.jsonl"
+        manifest.write_text(json.dumps([{
+            "candidate": str(candidate), "containing": str(containing),
+            "kind": "worktree", "allocated_bytes": 1,
+        }]))
+        invocation = (
+            f'{shlex.quote(sys.executable)} {shlex.quote(str(batch_driver))} '
+            f'--manifest {shlex.quote(str(manifest))} '
+            f'--journal {shlex.quote(str(journal))}'
+        )
+    else:
+        invocation = (
+            f'bash {shlex.quote(str(procedure))} '
+            f'{shlex.quote(str(candidate))} {shlex.quote(str(containing))}'
+        )
+    script = invocation + '\nprintf "RC=%s\\n" "$?"\n'
     result = subprocess.run([shell, "-c", script], env=env,
                             capture_output=True, text=True)
     rc_line = [ln for ln in result.stdout.splitlines() if ln.startswith("RC=")]
     rc = int(rc_line[-1].split("=", 1)[1]) if rc_line else None
     return {"rc": rc, "stdout": result.stdout, "stderr": result.stderr,
-            "git_log": git_log.read_text(), "gh_log": gh_log.read_text()}
+            "git_log": git_log.read_text(), "gh_log": gh_log.read_text(),
+            "env": env}
 
 
 def _occurrences(*task_ids: str) -> list[dict]:
@@ -810,6 +836,230 @@ def _terminal_task(agent: str, *, age_days: int = 30,
                        time.gmtime(time.time() - age_days * 86400))
     return {"assigned_agent": agent, "status": "completed", "completed_at": ts,
             "brief": marker + "\nfixture", "task_id": None}
+
+
+def _make_scan_execution_bundle(tmp_path: Path) -> Path:
+    skill = tmp_path / "execution-skill"
+    scripts = skill / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(PROCEDURE, scripts / PROCEDURE.name)
+    shutil.copy2(BATCH_DRIVER, scripts / BATCH_DRIVER.name)
+    scanner = scripts / HELPER.name
+    scanner.write_text(
+        "#!/usr/bin/env python3\n"
+        "import argparse,importlib.util,json,os,sys\n"
+        f"helper={str(HELPER.resolve())!r}\n"
+        "spec=importlib.util.spec_from_file_location('wc_real_helper',helper)\n"
+        "mod=importlib.util.module_from_spec(spec); sys.modules[spec.name]=mod; spec.loader.exec_module(mod)\n"
+        "ap=argparse.ArgumentParser(); ap.add_argument('--target',required=True); ap.add_argument('--containing-worktree'); ap.add_argument('--json',action='store_true'); args=ap.parse_args()\n"
+        "target=os.path.realpath(args.target); uid=os.getuid(); self_pid=str(os.getpid())\n"
+        "def proc(pid,cwd):\n"
+        " return {'pid':str(pid),'uid':[uid]*4,'comm':'python3','ppid':'1','exe':sys.executable,'exe_stat':(uid,0o755,True),'cwd':cwd,'root':'/','maps':[],'fds':{},'threads':{},'cgroup':'','ns':{'pid':'pid:[1]','mnt':'mnt:[1]','user':'user:[1]'},'starttime':100}\n"
+        "procs={self_pid:proc(self_pid,'/')}\n"
+        "for name in os.listdir('/proc'):\n"
+        " if not name.isdigit() or name==self_pid: continue\n"
+        " try:\n"
+        "  if os.stat('/proc/'+name).st_uid!=uid: continue\n"
+        "  cwd=os.path.realpath(os.readlink('/proc/'+name+'/cwd'))\n"
+        " except OSError: continue\n"
+        " if cwd==target or cwd.startswith(target.rstrip(os.sep)+os.sep): procs[name]=proc(name,cwd)\n"
+        "st=os.stat(target); host={'ok':True,'pid1_comm':'systemd','pid_ns_agree':True,'mnt_agree':True,'proc_mounts':1,'stacked':False,'mountinfo':'ok','pid1_ns_readable':True}\n"
+        "fake=mod.FakeProc(procs,stat_map={target:(st.st_dev,st.st_ino)},host_context=host)\n"
+        "result=mod.scan(target,proc=fake,self_pid=int(self_pid),agent_uid=uid,containing_worktree=args.containing_worktree)\n"
+        "print(json.dumps(result.to_json(),sort_keys=True))\n"
+        "raise SystemExit(0 if result.state=='clear_observation' else (3 if result.state=='blocked' else 2))\n"
+    )
+    scanner.chmod(0o755)
+    return skill
+
+
+def _assert_executed_bundled_scan(
+        tmp_path: Path, target: Path, expected_helper: Path) -> dict:
+    payload = json.loads((tmp_path / "job-payload.json").read_text())
+    expected = str(expected_helper.resolve())
+    assert expected in payload["script"]
+    assert "/scripts/check_path_use.py" not in payload["script"].replace(
+        expected, "",
+    )
+    execution = json.loads((tmp_path / "job-execution.json").read_text())
+    scan = json.loads(execution["stdout"])
+    assert scan["target"] == str(target.resolve())
+    return {"payload": payload, "execution": execution, "scan": scan}
+
+
+@pytest.mark.parametrize("skill_mode", ["unset", "bogus", "decoy"])
+def test_runner_executes_own_bundled_scanner_independent_of_skill_env(
+        tmp_path, body, skill_mode):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    execution_skill = _make_scan_execution_bundle(tmp_path)
+    procedure = execution_skill / "scripts" / PROCEDURE.name
+    execution_helper = execution_skill / "scripts" / HELPER.name
+    task_map, occurrences = _complete_cleanup_evidence()
+    decoy_marker = tmp_path / "decoy-called"
+    if skill_mode == "unset":
+        skill_env = None
+    elif skill_mode == "bogus":
+        skill_env = "/nonexistent-skill"
+    else:
+        decoy = tmp_path / "different-skill" / "scripts" / "check_path_use.py"
+        decoy.parent.mkdir(parents=True)
+        decoy.write_text(
+            "import os,sys\n"
+            f"open({str(decoy_marker)!r}, 'w').write('called\\n')\n"
+            f"os.execv(sys.executable, [sys.executable, {str(execution_helper.resolve())!r}, *sys.argv[1:]])\n"
+        )
+        skill_env = str(decoy.parents[1])
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map, audit_trigger=occurrences,
+        skill_env=skill_env, execute_scan=True,
+        procedure=procedure,
+    )
+    assert result["rc"] == 0, result
+    evidence = _assert_executed_bundled_scan(
+        tmp_path, fx["eligible"], execution_helper,
+    )
+    assert evidence["execution"]["returncode"] == 0
+    assert evidence["scan"]["state"] == "clear_observation"
+    assert not decoy_marker.exists()
+    assert not fx["eligible"].exists()
+
+
+def test_runner_occupied_target_still_refuses_at_current_use_gate(
+        tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    execution_skill = _make_scan_execution_bundle(tmp_path)
+    procedure = execution_skill / "scripts" / PROCEDURE.name
+    execution_helper = execution_skill / "scripts" / HELPER.name
+    task_map, occurrences = _complete_cleanup_evidence()
+    occupant = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        cwd=fx["eligible"],
+    )
+    try:
+        result = _run_procedure(
+            tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+            candidate=fx["eligible"], containing=fx["eligible"],
+            task_map=task_map, audit_trigger=occurrences,
+            skill_env="/nonexistent-skill", execute_scan=True,
+            procedure=procedure,
+        )
+    finally:
+        occupant.terminate()
+        occupant.wait(timeout=5)
+    assert result["rc"] == 2, result
+    assert '"reason":"gate:current-use-scan"' in result["stdout"]
+    evidence = _assert_executed_bundled_scan(
+        tmp_path, fx["eligible"], execution_helper,
+    )
+    assert evidence["execution"]["returncode"] == 3
+    assert evidence["scan"]["state"] == "blocked"
+    assert any(hit["pid"] == str(occupant.pid) for hit in evidence["scan"]["hits"])
+    assert fx["eligible"].exists()
+
+
+def test_runner_resolver_is_source_safe_and_overrides_inherited_private_value():
+    env = dict(os.environ, _WC_SCAN_HELPER="/different-skill/decoy.py")
+    result = subprocess.run(
+        [
+            "bash", "-c",
+            'source "$1"; printf "%s\\n" "$_WC_SCAN_HELPER"',
+            "source-check", str(PROCEDURE),
+        ],
+        env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(HELPER.resolve())
+
+
+def test_missing_sibling_scanner_refuses_through_existing_gate(tmp_path, body):
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    broken = tmp_path / "broken-skill" / "scripts"
+    broken.mkdir(parents=True)
+    shutil.copy2(PROCEDURE, broken / PROCEDURE.name)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map, audit_trigger=occurrences,
+        skill_env=str(SKILL_DIR),
+        procedure=broken / PROCEDURE.name,
+    )
+    assert result["rc"] == 2, result
+    assert '"reason":"gate:current-use-scan"' in result["stdout"]
+    assert not (tmp_path / "job-payload.json").exists()
+    assert fx["eligible"].exists()
+
+
+def test_symlinked_runner_invocation_resolves_canonical_scanner_under_real_zsh(
+        tmp_path, body):
+    zsh = shutil.which("zsh")
+    if zsh is None:
+        pytest.skip("zsh is absent")
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    execution_skill = _make_scan_execution_bundle(tmp_path)
+    linked_skill = tmp_path / "linked-skill"
+    linked_skill.symlink_to(execution_skill, target_is_directory=True)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map, audit_trigger=occurrences,
+        skill_env="/nonexistent-skill", execute_scan=True,
+        procedure=linked_skill / "scripts" / PROCEDURE.name, shell=zsh,
+    )
+    assert result["rc"] == 0, result
+    evidence = _assert_executed_bundled_scan(
+        tmp_path, fx["eligible"], execution_skill / "scripts" / HELPER.name,
+    )
+    assert evidence["execution"]["returncode"] == 0
+    assert evidence["scan"]["state"] == "clear_observation"
+
+
+@pytest.mark.parametrize("skill_env", [None, "/nonexistent-skill"])
+def test_batch_driver_executes_resolved_scanner_independent_of_skill_under_zsh(
+        tmp_path, body, skill_env):
+    zsh = shutil.which("zsh")
+    if zsh is None:
+        pytest.skip("zsh is absent")
+    fx = _build_procedure_fixture(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stubs(bin_dir)
+    execution_skill = _make_scan_execution_bundle(tmp_path)
+    task_map, occurrences = _complete_cleanup_evidence()
+    result = _run_procedure(
+        tmp_path, body, fx, bin_dir, marker=MANUAL_FIRST_LINE,
+        candidate=fx["eligible"], containing=fx["eligible"],
+        task_map=task_map, audit_trigger=occurrences,
+        skill_env=skill_env, execute_scan=True,
+        shell=zsh, via_batch=True,
+        batch_driver=execution_skill / "scripts" / BATCH_DRIVER.name,
+    )
+    assert result["rc"] == 0, result
+    evidence = _assert_executed_bundled_scan(
+        tmp_path, fx["eligible"], execution_skill / "scripts" / HELPER.name,
+    )
+    assert evidence["execution"]["returncode"] == 0
+    journal = [
+        json.loads(line)
+        for line in (tmp_path / "runner-journal.jsonl").read_text().splitlines()
+    ]
+    assert len(journal) == 1
+    assert journal[0]["receipt"]["decision"] == "removed_worktree"
 
 
 def test_f5_procedure_refuses_without_marker_and_never_mutates(tmp_path, body):

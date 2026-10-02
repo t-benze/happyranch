@@ -4,6 +4,12 @@
 # and action control flow. Keep SKILL.md as prose only: never parse or evaluate
 # Markdown to run cleanup commands.
 
+_WC_RUNNER_SKILL_DIR="$(
+  realpath "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null
+)" || _WC_RUNNER_SKILL_DIR=""
+[ -d "$_WC_RUNNER_SKILL_DIR" ] || _WC_RUNNER_SKILL_DIR=""
+_WC_SCAN_HELPER="${_WC_RUNNER_SKILL_DIR:+$_WC_RUNNER_SKILL_DIR/scripts/check_path_use.py}"
+
 _wc_refuse() { printf '{"decision":"%s","reason":"%s"}\n' "${2:-refused}" "$1"; return 2; }
 
 _wc_is_cache() {
@@ -888,11 +894,12 @@ _wc_scan_job() {
   local nonce title rationale scan_script payload submit_json wait_json
   local job_id show_json output_json started_epoch
   [ -n "${ACTING_TASK:-}" ] && [ -n "${SESSION_ID:-}" ] || return 1
+  [ -n "$_WC_SCAN_HELPER" ] && [ -f "$_WC_SCAN_HELPER" ] || return 1
   nonce="wc-${ACTING_TASK}-$$-${RANDOM:-0}"
   title="Workspace cleanup path-use scan $nonce"
   rationale="Host-visible read-only workspace cleanup scan for task $ACTING_TASK session $SESSION_ID nonce $nonce"
   scan_script="$(python3 -c 'import shlex,sys; print("exec "+shlex.join(sys.argv[1:]))' \
-    python3 "$SKILL/scripts/check_path_use.py" --target "$CANDIDATE" \
+    python3 "$_WC_SCAN_HELPER" --target "$CANDIDATE" \
     --containing-worktree "$CONTAINING" --json)" || return 1
   payload="$WC_TMP/scan-job-$nonce.json"
   export title rationale scan_script nonce
