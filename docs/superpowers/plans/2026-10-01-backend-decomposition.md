@@ -65,7 +65,7 @@ Serial, one slice in flight per hot file, each its own PR from fresh `origin/mai
 | S4 | Generic audit-log writes/reads, token usage/aggregation, and thread sessions (erratum: cursor-backed/reply/authority audit and authority session-binding methods are excluded) | `db/audit.py`, `db/sessions.py` | MEDIUM-HIGH (audit-row shapes are load-bearing; moved verbatim only) |
 | S5 | Workspace-cleanup selection (erratum: the moved module-level set also includes the ISO-awareness helpers, marker constants, history-page constant, shared stale-pending SQL constant, direct-WAL helper, and all three cleanup dataclasses; every name is re-exported) | `db/workspace_cleanup.py` | MEDIUM |
 | S6 | Threads core (erratum: the moved set is the 38 clock-independent thread, participant, message, and invocation methods; clock-resolving helpers and reply/task-tied methods remain for later slices) | `db/threads.py` | HIGH |
-| S7a/b | Reply delivery; reply exchange | `db/reply_delivery.py`, `db/reply_exchange.py` | HIGH |
+| S7a/b | Reply delivery; reply exchange (erratum: S7a and S7b merge into one PR; the two exchange constants move and are facade-re-exported, while a shared late `_now` helper preserves patched-global rule 3) | `db/reply_delivery.py`, `db/reply_exchange.py` | HIGH |
 | S8 | Tasks lifecycle (insert/update/list/subtree/delegate/escalate, completion-callback admission) | `db/tasks.py` | HIGH |
 | S9 | Schema bootstrap and migrations (DDL byte-identical) | `db/schema.py` | HIGH |
 | S10–S13 | Authority policy: v1 claims/fences; v2 attempts/finalisation; v2 continuation/publication; selector/activation | `db/authority_*.py` | HIGH/CRITICAL — only when no open authority PR is in flight |
