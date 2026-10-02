@@ -1,6 +1,6 @@
-# Web i18n — foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks contract
+# Web i18n — foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs/preview contract
 
-> Status: current (W1 foundation + W2a mounted-shell + W2b onboarding + W2c Settings/Preferences + W3a Dashboard/Threads + W3b-1 Tasks migration)
+> Status: current (W1 foundation + W2a mounted-shell + W2b onboarding + W2c Settings/Preferences + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs migration and opt-in preview)
 > Current Source: `web/src/lib/i18n/`, `web/src/hooks/i18n.tsx`, the mounted
 > shell/onboarding consumers, this spec.
 > Supersedes: the `Internationalization layer` non-goal in
@@ -10,10 +10,13 @@
 > (AppBar/Sidebar/root/not-found/ErrorBoundary/AddOrgDialog/help/palette);
 > **W2b** translated the onboarding route (`/onboarding` plus the shared
 > ConnectFlow it mounts); **W2c** translated Settings and built the
-> production-gated Preferences language selector (preview-gated until W3b-2);
+> Preferences language selector (production-gated until W3b-2);
 > **W3a** translated the mounted Dashboard and Threads route families;
-> **W3b-1** translated the mounted Tasks route family.
-> Later slices (W3b-2 Jobs + public opt-in preview, W4 remaining
+> **W3b-1** translated the mounted Tasks route family;
+> **W3b-2** translated the mounted Jobs route family and enabled the opt-in
+> preview (Preferences ▸ Language in production, English when unset, with a
+> secondary-pages coverage disclosure).
+> Later slices (W4 remaining
 > surfaces, W5 full coverage/default resolution) and native preference
 > persistence (N0/N1) are still open. The W1 sections below are retained as the historical W1 contract
 > and updated per phase.
@@ -53,9 +56,8 @@ the generated copy-paste CLI prompt (raw step ids, tokens, route targets) stay
 byte-for-byte verbatim; mapped categories re-translate on a switch with no
 resubmission. Neither phase
 translates the assistant dock body (W4) or any route family (W3/W4); neither
-adds a public language selector, and an unset preference still renders English
-until W3b-2 (W3a, which translates Dashboard/Threads, and W3b-1, which
-translates Tasks, do not change this).
+adds a public language selector; W3b-2 later opens the selector, and an unset
+preference still renders English (no browser-language detection).
 
 Delivery status at W1 (keep separate from later phases):
 
@@ -72,11 +74,12 @@ Delivery status at W1 (keep separate from later phases):
 | CJK-capable system font fallbacks (no download) | **shipped — W2a** |
 | Onboarding translation (W2b: OnboardingPage/ConnectRuntimeStep/shared ConnectFlow) | **shipped — W2b** |
 | Settings translation (W2c: page chrome + Assistant/Organization/Executors/Capacity sections) | **shipped — W2c** (Work Hours-owned `EligibilityEditorDialog` stays English until W4) |
-| Settings ▸ Preferences language selector (W2c) | **built, preview-gated** — mounted only in builds with `VITE_ENABLE_I18N_PREFERENCES=true` (tests/evidence); absent from ordinary production builds |
+| Settings ▸ Preferences language selector (W2c) | **shipped — enabled in production by W3b-2** (the W2c `VITE_ENABLE_I18N_PREFERENCES` gate is removed) |
 | Dashboard + Threads route families (W3a: DashboardPage, ThreadsPage list/detail/composer/strips, Archive/Invite/RemoveParticipant dialogs, shared NewThreadDialog) | **shipped — W3a** |
 | Tasks route family (W3b-1: TasksPage/TaskListRow, TaskDetailPage incl. recall/events/fan-out/rail, Cancel/Revisit/ResolveEscalation dialogs) | **shipped — W3b-1** |
-| Other route/page translation | **W3b-2/W4** — not shipped (Jobs is W3b-2; other route families and the assistant dock body are W4) |
-| Public language selector / opt-in preview | **W3b-2** — not shipped (W3b-2 opens the W2c gate after acceptance) |
+| Jobs route family (W3b-2: JobsPage, JobDetailPage incl. cascade/gated notice/rail/output, Run/Reject dialogs) | **shipped — W3b-2** |
+| Other route/page translation | **W4** — not shipped (other route families and the assistant dock body) |
+| Public language selector / opt-in preview | **shipped — W3b-2** (English when unset; secondary-pages coverage disclosure) |
 | Full-mode automatic environment detection | implemented + unit-tested, **not enabled** in production (W5) |
 | Native preference persistence (Swift/message handler) | **N0/N1** — not shipped |
 
@@ -100,8 +103,8 @@ payloads, machine/status values and keyboard shortcut sequences stay
 byte-for-byte; display-only dates/counts use the explicit-locale formatters.
 A locale switch never keys/remounts the page, never loses selection, drafts,
 attachments, open dialogs or focus, and issues no request. The CLAUDE.md
-thread rename/pin invariants are untouched. The Preferences gate stays closed,
-there is no secondary-pages disclosure and unset stays English.
+thread rename/pin invariants are untouched. At W3a the Preferences gate stayed
+closed (opened by W3b-2) and unset stays English.
 
 **W3b-1** (this phase) translates the mounted Tasks route family (`tasks`,
 `tasks/:task_id`): the list heading/eyebrow, group-by and filter form, status
@@ -129,9 +132,45 @@ values, an unknown escalation flavor, an unknown work-status state (the daemon
 sequences stay byte-for-byte. Group React keys stay the locale-neutral sentinels
 and lineage keys use semantic role ids, so a locale switch re-labels the same
 nodes, keeps selection, open dialogs, typed drafts and focus, and issues no
-request. Display dates use the explicit display locale. The Preferences gate
-stays closed and unset stays English: W3b-2 owns Jobs plus the public opt-in
+request. Display dates use the explicit display locale. At W3b-1 the
+Preferences gate stayed closed; W3b-2 (below) owns Jobs plus the opt-in
 preview.
+
+**W3b-2** (this phase) translates the mounted Jobs route family (`jobs`,
+`jobs/:job_id`): the list eyebrow/heading, the needs-you callout and its count,
+the queue-clear line, the column header, status group labels (also the group
+`aria-label`), the needs-review pill and the pending relative age; the detail
+loading/error/not-found states, back link, header actions (Stop / Reject /
+Approve & run / Run), command-card chrome and note, rejection/failure reason
+labels, the If-approved cascade (loading/error/empty/count title), the gated
+notice, the property rail labels and its yes/no/unbounded/seconds values, the
+output panel chrome (title, waiting/loading, `(empty)`); and the owned
+Run/Reject dialogs. Daemon values stay byte-for-byte: job/task IDs, job titles,
+script text, rationale, agent names, interpreter and cwd values, job status
+tokens (the `StatusBadge` and list outcome tokens `running`/`rejected`/`failed`,
+`exit <code>`), exit codes, stdout/stderr and their stream names, the live
+`[done] <status> exit=` log line, and rejection/failure reasons. Run/Reject and
+Stop errors are `JobErrorView` descriptors (`features/jobs/strings.ts`:
+`classifyJobError` applies the same F1 boundary as `classifyTaskError` — a
+recognized code (`unknown_job`, `not_pending`, `not_running`,
+`invalid_timeout`, `empty_reason`, `reason_too_long`) maps to its catalog key;
+any other non-empty code renders raw; with no/empty code a non-empty string
+diagnostic (`ApiError` string `detail`, `Error` message or thrown string, never
+`ApiError`'s synthetic `API <status>` message) renders verbatim; otherwise the
+localized per-action fallback). This replaces the former English-only
+`Error <status>: API <status> (<code>)` rendering. The Reject validation
+messages are state-held keys. A locale switch keeps the same cards, dialogs,
+typed drafts and focus and issues no request; display dates use the explicit
+display locale.
+
+W3b-2 also **enables the opt-in language preview** in ordinary production
+builds: `languagePreferenceGate.ts` and the `VITE_ENABLE_I18N_PREFERENCES`
+flag are removed and Settings ▸ Preferences ▸ Language is always mounted. With
+no saved choice the UI stays English — production resolves in `preview` mode,
+so the browser/system language is never consulted (automatic detection remains
+W5 `full` mode). The selector shows a localized coverage disclosure
+(`settings.preferences.coverageDisclosure`: secondary, not-yet-translated pages
+may still appear in English).
 
 **W2c** translates the Settings surface and prepares the W3b-2
 selector:
@@ -162,7 +201,7 @@ selector:
   existing loading/error/data gate and nested routes verbatim, so Preferences
   renders while the query is loading, errored or empty; every other panel keeps
   its prior gate, index/system/agents/unknown redirects and replace semantics.
-- **Closed production gate.** `languagePreferenceGate.ts`
+- **Closed production gate (W2c; removed by W3b-2).** `languagePreferenceGate.ts`
   (`isLanguagePreferenceEnabled()`) reads the build-time
   `VITE_ENABLE_I18N_PREFERENCES === 'true'` flag (same pattern as
   `VITE_ENABLE_PROTOTYPES`/`VITE_ENABLE_KB_COMPOSE`). Without it the
@@ -284,12 +323,12 @@ anchors them to the real consumer sources (e.g. `ThreadsPage.tsx` mounts
 `TaskDetailPage.tsx` mounts `CancelTaskDialog`/`RevisitTaskDialog`/
 `ResolveEscalationDialog`; `JobDetailPage.tsx` mounts
 `RunJobDialog`/`RejectJobDialog`), so an invented or unreachable name fails the
-test. After W3b-1 exactly nine namespaces are `translated` (`root-shell`,
+test. After W3b-2 exactly ten namespaces are `translated` (`root-shell`,
 `not-found`, `onboarding`, `app-shell`, `help-and-palette`, `settings`,
-`dashboard`, `threads`, `tasks`); every
+`dashboard`, `threads`, `tasks`, `jobs`); every
 later slice and route family is still visibly `english-only`, so English
 fallback is never mistaken for coverage. The `settings` namespace includes the
-gated `preferences` token and `PreferencesSection`; the shared
+(production-enabled since W3b-2) `preferences` token and `PreferencesSection`; the shared
 `EligibilityEditorDialog` it lists is owned by Work Hours and remains English
 until W4. The `system-assistant` namespace records only
 `AssistantDockHost` (the W4 dock body); the help/palette hosts moved to the
@@ -467,10 +506,10 @@ raw-`Error.message` and prompt-byte negatives deterministically.
 
 Frontend readiness map (actual evidence):
 
-| Readiness item | W1 | W2a/W2b/W2c/W3a/W3b-1 |
+| Readiness item | W1 | W2a/W2b/W2c/W3a/W3b-1/W3b-2 |
 | --- | --- | --- |
-| Route-wide Chinese rendering | N/A — no route translated in W1 (manifest marks every namespace `english-only`) | mounted shell + onboarding (W2a/W2b), Settings (W2c), Dashboard/Threads (W3a) and Tasks (W3b-1); Jobs (W3b-2), other route families and the assistant dock body (W4) still `english-only` |
-| Public language selector | N/A — W3b-2 | N/A — W3b-2 (W2c Preferences selector built but production-gated; still absent from ordinary builds) |
+| Route-wide Chinese rendering | N/A — no route translated in W1 (manifest marks every namespace `english-only`) | mounted shell + onboarding (W2a/W2b), Settings (W2c), Dashboard/Threads (W3a), Tasks (W3b-1) and Jobs (W3b-2); other route families and the assistant dock body (W4) still `english-only` |
+| Public language selector | N/A — W3b-2 | W3b-2: Settings ▸ Preferences mounted in ordinary builds; Vitest proves sub-nav + direct URL without a flag, unset-on-Chinese-browser stays English, disclosure visible, zh-CN switch keeps nodes/focus with zero requests; browser: `web/scripts/w3b-jobs-browser-evidence.mjs` against the ordinary dist |
 | Browser two-tab live evidence | covered by unit/integration storage-event tests AND captured same-origin two-tab change/delete/clear/no-echo browser evidence at the head SHA | W1 behavior retained (no native adapter added) |
 | Bilingual foundation browser capture | captured: real-browser story screenshots for saved-en-in-Chinese-env, saved `zh-CN` (CJK font glyphs) and preview-unset English | W2a/W2b add real-app shell/dialog and onboarding captures across en/zh, 1440x900/390x844 and light/dark (exact count bound to the pushed `receipt.json`) |
 | Production startup first-paint | captured: real `main.tsx`/`createBrowserRouter` startup with synthetic API stub; first COMMITTED bilingual consumer text and `<html lang>` asserted together | W2a reads the ACTUAL first committed Sidebar/AppBar DOM (frozen on first connection, never overwritten by a later correction) with `<html lang>` and the real navigator read-back; a causal `I18N_W2A_EVIDENCE=negative` control proves the same predicate rejects an initially-wrong shell |
@@ -479,17 +518,17 @@ Frontend readiness map (actual evidence):
 | Settings + Preferences (W2c) | N/A | Vitest: gate-off sub-nav absence + direct-URL replace redirect (unit and real `AppRoutes`), gate-on index/redirect/back/forward, Preferences under settings API loading/error/empty/ok, both switch directions with radio/sub-nav node identity + focus + route, zero requests in the switch window, keyboard Space selection, honest durable/failed persistence, storage-event sync without write-back, per-section zh-CN copy with raw detail verbatim, an already-visible Work Hours banner and executor product fallbacks re-translating in both directions with no resave/remount/request while raw diagnostics (incl. catalog-equal and empty) stay verbatim; browser: `web/scripts/w2c-preferences-browser-evidence.mjs` against the preview and ordinary dists plus a `--defect-dist` causal negative (Organization banner and Executors raw-diagnostic cases included; receipt/PNG hashes bound to the pushed head) |
 | Dashboard + Threads (W3a) | N/A | Vitest: Dashboard loading/error+Retry/first-run/populated in both locales with entity values verbatim; Threads list/detail states, composer and NewThreadDialog draft/attachment/focus/node identity across both switch directions with zero requests then exactly one create/reply; dialogs open across switches; mapped errors re-translate while raw (catalog-equal/empty/`HTTP <status>`) diagnostics stay verbatim; browser: `web/scripts/w3a-core-browser-evidence.mjs` against the ordinary dist (plus a Preferences-gate preview control) with receipt/PNG hashes bound to the pushed head |
 | Tasks (W3b-1) | N/A | Vitest (`features/tasks/tasks.i18n.test.tsx`, `TaskEventsLog.test.tsx`, `fanout.test.ts`): routed list populated/grouping/filter/empty/error and detail header/lineage/rail/execution-status/fan-out/chain in both locales with authored and machine values verbatim; same row/heading/dialog/field nodes, draft value and focus across both switch directions with zero requests; mapped dialog errors and the Revisit validation re-translate while unmapped (incl. catalog-equal) codes stay verbatim; StatusBadge English default; browser: `web/scripts/w3b-tasks-browser-evidence.mjs` against the ordinary dist (Tasks list + detail, en/zh-CN, 1440/390, one dialog-draft switch check, ordinary-bundle Preferences exclusion) |
+| Jobs (W3b-2) | N/A | Vitest (`features/jobs/jobs.i18n.test.tsx`): routed list populated/empty/error and detail pending/completed/load-error in both locales with daemon values verbatim; same card/button/field nodes, Run/Reject draft value and focus across both switch directions with zero requests; the F1 diagnostic boundary through the routed Run dialog (recognized code re-translates in place, unknown code and code-less string detail verbatim, empty code / blank detail fall back), Reject mapped code and Stop mapped code; browser: `web/scripts/w3b-jobs-browser-evidence.mjs` against the ordinary dist (Jobs list + detail + Run dialog draft switch, Preferences unset-English + disclosure + zero-request switch) |
 | Native Mac persistence receipt | N/A — N0/N1 (Linux host; not claimed) | NOT RUN — N0/N1 still open |
 
 ## 10. Exclusions
 
 No new dependency, daemon/API/schema/auth/permission/transport change, theme or
 draft migration, native chrome, CLI/manual translation, route-family
-translation campaign beyond W3a/W3b-1 (W3b-2 Jobs and W4 remain open), preview
-enablement or public selector (W2c's Preferences selector is built but
-production-gated), deployment, or caller migration of display
-formatters beyond the translated shell, onboarding and the W3a Dashboard/Threads
-and W3b-1 Tasks route families. Existing query/data/auth
+translation campaign beyond W3a/W3b-1/W3b-2 (W4 remains open), browser-language
+default resolution (W5), deployment, or caller migration of display
+formatters beyond the translated shell, onboarding and the W3a Dashboard/Threads,
+W3b-1 Tasks and W3b-2 Jobs route families. Existing query/data/auth
 bootstrap
 semantics are preserved; locale switching issues no `PUT /settings/org` and no
 `POST /api/v1/orgs`, and the command palette's cache-only switch issues no
@@ -499,6 +538,5 @@ the generated copy-paste CLI prompt bytes verbatim; the shared ConnectFlow is
 the single implementation for onboarding and Settings ▸ Executors. The
 `settings` namespace is `translated` (W2c: ordinary Settings chrome and the
 Assistant/Organization/Executors/Capacity sections; the Work Hours-owned
-`EligibilityEditorDialog` stays English until W4); only the Preferences
-route/selector remains production-gated (absent from ordinary builds) until W3
-acceptance opens it in W3b-2.
+`EligibilityEditorDialog` stays English until W4); the Preferences
+route/selector is mounted in ordinary builds since W3b-2.

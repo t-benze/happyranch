@@ -81,7 +81,7 @@ The SPA supports mutations, including task cancellation/revisit and Settings.
 Use `web/src/routes.tsx`, API functions, and the OpenAPI snapshot for the current
 surface. The daemon defaults to loopback; remote access uses the connector.
 
-### Internationalization (W1 foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks)
+### Internationalization (W1 foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs/preview)
 
 The web console has a first-party, typed English/Simplified-Chinese contract in
 `web/src/lib/i18n/` (`locale`, `catalog`, `format`, `coverage`) with the
@@ -146,33 +146,28 @@ Preferences** language selector (`sections/PreferencesSection.tsx`: English /
 splits the Settings shell so the `preferences` route renders OUTSIDE the
 `useSettings` loading/error/data gate; every other panel keeps that gate
 unchanged. Choosing a language never writes org settings or issues any API
-request. **The selector is closed in production until W3b-2** (W3a translates
-Dashboard/Threads and W3b-1 translates Tasks; neither opens it):
-`src/features/settings/languagePreferenceGate.ts` mounts the sub-nav entry and
-route only when the build sets `VITE_ENABLE_I18N_PREFERENCES=true` (the
-existing `VITE_ENABLE_PROTOTYPES`/`VITE_ENABLE_KB_COMPOSE` build-flag pattern).
-Ordinary builds tree-shake the component out, and a direct
-`/settings/preferences` URL falls through to the existing settings catch-all
-redirect (Assistant). Vitest opens the gate per test with `vi.stubEnv`; the W2c
-browser harness (`web/scripts/w2c-preferences-browser-evidence.mjs`) builds a
-separate preview dist with the flag and checks that the ordinary dist excludes
-the component. It also proves that state-held Settings messages follow a locale
+request. Until W3b-2 the selector was closed in production by a
+`VITE_ENABLE_I18N_PREFERENCES` build gate (`languagePreferenceGate.ts`, now
+removed — see W3b-2 below); the historical W2c browser harness
+(`web/scripts/w2c-preferences-browser-evidence.mjs`) built a separate preview
+dist with that flag. It also proves that state-held Settings messages follow a locale
 switch (the Organization Work Hours banner re-translates in place) while raw
 daemon diagnostics stay verbatim, with causal negatives for a pre-translated
-banner (`--defect-dist`) and a translated diagnostic. There is no W3b-2 secondary-pages disclosure yet, no browser/system
-language defaulting (unset/invalid stays English), and no preview is live.
+banner (`--defect-dist`) and a translated diagnostic. There is no browser/system
+language defaulting (unset/invalid stays English).
 
 **W3a** translated the mounted Dashboard and Threads route families (`features/dashboard/**`, `features/threads/**` list/detail/composer/strips/dialogs and the shared `shared/threads/NewThreadDialog.tsx` it mounts); pure design-system patterns (Composer, ThreadHeader, InboxRow, StatValue, CrescentMoonBadge, RecipientsInput, MentionTextarea, …) take optional localized label props with English defaults, so their other callers are unchanged. Thread errors are held as locale-neutral `ThreadErrorView` descriptors (`lib/threadErrors.ts`: mapped catalog key/params, or `raw` text rendered byte-for-byte even when empty or equal to a catalog string) and rendered at render time. Authored thread titles, message Markdown, names, IDs, filenames/hrefs, raw delivery payloads and machine values stay verbatim; a locale switch keeps drafts, attachments, selection, open dialogs and focus and issues no request. W3a browser evidence runs `scripts/w3a-core-browser-evidence.mjs` against the ORDINARY dist (storage-event switching, no in-app instrumentation) with a Preferences-gate positive control dist.
 
-**W3b-1** translated the mounted Tasks route family (`tasks`, `tasks/:task_id`: `features/tasks/**` list/detail panes, filters, group/status/rollup presentation, fan-out band, chain/lineage timeline, recall tree, activity log, property rail and execution-status card, loading/empty/error states, and the owned Cancel/Revisit/ResolveEscalation dialogs). The shared `StatusBadge` takes an optional localized `waitingLabels` prop with an English default, so its Jobs and TaskCard callers are unchanged. Dialog errors are held as locale-neutral `TaskErrorView` descriptors (`features/tasks/strings.ts`: mapped catalog key; an unmapped daemon code or, with no code, a non-empty string diagnostic rendered verbatim; otherwise the localized fallback) and the Revisit validation message is a state-held key, so both re-translate in place. Briefs, summaries, notes, agent names, task/thread/job IDs, status/block-kind/verdict/reason machine values, unknown escalation flavors and work-status states (the daemon label), raw event actions/payloads, hrefs and shortcut keys stay verbatim; group and lineage React keys stay locale-neutral, so a locale switch keeps rows, selection, open dialogs, typed drafts and focus and issues no request. W3b-1 browser evidence runs `scripts/w3b-tasks-browser-evidence.mjs` against the ORDINARY dist. **W3b-2** (Jobs plus the public opt-in preview) remains open, so the Preferences gate stays closed and an unset preference still renders English.
+**W3b-1** translated the mounted Tasks route family (`tasks`, `tasks/:task_id`: `features/tasks/**` list/detail panes, filters, group/status/rollup presentation, fan-out band, chain/lineage timeline, recall tree, activity log, property rail and execution-status card, loading/empty/error states, and the owned Cancel/Revisit/ResolveEscalation dialogs). The shared `StatusBadge` takes an optional localized `waitingLabels` prop with an English default, so its Jobs and TaskCard callers are unchanged. Dialog errors are held as locale-neutral `TaskErrorView` descriptors (`features/tasks/strings.ts`: mapped catalog key; an unmapped daemon code or, with no code, a non-empty string diagnostic rendered verbatim; otherwise the localized fallback) and the Revisit validation message is a state-held key, so both re-translate in place. Briefs, summaries, notes, agent names, task/thread/job IDs, status/block-kind/verdict/reason machine values, unknown escalation flavors and work-status states (the daemon label), raw event actions/payloads, hrefs and shortcut keys stay verbatim; group and lineage React keys stay locale-neutral, so a locale switch keeps rows, selection, open dialogs, typed drafts and focus and issues no request. W3b-1 browser evidence runs `scripts/w3b-tasks-browser-evidence.mjs` against the ORDINARY dist.
 
-The rest of the console is still English: **Jobs is W3b-2, the other
-route families and the assistant dock body are W4. No public language selector
-is exposed and preview is not enabled.** Native preference persistence is N0/N1; full-mode automatic
+**W3b-2** translated the mounted Jobs route family (`jobs`, `jobs/:job_id`: `features/jobs/**` list chrome, needs-you callout, status groups, columns and pending relative age; detail states, header actions, command card, If-approved cascade, gated notice, property rail and output panel; the owned Run/Reject dialogs). Daemon values stay verbatim: job/task IDs, titles, script text, rationale, agent names, interpreter/cwd values, job status tokens and `exit <code>`, exit codes, stdout/stderr and their stream names, the live `[done]` log line and rejection/failure reasons. Run/Reject/Stop errors are locale-neutral `JobErrorView` descriptors (`features/jobs/strings.ts` `classifyJobError`, the same F1 boundary as `classifyTaskError`: recognized code -> catalog key; unknown non-empty code -> raw; no/empty code with a non-empty string diagnostic -> verbatim; otherwise the localized fallback), replacing the former English `Error <status>: API <status> (<code>)` text. W3b-2 also **enables the opt-in language preview**: the `languagePreferenceGate.ts` / `VITE_ENABLE_I18N_PREFERENCES` gate is removed, so Settings ▸ Preferences ▸ Language is mounted in ordinary production builds. An unset preference stays English (production resolves in `preview` mode and never reads the browser language), and the selector discloses that secondary, not-yet-translated pages may still appear in English (`settings.preferences.coverageDisclosure`). Browser evidence runs `scripts/w3b-jobs-browser-evidence.mjs` against the ORDINARY dist.
+
+The rest of the console is still English: **the other route families and the
+assistant dock body are W4**; the opt-in preview selector discloses this. Native preference persistence is N0/N1; full-mode automatic
 environment detection is implemented and unit-tested but not enabled until W5.
-`web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b/W2c/W3a/W3b-1-migrated namespaces
+`web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b/W2c/W3a/W3b-1/W3b-2-migrated namespaces
 (`root-shell`, `not-found`, `app-shell`, `help-and-palette`, `onboarding`,
-`settings`, `dashboard`, `threads`, `tasks`) `translated` and every other mounted route namespace `english-only` (copy-free
+`settings`, `dashboard`, `threads`, `tasks`, `jobs`) `translated` and every other mounted route namespace `english-only` (copy-free
 redirects `not-applicable`), listing the actual mounted dialogs, so English
 fallback is never mistaken for coverage. Foundation browser evidence (isolated
 Storybook probe + the real `main.tsx` startup in headless Chrome) runs via
