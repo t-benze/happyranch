@@ -9,7 +9,8 @@ import {
 import { Button } from '@/design-system/primitives/Button';
 import { Textarea } from '@/design-system/primitives/Textarea';
 import { useCancelTask } from '@/hooks/tasks';
-import { TASKS_ERROR_STRINGS } from './strings';
+import { useTranslation } from '@/hooks/i18n';
+import { classifyTaskError, renderTaskError, type TaskErrorView } from './strings';
 
 interface Props {
   taskId: string;
@@ -17,8 +18,9 @@ interface Props {
 }
 
 export function CancelTaskDialog({ taskId, onClose }: Props): JSX.Element {
+  const { t } = useTranslation();
   const [reason, setReason] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<TaskErrorView | null>(null);
   const cancel = useCancelTask(taskId);
 
   const onSubmit = async () => {
@@ -27,8 +29,7 @@ export function CancelTaskDialog({ taskId, onClose }: Props): JSX.Element {
       await cancel.mutateAsync({ rationale: reason });
       onClose();
     } catch (e: unknown) {
-      const code = (e as { code?: string }).code;
-      setError(code ? (TASKS_ERROR_STRINGS[code] ?? code) : 'Cancel failed.');
+      setError(classifyTaskError(e, 'tasks.dialog.cancel.failed'));
     }
   };
 
@@ -36,26 +37,26 @@ export function CancelTaskDialog({ taskId, onClose }: Props): JSX.Element {
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Cancel task</DialogTitle>
+          <DialogTitle>{t('tasks.dialog.cancel.title')}</DialogTitle>
         </DialogHeader>
         <p className="text-fg-muted text-sm">
-          Reason (optional). The agent's current session will be terminated.
+          {t('tasks.dialog.cancel.body')}
         </p>
         <Textarea
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           rows={4}
-          placeholder="Reason for cancellation (optional)"
+          placeholder={t('tasks.dialog.cancel.placeholder')}
         />
-        {error && <p className="text-danger text-sm">{error}</p>}
+        {error !== null && <p className="text-danger text-sm">{renderTaskError(error, t)}</p>}
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>Back</Button>
+          <Button variant="ghost" onClick={onClose}>{t('tasks.dialog.cancel.back')}</Button>
           <Button
             variant="destructive"
             disabled={cancel.isPending}
             onClick={onSubmit}
           >
-            {cancel.isPending ? 'Cancelling…' : 'Cancel task'}
+            {cancel.isPending ? t('tasks.dialog.cancel.pending') : t('tasks.dialog.cancel.confirm')}
           </Button>
         </DialogFooter>
       </DialogContent>

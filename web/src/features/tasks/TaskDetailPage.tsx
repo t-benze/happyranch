@@ -23,6 +23,8 @@ import { AgentChip } from '@/design-system/patterns/AgentChip';
 import { Markdown } from '@/design-system/patterns/Markdown';
 import { useTask, useTaskRecall, useTasksRoutes } from '@/hooks/tasks';
 import { useJobsList } from '@/hooks/jobs';
+import { useTranslation } from '@/hooks/i18n';
+import type { Locale, MessageKey, MessageParams } from '@/lib/i18n';
 // eslint-disable-next-line no-restricted-imports -- no @/hooks accessor exposes getTask (useTask deliberately drops active_chain); routed direct per THR-011 founder ruling (option 3), pending a future hook
 import { getTask } from '@/lib/api/tasks';
 import type {
@@ -49,6 +51,8 @@ import {
 import { CancelTaskDialog } from './CancelTaskDialog';
 import { RevisitTaskDialog } from './RevisitTaskDialog';
 import { ResolveEscalationDialog } from './ResolveEscalationDialog';
+
+type Translate = (key: MessageKey, params?: MessageParams) => string;
 
 /* ================================================================
  * Timeline node — ds.css chain styling for the workflow strip
@@ -105,6 +109,7 @@ function TimelineNodeItem({
   state,
   blockerName,
 }: TimelineNodeProps): JSX.Element {
+  const { render } = useTranslation();
   return (
     <li className="flex gap-3">
       {/* Vertical connector */}
@@ -120,7 +125,9 @@ function TimelineNodeItem({
         )}
         {state === 'blocked' && blockerName && (
           <p className="text-status-escalated mt-0.5 text-xs">
-            Blocked on: <span className="font-mono">{blockerName}</span>
+            {render('tasks.detail.blockedOn', {
+              name: <span className="font-mono">{blockerName}</span>,
+            })}
           </p>
         )}
       </div>
@@ -151,21 +158,30 @@ type BlockedJobEntry = { job_id: string; status: string };
 function deriveBlockerName(
   blockKind: string | null | undefined,
   blockedOnJobs: BlockedJobEntry[] | null | undefined,
-  fanout?: ActiveFanout | null,
+  fanout: ActiveFanout | null | undefined,
+  t: Translate,
 ): string | undefined {
   // Active spawned fan-out: children are alive, parent waits for all to
   // become terminal. Show width-aware delegation copy.
   if (fanout?.status === 'spawned' && blockKind === 'delegated') {
-    return `waiting on ${fanout.width} subtasks`;
+    return t('tasks.detail.blocker.fanout', { count: fanout.width });
   }
   if (blockedOnJobs && blockedOnJobs.length > 0) {
     const jobIds = blockedOnJobs.map((e) => e.job_id);
-    return `job(s) ${jobIds.join(', ')}`;
+    return t('tasks.detail.blocker.jobs', { ids: jobIds.join(', ') });
   }
-  if (blockKind === 'delegated') return 'delegation';
-  if (blockKind === 'blocked_on_job') return 'blocked on job';
+  if (blockKind === 'delegated') return t('tasks.detail.blocker.delegation');
+  if (blockKind === 'blocked_on_job') return t('tasks.detail.blocker.blockedOnJob');
+  // An unknown block_kind is a raw machine value: verbatim.
   return blockKind ?? undefined;
 }
+
+/** Localized label for a KNOWN derived flavor; an unknown one stays verbatim. */
+const FLAVOR_LABEL_KEY: Record<string, MessageKey> = {
+  'needs-decision': 'tasks.detail.flavor.needsDecision',
+  'over-budget': 'tasks.detail.flavor.overBudget',
+  exhausted: 'tasks.detail.flavor.exhausted',
+};
 
 /**
  * THR-037 Change B §G: derive the escalated display flavor from the latest
@@ -206,18 +222,19 @@ function WorkflowChainTimeline({
   chain: ActiveChainResponse;
   blockInfo?: ChainTimelineBlockInfo;
 }): JSX.Element {
+  const { t } = useTranslation();
   const totalLegs = 1 + chain.legs.length;
   const currentIdx = chain.step_index;
 
   return (
     <section className="mt-5">
       <h3 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
-        Workflow chain — step {currentIdx + 1} of {totalLegs}
+        {t('tasks.detail.chain.heading', { step: currentIdx + 1, total: totalLegs })}
       </h3>
       <ol>
         {/* First leg */}
         <TimelineNodeItem
-          label="Leg 1 (first leg)"
+          label={t('tasks.detail.chain.firstLeg')}
           detail={chain.first_leg_expect_verdict ?? undefined}
           state={
             blockInfo?.isBlocked && currentIdx === 0
@@ -281,6 +298,7 @@ const DEPTH_PL = [
 
 function SubtaskRow({ node, depth = 0 }: SubtaskRowProps): JSX.Element {
   const routes = useTasksRoutes();
+  const { t } = useTranslation();
   const ml = DEPTH_PL[Math.min(depth, DEPTH_PL.length - 1)];
   // Prompt/summary excerpts — backed excerpts only; omitted when absent.
   const brief = snippet(node.brief, 88);
@@ -304,7 +322,7 @@ function SubtaskRow({ node, depth = 0 }: SubtaskRowProps): JSX.Element {
           {brief ? (
             <p className="text-text-primary truncate">{brief}</p>
           ) : (
-            <p className="text-text-muted italic">No brief</p>
+            <p className="text-text-muted italic">{t('tasks.detail.subtasks.noBrief')}</p>
           )}
           {(node.assigned_agent || summary) && (
             <p className="text-text-muted mt-0.5 truncate text-xs">
@@ -327,14 +345,15 @@ function SubtaskRow({ node, depth = 0 }: SubtaskRowProps): JSX.Element {
 }
 
 function ExecutionSubtasks({ recall }: { recall: TaskRecallNode }): JSX.Element {
+  const { t } = useTranslation();
   const hasSubtasks = recall.children && recall.children.length > 0;
   return (
     <section className="mt-5">
       <h3 className="text-text-secondary mb-2 text-xs font-semibold tracking-wider uppercase">
-        Execution subtasks
+        {t('tasks.detail.subtasks.heading')}
       </h3>
       {!hasSubtasks ? (
-        <p className="text-text-muted text-xs">No subtasks.</p>
+        <p className="text-text-muted text-xs">{t('tasks.detail.subtasks.none')}</p>
       ) : (
         <div className="space-y-0">
           {recall.children.map((c) => (
@@ -353,6 +372,7 @@ function ExecutionSubtasks({ recall }: { recall: TaskRecallNode }): JSX.Element 
 const BRIEF_COLLAPSE_THRESHOLD = 600;
 
 function BriefSection({ brief }: { brief: string }): JSX.Element {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const shouldCollapse = brief.length > BRIEF_COLLAPSE_THRESHOLD;
   const preview =
@@ -363,7 +383,7 @@ function BriefSection({ brief }: { brief: string }): JSX.Element {
   return (
     <section className="mt-5">
       <h3 className="text-text-secondary mb-2 text-xs font-semibold tracking-wider uppercase">
-        Brief
+        {t('tasks.detail.brief.heading')}
       </h3>
       <div className="border-border-default bg-surface-sunken rounded-md border p-3">
         <Markdown body={preview} />
@@ -374,8 +394,8 @@ function BriefSection({ brief }: { brief: string }): JSX.Element {
             className="text-accent-default mt-2 text-xs hover:underline"
           >
             {expanded
-              ? 'Show less'
-              : `Show full brief (${brief.length} chars)`}
+              ? t('tasks.detail.brief.showLess')
+              : t('tasks.detail.brief.showFull', { count: brief.length })}
           </button>
         )}
       </div>
@@ -405,9 +425,19 @@ function BriefSection({ brief }: { brief: string }): JSX.Element {
 
 type ChainNodeState = 'done' | 'current' | 'pending';
 
+/** Locale-neutral lineage role: the React key and the catalog lookup. */
+type ChainRole = 'parent' | 'revisitOf' | 'thisTask' | 'revisedBy';
+
+const CHAIN_ROLE_KEY: Record<ChainRole, MessageKey> = {
+  parent: 'tasks.detail.lineage.parent',
+  revisitOf: 'tasks.detail.lineage.revisitOf',
+  thisTask: 'tasks.detail.lineage.thisTask',
+  revisedBy: 'tasks.detail.lineage.revisedBy',
+};
+
 interface ChainCardNode {
   id: string;
-  role: string;
+  role: ChainRole;
   state: ChainNodeState;
 }
 
@@ -433,6 +463,7 @@ function ChainNodeItem({
   detailHref: string;
   current?: { status: TaskRecord['status']; title: string | null };
 }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <li className="flex gap-3">
       {/* Connector: node dot + vertical line to the next node */}
@@ -450,7 +481,7 @@ function ChainNodeItem({
         }`}
       >
         <p className="text-text-muted text-xs font-medium tracking-wider uppercase">
-          {node.role}
+          {t(CHAIN_ROLE_KEY[node.role])}
         </p>
         <div className="mt-1 flex flex-wrap items-center gap-2">
           {node.state === 'current' ? (
@@ -481,6 +512,7 @@ function RevisitDependencyChain({
   directRevisits: string[];
   routes: ReturnType<typeof useTasksRoutes>;
 }): JSX.Element | null {
+  const { t } = useTranslation();
   const parentId = task.parent_task_id;
   // revisit_chain = [this, predecessor, …, original]; predecessors are
   // slice(1) reversed so they read oldest → newest ahead of the current node.
@@ -490,20 +522,20 @@ function RevisitDependencyChain({
   if (!hasLineage) return null;
 
   const nodes: ChainCardNode[] = [];
-  if (parentId) nodes.push({ id: parentId, role: 'Parent', state: 'done' });
+  if (parentId) nodes.push({ id: parentId, role: 'parent', state: 'done' });
   for (const id of predecessors) {
-    nodes.push({ id, role: 'Revisit of', state: 'done' });
+    nodes.push({ id, role: 'revisitOf', state: 'done' });
   }
-  nodes.push({ id: task.task_id, role: 'This task', state: 'current' });
+  nodes.push({ id: task.task_id, role: 'thisTask', state: 'current' });
   for (const id of directRevisits) {
-    nodes.push({ id, role: 'Revised by', state: 'pending' });
+    nodes.push({ id, role: 'revisedBy', state: 'pending' });
   }
 
   const title = snippet(task.brief, 72);
   return (
     <section className="mt-5">
       <h3 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
-        Revisit &amp; dependency chain
+        {t('tasks.detail.lineage.heading')}
       </h3>
       <ol>
         {nodes.map((n, i) => (
@@ -625,10 +657,23 @@ function useChainWithBlock(slug: string | undefined, taskId: string | undefined)
  * Property rail — labeled metadata grid (a-task-detail / TASKDET-03)
  * ================================================================ */
 
-function formatDateTime(iso: string | null | undefined): string | null {
+function formatDateTime(iso: string | null | undefined, locale: Locale): string | null {
   if (!iso) return null;
-  return new Date(iso).toLocaleString();
+  return new Date(iso).toLocaleString(locale);
 }
+
+/** Localized label for a KNOWN work-status state; an unknown state keeps the
+ *  daemon-supplied label verbatim. */
+const WORK_STATE_LABEL_KEY: Record<string, MessageKey> = {
+  newly_started: 'tasks.exec.label.newlyStarted',
+  recent_progress: 'tasks.exec.label.recentProgress',
+  stale_no_receipt: 'tasks.exec.label.staleNoReceipt',
+  stale_old_receipt: 'tasks.exec.label.staleOldReceipt',
+  heartbeat_stale: 'tasks.exec.label.heartbeatStale',
+  heartbeat_unavailable: 'tasks.exec.label.heartbeatUnavailable',
+  unavailable: 'tasks.exec.label.unavailable',
+  not_applicable: 'tasks.exec.label.notApplicable',
+};
 
 /** Only the founder is distinguishable; every other agent is a worker. */
 function chipRole(name: string): 'worker' | 'founder' {
@@ -671,59 +716,63 @@ function RailRow({
  * live agent at all.
  */
 export function ExecutionStatusDetails({ status }: { status: WorkStatusResponse }): JSX.Element {
-  const start = formatDateTime(status.session_start_ts);
-  const hbTs = formatDateTime(status.heartbeat?.timestamp ?? null);
+  const { locale, t } = useTranslation();
+  const start = formatDateTime(status.session_start_ts, locale);
+  const hbTs = formatDateTime(status.heartbeat?.timestamp ?? null, locale);
   const hbFreshness = status.heartbeat?.freshness;
   const hbSuffix =
     hbFreshness === 'fresh'
-      ? '(fresh)'
+      ? t('tasks.exec.fresh')
       : hbFreshness === 'stale'
-        ? '(stale)'
-        : '(unavailable)';
+        ? t('tasks.exec.stale')
+        : t('tasks.exec.unavailable');
   const prog = status.latest_progress;
-  const progTs = formatDateTime(prog?.timestamp ?? null);
+  const progTs = formatDateTime(prog?.timestamp ?? null, locale);
+  const stateLabel = Object.prototype.hasOwnProperty.call(WORK_STATE_LABEL_KEY, status.state)
+    ? t(WORK_STATE_LABEL_KEY[status.state])
+    : status.label;
 
   return (
-    <section aria-label="Execution status" className="min-w-0">
+    <section aria-label={t('tasks.exec.heading')} className="min-w-0">
       <h3 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
-        Execution status
+        {t('tasks.exec.heading')}
       </h3>
       <dl className="min-w-0 space-y-3 text-sm">
-          <RailRow label="State">
-            <span className="text-text-primary font-medium">{status.label}</span>
+          <RailRow label={t('tasks.exec.state')}>
+            <span className="text-text-primary font-medium">{stateLabel}</span>
           </RailRow>
           {start && (
-            <RailRow label="Start">
+            <RailRow label={t('tasks.exec.start')}>
               <span className="text-text-primary font-mono text-xs tabular-nums">
                 {start}
               </span>
             </RailRow>
           )}
-          <RailRow label="Heartbeat">
+          <RailRow label={t('tasks.exec.heartbeat')}>
             <span className="text-text-primary font-mono text-xs tabular-nums">
-              {hbTs ?? 'none observed'}{' '}
+              {hbTs ?? t('tasks.exec.noneObserved')}{' '}
               <span className="text-text-muted">{hbSuffix}</span>
             </span>
           </RailRow>
           {status.applicable ? (
-            <RailRow label="Update">
+            <RailRow label={t('tasks.exec.update')}>
               {prog ? (
                 <span className="text-text-secondary min-w-0">
                   {progTs}
                   {prog.message ? (
                     <span className="text-text-primary"> — {prog.message}</span>
                   ) : (
-                    <span className="text-text-muted"> (content unavailable)</span>
+                    <span className="text-text-muted"> {t('tasks.exec.contentUnavailable')}</span>
                   )}
                 </span>
               ) : (
                 <span className="text-status-escalated font-medium">
-                  No substantive update recorded
+                  {t('tasks.exec.noUpdate')}
                 </span>
               )}
             </RailRow>
           ) : (
-            <RailRow label="Reason">
+            <RailRow label={t('tasks.exec.reason')}>
               <span className="text-text-secondary font-mono text-xs">
                 {status.reason ?? '—'}
               </span>
@@ -756,30 +805,38 @@ export function TaskStatusCard({
   jobs: JobRecord[];
   workStatus: WorkStatusResponse | null;
 }): JSX.Element {
+  const { locale, t } = useTranslation();
   const threadId = (task as Record<string, unknown>).dispatched_from_thread_id;
-  const created = formatDateTime(task.created_at);
+  const created = formatDateTime(task.created_at, locale);
 
   return (
-    <aside aria-label="Task status and properties" className="min-w-0 lg:w-80 lg:shrink-0">
+    <aside aria-label={t('tasks.rail.label')} className="min-w-0 lg:w-80 lg:shrink-0">
       <div className="border-border-default bg-surface-raised min-w-0 rounded-xl border p-4">
         <h2 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
-          Task status
+          {t('tasks.rail.heading')}
         </h2>
         <dl className="space-y-3 text-sm">
-          <RailRow label="Status">
+          <RailRow label={t('tasks.rail.status')}>
             <span className="inline-flex max-w-full flex-wrap">
-              <StatusBadge status={task.status} blockKind={task.block_kind} />
+              <StatusBadge
+                status={task.status}
+                blockKind={task.block_kind}
+                waitingLabels={{
+                  delegated: t('tasks.waiting.subtasks'),
+                  blocked_on_job: t('tasks.waiting.jobs'),
+                }}
+              />
             </span>
           </RailRow>
           {task.block_kind && (
-            <RailRow label="Block kind">
+            <RailRow label={t('tasks.rail.blockKind')}>
               <span className="text-text-secondary break-words font-mono text-xs">
                 {task.block_kind}
               </span>
             </RailRow>
           )}
           {task.assigned_agent && (
-            <RailRow label="Assignee">
+            <RailRow label={t('tasks.rail.assignee')}>
               <span className="block max-w-full">
                 <AgentChip
                   name={task.assigned_agent}
@@ -790,7 +847,7 @@ export function TaskStatusCard({
             </RailRow>
           )}
           {typeof threadId === 'string' && threadId && (
-            <RailRow label="Thread">
+            <RailRow label={t('tasks.rail.thread')}>
               <IdBadge
                 id={threadId}
                 kind="thread"
@@ -799,7 +856,7 @@ export function TaskStatusCard({
             </RailRow>
           )}
           {jobs.length > 0 && (
-            <RailRow label="Job" valueClassName="min-w-0">
+            <RailRow label={t('tasks.rail.job')} valueClassName="min-w-0">
               <span className="flex flex-wrap gap-x-2 gap-y-1">
                 {jobs.map((j) =>
                   slug ? (
@@ -820,7 +877,7 @@ export function TaskStatusCard({
             </RailRow>
           )}
           {created && (
-            <RailRow label="Created">
+            <RailRow label={t('tasks.rail.created')}>
               <span className="text-text-primary font-mono text-xs tabular-nums">
                 {created}
               </span>
@@ -852,6 +909,7 @@ export function TaskDetailPage(): JSX.Element {
   const { slug, task_id: taskIdParam } = useParams<{ slug: string; task_id: string }>();
   const taskId = taskIdParam ?? '';
   const routes = useTasksRoutes();
+  const { t, render } = useTranslation();
   const task = useTask(taskId);
   const recall = useTaskRecall(taskId);
   const jobsQuery = useJobsList({ task_id: taskId, status: 'all', limit: 100 });
@@ -905,14 +963,15 @@ export function TaskDetailPage(): JSX.Element {
     const blockerName =
       task.data.status === 'escalated' ||
       (task.data.status === 'blocked' && task.data.block_kind === 'escalated')
-        ? 'escalation'
+        ? t('tasks.detail.blocker.escalation')
         : deriveBlockerName(
             task.data.block_kind,
             chainQuery.data?.blockedOnJobs ?? null,
             fanoutCtx,
+            t,
           );
     return { isBlocked: true, blockerName };
-  }, [task.data, chainQuery.data, fanoutCtx]);
+  }, [task.data, chainQuery.data, fanoutCtx, t]);
 
   // ── Fan-out status band derivation ──────────────────────────────────────
   // Three lifecycle states, all DERIVED from data already fetched. Regular
@@ -956,7 +1015,7 @@ export function TaskDetailPage(): JSX.Element {
               to={routes.inbox()}
               className="text-text-muted hover:text-text-primary text-xs transition-colors"
             >
-              ‹ All tasks
+              {t('tasks.detail.back')}
             </Link>
           </nav>
 
@@ -973,11 +1032,18 @@ export function TaskDetailPage(): JSX.Element {
                 <StatusBadge
                   status={task.data.status}
                   blockKind={task.data.block_kind}
+                  waitingLabels={{
+                    delegated: t('tasks.waiting.subtasks'),
+                    blocked_on_job: t('tasks.waiting.jobs'),
+                  }}
                 />
               )}
               {escalationFlavor && (
                 <span className="text-text-muted text-xs font-medium">
-                  · {escalationFlavor}
+                  ·{' '}
+                  {Object.prototype.hasOwnProperty.call(FLAVOR_LABEL_KEY, escalationFlavor)
+                    ? t(FLAVOR_LABEL_KEY[escalationFlavor])
+                    : escalationFlavor}
                 </span>
               )}
             </h1>
@@ -986,35 +1052,44 @@ export function TaskDetailPage(): JSX.Element {
                 <span>{task.data.team}</span>
                 {task.data.parent_task_id && (
                   <span>
-                    · parent{' '}
-                    <Link
-                      to={routes.detail(task.data.parent_task_id)}
-                      className="text-id-task hover:underline"
-                    >
-                      {task.data.parent_task_id}
-                    </Link>
+                    {render('tasks.detail.parent', {
+                      id: (
+                        <Link
+                          to={routes.detail(task.data.parent_task_id)}
+                          className="text-id-task hover:underline"
+                        >
+                          {task.data.parent_task_id}
+                        </Link>
+                      ),
+                    })}
                   </span>
                 )}
                 {task.data.revisit_of_task_id && (
                   <span>
-                    · revisit of{' '}
-                    <Link
-                      to={routes.detail(task.data.revisit_of_task_id)}
-                      className="text-id-task hover:underline"
-                    >
-                      {task.data.revisit_of_task_id}
-                    </Link>
+                    {render('tasks.detail.revisitOf', {
+                      id: (
+                        <Link
+                          to={routes.detail(task.data.revisit_of_task_id)}
+                          className="text-id-task hover:underline"
+                        >
+                          {task.data.revisit_of_task_id}
+                        </Link>
+                      ),
+                    })}
                   </span>
                 )}
                 {chainQuery.data?.superseded_by_task_id && (
                   <span>
-                    · superseded by{' '}
-                    <Link
-                      to={routes.detail(chainQuery.data.superseded_by_task_id)}
-                      className="text-id-task hover:underline"
-                    >
-                      {chainQuery.data.superseded_by_task_id}
-                    </Link>
+                    {render('tasks.detail.supersededBy', {
+                      id: (
+                        <Link
+                          to={routes.detail(chainQuery.data.superseded_by_task_id)}
+                          className="text-id-task hover:underline"
+                        >
+                          {chainQuery.data.superseded_by_task_id}
+                        </Link>
+                      ),
+                    })}
                   </span>
                 )}
               </div>
@@ -1024,7 +1099,7 @@ export function TaskDetailPage(): JSX.Element {
                 role="alert"
                 className="bg-tier-red-tint text-status-abandoned mt-3 max-h-32 overflow-y-auto rounded-md px-3 py-2 text-sm"
               >
-                <span className="font-semibold">Failure reason:</span>{' '}
+                <span className="font-semibold">{t('tasks.detail.failureReason')}</span>{' '}
                 <span className="font-mono">{failureNote}</span>
               </div>
             )}
@@ -1034,13 +1109,13 @@ export function TaskDetailPage(): JSX.Element {
               >
                 {escalationPrimary && (
                   <p>
-                    <span className="font-semibold">Escalation reason:</span>{' '}
+                    <span className="font-semibold">{t('tasks.detail.escalationReason')}</span>{' '}
                     <span className="font-mono">{escalationPrimary}</span>
                   </p>
                 )}
                 {escalationSecondary && (
                   <p className={escalationPrimary ? 'mt-1' : undefined}>
-                    <span className="font-semibold">Automatic escalation:</span>{' '}
+                    <span className="font-semibold">{t('tasks.detail.automaticEscalation')}</span>{' '}
                     <span>{escalationSecondary}</span>
                   </p>
                 )}
@@ -1052,20 +1127,20 @@ export function TaskDetailPage(): JSX.Element {
                   {/* THR-080: Continue via resolve-escalation; Cancel via
                       generic /cancel route (removed from resolve vocabulary). */}
                   <Button size="sm" onClick={() => setDialog('resolve-continue')}>
-                    Continue
+                    {t('tasks.detail.continue')}
                   </Button>
                   <Button
                     size="sm"
                     variant="ghost"
                     onClick={() => setDialog('cancel')}
                   >
-                    Cancel
+                    {t('tasks.detail.cancel')}
                   </Button>
                 </>
               ) : (
                 <>
                   <Button size="sm" variant="ghost" onClick={() => setDialog('revisit')}>
-                    Revisit
+                    {t('tasks.detail.revisit')}
                   </Button>
                   <Button
                     size="sm"
@@ -1074,11 +1149,11 @@ export function TaskDetailPage(): JSX.Element {
                     disabled={isTerminal}
                     title={
                       isTerminal
-                        ? `Cannot cancel a ${task.data?.status} task`
+                        ? t('tasks.detail.cannotCancel', { status: task.data?.status ?? '' })
                         : undefined
                     }
                   >
-                    Cancel
+                    {t('tasks.detail.cancel')}
                   </Button>
                 </>
               )}
@@ -1087,7 +1162,7 @@ export function TaskDetailPage(): JSX.Element {
                   to={`/orgs/${slug}/audit?task_id=${taskId}`}
                   className="text-accent-default ml-auto self-center text-xs hover:underline"
                 >
-                  View audit →
+                  {t('tasks.detail.viewAudit')}
                 </Link>
               )}
             </div>
@@ -1127,18 +1202,18 @@ export function TaskDetailPage(): JSX.Element {
 
             <section className="mt-5">
               <h3 className="text-text-secondary mb-2 text-xs font-semibold tracking-wider uppercase">
-                Recall tree
+                {t('tasks.detail.recall.heading')}
               </h3>
               {recallNode ? (
                 <TaskRecallTree node={recallNode} />
               ) : (
-                <p className="text-text-muted text-xs">Loading recall…</p>
+                <p className="text-text-muted text-xs">{t('tasks.detail.recall.loading')}</p>
               )}
             </section>
 
             <section className="mt-5">
               <h3 className="text-text-secondary mb-2 text-xs font-semibold tracking-wider uppercase">
-                Activity
+                {t('tasks.detail.activity.heading')}
               </h3>
               <TaskEventsLog key={taskId} taskId={taskId} />
             </section>
@@ -1146,7 +1221,7 @@ export function TaskDetailPage(): JSX.Element {
             {jobsQuery.data && jobsQuery.data.jobs.length > 0 && (
               <section className="mt-5">
                 <h3 className="text-text-secondary mb-2 text-xs font-semibold tracking-wider uppercase">
-                  Jobs from this task
+                  {t('tasks.detail.jobs.heading')}
                 </h3>
                 <ul className="space-y-1 text-sm">
                   {jobsQuery.data.jobs.map((j) => (

@@ -11,7 +11,9 @@
  * the Assistant/Organization/Executors/Daemon-Capacity sections) and adds the
  * production-gated `preferences` route (`PreferencesSection`). The shared
  * Work Hours-owned `EligibilityEditorDialog` mounted by Organization stays
- * English until W4. The other mounted product surfaces and the later slices
+ * English until W4. W3a migrates Dashboard + Threads and W3b-1 migrates the
+ * Tasks route family (`tasks`, `tasks/:task_id` and its owned dialogs); Jobs
+ * is W3b-2. The other mounted product surfaces and the later slices
  * (assistant dock body = W4, route families = W3/W4) remain `english-only` —
  * fallback English is never treated as coverage.
  * Redirect-only/catch-all
@@ -101,7 +103,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
     namespace: 'threads',
     routeTokens: ['threads', 'threads/:thread_id'],
     // W3a: list/detail panes, composer, strips and the directly owned dialogs
-    // (incl. the shared NewThreadDialog it mounts). Tasks/Jobs stay W3b.
+    // (incl. the shared NewThreadDialog it mounts).
     status: 'translated',
     surfaces: [
       'ThreadsPage',
@@ -114,7 +116,9 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'tasks',
     routeTokens: ['tasks', 'tasks/:task_id'],
-    status: 'english-only',
+    // W3b-1: list/detail panes, filters, status/fan-out presentation, states
+    // and the directly owned dialogs. Jobs stays english-only until W3b-2.
+    status: 'translated',
     surfaces: [
       'TasksPage',
       'TaskDetailPage',

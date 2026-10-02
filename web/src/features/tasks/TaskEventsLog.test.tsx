@@ -1,4 +1,6 @@
 import { act, render, screen } from '@testing-library/react';
+import { I18nTestBoundary, savedLocaleAdapter } from '@/test/render';
+import { I18nProvider } from '@/hooks/i18n';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { TaskEvent } from '@/lib/api/types';
@@ -55,7 +57,7 @@ describe('TaskEventsLog', () => {
   });
 
   test('shows task-scoped loading, empty, and subscription-error states', () => {
-    render(<TaskEventsLog taskId="TASK-LOCAL-TIME" />);
+    render(<TaskEventsLog taskId="TASK-LOCAL-TIME" />, { wrapper: I18nTestBoundary });
 
     expect(screen.getByText('Loading events for TASK-LOCAL-TIME…')).toBeInTheDocument();
 
@@ -82,7 +84,7 @@ describe('TaskEventsLog', () => {
       }).format(this);
     });
     const user = userEvent.setup();
-    render(<TaskEventsLog taskId="TASK-LOCAL-TIME" />);
+    render(<TaskEventsLog taskId="TASK-LOCAL-TIME" />, { wrapper: I18nTestBoundary });
 
     emit('TASK-LOCAL-TIME', EVENT);
 
@@ -105,7 +107,7 @@ describe('TaskEventsLog', () => {
 
   test('renders valid timestamps for synthetic terminal events (completed/failed/escalated) without falling back', () => {
     vi.spyOn(Date.prototype, 'toLocaleString').mockReturnValue('FORMATTED');
-    render(<TaskEventsLog taskId="TASK-SYNTH" />);
+    render(<TaskEventsLog taskId="TASK-SYNTH" />, { wrapper: I18nTestBoundary });
 
     const completed: TaskEvent = {
       type: 'task_complete',
@@ -139,7 +141,7 @@ describe('TaskEventsLog', () => {
 
   test('renders a stable fallback instead of Invalid Date when the timestamp is missing', () => {
     vi.spyOn(Date.prototype, 'toLocaleString').mockReturnValue('FORMATTED');
-    render(<TaskEventsLog taskId="TASK-MISSING" />);
+    render(<TaskEventsLog taskId="TASK-MISSING" />, { wrapper: I18nTestBoundary });
 
     // Real legacy SSE shape: a synthesized terminal event with no timestamp key.
     const missing = {
@@ -156,7 +158,7 @@ describe('TaskEventsLog', () => {
 
   test('renders a stable fallback instead of Invalid Date for a malformed timestamp', () => {
     vi.spyOn(Date.prototype, 'toLocaleString').mockReturnValue('FORMATTED');
-    render(<TaskEventsLog taskId="TASK-MALFORMED" />);
+    render(<TaskEventsLog taskId="TASK-MALFORMED" />, { wrapper: I18nTestBoundary });
 
     const malformed: TaskEvent = {
       type: 'task_failed',
@@ -169,5 +171,33 @@ describe('TaskEventsLog', () => {
     expect(screen.getByText('Time unavailable')).toBeInTheDocument();
     expect(screen.queryByText('Invalid Date')).not.toBeInTheDocument();
     expect(screen.queryByText('FORMATTED')).not.toBeInTheDocument();
+  });
+
+  test('zh-CN: localized states and fan-out labels; task id, raw actions, agent and payload verbatim', async () => {
+    vi.spyOn(Date.prototype, 'toLocaleString').mockReturnValue('FORMATTED');
+    const user = userEvent.setup();
+    render(
+      <I18nProvider adapter={savedLocaleAdapter('zh-CN')}>
+        <TaskEventsLog taskId="TASK-ZH" />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByText('正在加载 TASK-ZH 的事件…')).toBeInTheDocument();
+    act(() => currentSubscription('TASK-ZH').onOpen?.());
+    expect(screen.getByText('TASK-ZH 暂无事件。')).toBeInTheDocument();
+    act(() => currentSubscription('TASK-ZH').onError?.());
+    expect(screen.getByRole('alert')).toHaveTextContent('无法加载 TASK-ZH 的事件。');
+
+    emit('TASK-ZH', EVENT);
+    emit('TASK-ZH', { ...EVENT, action: 'fanout_spawned', payload: { width: 2 } } as TaskEvent);
+    emit('TASK-ZH', { type: 'task_failed', timestamp: 'not-a-date' } as unknown as TaskEvent);
+
+    expect(screen.getByText('task_started')).toBeInTheDocument();
+    expect(screen.getByText('扇出已派生')).toBeInTheDocument();
+    expect(screen.getByText('task_failed')).toBeInTheDocument();
+    expect(screen.getByText('时间不可用')).toBeInTheDocument();
+    expect(screen.getAllByText('· dev_agent')).toHaveLength(2);
+    await user.click(screen.getByRole('button', { name: /task_started/ }));
+    expect(screen.getByText(/"source": "task-tail"/)).toBeInTheDocument();
   });
 });

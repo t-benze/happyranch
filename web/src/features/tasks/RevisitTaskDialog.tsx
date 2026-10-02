@@ -11,7 +11,8 @@ import { Button } from '@/design-system/primitives/Button';
 import { Textarea } from '@/design-system/primitives/Textarea';
 import { Input } from '@/design-system/primitives/Input';
 import { useRevisitTask, useTasksRoutes } from '@/hooks/tasks';
-import { TASKS_ERROR_STRINGS } from './strings';
+import { useTranslation } from '@/hooks/i18n';
+import { classifyTaskError, renderTaskError, type TaskErrorView } from './strings';
 
 interface Props {
   taskId: string;
@@ -19,9 +20,10 @@ interface Props {
 }
 
 export function RevisitTaskDialog({ taskId, onClose }: Props): JSX.Element {
+  const { t } = useTranslation();
   const [note, setNote] = useState('');
   const [sessionTimeout, setSessionTimeout] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<TaskErrorView | null>(null);
   const revisit = useRevisitTask(taskId);
   const navigate = useNavigate();
   const routes = useTasksRoutes();
@@ -30,7 +32,7 @@ export function RevisitTaskDialog({ taskId, onClose }: Props): JSX.Element {
     setError(null);
     const sst = sessionTimeout.trim();
     if (sst && !/^\d+$/.test(sst)) {
-      setError('Session timeout must be a positive integer.');
+      setError({ kind: 'message', key: 'tasks.dialog.revisit.invalidTimeout' });
       return;
     }
     try {
@@ -41,8 +43,7 @@ export function RevisitTaskDialog({ taskId, onClose }: Props): JSX.Element {
       if (out.task_id) navigate(routes.detail(out.task_id));
       else onClose();
     } catch (e: unknown) {
-      const code = (e as { code?: string }).code;
-      setError(code ? (TASKS_ERROR_STRINGS[code] ?? code) : 'Revisit failed.');
+      setError(classifyTaskError(e, 'tasks.dialog.revisit.failed'));
     }
   };
 
@@ -50,27 +51,27 @@ export function RevisitTaskDialog({ taskId, onClose }: Props): JSX.Element {
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Revisit task</DialogTitle>
+          <DialogTitle>{t('tasks.dialog.revisit.title')}</DialogTitle>
         </DialogHeader>
         <p className="text-fg-muted text-sm">
-          Spawns a new root task inheriting the brief + team. The original task stays frozen.
+          {t('tasks.dialog.revisit.body')}
         </p>
         <Textarea
           value={note}
           onChange={(e) => setNote(e.target.value)}
           rows={3}
-          placeholder="Note for the new root (optional)"
+          placeholder={t('tasks.dialog.revisit.notePlaceholder')}
         />
         <Input
           value={sessionTimeout}
           onChange={(e) => setSessionTimeout(e.target.value)}
-          placeholder="Session timeout (seconds, optional)"
+          placeholder={t('tasks.dialog.revisit.timeoutPlaceholder')}
         />
-        {error && <p className="text-danger text-sm">{error}</p>}
+        {error !== null && <p className="text-danger text-sm">{renderTaskError(error, t)}</p>}
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
           <Button disabled={revisit.isPending} onClick={onSubmit}>
-            {revisit.isPending ? 'Revisiting…' : 'Revisit'}
+            {revisit.isPending ? t('tasks.dialog.revisit.pending') : t('tasks.dialog.revisit.confirm')}
           </Button>
         </DialogFooter>
       </DialogContent>

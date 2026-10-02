@@ -7,6 +7,7 @@
  * updates, and must never imply activity where only a heartbeat was observed.
  */
 import { render, screen } from '@testing-library/react';
+import { I18nTestBoundary } from '@/test/render';
 import { describe, expect, test } from 'vitest';
 import { ExecutionStatusDetails } from './TaskDetailPage';
 import type { WorkStatusResponse } from '@/lib/api/types';
@@ -90,7 +91,7 @@ function notApplicable(): WorkStatusResponse {
 
 describe('ExecutionStatusCard', () => {
   test('newly-started: renders state, start, fresh heartbeat, and the explicit no-update line', () => {
-    render(<ExecutionStatusDetails status={newlyStarted()} />);
+    render(<ExecutionStatusDetails status={newlyStarted()} />, { wrapper: I18nTestBoundary });
     const card = screen.getByRole('region', { name: 'Execution status' });
     expect(card).toBeTruthy();
     expect(card.textContent).toContain('Newly started — awaiting first update');
@@ -102,7 +103,7 @@ describe('ExecutionStatusCard', () => {
   });
 
   test('recent progress: renders the receipt time AND the agent-written message', () => {
-    render(<ExecutionStatusDetails status={recentProgress()} />);
+    render(<ExecutionStatusDetails status={recentProgress()} />, { wrapper: I18nTestBoundary });
     const card = screen.getByRole('region', { name: 'Execution status' });
     expect(card.textContent).toContain('Recent update recorded');
     expect(card.textContent).toContain('Phase 3 of 6: tests passing');
@@ -111,7 +112,7 @@ describe('ExecutionStatusCard', () => {
   });
 
   test('stale-but-alive without receipt: actionable stale label + no-update line', () => {
-    render(<ExecutionStatusDetails status={staleNoReceipt()} />);
+    render(<ExecutionStatusDetails status={staleNoReceipt()} />, { wrapper: I18nTestBoundary });
     const card = screen.getByRole('region', { name: 'Execution status' });
     expect(card.textContent).toContain(
       'Stale-but-alive — no substantive update recorded',
@@ -121,7 +122,7 @@ describe('ExecutionStatusCard', () => {
   });
 
   test('stale-but-alive with old receipt: stale label + old content', () => {
-    render(<ExecutionStatusDetails status={staleOldReceipt()} />);
+    render(<ExecutionStatusDetails status={staleOldReceipt()} />, { wrapper: I18nTestBoundary });
     const card = screen.getByRole('region', { name: 'Execution status' });
     expect(card.textContent).toContain(
       'Stale-but-alive — last update older than 5 minutes',
@@ -131,7 +132,7 @@ describe('ExecutionStatusCard', () => {
   });
 
   test('terminal: explicit not-applicable, no heartbeat implying liveness', () => {
-    render(<ExecutionStatusDetails status={notApplicable()} />);
+    render(<ExecutionStatusDetails status={notApplicable()} />, { wrapper: I18nTestBoundary });
     const card = screen.getByRole('region', { name: 'Execution status' });
     expect(card.textContent).toContain('Not applicable');
     expect(card.textContent).toContain('terminal');
@@ -143,7 +144,7 @@ describe('ExecutionStatusCard', () => {
   test('heartbeat never renders as a substantive update', () => {
     // Fresh heartbeat + no receipt: the Update row must be the explicit
     // no-update line — never a message built from the heartbeat timestamp.
-    render(<ExecutionStatusDetails status={newlyStarted()} />);
+    render(<ExecutionStatusDetails status={newlyStarted()} />, { wrapper: I18nTestBoundary });
     const card = screen.getByRole('region', { name: 'Execution status' });
     expect(card.textContent).toContain('No substantive update recorded');
     // The heartbeat timestamp appears only on the heartbeat row, never as an
@@ -160,6 +161,7 @@ describe('ExecutionStatusCard', () => {
           heartbeat: { timestamp: FIXED_HEARTBEAT, freshness: 'stale' },
         })}
       />,
+      { wrapper: I18nTestBoundary },
     );
     const card = screen.getByRole('region', { name: 'Execution status' });
     expect(card.textContent).toContain('Heartbeat stale');
@@ -179,6 +181,7 @@ describe('ExecutionStatusCard', () => {
           },
         })}
       />,
+      { wrapper: I18nTestBoundary },
     );
     const card = screen.getByRole('region', { name: 'Execution status' });
     expect(card.textContent).toContain('(content unavailable)');
@@ -196,6 +199,7 @@ describe('ExecutionStatusCard', () => {
           },
         })}
       />,
+      { wrapper: I18nTestBoundary },
     );
     const card = screen.getByRole('region', { name: 'Execution status' });
     for (const value of card.querySelectorAll('dd')) {
