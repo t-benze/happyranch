@@ -304,7 +304,21 @@ if [ "$workload_status" -eq 0 ]; then
 fi
 if [ "$workload_status" -eq 0 ]; then
   observed_uv="$(uv --version)"
-  if [ "$observed_uv" != "uv {UV_VERSION}" ]; then
+  uv_version_ok=false
+  case "$observed_uv" in
+    "uv {UV_VERSION}")
+      uv_version_ok=true
+      ;;
+    "uv {UV_VERSION} ("*")")
+      uv_target_triple="${{observed_uv#* (}}"
+      uv_target_triple="${{uv_target_triple%)}}"
+      case "$uv_target_triple" in
+        ""|*[\\ \\(\\)]*) ;;
+        *) uv_version_ok=true ;;
+      esac
+      ;;
+  esac
+  if [ "$uv_version_ok" != true ]; then
     printf 'unexpected uv version: %s\\n' "$observed_uv" >&2
     workload_status=82
   else
