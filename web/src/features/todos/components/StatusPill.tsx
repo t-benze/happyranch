@@ -6,6 +6,7 @@
  */
 import type { ScheduleStatus } from '@/lib/api/types'
 import { toneClass } from '@/design-system/patterns/semanticTone'
+import { useTranslation } from '@/hooks/i18n'
 import { statusLabel } from '../strings'
 
 interface StatusPillProps {
@@ -15,8 +16,9 @@ interface StatusPillProps {
 const LED_STATUSES: Set<ScheduleStatus> = new Set(['armed', 'firing'])
 
 export function StatusPill({ status }: StatusPillProps): JSX.Element {
+  const { t } = useTranslation()
   const cls = toneClass(status)
-  const label = statusLabel(status)
+  const label = statusLabel(status, t)
   const showLed = LED_STATUSES.has(status)
   return (
     <span

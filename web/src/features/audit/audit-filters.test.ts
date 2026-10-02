@@ -12,6 +12,7 @@ import {
   type EventClass,
 } from './audit-filters';
 import type { AuditEntry } from '@/lib/api/types';
+import { translate } from '@/lib/i18n';
 
 function makeEntry(overrides: Partial<AuditEntry> = {}): AuditEntry {
   return {
@@ -142,11 +143,25 @@ describe('buildClassLegend', () => {
     expect(legend.map((l) => l.eventClass)).toEqual([...EVENT_CLASS_ORDER]);
     // Every count is zero on an empty input.
     expect(legend.every((l) => l.count === 0)).toBe(true);
-    // Labels + colors come from the locked per-class metadata.
+    // Label keys + colors come from the locked per-class metadata.
     for (const l of legend) {
-      expect(l.label).toBe(EVENT_CLASS_META[l.eventClass].label);
+      expect(l.labelKey).toBe(EVENT_CLASS_META[l.eventClass].labelKey);
       expect(l.color).toBe(EVENT_CLASS_META[l.eventClass].color);
     }
+  });
+
+  // THR-118 W4b: class labels are catalog keys; the class id stays the URL
+  // machine value.
+  test('class labels resolve through the catalog in both locales', () => {
+    const legend = buildClassLegend([]);
+    expect(legend.map((l) => translate('en', l.labelKey))).toEqual([
+      'Dispatch',
+      'Completed',
+      'Merge',
+      'Escalation',
+      'Failure',
+    ]);
+    expect(legend.map((l) => translate('zh-CN', l.labelKey))).toEqual(['派发', '已完成', '合并', '升级', '失败']);
   });
 
   test('collapses raw event-types into per-class counts', () => {

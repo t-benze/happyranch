@@ -11,6 +11,8 @@ import { useNextWakes } from '@/hooks/settings';
 import { useAgentsList } from '@/hooks/agents';
 import { Button } from '@/design-system/primitives/Button';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
+import { useTranslation } from '@/hooks/i18n';
+import { formatDateShapeFor } from '@/lib/i18n';
 import type { AgentSummary } from '@/lib/api/types';
 import {
   isEligible,
@@ -28,11 +30,10 @@ import {
 } from './components';
 import { TierEditorDialog, type Tier } from './TierEditorDialog';
 import { useAgentTeamMap } from './useAgentTeamMap';
-
-const PENDING_TICK =
-  'Saved ✓ — takes effect at the next scheduler pass (≈ within ~60s).';
+import { classifyWorkHoursError, renderWorkHoursError } from './strings';
 
 export function AgentDetailPage(): JSX.Element {
+  const { t, render } = useTranslation();
   const { slug, agent } = useParams<{ slug: string; agent: string }>();
   const settingsQuery = useSettings();
   const agentsQuery = useAgentsList();
@@ -48,32 +49,38 @@ export function AgentDetailPage(): JSX.Element {
   const team = agent ? (agentTeam[agent] ?? null) : null;
 
   const [tier, setTier] = useState<Tier | null>(null);
-  const [savedMsg, setSavedMsg] = useState<string | null>(null);
+  // Locale-neutral flag: the banner copy is translated on every render.
+  const [saved, setSaved] = useState(false);
 
   const allAgentNames = useMemo(() => agents.map((a) => a.name), [agents]);
 
   if (settingsQuery.isLoading) {
-    return <div className="text-fg-muted p-6">Loading work hours…</div>;
+    return <div className="text-fg-muted p-6">{t('workHours.loading')}</div>;
   }
 
   if (settingsQuery.isError || !wh) {
     return (
       <div className="p-4">
         <RecoveryBanner
-          reason={
-            settingsQuery.error?.message ??
-            'The work-hours config could not be read.'
-          }
+          reason={renderWorkHoursError(
+            classifyWorkHoursError(settingsQuery.error, 'workHours.recovery.unreadable'),
+            t,
+          )}
         />
         <Link to={`/orgs/${slug}/work-hours`} className="text-accent-text text-sm hover:underline">
-          ← Back to overview
+          {t('workHours.detail.backToOverview')}
         </Link>
       </div>
     );
   }
 
   if (!agent) {
-    return <EmptyState title="No agent" body="No agent specified." />;
+    return (
+      <EmptyState
+        title={t('workHours.detail.noAgent.title')}
+        body={t('workHours.detail.noAgent.body')}
+      />
+    );
   }
 
   const rec = reconcile(wh, agent, team);
@@ -83,7 +90,7 @@ export function AgentDetailPage(): JSX.Element {
   const hasSystemPrompt = agentSummary?.system_prompt !== undefined;
 
   function onSaved() {
-    setSavedMsg(PENDING_TICK);
+    setSaved(true);
   }
 
   return (
@@ -94,18 +101,17 @@ export function AgentDetailPage(): JSX.Element {
           to={`/orgs/${slug}/work-hours`}
           className="text-text-muted text-xs hover:underline"
         >
-          ← Work hours
+          {t('workHours.detail.backToWorkHours')}
         </Link>
         <div className="mt-1 flex flex-wrap items-center gap-3">
           <h1 className="font-display text-h2 text-text-primary">{agent}</h1>
-          <span className="text-text-muted text-sm">{team ?? 'no team'}</span>
+          <span className="text-text-muted text-sm">{team ?? t('workHours.detail.noTeam')}</span>
           <EligibilityChip eligible={eligible} />
           <OnDot on={on} />
         </div>
         {!eligible && (
           <p className="text-text-muted mt-1 text-xs">
-            Excluded by the eligibility selector — this schedule is configured
-            but inert.
+            {t('workHours.detail.excludedNote')}
           </p>
         )}
       </header>
@@ -113,17 +119,17 @@ export function AgentDetailPage(): JSX.Element {
       <div className="flex-1 overflow-y-auto">
         {/* a-workhours wh-wrap: 1120 centered cap (THR-099 Slice 8). */}
         <div className="max-w-content-wide mx-auto p-4">
-        {savedMsg && <SavedBanner message={savedMsg} />}
+        {saved && <SavedBanner message={t('workHours.saved')} />}
 
         {/* Reconciliation table */}
         <section className="mb-6">
           <div className="mb-2 flex items-center justify-between">
             <h2 className="text-text-primary text-sm font-semibold">
-              Effective schedule — provenance
+              {t('workHours.detail.provenanceHeading')}
             </h2>
             <div className="flex gap-2">
               <Button size="sm" variant="outline" onClick={() => setTier({ kind: 'org' })}>
-                Edit org default
+                {t('workHours.editOrgDefault')}
               </Button>
               {team && (
                 <Button
@@ -131,7 +137,7 @@ export function AgentDetailPage(): JSX.Element {
                   variant="outline"
                   onClick={() => setTier({ kind: 'team', team })}
                 >
-                  Edit team: {team}
+                  {t('workHours.editTeam', { team })}
                 </Button>
               )}
               <Button
@@ -139,13 +145,13 @@ export function AgentDetailPage(): JSX.Element {
                 variant="outline"
                 onClick={() => setTier({ kind: 'agent', agent })}
               >
-                Edit this agent
+                {t('workHours.detail.editAgent')}
               </Button>
               <Link
                 to={`/orgs/${slug}/settings/organization`}
                 className="text-accent-text text-xs hover:underline self-center"
               >
-                Manage operating control
+                {t('workHours.manageOperatingControl')}
               </Link>
             </div>
           </div>
@@ -154,11 +160,15 @@ export function AgentDetailPage(): JSX.Element {
             <table className="w-full text-sm">
               <thead className="bg-bg-subtle text-text-muted text-xs uppercase">
                 <tr>
-                  <Th>Leaf</Th>
-                  <Th>Org default</Th>
-                  <Th>{team ? `Team: ${team}` : 'Team'}</Th>
-                  <Th>This agent</Th>
-                  <Th>Effective</Th>
+                  <Th>{t('workHours.detail.col.leaf')}</Th>
+                  <Th>{t('workHours.provenance.org')}</Th>
+                  <Th>
+                    {team
+                      ? t('workHours.provenance.teamNamed', { team })
+                      : t('workHours.provenance.team')}
+                  </Th>
+                  <Th>{t('workHours.provenance.agent')}</Th>
+                  <Th>{t('workHours.detail.col.effective')}</Th>
                 </tr>
               </thead>
               <tbody className="divide-border divide-y">
@@ -191,16 +201,18 @@ export function AgentDetailPage(): JSX.Element {
 
         {/* Next wakes */}
         <section className="mb-6">
-          <h2 className="text-text-primary mb-2 text-sm font-semibold">Next wakes</h2>
+          <h2 className="text-text-primary mb-2 text-sm font-semibold">
+            {t('workHours.detail.nextWakes')}
+          </h2>
           <div className="border-border bg-bg-subtle rounded-md border p-3 text-sm">
             {nextWakesQuery.isLoading && (
-              <span className="text-text-muted">Computing next wakes…</span>
+              <span className="text-text-muted">{t('workHours.detail.computing')}</span>
             )}
             {!nextWakesQuery.isLoading && nextWakesQuery.data && (
               <NextWakes data={nextWakesQuery.data} routineTasks={routineTasks} />
             )}
             {!nextWakesQuery.isLoading && !nextWakesQuery.data && (
-              <span className="text-text-muted">No preview available.</span>
+              <span className="text-text-muted">{t('workHours.detail.noPreview')}</span>
             )}
           </div>
         </section>
@@ -208,39 +220,37 @@ export function AgentDetailPage(): JSX.Element {
         {/* Routine Tasks (read-only) */}
         <section>
           <h2 className="text-text-primary mb-2 text-sm font-semibold">
-            Routine Tasks{' '}
+            {t('workHours.detail.routineHeading')}{' '}
             <span className="text-text-muted text-xs font-normal">
-              (read-only · editing is Phase 2)
+              {t('workHours.detail.routineReadOnly')}
             </span>
           </h2>
           <div className="border-border bg-bg-subtle rounded-md border p-3 text-sm">
             <p className="text-text-muted mb-2 text-xs">
-              ⓘ Each bullet = one root task self-dispatched per wake. No bullets →
-              wake does nothing.
+              {t('workHours.detail.routineInfo')}
             </p>
             {!hasSystemPrompt ? (
               <p className="text-text-muted">
-                System prompt not available — view the agent&rsquo;s{' '}
-                <code className="text-text-secondary">## Routine Tasks</code>{' '}
-                markdown.
+                {render('workHours.detail.noSystemPrompt', {
+                  code: <code className="text-text-secondary">## Routine Tasks</code>,
+                })}
               </p>
             ) : routineTasks.length === 0 ? (
               <p className="text-feedback-danger">
-                This agent&rsquo;s wakes will dispatch nothing — add at least one
-                routine task (edit the agent&rsquo;s{' '}
-                <code>## Routine Tasks</code> markdown; in-UI editing is Phase 2).
+                {render('workHours.detail.dispatchNothingWarning', {
+                  code: <code>## Routine Tasks</code>,
+                })}
               </p>
             ) : (
               <ul className="text-text-secondary list-disc pl-5">
-                {routineTasks.map((t, i) => (
-                  <li key={i}>{t}</li>
+                {routineTasks.map((task, i) => (
+                  <li key={i}>{task}</li>
                 ))}
               </ul>
             )}
             {hasSystemPrompt && routineTasks.length > 0 && (
               <p className="text-text-muted mt-2 text-xs">
-                To change these in MVP, edit the agent&rsquo;s{' '}
-                <code>## Routine Tasks</code> markdown directly.
+                {render('workHours.detail.changeHint', { code: <code>## Routine Tasks</code> })}
               </p>
             )}
           </div>
@@ -273,41 +283,37 @@ function NextWakes({
   data: import('@/lib/api/types').NextWakesResponse;
   routineTasks: string[];
 }): JSX.Element {
+  const { t, locale } = useTranslation();
   if (!data.enabled) {
-    return (
-      <span className="text-text-muted">
-        Work-hours feature is OFF — no wakes scheduled.
-      </span>
-    );
+    return <span className="text-text-muted">{t('workHours.detail.featureOff')}</span>;
   }
   if (data.error) {
     return (
       <span className="text-feedback-danger">
-        Incomplete schedule: {data.error}
+        {t('workHours.detail.incomplete', { error: data.error })}
       </span>
     );
   }
   if (data.next_wakes.length === 0) {
-    return <span className="text-text-muted">No upcoming wakes.</span>;
+    return <span className="text-text-muted">{t('workHours.detail.noUpcoming')}</span>;
   }
   return (
     <div>
       <ol className="text-text-secondary font-mono text-xs tabular-nums">
         {data.next_wakes.map((iso) => (
           <li key={iso}>
-            {new Date(iso).toLocaleString(undefined, {
-              month: 'short',
-              day: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit',
-            })}
+            {formatDateShapeFor(locale, new Date(iso), 'monthDayTime')}
             {data.timezone ? ` (${data.timezone})` : ''}
           </li>
         ))}
       </ol>
       <p className="text-text-muted mt-2 text-xs">
-        On each wake it dispatches:{' '}
-        {routineTasks.length > 0 ? routineTasks.join('; ') : '(nothing — no routine tasks)'}
+        {t('workHours.detail.dispatches', {
+          tasks:
+            routineTasks.length > 0
+              ? routineTasks.join('; ')
+              : t('workHours.detail.dispatchesNothing'),
+        })}
       </p>
     </div>
   );

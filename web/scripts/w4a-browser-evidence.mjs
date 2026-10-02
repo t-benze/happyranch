@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * W4a browser-evidence harness (THR-118 W4a-1 health + dreams; W4a-2/W4a-3 add rows).
+ * W4a browser-evidence harness (THR-118 W4a-1 health + dreams; W4b todos + work-hours + audit; later W4 slices add rows).
  *
  * Same mechanism as `w3b-jobs-browser-evidence.mjs` (no new dependency): ONE
  * isolated headless Chrome driven over the DevTools Protocol against the
@@ -14,7 +14,8 @@
  *   G  the ordinary bundle carries every VIEW_ROUTES row's zh-CN catalog copy;
  *   V  each VIEW_ROUTES row in en and zh-CN at 1440x900 and 390x844:
  *      <html lang>, localized chrome, daemon values verbatim, no document-level
- *      horizontal overflow, PNG + sha256;
+ *      horizontal overflow, optional `contained` (every clipping card holds
+ *      its rows: scrollWidth <= clientWidth), PNG + sha256;
  *   S  each SWITCH_ROUTES row (an input/dialog surface): focus the control,
  *      switch en -> zh-CN -> en via the storage-event path; the SAME container
  *      and control nodes, focus (and draft, when the row types one), localized
@@ -187,7 +188,76 @@ const DREAM_DETAIL = {
   }],
 };
 
-/** pathname -> payload (or (search) => payload). W4a-2/W4a-3 add rows here. */
+// W4b todos
+const TODO_WEEKLY = {
+  schedule_id: 'SCHEDULE-042', agent_name: 'investment_advisor', team: 'engineering', kind: 'weekly',
+  fire_at: '2026-07-25T01:00:00Z', recurrence: { day: 'Sat', time: '09:00' }, timezone: 'Asia/Shanghai',
+  normalized_brief: 'Send the weekly market update — «raw» brief',
+  source_instruction: 'Every Saturday, send me the weekly market update.',
+  status: 'armed', active: 1, expires_at: '2026-10-23T12:00:00Z', indefinite: 0, spawned_task_ids: ['TASK-8899'],
+  last_fired_at: '2026-07-18T01:00:00Z', fire_count: 3, created_at: '2026-07-01T00:00:00Z', updated_at: '2026-07-20T00:00:00Z',
+};
+const TODO_MONTHLY = {
+  schedule_id: 'SCHEDULE-120', agent_name: 'portfolio_agent', team: 'engineering', kind: 'recurring',
+  fire_at: '2026-08-10T01:00:00Z',
+  recurrence: { freq: 'MONTHLY', interval: 2, ordinal: 'second', byday: ['MO'], time: '09:00', tz: 'Asia/Shanghai', until: null, count: 6, anchor_date: '2026-08-10' },
+  timezone: 'Asia/Shanghai', normalized_brief: 'Review the recurring portfolio allocation',
+  source_instruction: 'Review the portfolio on the second Monday every other month.',
+  status: 'armed', active: 1, expires_at: null, indefinite: 0, spawned_task_ids: [], last_fired_at: null, fire_count: 0,
+  created_at: '2026-07-01T00:00:00Z', updated_at: '2026-07-20T00:00:00Z',
+};
+const TODO_FAILED = {
+  ...TODO_WEEKLY, schedule_id: 'SCHEDULE-071', agent_name: 'dev_agent', normalized_brief: 'Sync the customer changelog',
+  status: 'failed', recurrence: { day: 'Fri', time: '17:00' }, timezone: 'America/Chicago', fire_count: 6,
+};
+
+
+// W4b work-hours
+const WH = {
+  enabled: true,
+  agents: { mode: 'all', include: [], exclude: ['support_bot'] },
+  default: { mode: 'windowed', window: { start: '09:00', end: '17:00', timezone: 'UTC' }, interval: '2h', days: ['mon', 'tue', 'wed', 'thu', 'fri'], catch_up_on_startup: false },
+  teams: { eng: { mode: null, window: { start: null, end: null, timezone: 'America/Los_Angeles' }, interval: null, days: null, catch_up_on_startup: null } },
+  overrides: { dev_agent: { mode: null, window: { start: null, end: '19:00', timezone: null }, interval: '30m', days: null, catch_up_on_startup: null } },
+};
+const WH_SETTINGS = {
+  system: {
+    claude_cli_path: { value: '/c', restart_required: true }, codex_cli_path: { value: '/c', restart_required: true },
+    opencode_cli_path: { value: '/c', restart_required: true }, pi_cli_path: { value: '/c', restart_required: true },
+    session_timeout_seconds: { value: 1800, restart_required: false }, queue_workers: { value: 3, restart_required: true },
+    host_global_session_cap: { value: 13, restart_required: true }, protocol_dir: { value: 'protocol', restart_required: true },
+  },
+  org: {
+    session_timeout_seconds: null,
+    dreaming: { enabled: true, schedule: { time: '02:00', timezone: 'UTC' }, catch_up_on_startup: false, agents: { mode: 'all', include: [], exclude: [] } },
+    threads: { enabled: true, default_turn_cap: 500, invocation_timeout_seconds: null },
+    working_hours: WH,
+  },
+};
+const WH_AGENT = (name, prompt) => ({ name, team: 'eng', role: 'worker', executor: 'claude', description: null, repos: {}, system_prompt: prompt });
+const WH_WAKE = (o) => ({
+  work_hour_id: 'WH-1', agent_name: 'dev_agent', local_date: '2026-09-30', slot: '09:00', mode: 'windowed',
+  scheduled_for: '2026-09-30T09:00:00Z', started_at: null, ended_at: null, status: 'completed', routine_count: 2,
+  spawned_task_ids: ['TASK-77'], spawned_task_count: 1, summary: 'Reviewed 3 PRs — «raw» summary.', transcript_path: null,
+  session_id: null, error: null, created_at: '2026-09-30T09:00:00Z', ...o,
+});
+
+
+// W4b audit — one entry per narrative shape the V row asserts. Timestamps are
+// one minute old so every row groups under the catalog TODAY header.
+const AUDIT_ENTRIES = [
+  { id: 4, task_id: 'TASK-1', session_id: 's1', agent: 'dev_agent', action: 'completion_report',
+    payload: { status: 'completed', confidence: 90 }, timestamp: iso(60e3) },
+  { id: 3, task_id: 'TASK-2', session_id: 's2', agent: 'code_reviewer', action: 'review_verdict',
+    payload: { verdict: 'APPROVE' }, timestamp: iso(61e3) },
+  { id: 2, task_id: 'THR-020', session_id: 's3', agent: 'engineering_manager', action: 'thread_dispatch',
+    payload: { task_id: 'TASK-410', target_agent: 'qa_engineer', team: 'engineering' }, timestamp: iso(62e3),
+    _thread_dream_id: 'DREAM-0011' },
+  { id: 1, task_id: 'TASK-9', session_id: 's4', agent: null, action: 'session_end',
+    payload: { duration_seconds: 80, token_usage: { total: 1500 } }, timestamp: iso(63e3) },
+];
+
+/** pathname -> payload (or (search) => payload). Later W4 slices add rows here. */
 const API_ROUTES = {
   '/api/v1/auth/bootstrap': { token: 'w4a-evidence-token' },
   '/api/v1/orgs': { orgs: [{ slug: ORG, root: `/runtime/${ORG}` }], broken: [] },
@@ -200,6 +270,22 @@ const API_ROUTES = {
   // W4a-1 dreams
   [`/api/v1/orgs/${ORG}/dreams`]: { dreams: DREAMS },
   [`/api/v1/orgs/${ORG}/dreams/DREAM-0011`]: DREAM_DETAIL,
+  // W4b todos
+  [`/api/v1/orgs/${ORG}/schedules`]: { schedules: [TODO_WEEKLY, TODO_MONTHLY, TODO_FAILED] },
+  [`/api/v1/orgs/${ORG}/schedules/SCHEDULE-042`]: TODO_WEEKLY,
+  [`/api/v1/orgs/${ORG}/schedules/SCHEDULE-120`]: TODO_MONTHLY,
+  // W4b work-hours
+  [`/api/v1/orgs/${ORG}/settings`]: WH_SETTINGS,
+  [`/api/v1/orgs/${ORG}/agents`]: { agents: [WH_AGENT('dev_agent', '## Routine Tasks\n- Review open PRs\n- Triage bugs'), WH_AGENT('support_bot', 'No routine section here.')] },
+  [`/api/v1/orgs/${ORG}/teams`]: { teams: [{ name: 'eng', manager: 'lead', workers: ['dev_agent', 'support_bot'] }] },
+  [`/api/v1/orgs/${ORG}/work-hours`]: { work_hours: [
+    WH_WAKE({}),
+    WH_WAKE({ work_hour_id: 'WH-2', slot: '11:00', scheduled_for: '2026-09-30T11:00:00Z', status: 'failed', routine_count: 1, spawned_task_ids: [], summary: null, error: 'Executor exited 137' }),
+    WH_WAKE({ work_hour_id: 'WH-3', agent_name: 'qa_engineer', status: 'weird_state', routine_count: 0, spawned_task_ids: [], summary: null }),
+  ] },
+  [`/api/v1/orgs/${ORG}/work-hours/next-wakes`]: { agent: 'dev_agent', enabled: true, timezone: 'America/Los_Angeles', mode: 'windowed', next_wakes: ['2026-10-01T15:00:00-07:00'], error: null },
+  // W4b audit
+  [`/api/v1/orgs/${ORG}/audit`]: { entries: AUDIT_ENTRIES, next_cursor: null },
 };
 
 function api(pathname, search) {
@@ -253,6 +339,11 @@ const CHINESE_NAVIGATOR = `(() => {
 const bodyHas = (s) => `document.body.textContent.includes(${JSON.stringify(s)})`;
 const langIs = (l) => `document.documentElement.lang === ${JSON.stringify(l)}`;
 const noOverflow = `document.documentElement.scrollWidth <= innerWidth + 1`;
+/** Cards (parents of rows matching `rowSel`) whose content is wider than the card; `cards` keeps it non-vacuous. */
+const cardsContain = (rowSel) => `(() => {
+  const cards = [...new Set([...document.querySelectorAll(${JSON.stringify(rowSel)})].map((a) => a.parentElement))];
+  return { cards: cards.length > 0, over: cards.filter((c) => c.scrollWidth > c.clientWidth).map((c) => \`clientW=\${c.clientWidth} scrollW=\${c.scrollWidth}\`) };
+})()`;
 
 // ------------------------------------------------------------------ route tables
 const DREAM_CARD = (id) => `[...document.querySelectorAll('li > button')].find((b) => b.textContent.includes(${JSON.stringify(id)}))`;
@@ -297,6 +388,100 @@ const VIEW_ROUTES = [
     ],
     verbatim: ['product_lead · 2026-09-30', 'Spanish after-hours routing', 'spanish-after-hours', 'Seen three times this week.'],
   },
+  {
+    id: 'todos', route: 'todos', path: `/orgs/${ORG}/todos`,
+    ready: () => `${bodyHas('SCHEDULE-042')} && ${bodyHas('SCHEDULE-120')} && ${bodyHas('SCHEDULE-071')}`,
+    keys: [
+      'todos.list.eyebrow', 'todos.list.title', 'todos.list.subtitle', 'todos.list.trustLine',
+      'todos.filter.all', 'todos.group.active', 'todos.group.paused', 'todos.group.needsAttention', 'todos.group.history',
+      'todos.filter.allAgents', ['todos.list.summaryActive', { count: 2, n: '2' }], ['todos.list.summaryAttention', { count: 1, n: '1' }],
+      'todos.status.armed', 'todos.status.failed', 'todos.row.nextFire', ['todos.row.runs', { count: 3, n: '3' }],
+      ['todos.schedule.every', { day: '@todos.weekdayShort.sat', time: '09:00' }],
+      ['todos.schedule.wasEvery', { day: '@todos.weekdayShort.fri', time: '17:00' }],
+      ['todos.recurrence.endsAfter', { count: '6' }],
+    ],
+    verbatim: ['SCHEDULE-042', 'investment_advisor', 'portfolio_agent', 'Send the weekly market update — «raw» brief', 'Asia/Shanghai'],
+    contained: () => cardsContain(`a[href^="/orgs/${ORG}/todos/"]`),
+  },
+  {
+    id: 'todo-detail', route: 'todos/:scheduleId', path: `/orgs/${ORG}/todos/SCHEDULE-042`,
+    ready: () => `${bodyHas('Every Saturday, send me the weekly market update.')}`,
+    keys: [
+      'todos.list.title', 'todos.action.pause', 'todos.action.edit', 'todos.action.cancel', 'todos.row.nextFire',
+      'todos.detail.recurrence', 'todos.kind.weekly', 'todos.detail.schedule', 'todos.detail.timezone', 'todos.detail.review',
+      'todos.detail.normalized', 'todos.detail.original', 'todos.detail.activity', 'todos.detail.runs', 'todos.detail.lastFired',
+      'todos.detail.viewActivity', 'todos.detail.recordDetails', 'todos.detail.created', 'todos.detail.updated',
+      'todos.detail.team', 'todos.detail.scheduleId',
+      ['todos.schedule.every', { day: '@todos.weekdayShort.sat', time: '09:00' }],
+    ],
+    verbatim: ['SCHEDULE-042', 'investment_advisor', 'engineering', 'Asia/Shanghai', 'TASK-8899', 'task_id=SCHEDULE-042',
+      'Every Saturday, send me the weekly market update.', 'Send the weekly market update — «raw» brief'],
+  },
+  {
+    id: 'todo-detail-recurring', route: 'todos/:scheduleId (recurring)', path: `/orgs/${ORG}/todos/SCHEDULE-120`,
+    ready: () => `${bodyHas('Review the portfolio on the second Monday every other month.')}`,
+    keys: [
+      'todos.kind.recurring',
+      ['todos.recurrence.endsAfter', { count: '6' }],
+    ],
+    verbatim: ['SCHEDULE-120', 'portfolio_agent', 'Asia/Shanghai'],
+  },
+  {
+    id: 'work-hours', route: 'work-hours', path: `/orgs/${ORG}/work-hours`,
+    ready: () => `${bodyHas('support_bot')} && ${bodyHas('America/Los_Angeles')}`,
+    keys: [
+      'workHours.header.eyebrow', 'workHours.header.title', 'workHours.header.wakeHistory', 'workHours.tabs.overview',
+      'workHours.tabs.wakes', 'workHours.statusBar.label', 'workHours.statusBar.on', 'workHours.manageOperatingControl',
+      'workHours.editOrgDefault', 'workHours.editTeamPlaceholder', 'workHours.roster.cadence', 'workHours.roster.eligibility',
+      'workHours.eligibility.eligible', 'workHours.eligibility.excluded', 'workHours.onDot.on', 'workHours.onDot.off',
+      ['workHours.cadence.every', { interval: '30m' }],
+    ],
+    verbatim: ['dev_agent', 'support_bot', 'windowed', '09:00–19:00 mon,tue,wed,thu,fri America/Los_Angeles'],
+  },
+  {
+    id: 'work-hours-agent', route: 'work-hours/:agent', path: `/orgs/${ORG}/work-hours/dev_agent`,
+    ready: () => `${bodyHas('Review open PRs')} && ${bodyHas('window.timezone')}`,
+    keys: [
+      'workHours.detail.backToWorkHours', 'workHours.detail.provenanceHeading', ['workHours.editTeam', { team: 'eng' }],
+      'workHours.detail.editAgent', 'workHours.detail.col.leaf', 'workHours.detail.col.effective', 'workHours.provenance.org',
+      'workHours.provenance.agent', ['workHours.provenance.teamNamed', { team: 'eng' }], 'workHours.detail.nextWakes',
+      ['workHours.detail.dispatches', { tasks: 'Review open PRs; Triage bugs' }], 'workHours.detail.routineHeading',
+      'workHours.detail.routineReadOnly', 'workHours.detail.routineInfo',
+    ],
+    verbatim: ['dev_agent', 'window.timezone', '▶ 30m', '▶ America/Los_Angeles', '(America/Los_Angeles)', 'Review open PRs', 'Triage bugs', '## Routine Tasks'],
+  },
+  {
+    id: 'work-hours-wakes', route: 'work-hours?view=wakes', path: `/orgs/${ORG}/work-hours?view=wakes`,
+    ready: () => `${bodyHas('Executor exited 137')} && ${bodyHas('weird_state')}`,
+    keys: [
+      'workHours.wakes.eyebrow', 'workHours.wakes.title', 'workHours.wakes.description', 'workHours.wakes.viewOnly',
+      'workHours.wakes.status.completed', 'workHours.wakes.status.failed', ['workHours.wakes.cardCount', { count: 2 }],
+      ['workHours.wakes.cardCount', { count: 1 }], ['workHours.wakes.routines', { count: 2 }],
+    ],
+    // The eyebrow "{n} wakes across {n} agents" is split by <span> nodes; textContent still matches:
+    // en "3 wakes across 2 agents", zh-CN "3 次唤醒，涉及 2 个智能体" (add as a bodyHas literal per locale if desired).
+    verbatim: ['dev_agent', 'qa_engineer', 'weird_state', 'Reviewed 3 PRs — «raw» summary.', 'Executor exited 137', 'TASK-77', '2026-09-30', '09:00'],
+  },
+  {
+    id: 'audit', route: 'audit', path: `/orgs/${ORG}/audit`,
+    ready: () => `${bodyHas('TASK-410')} && ${bodyHas('code_reviewer')}`,
+    keys: [
+      'audit.page.eyebrow', 'audit.page.title', 'audit.page.export',
+      'audit.since.24h', 'audit.since.7d', 'audit.since.all',
+      'audit.rail.title', 'audit.class.dispatch', 'audit.class.completed', 'audit.class.merge',
+      'audit.class.escalation', 'audit.class.failure',
+      'audit.clean.title', ['audit.clean.body', { count: 4 }],
+      'audit.day.today', 'audit.timeline.fromDream', 'audit.timeline.end',
+      ['audit.n.completion_report', { agent: 'dev_agent', target: 'TASK-1' }],
+      ['audit.n.review_verdict', { agent: 'code_reviewer', target: 'TASK-2' }],
+      ['audit.n.thread_dispatch.to', { agent: 'engineering_manager', task: 'TASK-410', who: 'qa_engineer' }],
+      ['audit.n.session_end', { agent: '@audit.n.subject.system', target: 'TASK-9' }],
+      ['audit.detail.confidence', { value: 90 }],
+      ['audit.detail.team', { team: 'engineering' }],
+      ['audit.detail.minutesSeconds', { m: 1, s: 20 }],
+    ],
+    verbatim: ['dev_agent', 'code_reviewer', 'engineering_manager', 'qa_engineer', 'TASK-1', 'TASK-410', 'APPROVE', 'completed · '],
+  },
 ];
 
 /**
@@ -317,6 +502,77 @@ const SWITCH_ROUTES = [
     container: `(CONTROL || { closest: () => null }).closest('[role="dialog"]')`,
     copy: (locale) => [tr(locale, 'dreams.candidate.pending', { agent: 'product_lead' }), tr(locale, 'dreams.candidate.accept'), tr(locale, 'dreams.rail.candidates')],
     shot: 'zh-dream-drawer-switch-1440',
+  },
+  {
+    // Recurring Edit dialog: the "Repeat every" number input. `open` clears it via the
+    // React-compatible native setter so the typed draft equals the control value exactly.
+    id: 'todo-edit-dialog', path: `/orgs/${ORG}/todos/SCHEDULE-120`,
+    open: async (page, h) => {
+      await h.waitTrue(page, bodyHas('Review the portfolio on the second Monday every other month.'), 'detail');
+      const EDIT = `[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === ${JSON.stringify(tr('en', 'todos.action.edit'))})`;
+      await h.clickSrc(page, EDIT);
+      await h.waitTrue(page, `Boolean(document.getElementById('edit-recurrence-interval'))`, 'edit dialog');
+      await h.evaluate(page, `(() => {
+        const i = document.getElementById('edit-recurrence-interval');
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, '');
+        i.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+      })()`);
+    },
+    control: `document.getElementById('edit-recurrence-interval')`,
+    container: `(CONTROL || { closest: () => null }).closest('[role="dialog"]')`,
+    draft: '3',
+    copy: (locale) => [
+      tr(locale, 'todos.edit.title'), tr(locale, 'todos.edit.repeatEvery'), tr(locale, 'todos.edit.monthlyPattern'),
+      tr(locale, 'todos.edit.namedWeekday'), tr(locale, 'todos.edit.save'), tr(locale, 'todos.edit.rephase'),
+    ],
+    shot: 'zh-todo-edit-switch-1440',
+  },
+  {
+    // TierEditorDialog (team tier, empty interval so the typed draft equals the value).
+    id: 'work-hours-tier-editor', path: `/orgs/${ORG}/work-hours/dev_agent`,
+    open: async (page, h) => {
+      await h.waitTrue(page, bodyHas('window.timezone'), 'detail table');
+      await h.clickSrc(page, `[...document.querySelectorAll('button')].find((b) => b.textContent === ${JSON.stringify(tr('en', 'workHours.editTeam', { team: 'eng' }))})`);
+      await h.waitTrue(page, `Boolean(document.querySelector('[role="dialog"] input[placeholder="2h"]'))`, 'tier dialog');
+    },
+    control: `document.querySelector('[role="dialog"] input[placeholder="2h"]')`,
+    container: `(CONTROL || { closest: () => null }).closest('[role="dialog"]')`,
+    draft: '5h',
+    copy: (locale) => [
+      tr(locale, 'workHours.editTeam', { team: 'eng' }),
+      tr(locale, 'workHours.tier.description', { tier: tr(locale, 'workHours.tier.kind.team') }),
+      tr(locale, 'workHours.tier.inheritedGhost', { value: '09:00', source: tr(locale, 'workHours.provenance.org') }),
+      tr(locale, 'workHours.dialog.reviewImpact'),
+    ],
+    shot: 'zh-work-hours-tier-editor-switch-1440',
+  },
+  {
+    // Shared EligibilityEditorDialog, mounted by Settings > Organization. Draft = a toggled
+    // include chip (no text input), so no `draft`; the toggled state is checked via copy
+    // (the live result line counts the toggled agent).
+    id: 'eligibility-editor', path: `/orgs/${ORG}/settings/organization`,
+    open: async (page, h) => {
+      const editLabel = (l) => tr(l, 'settings.organization.operating.editEligibility');
+      await h.waitTrue(page, `[...document.querySelectorAll('button')].some((b) => b.textContent === ${JSON.stringify(editLabel('en'))})`, 'org section');
+      await h.clickSrc(page, `[...document.querySelectorAll('button')].find((b) => b.textContent === ${JSON.stringify(editLabel('en'))})`);
+      const CHIP = `[...document.querySelectorAll('[role="dialog"] button[aria-pressed]')].find((b) => b.textContent === 'support_bot')`;
+      await h.waitTrue(page, `Boolean(${CHIP})`, 'eligibility dialog chip');
+      await sleep(400); // let the dialog open animation settle so the click lands on the chip
+      // toggle support_bot OFF the exclude list (mode 'all' => only the exclude picker renders)
+      await h.clickSrc(page, CHIP);
+      await h.waitTrue(page, `${CHIP}.getAttribute('aria-pressed') === 'false'`, 'support_bot toggled');
+    },
+    control: `[...document.querySelectorAll('[role="dialog"] button[aria-pressed]')].find((b) => b.textContent === 'support_bot')`,
+    container: `(CONTROL || { closest: () => null }).closest('[role="dialog"]')`,
+    copy: (locale) => [
+      tr(locale, 'workHours.eligibilityEditor.title'),
+      tr(locale, 'workHours.eligibilityEditor.description'),
+      tr(locale, 'workHours.eligibilityEditor.exclude'),
+      tr(locale, 'workHours.eligibilityEditor.liveResult', { count: 2, n: 2 }),
+      tr(locale, 'workHours.dialog.reviewImpact'),
+    ],
+    shot: 'zh-eligibility-editor-switch-1440',
   },
 ];
 
@@ -446,6 +702,7 @@ async function main() {
           }
           for (const value of row.verbatim) check(`V ${row.id} ${locale} ${w} verbatim ${value}`, await evaluate(page, bodyHas(value)), true);
           check(`V ${row.id} ${locale} ${w} no document horizontal overflow`, await evaluate(page, noOverflow), true);
+          if (row.contained) check(`V ${row.id} ${locale} ${w} cards contain their rows`, await evaluate(page, row.contained()), { cards: true, over: [] });
           await capture(page, `${short}-${row.id}-${w}`, { viewport: `${w}x${ht}`, locale, route: row.route });
           await closePage(page);
         }

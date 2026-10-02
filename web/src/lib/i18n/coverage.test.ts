@@ -175,14 +175,15 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
     ]);
   });
 
-  it('marks only the W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1-migrated namespaces translated and keeps later slices incomplete', () => {
+  it('marks only the W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1/W4b-migrated namespaces translated and keeps later slices incomplete', () => {
     const summary = coverageSummary();
-    expect(summary.translated).toBe(12);
+    expect(summary.translated).toBe(15);
     const translated = COVERAGE_MANIFEST.filter((entry) => entry.status === 'translated')
       .map((entry) => entry.namespace)
       .sort();
     expect(translated).toEqual([
       'app-shell',
+      'audit',
       'dashboard',
       'dreams',
       'health',
@@ -194,16 +195,15 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
       'settings',
       'tasks',
       'threads',
-    ]);
-    // W4a-2/W4a-3, W4b/W4c and every other route family remain honest English-only.
-    for (const namespace of [
       'todos',
+      'work-hours',
+    ]);
+    // The later W4c/W4d/W5 surfaces (agents/skills, artifacts/usage, kb, the dock) remain honest English-only.
+    for (const namespace of [
       'kb',
-      'audit',
       'skills',
       'agents',
       'usage',
-      'work-hours',
       'artifacts',
       'system-assistant',
     ]) {

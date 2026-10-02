@@ -27,6 +27,7 @@ import {
   SelectValue,
 } from '@/design-system/primitives/Select';
 import { useUpdateOrgSettings } from '@/hooks/settings';
+import { useTranslation } from '@/hooks/i18n';
 import type { WorkingHoursSettings } from '@/lib/api/types';
 import { ErrorPanel } from './ErrorPanel';
 import { extractServerErrors } from './extractServerErrors';
@@ -47,6 +48,7 @@ export function EligibilityEditorDialog({
   allAgents,
   onSaved,
 }: Props): JSX.Element {
+  const { t, render } = useTranslation();
   const mutation = useUpdateOrgSettings();
   const [mode, setMode] = useState<string>(wh.agents.mode);
   const [include, setInclude] = useState<string[]>(wh.agents.include);
@@ -80,13 +82,10 @@ export function EligibilityEditorDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg" closeLabel={t('common.close')}>
         <DialogHeader>
-          <DialogTitle>Edit eligibility</DialogTitle>
-          <DialogDescription>
-            The single org-level gate controlling which agents are eligible for
-            work hours. Pickers are populated from the live roster.
-          </DialogDescription>
+          <DialogTitle>{t('workHours.eligibilityEditor.title')}</DialogTitle>
+          <DialogDescription>{t('workHours.eligibilityEditor.description')}</DialogDescription>
         </DialogHeader>
 
         {errors.length > 0 && <ErrorPanel errors={errors} />}
@@ -94,18 +93,21 @@ export function EligibilityEditorDialog({
         {confirming ? (
           <div className="text-sm">
             <p className="text-text-primary">
-              Resulting eligible set:{' '}
-              <span className="font-semibold tabular-nums">{resulting.length}</span>{' '}
-              agent{resulting.length !== 1 ? 's' : ''}.
+              {render('workHours.eligibilityEditor.confirmResult', {
+                count: resulting.length,
+                n: <span className="font-semibold tabular-nums">{resulting.length}</span>,
+              })}
             </p>
             <p className="text-text-muted mt-1 break-words">
-              {resulting.length > 0 ? resulting.join(', ') : '(none)'}
+              {resulting.length > 0 ? resulting.join(', ') : t('workHours.dialog.none')}
             </p>
           </div>
         ) : (
           <div className="flex flex-col gap-4">
             <div className="flex items-center justify-between">
-              <span className="text-text-primary text-sm font-medium">mode</span>
+              <span className="text-text-primary text-sm font-medium">
+                {t('workHours.eligibilityEditor.mode')}
+              </span>
               <Select value={mode} onValueChange={setMode}>
                 <SelectTrigger className="w-32">
                   <SelectValue />
@@ -119,7 +121,7 @@ export function EligibilityEditorDialog({
 
             {mode === 'whitelist' && (
               <AgentPicker
-                title="include"
+                title={t('workHours.eligibilityEditor.include')}
                 roster={allAgents}
                 selected={include}
                 onToggle={(name) => toggle(include, setInclude, name)}
@@ -127,7 +129,7 @@ export function EligibilityEditorDialog({
             )}
 
             <AgentPicker
-              title="exclude"
+              title={t('workHours.eligibilityEditor.exclude')}
               roster={allAgents}
               selected={exclude}
               onToggle={(name) => toggle(exclude, setExclude, name)}
@@ -137,9 +139,10 @@ export function EligibilityEditorDialog({
               role="status"
               className="bg-surface-sunken rounded p-2 text-sm"
             >
-              Resulting eligible set:{' '}
-              <span className="font-semibold tabular-nums">{resulting.length}</span>{' '}
-              agent{resulting.length !== 1 ? 's' : ''}
+              {render('workHours.eligibilityEditor.liveResult', {
+                count: resulting.length,
+                n: <span className="font-semibold tabular-nums">{resulting.length}</span>,
+              })}
               {resulting.length > 0 && (
                 <span className="text-text-muted">
                   {' '}
@@ -154,19 +157,19 @@ export function EligibilityEditorDialog({
           {confirming ? (
             <>
               <Button variant="ghost" onClick={() => setConfirming(false)}>
-                Back
+                {t('workHours.dialog.back')}
               </Button>
               <Button onClick={() => void doSave()} disabled={mutation.isPending}>
-                {mutation.isPending ? 'Saving…' : 'Confirm & save'}
+                {mutation.isPending ? t('workHours.dialog.saving') : t('workHours.dialog.confirmSave')}
               </Button>
             </>
           ) : (
             <>
               <Button variant="ghost" onClick={() => onOpenChange(false)}>
-                Cancel
+                {t('common.cancel')}
               </Button>
               <Button onClick={() => setConfirming(true)} disabled={mutation.isPending}>
-                Review impact…
+                {t('workHours.dialog.reviewImpact')}
               </Button>
             </>
           )}
@@ -187,6 +190,7 @@ function AgentPicker({
   selected: string[];
   onToggle: (name: string) => void;
 }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <div>
       <p className="text-text-muted mb-1 text-xs font-medium tracking-wide uppercase">
@@ -194,7 +198,9 @@ function AgentPicker({
       </p>
       <div className="flex flex-wrap gap-1">
         {roster.length === 0 && (
-          <span className="text-text-muted text-xs">No agents in roster.</span>
+          <span className="text-text-muted text-xs">
+            {t('workHours.eligibilityEditor.emptyRoster')}
+          </span>
         )}
         {roster.map((name) => {
           const on = selected.includes(name);
