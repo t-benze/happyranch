@@ -528,10 +528,12 @@ Frontend readiness map (actual evidence):
 
 No new dependency, daemon/API/schema/auth/permission/transport change, theme or
 draft migration, native chrome, CLI/manual translation, route-family
-translation campaign beyond W3a/W3b-1/W3b-2 (W4 remains open), browser-language
+translation campaign beyond W3a/W3b-1/W3b-2/W4a-1 (W4a-1 translated Health
+and Dreams; W4a-2 artifacts, W4a-3 usage and the remaining W4 surfaces stay
+open), browser-language
 default resolution (W5), deployment, or caller migration of display
 formatters beyond the translated shell, onboarding and the W3a Dashboard/Threads,
-W3b-1 Tasks and W3b-2 Jobs route families. Existing query/data/auth
+W3b-1 Tasks, W3b-2 Jobs and W4a-1 Health/Dreams route families. Existing query/data/auth
 bootstrap
 semantics are preserved; locale switching issues no `PUT /settings/org` and no
 `POST /api/v1/orgs`, and the command palette's cache-only switch issues no
