@@ -166,6 +166,7 @@ describe('SettingsPage — sub-nav and routing', () => {
       'Assistant',
       'Organization',
       'Executors',
+      'Preferences',
     ]);
     expect(within(subnav).queryByText('System')).not.toBeInTheDocument();
     expect(within(subnav).queryByText('Agents')).not.toBeInTheDocument();

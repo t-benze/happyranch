@@ -1,29 +1,31 @@
 #!/usr/bin/env node
 /**
- * W3b-1 Tasks browser-evidence harness (THR-118).
+ * W3b-2 Jobs + opt-in preview browser-evidence harness (THR-118).
  *
- * A deliberately small sibling of `w3a-core-browser-evidence.mjs` (same
- * mechanism, no new dependency): ONE isolated headless Chrome driven over the
- * DevTools Protocol against the ORDINARY production SPA bundle, served
- * same-origin next to a synthetic `/api/v1` stub whose every request lands in a
- * server-side ledger. The app carries no evidence instrumentation: locale
- * switches use the supported `happyranch.ui.locale` preference written by a
- * second same-origin tab (the `storage` event path), independent of the
- * Preferences selector (mounted in ordinary builds since W3b-2). Expected copy
- * is read from the shipped typed catalogs (Node 24 strips the TS types).
+ * Same mechanism as `w3b-tasks-browser-evidence.mjs` (no new dependency): ONE
+ * isolated headless Chrome driven over the DevTools Protocol against the
+ * ORDINARY production SPA bundle (no build flag), served same-origin next to a
+ * synthetic `/api/v1` stub whose every request lands in a server-side ledger.
+ * Chrome runs with `--lang=zh-CN` plus a Chinese `navigator.languages`
+ * override, so an English result for an unset preference proves the preview
+ * never auto-detects. Expected copy is read from the shipped typed catalogs.
  *
  * Cases (receipt.json; exit 1 if any fails):
- *   G  the ordinary bundle contains the Preferences markers (W3b-2 contract);
- *   V  Tasks list + task detail in en and zh-CN at 1440x900 and 390x844:
- *      <html lang>, localized chrome, authored brief/IDs/agent verbatim, no
- *      document-level horizontal overflow, PNG + sha256;
- *   S  one state-preservation check: open the Cancel-task dialog, type a draft,
- *      switch en -> zh-CN -> en; the SAME dialog and textarea nodes, the same
- *      draft value and focus, and ZERO /api requests in each switch window.
+ *   G  the ordinary bundle now CONTAINS the Preferences selector markers;
+ *   V  Jobs list + job detail in en and zh-CN at 1440x900 and 390x844:
+ *      <html lang>, localized chrome, daemon values verbatim, no document-level
+ *      horizontal overflow, PNG + sha256;
+ *   S  Run-job dialog: type a cwd-override draft, switch en -> zh-CN -> en via
+ *      the storage-event path; the SAME dialog and input nodes, the same value
+ *      and focus, localized title/label, ZERO /api requests per switch window;
+ *   P  Settings > Preferences in the ordinary build, preference UNSET on a
+ *      Chinese browser: English, English radio checked, disclosure visible;
+ *      a real CDP click on 简体中文 switches in place (same radio/panel nodes,
+ *      focus, zh disclosure, <html lang>) with ZERO /api requests.
  *
  * Build + run (from web/):
  *   ./node_modules/.bin/vite build --outDir <tmp>/dist-ordinary
- *   node scripts/w3b-tasks-browser-evidence.mjs --dist <tmp>/dist-ordinary \
+ *   node scripts/w3b-jobs-browser-evidence.mjs --dist <tmp>/dist-ordinary \
  *     --out <evidence dir> --head <sha>
  */
 import { spawn } from 'node:child_process';
@@ -54,7 +56,7 @@ function arg(name, fallback) {
 }
 
 const dist = arg('dist') && resolve(arg('dist'));
-const outDir = resolve(arg('out', '.w3b-tasks-evidence'));
+const outDir = resolve(arg('out', '.w3b-jobs-evidence'));
 const head = arg('head', 'unknown');
 const chromeBin = arg('chrome', process.env.CHROME_BIN || 'google-chrome');
 
@@ -63,7 +65,8 @@ const sha256 = (buffer) => createHash('sha256').update(buffer).digest('hex');
 
 const ORG = 'test-org';
 const LOCALE_KEY = 'happyranch.ui.locale';
-const GATED_STRINGS = ['settings-preferences', 'happyranch-ui-language'];
+const PREFERENCE_MARKERS = ['settings-preferences', 'happyranch-ui-language'];
+const EXTERNAL_BLOCK = ['https://*', 'http://*.com/*', 'http://*.net/*'];
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png',
@@ -151,65 +154,44 @@ async function waitForDevTools(userDataDir, timeout = 30000) {
 }
 
 // ------------------------------------------------------------------ synthetic API
-// Authored/raw fixture bytes that must survive every locale unchanged.
+// Daemon bytes that must survive every locale unchanged.
 const AUTH = {
-  brief: 'Ship the v2 importer — «raw» `jobs_v2` migration (authored brief)',
-  note: 'raw daemon note: refund_policy unresolved',
-  job: 'Nightly e2e on staging (authored job title)',
+  title: 'Rotate staging TLS certs (authored job title)',
+  script: "certbot renew --cert-name staging.example --deploy-hook 'systemctl reload nginx'",
+  rationale: 'Certs expire in 3 days — «raw» rationale.',
 };
 const now = Date.now();
 const iso = (msAgo) => new Date(now - msAgo).toISOString();
 const LEDGER = [];
 const HUNG = [];
 
-function task(id, extra = {}) {
+function job(id, extra = {}) {
   return {
-    task_id: id, team: 'engineering', brief: AUTH.brief, status: 'in_progress', block_kind: 'delegated',
-    assigned_agent: 'dev_agent', parent_task_id: null, revisit_of_task_id: null,
-    created_at: iso(3 * 3600e3), updated_at: iso(5 * 60e3), closed_at: null, cancelled_at: null,
-    session_timeout_seconds: null, severity_rollup: 'failed', dispatched_from_thread_id: 'THR-101', ...extra,
+    id, task_id: 'TASK-640', agent_name: 'devops_agent', title: AUTH.title, rationale: AUTH.rationale,
+    script_text: AUTH.script, interpreter: 'bash', cwd_hint: 'repos/infra', status: 'pending', exit_code: null,
+    stdout_head: null, stderr_head: null, stdout_path: null, stderr_path: null, duration_ms: null,
+    started_at: null, finished_at: null, reviewed_at: null, reviewed_by: null, reject_reason: null,
+    cwd_resolved: null, max_runtime_seconds: 600, max_output_bytes: 52428800, review_required: true,
+    persistent: false, reason: null, created_at: iso(14 * 60e3), ...extra,
   };
 }
-const ROOTS = [
-  task('TASK-501'),
-  task('TASK-502', { status: 'completed', block_kind: null, severity_rollup: 'completed', brief: 'Docs refresh for importer', assigned_agent: 'qa_engineer', dispatched_from_thread_id: null, updated_at: iso(26 * 3600e3) }),
-  task('TASK-503', { status: 'pending', block_kind: null, severity_rollup: 'pending', brief: 'Queue capacity review', assigned_agent: null, updated_at: iso(2 * 3600e3) }),
+const JOBS = [
+  job('JOB-901'),
+  job('JOB-902', { status: 'running', title: 'Nightly backup', script_text: 'restic backup /srv', started_at: iso(5 * 60e3) }),
+  job('JOB-903', { status: 'completed', exit_code: 0, review_required: false, title: 'Lint sweep', script_text: 'npm run lint' }),
+  job('JOB-904', { status: 'rejected', title: 'Drop table', script_text: "psql -c 'DROP TABLE guides;'" }),
 ];
-const ESCALATED = [task('TASK-500', { status: 'escalated', block_kind: null, severity_rollup: 'escalated', brief: 'Approve schema change for `jobs_v2`?', note: AUTH.note })];
-const DETAIL = task('TASK-501', { revisit_of_task_id: 'TASK-490' });
 
 function api(pathname, search) {
-  if (pathname === '/api/v1/auth/bootstrap') return { token: 'w3b-evidence-token' };
+  if (pathname === '/api/v1/auth/bootstrap') return { token: 'w3b2-evidence-token' };
   if (pathname === '/api/v1/orgs') return { orgs: [{ slug: ORG, root: `/runtime/${ORG}` }], broken: [] };
   if (pathname === `/api/v1/orgs/${ORG}/dashboard/summary`) return { org_age_days: 12 };
-  if (pathname === `/api/v1/orgs/${ORG}/tasks/roots`) {
-    return { tasks: new URLSearchParams(search).get('status') === 'escalated' ? ESCALATED : ROOTS, next_cursor: null };
-  }
-  if (pathname === `/api/v1/orgs/${ORG}/tasks/TASK-501`) {
-    return {
-      task: DETAIL, results: [], revisit_chain: ['TASK-501', 'TASK-490'], direct_revisits: [],
-      predecessor_prior_status: null,
-      audit_log: [],
-      active_chain: { step_index: 1, first_leg_expect_verdict: 'APPROVE', legs: [{ agent: 'qa_engineer', expect_verdict: 'PASS' }] },
-      work_status: {
-        applicable: true, state: 'recent_progress', label: 'Recent update recorded', reason: null,
-        session_start_ts: iso(40 * 60e3), heartbeat: { timestamp: iso(20e3), freshness: 'fresh' },
-        latest_progress: { timestamp: iso(3 * 60e3), message: 'Ported 3 of 5 tables (agent-authored)', agent: 'dev_agent' },
-      },
-    };
-  }
-  if (pathname === `/api/v1/orgs/${ORG}/tasks/TASK-501/recall`) {
-    return {
-      task_id: 'TASK-501', assigned_agent: 'dev_agent', brief: AUTH.brief, status: 'in_progress', output_summary: null,
-      children: [
-        { task_id: 'TASK-511', assigned_agent: 'qa_engineer', brief: 'Verify importer on staging', status: 'failed', output_summary: 'Two rows mismatched (authored summary)', children: [] },
-        { task_id: 'TASK-512', assigned_agent: 'dev_agent', brief: 'Port remaining tables', status: 'in_progress', output_summary: null, children: [] },
-      ],
-    };
-  }
   if (pathname === `/api/v1/orgs/${ORG}/jobs/` || pathname === `/api/v1/orgs/${ORG}/jobs`) {
-    return { jobs: [{ id: 'JOB-77', title: AUTH.job, status: 'running', task_id: 'TASK-501' }], next_cursor: null };
+    const status = new URLSearchParams(search).get('status');
+    return { jobs: status && status !== 'all' ? JOBS.filter((j) => j.status === status) : JOBS, next_cursor: null };
   }
+  if (pathname === `/api/v1/orgs/${ORG}/jobs/JOB-901`) return JOBS[0];
+  if (pathname === `/api/v1/orgs/${ORG}/tasks`) return { tasks: [], next_cursor: null };
   return {};
 }
 
@@ -276,10 +258,10 @@ async function main() {
   const joined = distJs(dist).map((f) => readFileSync(f, 'utf8')).join('\n');
   const fingerprint = {
     indexHtmlSha256: sha256(readFileSync(join(dist, 'index.html'))),
-    gatedStrings: Object.fromEntries(GATED_STRINGS.map((s) => [s, joined.includes(s)])),
+    preferenceMarkers: Object.fromEntries(PREFERENCE_MARKERS.map((s) => [s, joined.includes(s)])),
   };
   const { server, url: base } = await startServer(dist);
-  const userDataDir = `/tmp/w3b-${process.pid}`; // short: Chrome's singleton socket path limit
+  const userDataDir = `/tmp/w3b2-${process.pid}`; // short: Chrome's singleton socket path limit
   rmSync(userDataDir, { recursive: true, force: true });
   mkdirSync(userDataDir, { recursive: true });
   let chrome;
@@ -300,7 +282,11 @@ async function main() {
     async function openPage(url, { init = '', width = 1440, height = 900 } = {}) {
       const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
       const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
-      for (const domain of ['Page', 'Runtime']) await cdp.send(`${domain}.enable`, {}, sessionId);
+      for (const domain of ['Page', 'Runtime', 'Network']) await cdp.send(`${domain}.enable`, {}, sessionId);
+      // Offline isolation: every non-loopback request (the external webfont
+      // CSS/woff2) is refused, so a hung third-party fetch can never stall the
+      // load event. Fonts fall back to local faces; recorded in the receipt.
+      await cdp.send('Network.setBlockedURLs', { urls: EXTERNAL_BLOCK }, sessionId);
       await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, sessionId);
       if (init) await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: init }, sessionId);
       const loaded = cdp.waitFor('Page.loadEventFired', { sessionId });
@@ -349,44 +335,42 @@ async function main() {
     }
 
     // ============================================================ G
-    beginCase('G', 'ordinary bundle contains the Preferences markers (W3b-2)');
-    for (const s of GATED_STRINGS) check(`G ordinary JS contains "${s}"`, fingerprint.gatedStrings[s], true);
+    beginCase('G', 'ordinary bundle contains the Preferences selector (preview enabled, no build flag)');
+    for (const s of PREFERENCE_MARKERS) check(`G ordinary JS contains "${s}"`, fingerprint.preferenceMarkers[s], true);
     endCase();
 
     // ============================================================ V
-    beginCase('V', 'Tasks list + detail, en/zh-CN, 1440x900 + 390x844');
+    beginCase('V', 'Jobs list + detail, en/zh-CN, 1440x900 + 390x844');
     for (const locale of ['en', 'zh-CN']) {
       const short = locale === 'en' ? 'en' : 'zh';
       for (const [w, h] of [[1440, 900], [390, 844]]) {
-        // List
         {
-          const page = await openPage(`${base}/orgs/${ORG}/tasks`, { init: `${seedLocale(locale)}\n${CHINESE_NAVIGATOR}`, width: w, height: h });
-          await waitTrue(page, `${bodyHas('TASK-501')} && ${bodyHas('TASK-500')}`, 'list rows');
+          const page = await openPage(`${base}/orgs/${ORG}/jobs`, { init: `${seedLocale(locale)}\n${CHINESE_NAVIGATOR}`, width: w, height: h });
+          await waitTrue(page, `${bodyHas('JOB-901')} && ${bodyHas('JOB-904')}`, 'list rows');
           await sleep(400);
           check(`V list ${locale} ${w} <html lang>`, await evaluate(page, langIs(locale)), true);
-          for (const key of ['tasks.page.title', 'tasks.attention.heading', 'tasks.group.status.inProgress', 'tasks.group.status.completed', 'tasks.waiting.subtasks', 'tasks.page.eyebrow.rollUp']) {
+          for (const key of ['jobs.list.eyebrow', 'jobs.list.title', 'jobs.list.needsYouBody', 'jobs.list.needsReview', 'jobs.list.column.requestedBy', 'jobs.group.pending', 'jobs.group.running', 'jobs.group.completed', 'jobs.group.rejected']) {
             check(`V list ${locale} ${w} shows ${key}`, await evaluate(page, bodyHas(tr(locale, key))), true);
           }
-          check(`V list ${locale} ${w} subtask rollup`, await evaluate(page, bodyHas(tr(locale, 'tasks.row.subtaskRollup', { status: tr(locale, 'tasks.rollup.failed') }))), true);
-          check(`V list ${locale} ${w} authored brief verbatim`, await evaluate(page, bodyHas(AUTH.brief)), true);
-          check(`V list ${locale} ${w} agent/thread ids verbatim`, await evaluate(page, `${bodyHas('dev_agent')} && ${bodyHas('THR-101')}`), true);
+          check(`V list ${locale} ${w} callout count`, await evaluate(page, bodyHas(tr(locale, 'jobs.list.needsYou', { count: 1 }))), true);
+          check(`V list ${locale} ${w} daemon values verbatim`, await evaluate(page, `${bodyHas(AUTH.title)} && ${bodyHas('$ ' + AUTH.script)} && ${bodyHas('devops_agent')} && ${bodyHas('TASK-640')} && ${bodyHas('exit 0')}`), true);
           check(`V list ${locale} ${w} no document horizontal overflow`, await evaluate(page, noOverflow), true);
-          await capture(page, `${short}-tasks-list-${w}`, { viewport: `${w}x${h}`, locale, route: 'tasks' });
+          await capture(page, `${short}-jobs-list-${w}`, { viewport: `${w}x${h}`, locale, route: 'jobs' });
           await closePage(page);
         }
-        // Detail
         {
-          const page = await openPage(`${base}/orgs/${ORG}/tasks/TASK-501`, { init: `${seedLocale(locale)}\n${CHINESE_NAVIGATOR}`, width: w, height: h });
-          await waitTrue(page, `${bodyHas('TASK-511')} && ${bodyHas('JOB-77')} && ${bodyHas(tr(locale, 'tasks.exec.heading'))}`, 'detail content');
+          const page = await openPage(`${base}/orgs/${ORG}/jobs/JOB-901`, { init: `${seedLocale(locale)}\n${CHINESE_NAVIGATOR}`, width: w, height: h });
+          await waitTrue(page, `${bodyHas(AUTH.title)} && ${bodyHas(tr(locale, 'jobs.cascade.empty'))}`, 'detail content');
           await sleep(400);
           check(`V detail ${locale} ${w} <html lang>`, await evaluate(page, langIs(locale)), true);
-          for (const key of ['tasks.detail.back', 'tasks.detail.revisit', 'tasks.detail.brief.heading', 'tasks.detail.lineage.heading', 'tasks.detail.subtasks.heading', 'tasks.detail.recall.heading', 'tasks.detail.activity.heading', 'tasks.detail.jobs.heading', 'tasks.rail.heading', 'tasks.exec.label.recentProgress', 'tasks.detail.chain.firstLeg']) {
+          for (const key of ['jobs.detail.commandEyebrow', 'jobs.detail.commandNote', 'jobs.cascade.title', 'jobs.gated.chip', 'jobs.gated.title', 'jobs.rail.requestedBy', 'jobs.rail.execution', 'jobs.rail.maxRuntime', 'jobs.action.approveRun', 'jobs.action.reject']) {
             check(`V detail ${locale} ${w} shows ${key}`, await evaluate(page, bodyHas(tr(locale, key))), true);
           }
-          check(`V detail ${locale} ${w} chain heading`, await evaluate(page, bodyHas(tr(locale, 'tasks.detail.chain.heading', { step: 2, total: 2 }))), true);
-          check(`V detail ${locale} ${w} authored values verbatim`, await evaluate(page, `${bodyHas('TASK-490')} && ${bodyHas(AUTH.job)} && ${bodyHas('Ported 3 of 5 tables (agent-authored)')} && ${bodyHas('Two rows mismatched (authored summary)')} && ${bodyHas('(running)')} && ${bodyHas('APPROVE')}`), true);
+          check(`V detail ${locale} ${w} back link`, await evaluate(page, bodyHas(tr(locale, 'jobs.detail.back', { taskId: 'TASK-640' }))), true);
+          check(`V detail ${locale} ${w} seconds value`, await evaluate(page, bodyHas(tr(locale, 'jobs.rail.seconds', { value: '600' }))), true);
+          check(`V detail ${locale} ${w} daemon values verbatim`, await evaluate(page, `${bodyHas(AUTH.script)} && ${bodyHas(AUTH.rationale)} && ${bodyHas('devops_agent')} && ${bodyHas('bash · cwd: repos/infra')} && ${bodyHas('pending')}`), true);
           check(`V detail ${locale} ${w} no document horizontal overflow`, await evaluate(page, noOverflow), true);
-          await capture(page, `${short}-task-detail-${w}`, { viewport: `${w}x${h}`, locale, route: 'tasks/:task_id' });
+          await capture(page, `${short}-job-detail-${w}`, { viewport: `${w}x${h}`, locale, route: 'jobs/:job_id' });
           await closePage(page);
         }
       }
@@ -394,30 +378,32 @@ async function main() {
     endCase();
 
     // ============================================================ S
-    beginCase('S', 'Cancel-task dialog draft survives en -> zh-CN -> en: same nodes, value, focus, zero /api requests');
+    beginCase('S', 'Run-job dialog draft survives en -> zh-CN -> en: same nodes, value, focus, zero /api requests');
     {
-      const page = await openPage(`${base}/orgs/${ORG}/tasks/TASK-501`, { init: `${seedLocale('en')}\n${CHINESE_NAVIGATOR}` });
-      await waitTrue(page, bodyHas('TASK-511'), 'detail content');
+      const page = await openPage(`${base}/orgs/${ORG}/jobs/JOB-901`, { init: `${seedLocale('en')}\n${CHINESE_NAVIGATOR}` });
+      await waitTrue(page, bodyHas(AUTH.title), 'detail content');
       await sleep(400);
-      const cancelButton = `[...document.querySelectorAll('header button')].find((b) => b.textContent.trim() === ${JSON.stringify(tr('en', 'tasks.detail.cancel'))})`;
-      await clickSrc(page, cancelButton);
-      await waitTrue(page, `Boolean(document.querySelector('[role="dialog"] textarea'))`, 'dialog');
-      const DRAFT = 'Draft reason — keep «exactly» 中文 too';
-      await evaluate(page, `(() => { const t = document.querySelector('[role="dialog"] textarea'); t.focus(); return true; })()`);
+      const runButton = `[...document.querySelectorAll('header button')].find((b) => b.textContent.trim() === ${JSON.stringify(tr('en', 'jobs.action.approveRun'))})`;
+      await clickSrc(page, runButton);
+      const FIELD = `document.querySelector('[role="dialog"] input[type="text"]')`;
+      await waitTrue(page, `Boolean(${FIELD})`, 'dialog');
+      const DRAFT = 'repos/infra/staging — «draft» 中文';
+      await evaluate(page, `(() => { ${FIELD}.focus(); return true; })()`);
       await cdp.send('Input.insertText', { text: DRAFT }, page.sessionId);
       await sleep(200);
       // The always-mounted assistant dock is also role="dialog": anchor on the
-      // dialog that owns the draft textarea, never the first role="dialog".
-      const DIALOG = `(document.querySelector('[role="dialog"] textarea') || { closest: () => null }).closest('[role="dialog"]')`;
-      await evaluate(page, `(() => { window.__w3bDialog = new WeakRef(${DIALOG}); window.__w3bField = new WeakRef(document.querySelector('[role="dialog"] textarea')); return true; })()`);
+      // dialog that owns the draft input.
+      const DIALOG = `(${FIELD} || { closest: () => null }).closest('[role="dialog"]')`;
+      await evaluate(page, `(() => { window.__w3bDialog = new WeakRef(${DIALOG}); window.__w3bField = new WeakRef(${FIELD}); return true; })()`);
       const state = `(() => {
         const d = window.__w3bDialog.deref(); const t = window.__w3bField.deref();
-        const fd = ${DIALOG}; const ft = document.querySelector('[role="dialog"] textarea');
+        const fd = ${DIALOG}; const ft = ${FIELD};
+        const label = ft && ft.id ? document.querySelector('label[for="' + ft.id + '"]') : null;
         return {
           sameDialog: Boolean(d && d === fd && d.isConnected && d.contains(t)), sameField: Boolean(t && t === ft && t.isConnected),
           value: t ? t.value : null, focused: document.activeElement === t,
           title: fd && document.getElementById(fd.getAttribute('aria-labelledby')) ? document.getElementById(fd.getAttribute('aria-labelledby')).textContent : null,
-          placeholder: ft ? ft.placeholder : null, lang: document.documentElement.lang,
+          label: label ? label.textContent : null, lang: document.documentElement.lang,
         };
       })()`;
       check('S before switch: value + focus', await evaluate(page, `(() => { const t = window.__w3bField.deref(); return [t.value, document.activeElement === t]; })()`), [DRAFT, true]);
@@ -426,15 +412,49 @@ async function main() {
         await crossTabSwitch(page, locale);
         const s = await evaluate(page, state);
         check(`S -> ${locale} same dialog node`, s.sameDialog, true);
-        check(`S -> ${locale} same textarea node`, s.sameField, true);
+        check(`S -> ${locale} same input node`, s.sameField, true);
         check(`S -> ${locale} draft value kept`, s.value, DRAFT);
         check(`S -> ${locale} focus kept`, s.focused, true);
-        check(`S -> ${locale} dialog title localized`, s.title, tr(locale, 'tasks.dialog.cancel.title'));
-        check(`S -> ${locale} placeholder localized`, s.placeholder, tr(locale, 'tasks.dialog.cancel.placeholder'));
+        check(`S -> ${locale} dialog title localized`, s.title, tr(locale, 'jobs.run.titleApprove', { jobId: 'JOB-901' }));
+        check(`S -> ${locale} field label localized`, s.label, tr(locale, 'jobs.run.cwdOverride'));
         check(`S -> ${locale} <html lang>`, s.lang, locale);
         check(`S -> ${locale} zero /api requests in switch window`, LEDGER.slice(from), []);
-        if (locale === 'zh-CN') await capture(page, 'zh-cancel-dialog-draft-1440', { viewport: '1440x900', locale, state: 'dialog draft after en->zh-CN switch' });
+        if (locale === 'zh-CN') await capture(page, 'zh-run-dialog-draft-1440', { viewport: '1440x900', locale, state: 'Run dialog draft after en->zh-CN switch' });
       }
+      await closePage(page);
+    }
+    endCase();
+
+    // ============================================================ P
+    beginCase('P', 'Preferences in the ordinary build: unset stays English on a Chinese browser; disclosure; zh-CN switch in place with zero /api');
+    {
+      // Earlier cases share this profile's localStorage: remove the saved
+      // preference before the app boots so this page starts genuinely UNSET.
+      const unset = `try { localStorage.removeItem(${JSON.stringify(LOCALE_KEY)}); } catch (e) {}`;
+      const page = await openPage(`${base}/orgs/${ORG}/settings/preferences`, { init: `${unset}\n${CHINESE_NAVIGATOR}` });
+      await waitTrue(page, `Boolean(document.querySelector('[data-testid="settings-preferences"]'))`, 'preferences panel');
+      await sleep(400);
+      const radio = (value) => `document.querySelector('input[name="happyranch-ui-language"][value="${value}"]')`;
+      check('P unset: stored preference absent', await evaluate(page, `localStorage.getItem(${JSON.stringify(LOCALE_KEY)})`), null);
+      check('P unset: navigator is Chinese', await evaluate(page, `navigator.languages.join(',')`), 'zh-CN,zh');
+      check('P unset: <html lang> en', await evaluate(page, langIs('en')), true);
+      check('P unset: English radio checked', await evaluate(page, `${radio('en')}.checked`), true);
+      check('P unset: route stays /settings/preferences', await evaluate(page, `location.pathname`), `/orgs/${ORG}/settings/preferences`);
+      check('P unset: disclosure (en) visible', await evaluate(page, `(() => { const p = [...document.querySelectorAll('[data-testid="settings-preferences"] p')].find((n) => n.textContent === ${JSON.stringify(tr('en', 'settings.preferences.coverageDisclosure'))}); return Boolean(p && p.getBoundingClientRect().height > 0); })()`), true);
+      await capture(page, 'en-preferences-unset-1440', { viewport: '1440x900', locale: 'en', state: 'unset preference on zh-CN browser' });
+      await evaluate(page, `(() => { window.__w3bRadio = new WeakRef(${radio('zh-CN')}); window.__w3bPanel = new WeakRef(document.querySelector('[data-testid="settings-preferences"]')); return true; })()`);
+      const from = LEDGER.length;
+      await clickSrc(page, radio('zh-CN'));
+      await waitTrue(page, langIs('zh-CN'), 'radio switch to zh-CN', 5000);
+      await sleep(600);
+      check('P switch: <html lang> zh-CN', await evaluate(page, langIs('zh-CN')), true);
+      check('P switch: same radio node, checked + focused', await evaluate(page, `(() => { const r = window.__w3bRadio.deref(); return [r === ${radio('zh-CN')}, r.checked, document.activeElement === r]; })()`), [true, true, true]);
+      check('P switch: same panel node', await evaluate(page, `window.__w3bPanel.deref() === document.querySelector('[data-testid="settings-preferences"]')`), true);
+      check('P switch: disclosure (zh-CN)', await evaluate(page, bodyHas(tr('zh-CN', 'settings.preferences.coverageDisclosure'))), true);
+      check('P switch: heading (zh-CN)', await evaluate(page, bodyHas(tr('zh-CN', 'settings.panel.preferences.title'))), true);
+      check('P switch: stored preference zh-CN', await evaluate(page, `localStorage.getItem(${JSON.stringify(LOCALE_KEY)})`), 'zh-CN');
+      check('P switch: zero /api requests in switch window', LEDGER.slice(from), []);
+      await capture(page, 'zh-preferences-selected-1440', { viewport: '1440x900', locale: 'zh-CN', state: 'after selecting 简体中文' });
       await closePage(page);
     }
     endCase();
@@ -451,6 +471,7 @@ async function main() {
   const receipt = {
     head, generatedAt: new Date().toISOString(), node: process.version,
     chrome: { path: chromeBin, version: chromeVersion, lang: 'zh-CN (Chrome --lang + navigator override: environment never defaults the locale)' },
+    externalRequestsBlocked: EXTERNAL_BLOCK,
     dist: fingerprint,
     summary: cases.map((c) => ({ id: c.id, title: c.title, pass: c.pass, checks: c.checks.length, failedChecks: c.checks.filter((x) => !x.ok).map((x) => x.name) })),
     cases, screenshots, ledger: LEDGER, passed: cases.length - failed.length, failed: failed.length,

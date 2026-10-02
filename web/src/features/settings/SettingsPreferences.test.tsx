@@ -1,9 +1,10 @@
 /**
  * THR-118 W2c — Settings ▸ Preferences (language) routing/state/error TDD.
  *
- * Covers the closed production gate (no sub-nav entry, direct URL redirects),
- * the explicitly activated seam (`VITE_ENABLE_I18N_PREFERENCES=true` via
- * `vi.stubEnv`), API loading/error/no-data independence, both switch
+ * W3b-2 enables the selector in ordinary production builds: the sub-nav entry
+ * and direct URL work without any build flag, an unset preference stays
+ * English even on a Chinese browser, and the coverage disclosure is visible.
+ * Also covers API loading/error/no-data independence, both switch
  * directions with DOM identity + focus preservation, honest persistence
  * success/failure, storage-event compatibility, back/forward navigation and a
  * zero-mutation / zero-unrelated-request switch window.
@@ -138,29 +139,34 @@ afterEach(() => {
   localStorage.clear();
 });
 
-describe('W2c Preferences — closed production gate', () => {
+/** An adapter with NO saved choice on a Chinese-language browser. */
+function unsetChineseBrowserAdapter(): LocalePreferenceAdapter {
+  return {
+    id: 'test-unset-zh-browser',
+    readSnapshot: () => ({ saved: null, systemLanguages: ['zh-CN', 'zh'] }),
+    write: () => ({ status: 'durable' }),
+  };
+}
+
+const DISCLOSURE_EN =
+  'Preview: some secondary pages are not translated yet and may still appear in English.';
+const DISCLOSURE_ZH = '预览版：部分次要页面尚未翻译，可能仍以英文显示。';
+
+describe('W3b-2 Preferences — enabled in production (no build flag)', () => {
   beforeEach(() => stubSettings('ok'));
 
-  test('gate off: no Preferences sub-nav entry', async () => {
-    mountSettings(`/orgs/${SLUG}/settings/assistant`);
-    const content = await screen.findByTestId('settings-content');
-    const subnav = within(content).getByRole('complementary');
-    expect(within(subnav).queryByRole('link', { name: 'Preferences' })).not.toBeInTheDocument();
-    expect(screen.queryByTestId('settings-preferences')).not.toBeInTheDocument();
-  });
-
-  test('gate off: a direct production URL cannot bypass the gate (replace-redirects to Assistant)', async () => {
+  test('ordinary build: the sub-nav lists Preferences and a direct URL renders it', async () => {
     mountSettings(`/orgs/${SLUG}/settings/preferences`);
-    await waitFor(() =>
-      expect(screen.getByTestId('route-evidence')).toHaveTextContent(
-        `REPLACE:/orgs/${SLUG}/settings/assistant`,
-      ),
+    expect(await screen.findByTestId('settings-preferences')).toBeInTheDocument();
+    const subnav = within(screen.getByTestId('settings-content')).getByRole('complementary');
+    expect(within(subnav).getByRole('link', { name: 'Preferences' })).toBeInTheDocument();
+    expect(screen.getByTestId('route-evidence')).toHaveTextContent(
+      `/orgs/${SLUG}/settings/preferences`,
     );
-    expect(screen.queryByTestId('settings-preferences')).not.toBeInTheDocument();
-    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+    expect(screen.getByTestId('route-evidence')).not.toHaveTextContent('assistant');
   });
 
-  test('gate off through the real AppRoutes tree: /settings/preferences lands on Assistant', async () => {
+  test('through the real AppRoutes tree: /settings/preferences renders the selector', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     renderWithProviders(
       <>
@@ -169,19 +175,45 @@ describe('W2c Preferences — closed production gate', () => {
       </>,
       { route: `/orgs/${SLUG}/settings/preferences` },
     );
-    await waitFor(() =>
-      expect(screen.getByTestId('route-evidence')).toHaveTextContent(
-        `REPLACE:/orgs/${SLUG}/settings/assistant`,
-      ),
+    expect(await screen.findByRole('radio', { name: 'English' })).toBeChecked();
+    expect(screen.getByTestId('route-evidence')).toHaveTextContent(
+      `/orgs/${SLUG}/settings/preferences`,
     );
-    expect(screen.queryByTestId('settings-preferences')).not.toBeInTheDocument();
+  });
+
+  test('unset preference on a Chinese browser stays English; the coverage disclosure is visible', async () => {
+    mountSettings(`/orgs/${SLUG}/settings/preferences`, unsetChineseBrowserAdapter());
+    expect(await screen.findByRole('heading', { name: 'Preferences' })).toBeInTheDocument();
+    expect(languageRadio('English')).toBeChecked();
+    expect(languageRadio('简体中文')).not.toBeChecked();
+    expect(document.documentElement.lang).toBe('en');
+    expect(screen.getByText(DISCLOSURE_EN)).toBeVisible();
+  });
+
+  test('selecting zh-CN switches in place with zero requests and keeps the disclosure', async () => {
+    const requests = recordRequests();
+    mountSettings(`/orgs/${SLUG}/settings/preferences`, unsetChineseBrowserAdapter());
+    const user = userEvent.setup();
+    await screen.findByRole('heading', { name: 'Preferences' });
+    await waitFor(() => expect(requests.some((r) => r.path === SETTINGS_URL)).toBe(true));
+    const panel = screen.getByTestId('settings-preferences');
+    const disclosure = screen.getByText(DISCLOSURE_EN);
+    const zhRadio = languageRadio('简体中文');
+    const windowStart = requests.length;
+
+    await user.click(zhRadio);
+    expect(await screen.findByRole('heading', { name: '偏好设置' })).toBeInTheDocument();
+    expect(screen.getByText(DISCLOSURE_ZH)).toBe(disclosure);
+    expect(screen.getByTestId('settings-preferences')).toBe(panel);
+    expect(languageRadio('简体中文')).toBe(zhRadio);
+    expect(zhRadio).toBeChecked();
+    expect(document.activeElement).toBe(zhRadio);
+    expect(document.documentElement.lang).toBe('zh-CN');
+    expect(requests.slice(windowStart)).toEqual([]);
   });
 });
 
-describe('W2c Preferences — activated seam (explicit test activation)', () => {
-  beforeEach(() => {
-    vi.stubEnv('VITE_ENABLE_I18N_PREFERENCES', 'true');
-  });
+describe('W2c Preferences — routing, state and persistence', () => {
 
   test('sub-nav lists Preferences last; index still redirects to Assistant', async () => {
     stubSettings('ok');
