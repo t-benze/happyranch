@@ -730,10 +730,10 @@ def test_nonroot_manager_supersede_losing_current_claim_has_no_effect(
     )
     queue = _SlugQueue()
     orch._queue = queue
-    returned_supersede = 0
+    cas_attempts: list[tuple[str, str]] = []
+    real_try_fail = db.try_fail_nonroot_manager_supersede
 
     def fake_run_agent(task_id, agent, prompt, **kwargs):
-        nonlocal returned_supersede
         db.update_task(task_id, current_session_id="sess-x")
         report = _manager_decision_report(task_id)
         db.insert_task_result(
@@ -745,29 +745,57 @@ def test_nonroot_manager_supersede_losing_current_claim_has_no_effect(
             output_summary=report.output_summary,
             decision_json=report.decision.model_dump_json(),
         )
-        if race == "cancelled":
-            db.update_task(
-                task_id,
-                cancelled_at="2026-10-02T00:00:00+00:00",
-                note="cancel won",
-            )
-        else:
+        if race == "replaced_session":
             db.update_task(
                 task_id,
                 current_session_id="sess-replacement",
                 note="replacement won",
             )
-        returned_supersede += 1
         return _make_result(), report
 
+    def observe_and_race_try_fail(
+        task_id: str,
+        *,
+        actor_agent: str,
+        actor_session_id: str,
+        expected_team: str,
+        note: str,
+    ) -> bool:
+        cas_attempts.append((task_id, actor_session_id))
+        if race == "cancelled":
+            # Production-reachable interleaving: cancellation lands after
+            # completion consumption selected the non-root branch but before
+            # the real ownership-fenced writer acquires its transaction.
+            db.update_task(
+                task_id,
+                cancelled_at="2026-10-02T00:00:00+00:00",
+                note="cancel won",
+            )
+        return real_try_fail(
+            task_id,
+            actor_agent=actor_agent,
+            actor_session_id=actor_session_id,
+            expected_team=expected_team,
+            note=note,
+        )
+
     monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+    monkeypatch.setattr(
+        db,
+        "try_fail_nonroot_manager_supersede",
+        observe_and_race_try_fail,
+    )
 
     orch.run_step(child_id)
 
     child = db.get_task(child_id)
-    assert returned_supersede == 1, "the agent returned the supersede decision"
+    parent = db.get_task(parent_id)
+    assert cas_attempts == [(child_id, "sess-x")]
     assert child.status is TaskStatus.IN_PROGRESS
+    assert child.completed_at is None
     assert child.note == ("cancel won" if race == "cancelled" else "replacement won")
+    assert parent.status is TaskStatus.IN_PROGRESS
+    assert parent.block_kind is BlockKind.DELEGATED
     assert db.get_task("TASK-001") is None
     assert db.execute("SELECT COUNT(*) FROM manager_supersessions").fetchone()[0] == 0
     assert queue.qsize() == 0
