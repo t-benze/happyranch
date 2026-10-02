@@ -16,6 +16,7 @@ import { Route, Routes } from 'react-router-dom';
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
 import type { OrgSettings } from '@/lib/api/types';
+import { translate } from '@/lib/i18n';
 import { OrganizationSection } from './OrganizationSection';
 
 const SLUG = 'test-org';
@@ -307,8 +308,12 @@ describe('OrganizationSection Work Hours saved banner relocalizes (TASK-8791)', 
     renderWithOrg('en', withWorkHoursEnabled(true));
 
     await user.click(await screen.findByRole('button', { name: 'Edit eligibility' }));
-    await user.click(await screen.findByRole('button', { name: 'Review impact…' }));
-    await user.click(await screen.findByRole('button', { name: 'Confirm & save' }));
+    await user.click(
+      await screen.findByRole('button', { name: translate('en', 'workHours.dialog.reviewImpact') }),
+    );
+    await user.click(
+      await screen.findByRole('button', { name: translate('en', 'workHours.dialog.confirmSave') }),
+    );
 
     await waitFor(() => expect(workHoursBanner().textContent).toBe(WH_SAVED_EN));
     expect(puts).toHaveLength(1);

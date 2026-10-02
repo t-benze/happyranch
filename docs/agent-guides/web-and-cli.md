@@ -85,7 +85,7 @@ The SPA supports mutations, including task cancellation/revisit and Settings.
 Use `web/src/routes.tsx`, API functions, and the OpenAPI snapshot for the current
 surface. The daemon defaults to loopback; remote access uses the connector.
 
-### Internationalization (W1 foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs/preview + W4a-1 Health/Dreams)
+### Internationalization (W1 foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs/preview + W4a-1 Health/Dreams + W4b Todos/Work Hours/Audit)
 
 The web console has a first-party, typed English/Simplified-Chinese contract in
 `web/src/lib/i18n/` (`locale`, `catalog`, `format`, `coverage`) with the
@@ -143,7 +143,7 @@ Capacity section bodies. Raw daemon errors, identifiers, executor and
 agent names, config keys, paths, commands and every capacity number stay
 verbatim; only product-owned surrounding copy is localized. The shared
 `EligibilityEditorDialog` (mounted by Organization but owned by Work Hours)
-stays English until W4. W2c also builds the client-only **Settings ▸
+stayed English until W4; W4b translates it. W2c also builds the client-only **Settings ▸
 Preferences** language selector (`sections/PreferencesSection.tsx`: English /
 简体中文 endonym radios with their own `lang`, immediate apply through the W1
 `setLocale`, `<html lang>` update, honest pending/saved/failed status) and
@@ -168,14 +168,16 @@ language defaulting (unset/invalid stays English).
 
 **W3b-2** translated the mounted Jobs route family (`jobs`, `jobs/:job_id`: `features/jobs/**` list chrome, needs-you callout, status groups, columns and pending relative age; detail states, header actions, command card, If-approved cascade, gated notice, property rail and output panel; the owned Run/Reject dialogs). Daemon values stay verbatim: job/task IDs, titles, script text, rationale, agent names, interpreter/cwd values, job status tokens and `exit <code>`, exit codes, stdout/stderr and their stream names, the live `[done]` log line and rejection/failure reasons. Run/Reject/Stop errors are locale-neutral `JobErrorView` descriptors (`features/jobs/strings.ts` `classifyJobError`, the same F1 boundary as `classifyTaskError`: recognized code -> catalog key; unknown non-empty code -> raw; no/empty code with a non-empty string diagnostic -> verbatim; otherwise the localized fallback), replacing the former English `Error <status>: API <status> (<code>)` text. W3b-2 also **enables the opt-in language preview**: the `languagePreferenceGate.ts` / `VITE_ENABLE_I18N_PREFERENCES` gate is removed, so Settings ▸ Preferences ▸ Language is mounted in ordinary production builds. An unset preference stays English (production resolves in `preview` mode and never reads the browser language), and the selector discloses that secondary, not-yet-translated pages may still appear in English (`settings.preferences.coverageDisclosure`). Browser evidence runs `scripts/w3b-jobs-browser-evidence.mjs` against the ORDINARY dist.
 
-**W4a-1** translated the mounted Runtime Health and Dreams routes (`features/health/HealthPage.tsx`: header, history-window toggle, stat cards, uptime/relative-age units, loop and HTTP-latency tables, trends; `features/dreams/**`: header eyebrow plural, feed, status pills, counts, quiet state, overview rail and the dream detail drawer with its candidate review gate). Daemon values (loop names, route templates, dream IDs, agent names, local dates, summaries, transcripts, error text, candidate title/slug/topic/rationale/body, KB slugs, unknown status tokens) stay verbatim. Accept/Dismiss errors are `DreamErrorView` descriptors (`features/dreams/strings.ts` `classifyDreamError`, the same F1 boundary as `classifyJobError`); `DREAM_STRINGS` is replaced by `dreams.*` catalog keys. Browser evidence: `scripts/w4a-browser-evidence.mjs` against the ORDINARY dist; its `API_ROUTES`/`VIEW_ROUTES`/`SWITCH_ROUTES` tables are extended by W4a-2 (artifacts) and W4a-3 (usage).
+**W4a-1** translated the mounted Runtime Health and Dreams routes (`features/health/HealthPage.tsx`: header, history-window toggle, stat cards, uptime/relative-age units, loop and HTTP-latency tables, trends; `features/dreams/**`: header eyebrow plural, feed, status pills, counts, quiet state, overview rail and the dream detail drawer with its candidate review gate). Daemon values (loop names, route templates, dream IDs, agent names, local dates, summaries, transcripts, error text, candidate title/slug/topic/rationale/body, KB slugs, unknown status tokens) stay verbatim. Accept/Dismiss errors are `DreamErrorView` descriptors (`features/dreams/strings.ts` `classifyDreamError`, the same F1 boundary as `classifyJobError`); `DREAM_STRINGS` is replaced by `dreams.*` catalog keys. Browser evidence: `scripts/w4a-browser-evidence.mjs` against the ORDINARY dist; its `API_ROUTES`/`VIEW_ROUTES`/`SWITCH_ROUTES` tables are extended by later W4 slices (W4c Agents/Skills, W4d artifacts/usage).
+
+**W4b** translated the mounted Todos (`features/todos/**`: list, detail, status pills, rows, recurrence/timezone presentation, Confirm/Edit dialogs), Work Hours (`features/work-hours-config/**`: overview, wakes, agent detail, TierEditorDialog; plus the Work Hours-owned `shared/work-hours/EligibilityEditorDialog.tsx` that Settings ▸ Organization mounts and its `ErrorPanel`) and Audit (`features/audit/**`: page, timeline, filters and the narrative, whose sentences are catalog templates with interpolation) route families. Agent names, task/schedule IDs, actions, timezones, cron/recurrence values and raw payload/error values stay verbatim; dates and times go through `lib/i18n/format.ts`. Error sites use the same F1 boundary through feature-local `strings.ts` classifiers. Browser evidence: route-table rows added to `scripts/w4a-browser-evidence.mjs`.
 
 The rest of the console is still English: **the other route families and the
 assistant dock body are W4**; the opt-in preview selector discloses this. Native preference persistence is N0/N1; full-mode automatic
 environment detection is implemented and unit-tested but not enabled until W5.
-`web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1-migrated namespaces
+`web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1/W4b-migrated namespaces
 (`root-shell`, `not-found`, `app-shell`, `help-and-palette`, `onboarding`,
-`settings`, `dashboard`, `threads`, `tasks`, `jobs`, `health`, `dreams`) `translated` and every other mounted route namespace `english-only` (copy-free
+`settings`, `dashboard`, `threads`, `tasks`, `jobs`, `health`, `dreams`, `todos`, `work-hours`, `audit`) `translated` and every other mounted route namespace `english-only` (copy-free
 redirects `not-applicable`), listing the actual mounted dialogs, so English
 fallback is never mistaken for coverage. Foundation browser evidence (isolated
 Storybook probe + the real `main.tsx` startup in headless Chrome) runs via

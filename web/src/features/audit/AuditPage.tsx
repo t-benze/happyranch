@@ -22,6 +22,8 @@ import { Button } from '@/design-system/primitives/Button';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { cn } from '@/lib/utils';
 import { useAuditList } from '@/hooks/audit';
+import { useTranslation } from '@/hooks/i18n';
+import type { MessageKey } from '@/lib/i18n';
 import { AuditTimeline } from './AuditTimeline';
 import {
   decodeFilters,
@@ -37,13 +39,15 @@ import {
 } from './audit-filters';
 import type { AuditEntry } from '@/lib/api/types';
 
-const SINCE_OPTIONS: { value: AuditFilters['since']; label: string }[] = [
-  { value: '24h', label: '24h' },
-  { value: '7d', label: '7d' },
-  { value: 'all', label: 'All time' },
+// Window chips: `value` is the URL machine token; only the label is translated.
+const SINCE_OPTIONS: { value: AuditFilters['since']; labelKey: MessageKey }[] = [
+  { value: '24h', labelKey: 'audit.since.24h' },
+  { value: '7d', labelKey: 'audit.since.7d' },
+  { value: 'all', labelKey: 'audit.since.all' },
 ];
 
 export function AuditPage(): JSX.Element {
+  const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
   const filters = useMemo(() => decodeFilters(searchParams), [searchParams]);
 
@@ -163,24 +167,24 @@ export function AuditPage(): JSX.Element {
               a-audit Direction-A reference and the Tasks/Agents surfaces. */}
           <div className="min-w-0 flex-1">
             <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
-              APPEND-ONLY · EVERY ACTION, WHO &amp; WHEN
+              {t('audit.page.eyebrow')}
             </p>
             <h1 className="font-display text-display text-text-primary mt-1 font-medium">
-              The org&apos;s audit trail
+              {t('audit.page.title')}
             </h1>
           </div>
           <Button variant="secondary" size="sm" onClick={handleExport}>
-            Export
+            {t('audit.page.export')}
           </Button>
         </div>
 
         {/* Time window chips */}
-        <div className="mt-3 flex flex-wrap items-center gap-2" role="radiogroup" aria-label="Time window">
+        <div className="mt-3 flex flex-wrap items-center gap-2" role="radiogroup" aria-label={t('audit.since.label')}>
           {SINCE_OPTIONS.map((opt) => {
             const active = (filters.since ?? 'all') === (opt.value ?? 'all');
             return (
               <button
-                key={opt.label}
+                key={opt.labelKey}
                 role="radio"
                 aria-checked={active}
                 type="button"
@@ -192,7 +196,7 @@ export function AuditPage(): JSX.Element {
                     : 'bg-surface-sunken text-text-muted hover:bg-surface-raised hover:text-text-primary',
                 )}
               >
-                {opt.label}
+                {t(opt.labelKey)}
               </button>
             );
           })}
@@ -285,12 +289,13 @@ function EventTypesRail({
   onToggle: (eventClass: EventClass) => void;
   onClear: () => void;
 }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <aside
       className="bg-surface border-border-default h-fit w-full rounded-lg border p-4"
-      aria-label="Event type filter"
+      aria-label={t('audit.rail.label')}
     >
-      <h2 className="text-text-secondary font-display mb-2 text-sm font-medium">Event types</h2>
+      <h2 className="text-text-secondary font-display mb-2 text-sm font-medium">{t('audit.rail.title')}</h2>
       <ul className="space-y-0.5">
         {legend.map((le) => {
           const active = activeClass === le.eventClass;
@@ -311,7 +316,7 @@ function EventTypesRail({
                   aria-hidden="true"
                   className={cn('inline-block h-2 w-2 shrink-0 rounded-full', DOT_COLOR_CLASS[le.color])}
                 />
-                <span className="flex-1 text-left">{le.label}</span>
+                <span className="flex-1 text-left">{t(le.labelKey)}</span>
                 <span className="text-text-muted tabular-nums">{le.count}</span>
               </button>
             </li>
@@ -324,7 +329,7 @@ function EventTypesRail({
           onClick={onClear}
           className="text-accent-text hover:text-text-primary mt-3 text-xs"
         >
-          Show all events
+          {t('audit.rail.showAll')}
         </button>
       )}
     </aside>
@@ -334,17 +339,18 @@ function EventTypesRail({
 /** Green "Clean record" reassurance panel (AUDIT design authority): rendered in
  *  the right rail below the legend when the current window has zero failures. */
 function CleanRecordPanel({ total }: { total: number }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <aside
       className="bg-accent-soft border-accent-muted rounded-lg border p-4"
-      aria-label="Clean record"
+      aria-label={t('audit.clean.label')}
     >
       <div className="flex items-center gap-2">
         <Check aria-hidden="true" className="text-accent-text h-4 w-4 shrink-0" />
-        <p className="text-accent-text text-sm font-medium">Clean record · 0 failures</p>
+        <p className="text-accent-text text-sm font-medium">{t('audit.clean.title')}</p>
       </div>
       <p className="text-accent-text mt-1 text-xs">
-        {total} events logged, none failed. Tap a class above to filter the trail.
+        {t('audit.clean.body', { total })}
       </p>
     </aside>
   );

@@ -8,9 +8,12 @@
  */
 import { Link, useParams } from 'react-router-dom'
 import type { ScheduleRecord } from '@/lib/api/types'
+import { useTranslation } from '@/hooks/i18n'
+import type { Locale } from '@/lib/i18n'
+import { formatCountFor } from '@/lib/i18n/format'
 import { StatusPill } from './StatusPill'
-import { TODO_STRINGS } from '../strings'
-import { formatFireAtInTz } from '../timezone'
+import { shortDayLabel, type Translate } from '../strings'
+import { formatFireAtInTz, formatReviewDate } from '../timezone'
 import { formatRecurringRule } from '../recurrence'
 import { cn } from '@/lib/utils'
 
@@ -19,45 +22,45 @@ interface TodoRowProps {
 }
 
 /** Describe the schedule type in a concise, status-aware human line using the stored tz. */
-function scheduleLine(s: ScheduleRecord): string {
+function scheduleLine(s: ScheduleRecord, t: Translate, locale: Locale): string {
   const tz = s.timezone || 'UTC'
   const isPast = ['fired', 'failed', 'timeout', 'expired', 'cancelled'].includes(s.status)
 
   if (s.kind === 'one_shot') {
     if (s.fire_at) {
-      const formatted = formatFireAtInTz(s.fire_at, tz)
+      const formatted = formatFireAtInTz(s.fire_at, tz, locale)
       if (formatted !== s.fire_at) {
-        return isPast ? `Once on ${formatted}` : `Once on ${formatted}`
+        return t('todos.schedule.onceOn', { when: formatted })
       }
     }
-    return 'One-shot'
+    return t('todos.kind.oneShot')
   }
 
-  if (s.kind === 'recurring') return formatRecurringRule(s.recurrence, tz)
+  if (s.kind === 'recurring') return formatRecurringRule(s.recurrence, tz, t)
 
-  const day = s.recurrence?.day ?? ''
-  const time = s.recurrence?.time ?? ''
-  const prefix = isPast ? 'Was every' : 'Every'
+  const day = shortDayLabel(String(s.recurrence?.day ?? ''), t)
+  const time = String(s.recurrence?.time ?? '')
+  const line = t(isPast ? 'todos.schedule.wasEvery' : 'todos.schedule.every', { day, time })
   if (s.indefinite) {
-    return `${prefix} ${day} at ${time} · ${TODO_STRINGS.indefiniteLabel}`
+    return `${line} · ${t('todos.indefinite')}`
   }
-  return `${prefix} ${day} at ${time}`
+  return line
 }
 
 /** Expiry / review line for the row. */
-function expiryLine(s: ScheduleRecord): string | null {
+function expiryLine(s: ScheduleRecord, t: Translate, locale: Locale): string | null {
   if (s.status === 'expired' && s.expires_at) {
     const d = new Date(s.expires_at)
     if (!Number.isNaN(d.getTime())) {
-      return `Expired ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+      return t('todos.row.expiredOn', { date: formatReviewDate(d, locale) })
     }
-    return 'Expired'
+    return t('todos.row.expired')
   }
-  if (s.indefinite) return TODO_STRINGS.indefiniteLabel
+  if (s.indefinite) return t('todos.indefinite')
   if (s.expires_at) {
     const d = new Date(s.expires_at)
     if (!Number.isNaN(d.getTime())) {
-      return `${TODO_STRINGS.reviewByLabel} ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+      return t('todos.row.reviewBy', { date: formatReviewDate(d, locale) })
     }
   }
   return null
@@ -74,6 +77,7 @@ function agentInitials(name: string): string {
 
 export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
   const { slug } = useParams<{ slug: string }>()
+  const { t, locale } = useTranslation()
   const isTerminal = ['fired', 'expired', 'cancelled', 'failed', 'timeout'].includes(
     schedule.status,
   )
@@ -81,10 +85,10 @@ export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
   const tz = schedule.timezone || 'UTC'
 
   const fireAtDisplay = showNextFire && schedule.fire_at
-    ? formatFireAtInTz(schedule.fire_at, tz)
+    ? formatFireAtInTz(schedule.fire_at, tz, locale)
     : ''
 
-  const expiry = expiryLine(schedule)
+  const expiry = expiryLine(schedule, t, locale)
 
   return (
     <Link
@@ -109,10 +113,10 @@ export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
         {showNextFire && (
           <div className="flex shrink-0 flex-col items-end">
             <span className="text-fg-subtle text-2xs leading-tight font-normal tracking-wider uppercase">
-              {TODO_STRINGS.nextFireLabel}
+              {t('todos.row.nextFire')}
             </span>
             <span className="text-fg text-sm leading-tight font-semibold tabular-nums">
-              {schedule.status === 'firing' ? TODO_STRINGS.firingNow : fireAtDisplay}
+              {schedule.status === 'firing' ? t('todos.row.firingNow') : fireAtDisplay}
             </span>
           </div>
         )}
@@ -132,13 +136,13 @@ export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
           <span aria-hidden="true" className="text-fg-subtle">
             ·
           </span>
-          <span className="truncate">{scheduleLine(schedule)}</span>
+          <span className="truncate">{scheduleLine(schedule, t, locale)}</span>
         </div>
         <div className="text-fg-subtle flex shrink-0 items-center gap-3 text-xs">
           {expiry && <span>{expiry}</span>}
           {schedule.fire_count > 0 && (
             <span>
-              {schedule.fire_count} {TODO_STRINGS.runsLabel}
+              {t('todos.row.runs', { count: formatCountFor(locale, schedule.fire_count) })}
             </span>
           )}
           <span className="text-fg-subtle font-mono text-xs">

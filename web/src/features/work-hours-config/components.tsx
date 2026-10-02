@@ -4,6 +4,8 @@
  */
 import { AlertTriangle } from 'lucide-react';
 import { SubTabBar } from '@/design-system/primitives/SubTabBar';
+import { useTranslation } from '@/hooks/i18n';
+import type { MessageKey } from '@/lib/i18n';
 import type { Provenance } from './merge';
 
 /**
@@ -20,23 +22,24 @@ export function WorkHoursTabs({
   slug: string | undefined;
   active: 'overview' | 'wakes';
 }): JSX.Element {
+  const { t } = useTranslation();
   const base = `/orgs/${slug ?? ''}/work-hours`;
   return (
     <SubTabBar
       active={active}
       tabs={[
-        { value: 'overview', label: 'Overview', to: base },
-        { value: 'wakes', label: 'Wakes', to: `${base}?view=wakes` },
+        { value: 'overview', label: t('workHours.tabs.overview'), to: base },
+        { value: 'wakes', label: t('workHours.tabs.wakes'), to: `${base}?view=wakes` },
       ]}
     />
   );
 }
 
-const PROVENANCE_LABEL: Record<Provenance, string> = {
-  org: 'Org default',
-  team: 'Team',
-  agent: 'This agent',
-  unset: 'unset',
+const PROVENANCE_LABEL: Record<Provenance, MessageKey> = {
+  org: 'workHours.provenance.org',
+  team: 'workHours.provenance.team',
+  agent: 'workHours.provenance.agent',
+  unset: 'workHours.provenance.unset',
 };
 
 const PROVENANCE_STYLE: Record<Provenance, string> = {
@@ -53,8 +56,11 @@ export function ProvenanceBadge({
   source: Provenance;
   teamName?: string | null;
 }): JSX.Element {
+  const { t } = useTranslation();
   const label =
-    source === 'team' && teamName ? `Team: ${teamName}` : PROVENANCE_LABEL[source];
+    source === 'team' && teamName
+      ? t('workHours.provenance.teamNamed', { team: teamName })
+      : t(PROVENANCE_LABEL[source]);
   return (
     <span
       className={`text-mono-sm inline-flex items-center rounded-full px-1.5 py-0.5 font-semibold ${PROVENANCE_STYLE[source]}`}
@@ -65,6 +71,7 @@ export function ProvenanceBadge({
 }
 
 export function EligibilityChip({ eligible }: { eligible: boolean }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <span
       className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
@@ -73,12 +80,13 @@ export function EligibilityChip({ eligible }: { eligible: boolean }): JSX.Elemen
           : 'bg-surface-sunken text-text-muted'
       }`}
     >
-      {eligible ? 'Eligible' : 'Excluded'}
+      {eligible ? t('workHours.eligibility.eligible') : t('workHours.eligibility.excluded')}
     </span>
   );
 }
 
 export function OnDot({ on }: { on: boolean }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <span className="inline-flex items-center gap-1.5 text-xs">
       <span
@@ -87,22 +95,24 @@ export function OnDot({ on }: { on: boolean }): JSX.Element {
           on ? 'bg-tier-green' : 'bg-surface-sunken'
         }`}
       />
-      <span className="text-text-muted">{on ? 'On' : 'Off'}</span>
+      <span className="text-text-muted">{on ? t('workHours.onDot.on') : t('workHours.onDot.off')}</span>
     </span>
   );
 }
 
 export function NoRoutineTasksFlag(): JSX.Element {
+  const { t } = useTranslation();
   return (
     <span className="text-feedback-danger inline-flex items-center gap-1 text-xs">
       <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
-      no routine tasks
+      {t('workHours.noRoutineTasks')}
     </span>
   );
 }
 
 /** Config-broken-on-disk recovery banner (spec §5.1). */
 export function RecoveryBanner({ reason }: { reason: string }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <div
       role="alert"
@@ -110,9 +120,9 @@ export function RecoveryBanner({ reason }: { reason: string }): JSX.Element {
     >
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
       <div>
-        <p className="font-medium">Live config failed to load. Scheduling is degraded.</p>
+        <p className="font-medium">{t('workHours.recovery.title')}</p>
         <p className="mt-0.5">{reason}</p>
-        <p className="mt-0.5">Fix the working-hours config and save to restore.</p>
+        <p className="mt-0.5">{t('workHours.recovery.hint')}</p>
       </div>
     </div>
   );

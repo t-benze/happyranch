@@ -6,6 +6,7 @@ import { Route, Routes } from 'react-router-dom';
 import { TierEditorDialog } from './TierEditorDialog';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
+import { translate } from '@/lib/i18n';
 import type { WorkingHoursSettings } from '@/lib/api/types';
 
 const SLUG = 'alpha';
@@ -89,7 +90,7 @@ describe('TierEditorDialog — continuous interval is server-authoritative', () 
     expect(intervalInput).toHaveValue('5h');
 
     // Agent tier saves directly (no impact-confirm step).
-    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await user.click(screen.getByRole('button', { name: translate('en', 'common.save') }));
 
     // The client sent the non-divisor value straight to the server — it did
     // not gate on divides-24h.
@@ -100,5 +101,9 @@ describe('TierEditorDialog — continuous interval is server-authoritative', () 
     expect(
       await screen.findByText('interval 5h must evenly divide 24h'),
     ).toBeInTheDocument();
+    // ...under the localized blocking heading, with the daemon text verbatim.
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      translate('en', 'workHours.dialog.saveRejected'),
+    );
   });
 });

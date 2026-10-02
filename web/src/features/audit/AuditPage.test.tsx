@@ -6,6 +6,11 @@ import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 import userEvent from '@testing-library/user-event';
 import { formatDateHeader } from './AuditTimeline';
+import { translate, type MessageKey, type MessageParams } from '@/lib/i18n';
+
+// English copy comes from the typed catalog (THR-118 W4b).
+const en = (key: MessageKey, params?: MessageParams): string => translate('en', key, params);
+const dayHeader = (label: string, date: string): string => en('audit.day.header', { label, date });
 
 const SLUG = 'alpha';
 
@@ -78,8 +83,8 @@ describe('AuditPage — day-grouped timeline', () => {
     mountAt(`/orgs/${SLUG}/audit`);
 
     await waitFor(() => {
-      expect(screen.getByText('THURSDAY · JUN 18')).toBeInTheDocument();
-      expect(screen.getByText('WEDNESDAY · JUN 17')).toBeInTheDocument();
+      expect(screen.getByText(dayHeader('THURSDAY', 'JUN 18'))).toBeInTheDocument();
+      expect(screen.getByText(dayHeader('WEDNESDAY', 'JUN 17'))).toBeInTheDocument();
     });
     // The old raw-ISO header must be gone (red-proof for the format change).
     expect(screen.queryByText('2026-06-18')).not.toBeInTheDocument();
@@ -116,13 +121,13 @@ describe('AuditPage — day-grouped timeline', () => {
     mountAt(`/orgs/${SLUG}/audit`);
 
     const title = await screen.findByRole('heading', {
-      name: "The org's audit trail",
+      name: en('audit.page.title'),
     });
     expect(title).toBeInTheDocument();
     expect(title).toHaveClass('font-display');
 
     expect(
-      screen.getByText('APPEND-ONLY · EVERY ACTION, WHO & WHEN'),
+      screen.getByText(en('audit.page.eyebrow')),
     ).toBeInTheDocument();
 
     // The old plain "Audit" h2 title must be gone.
@@ -137,19 +142,19 @@ describe('AuditPage — day-grouped timeline', () => {
     mountAt(`/orgs/${SLUG}/audit`);
 
     // The right rail shows all five fixed classes, each with a colored dot + count.
-    const rail = await screen.findByLabelText('Event type filter');
+    const rail = await screen.findByLabelText(en('audit.rail.label'));
     for (const label of ['Dispatch', 'Completed', 'Merge', 'Escalation', 'Failure']) {
       expect(within(rail).getByText(label)).toBeInTheDocument();
     }
-    expect(screen.getByRole('heading', { name: 'Event types' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: en('audit.rail.title') })).toBeInTheDocument();
 
     // defaultEntries: completion_report + review_verdict + escalation_resolved → Completed = 3
-    const completedBtn = within(rail).getByText('Completed').closest('button')!;
+    const completedBtn = within(rail).getByText(en('audit.class.completed')).closest('button')!;
     await waitFor(() => {
       expect(within(completedBtn).getByText('3')).toBeInTheDocument();
     });
     // escalation → Escalation = 1
-    const escalationBtn = within(rail).getByText('Escalation').closest('button')!;
+    const escalationBtn = within(rail).getByText(en('audit.class.escalation')).closest('button')!;
     expect(within(escalationBtn).getByText('1')).toBeInTheDocument();
   });
 
@@ -169,8 +174,8 @@ describe('AuditPage — day-grouped timeline', () => {
       expect(screen.getByText('TASK-F')).toBeInTheDocument();
     });
 
-    const rail = screen.getByLabelText('Event type filter');
-    const completedBtn = within(rail).getByText('Completed').closest('button')!;
+    const rail = screen.getByLabelText(en('audit.rail.label'));
+    const completedBtn = within(rail).getByText(en('audit.class.completed')).closest('button')!;
     await user.click(completedBtn);
 
     await waitFor(() => {
@@ -181,7 +186,7 @@ describe('AuditPage — day-grouped timeline', () => {
       expect(screen.queryByText('TASK-F')).not.toBeInTheDocument();
     });
     // The clear affordance appears once a class is active.
-    expect(within(rail).getByText('Show all events')).toBeInTheDocument();
+    expect(within(rail).getByText(en('audit.rail.showAll'))).toBeInTheDocument();
   });
 
   test('clicking the active class clears the filter', async () => {
@@ -198,8 +203,8 @@ describe('AuditPage — day-grouped timeline', () => {
       expect(screen.queryByText('TASK-E')).not.toBeInTheDocument();
     });
 
-    const rail = screen.getByLabelText('Event type filter');
-    const completedBtn = within(rail).getByText('Completed').closest('button')!;
+    const rail = screen.getByLabelText(en('audit.rail.label'));
+    const completedBtn = within(rail).getByText(en('audit.class.completed')).closest('button')!;
     expect(completedBtn).toHaveAttribute('aria-pressed', 'true');
 
     await user.click(completedBtn);
@@ -218,15 +223,15 @@ describe('AuditPage — day-grouped timeline', () => {
     mountAt(`/orgs/${SLUG}/audit`);
 
     await waitFor(() => {
-      expect(screen.getByText('Completed')).toBeInTheDocument();
+      expect(screen.getByText(en('audit.class.completed'))).toBeInTheDocument();
     });
 
     // The default "All time" radio should be checked
-    const allTimeRadio = screen.getByRole('radio', { name: 'All time' });
+    const allTimeRadio = screen.getByRole('radio', { name: en('audit.since.all') });
     expect(allTimeRadio).toHaveAttribute('aria-checked', 'true');
 
     // Click "7d" window chip
-    const sevenDay = screen.getByRole('radio', { name: '7d' });
+    const sevenDay = screen.getByRole('radio', { name: en('audit.since.7d') });
     await user.click(sevenDay);
 
     // The 7d radio should now be checked
@@ -250,8 +255,8 @@ describe('AuditPage — day-grouped timeline', () => {
     mountAt(`/orgs/${SLUG}/audit`);
 
     await waitFor(() => {
-      expect(screen.getByText('All clear')).toBeInTheDocument();
-      expect(screen.getByText(/No failures or escalations/)).toBeInTheDocument();
+      expect(screen.getByText(en('audit.allClear.title'))).toBeInTheDocument();
+      expect(screen.getByText(en('audit.allClear.body'))).toBeInTheDocument();
     });
   });
 
@@ -261,7 +266,7 @@ describe('AuditPage — day-grouped timeline', () => {
     mountAt(`/orgs/${SLUG}/audit`);
 
     await waitFor(() => {
-      expect(screen.getByText('No audit entries')).toBeInTheDocument();
+      expect(screen.getByText(en('audit.empty.title'))).toBeInTheDocument();
     });
   });
 
@@ -275,11 +280,11 @@ describe('AuditPage — day-grouped timeline', () => {
     mountAt(`/orgs/${SLUG}/audit`);
 
     await waitFor(() => {
-      expect(screen.getByText(/Could not load audit entries/)).toBeInTheDocument();
+      expect(screen.getByText(en('audit.error.load'))).toBeInTheDocument();
     });
 
     // Retry button should be present
-    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: en('common.retry') })).toBeInTheDocument();
   });
 
   test('renders token cost for entries with token_usage', async () => {
@@ -298,7 +303,7 @@ describe('AuditPage — day-grouped timeline', () => {
 
     await waitFor(() => {
       // Token cost now renders in the mono secondary detail line ("… tokens").
-      expect(screen.getByText('1.5K tokens')).toBeInTheDocument();
+      expect(screen.getByText(en('audit.detail.tokens', { tokens: '1.5K' }))).toBeInTheDocument();
     });
   });
 
@@ -318,11 +323,11 @@ describe('AuditPage — day-grouped timeline', () => {
     mountAt(`/orgs/${SLUG}/audit`);
 
     await waitFor(() => {
-      expect(screen.getByLabelText('Dream-originated')).toBeInTheDocument();
+      expect(screen.getByLabelText(en('audit.timeline.dreamBadge'))).toBeInTheDocument();
     });
     // THR-099 PR2: the marker is now a labelled "from dream" pill, not a bare
     // moon glyph (red-proof — old code rendered only the icon, no text).
-    expect(screen.getByText('from dream')).toBeInTheDocument();
+    expect(screen.getByText(en('audit.timeline.fromDream'))).toBeInTheDocument();
   });
 
   // THR-137: long progress messages must render fully readable with word-wrap
@@ -490,7 +495,7 @@ describe('AuditPage — day-grouped timeline', () => {
 
     await waitFor(() => {
       // Token cost renders in the mono secondary detail line.
-      expect(screen.getByText('500 tokens')).toBeInTheDocument();
+      expect(screen.getByText(en('audit.detail.tokens', { tokens: '500' }))).toBeInTheDocument();
       // agent_session_id must NOT appear as executor text
       expect(screen.queryByText(/abc12345/)).not.toBeInTheDocument();
     });
@@ -573,7 +578,7 @@ describe('AuditPage — day-grouped timeline', () => {
 
     // Wait for page to load
     await waitFor(() => {
-      expect(screen.getByText('Export')).toBeInTheDocument();
+      expect(screen.getByText(en('audit.page.export'))).toBeInTheDocument();
     });
 
     // Spy on URL.createObjectURL + document.createElement('a').click()
@@ -598,7 +603,7 @@ describe('AuditPage — day-grouped timeline', () => {
     }) as typeof document.createElement;
 
     try {
-      const exportBtn = screen.getByText('Export');
+      const exportBtn = screen.getByText(en('audit.page.export'));
       await user.click(exportBtn);
 
       expect(capturedBlob).not.toBeNull();
@@ -663,9 +668,9 @@ describe('AuditPage — day-grouped timeline', () => {
 
     // Wait for data to load — legend counts depend on allEntries
     await waitFor(() => {
-      expect(screen.getByText('Export')).toBeInTheDocument();
-      const rail = screen.getByLabelText('Event type filter');
-      expect(within(rail).getByText('Completed')).toBeInTheDocument();
+      expect(screen.getByText(en('audit.page.export'))).toBeInTheDocument();
+      const rail = screen.getByLabelText(en('audit.rail.label'));
+      expect(within(rail).getByText(en('audit.class.completed'))).toBeInTheDocument();
     });
 
     // Spy on Blob/URL for export
@@ -677,7 +682,7 @@ describe('AuditPage — day-grouped timeline', () => {
     };
 
     try {
-      const exportBtn = screen.getByText('Export');
+      const exportBtn = screen.getByText(en('audit.page.export'));
       await user.click(exportBtn);
 
       expect(capturedBlob).not.toBeNull();
@@ -798,7 +803,7 @@ describe('AuditPage — day-grouped timeline', () => {
       return 'blob:test';
     };
     try {
-      await user.click(screen.getByText('Export'));
+      await user.click(screen.getByText(en('audit.page.export')));
       expect(capturedBlob).not.toBeNull();
       const csv = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
@@ -839,7 +844,7 @@ describe('AuditPage — day-grouped timeline', () => {
     mountAt(`/orgs/${SLUG}/audit?action=completion_report&class=failure`);
 
     await waitFor(() => {
-      expect(screen.getByText('No audit entries')).toBeInTheDocument();
+      expect(screen.getByText(en('audit.empty.title'))).toBeInTheDocument();
     });
 
     let capturedBlob: Blob | null = null;
@@ -849,7 +854,7 @@ describe('AuditPage — day-grouped timeline', () => {
       return 'blob:test';
     };
     try {
-      await user.click(screen.getByText('Export'));
+      await user.click(screen.getByText(en('audit.page.export')));
       // The export set is empty too — it must NOT dump the failure-class row the
       // timeline never showed. With the bug (class-only export) it contained
       // TASK-FAIL while the timeline was empty.
@@ -870,15 +875,15 @@ describe('AuditPage — day-grouped timeline', () => {
     mountAt(`/orgs/${SLUG}/audit`);
 
     // Failure count == 1 proves the row loaded and classed as failure.
-    const rail = await screen.findByLabelText('Event type filter');
-    const failureBtn = within(rail).getByText('Failure').closest('button')!;
+    const rail = await screen.findByLabelText(en('audit.rail.label'));
+    const failureBtn = within(rail).getByText(en('audit.class.failure')).closest('button')!;
     await waitFor(() => {
       expect(within(failureBtn).getByText('1')).toBeInTheDocument();
     });
 
     // The 'All clear' calm state must NOT render.
     expect(screen.queryByTestId('all-clear')).not.toBeInTheDocument();
-    expect(screen.queryByText('All clear')).not.toBeInTheDocument();
+    expect(screen.queryByText(en('audit.allClear.title'))).not.toBeInTheDocument();
   });
 });
 
@@ -897,7 +902,7 @@ describe('AuditPage — THR-099 PR2 dot-rail restyle', () => {
     ]);
     mountAt(`/orgs/${SLUG}/audit`);
 
-    const timeline = await screen.findByLabelText('Audit timeline');
+    const timeline = await screen.findByLabelText(en('audit.timeline.label'));
     await waitFor(() => {
       expect(within(timeline).getByText('TASK-OK')).toBeInTheDocument();
     });
@@ -923,9 +928,9 @@ describe('AuditPage — THR-099 PR2 dot-rail restyle', () => {
     mountAt(`/orgs/${SLUG}/audit`);
 
     await waitFor(() => {
-      expect(screen.getByText('Clean record · 0 failures')).toBeInTheDocument();
+      expect(screen.getByText(en('audit.clean.title'))).toBeInTheDocument();
     });
-    expect(screen.getByText(/none failed\. Tap a class above/)).toBeInTheDocument();
+    expect(screen.getByText(en('audit.clean.body', { total: 2 }))).toBeInTheDocument();
   });
 
   test('hides the "Clean record" panel when a failure-class entry exists', async () => {
@@ -936,12 +941,12 @@ describe('AuditPage — THR-099 PR2 dot-rail restyle', () => {
     mountAt(`/orgs/${SLUG}/audit`);
 
     // Wait for the legend to prove data loaded, then assert the panel is absent.
-    const rail = await screen.findByLabelText('Event type filter');
-    const failureBtn = within(rail).getByText('Failure').closest('button')!;
+    const rail = await screen.findByLabelText(en('audit.rail.label'));
+    const failureBtn = within(rail).getByText(en('audit.class.failure')).closest('button')!;
     await waitFor(() => {
       expect(within(failureBtn).getByText('1')).toBeInTheDocument();
     });
-    expect(screen.queryByText(/Clean record/)).not.toBeInTheDocument();
+    expect(screen.queryByText(en('audit.clean.title'))).not.toBeInTheDocument();
   });
 });
 
@@ -949,16 +954,25 @@ describe('formatDateHeader — relative uppercase day labels (THR-099 PR2)', () 
   const now = new Date('2026-06-16T12:00:00Z');
 
   test('labels the current UTC day TODAY · MON DD', () => {
-    expect(formatDateHeader('2026-06-16', now)).toBe('TODAY · JUN 16');
+    expect(formatDateHeader('2026-06-16', 'en', en, now)).toBe(dayHeader(en('audit.day.today'), 'JUN 16'));
   });
 
   test('labels the prior UTC day YESTERDAY · MON DD', () => {
-    expect(formatDateHeader('2026-06-15', now)).toBe('YESTERDAY · JUN 15');
+    expect(formatDateHeader('2026-06-15', 'en', en, now)).toBe(dayHeader(en('audit.day.yesterday'), 'JUN 15'));
   });
 
   test('labels older days WEEKDAY · MON DD', () => {
     // 2026-06-10 is a Wednesday (UTC).
-    expect(formatDateHeader('2026-06-10', now)).toBe('WEDNESDAY · JUN 10');
+    expect(formatDateHeader('2026-06-10', 'en', en, now)).toBe(dayHeader('WEDNESDAY', 'JUN 10'));
+  });
+
+  // THR-118 W4b: zh-CN uses the catalog TODAY/YESTERDAY labels and Intl
+  // weekday + month-day in that locale.
+  test('zh-CN labels: catalog today/yesterday, localized weekday and month-day', () => {
+    const zh = (key: MessageKey, params?: MessageParams): string => translate('zh-CN', key, params);
+    expect(formatDateHeader('2026-06-16', 'zh-CN', zh, now)).toBe('今天 · 6月16日');
+    expect(formatDateHeader('2026-06-15', 'zh-CN', zh, now)).toBe('昨天 · 6月15日');
+    expect(formatDateHeader('2026-06-10', 'zh-CN', zh, now)).toBe('星期三 · 6月10日');
   });
 });
 
@@ -980,7 +994,7 @@ describe('AuditPage — timeline container-geometry contract', () => {
     seedAudit();
     mountAt(`/orgs/${SLUG}/audit`);
 
-    const body = await screen.findByLabelText('Audit timeline');
+    const body = await screen.findByLabelText(en('audit.timeline.label'));
     // AuditTimeline renders TimelineBody directly, so the scroll box's parent
     // IS the card. It must be a bounded flex column, else TimelineBody's
     // flex-1 is inert and the card clips the list with no scrollbar.
@@ -1002,7 +1016,7 @@ describe('AuditPage — timeline container-geometry contract', () => {
     expect(wrapper).toHaveClass('flex', 'flex-col', 'h-full', 'min-h-0');
     // TimelineBody is a direct child of the all-clear wrapper, so the bounded
     // chain reaches it exactly like the normal branch's card.
-    const body = await screen.findByLabelText('Audit timeline');
+    const body = await screen.findByLabelText(en('audit.timeline.label'));
     expect(body.parentElement).toBe(wrapper);
   });
 });
@@ -1139,8 +1153,8 @@ describe('AuditPage — keyset infinite scroll', () => {
       expect(screen.getByText('TASK-OLD-B')).toBeInTheDocument();
     });
     // Day headers render in the THR-099 PR2 relative uppercase format.
-    expect(screen.getByText('SATURDAY · JUN 20')).toBeInTheDocument();
-    expect(screen.getByText('FRIDAY · JUN 19')).toBeInTheDocument();
+    expect(screen.getByText(dayHeader('SATURDAY', 'JUN 20'))).toBeInTheDocument();
+    expect(screen.getByText(dayHeader('FRIDAY', 'JUN 19'))).toBeInTheDocument();
     expect(screen.getByText('TASK-NEW-A')).toBeInTheDocument();
 
     // Page 2 was fetched with the opaque cursor returned by page 1.
@@ -1148,7 +1162,7 @@ describe('AuditPage — keyset infinite scroll', () => {
 
     // End-of-list affordance appears once next_cursor is null.
     await waitFor(() => {
-      expect(screen.getByText('End of audit trail')).toBeInTheDocument();
+      expect(screen.getByText(en('audit.timeline.end'))).toBeInTheDocument();
     });
   });
 
@@ -1181,7 +1195,7 @@ describe('AuditPage — keyset infinite scroll', () => {
     // Still exactly one page fetched — no runaway pagination. The absence of an
     // observed sentinel (length 0) is the proof paging halts at next_cursor=null.
     expect(requestCount).toBe(1);
-    expect(screen.getByText('End of audit trail')).toBeInTheDocument();
+    expect(screen.getByText(en('audit.timeline.end'))).toBeInTheDocument();
   });
 
   test('cursor-walk: pages through 3 cursor-linked pages in order, stopping at null (THR-098)', async () => {
@@ -1258,7 +1272,7 @@ describe('AuditPage — keyset infinite scroll', () => {
     expect(seenCursors).toEqual([null, 'cursor-A', 'cursor-B']);
 
     // Terminal state: end-of-list affordance renders, no more pages.
-    expect(screen.getByText('End of audit trail')).toBeInTheDocument();
+    expect(screen.getByText(en('audit.timeline.end'))).toBeInTheDocument();
     expect(pageHit).toBe(3);
   });
 
@@ -1316,7 +1330,7 @@ describe('AuditPage — keyset infinite scroll', () => {
       expect(root).not.toBeNull();
       // Sentinel parent IS the scroll container <div aria-label="Audit timeline">
       expect(root).toBeInstanceOf(HTMLDivElement);
-      expect((root as HTMLElement).getAttribute('aria-label')).toBe('Audit timeline');
+      expect((root as HTMLElement).getAttribute('aria-label')).toBe(en('audit.timeline.label'));
     }
 
     _trackUseRefReads = false;

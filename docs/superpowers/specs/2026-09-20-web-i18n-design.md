@@ -1,6 +1,6 @@
-# Web i18n — foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs/preview + W4a-1 Health/Dreams contract
+# Web i18n — foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs/preview + W4a-1 Health/Dreams + W4b Todos/Work Hours/Audit contract
 
-> Status: current (W1 foundation + W2a mounted-shell + W2b onboarding + W2c Settings/Preferences + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs migration and opt-in preview + W4a-1 Health/Dreams)
+> Status: current (W1 foundation + W2a mounted-shell + W2b onboarding + W2c Settings/Preferences + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs migration and opt-in preview + W4a-1 Health/Dreams + W4b Todos/Work Hours/Audit)
 > Current Source: `web/src/lib/i18n/`, `web/src/hooks/i18n.tsx`, the mounted
 > shell/onboarding consumers, this spec.
 > Supersedes: the `Internationalization layer` non-goal in
@@ -16,6 +16,10 @@
 > **W3b-2** translated the mounted Jobs route family and enabled the opt-in
 > preview (Preferences ▸ Language in production, English when unset, with a
 > secondary-pages coverage disclosure).
+> **W4a-1** translated Runtime Health and Dreams; **W4b** translated the
+> mounted Todos, Work Hours (incl. the shared `EligibilityEditorDialog`) and
+> Audit route families. Agents/Skills move to **W4c** and artifacts/usage to
+> **W4d**.
 > Later slices (W4 remaining
 > surfaces, W5 full coverage/default resolution) and native preference
 > persistence (N0/N1) are still open. The W1 sections below are retained as the historical W1 contract
@@ -73,13 +77,14 @@ Delivery status at W1 (keep separate from later phases):
 | Mounted shell translation (W2a: AppBar/Sidebar/root/not-found/ErrorBoundary/AddOrgDialog/help/palette) | **shipped — W2a** |
 | CJK-capable system font fallbacks (no download) | **shipped — W2a** |
 | Onboarding translation (W2b: OnboardingPage/ConnectRuntimeStep/shared ConnectFlow) | **shipped — W2b** |
-| Settings translation (W2c: page chrome + Assistant/Organization/Executors/Capacity sections) | **shipped — W2c** (Work Hours-owned `EligibilityEditorDialog` stays English until W4) |
+| Settings translation (W2c: page chrome + Assistant/Organization/Executors/Capacity sections) | **shipped — W2c** (Work Hours-owned `EligibilityEditorDialog` stayed English until W4; translated by W4b) |
 | Settings ▸ Preferences language selector (W2c) | **shipped — enabled in production by W3b-2** (the W2c `VITE_ENABLE_I18N_PREFERENCES` gate is removed) |
 | Dashboard + Threads route families (W3a: DashboardPage, ThreadsPage list/detail/composer/strips, Archive/Invite/RemoveParticipant dialogs, shared NewThreadDialog) | **shipped — W3a** |
 | Tasks route family (W3b-1: TasksPage/TaskListRow, TaskDetailPage incl. recall/events/fan-out/rail, Cancel/Revisit/ResolveEscalation dialogs) | **shipped — W3b-1** |
 | Jobs route family (W3b-2: JobsPage, JobDetailPage incl. cascade/gated notice/rail/output, Run/Reject dialogs) | **shipped — W3b-2** |
 | Runtime Health + Dreams (W4a-1: HealthPage; DreamsPage feed/rail + DreamDetailPane drawer) | **shipped — W4a-1** |
-| Other route/page translation | **W4** — not shipped (artifacts = W4a-2, usage = W4a-3, other route families and the assistant dock body) |
+| Todos + Work Hours + Audit (W4b: TodosPage/TodoDetailPage/TodoRow/StatusPill + Confirm/Edit dialogs; Work Hours OverviewPage/WakesView/AgentDetailPage + TierEditorDialog + shared EligibilityEditorDialog; AuditPage/AuditTimeline/filters + catalog-templated narrative) | **shipped — W4b** |
+| Other route/page translation | **W4** — not shipped (Agents/Skills = W4c; artifacts and usage = W4d; other route families and the assistant dock body) |
 | Public language selector / opt-in preview | **shipped — W3b-2** (English when unset; secondary-pages coverage disclosure) |
 | Full-mode automatic environment detection | implemented + unit-tested, **not enabled** in production (W5) |
 | Native preference persistence (Swift/message handler) | **N0/N1** — not shipped |
@@ -325,14 +330,15 @@ anchors them to the real consumer sources (e.g. `ThreadsPage.tsx` mounts
 `TaskDetailPage.tsx` mounts `CancelTaskDialog`/`RevisitTaskDialog`/
 `ResolveEscalationDialog`; `JobDetailPage.tsx` mounts
 `RunJobDialog`/`RejectJobDialog`), so an invented or unreachable name fails the
-test. After W4a-1 exactly twelve namespaces are `translated` (`root-shell`,
+test. After W4b exactly fifteen namespaces are `translated` (`root-shell`,
 `not-found`, `onboarding`, `app-shell`, `help-and-palette`, `settings`,
-`dashboard`, `threads`, `tasks`, `jobs`, `health`, `dreams`); every
+`dashboard`, `threads`, `tasks`, `jobs`, `health`, `dreams`, `todos`,
+`work-hours`, `audit`); every
 later slice and route family is still visibly `english-only`, so English
 fallback is never mistaken for coverage. The `settings` namespace includes the
 (production-enabled since W3b-2) `preferences` token and `PreferencesSection`; the shared
-`EligibilityEditorDialog` it lists is owned by Work Hours and remains English
-until W4. The `system-assistant` namespace records only
+`EligibilityEditorDialog` it lists is owned by Work Hours and is translated by
+W4b. The `system-assistant` namespace records only
 `AssistantDockHost` (the W4 dock body); the help/palette hosts moved to the
 `help-and-palette` namespace.
 
@@ -508,9 +514,9 @@ raw-`Error.message` and prompt-byte negatives deterministically.
 
 Frontend readiness map (actual evidence):
 
-| Readiness item | W1 | W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1 |
+| Readiness item | W1 | W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1/W4b |
 | --- | --- | --- |
-| Route-wide Chinese rendering | N/A — no route translated in W1 (manifest marks every namespace `english-only`) | mounted shell + onboarding (W2a/W2b), Settings (W2c), Dashboard/Threads (W3a), Tasks (W3b-1), Jobs (W3b-2) and Health/Dreams (W4a-1); other route families and the assistant dock body (W4) still `english-only` |
+| Route-wide Chinese rendering | N/A — no route translated in W1 (manifest marks every namespace `english-only`) | mounted shell + onboarding (W2a/W2b), Settings (W2c), Dashboard/Threads (W3a), Tasks (W3b-1), Jobs (W3b-2), Health/Dreams (W4a-1) and Todos/Work Hours/Audit (W4b); other route families (W4c/W4d) and the assistant dock body still `english-only` |
 | Public language selector | N/A — W3b-2 | W3b-2: Settings ▸ Preferences mounted in ordinary builds; Vitest proves sub-nav + direct URL without a flag, unset-on-Chinese-browser stays English, disclosure visible, zh-CN switch keeps nodes/focus with zero requests; browser: `web/scripts/w3b-jobs-browser-evidence.mjs` against the ordinary dist |
 | Browser two-tab live evidence | covered by unit/integration storage-event tests AND captured same-origin two-tab change/delete/clear/no-echo browser evidence at the head SHA | W1 behavior retained (no native adapter added) |
 | Bilingual foundation browser capture | captured: real-browser story screenshots for saved-en-in-Chinese-env, saved `zh-CN` (CJK font glyphs) and preview-unset English | W2a/W2b add real-app shell/dialog and onboarding captures across en/zh, 1440x900/390x844 and light/dark (exact count bound to the pushed `receipt.json`) |
@@ -522,18 +528,20 @@ Frontend readiness map (actual evidence):
 | Tasks (W3b-1) | N/A | Vitest (`features/tasks/tasks.i18n.test.tsx`, `TaskEventsLog.test.tsx`, `fanout.test.ts`): routed list populated/grouping/filter/empty/error and detail header/lineage/rail/execution-status/fan-out/chain in both locales with authored and machine values verbatim; same row/heading/dialog/field nodes, draft value and focus across both switch directions with zero requests; mapped dialog errors and the Revisit validation re-translate while unmapped (incl. catalog-equal) codes stay verbatim; StatusBadge English default; browser: `web/scripts/w3b-tasks-browser-evidence.mjs` against the ordinary dist (Tasks list + detail, en/zh-CN, 1440/390, one dialog-draft switch check, ordinary-bundle Preferences markers present since W3b-2) |
 | Jobs (W3b-2) | N/A | Vitest (`features/jobs/jobs.i18n.test.tsx`): routed list populated/empty/error and detail pending/completed/load-error in both locales with daemon values verbatim; same card/button/field nodes, Run/Reject draft value and focus across both switch directions with zero requests; the F1 diagnostic boundary through the routed Run dialog (recognized code re-translates in place, unknown code and code-less string detail verbatim, empty code / blank detail fall back), Reject mapped code and Stop mapped code; browser: `web/scripts/w3b-jobs-browser-evidence.mjs` against the ordinary dist (Jobs list + detail + Run dialog draft switch, Preferences unset-English + disclosure + zero-request switch) |
 | Health + Dreams (W4a-1) | N/A | Vitest (`features/health/health.i18n.test.tsx`, `features/dreams/dreams.i18n.test.tsx`; `HealthPage.test.tsx`/`DreamsPage.test.tsx` now assert through the catalog): routed Health populated/empty-history/live-error/history-error and Dreams feed populated/empty/error + rail + detail drawer in both locales with daemon values verbatim; same loop-cell/window-button/card/drawer/Accept nodes and focus across both switch directions with zero requests; the F1 boundary through the routed Accept action (recognized `candidate_*` code re-translates in place, unknown code and code-less string detail verbatim, empty code falls back to the localized failure copy); browser: `web/scripts/w4a-browser-evidence.mjs` against the ordinary dist (G ordinary-bundle zh-CN copy, V health/dreams/dream-drawer en+zh-CN at 1440/390, S drawer Accept-focus switch with zero /api requests) |
+| Todos + Work Hours + Audit (W4b) | N/A | Vitest (`features/todos/todos.i18n.test.tsx`, `features/work-hours-config/work-hours.i18n.test.tsx`, `features/audit/audit.i18n.test.tsx`; `TodosPage.test.tsx`, the Work Hours page/dialog tests and the Audit page/narrative/filter tests now assert through the catalog): routed Todos list/detail, Work Hours overview/wakes/agent detail and Audit timeline/filters in both locales with daemon values (agent names, schedule/task ids, actions, timezones, raw payload values) verbatim; recurrence/timezone and dates through `lib/i18n/format.ts`; narrative sentences from catalog templates with interpolation; Todo EditDialog, TierEditorDialog and the shared EligibilityEditorDialog keep draft, nodes and focus across both switch directions with zero requests; the F1 boundary through `features/<x>/strings.ts` classifiers; browser: `web/scripts/w4a-browser-evidence.mjs` route-table rows (G ordinary-bundle zh-CN copy, V todos/work-hours/audit en+zh-CN at 1440/390, S Todo EditDialog + TierEditor + EligibilityEditor draft/focus switch with zero /api requests) |
 | Native Mac persistence receipt | N/A — N0/N1 (Linux host; not claimed) | NOT RUN — N0/N1 still open |
 
 ## 10. Exclusions
 
 No new dependency, daemon/API/schema/auth/permission/transport change, theme or
 draft migration, native chrome, CLI/manual translation, route-family
-translation campaign beyond W3a/W3b-1/W3b-2/W4a-1 (W4a-1 translated Health
-and Dreams; W4a-2 artifacts, W4a-3 usage and the remaining W4 surfaces stay
+translation campaign beyond W3a/W3b-1/W3b-2/W4a-1/W4b (W4a-1 translated Health
+and Dreams; W4b translated Todos, Work Hours and Audit; Agents/Skills (W4c),
+artifacts and usage (W4d) and the remaining W4 surfaces stay
 open), browser-language
 default resolution (W5), deployment, or caller migration of display
 formatters beyond the translated shell, onboarding and the W3a Dashboard/Threads,
-W3b-1 Tasks, W3b-2 Jobs and W4a-1 Health/Dreams route families. Existing query/data/auth
+W3b-1 Tasks, W3b-2 Jobs, W4a-1 Health/Dreams and W4b Todos/Work Hours/Audit route families. Existing query/data/auth
 bootstrap
 semantics are preserved; locale switching issues no `PUT /settings/org` and no
 `POST /api/v1/orgs`, and the command palette's cache-only switch issues no
@@ -543,5 +551,5 @@ the generated copy-paste CLI prompt bytes verbatim; the shared ConnectFlow is
 the single implementation for onboarding and Settings ▸ Executors. The
 `settings` namespace is `translated` (W2c: ordinary Settings chrome and the
 Assistant/Organization/Executors/Capacity sections; the Work Hours-owned
-`EligibilityEditorDialog` stays English until W4); the Preferences
+`EligibilityEditorDialog` stayed English until W4 and is translated by W4b); the Preferences
 route/selector is mounted in ordinary builds since W3b-2.

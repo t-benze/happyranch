@@ -11,14 +11,18 @@
  * the Assistant/Organization/Executors/Daemon-Capacity sections) and adds the
  * `preferences` route (`PreferencesSection`), production-gated until W3b-2.
  * The shared
- * Work Hours-owned `EligibilityEditorDialog` mounted by Organization stays
- * English until W4. W3a migrates Dashboard + Threads and W3b-1 migrates the
+ * Work Hours-owned `EligibilityEditorDialog` mounted by Organization stayed
+ * English until W4 and is migrated by W4b. W3a migrates Dashboard + Threads and W3b-1 migrates the
  * Tasks route family (`tasks`, `tasks/:task_id` and its owned dialogs); W3b-2
  * migrates the Jobs route family (`jobs`, `jobs/:job_id` and its owned
  * dialogs) and opens the Preferences language preview in production. W4a-1
  * migrates Runtime Health (`health`) and Dreams (`dreams`, incl. the dream
- * detail drawer). The other mounted product surfaces and the later slices
- * (assistant dock body = W4, route families = W3/W4) remain `english-only` —
+ * detail drawer). W4b migrates Todos (`todos`, `todos/:scheduleId` and its
+ * owned dialogs), Work Hours (`work-hours`, `work-hours/:agent`, the
+ * TierEditorDialog and the shared EligibilityEditorDialog) and Audit (`audit`,
+ * incl. the catalog-templated narrative). The other mounted product surfaces
+ * remain `english-only` for the later slices (W4c agents/skills, W4d
+ * artifacts/usage; kb and the assistant dock body in later W4/W5 legs) —
  * fallback English is never treated as coverage.
  * Redirect-only/catch-all
  * tokens are `not-applicable`. The marker is explicit machine-readable data
@@ -134,7 +138,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'todos',
     routeTokens: ['todos', 'todos/:scheduleId'],
-    status: 'english-only',
+    status: 'translated',
     surfaces: ['TodosPage', 'TodoDetailPage', 'ConfirmDialog', 'EditDialog'],
   },
   {
@@ -146,7 +150,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'audit',
     routeTokens: ['audit'],
-    status: 'english-only',
+    status: 'translated',
     surfaces: ['AuditPage', 'audit narrative'],
   },
   {
@@ -202,7 +206,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'work-hours',
     routeTokens: ['work-hours', 'work-hours/:agent'],
-    status: 'english-only',
+    status: 'translated',
     surfaces: ['WorkHoursOverviewPage', 'WorkHoursWakesView', 'WorkHoursAgentDetailPage', 'TierEditorDialog'],
   },
   {

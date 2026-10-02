@@ -11,10 +11,11 @@ import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap'
 import { Button } from '@/design-system/primitives/Button'
 import { EmptyState } from '@/design-system/patterns/EmptyState'
 import { cn } from '@/lib/utils'
+import { useTranslation } from '@/hooks/i18n'
+import { formatCountFor } from '@/lib/i18n/format'
 import { useTodoList } from './hooks'
 import { TodoRow } from './components/TodoRow'
 import {
-  TODO_STRINGS,
   FILTER_GROUPS,
   SECTION_ORDER,
   type FilterGroup,
@@ -28,6 +29,7 @@ export function TodosPage(): JSX.Element {
     scheduleId?: string
   }>()
   const org = slug ?? ''
+  const { t, locale } = useTranslation()
   const [activeFilter, setActiveFilter] = useState<FilterGroup>('all')
   const [agentFilter, setAgentFilter] = useState<string | undefined>(undefined)
 
@@ -70,13 +72,13 @@ export function TodosPage(): JSX.Element {
     <ContentWrap>
       <div className="mb-5">
         <p className="text-fg-subtle text-overline mb-2 font-mono tracking-wider uppercase">
-          {TODO_STRINGS.eyebrow}
+          {t('todos.list.eyebrow')}
         </p>
         <h1 className="text-display font-display text-fg leading-tight">
-          {TODO_STRINGS.pageTitle}
+          {t('todos.list.title')}
         </h1>
-        <p className="text-fg-muted mt-2 text-base">{TODO_STRINGS.subtitle}</p>
-        <p className="text-fg-subtle mt-1.5 text-sm">{TODO_STRINGS.trustLine}</p>
+        <p className="text-fg-muted mt-2 text-base">{t('todos.list.subtitle')}</p>
+        <p className="text-fg-subtle mt-1.5 text-sm">{t('todos.list.trustLine')}</p>
       </div>
 
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
@@ -93,7 +95,7 @@ export function TodosPage(): JSX.Element {
                   : 'text-fg-muted hover:text-fg',
               )}
             >
-              {fg.label}
+              {t(fg.labelKey)}
             </button>
           ))}
         </div>
@@ -104,9 +106,9 @@ export function TodosPage(): JSX.Element {
               value={agentFilter ?? ''}
               onChange={(e) => setAgentFilter(e.target.value || undefined)}
               className="border-border bg-bg-raised text-fg-muted focus:ring-accent rounded-md border px-2.5 py-1.5 text-sm focus:ring-2 focus:outline-none"
-              aria-label="Filter by agent"
+              aria-label={t('todos.filter.agentLabel')}
             >
-              <option value="">{TODO_STRINGS.filterAllAgents}</option>
+              <option value="">{t('todos.filter.allAgents')}</option>
               {agentNames.map((name) => (
                 <option key={name} value={name}>
                   {name}
@@ -116,9 +118,11 @@ export function TodosPage(): JSX.Element {
           )}
 
           <span className="text-fg-subtle text-xs">
-            {activeCount > 0 && `${activeCount} active`}
+            {activeCount > 0 &&
+              t('todos.list.summaryActive', { count: formatCountFor(locale, activeCount) })}
             {activeCount > 0 && attentionCount > 0 && ' · '}
-            {attentionCount > 0 && `${attentionCount} needs attention`}
+            {attentionCount > 0 &&
+              t('todos.list.summaryAttention', { count: formatCountFor(locale, attentionCount) })}
           </span>
         </div>
       </div>
@@ -149,13 +153,11 @@ export function TodosPage(): JSX.Element {
       {isError && !isLoading && (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <AlertCircle size={32} className="text-feedback-danger mb-3" aria-hidden="true" />
-          <h3 className="text-h3 text-fg">Failed to load Todos</h3>
-          <p className="text-body text-fg-muted mt-2 mb-5">
-            The server returned an error. You can try again.
-          </p>
+          <h3 className="text-h3 text-fg">{t('todos.list.errorTitle')}</h3>
+          <p className="text-body text-fg-muted mt-2 mb-5">{t('todos.list.errorBody')}</p>
           <Button onClick={() => refetch()}>
             <RefreshCw size={14} className="mr-1.5" />
-            Retry
+            {t('todos.retry')}
           </Button>
         </div>
       )}
@@ -163,8 +165,8 @@ export function TodosPage(): JSX.Element {
       {!isLoading && !isError && allSchedules.length === 0 && (
         <EmptyState
           icon={<Clock size={32} />}
-          title={TODO_STRINGS.emptyTitle}
-          body={<p>{TODO_STRINGS.emptyBody}</p>}
+          title={t('todos.list.emptyTitle')}
+          body={<p>{t('todos.list.emptyBody')}</p>}
         />
       )}
 
@@ -173,8 +175,8 @@ export function TodosPage(): JSX.Element {
         allSchedules.length > 0 &&
         filteredSchedules.length === 0 && (
           <EmptyState
-            title={TODO_STRINGS.filteredEmptyTitle}
-            body={<p>{TODO_STRINGS.filteredEmptyBody}</p>}
+            title={t('todos.list.filteredEmptyTitle')}
+            body={<p>{t('todos.list.filteredEmptyBody')}</p>}
           />
         )}
 
@@ -183,7 +185,7 @@ export function TodosPage(): JSX.Element {
           {sections.map((sec) => (
             <div key={sec.key}>
               <div className="text-fg-subtle text-overline px-5 py-1 font-semibold tracking-wider uppercase">
-                {sec.label} · {sec.items.length}
+                {t(sec.labelKey)} · {formatCountFor(locale, sec.items.length)}
               </div>
               <div
                 className={cn(
