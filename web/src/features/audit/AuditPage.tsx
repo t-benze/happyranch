@@ -350,7 +350,7 @@ function CleanRecordPanel({ total }: { total: number }): JSX.Element {
         <p className="text-accent-text text-sm font-medium">{t('audit.clean.title')}</p>
       </div>
       <p className="text-accent-text mt-1 text-xs">
-        {t('audit.clean.body', { total })}
+        {t('audit.clean.body', { count: total })}
       </p>
     </aside>
   );

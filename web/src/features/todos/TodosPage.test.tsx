@@ -432,8 +432,8 @@ describe('TodosPage — list view', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
     await screen.findByText('Send the weekly market update')
     const bodyText = document.body.textContent ?? ''
-    expect(bodyText).toContain(en('todos.list.summaryActive', { count: '3' }))
-    expect(bodyText).toContain(en('todos.list.summaryAttention', { count: '2' }))
+    expect(bodyText).toContain(en('todos.list.summaryActive', { count: 3, n: '3' }))
+    expect(bodyText).toContain(en('todos.list.summaryAttention', { count: 2, n: '2' }))
   })
 
   it('shows status pill labels', async () => {

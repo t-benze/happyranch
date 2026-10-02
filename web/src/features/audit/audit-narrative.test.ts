@@ -588,3 +588,42 @@ describe('describeAuditEntry — zh-CN (THR-118 W4b)', () => {
     expect(narrativeText(unknown)).toBe('dev_agent 在 TASK-1 上 some brand new event。');
   });
 });
+
+describe('count-bearing details pluralize (THR-118 W4b F-A)', () => {
+  const detailOf = (action: string, payload: Record<string, unknown>, locale: 'en' | 'zh-CN') =>
+    describeAuditEntry(entry({ action, agent: 'scheduler', task_id: 'X-1', payload }), locale).detail;
+
+  it('dream_completed learnings / KB candidates', () => {
+    expect(detailOf('dream_completed', { new_learnings_count: 1, kb_candidate_count: 1 }, 'en')).toBe(
+      '1 learning · 1 KB candidate',
+    );
+    expect(detailOf('dream_completed', { new_learnings_count: 3, kb_candidate_count: 2 }, 'en')).toBe(
+      '3 learnings · 2 KB candidates',
+    );
+    expect(detailOf('dream_completed', { new_learnings_count: 1, kb_candidate_count: 2 }, 'zh-CN')).toBe(
+      '1 条学习 · 2 个知识库候选',
+    );
+  });
+
+  it('work_hour_completed tasks / routines', () => {
+    expect(detailOf('work_hour_completed', { spawned_task_count: 1, routine_count: 1 }, 'en')).toBe(
+      '1 task · 1 routine',
+    );
+    expect(detailOf('work_hour_completed', { spawned_task_count: 2, routine_count: 3 }, 'en')).toBe(
+      '2 tasks · 3 routines',
+    );
+    expect(detailOf('work_hour_spawned', { spawned_task_count: 1 }, 'zh-CN')).toBe('1 个任务');
+  });
+
+  it('thread_reply_wake_cancelled receipts', () => {
+    expect(detailOf('thread_reply_wake_cancelled', { swept_count: 1 }, 'en')).toBe('1 receipt retired');
+    expect(detailOf('thread_reply_wake_cancelled', { swept_count: 2 }, 'en')).toBe('2 receipts retired');
+    expect(detailOf('thread_reply_wake_cancelled', { swept_count: 1 }, 'zh-CN')).toBe('已退役 1 个回执');
+  });
+
+  it('session_end tokens', () => {
+    expect(detailOf('session_end', { token_usage: { total: 1 } }, 'en')).toBe('1 token');
+    expect(detailOf('session_end', { token_usage: { total: 1500 } }, 'en')).toBe('1.5K tokens');
+    expect(detailOf('session_end', { token_usage: { total: 1 } }, 'zh-CN')).toBe('1 Token');
+  });
+});

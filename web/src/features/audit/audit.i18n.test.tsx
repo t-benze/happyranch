@@ -22,6 +22,7 @@ import { beforeEach, describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
+import { en, zhCN } from '@/lib/i18n/catalog';
 
 const SLUG = 'alpha';
 
@@ -270,5 +271,59 @@ describe('Audit load-error boundary', () => {
     expect(screen.queryByText(/API 500/)).toBeNull();
     await switchLocale('en');
     expect(screen.getByText('Could not load audit entries.')).toBeInTheDocument();
+  });
+});
+
+// THR-118 W4b fix-forward (TASK-9461 F-A): every count-bearing Audit message is
+// a per-locale plural object (English one + other, Chinese other) selected by
+// a numeric `count`.
+const AUDIT_COUNT_KEYS = [
+  'audit.clean.body',
+  'audit.detail.tokens',
+  'audit.detail.receiptsRetired',
+  'audit.detail.learnings',
+  'audit.detail.kbCandidates',
+  'audit.detail.tasks',
+  'audit.detail.routines',
+] as const;
+
+const SINGULAR_ENTRIES = [
+  {
+    id: 11,
+    task_id: 'DREAM-1',
+    session_id: null,
+    agent: 'scheduler',
+    action: 'dream_completed',
+    payload: { new_learnings_count: 1, kb_candidate_count: 2 },
+    timestamp: '2026-06-18T10:00:00Z',
+  },
+];
+
+describe('Audit count plurals', () => {
+  test('count-bearing catalog entries are plural objects in both locales', () => {
+    for (const key of AUDIT_COUNT_KEYS) {
+      expect(Object.keys(en[key] as object).sort(), key).toEqual(['one', 'other']);
+      expect(Object.keys(zhCN[key] as object), key).toEqual(['other']);
+    }
+  });
+
+  test('clean-record body and row details pick singular/plural in en and zh-CN', async () => {
+    stub({ entries: SINGULAR_ENTRIES });
+    mount('en');
+    expect(
+      await screen.findByText('1 event logged, none failed. Tap a class above to filter the trail.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('1 learning · 2 KB candidates')).toBeInTheDocument();
+    await switchLocale('zh-CN');
+    expect(screen.getByText('已记录 1 个事件，均未失败。点击上方的类别即可筛选记录。')).toBeInTheDocument();
+    expect(screen.getByText('1 条学习 · 2 个知识库候选')).toBeInTheDocument();
+  });
+
+  test('a multi-event window reads in the plural', async () => {
+    stub();
+    mount('en');
+    expect(
+      await screen.findByText('4 events logged, none failed. Tap a class above to filter the trail.'),
+    ).toBeInTheDocument();
   });
 });

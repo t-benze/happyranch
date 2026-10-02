@@ -9,16 +9,7 @@
  * ISO-8601 instant (no sub-second fraction, Z suffix) or null.
  */
 
-import type { Locale } from '@/lib/i18n'
-
-/**
- * Display-locale -> Intl locale for the PRESENTATION formatters below. English
- * keeps the historical 'en-US' rendering byte-for-byte; calculation helpers
- * (tzParts / serialization / next-occurrence) stay pinned to 'en-US'.
- */
-function displayIntlLocale(locale: Locale): string {
-  return locale === 'en' ? 'en-US' : locale
-}
+import { formatDateShapeFor, type Locale } from '@/lib/i18n'
 
 const WEEKDAY_NAMES_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const
 const WEEKDAY_NAMES_LONG = [
@@ -218,19 +209,8 @@ export function formatFireAtInTz(isoString: string, tz: string, locale: Locale =
   try {
     const d = new Date(isoString)
     if (Number.isNaN(d.getTime())) return isoString
-    const datePart = new Intl.DateTimeFormat(displayIntlLocale(locale), {
-      timeZone: tz,
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    }).format(d)
-    const timePart = new Intl.DateTimeFormat(displayIntlLocale(locale), {
-      timeZone: tz,
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).format(d)
+    const datePart = formatDateShapeFor(locale, d, 'weekdayDate', tz)
+    const timePart = formatDateShapeFor(locale, d, 'clock24', tz)
     return `${datePart} · ${timePart}`
   } catch {
     return isoString
@@ -240,19 +220,8 @@ export function formatFireAtInTz(isoString: string, tz: string, locale: Locale =
 /** Format a Date for preview in a given IANA timezone. */
 export function formatPreviewInTz(date: Date, tz: string, locale: Locale = 'en'): string {
   try {
-    const datePart = new Intl.DateTimeFormat(displayIntlLocale(locale), {
-      timeZone: tz,
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    }).format(date)
-    const timePart = new Intl.DateTimeFormat(displayIntlLocale(locale), {
-      timeZone: tz,
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).format(date)
+    const datePart = formatDateShapeFor(locale, date, 'weekdayDate', tz)
+    const timePart = formatDateShapeFor(locale, date, 'clock24', tz)
     return `${datePart} · ${timePart}`
   } catch {
     return String(date)
@@ -264,12 +233,7 @@ export function formatDateShortInTz(isoString: string, tz: string, locale: Local
   try {
     const d = new Date(isoString)
     if (Number.isNaN(d.getTime())) return isoString
-    return new Intl.DateTimeFormat(displayIntlLocale(locale), {
-      timeZone: tz,
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-    }).format(d)
+    return formatDateShapeFor(locale, d, 'weekdayMonthDay', tz)
   } catch {
     return isoString
   }
@@ -280,12 +244,7 @@ export function formatTimeInTz(isoString: string, tz: string, locale: Locale = '
   try {
     const d = new Date(isoString)
     if (Number.isNaN(d.getTime())) return isoString
-    return new Intl.DateTimeFormat(displayIntlLocale(locale), {
-      timeZone: tz,
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).format(d)
+    return formatDateShapeFor(locale, d, 'clock24', tz)
   } catch {
     return isoString
   }
@@ -293,13 +252,8 @@ export function formatTimeInTz(isoString: string, tz: string, locale: Locale = '
 
 /**
  * Calendar date (month short, day, year) for review/expiry presentation in the
- * host timezone — the historical toLocaleDateString('en-US', ...) behaviour,
- * with the display locale substituted.
+ * host timezone, through the canonical explicit-locale formatter.
  */
 export function formatReviewDate(value: Date, locale: Locale = 'en'): string {
-  return value.toLocaleDateString(displayIntlLocale(locale), {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  })
+  return formatDateShapeFor(locale, value, 'monthDayYear')
 }

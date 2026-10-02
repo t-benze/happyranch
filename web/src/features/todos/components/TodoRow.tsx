@@ -142,7 +142,10 @@ export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
           {expiry && <span>{expiry}</span>}
           {schedule.fire_count > 0 && (
             <span>
-              {t('todos.row.runs', { count: formatCountFor(locale, schedule.fire_count) })}
+              {t('todos.row.runs', {
+                count: schedule.fire_count,
+                n: formatCountFor(locale, schedule.fire_count),
+              })}
             </span>
           )}
           <span className="text-fg-subtle font-mono text-xs">

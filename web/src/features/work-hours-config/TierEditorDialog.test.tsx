@@ -1,10 +1,10 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, test } from 'vitest';
 import { Route, Routes } from 'react-router-dom';
 import { TierEditorDialog } from './TierEditorDialog';
-import { renderWithProviders } from '@/test/render';
+import { renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
 import { translate } from '@/lib/i18n';
 import type { WorkingHoursSettings } from '@/lib/api/types';
@@ -37,7 +37,7 @@ function continuousWh(): WorkingHoursSettings {
   };
 }
 
-function renderDialog() {
+function renderDialog(locale: 'en' | 'zh-CN' = 'en') {
   return renderWithProviders(
     <Routes>
       <Route
@@ -55,7 +55,10 @@ function renderDialog() {
         }
       />
     </Routes>,
-    { route: `/orgs/${SLUG}/work-hours/dev_agent` },
+    {
+      route: `/orgs/${SLUG}/work-hours/dev_agent`,
+      i18n: { adapter: savedLocaleAdapter(locale) },
+    },
   );
 }
 
@@ -105,5 +108,27 @@ describe('TierEditorDialog — continuous interval is server-authoritative', () 
     expect(screen.getByRole('alert')).toHaveTextContent(
       translate('en', 'workHours.dialog.saveRejected'),
     );
+  });
+});
+
+describe('TierEditorDialog — zh-CN close control and ErrorPanel (THR-118 W4b)', () => {
+  test('the dialog close control and the blocking ErrorPanel are localized', async () => {
+    server.use(
+      http.put(`/api/v1/orgs/${SLUG}/settings/org`, () =>
+        HttpResponse.json({ detail: { errors: ['interval 5h must evenly divide 24h'] } }, { status: 422 }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderDialog('zh-CN');
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('button', { name: '关闭' })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: 'Close' })).toBeNull();
+
+    await user.click(within(dialog).getByRole('button', { name: translate('zh-CN', 'common.save') }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('保存被拒绝 — 配置未写入。');
+    // The daemon error string stays verbatim.
+    expect(alert).toHaveTextContent('interval 5h must evenly divide 24h');
   });
 });

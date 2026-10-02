@@ -82,7 +82,7 @@ export function EligibilityEditorDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg" closeLabel={t('common.close')}>
         <DialogHeader>
           <DialogTitle>{t('workHours.eligibilityEditor.title')}</DialogTitle>
           <DialogDescription>{t('workHours.eligibilityEditor.description')}</DialogDescription>

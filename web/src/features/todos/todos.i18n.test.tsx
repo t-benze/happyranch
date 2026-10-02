@@ -23,6 +23,7 @@ import { server } from '@/test/server'
 import type { ScheduleRecord } from '@/lib/api/types'
 import { classifyTodoError, renderTodoError } from './strings'
 import { translate } from '@/lib/i18n'
+import { en, zhCN } from '@/lib/i18n/catalog'
 
 const SLUG = 'happyranch'
 const API = '/api/v1'
@@ -344,5 +345,56 @@ describe('classifyTodoError', () => {
       kind: 'message',
       key: 'todos.error.editFailed',
     })
+  })
+})
+
+// THR-118 W4b fix-forward (TASK-9461 F-A): every count-bearing Todos message is
+// a per-locale plural object (English one + other, Chinese other) selected by
+// a numeric `count`.
+const TODOS_COUNT_KEYS = [
+  'todos.list.summaryActive',
+  'todos.list.summaryAttention',
+  'todos.row.runs',
+  'todos.recurrence.everyN.daily',
+  'todos.recurrence.everyN.weekly',
+  'todos.recurrence.everyN.monthly',
+  'todos.recurrence.everyN.yearly',
+  'todos.recurrence.everyN.cycle',
+  'todos.recurrence.endsAfter',
+] as const
+
+describe('Todos count plurals', () => {
+  test('count-bearing catalog entries are plural objects in both locales', () => {
+    for (const key of TODOS_COUNT_KEYS) {
+      expect(Object.keys(en[key] as object).sort(), key).toEqual(['one', 'other'])
+      expect(Object.keys(zhCN[key] as object), key).toEqual(['other'])
+    }
+  })
+
+  test('singular and plural render correctly in en and zh-CN at the real call sites', async () => {
+    const one = { ...WEEKLY, fire_count: 1 }
+    const monthlyOnce: ScheduleRecord = {
+      ...MONTHLY,
+      recurrence: { ...(MONTHLY.recurrence as Record<string, unknown>), count: 1 } as ScheduleRecord['recurrence'],
+    }
+    const failedToo = { ...FAILED, schedule_id: 'SCHEDULE-072', normalized_brief: 'Rotate the on-call roster' }
+    stub({ list: [one, monthlyOnce, FAILED, failedToo] })
+    mount('en')
+    expect(await screen.findByText('1 run')).toBeInTheDocument()
+    expect(screen.getByText('2 active · 2 need attention')).toBeInTheDocument()
+    expect(screen.getAllByText('6 runs').length).toBe(2)
+    expect(
+      screen.getByText('Every 2 months on the second Monday at 09:00 Asia/Shanghai · Ends after 1 occurrence'),
+    ).toBeInTheDocument()
+    await switchLocale('zh-CN')
+    expect(screen.getByText('1 次运行')).toBeInTheDocument()
+    expect(screen.getByText('2 个进行中 · 2 个需要关注')).toBeInTheDocument()
+    expect(screen.getByText('每 2 个月的第二个星期一 09:00（Asia/Shanghai） · 1 次后结束')).toBeInTheDocument()
+  })
+
+  test('a single active Todo reads in the singular', async () => {
+    stub({ list: [WEEKLY, FAILED] })
+    mount('en')
+    expect(await screen.findByText('1 active · 1 needs attention')).toBeInTheDocument()
   })
 })

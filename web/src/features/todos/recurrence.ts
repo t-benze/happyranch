@@ -50,7 +50,7 @@ export function formatRecurringRule(
   const [oneKey, manyKey] = Object.prototype.hasOwnProperty.call(EVERY_KEYS, freq)
     ? EVERY_KEYS[freq]
     : CYCLE_KEYS
-  let base = interval === 1 ? t(oneKey) : t(manyKey, { interval: String(interval) })
+  let base = interval === 1 ? t(oneKey) : t(manyKey, { count: interval, interval: String(interval) })
   if (rule.freq === 'WEEKLY' && Array.isArray(rule.byday)) {
     base = t('todos.recurrence.onDays', {
       every: base,
@@ -73,7 +73,7 @@ export function formatRecurringRule(
   const ending = rule.until
     ? t('todos.recurrence.endsOn', { date: String(rule.until) })
     : rule.count
-      ? t('todos.recurrence.endsAfter', { count: String(rule.count) })
+      ? t('todos.recurrence.endsAfter', { count: Number(rule.count) })
       : t('todos.recurrence.endsNever')
   return `${timed} · ${ending}`
 }

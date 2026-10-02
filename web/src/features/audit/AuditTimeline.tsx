@@ -19,7 +19,7 @@ import { cn } from '@/lib/utils';
 import { useAuditList } from '@/hooks/audit';
 import { useTranslation } from '@/hooks/i18n';
 import type { AuditEntry } from '@/lib/api/types';
-import type { Locale, MessageKey, MessageParams } from '@/lib/i18n';
+import { formatDateShapeFor, type Locale, type MessageKey, type MessageParams } from '@/lib/i18n';
 import {
   decodeFilters,
   isAllClear,
@@ -44,18 +44,8 @@ function formatTime(iso: string, locale: Locale): string {
   // 24-hour mono clock (e.g. 14:10:02) matching the a-audit design authority —
   // never a 12-hour AM/PM meridiem (THR-099 Batch 2 fidelity). The display
   // locale is explicit (THR-118); the viewer's local timezone is unchanged.
-  return new Date(iso).toLocaleTimeString(locale, {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
+  return formatDateShapeFor(locale, new Date(iso), 'clock24Seconds');
 }
-
-const MONTH_ABBR = [
-  'JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
-  'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC',
-] as const;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -65,7 +55,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  *  groupByDay's UTC slice, so today/yesterday are compared in UTC to stay
  *  consistent with the grouping. `now` is injectable for deterministic tests.
  *  THR-118: TODAY/YESTERDAY and the joiner are catalog keys; zh-CN weekday and
- *  month-day come from Intl in that locale (e.g. `星期三 · 6月10日`). */
+ *  month-day come from the canonical `formatDateShapeFor` in that locale
+ *  (e.g. `星期三 · 6月10日`; English uppercases `Jun 16` to `JUN 16`). */
 export function formatDateHeader(
   dateStr: string,
   locale: Locale,
@@ -75,19 +66,13 @@ export function formatDateHeader(
   const todayStr = now.toISOString().slice(0, 10);
   const yesterdayStr = new Date(now.getTime() - DAY_MS).toISOString().slice(0, 10);
   const day = new Date(`${dateStr}T00:00:00Z`);
-  const [, mm, dd] = dateStr.split('-');
-  const monDay =
-    locale === 'en'
-      ? `${MONTH_ABBR[Number(mm) - 1]} ${Number(dd)}`
-      : day.toLocaleDateString(locale, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  const monDay = formatDateShapeFor(locale, day, 'monthDay', 'UTC').toUpperCase();
 
   let label: string;
   if (dateStr === todayStr) label = t('audit.day.today');
   else if (dateStr === yesterdayStr) label = t('audit.day.yesterday');
   else {
-    label = day
-      .toLocaleDateString(locale === 'en' ? 'en-US' : locale, { weekday: 'long', timeZone: 'UTC' })
-      .toUpperCase();
+    label = formatDateShapeFor(locale, day, 'weekdayLong', 'UTC').toUpperCase();
   }
   return t('audit.day.header', { label, date: monDay });
 }

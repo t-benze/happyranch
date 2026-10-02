@@ -930,7 +930,7 @@ describe('AuditPage — THR-099 PR2 dot-rail restyle', () => {
     await waitFor(() => {
       expect(screen.getByText(en('audit.clean.title'))).toBeInTheDocument();
     });
-    expect(screen.getByText(en('audit.clean.body', { total: 2 }))).toBeInTheDocument();
+    expect(screen.getByText(en('audit.clean.body', { count: 2 }))).toBeInTheDocument();
   });
 
   test('hides the "Clean record" panel when a failure-class entry exists', async () => {

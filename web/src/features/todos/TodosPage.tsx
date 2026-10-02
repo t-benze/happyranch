@@ -119,10 +119,16 @@ export function TodosPage(): JSX.Element {
 
           <span className="text-fg-subtle text-xs">
             {activeCount > 0 &&
-              t('todos.list.summaryActive', { count: formatCountFor(locale, activeCount) })}
+              t('todos.list.summaryActive', {
+                count: activeCount,
+                n: formatCountFor(locale, activeCount),
+              })}
             {activeCount > 0 && attentionCount > 0 && ' · '}
             {attentionCount > 0 &&
-              t('todos.list.summaryAttention', { count: formatCountFor(locale, attentionCount) })}
+              t('todos.list.summaryAttention', {
+                count: attentionCount,
+                n: formatCountFor(locale, attentionCount),
+              })}
           </span>
         </div>
       </div>

@@ -9,7 +9,7 @@
  * locale switch preserves the edited input node, value and focus.
  */
 import { describe, expect, test, beforeEach } from 'vitest';
-import { act, screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { Route, Routes } from 'react-router-dom';
@@ -323,5 +323,37 @@ describe('OrganizationSection Work Hours saved banner relocalizes (TASK-8791)', 
     await waitFor(() => expect(banner.textContent).toBe(WH_SAVED_ZH));
     expect(workHoursBanner()).toBe(banner);
     expect(puts).toHaveLength(1);
+  });
+});
+
+// THR-118 W4b fix-forward (TASK-9461 F-C/F-D): the shared EligibilityEditorDialog
+// mounted from Settings ▸ Organization names its close control in the UI
+// locale, and its ErrorPanel (second ErrorPanel importer) is localized.
+describe('OrganizationSection ▸ EligibilityEditorDialog zh-CN', () => {
+  test('close control and 422 ErrorPanel are localized, daemon text verbatim', async () => {
+    server.use(
+      http.put(`/api/v1/orgs/${SLUG}/settings/org`, () =>
+        HttpResponse.json({ detail: 'Unknown agent reference: ghost_agent' }, { status: 422 }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderSection('zh-CN');
+
+    await user.click(await screen.findByRole('button', { name: '编辑资格' }));
+    const dialog = await screen.findByRole('dialog', {
+      name: translate('zh-CN', 'workHours.eligibilityEditor.title'),
+    });
+    expect(within(dialog).getByRole('button', { name: '关闭' })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: 'Close' })).toBeNull();
+
+    await user.click(
+      within(dialog).getByRole('button', { name: translate('zh-CN', 'workHours.dialog.reviewImpact') }),
+    );
+    await user.click(
+      await within(dialog).findByRole('button', { name: translate('zh-CN', 'workHours.dialog.confirmSave') }),
+    );
+    const alert = await within(dialog).findByRole('alert');
+    expect(alert).toHaveTextContent('保存被拒绝 — 配置未写入。');
+    expect(alert).toHaveTextContent('Unknown agent reference: ghost_agent');
   });
 });

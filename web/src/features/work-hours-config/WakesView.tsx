@@ -58,7 +58,7 @@ import { useWorkHoursList } from '@/hooks/schedule';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from '@/hooks/i18n';
 import type { WorkHourRecord } from '@/lib/api/types';
-import type { Locale, MessageKey } from '@/lib/i18n';
+import { formatDateShapeFor, type Locale, type MessageKey } from '@/lib/i18n';
 import { WorkHoursTabs } from './components';
 import { classifyWorkHoursError, WAKE_STATUS_KEYS } from './strings';
 
@@ -89,13 +89,7 @@ function formatStatus(status: string, t: (key: MessageKey) => string): string {
 }
 
 function formatScheduledFor(iso: string, locale: Locale): string {
-  return new Date(iso).toLocaleString(locale, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return formatDateShapeFor(locale, new Date(iso), 'dateTime');
 }
 
 /* ------------------------------------------------------------------ */

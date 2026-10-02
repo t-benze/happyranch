@@ -346,7 +346,7 @@ export function describeAuditEntry(e: AuditEntry, locale: Locale): AuditNarrativ
       detail = detailOf(
         dur != null ? formatDuration(dur, t) : null,
         toks != null && toks > 0
-          ? t('audit.detail.tokens', { tokens: formatTokensFor(locale, toks) })
+          ? t('audit.detail.tokens', { count: toks, tokens: formatTokensFor(locale, toks) })
           : null,
       );
       break;

@@ -256,7 +256,7 @@ export function TierEditorDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl">
+      <DialogContent className="max-w-xl" closeLabel={t('common.close')}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>

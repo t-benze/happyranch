@@ -12,6 +12,7 @@ import { useAgentsList } from '@/hooks/agents';
 import { Button } from '@/design-system/primitives/Button';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { useTranslation } from '@/hooks/i18n';
+import { formatDateShapeFor } from '@/lib/i18n';
 import type { AgentSummary } from '@/lib/api/types';
 import {
   isEligible,
@@ -301,12 +302,7 @@ function NextWakes({
       <ol className="text-text-secondary font-mono text-xs tabular-nums">
         {data.next_wakes.map((iso) => (
           <li key={iso}>
-            {new Date(iso).toLocaleString(locale, {
-              month: 'short',
-              day: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit',
-            })}
+            {formatDateShapeFor(locale, new Date(iso), 'monthDayTime')}
             {data.timezone ? ` (${data.timezone})` : ''}
           </li>
         ))}
