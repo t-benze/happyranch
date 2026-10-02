@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from '@/design-system/primitives/Dialog'
 import { Button } from '@/design-system/primitives/Button'
+import { useTranslation } from '@/hooks/i18n'
 
 interface ConfirmDialogProps {
   open: boolean
@@ -32,9 +33,10 @@ export function ConfirmDialog({
   loading = false,
   onConfirm,
 }: ConfirmDialogProps): JSX.Element {
+  const { t } = useTranslation()
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent closeLabel={t('common.close')}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
@@ -45,7 +47,7 @@ export function ConfirmDialog({
             onClick={() => onOpenChange(false)}
             disabled={loading}
           >
-            Cancel
+            {t('todos.dialog.dismiss')}
           </Button>
           <Button variant={confirmVariant} onClick={onConfirm} disabled={loading}>
             {loading ? '…' : confirmLabel}

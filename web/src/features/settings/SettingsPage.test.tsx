@@ -7,6 +7,7 @@ import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { renderGuarded } from './sections/capacityTestMount';
 import { server } from '@/test/server';
+import { translate } from '@/lib/i18n';
 
 const SLUG = 'test-org';
 
@@ -966,24 +967,39 @@ describe('SettingsPage — Organization section', () => {
 
     // Dialog opens with accessible title
     await waitFor(() => {
-      expect(screen.getByRole('dialog', { name: 'Edit eligibility' })).toBeInTheDocument();
+      expect(
+        screen.getByRole('dialog', { name: translate('en', 'workHours.eligibilityEditor.title') }),
+      ).toBeInTheDocument();
     });
 
     // Include one agent (scope to the include picker to avoid the exclude duplicate)
-    const includeSection = screen.getByText('include').closest('div') as HTMLElement;
+    const includeSection = screen
+      .getByText(translate('en', 'workHours.eligibilityEditor.include'))
+      .closest('div') as HTMLElement;
     const devChip = within(includeSection).getByRole('button', { name: 'dev_agent' });
     await user.click(devChip);
     expect(devChip.getAttribute('aria-pressed')).toBe('true');
 
     // Review impact shows resulting eligible set
-    await user.click(screen.getByRole('button', { name: 'Review impact…' }));
+    await user.click(
+      screen.getByRole('button', { name: translate('en', 'workHours.dialog.reviewImpact') }),
+    );
     await waitFor(() => {
-      expect(screen.getByText(/Resulting eligible set:/)).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          (_, el) =>
+            el?.tagName === 'P' &&
+            el.textContent ===
+              translate('en', 'workHours.eligibilityEditor.confirmResult', { count: 1, n: 1 }),
+        ),
+      ).toBeInTheDocument();
     });
     expect(screen.getByText('dev_agent')).toBeInTheDocument();
 
     // Confirm triggers the save and surfaces 422 without client-side authority
-    await user.click(screen.getByRole('button', { name: 'Confirm & save' }));
+    await user.click(
+      screen.getByRole('button', { name: translate('en', 'workHours.dialog.confirmSave') }),
+    );
     await waitFor(() => {
       expect(
         screen.getByRole('alert'),
@@ -996,13 +1012,21 @@ describe('SettingsPage — Organization section', () => {
     });
 
     // Retry: review impact again, then confirm
-    await user.click(screen.getByRole('button', { name: 'Review impact…' }));
+    await user.click(
+      screen.getByRole('button', { name: translate('en', 'workHours.dialog.reviewImpact') }),
+    );
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Confirm & save' })).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: translate('en', 'workHours.dialog.confirmSave') }),
+      ).toBeInTheDocument();
     });
-    await user.click(screen.getByRole('button', { name: 'Confirm & save' }));
+    await user.click(
+      screen.getByRole('button', { name: translate('en', 'workHours.dialog.confirmSave') }),
+    );
     await waitFor(() => {
-      expect(screen.queryByRole('dialog', { name: 'Edit eligibility' })).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('dialog', { name: translate('en', 'workHours.eligibilityEditor.title') }),
+      ).not.toBeInTheDocument();
     });
     await waitFor(() => {
       expect(

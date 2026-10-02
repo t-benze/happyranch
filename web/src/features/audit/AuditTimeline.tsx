@@ -17,7 +17,9 @@ import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { Button } from '@/design-system/primitives/Button';
 import { cn } from '@/lib/utils';
 import { useAuditList } from '@/hooks/audit';
+import { useTranslation } from '@/hooks/i18n';
 import type { AuditEntry } from '@/lib/api/types';
+import { formatDateShapeFor, type Locale, type MessageKey, type MessageParams } from '@/lib/i18n';
 import {
   decodeFilters,
   isAllClear,
@@ -29,27 +31,21 @@ import {
   type EntityRef,
   type NarrativeSegment,
 } from './audit-narrative';
+import { classifyAuditError, renderAuditLoadError } from './strings';
 import { useQueryClient } from '@tanstack/react-query';
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-function formatTime(iso: string): string {
-  // 24-hour mono clock (e.g. 14:10:02) matching the a-audit design authority —
-  // never a 12-hour AM/PM meridiem (THR-099 Batch 2 fidelity).
-  return new Date(iso).toLocaleTimeString(undefined, {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
-}
+type Translate = (key: MessageKey, params?: MessageParams) => string;
 
-const MONTH_ABBR = [
-  'JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
-  'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC',
-] as const;
+function formatTime(iso: string, locale: Locale): string {
+  // 24-hour mono clock (e.g. 14:10:02) matching the a-audit design authority —
+  // never a 12-hour AM/PM meridiem (THR-099 Batch 2 fidelity). The display
+  // locale is explicit (THR-118); the viewer's local timezone is unchanged.
+  return formatDateShapeFor(locale, new Date(iso), 'clock24Seconds');
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -57,22 +53,28 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  *  `TODAY · JUN 16`, `YESTERDAY · JUN 15`, else `WEEKDAY · MON DD` (THR-099
  *  PR2). `dateStr` is the UTC calendar day ("YYYY-MM-DD") produced by
  *  groupByDay's UTC slice, so today/yesterday are compared in UTC to stay
- *  consistent with the grouping. `now` is injectable for deterministic tests. */
-export function formatDateHeader(dateStr: string, now: Date = new Date()): string {
+ *  consistent with the grouping. `now` is injectable for deterministic tests.
+ *  THR-118: TODAY/YESTERDAY and the joiner are catalog keys; zh-CN weekday and
+ *  month-day come from the canonical `formatDateShapeFor` in that locale
+ *  (e.g. `星期三 · 6月10日`; English uppercases `Jun 16` to `JUN 16`). */
+export function formatDateHeader(
+  dateStr: string,
+  locale: Locale,
+  t: Translate,
+  now: Date = new Date(),
+): string {
   const todayStr = now.toISOString().slice(0, 10);
   const yesterdayStr = new Date(now.getTime() - DAY_MS).toISOString().slice(0, 10);
-  const [, mm, dd] = dateStr.split('-');
-  const monDay = `${MONTH_ABBR[Number(mm) - 1]} ${Number(dd)}`;
+  const day = new Date(`${dateStr}T00:00:00Z`);
+  const monDay = formatDateShapeFor(locale, day, 'monthDay', 'UTC').toUpperCase();
 
   let label: string;
-  if (dateStr === todayStr) label = 'TODAY';
-  else if (dateStr === yesterdayStr) label = 'YESTERDAY';
+  if (dateStr === todayStr) label = t('audit.day.today');
+  else if (dateStr === yesterdayStr) label = t('audit.day.yesterday');
   else {
-    label = new Date(`${dateStr}T00:00:00Z`)
-      .toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' })
-      .toUpperCase();
+    label = formatDateShapeFor(locale, day, 'weekdayLong', 'UTC').toUpperCase();
   }
-  return `${label} · ${monDay}`;
+  return t('audit.day.header', { label, date: monDay });
 }
 
 /** Group entries by calendar day (date string), sort days most-recent first.
@@ -161,7 +163,8 @@ interface TimelineRowProps {
 }
 
 function TimelineRow({ entry, legendColor, slug }: TimelineRowProps): JSX.Element {
-  const narrative = describeAuditEntry(entry);
+  const { t, locale } = useTranslation();
+  const narrative = describeAuditEntry(entry, locale);
   const hasDream = !!entry._thread_dream_id;
 
   return (
@@ -198,12 +201,12 @@ function TimelineRow({ entry, legendColor, slug }: TimelineRowProps): JSX.Elemen
           </p>
           {hasDream && (
             <span className="bg-accent-soft text-accent-text inline-flex shrink-0 items-center gap-1 self-center rounded-full px-2 py-0.5 text-xs font-medium">
-              <CrescentMoonBadge className="h-3 w-3" />
-              from dream
+              <CrescentMoonBadge className="h-3 w-3" label={t('audit.timeline.dreamBadge')} />
+              {t('audit.timeline.fromDream')}
             </span>
           )}
           <span className="text-text-muted shrink-0 font-mono text-xs tabular-nums">
-            {formatTime(entry.timestamp)}
+            {formatTime(entry.timestamp, locale)}
           </span>
         </div>
 
@@ -223,8 +226,9 @@ function TimelineRow({ entry, legendColor, slug }: TimelineRowProps): JSX.Elemen
 /* ------------------------------------------------------------------ */
 
 function TimelineSkeleton(): JSX.Element {
+  const { t } = useTranslation();
   return (
-    <div className="space-y-4 p-4" aria-label="Loading audit entries">
+    <div className="space-y-4 p-4" aria-label={t('audit.timeline.loading')}>
       {[1, 2, 3].map((i) => (
         <div key={i}>
           <div className="bg-surface-sunken mb-2 h-4 w-48 animate-pulse rounded" />
@@ -269,6 +273,7 @@ export function AuditTimeline({ legendMap, sinceISO }: AuditTimelineProps): JSX.
     limit: 500,
   });
   const queryClient = useQueryClient();
+  const { t } = useTranslation();
 
   // Flatten every loaded page BEFORE any client-side narrowing, so day-
   // grouping and filtering span the full loaded set and never reset per page.
@@ -295,8 +300,7 @@ export function AuditTimeline({ legendMap, sinceISO }: AuditTimelineProps): JSX.
     return (
       <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
         <p className="text-tier-red text-sm">
-          Could not load audit entries.
-          {auditQuery.error?.message && <> {auditQuery.error.message}</>}
+          {renderAuditLoadError(classifyAuditError(auditQuery.error, 'audit.error.load'), t)}
         </p>
         <Button
           size="sm"
@@ -307,7 +311,7 @@ export function AuditTimeline({ legendMap, sinceISO }: AuditTimelineProps): JSX.
             })
           }
         >
-          Retry
+          {t('common.retry')}
         </Button>
       </div>
     );
@@ -317,10 +321,7 @@ export function AuditTimeline({ legendMap, sinceISO }: AuditTimelineProps): JSX.
   if (entries.length === 0) {
     return (
       <div className="flex h-full items-center justify-center">
-        <EmptyState
-          title="No audit entries"
-          body="No audit entries match the current filters."
-        />
+        <EmptyState title={t('audit.empty.title')} body={t('audit.empty.body')} />
       </div>
     );
   }
@@ -359,6 +360,7 @@ export function AuditTimeline({ legendMap, sinceISO }: AuditTimelineProps): JSX.
 }
 
 function AllClearBanner(): JSX.Element {
+  const { t } = useTranslation();
   return (
     <div className="bg-surface border-border-default shadow-pasture-sm mx-4 mt-4 flex shrink-0 items-center gap-3 rounded-lg border p-4">
       <span
@@ -366,10 +368,8 @@ function AllClearBanner(): JSX.Element {
         className="bg-positive inline-block h-2.5 w-2.5 rounded-full"
       />
       <div>
-        <p className="text-text-primary font-display text-sm font-medium">All clear</p>
-        <p className="text-text-muted text-xs">
-          No failures or escalations in this window.
-        </p>
+        <p className="text-text-primary font-display text-sm font-medium">{t('audit.allClear.title')}</p>
+        <p className="text-text-muted text-xs">{t('audit.allClear.body')}</p>
       </div>
     </div>
   );
@@ -391,6 +391,7 @@ function TimelineBody({
   isFetchingNextPage: boolean;
 }): JSX.Element {
   const days = useMemo(() => groupByDay(entries), [entries]);
+  const { t, locale } = useTranslation();
 
   // Infinite scroll: observe a bottom sentinel against THIS scroll container
   // (the timeline scrolls inside its own overflow-y-auto box, not the
@@ -424,11 +425,11 @@ function TimelineBody({
   }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto" aria-label="Audit timeline">
+    <div ref={scrollRef} className="flex-1 overflow-y-auto" aria-label={t('audit.timeline.label')}>
       {days.map(({ date, entries: dayEntries }) => (
         <div key={date}>
           <h3 className="text-text-muted bg-surface sticky top-0 z-10 px-4 pt-4 pb-2 text-xs font-medium tracking-wide uppercase">
-            {formatDateHeader(date)}
+            {formatDateHeader(date, locale, t)}
           </h3>
           {dayEntries.map((e) => (
             <TimelineRow
@@ -444,12 +445,12 @@ function TimelineBody({
       <div ref={sentinelRef} aria-hidden className="h-1" />
       {isFetchingNextPage && (
         <p className="text-text-muted py-3 text-center text-sm" role="status">
-          Loading more…
+          {t('audit.timeline.loadingMore')}
         </p>
       )}
       {!hasNextPage && entries.length > 0 && (
         <p className="text-text-muted py-4 text-center text-xs">
-          End of audit trail
+          {t('audit.timeline.end')}
         </p>
       )}
     </div>

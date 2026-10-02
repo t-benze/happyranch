@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { AuditEntry } from '@/lib/api/types';
+import { translate, type MessageKey, type MessageParams } from '@/lib/i18n';
 import { describeAuditEntry, narrativeText } from './audit-narrative';
+
+/* English expectations come from the typed catalog (THR-118 W4b). */
+const en = (key: MessageKey, params?: MessageParams): string => translate('en', key, params);
+const zh = (key: MessageKey, params?: MessageParams): string => translate('zh-CN', key, params);
 
 /* Build an AuditEntry with sensible defaults; override per case. */
 function entry(over: Partial<AuditEntry>): AuditEntry {
@@ -92,6 +97,7 @@ describe('describeAuditEntry — coverage (one case per event type)', () => {
   it.each(KNOWN_ACTIONS)('%s renders a human sentence, not the raw code', (action) => {
     const n = describeAuditEntry(
       entry({ action, agent: 'dev_agent', task_id: 'TASK-408' }),
+      'en',
     );
     const text = narrativeText(n);
     // Never surfaces the raw snake_case event code verbatim as the sentence.
@@ -105,6 +111,7 @@ describe('describeAuditEntry — coverage (one case per event type)', () => {
   it('falls back to a humanized phrase for an unknown event type', () => {
     const n = describeAuditEntry(
       entry({ action: 'some_brand_new_event', agent: 'dev_agent', task_id: 'TASK-1' }),
+      'en',
     );
     const text = narrativeText(n);
     expect(text).toContain('some brand new event');
@@ -114,8 +121,8 @@ describe('describeAuditEntry — coverage (one case per event type)', () => {
   });
 
   it('uses a neutral subject when the actor is unknown', () => {
-    const n = describeAuditEntry(entry({ action: 'session_start', agent: null }));
-    expect(n.segments[0]).toEqual({ kind: 'subject', text: 'The system' });
+    const n = describeAuditEntry(entry({ action: 'session_start', agent: null }), 'en');
+    expect(n.segments[0]).toEqual({ kind: 'subject', text: en('audit.n.subject.system') });
   });
 });
 
@@ -128,13 +135,14 @@ describe('describeAuditEntry — headline narratives', () => {
         task_id: 'TASK-408',
         payload: { status: 'completed', confidence: 90 },
       }),
+      'en',
     );
-    expect(narrativeText(n)).toBe('dev_agent completed TASK-408.');
+    expect(narrativeText(n)).toBe(en('audit.n.completion_report', { agent: 'dev_agent', target: 'TASK-408' }));
     expect(n.segments).toContainEqual({
       kind: 'ref',
       ref: { type: 'task', id: 'TASK-408', label: 'TASK-408' },
     });
-    expect(n.detail).toBe('completed · confidence 90');
+    expect(n.detail).toBe(`completed · ${en('audit.detail.confidence', { value: 90 })}`);
   });
 
   it('thread_dispatch links the dispatched task and the target agent', () => {
@@ -145,8 +153,11 @@ describe('describeAuditEntry — headline narratives', () => {
         task_id: 'THR-020',
         payload: { task_id: 'TASK-410', target_agent: 'dev_agent', team: 'engineering' },
       }),
+      'en',
     );
-    expect(narrativeText(n)).toBe('engineering_manager dispatched TASK-410 to dev_agent.');
+    expect(narrativeText(n)).toBe(
+      en('audit.n.thread_dispatch.to', { agent: 'engineering_manager', task: 'TASK-410', who: 'dev_agent' }),
+    );
     expect(n.segments).toContainEqual({
       kind: 'ref',
       ref: { type: 'task', id: 'TASK-410', label: 'TASK-410' },
@@ -165,8 +176,9 @@ describe('describeAuditEntry — headline narratives', () => {
         task_id: 'TASK-689',
         payload: { verdict: 'APPROVE', feedback: null },
       }),
+      'en',
     );
-    expect(narrativeText(n)).toBe('code_reviewer reviewed TASK-689.');
+    expect(narrativeText(n)).toBe(en('audit.n.review_verdict', { agent: 'code_reviewer', target: 'TASK-689' }));
     expect(n.detail).toBe('APPROVE');
   });
 
@@ -178,8 +190,9 @@ describe('describeAuditEntry — headline narratives', () => {
         task_id: 'TASK-101',
         payload: { reason: 'blocks PR #101' },
       }),
+      'en',
     );
-    expect(narrativeText(n)).toBe('engineering_manager escalated TASK-101.');
+    expect(narrativeText(n)).toBe(en('audit.n.escalation', { agent: 'engineering_manager', target: 'TASK-101' }));
     expect(n.detail).toBe('blocks PR #101');
   });
 
@@ -191,9 +204,12 @@ describe('describeAuditEntry — headline narratives', () => {
         task_id: 'TASK-678',
         payload: { duration_seconds: 80, token_usage: { total: 76300 }, token_count: 76300 },
       }),
+      'en',
     );
-    expect(narrativeText(n)).toBe('dev_agent wrapped up TASK-678.');
-    expect(n.detail).toBe('1m 20s · 76.3K tokens');
+    expect(narrativeText(n)).toBe(en('audit.n.session_end', { agent: 'dev_agent', target: 'TASK-678' }));
+    expect(n.detail).toBe(
+      `${en('audit.detail.minutesSeconds', { m: 1, s: 20 })} · ${en('audit.detail.tokens', { tokens: '76.3K' })}`,
+    );
   });
 
   it('job_submitted links the job and its parent task', () => {
@@ -204,8 +220,11 @@ describe('describeAuditEntry — headline narratives', () => {
         task_id: 'TASK-680',
         payload: { script_request_id: 'JOB-083', title: 'run prod build', interpreter: 'bash' },
       }),
+      'en',
     );
-    expect(narrativeText(n)).toBe('dev_agent submitted JOB-083 on TASK-680.');
+    expect(narrativeText(n)).toBe(
+      en('audit.n.job_submitted.on', { agent: 'dev_agent', job: 'JOB-083', target: 'TASK-680' }),
+    );
     expect(n.segments).toContainEqual({
       kind: 'ref',
       ref: { type: 'job', id: 'JOB-083', label: 'JOB-083' },
@@ -221,8 +240,9 @@ describe('describeAuditEntry — headline narratives', () => {
         task_id: 'artifact:qa/report.png',
         payload: { name: 'qa/report.png', size_bytes: 2048 },
       }),
+      'en',
     );
-    expect(narrativeText(n)).toBe('qa_engineer published qa/report.png.');
+    expect(narrativeText(n)).toBe(en('audit.n.artifact_put', { agent: 'qa_engineer', name: 'qa/report.png' }));
     expect(n.detail).toBe('2.0 KB');
     // The namespaced artifact: scope id must never become a (broken) task link.
     expect(n.segments).not.toContainEqual(
@@ -238,8 +258,9 @@ describe('describeAuditEntry — headline narratives', () => {
         task_id: 'TASK-690',
         payload: { message: 'phase 3 of 6' },
       }),
+      'en',
     );
-    expect(narrativeText(n)).toBe('dev_agent reported progress on TASK-690.');
+    expect(narrativeText(n)).toBe(en('audit.n.progress', { agent: 'dev_agent', target: 'TASK-690' }));
     expect(n.detail).toBe('phase 3 of 6');
   });
 
@@ -251,9 +272,10 @@ describe('describeAuditEntry — headline narratives', () => {
         task_id: 'TASK-688',
         payload: { step_number: 2, decision: { action: 'delegate' } },
       }),
+      'en',
     );
-    expect(narrativeText(n)).toBe('orchestrator advanced TASK-688.');
-    expect(n.detail).toBe('step 2 · delegate');
+    expect(narrativeText(n)).toBe(en('audit.n.orchestration_step', { agent: 'orchestrator', target: 'TASK-688' }));
+    expect(n.detail).toBe(`${en('audit.detail.step', { step: 2 })} · delegate`);
   });
 
   it('agent_managed renders the management verb and links the managed agent', () => {
@@ -264,8 +286,11 @@ describe('describeAuditEntry — headline narratives', () => {
         task_id: 'TASK-1',
         payload: { action: 'enroll', name: 'new_agent', source: 'task' },
       }),
+      'en',
     );
-    expect(narrativeText(n)).toBe('engineering_manager enrolled agent new_agent.');
+    expect(narrativeText(n)).toBe(
+      en('audit.n.agent_managed.enroll', { agent: 'engineering_manager', target: 'new_agent' }),
+    );
     expect(n.segments).toContainEqual({
       kind: 'ref',
       ref: { type: 'agent', id: 'new_agent', label: 'new_agent' },
@@ -280,8 +305,9 @@ describe('describeAuditEntry — headline narratives', () => {
         task_id: 'THR-9',
         payload: { seq: 3, kind: 'reply' },
       }),
+      'en',
     );
-    expect(narrativeText(n)).toBe('founder sent a message in THR-9.');
+    expect(narrativeText(n)).toBe(en('audit.n.thread_message_sent', { agent: 'founder', target: 'THR-9' }));
     expect(n.segments).toContainEqual({
       kind: 'ref',
       ref: { type: 'thread', id: 'THR-9', label: 'THR-9' },
@@ -296,9 +322,12 @@ describe('describeAuditEntry — headline narratives', () => {
         task_id: 'DREAM-1',
         payload: { new_learnings_count: 3, kb_candidate_count: 2, founder_thread_id: null },
       }),
+      'en',
     );
-    expect(narrativeText(n)).toBe('scheduler completed a dream.');
-    expect(n.detail).toBe('3 learnings · 2 KB candidates');
+    expect(narrativeText(n)).toBe(en('audit.n.dream_completed', { agent: 'scheduler' }));
+    expect(n.detail).toBe(
+      `${en('audit.detail.learnings', { count: 3 })} · ${en('audit.detail.kbCandidates', { count: 2 })}`,
+    );
   });
 });
 
@@ -316,9 +345,10 @@ describe('thread reply delivery lifecycle (GH-688 Phase 1 Slice C)', () => {
           token_prefix: 'abc12345',
         },
       }),
+      'en',
     );
-    expect(narrativeText(n)).toBe('dev_agent queued a reply wake in THR-9.');
-    expect(n.detail).toBe('messages 2–4');
+    expect(narrativeText(n)).toBe(en('audit.n.thread_reply_wake_created.in', { agent: 'dev_agent', target: 'THR-9' }));
+    expect(n.detail).toBe(en('audit.detail.messages', { from: 2, to: 4 }));
     expect(n.segments).toContainEqual({
       kind: 'ref',
       ref: { type: 'thread', id: 'THR-9', label: 'THR-9' },
@@ -333,9 +363,12 @@ describe('thread reply delivery lifecycle (GH-688 Phase 1 Slice C)', () => {
         task_id: 'THR-9',
         payload: { agent_name: 'dev_agent', from_seq: 2, through_seq: 5 },
       }),
+      'en',
     );
-    expect(narrativeText(n)).toBe('dev_agent coalesced a reply wake in THR-9.');
-    expect(n.detail).toBe('messages 2–5');
+    expect(narrativeText(n)).toBe(
+      en('audit.n.thread_reply_wake_coalesced.in', { agent: 'dev_agent', target: 'THR-9' }),
+    );
+    expect(n.detail).toBe(en('audit.detail.messages', { from: 2, to: 5 }));
   });
 
   it('thread_reply_wake_claimed', () => {
@@ -351,9 +384,10 @@ describe('thread reply delivery lifecycle (GH-688 Phase 1 Slice C)', () => {
           token_prefix: 'abc12345',
         },
       }),
+      'en',
     );
-    expect(narrativeText(n)).toBe('dev_agent claimed a reply wake in THR-9.');
-    expect(n.detail).toBe('messages 1–3');
+    expect(narrativeText(n)).toBe(en('audit.n.thread_reply_wake_claimed.in', { agent: 'dev_agent', target: 'THR-9' }));
+    expect(n.detail).toBe(en('audit.detail.messages', { from: 1, to: 3 }));
   });
 
   it('thread_reply_wake_settled with follow-on', () => {
@@ -372,9 +406,17 @@ describe('thread reply delivery lifecycle (GH-688 Phase 1 Slice C)', () => {
           decline_reason: null,
         },
       }),
+      'en',
     );
-    expect(narrativeText(n)).toBe('dev_agent settled a reply wake in THR-9.');
-    expect(n.detail).toBe('reply · acknowledged through 3 · required through 4 · follow-on minted');
+    expect(narrativeText(n)).toBe(en('audit.n.thread_reply_wake_settled.in', { agent: 'dev_agent', target: 'THR-9' }));
+    expect(n.detail).toBe(
+      [
+        'reply',
+        en('audit.detail.acknowledgedThrough', { seq: 3 }),
+        en('audit.detail.requiredThrough', { seq: 4 }),
+        en('audit.detail.followOnMinted'),
+      ].join(' · '),
+    );
   });
 
   it('thread_reply_wake_settled failure surfaces retry required', () => {
@@ -393,9 +435,17 @@ describe('thread reply delivery lifecycle (GH-688 Phase 1 Slice C)', () => {
           decline_reason: 'timeout',
         },
       }),
+      'en',
     );
-    expect(narrativeText(n)).toBe('dev_agent settled a reply wake in THR-9.');
-    expect(n.detail).toBe('failed · acknowledged through 1 · required through 4 · retry required');
+    expect(narrativeText(n)).toBe(en('audit.n.thread_reply_wake_settled.in', { agent: 'dev_agent', target: 'THR-9' }));
+    expect(n.detail).toBe(
+      [
+        'failed',
+        en('audit.detail.acknowledgedThrough', { seq: 1 }),
+        en('audit.detail.requiredThrough', { seq: 4 }),
+        en('audit.detail.retryRequired'),
+      ].join(' · '),
+    );
   });
 
   it('thread_reply_wake_cancelled', () => {
@@ -411,9 +461,18 @@ describe('thread reply delivery lifecycle (GH-688 Phase 1 Slice C)', () => {
           swept_count: 2,
         },
       }),
+      'en',
     );
-    expect(narrativeText(n)).toBe('qa_engineer cancelled a reply wake in THR-9.');
-    expect(n.detail).toBe('founder_aborted · discarded through 4 · 2 receipt(s) retired');
+    expect(narrativeText(n)).toBe(
+      en('audit.n.thread_reply_wake_cancelled.in', { agent: 'qa_engineer', target: 'THR-9' }),
+    );
+    expect(n.detail).toBe(
+      [
+        'founder_aborted',
+        en('audit.detail.discardedThrough', { seq: 4 }),
+        en('audit.detail.receiptsRetired', { count: 2 }),
+      ].join(' · '),
+    );
   });
 
   it('thread_reply_wake_recovered', () => {
@@ -430,8 +489,141 @@ describe('thread reply delivery lifecycle (GH-688 Phase 1 Slice C)', () => {
           token_prefix: 'abc12345',
         },
       }),
+      'en',
     );
-    expect(narrativeText(n)).toBe('dev_agent recovered a reply wake in THR-9.');
-    expect(n.detail).toBe('replacement_queued · messages 1–3');
+    expect(narrativeText(n)).toBe(
+      en('audit.n.thread_reply_wake_recovered.in', { agent: 'dev_agent', target: 'THR-9' }),
+    );
+    expect(n.detail).toBe(`replacement_queued · ${en('audit.detail.messages', { from: 1, to: 3 })}`);
+  });
+});
+
+describe('describeAuditEntry — zh-CN (THR-118 W4b)', () => {
+  it.each(KNOWN_ACTIONS)('%s renders a zh-CN sentence led by the verbatim subject', (action) => {
+    const n = describeAuditEntry(entry({ action, agent: 'dev_agent', task_id: 'TASK-408' }), 'zh-CN');
+    const text = narrativeText(n);
+    expect(n.segments[0]).toEqual({ kind: 'subject', text: 'dev_agent' });
+    expect(text).not.toContain(action);
+    // Every sentence is translated: it carries CJK prose and ends with the
+    // Chinese full stop (or the closing parenthesis of a linked id).
+    expect(text).toMatch(/[一-鿿]/);
+    expect(text).toMatch(/[。）]$/);
+    expect(text).not.toBe(narrativeText(describeAuditEntry(entry({ action, agent: 'dev_agent', task_id: 'TASK-408' }), 'en')));
+  });
+
+  it('keeps refs and verbatim payload values inside translated slots', () => {
+    const n = describeAuditEntry(
+      entry({
+        action: 'thread_dispatch',
+        agent: 'engineering_manager',
+        task_id: 'THR-020',
+        payload: { task_id: 'TASK-410', target_agent: 'dev_agent', team: 'engineering' },
+      }),
+      'zh-CN',
+    );
+    expect(narrativeText(n)).toBe(
+      zh('audit.n.thread_dispatch.to', { agent: 'engineering_manager', task: 'TASK-410', who: 'dev_agent' }),
+    );
+    expect(narrativeText(n)).toBe('engineering_manager 将 TASK-410 派发给 dev_agent。');
+    expect(n.segments).toContainEqual({ kind: 'ref', ref: { type: 'task', id: 'TASK-410', label: 'TASK-410' } });
+    expect(n.segments).toContainEqual({ kind: 'ref', ref: { type: 'agent', id: 'dev_agent', label: 'dev_agent' } });
+    expect(n.detail).toBe('团队 engineering');
+  });
+
+  it('job sentence reorders the parent-task slot without losing either ref', () => {
+    const n = describeAuditEntry(
+      entry({
+        action: 'job_submitted',
+        agent: 'dev_agent',
+        task_id: 'TASK-680',
+        payload: { script_request_id: 'JOB-083', title: 'run prod build' },
+      }),
+      'zh-CN',
+    );
+    expect(narrativeText(n)).toBe('dev_agent 在 TASK-680 上提交了 JOB-083。');
+    const refs = n.segments.filter((s) => s.kind === 'ref').map((s) => (s.kind === 'ref' ? s.ref.id : ''));
+    expect(refs).toEqual(['TASK-680', 'JOB-083']);
+    expect(n.detail).toBe('run prod build');
+  });
+
+  it('localizes the neutral subject, generic nouns and detail units', () => {
+    const n = describeAuditEntry(
+      entry({
+        action: 'session_end',
+        agent: null,
+        payload: { duration_seconds: 80, token_usage: { total: 76300 } },
+      }),
+      'zh-CN',
+    );
+    expect(n.segments[0]).toEqual({ kind: 'subject', text: zh('audit.n.subject.system') });
+    expect(narrativeText(n)).toBe('系统 结束了 一个任务。');
+    expect(n.detail).toBe('1 分 20 秒 · 7.6万 Token');
+  });
+
+  it('reply-wake details are translated while raw payload tokens stay verbatim', () => {
+    const n = describeAuditEntry(
+      entry({
+        action: 'thread_reply_wake_cancelled',
+        agent: 'qa_engineer',
+        task_id: 'THR-9',
+        payload: { boundary_seq: 4, reason: 'founder_aborted', swept_count: 2 },
+      }),
+      'zh-CN',
+    );
+    expect(narrativeText(n)).toBe('qa_engineer 在 THR-9 中取消了一次回复唤醒。');
+    expect(n.detail).toBe('founder_aborted · 已丢弃至 4 · 已退役 2 个回执');
+  });
+
+  it('artifact names and unknown action names stay verbatim', () => {
+    const put = describeAuditEntry(
+      entry({ action: 'artifact_put', agent: 'qa_engineer', payload: { name: 'qa/report.png', size_bytes: 2048 } }),
+      'zh-CN',
+    );
+    expect(narrativeText(put)).toBe('qa_engineer 发布了 qa/report.png。');
+    expect(put.detail).toBe('2.0 KB');
+    const unknown = describeAuditEntry(
+      entry({ action: 'some_brand_new_event', agent: 'dev_agent', task_id: 'TASK-1' }),
+      'zh-CN',
+    );
+    expect(narrativeText(unknown)).toBe('dev_agent 在 TASK-1 上 some brand new event。');
+  });
+});
+
+describe('count-bearing details pluralize (THR-118 W4b F-A)', () => {
+  const detailOf = (action: string, payload: Record<string, unknown>, locale: 'en' | 'zh-CN') =>
+    describeAuditEntry(entry({ action, agent: 'scheduler', task_id: 'X-1', payload }), locale).detail;
+
+  it('dream_completed learnings / KB candidates', () => {
+    expect(detailOf('dream_completed', { new_learnings_count: 1, kb_candidate_count: 1 }, 'en')).toBe(
+      '1 learning · 1 KB candidate',
+    );
+    expect(detailOf('dream_completed', { new_learnings_count: 3, kb_candidate_count: 2 }, 'en')).toBe(
+      '3 learnings · 2 KB candidates',
+    );
+    expect(detailOf('dream_completed', { new_learnings_count: 1, kb_candidate_count: 2 }, 'zh-CN')).toBe(
+      '1 条学习 · 2 个知识库候选',
+    );
+  });
+
+  it('work_hour_completed tasks / routines', () => {
+    expect(detailOf('work_hour_completed', { spawned_task_count: 1, routine_count: 1 }, 'en')).toBe(
+      '1 task · 1 routine',
+    );
+    expect(detailOf('work_hour_completed', { spawned_task_count: 2, routine_count: 3 }, 'en')).toBe(
+      '2 tasks · 3 routines',
+    );
+    expect(detailOf('work_hour_spawned', { spawned_task_count: 1 }, 'zh-CN')).toBe('1 个任务');
+  });
+
+  it('thread_reply_wake_cancelled receipts', () => {
+    expect(detailOf('thread_reply_wake_cancelled', { swept_count: 1 }, 'en')).toBe('1 receipt retired');
+    expect(detailOf('thread_reply_wake_cancelled', { swept_count: 2 }, 'en')).toBe('2 receipts retired');
+    expect(detailOf('thread_reply_wake_cancelled', { swept_count: 1 }, 'zh-CN')).toBe('已退役 1 个回执');
+  });
+
+  it('session_end tokens', () => {
+    expect(detailOf('session_end', { token_usage: { total: 1 } }, 'en')).toBe('1 token');
+    expect(detailOf('session_end', { token_usage: { total: 1500 } }, 'en')).toBe('1.5K tokens');
+    expect(detailOf('session_end', { token_usage: { total: 1 } }, 'zh-CN')).toBe('1 Token');
   });
 });

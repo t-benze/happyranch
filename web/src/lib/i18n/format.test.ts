@@ -1,9 +1,10 @@
 import { execFileSync } from 'node:child_process';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { formatCount, formatTokens } from '@/lib/format';
-import { formatCountFor, formatDateTimeFor, formatTokensFor } from './format';
+import { formatCountFor, formatDateShapeFor, formatDateTimeFor, formatTokensFor } from './format';
 
 describe('formatTokensFor — explicit-locale compact metrics (W1 acceptance case 6)', () => {
   it('English delegates to the canonical K/M formatter', () => {
@@ -137,5 +138,65 @@ describe('explicit display locale is host-independent (W1 acceptance case 1)', (
       expect(result.legacy).toBe('1.234.567');
       expect(result.legacy).not.toBe(result.explicitEn);
     }
+  });
+});
+
+describe('formatDateShapeFor — centrally owned date/time shapes (THR-118 W4b)', () => {
+  const instant = new Date('2026-06-10T06:05:09Z');
+  const cases: Array<[Parameters<typeof formatDateShapeFor>[2], string, string]> = [
+    ['weekdayDate', 'Wed, Jun 10, 2026', '2026年6月10日周三'],
+    ['weekdayMonthDay', 'Wed, Jun 10', '6月10日周三'],
+    ['monthDay', 'Jun 10', '6月10日'],
+    ['monthDayYear', 'Jun 10, 2026', '2026年6月10日'],
+    ['weekdayLong', 'Wednesday', '星期三'],
+    ['clock24', '06:05', '06:05'],
+    ['clock24Seconds', '06:05:09', '06:05:09'],
+    ['monthDayTime', 'Jun 10, 06:05 AM', '6月10日 06:05'],
+    ['dateTime', 'Jun 10, 2026, 06:05 AM', '2026年6月10日 06:05'],
+  ];
+
+  it.each(cases)('%s renders the English and Chinese shape', (shape, english, chinese) => {
+    const norm = (v: string) => v.replace(/[\u202f\u00a0]/g, ' ');
+    expect(norm(formatDateShapeFor('en', instant, shape, 'UTC'))).toBe(english);
+    expect(norm(formatDateShapeFor('zh-CN', instant, shape, 'UTC'))).toBe(chinese);
+  });
+
+  it('honors the explicit timezone and accepts epoch milliseconds', () => {
+    expect(formatDateShapeFor('en', instant.getTime(), 'clock24', 'Asia/Shanghai')).toBe('14:05');
+    expect(formatDateShapeFor('zh-CN', instant, 'weekdayLong', 'Pacific/Kiritimati')).toBe('星期三');
+  });
+
+  it('an invalid date renders like Date#toLocaleString instead of throwing', () => {
+    expect(formatDateShapeFor('en', new Date('nope'), 'dateTime')).toBe('Invalid Date');
+    expect(formatDateShapeFor('zh-CN', Number.NaN, 'clock24')).toBe('Invalid Date');
+  });
+});
+
+describe('W4b display sites route dates through @/lib/i18n/format (THR-118 W4b)', () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const srcRoot = join(here, '../..');
+  const W4B_DIRS = ['features/todos', 'features/work-hours-config', 'features/audit', 'shared/work-hours'];
+  // Presentation calls: any toLocale*String, or an Intl date formatter whose
+  // locale is NOT a fixed machine literal ('en-US'/'en-CA' formatToParts
+  // parsing for timezone conversion and <input> values stays feature-local).
+  const DISPLAY_CALL = /toLocale(?:Date|Time)?String\(|Intl\.DateTimeFormat\((?!'en-(?:US|CA)')/;
+
+  function sources(dir: string): string[] {
+    return readdirSync(join(srcRoot, dir), { recursive: true, encoding: 'utf8' })
+      .filter((f) => /\.(ts|tsx)$/.test(f) && !/\.test\.tsx?$/.test(f))
+      .map((f) => join(dir, f));
+  }
+
+  it('no W4b feature file formats a visible date/time directly', () => {
+    const files = W4B_DIRS.flatMap(sources);
+    expect(files.length).toBeGreaterThan(20);
+    const offenders = files.flatMap((file) =>
+      readFileSync(join(srcRoot, file), 'utf8')
+        .split('\n')
+        .map((line, i) => [line, i + 1] as const)
+        .filter(([line]) => DISPLAY_CALL.test(line) && !line.trim().startsWith('*') && !line.trim().startsWith('//'))
+        .map(([, n]) => `${file}:${n}`),
+    );
+    expect(offenders).toEqual([]);
   });
 });
