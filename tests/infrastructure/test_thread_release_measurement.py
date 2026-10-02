@@ -1,20 +1,22 @@
 """Deterministic fixtures for the THR-198 Phase-2 Slice D release-measurement
 harness (``runtime/infrastructure/thread_release_measurement.py``).
 
-Every test builds an in-memory SQLite database mirroring the subset of the
-real schema the harness reads (``threads`` / ``thread_participants`` /
-``thread_messages`` / ``thread_invocations``) with exact timestamps, so all
-counts and rates are deterministic. No test touches a file DB or the live
-org database.
+Every test builds a temporary file database through the production
+``Database`` schema owner, then inserts exact timestamps so all counts and
+rates are deterministic. No test touches the live org database.
 """
 from __future__ import annotations
 
+import itertools
 import json
 import sqlite3
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
 from runtime.infrastructure import thread_release_measurement as m
+from runtime.infrastructure.database import Database
 
 EPOCH = "2026-08-26T14:25:23Z"
 WINDOW_END = "2026-09-26T14:25:23Z"  # epoch + 1 calendar month
@@ -40,69 +42,41 @@ NON_OBJECT_PAYLOADS: list[str | None] = [
 ]
 
 
+_DB_IDS = itertools.count()
+_CURRENT_DB_DIR: Path | None = None
+
+
+@pytest.fixture(autouse=True)
+def _production_database_dir(tmp_path: Path) -> Iterator[None]:
+    """Give each case an isolated production-schema database directory."""
+    global _CURRENT_DB_DIR
+    assert _CURRENT_DB_DIR is None
+    _CURRENT_DB_DIR = tmp_path
+    try:
+        yield
+    finally:
+        _CURRENT_DB_DIR = None
+
+
 def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.executescript(
-        """
-        CREATE TABLE threads (
-            id TEXT PRIMARY KEY,
-            mention_routing_enabled INTEGER NOT NULL DEFAULT 1
-        );
-        CREATE TABLE thread_participants (
-            thread_id TEXT NOT NULL,
-            agent_name TEXT NOT NULL,
-            added_at TEXT NOT NULL,
-            PRIMARY KEY (thread_id, agent_name)
-        );
-        CREATE TABLE thread_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            thread_id TEXT NOT NULL,
-            seq INTEGER NOT NULL,
-            speaker TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            body_markdown TEXT,
-            mentions_json TEXT,
-            created_at TEXT NOT NULL
-        );
-        CREATE TABLE thread_invocations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            thread_id TEXT NOT NULL,
-            agent_name TEXT NOT NULL,
-            invocation_token TEXT NOT NULL UNIQUE,
-            triggering_seq INTEGER NOT NULL,
-            purpose TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending',
-            enqueued_at TEXT NOT NULL,
-            started_at TEXT,
-            consumed_at TEXT,
-            decline_reason TEXT
-        );
-        CREATE TABLE audit_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_id TEXT NOT NULL,
-            agent TEXT NOT NULL,
-            action TEXT NOT NULL,
-            payload TEXT,
-            timestamp TEXT NOT NULL
-        );
-        """
-    )
-    return conn
+    assert _CURRENT_DB_DIR is not None
+    database = Database(_CURRENT_DB_DIR / f"measurement-{next(_DB_IDS)}.db")
+    return database._conn
 
 
 def _add_thread(conn, thread_id: str, *, mention_routing_enabled: int = 1) -> None:
     conn.execute(
-        "INSERT INTO threads (id, mention_routing_enabled) VALUES (?, ?)",
-        (thread_id, mention_routing_enabled),
+        "INSERT INTO threads (id, subject, started_at, mention_routing_enabled) "
+        "VALUES (?, ?, ?, ?)",
+        (thread_id, f"Thread {thread_id}", "2026-08-01T00:00:00Z", mention_routing_enabled),
     )
 
 
 def _add_participant(conn, thread_id: str, agent: str, added_at: str) -> None:
     conn.execute(
-        "INSERT INTO thread_participants (thread_id, agent_name, added_at) "
-        "VALUES (?, ?, ?)",
-        (thread_id, agent, added_at),
+        "INSERT INTO thread_participants (thread_id, agent_name, added_at, added_by) "
+        "VALUES (?, ?, ?, ?)",
+        (thread_id, agent, added_at, "founder"),
     )
 
 
@@ -2027,10 +2001,9 @@ def test_build_release_record_requires_a_mode() -> None:
         m.build_release_record()
 
 
-def test_cli_emits_json_without_touching_file_db() -> None:
-    # A deterministic run of the CLI against the live org DB is NOT part of
-    # the hermetic test suite; instead verify the record round-trips through
-    # the writer used by main().
+def test_cli_emits_json_from_production_schema(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     conn = _conn()
     _add_thread(conn, "T1")
     _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
@@ -2038,6 +2011,15 @@ def test_cli_emits_json_without_touching_file_db() -> None:
                  mentions='["alice"]')
     _add_invocation(conn, "T1", "alice", 1, "2026-08-27T00:01:00Z",
                     status="consumed")
-    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
-    record = m.build_release_record(live=live)
-    assert json.loads(json.dumps(record)) == record
+    conn.commit()
+    db_path = conn.execute("PRAGMA database_list").fetchone()["file"]
+
+    assert m.main([
+        "--db", db_path,
+        "--epoch", EPOCH,
+        "--as-of", "2026-08-27T12:00:00Z",
+        "--mode", "live",
+    ]) == 0
+    record = json.loads(capsys.readouterr().out)
+    assert record["live"]["mentioned_messages"] == 1
+    assert record["live"]["mentioned_wakes"] == 1

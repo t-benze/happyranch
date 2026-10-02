@@ -4,6 +4,10 @@ import sqlite3
 
 from runtime.infrastructure.database import Database
 from runtime.models import TaskRecord, TaskStatus, TokenUsage
+from runtime.orchestrator.usage_normalization import (
+    ReportedState,
+    normalize_usage,
+)
 
 
 def _usage(input_tokens=100, output_tokens=50, **kw):
@@ -24,6 +28,48 @@ def test_insert_and_list_session_token_usage(db: Database):
     assert r["executor"] == "claude"
     assert r["input_tokens"] == 10
     assert r["output_tokens"] == 20
+
+
+def test_codex_cache_write_reported_state_survives_storage(db: Database):
+    from runtime.orchestrator.executors import _parse_codex_usage
+
+    cases = (
+        ("reported-zero", ',"cache_write_input_tokens":0', 0),
+        ("absent", "", None),
+    )
+    for suffix, cache_write_field, expected_stored in cases:
+        raw = (
+            '{"type":"turn.completed","usage":{"input_tokens":100,'
+            f'"cached_input_tokens":40{cache_write_field},'
+            '"output_tokens":20,"reasoning_output_tokens":5}}\n'
+        )
+        usage = _parse_codex_usage(raw)
+        assert usage is not None
+
+        task_id = f"TASK-CODEX-{suffix}"
+        db.insert_session_token_usage(
+            task_id=task_id,
+            agent="dev_agent",
+            session_id=f"sess-codex-{suffix}",
+            executor="codex",
+            token_usage=usage,
+        )
+        row = db.list_session_token_usage(task_id=task_id)[0]
+        assert row["cache_creation_tokens"] is expected_stored
+
+        normalized = normalize_usage(row)
+        if expected_stored == 0:
+            assert normalized.fresh_input.state is ReportedState.REPORTED
+            assert normalized.fresh_input.value == 60
+            assert normalized.fresh_input.partial_uncached_subtotal is None
+        else:
+            assert normalized.fresh_input.state is ReportedState.NOT_REPORTED
+            assert normalized.fresh_input.value is None
+            assert normalized.fresh_input.partial_uncached_subtotal == 60
+
+        # Existing churn contract remains input + output + reasoning. This PR
+        # does not fix the known Codex reasoning double-count in TokenUsage.total.
+        assert usage.total == 85
 
 
 def test_legacy_session_token_usage_table_migrates_before_scope_indexes(tmp_path):
@@ -115,7 +161,7 @@ def test_churn_excludes_cache_for_codex_no_double_count(db: Database):
     # reasoning_output=10. The parser normalizes input → 100 (net-fresh).
     raw = (
         '{"type":"turn.completed","usage":{"input_tokens":1000,'
-        '"cached_input_tokens":900,"output_tokens":50,'
+        '"cached_input_tokens":900,"cache_write_input_tokens":0,"output_tokens":50,'
         '"reasoning_output_tokens":10}}\n'
     )
     tu = _parse_codex_usage(raw)
@@ -123,6 +169,7 @@ def test_churn_excludes_cache_for_codex_no_double_count(db: Database):
     assert tu.cache_read_tokens == 900
     assert tu.output_tokens == 50
     assert tu.reasoning_tokens == 10
+    assert tu.total == 160
     db.insert_session_token_usage(
         task_id="T1", agent="code_reviewer", session_id="s1", executor="codex",
         token_usage=tu,

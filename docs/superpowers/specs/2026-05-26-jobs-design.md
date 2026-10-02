@@ -254,11 +254,22 @@ Non-persistent jobs (`persistent=false`) are bound by their `max_runtime_seconds
 
 ### 5.2 Daemon shutdown
 
-Same shape as the current SR shutdown path (`terminate_all_inflight`):
+Implemented shutdown protocol (`TaskQueue.stop` + `terminate_all_inflight`):
 
-1. Snapshot in-flight subprocess registry, SIGTERM each.
-2. 5 s grace, then SIGKILL any still alive.
-3. Await runner background tasks (with timeout) so they persist terminal state before per-org DBs close.
+1. Permanently stop task-queue consumers and producer admission first. A job's
+   terminal resume hook therefore cannot claim or buffer its blocked waiter
+   during teardown.
+2. Snapshot the in-flight subprocess registry and install
+   `daemon_shutdown` overrides for the whole snapshot before the first
+   SIGTERM. An existing/concurrent `task_ended` override has precedence.
+3. Signal each process that is still running. If it exited naturally in the
+   snapshot-to-signal window or the process group is already gone, remove only
+   the shutdown override installed here and retain the natural result.
+4. After the 5 s grace, SIGKILL any survivor, then await runner background
+   tasks (with timeout) so `failed/daemon_shutdown` plus the real exit code is
+   persisted before per-org DBs close.
+5. Leave the waiter `in_progress(blocked_on_job)` for the existing startup
+   Branch 3 / lifespan scan to resume once through queue deduplication.
 
 ### 5.3 Startup recovery
 
@@ -266,7 +277,7 @@ For each org on daemon startup, scan for `status=running` rows (left over from a
 
 **Stale never-started pending observation (THR-195).** On the same daemon startup, the daemon runs a READ-ONLY observation for `status='pending' AND started_at IS NULL` rows older than a justified threshold (`STALE_PENDING_JOB_MAX_AGE`, 7 days — far beyond the synchronous auto-run dispatch window; the only legitimate long-lived `pending` class is a review-gated job awaiting founder action, and one past the threshold is exactly what the consumer should see). Findings are logged as a startup warning per org. This is **observation only — never an automatic reaper/retry/cancel mechanism**: no row is mutated, no task is resumed, no notification is sent. The scan is **registry-wide** (`RuntimeDir.iter_org_roots`), covering every current org root — including a DB-bearing org whose `OrgState.load` failed (`broken_orgs`), which the loaded-org set `state.orgs` omits. Observation opens **genuine read-only SQLite connections** (`scan_stale_pending_jobs_readonly`), never `Database(db_path)`: it cannot create a missing DB, cannot enable WAL, and cannot run schema migration guards (cleanly-closed stores are read via `immutable=1`; stores with live sidecars are read DIRECTLY via a genuine read-only WAL-aware connection (`mode=ro`) on the source itself). **The founder contract (TASK-5544) protects the durable source `happyranch.db` and `happyranch.db-wal` BYTES ONLY**: both remain **byte-identical** before/after every observation, while the SQLite WAL-index `happyranch.db-shm` may be **created, modified, or removed** by read-side WAL access as transient reader/lock/index behavior — explicitly permitted, and no `-shm` existence/hash/mtime identity is ever asserted. **No snapshot or temporary directory is ever created** — the temporary snapshot/copy machinery was retired in the fourth-round correction. **Startup-safe seam:** each org root is observed independently; a per-org observation failure (malformed file, legacy/pre-migration schema without a `jobs` table, a locked DB, or any other SQLite read error) is **logged with org/root/error context** and that org reports empty — it **cannot abort daemon startup and cannot suppress the other org roots**, and failures are never swallowed silently. An org seeded by `orgs init` (which materializes `org/teams.yaml` before any `happyranch.db`) has nothing to observe and is reported as empty without creating anything; an EXISTING pre-migration/legacy store is never migrated or altered (`.db` bytes and schema unchanged; `-wal` bytes unchanged; only the permitted `-shm` shared-memory surface may appear/change across scans), and a malformed/irrelevant store **fails closed at the leaf** (raises) without durable mutation — the all-org coordinator isolates that failure — so observation cannot durably mutate any org. Rationale: on the auto-run path the dispatch handoff is synchronous — a row still `pending` after the submit response has never been dispatched — and when the handoff fails validation (e.g. `409 cwd_missing` from a bad `cwd_hint`; see KB `job-cwd-hint-is-a-relative-path-not-a-note`) the submit route re-raises to the caller and the row stays `pending` forever, silently stranding the owning task's bookkeeping (THR-195 JOB-155/191/193/201, JOB-002/003/004).
 
-**Founder-authorized reconciliation seam (THR-195, one-time).** The mutation half is a narrowly factored internal lifecycle seam (`runtime/daemon/never_started_job_reconciliation.py`), NOT wired into any periodic loop. Invoked only with explicit founder authority, it first proves a candidate is `pending` + `started_at IS NULL` + older than the threshold + owned by a TERMINAL task with no `executor_pid` / `current_session_id`, then terminalizes it via the store's guarded `pending AND started_at IS NULL → failed` transition (`transition_never_started_job_to_failed`) and writes a durable `job_reconciled_orphaned` audit row carrying before/after lifecycle state. The guarded transition and the audit row are **one atomic transaction** (the transition's UPDATE is left uncommitted; the audit row uses `insert_audit_log_uncommitted`; a single `commit()` makes both durable together, and any audit/commit failure rolls both back) — a terminalized job can never survive without its durable non-live-proof recovery record. A non-terminal owning task (e.g. `in_progress(blocked_on_job)` like TASK-1435/JOB-190) is categorically refused: its blocker remains a live founder-review decision under the existing lifecycle.
+The one-time reconciliation seam was retired under THR-274 seq38; no code path mutates never-started pending rows, and the observation above remains observation-only.
 
 ## 6. Data model
 
@@ -614,7 +625,11 @@ Rename of `scripts_runner.py` with three behavioral changes:
 2. **Output-size cap.** The `_pump_stream` helper gains a `max_bytes: int | None` parameter. When `byte_counter[0] >= max_bytes`, the pump triggers a kill signal back to the parent (via an `asyncio.Event` shared with the runner), and the runner SIGTERM-then-SIGKILL the subprocess with `kill_reason=output_cap`. The pump continues draining whatever's already buffered, then exits.
 3. **Task-terminal kill API.** A new module-level function `terminate_jobs_for_task(task_id: str)` returns the in-flight JOB-NNN ids matching that task, sends SIGTERM to each (5 s grace), then SIGKILL. Called from the task-status update path (§11).
 
-The in-flight registry, `register_runner_task`, `terminate_all_inflight`, the shutdown await pattern, and `recover_orphaned_running_scripts` (renamed `recover_orphaned_running_jobs`) all carry over unchanged in behavior.
+The in-flight registry, `register_runner_task`, shutdown await pattern, and
+`recover_orphaned_running_scripts` (renamed
+`recover_orphaned_running_jobs`) carry over. `terminate_all_inflight` now
+implements §5.2's explicit `failed/daemon_shutdown` classification and queue-
+first ordering rather than recording a signal death as a natural completion.
 
 ## 11. Task-lifecycle integration
 

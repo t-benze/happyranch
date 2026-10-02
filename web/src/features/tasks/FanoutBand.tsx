@@ -16,6 +16,8 @@
 
 import type { ChildStatusCounts } from './fanout';
 import { progressSummary } from './fanout';
+import { useTranslation } from '@/hooks/i18n';
+import type { MessageKey, MessageParams } from '@/lib/i18n';
 
 export type FanoutMode = 'running' | 'joined';
 
@@ -78,13 +80,14 @@ function headline(
   mode: FanoutMode,
   width: number | null,
   counts: ChildStatusCounts | null,
+  t: (key: MessageKey, params?: MessageParams) => string,
 ): string {
   const n = width ?? counts?.total ?? 0;
   switch (mode) {
     case 'running':
-      return `Running fan-out — ${counts?.terminal ?? 0} of ${n} done`;
+      return t('tasks.fanout.running', { done: counts?.terminal ?? 0, total: n });
     case 'joined':
-      return `Fan-out joined — ${counts?.completed ?? 0} of ${n} succeeded`;
+      return t('tasks.fanout.joined', { succeeded: counts?.completed ?? 0, total: n });
   }
 }
 
@@ -102,12 +105,13 @@ export function FanoutBand({
   width,
   counts,
 }: FanoutBandProps): JSX.Element {
+  const { locale, t, render } = useTranslation();
   const tone = toneClasses(mode);
   const n = width ?? counts?.total ?? 0;
 
   return (
     <section
-      aria-label="Fan-out status"
+      aria-label={t('tasks.fanout.label')}
       className="border-border-default bg-surface-raised mt-4 rounded-xl border p-4"
     >
       <div className="flex items-start gap-3">
@@ -116,20 +120,19 @@ export function FanoutBand({
         </span>
         <div className="min-w-0 flex-1">
           <p className={`text-sm font-semibold ${tone.title}`}>
-            {headline(mode, width, counts)}
+            {headline(mode, width, counts, t)}
           </p>
 
           {mode === 'running' && (
             <>
               <p className="text-text-muted mt-1 text-xs">
-                Parent resumes automatically once every subtask reaches a
-                terminal state.
+                {t('tasks.fanout.runningNote')}
               </p>
               {counts && (
                 <>
                   <ProgressBar counts={counts} />
                   <p className="text-text-secondary mt-1.5 font-mono text-xs tabular-nums">
-                    {progressSummary(counts)}
+                    {progressSummary(counts, locale)}
                   </p>
                 </>
               )}
@@ -138,13 +141,11 @@ export function FanoutBand({
 
           {mode === 'joined' && counts && (
             <p className="text-text-muted mt-1 text-xs">
-              Parent resumed and completed once all subtasks reached a terminal
-              state.
+              {t('tasks.fanout.joinedNote')}
               {counts.failed > 0 && (
                 <>
                   {' '}
-                  {counts.failed} subtask{counts.failed === 1 ? '' : 's'} did not
-                  succeed.
+                  {t('tasks.fanout.failedSubtasks', { count: counts.failed })}
                 </>
               )}
             </p>
@@ -158,10 +159,14 @@ export function FanoutBand({
       {(mode === 'running' || mode === 'joined') && n > 0 && (
         <div className="border-border-subtle text-text-muted mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t pt-2 text-xs">
           <span>
-            Width <span className="text-text-secondary tabular-nums">{n}</span>
+            {render('tasks.fanout.width', {
+              value: <span className="text-text-secondary tabular-nums">{n}</span>,
+            })}
           </span>
           <span>
-            Join <span className="text-text-secondary font-mono">all-terminal</span>
+            {render('tasks.fanout.join', {
+              value: <span className="text-text-secondary font-mono">all-terminal</span>,
+            })}
           </span>
         </div>
       )}

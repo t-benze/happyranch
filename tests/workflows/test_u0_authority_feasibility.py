@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import hashlib
 import json
 import sqlite3
 import threading
@@ -17,174 +16,6 @@ from fastapi import HTTPException
 from runtime.models import CompletionReport
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator.chain import build_prior_leg_context
-
-
-@dataclasses.dataclass(frozen=True)
-class _U0HostedSourceContract:
-    """Pinned source contracts for PR845 and its recorded hosted merge.
-
-    These are intentionally a closed set.  The evidence scenarios must not
-    silently accept a source whose prompt or teardown behavior is unknown.
-    """
-
-    expanded_prior_steps: bool
-    teardown_scratch_report: bool
-
-
-def _u0_hosted_source_contract() -> _U0HostedSourceContract:
-    """Select the exact, independently recorded PR or hosted-merge contract."""
-    import runtime.orchestrator.orchestrator as orchestrator_module
-    import runtime.orchestrator.run_step as run_step_module
-
-    source_pair = (
-        hashlib.sha256(Path(run_step_module.__file__).read_bytes()).hexdigest(),
-        hashlib.sha256(Path(orchestrator_module.__file__).read_bytes()).hexdigest(),
-    )
-    contracts = {
-        # PR845 e1e2c676: compact prior-step records; no teardown reporter.
-        ("3f201e4763f1f48b81f1656078b07332e656857e1b4629e4507e1f50189e3566",
-         "0c84c2d8af5de8fada6b64771c5a94f65f3e6cb28be1a9176d238b26b6ce0369"):
-            _U0HostedSourceContract(False, False),
-        # Recorded synthetic merge f08d99b tree 536d81be: both behaviors land
-        # from its main parent.  These are source bytes, not test observations.
-        ("e6b5b869b3ec3f1a6e597594b9e27f5e48dad4ff9f361646d19c924d771ea86e",
-         "65606c50ee41224fdb8fe48193adffd045a0d6977fd7eed7e4342c0ec876e73d"):
-            _U0HostedSourceContract(True, True),
-        # Current PR845 evidence venue: source bytes from the authenticated
-        # `13ea23be` main-derived tree inspected for this correction.  Its
-        # expanded prior-step serializer and teardown report are exercised
-        # below; this hash pair prevents a later source drift from borrowing
-        # those expectations.
-        ("6e474df928458a7a122003722957a16853c6f81799c375a2d68273a6da30aa3e",
-         "4dd0550d39b80375a2ddaea2c045272f41c40cb84a904542eb50950670295b11"):
-            _U0HostedSourceContract(True, True),
-        # Hosted ``pull_request`` merge venue for review-visible base
-        # ``8074f3b7``: the published PR head merged into current ``main``
-        # ``d49d2725fc008543a7e4e5ed73ff5afbc7d7a188`` (tree
-        # ``49f5a6e40e36e1f480bfc0024eb14e81eba4e7dd``).  The only
-        # ``13ea23be..d49d2725`` orchestrator-directory delta is the
-        # config-gated workspace-cleanup reclamation context appended to the
-        # prompt before launch plus three cleanup helpers in ``run_step.py``;
-        # ``orchestrator.py`` is byte-identical and the prior-step serializer
-        # and teardown reporter definitions are unchanged.  The added hook is
-        # disabled under the default config
-        # ``workspace_cleanup_reclamation_actions_enabled=False``, so the same
-        # (expanded prior steps, teardown scratch report) behavior holds.  This
-        # pair is reproduced at the disposable hosted-merge venue recorded in
-        # ``output/TASK-8659/hosted-venue.json``.
-        ("53fab381e3a09e41b86ba5b35df2cc710aaaa9408407be35ef0745d100f01670",
-         "4dd0550d39b80375a2ddaea2c045272f41c40cb84a904542eb50950670295b11"):
-            _U0HostedSourceContract(True, True),
-        # Current remote-main applicability venue at ``0614246b`` (tree
-        # ``be2101d343832c7947d04cb64b31981b957e0797``), inspected before a
-        # renewed PR845 hosted merge.  The intervening authority-policy v2
-        # admission/receipt work changes both module byte digests, but retains
-        # the expanded prior-step serializer and the teardown scratch reporter.
-        # The still-live synthetic merge ref ``f4bab292`` uses the preceding
-        # accepted pair above; this additional pair prevents a refreshed merge
-        # against current main from borrowing expectations by default.
-        ("0a5c6b19e7ca10503cba77489102564d971a4234872090f1b35fc43ac21757ff",
-         "972660d78706ef6d0d955e5c729642c4f80c7654f78fc69cabf223702834426c"):
-            _U0HostedSourceContract(True, True),
-        # Current ``fbad23f2`` main after PR897: its terminal-worktree
-        # reclamation delta leaves the expanded prior-step serializer and
-        # teardown scratch reporter definitions and direct call sites intact.
-        ("66980e58bcd0a60e0fe5bc12d55644d700ba04975ce97e18718533c8227e5735",
-         "9fcc840b1f227e0a7b5710b598ec2f037526b96511ddbacb2d058f8888b3e948"):
-            _U0HostedSourceContract(True, True),
-        # Slice B changes orchestrator only; both source behaviors remain
-        # verified at the founder-approved integrated venue.
-        ("66980e58bcd0a60e0fe5bc12d55644d700ba04975ce97e18718533c8227e5735",
-         "421ba7994c4cc9a50e365178b4a3a36e4f4d36eaeff40bea72cb7d1b6b59bea2"):
-            _U0HostedSourceContract(True, True),
-        # PR899's intentional synthetic merge with current main retains the
-        # expanded prior-step serializer and teardown scratch reporter.
-        ("66980e58bcd0a60e0fe5bc12d55644d700ba04975ce97e18718533c8227e5735",
-         "ec3f217c5857440daf3afc7d379ac8a7d3c33cfc6bd149e5ab1649d1ad23c5e8"):
-            _U0HostedSourceContract(True, True),
-        # PR900 changes run_step only; both source behaviors remain verified.
-        ("318bb4504ffc25f6192c25b05e93bce910499156fe783e95935bea60f1734741",
-         "9fcc840b1f227e0a7b5710b598ec2f037526b96511ddbacb2d058f8888b3e948"):
-            _U0HostedSourceContract(True, True),
-        # Fresh current main plus Slice B changes both source digests while
-        # retaining the same independently verified behavior.
-        ("318bb4504ffc25f6192c25b05e93bce910499156fe783e95935bea60f1734741",
-         "421ba7994c4cc9a50e365178b4a3a36e4f4d36eaeff40bea72cb7d1b6b59bea2"):
-            _U0HostedSourceContract(True, True),
-        # PR899 after PR900 changes run_step only; both behaviors remain verified.
-        ("318bb4504ffc25f6192c25b05e93bce910499156fe783e95935bea60f1734741",
-         "ec3f217c5857440daf3afc7d379ac8a7d3c33cfc6bd149e5ab1649d1ad23c5e8"):
-            _U0HostedSourceContract(True, True),
-        # Slice B integrated after PR899 retains both verified U0 behaviors.
-        ("318bb4504ffc25f6192c25b05e93bce910499156fe783e95935bea60f1734741",
-         "388b019dbbecf22a912c92f38022f4a771ad0e3daafcc372ef81610fac1fc834"):
-            _U0HostedSourceContract(True, True),
-    }
-    try:
-        return contracts[source_pair]
-    except KeyError as error:
-        raise AssertionError(
-            "unverified U0 source contract: run_step/orchestrator sha256="
-            f"{source_pair!r}"
-        ) from error
-
-
-def test_u0_hosted_source_contract_accepts_post_pr899_slice_b_merge() -> None:
-    """The exact post-PR899 Slice B pair selects its recorded U0 behaviors."""
-    import runtime.orchestrator.orchestrator as orchestrator_module
-    import runtime.orchestrator.run_step as run_step_module
-
-    source_pair = (
-        hashlib.sha256(Path(run_step_module.__file__).read_bytes()).hexdigest(),
-        hashlib.sha256(Path(orchestrator_module.__file__).read_bytes()).hexdigest(),
-    )
-    assert source_pair == (
-        "318bb4504ffc25f6192c25b05e93bce910499156fe783e95935bea60f1734741",
-        "388b019dbbecf22a912c92f38022f4a771ad0e3daafcc372ef81610fac1fc834",
-    )
-    assert _u0_hosted_source_contract() == _U0HostedSourceContract(True, True)
-
-
-def test_u0_hosted_source_contract_rejects_unknown_source_pair(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An unrecorded source pair must refuse, never borrow a default contract.
-
-    The real pinned venues are exercised by the existing authority scenarios;
-    this control proves the closed set has no permissive fallback: arbitrary
-    unknown bytes raise the same ``unverified U0 source contract`` refusal
-    instead of mapping to ``(True, True)`` or any other accepted behavior.
-    """
-    import runtime.orchestrator.orchestrator as orchestrator_module
-    import runtime.orchestrator.run_step as run_step_module
-
-    unknown_run_step = tmp_path / "run_step.py"
-    unknown_orchestrator = tmp_path / "orchestrator.py"
-    unknown_run_step.write_bytes(b"# unrecorded run_step source\n")
-    unknown_orchestrator.write_bytes(b"# unrecorded orchestrator source\n")
-    monkeypatch.setattr(run_step_module, "__file__", str(unknown_run_step))
-    monkeypatch.setattr(orchestrator_module, "__file__", str(unknown_orchestrator))
-    with pytest.raises(AssertionError, match="unverified U0 source contract"):
-        _u0_hosted_source_contract()
-
-
-@pytest.fixture(autouse=True)
-def _canonical_pair_for_contained_launches(monkeypatch: pytest.MonkeyPatch) -> None:
-    from tests.daemon import test_task_producer_containment as containment
-
-    original_make_orch = containment._make_orch
-
-    def make_orch_with_pair(*args, **kwargs):
-        result = original_make_orch(*args, **kwargs)
-        paths = result[0]._paths
-        for agent_name in ("engineering_head", "dev_agent"):
-            workspace = paths.workspaces_dir / agent_name
-            workspace.mkdir(parents=True, exist_ok=True)
-            (workspace / "AGENTS.md").write_text("# Test agent instructions\n")
-            (workspace / "CLAUDE.md").symlink_to("AGENTS.md")
-        return result
-
-    monkeypatch.setattr(containment, "_make_orch", make_orch_with_pair)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1141,10 +972,12 @@ def test_actual_manage_agent_route_serializes_same_hash_writers_at_lock(tmp_path
     assert len([r for r in org_state.db.get_audit_logs("TASK-U0") if r["action"] == "agent_managed"]) == 1
 
 
-def test_diagnostic_parent_dispatches_child_through_real_queue(tmp_path, monkeypatch) -> None:
-    """Diagnostic queue control only: replacing `_run_agent` bypasses launch proof."""
+def _run_diagnostic_parent_dispatch(
+    tmp_path, monkeypatch, *, publish_session_binding: bool,
+):
+    """Drive the queue diagnostic with or without the executor-owned binding."""
     from runtime.daemon.dispatcher import Dispatcher
-    from runtime.models import CompletionReport, NextStep, TaskRecord, TaskStatus
+    from runtime.models import CompletionReport, NextStep, TaskRecord
     from runtime.orchestrator.executors import ExecutorResult
 
     org_state = _org_state(tmp_path)
@@ -1162,13 +995,23 @@ def test_diagnostic_parent_dispatches_child_through_real_queue(tmp_path, monkeyp
 
     def recording_executor(task_id, agent, prompt, on_session_started=None):
         launches.append((task_id, agent))
+        result = ExecutorResult(
+            success=True, session_id=f"sess-{task_id}", duration_seconds=0,
+        )
+        if publish_session_binding:
+            org_state.db.update_task(
+                task_id, assigned_agent=agent,
+                current_session_id=result.session_id,
+            )
+            if on_session_started is not None:
+                on_session_started(task_id, agent, result.session_id)
         decision = (
             NextStep(action="delegate", agent="dev_agent", prompt="bounded child")
             if task_id == "TASK-U0-PARENT" and launches.count((task_id, agent)) == 1
             else NextStep(action="done", summary="child completed")
         )
         return (
-            ExecutorResult(success=True, session_id=f"sess-{task_id}", duration_seconds=0),
+            result,
             CompletionReport(
                 task_id=task_id, agent=agent, status="completed", confidence=100,
                 output_summary=decision.summary or "delegate", decision=decision,
@@ -1176,11 +1019,22 @@ def test_diagnostic_parent_dispatches_child_through_real_queue(tmp_path, monkeyp
         )
 
     monkeypatch.setattr(org_state.orchestrator, "_run_agent", recording_executor)
-    # This is the actual daemon queue/dispatcher path, but this deliberately
-    # replaces `_run_agent`; it cannot establish session binding, scratch,
-    # validator, contained supervisor launch, or DB completion readback.
+    # This is the actual daemon queue/dispatcher path.  The positive variant
+    # mirrors the real launch's durable session binding, but replacing
+    # `_run_agent` still bypasses scratch, validation, contained supervisor
+    # launch, and DB completion readback.
     org_state._u0_daemon_state.queue.enqueue("alpha", parent.id)
     asyncio.run(org_state._u0_daemon_state.queue.drain_sync(Dispatcher(org_state._u0_daemon_state)))
+    return org_state, parent, launches
+
+
+def test_diagnostic_parent_dispatches_child_through_real_queue(tmp_path, monkeypatch) -> None:
+    """The diagnostic fake publishes the same durable binding as a real launch."""
+    from runtime.models import TaskStatus
+
+    org_state, parent, launches = _run_diagnostic_parent_dispatch(
+        tmp_path, monkeypatch, publish_session_binding=True,
+    )
 
     children = org_state.db.get_children(parent.id)
     assert len(children) == 1
@@ -1192,6 +1046,26 @@ def test_diagnostic_parent_dispatches_child_through_real_queue(tmp_path, monkeyp
         (parent.id, "engineering_head"),
     ]
     assert child.status is TaskStatus.COMPLETED
+
+
+def test_diagnostic_parent_missing_session_binding_drops_lost_claim(
+    tmp_path, monkeypatch,
+) -> None:
+    """A fake that omits launch publication cannot persist or enqueue a child."""
+    from runtime.models import BlockKind, TaskStatus
+
+    org_state, parent, launches = _run_diagnostic_parent_dispatch(
+        tmp_path, monkeypatch, publish_session_binding=False,
+    )
+
+    assert org_state.db.get_children(parent.id) == []
+    assert org_state._u0_daemon_state.queue._queue.empty()
+    current = org_state.db.get_task(parent.id)
+    assert current is not None
+    assert current.status is TaskStatus.IN_PROGRESS
+    assert current.block_kind is None
+    assert current.current_session_id is None
+    assert launches == [(parent.id, "engineering_head")]
 
 
 def test_contained_queue_dispatch_callback_readback_and_parent_resume(tmp_path, monkeypatch) -> None:
@@ -1299,6 +1173,14 @@ def test_r1_termination_before_validate_denies_real_contained_delegation(tmp_pat
                           sessions=tracker, settings=orch._settings,
                           teams_lock=asyncio.Lock(), db_lock=asyncio.Lock(),
                           event_bus=EventSink())
+    from runtime.infrastructure.workflow_schema import install_or_recover
+    from runtime.workflows.authority import WorkflowAuthorityCoordinator
+    install_or_recover(db)
+    db.upsert_org_setting("reviewer_agents", '["engineering_head"]')
+    org.workflow_authority = WorkflowAuthorityCoordinator(
+        db=db, org_slug="test", root=paths.root, teams=orch._teams,
+    )
+    org.workflow_authority.recover_or_publish(publisher="u0-test-setup")
     # A separate active manager session owns the authority writer; it cannot
     # be mistaken for the parent invocation whose decision is being consumed.
     db.insert_task(TaskRecord(id="TASK-U0-AUTH", team="engineering", brief="authority writer",
@@ -2380,27 +2262,23 @@ def test_r1_chain_cancel_before_first_callback_rejects_late_result(
         key: value for key, value in after_cancel.items() if key != "audits"
     }
     assert final["audits"][parent_id] == after_cancel["audits"][parent_id]
-    contract = _u0_hosted_source_contract()
-    expected_tail = 2 if contract.teardown_scratch_report else 1
+    expected_tail = 2
     assert final["audits"][first][:-expected_tail] == after_cancel["audits"][first]
     terminal_tail = final["audits"][first][-expected_tail:]
-    if contract.teardown_scratch_report:
-        scratch_audit, session_end = terminal_tail
-        # Teardown reports its bounded scratch observation before the session
-        # terminal audit. Keep the complete new row in-order, never filtered.
-        assert set(scratch_audit) == {"id", "task_id", "agent", "action", "payload", "timestamp"}
-        assert scratch_audit["task_id"] == first
-        assert scratch_audit["agent"] == "dev_agent"
-        assert scratch_audit["action"] == "task_scratch_report"
-        _assert_source_owned_scratch_audit(
-            audit=scratch_audit, observations=scratch_audit_observations,
-            task_id=first, agent="dev_agent",
-            session_id=next(session_id for task_id, _agent, session_id, *_rest in launches
-                            if task_id == first),
-            workspace=paths.workspaces_dir / "dev_agent",
-        )
-    else:
-        (session_end,) = terminal_tail
+    scratch_audit, session_end = terminal_tail
+    # Teardown reports its bounded scratch observation before the session
+    # terminal audit. Keep the complete new row in-order, never filtered.
+    assert set(scratch_audit) == {"id", "task_id", "agent", "action", "payload", "timestamp"}
+    assert scratch_audit["task_id"] == first
+    assert scratch_audit["agent"] == "dev_agent"
+    assert scratch_audit["action"] == "task_scratch_report"
+    _assert_source_owned_scratch_audit(
+        audit=scratch_audit, observations=scratch_audit_observations,
+        task_id=first, agent="dev_agent",
+        session_id=next(session_id for task_id, _agent, session_id, *_rest in launches
+                        if task_id == first),
+        workspace=paths.workspaces_dir / "dev_agent",
+    )
     assert session_end["action"] == "session_end"
     assert session_end["task_id"] == first
     assert session_end["agent"] == "dev_agent"
@@ -3186,15 +3064,21 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         assert all(both_launched_snapshot["results"][child] == [] for child in children)
         assert held_spawn["active_fanout"] == both_launched_snapshot["active_fanout"]
         # Launch adds only each child's source-owned scratch manifest/lock and
-        # live session/control; attachment and canonical/team/archive bytes
-        # remain in the same identity/path domain through this boundary.
+        # live session/control; the remaining files are the exact
+        # ContextBuilder-provisioned workspace shape.  Attachment and
+        # canonical/team/archive bytes remain in the same identity/path domain
+        # through this boundary.
         for surface in ("attachments", "canonical_agents", "archived_agents",
                         "archived_workspaces", "teams_bytes"):
             assert both_launched_snapshot[surface] == held_spawn[surface]
         assert both_launched_snapshot["controls"][parent_id] is False
         assert all(both_launched_snapshot["controls"][child] is True for child in children)
         assert set(both_launched_snapshot["workspaces"]["dev_agent"]) == {
-            "AGENTS.md", "CLAUDE.md", "agent.yaml", "task_history.md",
+            ".claude/settings.json",
+            "AGENTS.md",
+            "CLAUDE.md",
+            "memory/_index.md",
+            "task_history.md",
         } | {
             item for child in children
             for item in (f".happyranch/task-scratch-manifests/{child}.json",
@@ -3351,20 +3235,14 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     assert all(call["manager_name"] == "engineering_head" and call["self_only"] is False
                for call in role_guidance_calls)
     assert role_guidance_calls[0]["prior_steps"] == []
-    if _u0_hosted_source_contract().expanded_prior_steps:
-        expected_prior_steps = [
-            (1, "dev_agent", "delegate [TASK-001]: plain zero",
-             "task_id=TASK-001; status=completed; verdict=PASS; "
-             "revisit_of_task_id=(none); reason=report:TASK-001", True),
-            (2, "dev_agent", "delegate [TASK-002]: plain one",
-             "task_id=TASK-002; status=completed; verdict=PASS; "
-             "revisit_of_task_id=(none); reason=report:TASK-002", True),
-        ]
-    else:
-        expected_prior_steps = [
-            (1, "dev_agent", "delegate: plain zero", "report:TASK-001", True),
-            (2, "dev_agent", "delegate: plain one", "report:TASK-002", True),
-        ]
+    expected_prior_steps = [
+        (1, "dev_agent", "delegate [TASK-001]: plain zero",
+         "task_id=TASK-001; status=completed; verdict=PASS; "
+         "revisit_of_task_id=(none); reason=report:TASK-001", True),
+        (2, "dev_agent", "delegate [TASK-002]: plain one",
+         "task_id=TASK-002; status=completed; verdict=PASS; "
+         "revisit_of_task_id=(none); reason=report:TASK-002", True),
+    ]
     assert [(step.step_number, step.agent, step.action, step.result_summary, step.success)
             for step in role_guidance_calls[1]["prior_steps"]] == expected_prior_steps
     assert joins[0]["payload"] == {
@@ -4152,25 +4030,20 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
         if task_id != live:
             assert appended_audits == []
         else:
-            contract = _u0_hosted_source_contract()
-            assert [audit["action"] for audit in appended_audits] == (
-                ["task_scratch_report", "session_end"]
-                if contract.teardown_scratch_report else ["session_end"]
+            assert [audit["action"] for audit in appended_audits] == [
+                "task_scratch_report", "session_end",
+            ]
+            scratch_audit, session_end = appended_audits
+            assert set(scratch_audit) == {"id", "task_id", "agent", "action", "payload", "timestamp"}
+            assert scratch_audit["task_id"] == live
+            assert scratch_audit["agent"] == "dev_agent"
+            _assert_source_owned_scratch_audit(
+                audit=scratch_audit, observations=scratch_audit_observations,
+                task_id=live, agent="dev_agent",
+                session_id=next(entry["session_id"] for entry in launches
+                                if entry["task_id"] == live),
+                workspace=paths.workspaces_dir / "dev_agent",
             )
-            if contract.teardown_scratch_report:
-                scratch_audit, session_end = appended_audits
-                assert set(scratch_audit) == {"id", "task_id", "agent", "action", "payload", "timestamp"}
-                assert scratch_audit["task_id"] == live
-                assert scratch_audit["agent"] == "dev_agent"
-                _assert_source_owned_scratch_audit(
-                    audit=scratch_audit, observations=scratch_audit_observations,
-                    task_id=live, agent="dev_agent",
-                    session_id=next(entry["session_id"] for entry in launches
-                                    if entry["task_id"] == live),
-                    workspace=paths.workspaces_dir / "dev_agent",
-                )
-            else:
-                (session_end,) = appended_audits
             assert session_end["task_id"] == live and session_end["agent"] == "dev_agent"
     for surface in ("attachments", "results", "sessions", "pids", "controls", "queue", "canonical_agents", "archived_agents", "workspaces", "archived_workspaces", "teams_bytes", "active_fanout", "active_chain"):
         assert final[surface] == after[surface]

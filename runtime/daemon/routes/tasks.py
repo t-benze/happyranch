@@ -36,6 +36,7 @@ from runtime.infrastructure.task_attachment_store import (
     sanitize_display_name,
 )
 from runtime.models import BlockKind, TaskAttachmentRecord, TaskAttachmentRef, TaskRecord, TaskStatus
+from runtime.orchestrator.escalation_reason import derive_current_escalation_reason
 
 logger = logging.getLogger(__name__)
 
@@ -415,6 +416,10 @@ def get_task(task_id: str, org: OrgDep) -> dict:
         "blocked_on_jobs": blocked_on_jobs,
         "active_chain": active_chain,
         "superseded_by_task_id": superseded_by_task_id,
+        "escalation_reason": derive_current_escalation_reason(
+            task_status=task.status.value,
+            audit_rows=org.db.get_escalation_episode_audit_tail(task_id),
+        ),
         # TASK-5522: read-only derived work-status summary. Built from the
         # task record (last_heartbeat) plus the existing audit rows
         # (session_start / progress) — no schema, no synthetic audits, no

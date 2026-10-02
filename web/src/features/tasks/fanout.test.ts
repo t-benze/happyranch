@@ -133,7 +133,7 @@ describe('progressSummary', () => {
         running: 0,
         queued: 0,
         terminal: 4,
-      }),
+      }, 'en'),
     ).toBe('4 of 4 complete');
   });
 
@@ -146,8 +146,18 @@ describe('progressSummary', () => {
         running: 2,
         queued: 1,
         terminal: 2,
-      }),
+      }, 'en'),
     ).toBe('1 of 5 complete · 2 running · 1 failed · 1 queued');
+  });
+
+  test('renders the same segments in zh-CN with the counts unchanged', () => {
+    const counts = { total: 5, completed: 1, failed: 1, running: 2, queued: 1, terminal: 2 };
+    expect(progressSummary(counts, 'zh-CN')).toBe(
+      '已完成 1/5 · 2 个运行中 · 1 个失败 · 1 个排队中',
+    );
+    expect(
+      progressSummary({ ...counts, failed: 0, running: 0, queued: 0, completed: 5 }, 'zh-CN'),
+    ).toBe('已完成 5/5');
   });
 });
 
@@ -176,13 +186,21 @@ describe('event label mapping', () => {
   }
 
   test('pretty-labels the three fan-out actions', () => {
-    expect(prettyLabel(eventLabel(ev('fanout_spawned')))).toBe('Fan-out spawned');
-    expect(prettyLabel(eventLabel(ev('fanout_join')))).toBe('Fan-out joined');
+    expect(prettyLabel(eventLabel(ev('fanout_spawned')), 'en')).toBe('Fan-out spawned');
+    expect(prettyLabel(eventLabel(ev('fanout_join')), 'en')).toBe('Fan-out joined');
+    expect(prettyLabel(eventLabel(ev('fanout_spawned')), 'zh-CN')).toBe('扇出已派生');
+    expect(prettyLabel(eventLabel(ev('fanout_join')), 'zh-CN')).toBe('扇出已汇合');
   });
 
   test('preserves ordinary event labels unchanged', () => {
-    expect(prettyLabel(eventLabel(ev('task_started')))).toBe('task_started');
-    expect(prettyLabel(eventLabel(ev('escalation')))).toBe('escalation');
+    for (const locale of ['en', 'zh-CN'] as const) {
+      // Raw audit action names are machine values: byte-identical in both locales.
+      expect(prettyLabel(eventLabel(ev('task_started')), locale)).toBe('task_started');
+      expect(prettyLabel(eventLabel(ev('escalation')), locale)).toBe('escalation');
+      expect(prettyLabel(eventLabel(ev('fanout_spawned_extra')), locale)).toBe(
+        'fanout_spawned_extra',
+      );
+    }
     // Terminal events arrive with no `action` — fall back to `type`.
     expect(
       prettyLabel(
@@ -190,6 +208,7 @@ describe('event label mapping', () => {
           timestamp: 't',
           type: 'task_complete',
         } as unknown as TaskEvent),
+        'zh-CN',
       ),
     ).toBe('task_complete');
   });

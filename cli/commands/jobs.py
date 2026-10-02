@@ -61,6 +61,9 @@ def cmd_jobs_submit(args: argparse.Namespace) -> None:
     if not _ok(r):
         return
     result = r.json()
+    if getattr(args, "json", False):
+        print(_json.dumps(result, sort_keys=True))
+        return
     print(f"ok: submitted {result['id']} (status={result['status']}). Self-block your task referencing this ID.")
 
 
@@ -104,6 +107,22 @@ def cmd_jobs_show(args: argparse.Namespace) -> None:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
     slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
+    if getattr(args, "json", False):
+        import json as _json
+        if not args.task_id or not args.session_id:
+            print(
+                "error: --json requires --task-id and --session-id",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        r = client.get(
+            f"/api/v1/orgs/{slug}/jobs/{args.job_id}/receipt",
+            params={"task_id": args.task_id, "session_id": args.session_id},
+        )
+        if not _ok(r):
+            return
+        print(_json.dumps(r.json(), sort_keys=True))
+        return
     r = client.get(f"/api/v1/orgs/{slug}/jobs/{args.job_id}")
     if not _ok(r):
         return
@@ -129,6 +148,8 @@ def cmd_jobs_show(args: argparse.Namespace) -> None:
         print()
         print(f"Exit code:    {d['exit_code']}")
         print(f"Duration:     {d['duration_ms']}ms")
+        if d.get("reason") is not None:
+            print(f"Reason:       {d['reason']}")
         if d["stdout_head"]:
             print("Stdout (head):")
             for line in d["stdout_head"].splitlines():
@@ -188,6 +209,27 @@ def cmd_jobs_output(args: argparse.Namespace) -> None:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
     slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
+    if getattr(args, "json", False):
+        import json as _json
+        if not args.task_id or not args.session_id:
+            print(
+                "error: --json requires --task-id and --session-id",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        r = client.get(
+            f"/api/v1/orgs/{slug}/jobs/{args.job_id}/receipt",
+            params={
+                "task_id": args.task_id,
+                "session_id": args.session_id,
+                "stream": args.stream,
+                "max_bytes": args.max_bytes,
+            },
+        )
+        if not _ok(r):
+            return
+        print(_json.dumps(r.json(), sort_keys=True))
+        return
     r = client.get(
         f"/api/v1/orgs/{slug}/jobs/{args.job_id}/output",
         params={"stream": args.stream, "max_bytes": args.max_bytes},
@@ -404,6 +446,7 @@ def _register_jobs_verbs(
         "--from-file", dest="from_file", required=True, help="JSON payload file"
     )
     p_submit.add_argument("--org", help="Org slug (required for agent callbacks)")
+    p_submit.add_argument("--json", action="store_true", help="Emit structured JSON")
     p_submit.set_defaults(func=wrap(cmd_jobs_submit))
 
     p_list = parent.add_parser("list", help="List jobs")
@@ -432,6 +475,9 @@ def _register_jobs_verbs(
     p_show = parent.add_parser("show", help="Show one job")
     p_show.add_argument("job_id")
     p_show.add_argument("--org")
+    p_show.add_argument("--json", action="store_true", help="Emit an authenticated structured receipt")
+    p_show.add_argument("--task-id", dest="task_id", default=None)
+    p_show.add_argument("--session-id", dest="session_id", default=None)
     p_show.set_defaults(func=wrap(cmd_jobs_show))
 
     p_reject = parent.add_parser("reject", help="Reject a pending job")
@@ -449,6 +495,9 @@ def _register_jobs_verbs(
     )
     p_output.add_argument("--max-bytes", type=int, default=1_048_576)
     p_output.add_argument("--org")
+    p_output.add_argument("--json", action="store_true", help="Emit an authenticated structured receipt")
+    p_output.add_argument("--task-id", dest="task_id", default=None)
+    p_output.add_argument("--session-id", dest="session_id", default=None)
     p_output.set_defaults(func=wrap(cmd_jobs_output))
 
     p_run = parent.add_parser("run", help="Run a pending job (TTY-gated)")
@@ -505,4 +554,3 @@ def register(sub) -> None:
     )
     scripts_sub = p_scripts.add_subparsers(dest="scripts_cmd")
     _register_jobs_verbs(scripts_sub, deprecated=True)
-

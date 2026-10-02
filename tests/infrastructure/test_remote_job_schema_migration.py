@@ -5,10 +5,12 @@ import gzip
 import hashlib
 import re
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
+import runtime.infrastructure.database as database_module
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.remote_job_schema import (
     COMPLETE_STAGE,
@@ -221,7 +223,7 @@ def _snapshot(path: Path) -> tuple[list[tuple], list[tuple], list[tuple]]:
 
 def _complete_snapshot(path: Path) -> tuple[list[tuple], dict[str, list[tuple]]]:
     """Capture every persisted schema object and row without normalizing SQL."""
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn:
         schema = conn.execute(
             "SELECT type,name,tbl_name,rootpage,sql FROM sqlite_master "
             "ORDER BY type,name"
@@ -694,6 +696,10 @@ def test_exact_untouched_merged_s2_upgrades_and_preserves_every_unrelated_byte_v
         )
         conn.commit()
     before_schema, before_rows = _complete_snapshot(path)
+    with sqlite3.connect(path) as conn:
+        before_thread_columns = conn.execute(
+            "PRAGMA table_info(thread_invocations)"
+        ).fetchall()
 
     Database(path).close()
     Database(path).close()
@@ -732,7 +738,15 @@ def test_exact_untouched_merged_s2_upgrades_and_preserves_every_unrelated_byte_v
     def unrelated(schema: list[tuple]) -> list[tuple]:
         return [
             row for row in schema
-            if row[1] not in added | {"remote_runners", "idx_task_completion_recoveries_task"}
+            if row[1] not in added | {
+                "remote_runners",
+                "idx_task_completion_recoveries_task",
+                # Usage v1 PR2 adds only executor/model to this existing table.
+                # PR2b adds only reply_message_seq plus the named partial
+                # unique index. The exact allowed DDL delta is asserted below.
+                "thread_invocations",
+                "idx_thread_invocations_reply_message",
+            }
             and row[2] not in {
                 "remote_runners",
                 "remote_runner_enrollment_challenges",
@@ -744,6 +758,23 @@ def test_exact_untouched_merged_s2_upgrades_and_preserves_every_unrelated_byte_v
         if table not in {"remote_runners", "remote_runner_schema_migrations"}:
             assert after_rows[table] == rows
     with sqlite3.connect(path) as conn:
+        after_thread_columns = conn.execute(
+            "PRAGMA table_info(thread_invocations)"
+        ).fetchall()
+        assert after_thread_columns[:-3] == before_thread_columns
+        assert [column[1:] for column in after_thread_columns[-3:]] == [
+            ("executor", "TEXT", 0, None, 0),
+            ("model", "TEXT", 0, None, 0),
+            ("reply_message_seq", "INTEGER", 0, None, 0),
+        ]
+        assert conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+            ("idx_thread_invocations_reply_message",),
+        ).fetchone() == (
+            "CREATE UNIQUE INDEX idx_thread_invocations_reply_message "
+            "ON thread_invocations(thread_id, reply_message_seq) "
+            "WHERE reply_message_seq IS NOT NULL",
+        )
         assert conn.execute(
             "SELECT name,stage FROM remote_runner_schema_migrations WHERE name=?",
             (IDENTITY_MIGRATION_NAME,),
@@ -866,7 +897,7 @@ def test_identity_exact_shape_drift_refuses_before_any_mutation(
 ) -> None:
     path = tmp_path / f"identity-drift-{case_id.replace(':', '-')}.db"
     Database(path).close()
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn:
         conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute(f"DROP {kind.upper()} {name}")
         conn.execute(replacement)
@@ -876,6 +907,33 @@ def test_identity_exact_shape_drift_refuses_before_any_mutation(
         with pytest.raises(sqlite3.DatabaseError):
             Database(path)
         assert _complete_snapshot(path) == before
+
+
+def test_database_constructor_closes_owned_connection_on_schema_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "constructor-refusal.db"
+    Database(path).close()
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("DROP TABLE remote_runners")
+        conn.execute("CREATE TABLE remote_runners(id TEXT PRIMARY KEY, wrong TEXT)")
+        conn.commit()
+
+    real_connect = sqlite3.connect
+    opened: list[sqlite3.Connection] = []
+
+    def tracked_connect(*args, **kwargs):
+        connection = real_connect(*args, **kwargs)
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(database_module.sqlite3, "connect", tracked_connect)
+    with pytest.raises(sqlite3.DatabaseError, match="conflicting remote-job"):
+        Database(path)
+
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        opened[0].execute("SELECT 1")
 
 
 @pytest.mark.parametrize("table", [

@@ -9,10 +9,11 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Final, Literal
 
 from runtime.config import Settings
 from runtime.models import TokenUsage
@@ -450,6 +451,24 @@ def _claude_canonical_model(obj: dict) -> str | None:
     return legacy if isinstance(legacy, str) and legacy else None
 
 
+@dataclass(frozen=True)
+class ParserUsageSemantics:
+    """Declared interpretation of one built-in parser's stored usage fields."""
+
+    reasoning: Literal["in_output", "separate", "absent"]
+
+
+# Usage consumers derive provider-independent output from this declaration.
+# Custom/generic executors are intentionally absent: their reasoning contract
+# is unknown unless and until their parser semantics are declared here.
+PARSER_USAGE_SEMANTICS: Final[Mapping[str, ParserUsageSemantics]] = MappingProxyType({
+    "claude": ParserUsageSemantics(reasoning="in_output"),
+    "codex": ParserUsageSemantics(reasoning="in_output"),
+    "opencode": ParserUsageSemantics(reasoning="separate"),
+    "pi": ParserUsageSemantics(reasoning="in_output"),
+})
+
+
 def _parse_claude_usage(stdout: str) -> TokenUsage | None:
     """Parse Claude Code's `--output-format json` stdout into TokenUsage.
 
@@ -690,11 +709,13 @@ def _parse_claude_terminal_error(stdout: str, stderr: str) -> str | None:
 def _parse_codex_usage(stdout: str) -> TokenUsage | None:
     """Parse Codex `exec --json` NDJSON event stream into TokenUsage.
 
-    Walks events, picks the last `turn.completed` — the terminal event that
-    carries the cumulative ``usage`` object in Codex >= 0.137 (confirmed
-    against codex-cli 0.137.0 and 0.139.0 live output). Returns None on empty
-    stdout, TokenUsage with NULL token fields if no terminal usage event is
-    found (forensic preservation), populated TokenUsage on success.
+    Walks events and picks the last `turn.completed`. Its terminal ``usage``
+    object reports the current turn only (while aggregating work performed
+    within that turn), not cumulative usage across a resumed conversation.
+    This is confirmed for codex-cli 0.153.4 by the two-turn resume regression.
+    Returns None on empty stdout, TokenUsage with NULL token fields if no
+    terminal usage event is found (forensic preservation), and populated
+    TokenUsage on success.
 
     Note: Codex `exec --json` v0.137.0 emits no model field on any event, so
     ``model`` stays NULL (read defensively in case a later version adds it).
@@ -731,6 +752,7 @@ def _parse_codex_usage(stdout: str) -> TokenUsage | None:
         usage = {}
     raw_input = usage.get("input_tokens")
     cached = usage.get("cached_input_tokens")
+    cache_write = usage.get("cache_write_input_tokens")
     # Fix B (issue #216): Codex input_tokens is inclusive of cached_input_tokens.
     # Normalize to net-fresh so churn = input+output+reasoning is apples-to-apples
     # across executors and cache is never double-counted.
@@ -742,7 +764,7 @@ def _parse_codex_usage(stdout: str) -> TokenUsage | None:
         input_tokens=net_input,
         output_tokens=usage.get("output_tokens"),
         cache_read_tokens=usage.get("cached_input_tokens"),
-        cache_creation_tokens=None,
+        cache_creation_tokens=cache_write if type(cache_write) is int else None,
         reasoning_tokens=usage.get("reasoning_output_tokens"),
         model=last_complete.get("model"),
         usage_raw_json=json.dumps(last_complete),

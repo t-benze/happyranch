@@ -283,18 +283,12 @@ async def test_worker_loop_records_tick_on_run_step_exception() -> None:
             pass
 
     queue.enqueue("alpha", "task-fail")
-    worker = asyncio.create_task(queue._worker_loop(FailDispatcher()))
-    # Give the worker time to pick up and process the item (the exception
-    # is caught internally so the loop continues and blocks on _queue.get).
-    await asyncio.sleep(0.2)
-    # Signal stop + unblock _queue.get() with a sentinel so the loop exits.
-    queue._stopping = True
-    queue.enqueue("alpha", "task-sentinel")
-    try:
-        await asyncio.wait_for(worker, timeout=3.0)
-    except asyncio.TimeoutError:
-        worker.cancel()
-        raise
+    queue.start_workers(FailDispatcher(), n=1)
+    for _ in range(100):
+        if "run_step_worker" in registry._loops:
+            break
+        await asyncio.sleep(0.01)
+    await queue.stop()
 
     assert "run_step_worker" in registry._loops
     tick = registry._loops["run_step_worker"]
@@ -322,15 +316,12 @@ async def test_worker_loop_records_tick_on_success() -> None:
             pass
 
     queue.enqueue("alpha", "task-ok")
-    worker = asyncio.create_task(queue._worker_loop(OkDispatcher()))
-    await asyncio.sleep(0.2)
-    queue._stopping = True
-    queue.enqueue("alpha", "task-sentinel")
-    try:
-        await asyncio.wait_for(worker, timeout=3.0)
-    except asyncio.TimeoutError:
-        worker.cancel()
-        raise
+    queue.start_workers(OkDispatcher(), n=1)
+    for _ in range(100):
+        if "run_step_worker" in registry._loops:
+            break
+        await asyncio.sleep(0.01)
+    await queue.stop()
 
     assert "run_step_worker" in registry._loops
     tick = registry._loops["run_step_worker"]

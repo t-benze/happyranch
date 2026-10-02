@@ -82,4 +82,14 @@ describe('openapi coverage', () => {
     const stale = [...EXCLUDED_PATHS.keys()].filter((r) => !daemonRoutes.has(r));
     expect(stale, `Stale EXCLUDED entries: ${stale.join(', ')}`).toEqual([]);
   });
+
+  test('Usage v1 read routes are browser-included', () => {
+    expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/usage/workload')).toBe(true);
+    expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/usage/efficiency')).toBe(true);
+  });
+
+  test('task-detail and dashboard escalation-reason surfaces are browser-included', () => {
+    expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/tasks/{task_id}')).toBe(true);
+    expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/dashboard/summary')).toBe(true);
+  });
 });

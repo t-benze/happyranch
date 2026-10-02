@@ -248,7 +248,7 @@ def test_manifest_has_no_deletion_consumer():
     root = Path(__file__).parents[1]
     scheduler = (root / "runtime/daemon/workspace_cleanup_scheduler.py").read_text()
     contract = (root / "runtime/orchestrator/task_scratch.py").read_text()
-    report = (root / "runtime/daemon/task_scratch_report.py").read_text()
+    report = (root / "runtime/orchestrator/task_scratch_report.py").read_text()
     assert "execute_ledger" not in scheduler
     assert "task_scratch_reclamation" not in scheduler
     assert "execute_ledger" not in report

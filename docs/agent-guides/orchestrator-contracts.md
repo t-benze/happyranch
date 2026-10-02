@@ -46,6 +46,34 @@ and skips; root is outside the scan; positive non-exempt use blocks. This is a
 snapshot with disclosed later-opener/data-loss residual, not proof of OS-wide
 absence.
 
+The scan runs only as a task-bound host-visible HappyRanch job. The procedure
+authenticates a closed-schema, non-truncated receipt binding the current
+task/session to the actual job, agent, stored command, interpreter, resolved
+cwd, timestamps, terminal result, complete output totals, and scanner coverage;
+it has no direct fallback. Complete candidate-specific task and filtered-trigger
+paging replaces the former org-wide capped-history veto. PR evidence is also
+completely paginated and repeated; open, closed-unmerged, duplicate, changing,
+conflicting, or malformed rows refuse.
+Durable preservation may be the accepted ref, an owning origin task branch
+whose head equals or descends from the candidate, an owning-task merged PR, or
+an any-task merged PR whose head independently contains the candidate. An
+existing owning branch is authoritative: non-containment or failed containment
+evidence refuses without merged-PR fallback. The
+any-task route requires complete stable double-read discovery, `MERGED` plus
+non-empty `mergedAt`, base equal to the double-read default branch, and a
+complete stable compare; discovery alone and other-task unmerged PRs never
+count. An owning branch's open or closed-unmerged PR remains a refusal. Merged
+integration may not preserve original commit topology. Whole-worktree removal still
+requires cleanliness; only a literal root dependency cache may be removed from
+an otherwise dirty worktree, after all cache gates, without changing tracked
+source bytes or Git status.
+The candidate's containing worktree must be registered at its owning primary's
+exact `.claude/worktrees/<TASK>` path on `task/<TASK>`. A complete no-follow
+`lstat` walk runs before and at action time, refusing nested mounts,
+cross-device/foreign-owned entries, protected descendants, unreadable or capped
+evidence, and identity drift. Accounting includes the root inode, and success
+requires literal candidate absence plus unchanged protected-path identities.
+
 The database-only reclamation selection helper is called only by `run_step`'s
 pre-agent hook, never by the scheduler. Supplied claim counts other than initial `0 -> 1` refuse before its
 per-read admission callback or SQL; a valid supplied pair still needs a fresh
@@ -71,10 +99,17 @@ The only candidate is the registered assigned agent's literal
 primary. Registered-agent ownership, unchanged non-symlink same-device paths,
 exact worktree registration and `task/<task-id>` branch, clean status, a HEAD
 contained by a durable remote ref, no open or closed-unmerged pull request, no
-live session/control/PID/cwd/fd reference, no latest applicable
+live session/control/PID or shared-scanner process reference, no latest applicable
 `worktree-deferred:` risk, and the shared deadline must all be proven. Any
 error, timeout, malformed response, missing or ambiguous identity, dirty or
 unpublished state, or live reference yields a typed logged preservation result.
+The process gate loads the bundled `workspace-cleanup` `check_path_use.py` by
+its explicit file path and uses its exact seq171/seq185 same-user rule as the
+single source: root-owned processes are out of scope; only exact
+name-plus-expected-cgroup helpers are exempt; another unreadable same-user
+process is uncertain; and a positive cwd/root/exe/maps/fd reference is live.
+The synchronous hook runs inside the queue's existing `run_in_executor` worker
+thread and retains the one five-second total deadline.
 Success runs literal non-force `git worktree remove <path>` and never deletes a
 branch. The helper changes no task, result, parent, or audit state; signals no
 process; enqueues nothing; raises nothing into terminal semantics; and schedules
@@ -120,7 +155,42 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   process-local event-loop protection. Synchronous unlocked segments remain
   unlocked; this does not provide global workspace-generation fencing or
   serialize external same-UID/multiprocess filesystem writers.
-- **Approval.** `POST /agents/{name}/approve` atomically moves the pending file to `org/agents/<name>.md` and bootstraps the workspace under `workspaces/<name>/`. Approved agents appear in `GET /agents` and `GET /agents/enrollments?status=approved`.
+- **Workflow-authority participation.** Supported org-scoped authority writers
+  enter the coordinator gate before `teams_lock`, durably fence around each
+  synchronous canonical mutation, and publish the next generation only from
+  their terminal success/compensation state. Multi-stage update/termination
+  retains the process gate across awaited bootstrap; startup migration retains
+  it across the batch. The durable lease and SQLite transactions never span
+  scanning, clone/network/host-launch/callback work, awaited bootstrap, snapshot
+  capture, or other canonical-input scanning. Publication failure leaves new workflow
+  admission fail-closed and is recovered at cold `OrgState.load`; it does not
+  roll back or falsify the existing route result after the legacy write
+  committed. Direct same-UID edits remain outside the cooperative guarantee.
+  Every publication is bound to the writer's invocation-owned `prepared`
+  journal before the canonical mutation. An independent coordinator may abort
+  and supersede only that pre-file state; file reservation and the final pointer
+  CAS require the same journal plus `publisher_invocation`, so a stale publisher
+  cannot adopt the newer fence. Cold recovery re-captures against the same
+  pre-file journal; an incoherent retry performs no durable write and remains
+  fenced, while a superseded retry is refused. Eligible-team selector
+  initialization during whole-runtime `DaemonState` loading covers daemon
+  startup and runtime register/switch before state publication; dynamic org
+  attachment owns the same conditional boundary separately. Raw
+  `OrgState.load` retains the coordinator's coherent recovery generation and
+  is made launch-ready by its containing supported lifecycle. Founder creation of a new-team manager and
+  pending bootstrap-manager approval initialize the selector inside the same
+  coordinated canonical change as the roster mutation; policy GET/release
+  compatibility handlers also participate conditionally. A missing selector
+  fences and publishes exactly once, while an authenticated existing selector
+  is read-only and does not advance generation. Existing-team worker creation
+  advances only its roster generation and adds no selector-history churn. Common task,
+  thread, dream, wake, and schedule launch resolution is read-only and refuses
+  an uninitialized selector rather than mutating authority during launch.
+- **U2A boundary.** The coordinator's readiness verifier is intentionally not
+  consumed by task, chain, fan-out, activation, or dispatch paths yet.
+  Machine-global executor-profile changes remain U2B-deferred and do not yet
+  fence orgs; no workflow admission consumer may ship before U2B.
+- **Approval.** `POST /agents/{name}/approve` atomically moves the pending file to `org/agents/<name>.md`; when that promotion makes the registered manager eligible, it initializes the team's selector in the same workflow-authority canonical change. It then bootstraps the workspace under `workspaces/<name>/`. Approved agents appear in `GET /agents` and `GET /agents/enrollments?status=approved`.
 - **Termination.** `manage-agent terminate` archives an approved **non-manager worker** on the caller's team. It is refused if the agent is a manager, belongs to another team, or has live work. Live work includes non-terminal tasks assigned to the agent, already-started thread invocations, firing schedules, running work-hours wakes, running dreams, or pending/running jobs attributable to the agent. If the agent is quiescent, the route:
   - archives the active `org/agents/<name>.md` to `org/agents/_terminated/<name>.md`;
   - archives the workspace `workspaces/<name>/` to `workspaces/_terminated/<name>/`;
@@ -172,6 +242,14 @@ progress, and absent/malformed data is surfaced as unavailable, never
 fabricated. Both `happyranch details` and the Tasks UI render this summary;
 `runtime/skills/bundled/start-task/SKILL.md` §5 makes the corresponding worker
 checkpoint policy concrete.
+
+The same `session_start` row now also carries additive Usage v1 lifecycle
+fields: runtime `session_id`, actual spawn `invocation_purpose`, `executor`,
+and nullable `model`; `workspace` is unchanged. Spawn purpose follows the
+decision-loop versus worker-execution mode, never agent role or root/leaf
+shape. THR-247 callback-only completion recovery is `unattributed` and remains
+durably distinguishable through `task_completion_recoveries.recovery_session_id`.
+These payload fields are not projected by `work_status`.
 
 ### Post-deploy operational measurement (not a shipping gate)
 
@@ -328,10 +406,24 @@ Dispatcher admit it once; and the next real completion result spends, claims,
 applies, and acknowledges the single-use envelope. Startup and zombie recovery
 may only rediscover/refuse or reconcile those same durable identities. There is
 no second evaluator, magic reason, clause identifier, adverse-review veto, or
-raw-DDL veto. `REQUEST_CHANGES`, partial-work observations, and the accepted
-historical schema-layout inequality remain diagnostics; current owner/session,
-cancellation, active-work, budgets, protected drift, atomicity, replay, and
-closed audit evidence remain authoritative.
+raw-DDL veto. `REQUEST_CHANGES`, partial-work observations, and every schema
+shape are diagnostics; current owner/session, cancellation, active-work,
+budgets, permission evidence, atomicity, replay, and closed audit evidence
+remain authoritative. K/P retain the real claim-time schema observation (raw
+DDL digest, inventory digest, and object count), but v2 never compares or
+rechecks those values and schema structure cannot refuse continuation. The
+legacy v1 schema clause remains unchanged.
+
+The injected active-policy block shows the exact top-level
+`manager_self_evaluation` object shape beside `decision` and the code-derived
+assessment vocabularies. A manager-decision task receives a filled example bound
+to that launch. Thread, wake, schedule, and dream contexts have no bound
+manager-decision identity, so their policy block labels the example as shape and
+types only and uses explicit placeholder tokens rather than copyable `unknown`
+values. They do not submit the object; it is submitted only in a manager-decision
+task's report-completion using that task's bound root/session identities. Both
+assessments must still be set honestly, and the displayed continue-shaped values
+are not a default.
 
 The dedicated eligible-manager page is available uniformly to every valid
 registered manager, edits the two values only as a pair, and uses the
@@ -409,49 +501,24 @@ shipping v1 writers in `runtime/daemon/routes/authority_policy.py` still bypass
 it and B2b must converge them, so this remains an intermediate unmerged
 storage/control seam rather than a shippable mixed-writer mode.
 
-Checkpoint C3a lands the accepted v2 CONSTRAINT-SENSITIVE schema-integrity
-prerequisite as a separate, read-only, callable seam in
-`runtime/orchestrator/authority.py`:
-`capture_authority_policy_v2_schema_integrity(db)` and
-`recheck_authority_policy_v2_schema_integrity(evidence, db)` returning the
-narrow typed `AuthorityPolicyV2SchemaIntegrity` evidence from
-`runtime/models.py`. Its reference is constructed independently of the
-candidate database — fresh current source plus ONLY the two accepted exact
-migrated `threads`/`thread_messages` ordered-layout substitutions and their
-index-cid consequences — and the oracle compares the complete non-internal
-object inventory (full table SQL including CHECK/UNIQUE/FK expressions, ordered
-`table_xinfo`, `foreign_key_list`, complete `index_xinfo` including expression
-sentinels/collation/key flags/cid, `index_list` origin/unique/partial, explicit
-index SQL/predicate and full trigger/view SQL; autoindex constraint metadata is
-retained and only rootpage/allocator and SQLite's reserved internal
-`sqlite_`-prefixed objects are ignored). The reserved prefix is matched as that
-exact literal, case-insensitive prefix — never a SQL `LIKE 'sqlite_%'` pattern
-whose `_` is a wildcard — so a legal user object that merely resembles the
-internal namespace (for example `sqliteXunreviewed`) is still inventoried and
-refused as unexpected. Every candidate read and the frozen raw digest run inside
-ONE `Database.coherent_read_view()`: the shared-connection lock is held across
-the whole capture and one SQLite read snapshot is pinned, so a commit on an
-independent connection can neither split the inventory from the digest nor be
-authenticated by a stale inventory — it can only make the subsequent recheck
-refuse. It requires `PRAGMA integrity_check` exactly `ok` and zero
-`foreign_key_check` violations, then freezes the validated candidate's ACTUAL
-raw `sqlite_master` DDL digest. A recheck denies ANY later raw-digest drift
-(including a switch to the other accepted layout) and a failed/unavailable
-capture can never become a successful recheck; unknown layouts and read errors
-fail closed with bounded machine-readable diagnostics. The result is integrity
-EVIDENCE only — never policy authority, a clause match or a grant — and the
-candidate is never repaired. The legacy v1
+Checkpoint C3a historically landed a constraint-sensitive v2 schema-integrity
+prerequisite. Founder THR-229 seq351 later removed that gate. The current v2
+path has no source-built reference, historical-layout whitelist, integrity or
+foreign-key check, inventory comparison, or post-claim schema recheck. Instead,
+`capture_authority_policy_v2_schema_observation(db)` records the candidate's
+ACTUAL raw `sqlite_master` DDL digest, complete non-internal object-inventory
+digest, and object count in one coherent claim-time read. The observed values
+are persisted unchanged on both K and P as diagnostics; they are never
+placeholders, compared, or rechecked, and schema structure never produces a v2
+`schema_drift` refusal. Genuine inability to observe the schema still fails the
+claim with the existing bounded `claim_failed` outcome. The legacy v1
 `_release_schema_digest`/`_live_schema_digest`/`_server_evidence`/
 `_server_fact_clause`/`_during_attempt_drift_clause` behavior and all callers
-are unchanged, and this seam is not yet wired into the authority hook. The
-checked-in full historical schema fixture
-`tests/fixtures/authority_v2_historical_schema.json` (with reconstruction
-support in `tests/authority_v2_historical_schema.py`) rebuilds the whole old
-schema and opens it through the actual current `Database` migration path; the
-R3 shipping venue runs over the migrated DB as well. The persisted
-candidate/pin/evaluation/continuation consumer, the corrected
-adverse/partial/raw-DDL diagnostics and the recovery/generation admission
-fences remain staged later units.
+remain unchanged. The checked-in full historical schema fixture
+`tests/fixtures/authority_v2_historical_schema.json` and reconstruction support
+in `tests/authority_v2_historical_schema.py` remain real migration-path test
+support; organic `ADD COLUMN` histories, including `agent_enrollments`, require
+no special acceptance list.
 
 Checkpoint C3b lands the durable v2 candidate/pin claim and the SEPARATE
 claim-audit stages. The Database owns synchronization and the transaction
@@ -472,8 +539,8 @@ or invalidate the live owner whenever the caller already owns a transaction —
 the caller's transaction and its pending work are left untouched and the two
 stage commits stay independent (no merged transaction, no silent savepoint and
 no changed R4 durability) — and otherwise runs ONE synchronized
-`BEGIN IMMEDIATE` (the independent C3a reference is constructed OUTSIDE it and
-its frozen raw digest is re-validated while the transaction is held) that
+`BEGIN IMMEDIATE` and captures the claim-time schema observation once while the
+transaction is held; there is no reference construction or schema recheck. It
 re-reads and authenticates the actual immutable admitted result: exact
 attempt/root/team/manager/session/result plus `origin_boot_id`/`owner_attempt_id`,
 `unfinalized`/`admitted` state, the single authenticated `admitted` audit, the
@@ -505,12 +572,13 @@ result row/body, immutable binding, authenticated pinned release/activation/
 selector prefix, the full candidate/pin/attempt/release/binding joins
 (provider/executor/model/version/digest/boot/owner), the prior required a0 and
 the current task ownership/cancellation — and rechecks the ORIGINAL frozen
-claim-time schema/permission evidence under its owned transaction (no
-recapture-and-rebaseline). It inserts exactly one candidate claim event plus the
+claim-time permission evidence under its owned transaction (no
+recapture-and-rebaseline). The schema observation remains diagnostic and is not
+compared or rechecked. It inserts exactly one candidate claim event plus the
 required `claim_audited` result-stage evidence and advances J to `claim_audited`
 atomically. A failed claim leaves J admitted/a0 with no K/P; a failed claim-audit
 preserves the claimed K/P with no a1. An owned-stage failure, a genuine
-cancellation/replacement, or a schema/permission-drift refusal by the authentic
+cancellation/replacement, or a permission-drift refusal by the authentic
 uninterrupted owner poisons the winning token so a later retry cannot become a
 fresh authority; an unauthorized/stale/duplicate contender (wrong boot, wrong
 owner, wrong tuple, second connection, duplicate call, transaction-nesting
@@ -604,8 +672,8 @@ owner. It authenticates the immutable ATTRIBUTION (exact causal result
 row/root/agent/session and the immutable launch binding, plus the attempt and any
 candidate reference) FIRST, before any terminal success or receipt
 classification, and never the failed CONTINUATION evidence whose absence caused
-the refusal (a missing stage audit, a drifted assessment/decision or a frozen
-schema/permission drift is not required and is never reconstructed). For the
+the refusal (a missing stage audit, a drifted assessment/decision or frozen
+permission-surface drift is not required and is never reconstructed). For the
 still-current causal owner (`in_progress`, null `block_kind`, not cancelled) it
 writes the closed refusal result-stage event, a candidate `refused` event if K
 exists, the normal `escalation` audit and the bounded `completion_report` refusal
@@ -663,6 +731,42 @@ forwards and never commits. The shipping authority hook remains fail-closed; the
 later publication/admission/spend transitions and
 the startup/reaper/run-step automatic discovery wiring remain separate units, so
 the dual-text feature remains unaccepted.
+
+THR-277 supersedes C3d1's root-only terminal wording for structural children.
+The refusal transaction authenticates exactly one of two complete shapes: a
+root retains the existing `escalation` audit and `escalated` task, while a
+non-root writes `authority_v2_refusal_task_failed` and becomes terminal
+`failed` before its ordinary or recovery-owned FAILED tail wakes the parent.
+Startup classifies only `admitted` attempts from the exact causal result via
+the shipping completion reconstruction/parser; blocked and parsed
+non-escalate results receive zero writes and no fence. Missing/unreadable
+evidence, parser-unavailable callers, later stages, and parsed escalation keep
+the fail-closed refusal path. No schema or task-status value changes.
+
+#### Current-episode refusal reason projection
+
+For a root refusal, the retained `escalation` audit carries only
+`reason=authority_v2_refusal`, the closed `refusal_code`, and `attempt_id`, and
+`tasks.note` remains `authority_v2_refusal:<code>`. Founder-facing reads derive
+an additive `escalation_reason` without rewriting either invariant. A non-root
+refusal is terminal `failed`, writes no `escalation` audit, and therefore has no
+founder-facing escalation-reason projection. Two consecutive exact-task
+`escalation` audit IDs delimit the current root episode. For a root v2 refusal,
+only an intervening `orchestration_step` with
+`decision.action=escalate` may supply the manager-authored primary reason; a
+delegate/done/fanout callback therefore yields no primary and never reaches
+back to an older episode. Ordinary escalations keep their stored reason and no
+secondary explanation. Non-escalated tasks return no projection.
+
+The database read selects only `escalation` and `orchestration_step` rows with
+exact `task_id` equality, newest primary-key order, and a 256-row cap. Under the
+writer contract, the causal decision and refusal are adjacent in that
+action-filtered stream. If evidence is not inside the bounded tail, the primary
+stays absent rather than consulting older rows. Scope-prefixed rows such as
+`config:*` cannot match a `TASK-*` row.
+The refusal-code explanation map is server-owned,
+covers the complete closed housekeeping refusal vocabulary, and falls back to
+the raw code for forward compatibility.
 
 Checkpoint C3d2 lands the accepted R4 finalize and settle-receipt steps 1-2 on
 the same unmerged draft PR, adding exactly the three remaining approved additive
@@ -723,6 +827,12 @@ forwarders (`finalize_v2_continuation`, `settle_v2_continuation_receipt`,
 envelope spend, the startup/reaper/run-step wiring and the production
 authority-hook continuation remain separate units; the shipping hook still
 fail-closes to ESCALATE and the dual-text feature remains unaccepted.
+
+In the shipping automatic hook, a bounded non-success finalization return is
+recorded best-effort as an `authority_hook` `capture_failure` carrying its
+closed status and reason before the unchanged `final_commit_failed` refusal
+housekeeping runs. A raised finalizer exception retains its existing distinct
+raised-exception diagnostic and the same refusal code.
 
 C3d2 correction (same unmerged draft PR). The exact post-final causal replay and
 settlement now authenticate the COMPLETE durable evidence read-only through ONE
@@ -1204,6 +1314,39 @@ fall back to legacy mutation. Focused coverage lives in
 complete parity sweep, main convergence and final review/QA/CI remain later
 units.
 
+Issue #918 historically tightened that contract without changing the schema by
+accepting exact shipped `agent_enrollments` layouts. Founder THR-229 seq351
+later removed the v2 schema-integrity gate in full. There is now no special
+layout acceptance, source reference, comparison, integrity check, or schema
+recheck. The claim still records the real raw-schema digest, inventory digest,
+and object count on K/P as observed-only diagnostics. This supersedes only the
+schema-gate portion of issue #918; its terminal refusal recovery, durable
+step-audit idempotency, and single post-commit surfacing behavior below remain
+current.
+
+Pre-final stage refusal now records the closed terminal-housekeeping category
+before forgetting the live owner (`schema_drift` and `evidence_drift` map to
+`identity_mismatch`; duplicate-stage categories map to
+`interrupted_pre_final`). Historical terminal recovery receipts do not claim a
+new ordinary result, but an unrelated live receipt remains a fence. A committed
+`v2_refused` root uses the normal post-commit notification and thread-follow-up
+tail without a second escalation write. Startup passes its orchestrator into
+pre-final refusal discovery and runs that tail only for the database writer's
+newly committed `refused` outcome, after commit; authenticated
+`already_refused` replay, `owner_lost` and pending outcomes do not surface.
+Thus a second startup adds no notification, thread follow-up or audit while the
+pre-final root remains fenced from every later startup recovery branch. A
+`v2_pending` outcome instead proceeds through the ordinary escalation CAS so it
+cannot leave a result-bearing root permanently `in_progress`.
+
+The persisted orchestration-step audit is the consumer idempotency key on every
+entry, including startup and zombie recovery even if a caller omits the
+`recovery_reentry` hint; the zombie caller supplies that hint explicitly as
+well. Replaying a persisted result therefore cannot append another
+`orchestration_step`, escalate/notify/follow up twice, remint v2 evidence,
+create a child or enqueue work. See
+`docs/superpowers/specs/2026-09-29-authority-v2-schema-refusal-recovery.md`.
+
 Checkpoint C3d4a (same unmerged draft PR) adds the common DB-aware TASK enqueue
 boundary and converges the direct producers onto it.
 `Database.classify_authority_policy_v2_root_dispatch_for_enqueue` is a narrow
@@ -1493,8 +1636,13 @@ Contract (founder-approved in THR-028, refined in THR-078):
 
 2. **Mechanical retry provenance (THR-078).** A manager may re-dispatch
    unchanged work or direct revised work with a valid `revisit_of_task_id`
-   link to a FAILED same-parent predecessor. The link records history; it
-   neither compares briefs nor itself authorizes root escalation. A later
+   link to a FAILED same-agent predecessor under the same parent, or under
+   a root connected to the current root by verified recorded supersessions.
+   Cross-root verification admits at most 20 root records (19 edges), joining
+   actual dispatch, founder revisit, manual resolution or manager-supersession
+   evidence. Brief text and arbitrary revisit links confer no authority. The
+   original failed child and parent are never rewritten. The link records
+   history; it neither compares briefs nor itself authorizes root escalation. A later
    COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors from
    causal selection (THR-183).
 
@@ -1579,6 +1727,14 @@ worker they create before another sweep, inspecting the queue, or restoring
 shared `jobs_runner` state; durable job settlement alone is not cleanup-tail
 completion.
 
+Graceful shutdown uses the same blocked-job recovery ownership without adding
+a resume mechanism: lifespan teardown stops `TaskQueue` first, so terminal job
+hooks are refused while in-flight jobs are classified and persisted as
+`failed/daemon_shutdown`. The parked task retains its session and Branch 3
+publishes the restart wake; the lifespan blocked-job scan loses to the pending
+item. Resume prompt rendering reads nullable reason/exit detail from the job
+row while preserving the audit payload's existing status-string map.
+
 Branch 1 (in_progress + block_kind IS NULL — a live subprocess killed by the restart):
 
 1. **Mark failed with restart context.** The killed child's note is enriched to
@@ -1606,3 +1762,30 @@ Branch 1 (in_progress + block_kind IS NULL — a live subprocess killed by the r
    child FAILED without enqueuing the parent. The existing N-wide all-children-
    terminal barrier in `_enqueue_parent_if_waiting` resolves when all legs
    report. The restart note survives to that eventual wake.
+
+
+### Retry spawn and refusal transactions
+
+`try_delegate` and `try_delegate_many` take the original owned report claim.
+Its optional result-row identity comes from the current report caller; the
+authority hook's historical latest-row lookup does not supply retry ownership.
+Under the Database RLock they begin an IMMEDIATE transaction before rereading
+that claim and retry lineage. A changed session, step, owner, state or callback
+binding yields `LostClaim` with no feedback or enqueue. With ownership intact,
+invalid provenance yields `InvalidLineage`; `Committed` alone permits child
+queues. Ordinary worker-of-record revision accounting commits in the same
+transaction as the child, attachment links/audits, chain and parent transition.
+Fanout adds no revision. Actual write errors roll back and propagate; existing
+callback results and decision history survive all refusals and rollbacks.
+
+Retry refusal uses two separate transactions. A atomically records the existing
+feedback result and orchestration audit and returns the parent to PENDING while
+preserving its original session and counters. B takes a fresh writer reservation,
+checks A's exact pending fingerprint and feedback row, and holds that reservation
+through the actual synchronous nonblocking enqueue. B writes nothing and always
+rolls back its reservation. Cancellation committed before B means zero insertion;
+if B wins, cancellation may commit after insertion and the queued item cannot
+claim a cancelled task. Queue failure preserves A's pending feedback and releases
+the reservation. Queue insertion is not a task claim or an exactly-once crash
+boundary; startup may enqueue PENDING again. Other feedback paths, general chain
+advancement and restart policy are unchanged.

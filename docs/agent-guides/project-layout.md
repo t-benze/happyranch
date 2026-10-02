@@ -50,9 +50,10 @@ Tracked source is split by product surface:
 |-- runtime/                     # Python runtime package shipped by pyproject
 |   |-- config.py, models.py, runtime.py, system_assistant.py
 |   |-- adapters/                # Claude, Codex, opencode, and Pi adapters
-|   |-- daemon/                  # FastAPI app, routes, queue, sessions, jobs/thread runners
-|   |-- infrastructure/          # SQLite, audit, KB, learnings, threads, artifacts
-|   |-- orchestrator/            # task state machine, executors, prompts, teams, workspaces, chains
+|   |-- daemon/                  # FastAPI app, routes, queue, sessions, runners, compatibility aliases
+|   |-- infrastructure/          # SQLite, audit, KB, learnings, threads, artifacts, mention routing
+|   |   `-- db/                  # Database facade mixins: dreams, knowledge, jobs, attachments, audit, sessions, workspace cleanup, threads, reply delivery/exchange, schema bootstrap/migrations
+|   |-- orchestrator/            # task state machine, executors, prompts, teams, workspaces, task-scratch reports
 |   |-- platform/                # process/session backends and platform enforcement
 |   |-- portability/             # org portability classification helpers
 |   |-- remote_access/           # managed remote-access client and packaging support
@@ -82,18 +83,49 @@ Tracked source is split by product surface:
 |   |-- superpowers/{plans,specs}/ # historical plans and indexed design history
 |   `-- local-ci.md, jenkins-jobs.md # supported development/CI operations
 |-- examples/orgs/hk-macau-tourism/  # canonical sample org tree
-|-- org/config.yaml              # shipped eligibility-policy guard/fixture used by tests
-`-- tests/                       # Python unit, contract, daemon, integration, and fixture coverage
+`-- tests/                       # Python tests; see the forward-only placement rules below
 ```
 
 `pyproject.toml` packages `runtime` and `cli`; imports in tests and app code should use those packages. Do not treat top-level `src/` as canonical source unless tracked `.py` files are added there and packaging/imports are updated.
 
-The tracked root `org/config.yaml` has one narrow in-repo role:
-`tests/test_skill_cutover_completeness.py` reads the real file as the shipped
-skill-eligibility-policy guard and fixture. It is not packaged as a top-level
-org by `pyproject.toml`. Deployed org content lives under
-`<runtime>/orgs/<slug>/org/`, while the canonical bootstrap example remains
-`examples/orgs/hk-macau-tourism/`.
+The task-scratch report, coverage, and evidence implementations live under
+`runtime/orchestrator/`, and the pure thread-mention resolver lives under
+`runtime/infrastructure/`. Their former `runtime/daemon/` module paths are
+identity aliases retained for import and monkeypatch compatibility.
+
+`runtime/infrastructure/database.py` remains the stable `Database` facade.
+Capability-owned methods move incrementally into mixins under
+`runtime/infrastructure/db/`; callers continue importing and instantiating the
+facade from its original module.
+
+## Test placement
+
+Test placement is forward-only. New tests mirror the production package and
+module they exercise: for example, `runtime/daemon/<x>.py` maps to
+`tests/daemon/test_<x>.py`, `runtime/orchestrator/<x>.py` maps to
+`tests/orchestrator/test_<x>.py`, and CLI package paths map to the corresponding
+`tests/` subpackage. Existing domain directories include `daemon`,
+`orchestrator`, `infrastructure`, `platform`, `client`, `unit`, `remote_access`,
+`remote_jobs`, and `workflows`. Use an existing mirror when it matches the
+production surface; if no mirror exists yet (for example, `cli/commands/` has no
+`tests/commands/` directory), the first new test for that area creates it.
+
+Cross-surface contract tests, including the OpenAPI snapshot and route
+classification coverage, belong in `tests/contract/`. True end-to-end tests
+that run a real daemon with fake CLIs and carry the `integration` marker belong
+in `tests/integration/`.
+
+At adoption, 187 legacy tests remain as flat `tests/test_*.py` files. Move a
+legacy flat test only when its production area is already being changed in the
+same PR; do not perform a mass move. This rule governs new work going forward.
+
+The tracked skill-eligibility fixture lives at
+`tests/fixtures/skill_eligibility/config.yaml` and is read by
+`tests/test_skill_cutover_completeness.py`. The fixture is not a CLI default:
+`happyranch skills catalog validate`, `skills effective`, and
+`skills policy explain` load an eligibility policy only when `--policy` is
+provided. Deployed org content lives under `<runtime>/orgs/<slug>/org/`, while
+the canonical bootstrap example remains `examples/orgs/hk-macau-tourism/`.
 
 ## Runtime Container
 

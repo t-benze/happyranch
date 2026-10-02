@@ -15,11 +15,18 @@ from runtime.config import Settings
 from runtime.daemon.__main__ import _sweep_on_startup
 from runtime.daemon.queue import TaskQueue
 from runtime.infrastructure.database import Database
+from runtime.infrastructure.workflow_schema import install_or_recover
 from runtime.models import BlockKind, TaskRecord, TaskStatus, ThreadInvocationPurpose, ThreadRecord, ThreadStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.teams import TeamsRegistry
 from runtime.runtime import RuntimeDir
+
+
+def _open_live_org_database(path: Path) -> Database:
+    db = Database(path)
+    install_or_recover(db)
+    return db
 
 
 @contextmanager
@@ -205,7 +212,7 @@ def test_accepted_recovery_continue_settles_exact_receipt_once_across_restart(tm
     assert db.execute("SELECT state FROM task_completion_recoveries WHERE task_id=?", (task_id,)).fetchone()["state"] == "callback_consumed"
     path = db.path
     db.close()
-    reopened = Database(path)
+    reopened = _open_live_org_database(path)
     orch._db, orch._audit = reopened, AuditLogger(reopened)
     _sweep_on_startup(reopened, queue, "test", orch)
     _sweep_on_startup(reopened, queue, "test", orch)
@@ -213,6 +220,105 @@ def test_accepted_recovery_continue_settles_exact_receipt_once_across_restart(tm
     assert len(reopened.list_authority_candidates_for_root(task_id)) == 1
     assert [row["action"] for row in reopened.get_audit_logs(task_id)].count("completion_report") == 1
     assert reopened.execute("SELECT state FROM task_completion_recoveries WHERE task_id=?", (task_id,)).fetchone()["state"] == "callback_consumed"
+
+
+def test_accepted_recovery_delegate_claim_uses_only_recovery_result_row(
+    tmp_path, monkeypatch, request,
+):
+    """The spawn claim is bound to the ledger-selected recovery result row."""
+    from runtime.infrastructure.database import Committed, LostClaim, RetryClaim
+    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+    from runtime.orchestrator.run_step import _consume_accepted_completion_recovery
+
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    request.addfinalizer(db.close)
+    task_id = "TASK-RECOVERY-DELEGATE"
+    origin_session = "origin-manager"
+    recovery_session = "recovery-manager"
+    orch._paths.workspaces_dir.joinpath("dev_agent").mkdir(parents=True)
+    db.insert_task(TaskRecord(
+        id=task_id, brief="delegate after recovery", team="engineering",
+        assigned_agent="engineering_head", status=TaskStatus.IN_PROGRESS,
+        task_type="task", current_session_id=origin_session,
+        orchestration_step_count=1,
+    ))
+    assert db.claim_task_completion_recovery(
+        task_id=task_id, agent="engineering_head",
+        origin_session_id=origin_session,
+        recovery_session_id=recovery_session,
+        provider_session_id="provider-conversation",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2999-01-01T00:02:00+00:00",
+    )
+    db.update_task(task_id, current_session_id=recovery_session)
+    decision_json = json.dumps({
+        "action": "delegate", "agent": "dev_agent", "prompt": "bounded child",
+    })
+    db.insert_task_result(
+        task_id=task_id, agent="engineering_head", session_id=origin_session,
+        status="completed", confidence_score=90, output_summary="late origin",
+        decision_json=decision_json,
+    )
+    origin_result = db.get_latest_task_result(
+        task_id, "engineering_head", origin_session,
+    )
+    assert origin_result is not None
+    assert db.admit_task_completion_callback(
+        task_id=task_id, agent="engineering_head", session_id=recovery_session,
+        status="completed", confidence_score=100,
+        output_summary="recovered delegate", decision_json=decision_json,
+    )
+    accepted = db.get_accepted_task_completion_recovery_result(
+        task_id=task_id, agent="engineering_head",
+    )
+    assert accepted is not None
+    assert accepted["session_id"] == recovery_session
+
+    original_try_delegate = db.try_delegate
+    observed_claims: list[RetryClaim] = []
+    committed_outcomes: list[Committed] = []
+
+    def assert_result_binding(parent_id, child, **kwargs):
+        claim = kwargs["expected_claim"]
+        observed_claims.append(claim)
+        assert claim.result_row_id == accepted["id"]
+        assert claim.current_session_id == recovery_session
+
+        origin_claim = RetryClaim.from_task(
+            db.get_task(task_id), result_row_id=origin_result["id"],
+        )
+        origin_child = TaskRecord(
+            id="TASK-ORIGIN-RESULT-CHILD", brief="must not spawn",
+            team="engineering", assigned_agent="dev_agent",
+            parent_task_id=task_id, task_type="subtask",
+        )
+        origin_outcome = original_try_delegate(
+            task_id, origin_child, parent_note="must not commit",
+            expected_claim=origin_claim,
+        )
+        assert isinstance(origin_outcome, LostClaim)
+        assert db.get_task(origin_child.id) is None
+        outcome = original_try_delegate(parent_id, child, **kwargs)
+        assert isinstance(outcome, Committed)
+        committed_outcomes.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(db, "try_delegate", assert_result_binding)
+    report = completion_report_from_result_row(
+        task_id, accepted, fallback_agent="engineering_head",
+    )
+    _consume_accepted_completion_recovery(
+        orch, task_id, report, agent="engineering_head",
+        session_id=recovery_session, result_row_id=accepted["id"],
+    )
+
+    assert len(observed_claims) == 1
+    children = db.get_children(task_id)
+    assert len(children) == 1
+    assert children[0] != "TASK-ORIGIN-RESULT-CHILD"
+    assert committed_outcomes == [Committed((children[0],))]
+    assert queue._queue.get_nowait() == ("test", children[0], None)
+    assert queue._queue.empty()
 
 
 def _accepted_root_escalation_recovery(tmp_path):
@@ -319,7 +425,7 @@ def test_accepted_recovery_root_escalation_final_owner_fence(tmp_path, winner_ki
     ).fetchone())
     path = db.path
     db.close()
-    reopened = Database(path)
+    reopened = _open_live_org_database(path)
     orch._db, orch._audit = reopened, AuditLogger(reopened)
     _sweep_on_startup(reopened, queue, "test", orch)
     _sweep_on_startup(reopened, queue, "test", orch)
@@ -485,7 +591,7 @@ def test_nonroot_manager_recovery_postcommit_cleanup_reenters_on_restart(tmp_pat
     assert db.get_job("JOB-OWNED").status.value == "running"
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     orch._audit = AuditLogger(reopened)
     with mock.patch("runtime.orchestrator.authority.run_authority_hook") as authority:
@@ -571,7 +677,7 @@ def test_nonroot_manager_recovery_transaction_abort_rolls_back_then_startup_sett
     assert rolled_back["accepted_result_id"] == accepted["id"]
     assert db.execute("SELECT id FROM task_results WHERE id=?", (accepted["id"],)).fetchone()["id"] == accepted["id"]
     db.execute(f"DROP TRIGGER abort_nonroot_{point}")
-    path = db.path; db.close(); reopened = Database(path); orch._db = reopened; orch._audit = AuditLogger(reopened)
+    path = db.path; db.close(); reopened = _open_live_org_database(path); orch._db = reopened; orch._audit = AuditLogger(reopened)
     with mock.patch("runtime.orchestrator.authority.run_authority_hook") as authority:
         _sweep_on_startup(reopened, queue, "test", orch)
         _sweep_on_startup(reopened, queue, "test", orch)
@@ -827,7 +933,7 @@ def test_root_recovery_escalation_transaction_rolls_back_then_restart_settles_on
 
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     orch._audit = AuditLogger(reopened)
     _sweep_on_startup(reopened, queue, "test", orch)
@@ -921,7 +1027,7 @@ def test_accepted_manager_done_recovery_reuses_its_step_audit_after_crash(
     assert len([r for r in db.get_audit_logs(task_id) if r["action"] == "orchestration_step"]) == 1
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     from runtime.infrastructure.audit_logger import AuditLogger
     orch._audit = AuditLogger(reopened)
@@ -1064,7 +1170,7 @@ def test_manager_done_postcommit_cleanup_pending_restarts_once(
         db_path = db.path
         assert db.get_job("JOB-OWNED").status.value == "running"
         db.close()
-        reopened = Database(db_path)
+        reopened = _open_live_org_database(db_path)
         orch._db = reopened
         orch._audit = AuditLogger(reopened)
         assert reopened.get_job("JOB-OWNED").status.value == "running"
@@ -1393,7 +1499,7 @@ def _seed_org(tmp_path: Path, slug: str = "test") -> Database:
     org_root.mkdir(parents=True)
     (org_root / "org").mkdir()
     (org_root / "org" / "teams.yaml").write_text("teams: {}\n")
-    return Database(org_root / "happyranch.db")
+    return _open_live_org_database(org_root / "happyranch.db")
 
 
 def _seed_org_with_orch(
@@ -1414,7 +1520,7 @@ def _seed_org_with_orch(
         "    manager: engineering_head\n"
         "    workers: [dev_agent]\n"
     )
-    db = Database(paths.db_path)
+    db = _open_live_org_database(paths.db_path)
     queue = TaskQueue()
     orch = Orchestrator(
         db=db, settings=Settings(), paths=paths, slug=slug,
@@ -1466,7 +1572,7 @@ def test_accepted_recovery_reentry_after_effects_is_consumed_without_duplicate_a
             )
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     from runtime.infrastructure.audit_logger import AuditLogger
     orch._audit = AuditLogger(reopened)
@@ -1557,7 +1663,7 @@ def test_accepted_leaf_completion_recovery_is_atomic_and_preserves_exact_verdict
     db_path = db.path
     db.close()
 
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     reopened.execute("DROP TRIGGER " + {
         "terminal": "abort_leaf_terminal",
         "before_ledger": "abort_leaf_before_ledger",
@@ -1659,7 +1765,7 @@ def test_accepted_leaf_recovery_loses_to_winner_at_consume_transaction_boundary(
         assert cleanup_calls == [] and winner_control_calls == []
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     _sweep_on_startup(reopened, queue, "test", orch)
     _sweep_on_startup(reopened, queue, "test", orch)
@@ -1699,7 +1805,7 @@ def test_completed_leaf_postcommit_restart_cleans_only_owned_job_and_wakes_once(
     with mock.patch("runtime.orchestrator.run_step._kill_jobs_for_terminating_task", side_effect=RuntimeError("after commit")):
         with pytest.raises(RuntimeError, match="after commit"):
             _consume_accepted_completion_recovery(orch, "TASK-LEAF", completion_report_from_result_row("TASK-LEAF", accepted, fallback_agent="dev_agent"), agent="dev_agent", session_id="recovery-TASK-LEAF", result_row_id=accepted["id"])
-    path = db.path; db.close(); reopened = Database(path); orch._db = reopened
+    path = db.path; db.close(); reopened = _open_live_org_database(path); orch._db = reopened
     from runtime.infrastructure.audit_logger import AuditLogger
     orch._audit = AuditLogger(reopened)
     with _capture_joined_cleanup_threads() as (
@@ -2217,7 +2323,7 @@ def test_accepted_blocked_recovery_restart_consumes_once_then_resumes_owned_job(
 
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     from runtime.infrastructure.audit_logger import AuditLogger
     orch._audit = AuditLogger(reopened)
@@ -2276,7 +2382,7 @@ def test_sweep_restart_settles_unaccepted_recovery_before_pid_liveness_and_recon
     db.update_task("TASK-REC", executor_pid=executor_pid)
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
 
     from runtime.orchestrator.run_step import _kill_jobs_for_terminating_task
@@ -2363,7 +2469,7 @@ def test_sweep_restart_settlement_reenters_after_cleanup_interrupt_and_lifespan_
     )
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
 
     with mock.patch(
@@ -2378,7 +2484,7 @@ def test_sweep_restart_settlement_reenters_after_cleanup_interrupt_and_lifespan_
     assert queue._queue.empty()
     reopened.close()
 
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     orch._db = reopened
     with mock.patch("os.kill") as kill:
         _sweep_on_startup(reopened, queue, "test", orch)
@@ -2419,7 +2525,7 @@ def test_restart_settlement_rolls_back_task_ledger_and_job_together(tmp_path):
         _sweep_on_startup(db, queue, "test", orch)
     db.close()
 
-    reopened = Database(db.path)
+    reopened = _open_live_org_database(db.path)
     orch._db = reopened
     assert reopened.get_task("TASK-REC").status is TaskStatus.IN_PROGRESS
     assert reopened.get_job("JOB-REC").status.value == "running"
@@ -2601,6 +2707,122 @@ def test_sweep_parked_delegated_with_all_children_terminal_reenqueues(tmp_path):
     assert db.get_task("T-PAR").status == TaskStatus.IN_PROGRESS
     assert db.get_task("T-PAR").block_kind == BlockKind.DELEGATED
     assert queue._queue.get_nowait() == ("test", "T-PAR", None)
+
+
+def _queued_task_count(queue: TaskQueue, task_id: str) -> int:
+    return sum(queued_id == task_id for _, queued_id, _ in queue._queue._queue)
+
+
+def _retry_startup_fanout_json(*children: str) -> str:
+    from runtime.orchestrator.fanout import FanoutState
+
+    return FanoutState(
+        children_ids=list(children),
+        children_details=[
+            {"agent": "dev_agent", "prompt": child} for child in children
+        ],
+        width=len(children),
+        manager_agent="engineering_head",
+        join_summary="combine",
+        status="spawned",
+    ).serialize()
+
+
+def test_retry_pending_and_delegated_s1_pending_replay_claims_once(tmp_path):
+    """C5/S1: startup delivery is replayable, while the DB claim is singular."""
+    db = _seed_org(tmp_path)
+    db.insert_task(TaskRecord(
+        id="T-RETRY-PENDING", brief="retry", team="engineering",
+        assigned_agent="engineering_head", status=TaskStatus.PENDING,
+    ))
+    queue = TaskQueue()
+
+    _sweep_on_startup(db, queue, "test")
+    _sweep_on_startup(db, queue, "test")
+
+    assert _queued_task_count(queue, "T-RETRY-PENDING") == 2
+    pending = db.get_task("T-RETRY-PENDING")
+    assert pending.status is TaskStatus.PENDING
+    assert db.get_task_results("T-RETRY-PENDING") == []
+    assert db.try_claim_for_step(
+        "T-RETRY-PENDING", TaskStatus.PENDING, None, 1,
+    )
+    assert not db.try_claim_for_step(
+        "T-RETRY-PENDING", TaskStatus.PENDING, None, 1,
+    )
+    assert db.get_task("T-RETRY-PENDING").orchestration_step_count == 1
+
+
+def test_retry_pending_and_delegated_s2_s4_terminal_parent_wake_is_process_local(
+    tmp_path,
+):
+    """C5/S2/S4: dedupe is per live queue; a fresh process reconstructs once."""
+    db = _seed_org(tmp_path)
+    db.insert_task(TaskRecord(id="T-RETRY-PAR", brief="p", team="engineering"))
+    fanout_json = _retry_startup_fanout_json("T-RETRY-C1", "T-RETRY-C2")
+    db.update_task(
+        "T-RETRY-PAR",
+        status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED,
+    )
+    db.update_task_active_fanout("T-RETRY-PAR", fanout_json)
+    for index, status in enumerate((TaskStatus.COMPLETED, TaskStatus.FAILED), 1):
+        db.insert_task(TaskRecord(
+            id=f"T-RETRY-C{index}", brief="carrier", team="engineering",
+            assigned_agent="dev_agent", parent_task_id="T-RETRY-PAR",
+            status=status, task_type="subtask",
+        ))
+
+    first_process_queue = TaskQueue()
+    _sweep_on_startup(db, first_process_queue, "test")
+    _sweep_on_startup(db, first_process_queue, "test")
+    assert _queued_task_count(first_process_queue, "T-RETRY-PAR") == 1
+    assert db.get_task("T-RETRY-PAR").active_fanout == fanout_json
+    assert not [
+        row for row in db.get_audit_logs("T-RETRY-PAR")
+        if row["action"] == "fanout_join"
+    ]
+
+    restarted_queue = TaskQueue()
+    _sweep_on_startup(db, restarted_queue, "test")
+    assert _queued_task_count(restarted_queue, "T-RETRY-PAR") == 1
+
+
+def test_retry_pending_and_delegated_s3_live_carrier_does_not_wake_parent(tmp_path):
+    """C5/S3: a live carrier keeps the outer fanout parked across sweeps."""
+    db = _seed_org(tmp_path)
+    db.insert_task(TaskRecord(id="T-LIVE-PAR", brief="p", team="engineering"))
+    fanout_json = _retry_startup_fanout_json("T-LIVE-CARRIER")
+    db.update_task(
+        "T-LIVE-PAR",
+        status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED,
+    )
+    db.update_task_active_fanout("T-LIVE-PAR", fanout_json)
+    db.insert_task(TaskRecord(
+        id="T-LIVE-CARRIER", brief="carrier", team="engineering",
+        assigned_agent="dev_agent", parent_task_id="T-LIVE-PAR",
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+        task_type="subtask",
+    ))
+    db.insert_task(TaskRecord(
+        id="T-LIVE-LEG", brief="leg", team="engineering",
+        assigned_agent="dev_agent", parent_task_id="T-LIVE-CARRIER",
+        status=TaskStatus.PENDING, task_type="subtask",
+    ))
+    queue = TaskQueue()
+
+    _sweep_on_startup(db, queue, "test")
+    _sweep_on_startup(db, queue, "test")
+
+    assert _queued_task_count(queue, "T-LIVE-PAR") == 0
+    parent = db.get_task("T-LIVE-PAR")
+    assert parent.block_kind is BlockKind.DELEGATED
+    assert parent.active_fanout == fanout_json
+    assert not [
+        row for row in db.get_audit_logs("T-LIVE-PAR")
+        if row["action"] == "fanout_join"
+    ]
 
 
 def _seed_job(db: Database, job_id: str, task_id: str, status: str) -> None:
@@ -3519,6 +3741,151 @@ def test_terminate_all_inflight_awaits_runner_tasks(tmp_home, daemon_state):
         "shutdown returned before the runner task persisted terminal state — "
         "row would have stayed `running` until next startup"
     )
+
+
+def test_lifespan_shutdown_keeps_job_waiter_parked_until_one_restart_resume(
+    tmp_home, runtime, daemon_state, monkeypatch,
+):
+    """S5/case 15: graceful shutdown cannot claim a just-killed job waiter."""
+    import time
+    from datetime import datetime, timezone
+
+    from fastapi.testclient import TestClient
+
+    from runtime.config import Settings
+    from runtime.daemon import jobs_runner, paths as paths_mod
+    from runtime.daemon.__main__ import _sweep_on_startup
+    from runtime.daemon.app import create_app
+    from runtime.daemon.state import DaemonState
+    from runtime.models import (
+        BlockKind,
+        JobInterpreter,
+        JobRecord,
+        JobStatus,
+        TaskRecord,
+        TaskStatus,
+    )
+
+    monkeypatch.setattr(jobs_runner, "_INFLIGHT", {})
+    monkeypatch.setattr(jobs_runner, "_RUNNER_TASKS", {})
+    monkeypatch.setattr(jobs_runner, "_KILL_REASON_OVERRIDE", {})
+
+    task_id = "TASK-SHUTDOWN-WAITER"
+    job_id = "JOB-SHUTDOWN-WAITER"
+    original_session = "sess-before-shutdown"
+    org = daemon_state.orgs["alpha"]
+    workspace = org.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True, exist_ok=True)
+    org.db.insert_task(TaskRecord(
+        id=task_id,
+        assigned_agent="dev_agent",
+        team="engineering",
+        brief="wait for shutdown job",
+        status=TaskStatus.IN_PROGRESS,
+        current_session_id=original_session,
+    ))
+    org.db.update_task(
+        task_id,
+        status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.BLOCKED_ON_JOB,
+        blocked_on_job_ids=json.dumps([job_id]),
+    )
+    org.db.insert_job(JobRecord(
+        id=job_id,
+        task_id=task_id,
+        agent_name="dev_agent",
+        title="long job",
+        rationale="exercise lifespan shutdown",
+        script_text="sleep 30\n",
+        interpreter=JobInterpreter.BASH,
+        review_required=True,
+        persistent=True,
+        created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    ))
+
+    shutdown_claims: list[str] = []
+
+    def reject_shutdown_claim(task_id_arg, *_args, **_kwargs):
+        shutdown_claims.append(task_id_arg)
+        raise RuntimeError("shutdown queue must not claim the blocked waiter")
+
+    org.orchestrator._run_agent = reject_shutdown_claim
+
+    with TestClient(create_app(daemon_state)) as client:
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+        response = client.post(
+            f"/api/v1/orgs/alpha/jobs/{job_id}/run",
+            json={"cwd_override": None, "timeout_seconds": None},
+        )
+        assert response.status_code == 202, response.text
+        for _ in range(200):
+            if job_id in jobs_runner._INFLIGHT:
+                break
+            time.sleep(0.01)
+        assert job_id in jobs_runner._INFLIGHT
+
+    # The first lifespan is now fully torn down: queue.stop() fenced the
+    # runner's terminal resume notification before the real DB writer fired.
+    assert jobs_runner._INFLIGHT == {}
+    assert jobs_runner._RUNNER_TASKS == {}
+    assert jobs_runner._KILL_REASON_OVERRIDE == {}
+    assert shutdown_claims == []
+
+    fresh_state = DaemonState.from_runtime(runtime, Settings())
+    fresh_org = fresh_state.orgs["alpha"]
+    after_shutdown = fresh_org.db.get_task(task_id)
+    shutdown_job = fresh_org.db.get_job(job_id)
+    assert shutdown_job is not None
+    assert shutdown_job.status == JobStatus.FAILED
+    assert shutdown_job.reason == "daemon_shutdown"
+    assert shutdown_job.exit_code == -15
+    assert after_shutdown is not None
+    assert after_shutdown.status == TaskStatus.IN_PROGRESS
+    assert after_shutdown.block_kind == BlockKind.BLOCKED_ON_JOB
+    assert after_shutdown.current_session_id == original_session
+    assert not any(
+        row["action"] in {"task_resumed_from_jobs", "session_start"}
+        for row in fresh_org.db.get_audit_logs(task_id)
+    )
+
+    # Pin the restart owner: Branch 3 publishes the first wake. A repeated
+    # Branch 3 pass stays at one pending item, and the subsequent lifespan
+    # list_tasks_blocked_on_jobs publication is deduped before workers run.
+    _sweep_on_startup(
+        fresh_org.db, fresh_state.queue, "alpha", fresh_org.orchestrator,
+    )
+    assert fresh_state.queue._queue.qsize() == 1
+    _sweep_on_startup(
+        fresh_org.db, fresh_state.queue, "alpha", fresh_org.orchestrator,
+    )
+    assert fresh_state.queue._queue.qsize() == 1
+
+    delivered_prompts: list[str] = []
+
+    def capture_resumed_prompt(*_args, **kwargs):
+        delivered_prompts.append(kwargs.get("prompt") or _args[2])
+        raise RuntimeError("stop after observing resumed provider prompt")
+
+    fresh_org.orchestrator._run_agent = capture_resumed_prompt
+    with TestClient(create_app(fresh_state)):
+        for _ in range(300):
+            if delivered_prompts:
+                break
+            time.sleep(0.01)
+        assert len(delivered_prompts) == 1
+        assert (
+            f"{job_id}  failed (daemon_shutdown, exit -15)"
+            in delivered_prompts[0]
+        )
+        resumed = [
+            row for row in fresh_org.db.get_audit_logs(task_id)
+            if row["action"] == "task_resumed_from_jobs"
+        ]
+        assert len(resumed) == 1
+
+    assert jobs_runner._INFLIGHT == {}
+    assert jobs_runner._RUNNER_TASKS == {}
+    assert jobs_runner._KILL_REASON_OVERRIDE == {}
 
 
 # ── Thread invocation sweep (THR-046 message-112) ────────────────────────
@@ -4509,7 +4876,7 @@ def test_shipping_startup_invocation_commit_serializes_owned_job_backstop(
     # startup-governed pending receipt from an unrelated terminal receipt.
     db_path = db.path
     db.close()
-    reopened = Database(db_path)
+    reopened = _open_live_org_database(db_path)
     owned = reopened.get_job("JOB-OWNED")
     other_job = reopened.get_job("JOB-OTHER")
     assert owned is not None and owned.reason == "task_ended"

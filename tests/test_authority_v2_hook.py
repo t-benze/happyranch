@@ -62,6 +62,9 @@ from tests.test_authority_v2_attempt_admission import (
     _seed_bound_task,
     _store,
 )
+from tests.authority_v2_historical_schema import (
+    add_historical_agent_enrollments,
+)
 
 
 class _FakeTeams:
@@ -215,6 +218,25 @@ def test_v2_hook_clear_continue_finalizes_settles_and_publishes_once(tmp_path):
     ).fetchone()
     assert raw["stage"] == "consumed_audited"
     assert raw["finalization_state"] == "continued"
+
+
+def test_v2_hook_historical_agent_enrollments_reaches_evaluation(tmp_path):
+    store, _, _, row, attempt = _admitted(tmp_path)
+    db = store._db
+    db.bind_authority_policy_v2_process_boot_id(attempt.origin_boot_id)
+    add_historical_agent_enrollments(db)
+    _log_ordinary_completion(db, row["id"])
+
+    outcome, _ = _run_hook(store, row, queue=_RecordingQueue())
+
+    assert outcome == HOOK_V2_CONTINUED
+    candidate = db.get_authority_policy_v2_candidate_for_result(row["id"])
+    evaluation = db.get_authority_policy_v2_evaluation_for_result(row["id"])
+    assert candidate is not None
+    assert evaluation is not None
+    assert evaluation.candidate_id == candidate.candidate_id
+    final = db.get_authority_policy_v2_attempt_for_result(row["id"])
+    assert final is not None and final.finalization_state == "continued"
 
 
 def test_v2_hook_ignores_caller_self_evaluation_and_uses_persisted(tmp_path):
@@ -390,6 +412,43 @@ def test_v2_hook_missing_diagnostic_refuses_durably(tmp_path):
 
 
 # ── mid-stage failure: refusal-only, prior residue retained ──────────────
+
+
+def test_v2_hook_records_non_success_final_status_before_unchanged_refusal(
+    tmp_path,
+):
+    """A bounded final return is visible without changing refusal semantics."""
+    carrier = {
+        "_error_code": "malformed_output",
+        "payload_digest": "a" * 64,
+    }
+    store, _, _, row, attempt = _admitted(tmp_path, carrier=carrier)
+    db = store._db
+    db.bind_authority_policy_v2_process_boot_id(attempt.origin_boot_id)
+
+    outcome, _ = _run_hook(store, row, queue=_RecordingQueue())
+
+    assert outcome == HOOK_V2_REFUSED
+    capture_failures = [
+        audit["payload"]
+        for audit in db.get_audit_logs(TASK_ID)
+        if audit["action"] == "authority_hook"
+        and audit["payload"].get("outcome") == "capture_failure"
+    ]
+    assert capture_failures == [
+        {
+            "outcome": "capture_failure",
+            "error": (
+                "v2 final continuation returned "
+                "status='finalization_pending' reason='evidence_drift'"
+            ),
+        }
+    ]
+    refused = db.get_authority_policy_v2_attempt_for_result(row["id"])
+    assert refused is not None
+    assert refused.finalization_state == "refused"
+    assert refused.refusal_code == "final_commit_failed"
+    assert db.get_task(TASK_ID).status is TaskStatus.ESCALATED
 
 
 def test_v2_hook_stage_failure_requests_refusal_and_retains_residue(

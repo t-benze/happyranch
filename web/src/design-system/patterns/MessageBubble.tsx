@@ -38,6 +38,16 @@ interface MessageBubbleProps {
    *  artifactsApi.downloadThreadAttachment). The full attachment object is
    *  passed so the handler can branch on thread_attachment_id vs artifact_name. */
   onAttachmentDownload?: (attachment: ThreadAttachment) => void;
+  /**
+   * Optional localized product copy (THR-118 W3a). Omitted fields keep the
+   * historical English copy.
+   */
+  labels?: { declined?: string; systemEvent?: string };
+  /**
+   * Optional display formatter for `timestamp` (e.g. an explicit-locale
+   * formatter). Defaults to the historical host-locale `toLocaleString()`.
+   */
+  formatTimestamp?: (iso: string) => string;
 }
 
 function fmtTs(iso: string): string {
@@ -58,15 +68,16 @@ const VARIANT_CONTAINER: Record<MessageVariant, string> = {
 };
 
 export function MessageBubble(props: MessageBubbleProps): JSX.Element {
+  const formatTs = props.formatTimestamp ?? fmtTs;
   if (props.variant === 'system') {
     return (
       <div
         className="border-border-subtle text-caption text-text-muted mx-auto my-2 inline-flex max-w-fit items-center gap-2 self-center rounded-full border border-dashed bg-transparent px-3 py-1"
-        aria-label="system event"
+        aria-label={props.labels?.systemEvent ?? 'system event'}
       >
         <span className="font-mono">[{props.seq}]</span>
-        <span>{props.systemDescription ?? 'system event'}</span>
-        <span className="text-text-muted">· {fmtTs(props.timestamp)}</span>
+        <span>{props.systemDescription ?? props.labels?.systemEvent ?? 'system event'}</span>
+        <span className="text-text-muted">· {formatTs(props.timestamp)}</span>
       </div>
     );
   }
@@ -93,12 +104,12 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
           />
         )}
         <span className="text-text-muted ml-auto font-mono">
-          #{seq} · {fmtTs(timestamp)}
+          #{seq} · {formatTs(timestamp)}
         </span>
       </header>
       {variant === 'decline' ? (
         <p className="text-body text-tier-red">
-          <strong>Declined:</strong> {declineReason}
+          <strong>{props.labels?.declined ?? 'Declined:'}</strong> {declineReason}
         </p>
       ) : (
         <Markdown body={body ?? ''} />

@@ -7,6 +7,7 @@ THR-243 seq42.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -21,7 +22,10 @@ from runtime.daemon.zombie_reaper import (
 )
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.audit_logger import AuditLogger
-from runtime.models import TaskRecord, TaskStatus
+from runtime.models import BlockKind, TaskRecord, TaskStatus
+from runtime.orchestrator.authority import (
+    refuse_authority_policy_v2_pre_final_on_startup,
+)
 from runtime.orchestrator.active_authority_policy import (
     SESSION_POLICY_BINDING_ACTION,
 )
@@ -37,8 +41,13 @@ from tests.test_authority_v2_evaluation_stage import (
     _evaluate,
 )
 from tests.test_authority_v2_hook import (
+    _admitted as _hook_admitted,
+    _carrier_with,
     _log_ordinary_completion,
     _orch,
+)
+from tests.authority_v2_historical_schema import (
+    add_historical_agent_enrollments,
 )
 
 
@@ -172,6 +181,181 @@ def test_startup_refusal_commit_failure_reopens_for_refusal_only_retry(tmp_path)
     ).refusal_code == "interrupted_pre_final"
 
 
+def test_startup_refusal_replay_surfaces_new_transition_exactly_once(
+    tmp_path, monkeypatch,
+):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store.bind_v2_process_boot_id("boot-after-restart")
+    store._db._v2_live_attempt_owners.clear()
+    notifications: list[dict] = []
+    thread_followups: list[tuple[str, str]] = []
+    orch = _reaper_orch(store)
+    orch.notify_escalated = lambda **kwargs: notifications.append(kwargs)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._maybe_post_thread_escalation",
+        lambda _orch, task_id, *, reason: thread_followups.append(
+            (task_id, reason)
+        ),
+    )
+
+    for _ in range(2):
+        _sweep_on_startup(store._db, TaskQueue(), "test", orchestrator=orch)
+
+    task = store._db.get_task(attempt.root_task_id)
+    final = store._db.get_authority_policy_v2_attempt_for_result(row["id"])
+    audits = store._db.get_audit_logs(attempt.root_task_id)
+    assert task.status is TaskStatus.ESCALATED
+    assert final is not None and final.finalization_state == "refused"
+    assert [a["action"] for a in audits].count("escalation") == 1
+    assert len(notifications) == 1
+    assert len(thread_followups) == 1
+
+
+def test_startup_admitted_blocked_result_is_not_refused_or_fenced(tmp_path):
+    """D2-B' regression: the real sweep reaches Branch 2 in the same pass."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store._db._conn.execute(
+        "UPDATE task_results SET status='blocked', decision_json=NULL WHERE id=?",
+        (row["id"],),
+    )
+    store._db._conn.commit()
+    store._db.update_task(
+        attempt.root_task_id,
+        status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED,
+    )
+    store._db.insert_task(TaskRecord(
+        id="TASK-D2-TERMINAL-CHILD",
+        brief="terminal child",
+        parent_task_id=attempt.root_task_id,
+        status=TaskStatus.COMPLETED,
+        completed_at="2026-01-01T00:00:00+00:00",
+    ))
+    store.bind_v2_process_boot_id("boot-after-restart")
+    store._db._v2_live_attempt_owners.clear()
+    orch = _reaper_orch(store)
+    queue = TaskQueue()
+
+    fenced = refuse_authority_policy_v2_pre_final_on_startup(
+        store._db, orchestrator=orch,
+    )
+    _sweep_on_startup(store._db, queue, "test", orchestrator=orch)
+
+    # The returned fence set and Branch 2's enqueue independently prove that
+    # classification did not suppress ordinary recovery in this boot.
+    assert attempt.root_task_id not in fenced
+    assert store._db.get_task(attempt.root_task_id).block_kind is BlockKind.DELEGATED
+    assert queue._queue.qsize() == 1
+    assert store._db.get_authority_policy_v2_attempt_for_result(
+        row["id"]
+    ).finalization_state == "unfinalized"
+    actions = [a["action"] for a in store._db.get_audit_logs(attempt.root_task_id)]
+    assert "escalation" not in actions
+    assert "authority_v2_refusal_task_failed" not in actions
+    assert "daemon_restart_failure" not in actions
+
+
+def test_startup_non_escalate_classification_without_orchestrator_fails_closed(tmp_path):
+    """M4: database-only startup callers cannot reproduce parser semantics."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store._db._conn.execute(
+        "UPDATE task_results SET decision_json=? WHERE id=?",
+        (json.dumps({"action": "done"}), row["id"]),
+    )
+    store._db._conn.commit()
+    store.bind_v2_process_boot_id("boot-after-restart")
+    store._db._v2_live_attempt_owners.clear()
+
+    _sweep_on_startup(store._db, TaskQueue(), "test")
+
+    assert store._db.get_task(attempt.root_task_id).status is TaskStatus.ESCALATED
+    assert store._db.get_authority_policy_v2_attempt_for_result(
+        row["id"]
+    ).finalization_state == "refused"
+
+
+def test_startup_non_admitted_non_escalate_result_still_refuses(tmp_path):
+    """M3: classification is admitted-only; a claimed attempt is interrupted."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _claim(store, row, attempt).status == "claimed"
+    store._db._conn.execute(
+        "UPDATE task_results SET decision_json=? WHERE id=?",
+        (json.dumps({"action": "done"}), row["id"]),
+    )
+    store._db._conn.commit()
+    store.bind_v2_process_boot_id("boot-after-restart")
+    store._db._v2_live_attempt_owners.clear()
+
+    _sweep_on_startup(
+        store._db, TaskQueue(), "test", orchestrator=_reaper_orch(store),
+    )
+
+    assert store._db.get_task(attempt.root_task_id).status is TaskStatus.ESCALATED
+    assert store._db.get_authority_policy_v2_attempt_for_result(
+        row["id"]
+    ).refusal_code == "claim_audit_missing"
+
+
+def test_startup_non_escalate_admission_is_read_only_across_two_boots(tmp_path):
+    """M5: two boots skip J and consume an accepted Q no more than once."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store._db._conn.execute(
+        "UPDATE task_results SET decision_json=? WHERE id=?",
+        (json.dumps({"action": "done"}), row["id"]),
+    )
+    store._db.update_task(
+        attempt.root_task_id,
+        status=TaskStatus.IN_PROGRESS,
+        block_kind=None,
+    )
+    store._db._conn.execute(
+        """INSERT INTO task_completion_recoveries
+           (task_id, agent, origin_session_id, recovery_session_id,
+            provider_session_id, claimed_at, expires_at, state,
+            accepted_result_id, accepted_result_session_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            attempt.root_task_id,
+            attempt.manager_agent,
+            "sess-origin",
+            attempt.manager_session_id,
+            "provider-1",
+            "2026-01-01T00:00:00+00:00",
+            "2999-01-01T00:02:00+00:00",
+            "callback_accepted",
+            row["id"],
+            attempt.manager_session_id,
+        ),
+    )
+    store._db._conn.commit()
+    store.bind_v2_process_boot_id("boot-after-restart")
+    store._db._v2_live_attempt_owners.clear()
+    orch = _reaper_orch(store)
+    _sweep_on_startup(store._db, TaskQueue(), "test", orchestrator=orch)
+    after_first = store._db._conn.execute(
+        "SELECT COUNT(*) FROM audit_log"
+    ).fetchone()[0]
+    receipt_after_first = store._db._conn.execute(
+        "SELECT state FROM task_completion_recoveries WHERE task_id=?",
+        (attempt.root_task_id,),
+    ).fetchone()["state"]
+
+    _sweep_on_startup(store._db, TaskQueue(), "test", orchestrator=orch)
+
+    assert store._db._conn.execute(
+        "SELECT COUNT(*) FROM audit_log"
+    ).fetchone()[0] == after_first
+    receipt_after_second = store._db._conn.execute(
+        "SELECT state FROM task_completion_recoveries WHERE task_id=?",
+        (attempt.root_task_id,),
+    ).fetchone()["state"]
+    assert receipt_after_first == "callback_consumed"
+    assert receipt_after_second == "callback_consumed"
+    assert store._db.get_authority_policy_v2_attempt_for_result(
+        row["id"]
+    ).finalization_state == "unfinalized"
+
+
 def _flag_v2_zombie(store, *, age: int) -> tuple[datetime, object]:
     task = store._db.get_task("TASK-C2")
     now = datetime.now(timezone.utc)
@@ -189,6 +373,7 @@ def _reaper_orch(store):
     orch = _orch(store)
     orch._audit = AuditLogger(store._db)
     orch._parse_next_step = lambda report: report.decision
+    orch._update_task_history = lambda _task_id: None
     return orch
 
 
@@ -210,33 +395,178 @@ def test_v2_result_present_uses_real_consumer_then_exact_marker_clear(tmp_path):
         "zombie_cleared"
     ) == 1
 
-    # Replay/reopen cannot run a second evaluation, mint or enqueue: the root
-    # is no longer an in_progress zombie and the exact clear receipt is single.
-    before = {
-        table: store._db._conn.execute(
-            f'SELECT COUNT(*) FROM "{table}"'
-        ).fetchone()[0]
-        for table in (
-            "authority_policy_v2_candidates",
-            "authority_policy_v2_evaluations",
-            "authority_policy_v2_continue_envelopes",
-            "authority_policy_v2_recovery_notifications",
-        )
-    }
-    _sweep_org_zombies(
-        store._db, now=now, uptime=999, warm_up_seconds=0,
-        orchestrator=_reaper_orch(store),
+
+def test_historical_schema_zombie_recovery_evaluates_and_continues_exactly_once(
+    tmp_path, monkeypatch,
+):
+    """The accepted historical table reaches evaluation at the real reaper seam."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    db = store._db
+    store.bind_v2_process_boot_id(attempt.origin_boot_id)
+    add_historical_agent_enrollments(db)
+    _log_ordinary_completion(db, row["id"])
+    now, _ = _flag_v2_zombie(store, age=10)
+    result_id = row["id"]
+    attempt_id = attempt.attempt_id
+    notifications: list[dict] = []
+    thread_followups: list[tuple[str, str]] = []
+    orch = _reaper_orch(store)
+    orch.notify_escalated = lambda **kwargs: notifications.append(kwargs)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._maybe_post_thread_escalation",
+        lambda _orch, task_id, *, reason: thread_followups.append(
+            (task_id, reason)
+        ),
     )
-    after = {
-        table: store._db._conn.execute(
-            f'SELECT COUNT(*) FROM "{table}"'
-        ).fetchone()[0]
-        for table in before
-    }
-    assert after == before
-    assert [a["action"] for a in store._db.get_audit_logs(task.id)].count(
-        "zombie_cleared"
-    ) == 1
+    monkeypatch.setattr(
+        "runtime.daemon.zombie_reaper._pid_is_dead", lambda _pid: True,
+    )
+
+    for _ in range(3):
+        _sweep_org_zombies(
+            db, now=now, uptime=999, warm_up_seconds=0, orchestrator=orch,
+        )
+
+    task = db.get_task(attempt.root_task_id)
+    final = db.get_authority_policy_v2_attempt_for_result(result_id)
+    audits = db.get_audit_logs(attempt.root_task_id)
+    assert task.status is TaskStatus.PENDING
+    assert task.zombie_flagged_at is None
+    assert final is not None
+    assert final.attempt_id == attempt_id
+    assert final.finalization_state == "continued"
+    assert db.get_latest_task_result(
+        attempt.root_task_id, attempt.manager_agent, attempt.manager_session_id,
+    )["id"] == result_id
+    assert [a["action"] for a in audits].count("orchestration_step") == 1
+    assert [a["action"] for a in audits].count("escalation") == 0
+    assert notifications == []
+    assert thread_followups == []
+    assert db.get_children(attempt.root_task_id) == []
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_candidates"
+    ).fetchone()[0] == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_evaluations"
+    ).fetchone()[0] == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_recovery_notifications"
+    ).fetchone()[0] == 1
+    assert len(orch._queue.puts) == 1
+
+
+def test_historical_schema_zombie_recovery_evaluates_and_escalates_exactly_once(
+    tmp_path, monkeypatch,
+):
+    """The accepted historical table reaches a real escalate evaluation once."""
+    store = _store(tmp_path)
+    binding = _seed_bound_task(store)
+    carrier, admission = _carrier_with(
+        binding, escalate="applies", continue_="does_not_apply",
+    )
+    store, _, _, row, attempt = _hook_admitted(
+        tmp_path, carrier=carrier, admission=admission,
+        prebound=(store, binding),
+    )
+    db = store._db
+    store.bind_v2_process_boot_id(attempt.origin_boot_id)
+    add_historical_agent_enrollments(db)
+    _log_ordinary_completion(db, row["id"])
+    now, _ = _flag_v2_zombie(store, age=10)
+    result_id = row["id"]
+    attempt_id = attempt.attempt_id
+    notifications: list[dict] = []
+    thread_followups: list[tuple[str, str]] = []
+    orch = _reaper_orch(store)
+    orch.notify_escalated = lambda **kwargs: notifications.append(kwargs)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._maybe_post_thread_escalation",
+        lambda _orch, task_id, *, reason: thread_followups.append(
+            (task_id, reason)
+        ),
+    )
+    monkeypatch.setattr(
+        "runtime.daemon.zombie_reaper._pid_is_dead", lambda _pid: True,
+    )
+
+    for _ in range(3):
+        _sweep_org_zombies(
+            db, now=now, uptime=999, warm_up_seconds=0, orchestrator=orch,
+        )
+
+    task = db.get_task(attempt.root_task_id)
+    final = db.get_authority_policy_v2_attempt_for_result(result_id)
+    evaluation = db.get_authority_policy_v2_evaluation_for_result(result_id)
+    audits = db.get_audit_logs(attempt.root_task_id)
+    assert task.status is TaskStatus.ESCALATED
+    assert task.zombie_flagged_at is None
+    assert final is not None
+    assert final.attempt_id == attempt_id
+    assert final.finalization_state == "refused"
+    assert evaluation is not None and evaluation.outcome == "escalate_applies"
+    assert db.get_latest_task_result(
+        attempt.root_task_id, attempt.manager_agent, attempt.manager_session_id,
+    )["id"] == result_id
+    assert [a["action"] for a in audits].count("orchestration_step") == 1
+    assert [a["action"] for a in audits].count("escalation") == 1
+    assert len(notifications) == 1
+    assert len(thread_followups) == 1
+    assert db.get_children(attempt.root_task_id) == []
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_candidates"
+    ).fetchone()[0] == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_evaluations"
+    ).fetchone()[0] == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_continue_envelopes"
+    ).fetchone()[0] == 0
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_recovery_notifications"
+    ).fetchone()[0] == 0
+    assert orch._queue.puts == []
+
+
+def test_v2_pending_zombie_recovery_uses_ordinary_escalation_exactly_once(
+    tmp_path, monkeypatch,
+):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    db = store._db
+    store.bind_v2_process_boot_id(attempt.origin_boot_id)
+    _log_ordinary_completion(db, row["id"])
+    now, _ = _flag_v2_zombie(store, age=10)
+    notifications: list[dict] = []
+    thread_followups: list[tuple[str, str]] = []
+    orch = _reaper_orch(store)
+    orch.notify_escalated = lambda **kwargs: notifications.append(kwargs)
+    monkeypatch.setattr(
+        "runtime.orchestrator.authority.run_authority_hook",
+        lambda *_args, **_kwargs: "v2_pending",
+    )
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._maybe_post_thread_escalation",
+        lambda _orch, task_id, *, reason: thread_followups.append(
+            (task_id, reason)
+        ),
+    )
+    monkeypatch.setattr(
+        "runtime.daemon.zombie_reaper._pid_is_dead", lambda _pid: True,
+    )
+
+    for _ in range(3):
+        _sweep_org_zombies(
+            db, now=now, uptime=999, warm_up_seconds=0, orchestrator=orch,
+        )
+
+    task = db.get_task(attempt.root_task_id)
+    audits = db.get_audit_logs(attempt.root_task_id)
+    assert task.status is TaskStatus.ESCALATED
+    assert [a["action"] for a in audits].count("orchestration_step") == 1
+    assert [a["action"] for a in audits].count("escalation") == 1
+    assert len(notifications) == 1
+    assert len(thread_followups) == 1
+    assert db.get_children(attempt.root_task_id) == []
+    assert orch._queue.puts == []
 
 
 def test_v2_result_present_marker_race_preserves_winner(tmp_path, monkeypatch):

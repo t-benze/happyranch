@@ -500,7 +500,7 @@ def test_mixed_release_identity_refuses(tmp_path):
     store._db._conn.commit()
     outcome = _evaluate(store, row, attempt)
     assert outcome.status == "refused"
-    assert outcome.refusal_code in {"identity_mismatch", "schema_drift"}
+    assert outcome.refusal_code == "identity_mismatch"
 
 
 # ── tampered V ───────────────────────────────────────────────────────────
@@ -528,7 +528,7 @@ def test_dropping_evaluation_trigger_then_tampering_refuses(tmp_path):
     store._db._conn.commit()
     outcome = _audit_evaluation(store, row, attempt)
     assert outcome.status == "refused"
-    assert outcome.refusal_code in {"identity_mismatch", "schema_drift"}
+    assert outcome.refusal_code == "identity_mismatch"
 
 
 def test_missing_evaluation_refuses_audit(tmp_path):
@@ -542,9 +542,7 @@ def test_missing_evaluation_refuses_audit(tmp_path):
     store._db._conn.commit()
     outcome = _audit_evaluation(store, row, attempt)
     assert outcome.status == "refused"
-    # Deleting the immutable row required dropping its trigger, so the frozen
-    # schema recheck additionally refuses the now-missing evidence.
-    assert outcome.refusal_code in {"evaluation_missing", "identity_mismatch", "schema_drift"}
+    assert outcome.refusal_code == "evaluation_missing"
 
 
 # ── injected atomic failures: exact R4 residue ───────────────────────────
@@ -650,16 +648,16 @@ def test_caller_transaction_is_preserved(tmp_path, method):
     ).fetchone()[0] == 1
 
 
-# ── schema drift ─────────────────────────────────────────────────────────
+# ── schema representation is not an evaluation fence ────────────────────
 
 
-def test_post_claim_schema_drift_refuses_evaluation(tmp_path):
+def test_post_claim_extra_index_does_not_refuse_evaluation(tmp_path):
     store, _, row, attempt, candidate = _ready(tmp_path)
     store._db._conn.execute("CREATE INDEX thr229_c3c_drift ON tasks(status)")
     store._db._conn.commit()
     outcome = _evaluate(store, row, attempt)
-    assert outcome.status == "refused" and outcome.refusal_code == "schema_drift"
-    assert _counts(store._db)["evaluations"] == 0
+    assert outcome.status == "evaluated"
+    assert _counts(store._db)["evaluations"] == 1
 
 
 # ── C3c correction: BOTH halves of every required prior stage audit ──────

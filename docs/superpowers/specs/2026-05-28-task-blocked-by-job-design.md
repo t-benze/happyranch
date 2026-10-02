@@ -360,7 +360,7 @@ The existing skill section (jobs-design.md §9.1, the paragraph beginning "If `r
 > }
 > ```
 >
-> The system will resume your task automatically once **every** listed job reaches a terminal state (`completed`, `failed`, or `rejected`). When you resume, your bootstrap doc will include a `BLOCKED-JOBS-RESULTS` section listing each job's status, exit code, and `happyranch jobs show JOB-NNN` / `happyranch jobs output JOB-NNN` commands to fetch full output. **You don't poll.**
+> The system will resume your task automatically once **every** listed job reaches a terminal state (`completed`, `failed`, or `rejected`). When you resume, your bootstrap doc will include a `BLOCKED-JOBS-RESULTS` section listing each job's status and, when stored, its reason and exit code, plus `happyranch jobs show JOB-NNN` / `happyranch jobs output JOB-NNN` commands to fetch full output. The load-bearing `task_resumed_from_jobs.job_outcomes` values remain status strings; the renderer reads the terminal job row for additive detail and safely falls back to status-only output for legacy/missing rows. **You don't poll.**
 
 The skill's existing "If `review_required=false`" branch (loop on `happyranch jobs wait`) remains as a valid pattern for short-lived auto-running jobs the agent can stay in-session for. The block-and-resume path is the recommended pattern for any wait long enough to risk session timeout.
 
@@ -376,13 +376,12 @@ Render shape:
 === BLOCKED-JOBS-RESULTS (system) ===
 You self-blocked on JOB-12, JOB-13. They are now terminal:
 
-  JOB-12  completed  exit=0   12.3s   "Run migration on staging"
+  JOB-12  completed (exit 0)
           → happyranch jobs show JOB-12
-          → happyranch jobs output JOB-12 --stream stdout
-  JOB-13  failed     exit=2   4.1s    "Verify schema"
-          reason: non-zero exit
+          → happyranch jobs output JOB-12
+  JOB-13  failed (daemon_shutdown, exit -15)
           → happyranch jobs show JOB-13
-          → happyranch jobs output JOB-13 --stream stderr
+          → happyranch jobs output JOB-13
 
 Re-read your task brief; decide whether to proceed, retry, or escalate.
 ======================================
@@ -484,6 +483,13 @@ The `triggering_job_id` field on `task_resumed_from_jobs` is the founder's debug
 - Agent submits + blocks, daemon killed mid-block (jobs left in `running` state on disk)
 - Daemon restarted → `recover_orphaned_running_jobs` force-fails the jobs with `daemon_crash` → caller C's recovery scan re-evaluates the predicate → task resumes
 - Resumed agent session sees the `BLOCKED-JOBS-RESULTS` header listing `failed (reason=daemon_crash)` for each job
+
+Graceful shutdown is distinct from crash recovery: lifespan teardown stops the
+task queue before signalling jobs, so a dying job cannot claim its waiter. A
+signalled job persists `failed/daemon_shutdown` with its real exit code, the
+task/session stays parked through process exit, and Branch 3 plus the lifespan
+scan dedupe one startup resume. The resulting header reads, for example,
+`JOB-12 failed (daemon_shutdown, exit -15)`.
 
 **Existing `tests/integration/test_threads_e2e.py`** — extend to verify thread task-followup still fires correctly for tasks that pass through `blocked_on_job` state. A thread-dispatched task that self-blocks, resumes, and reaches a true terminal must trigger the existing followup helper as before. This guards against accidental call-order regressions between the new resume helper and the existing thread followup helper.
 

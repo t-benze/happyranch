@@ -37,6 +37,8 @@ from runtime.daemon.sessions import SessionTracker
 from runtime.infrastructure.database import Database
 from runtime.models import TaskRecord, TaskStatus, TokenUsage
 from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+from runtime.orchestrator.context_builder import ContextBuilder
 from runtime.orchestrator.executors import ExecutorResult
 from runtime.orchestrator.host_supervisor import (
     AdmissionRequest,
@@ -46,6 +48,7 @@ from runtime.orchestrator.host_supervisor import (
 )
 from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.teams import TeamsRegistry
+from runtime.orchestrator.workspace_adapters import write_canonical_instruction_pair
 from runtime.platform.session_backend import (
     Capability,
     CapabilityLevel,
@@ -212,12 +215,22 @@ class _RecordingExecutor:
         ]
         self._observer = observer
         self.calls: list[dict] = []
+        self.spec_calls: list[dict] = []
         self.lock = threading.Lock()
 
     def set_invocation_context(self, **kwargs):
         pass
 
-    def build_launch_spec(self, *, workspace, prompt, session_id=None, model=None, org_slug=None, timeout_seconds=1800) -> LaunchSpec:
+    def build_launch_spec(
+        self, *, workspace, prompt, session_id=None, model=None,
+        resume_session_id=None, org_slug=None, timeout_seconds=1800,
+    ) -> LaunchSpec:
+        self.spec_calls.append(
+            {
+                "session_id": session_id,
+                "resume_session_id": resume_session_id,
+            }
+        )
         return LaunchSpec(argv=("fake-cli",), cwd=str(workspace), env={})
 
     def verify_launch_ready(self) -> str | None:
@@ -256,7 +269,10 @@ class _RaisingSpecExecutor(_RecordingExecutor):
     argv gate etc.) — the producer fails closed and must still clear the
     SessionTracker control/session."""
 
-    def build_launch_spec(self, *, workspace, prompt, session_id=None, model=None, org_slug=None, timeout_seconds=1800) -> LaunchSpec:
+    def build_launch_spec(
+        self, *, workspace, prompt, session_id=None, model=None,
+        resume_session_id=None, org_slug=None, timeout_seconds=1800,
+    ) -> LaunchSpec:
         raise RuntimeError("argv gate refused")
 
 
@@ -288,9 +304,15 @@ def _seed_org(paths: OrgPaths, tmp_path: Path, test_settings: Settings) -> None:
         src.mkdir(parents=True, exist_ok=True)
         (src / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
     ws = paths.workspaces_dir / _AGENT
-    ws.mkdir(parents=True, exist_ok=True)
-    (ws / "task_history.md").write_text("# Task History: dev_agent\n\n")
-    (ws / "agent.yaml").write_text("executor: claude\n")
+    ContextBuilder(test_settings, paths, slug="test").ensure_workspace_ready(
+        ws, _AGENT, "Build software.", provider="claude",
+    )
+    # U0 imports this fixture and launches both registered agents. Keep the
+    # manager's narrower fixture shape while using the production pair writer.
+    write_canonical_instruction_pair(
+        paths.workspaces_dir / "engineering_head",
+        "Manage the engineering team.\n",
+    )
     # NOTE: no pre-created skill directories — the canonical-store
     # SymlinkMaterializer creates the start-task link + readiness marker
     # during materialization; a pre-created ordinary dir at the link path
@@ -308,6 +330,11 @@ def _make_orch(tmp_path: Path, backend: _FakeBackend, executor: _RecordingExecut
     paths = OrgPaths(root=rt / "orgs" / "test")
     _seed_org(paths, tmp_path, test_settings)
     db = Database(paths.db_path)
+    # This harness intentionally constructs Orchestrator directly instead of
+    # entering shipping startup or DaemonState.add_org. Establish the same
+    # authenticated empty-selector prerequisite those lifecycle seams publish
+    # before any real launch; launch policy resolution itself stays read-only.
+    AuthorityPolicyStore(db).ensure_authority_selector("engineering")
     orch = Orchestrator(
         db=db, settings=test_settings, paths=paths, slug="test",
         teams=TeamsRegistry.load(paths.root),
@@ -367,6 +394,8 @@ def test_task_producer_contained_success_lifecycle(tmp_path, monkeypatch):
     # body (the supervisor's AdmissionRequest.on_started owns the PID), no
     # internal 429 retry.
     assert len(executor.calls) == 1
+    assert len(executor.spec_calls) == 1
+    assert executor.spec_calls[0]["resume_session_id"] is None
     call = executor.calls[0]
     assert call["running"] is backend.last_running
     assert call["on_started"] is None
@@ -389,6 +418,24 @@ def test_task_producer_contained_success_lifecycle(tmp_path, monkeypatch):
     assert tracker.get_cancel_control(task_id, _AGENT) is None
     assert tracker.get_pid(task_id, _AGENT) is None
     assert tracker.get_active(task_id, _AGENT) is None
+
+
+def test_recording_executor_keeps_runtime_and_provider_resume_ids_distinct(tmp_path):
+    """The fake matches the real build_launch_spec recovery/resume signature."""
+    executor = _RecordingExecutor()
+    executor.build_launch_spec(
+        workspace=tmp_path,
+        prompt="recover completion",
+        session_id="runtime-session",
+        resume_session_id="provider-session",
+    )
+
+    assert executor.spec_calls == [
+        {
+            "session_id": "runtime-session",
+            "resume_session_id": "provider-session",
+        }
+    ]
 
 
 def test_task_producer_429_retry_reacquires_fresh_handle(tmp_path, monkeypatch):

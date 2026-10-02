@@ -1,7 +1,7 @@
--- TASK-7263 U0 only: executable on isolated test adapters, never installed.
+-- TASK-8849 U1A: canonical inert version-1 workflow-owned layout.
 PRAGMA foreign_keys=ON;
 -- This is the adapter's sole durable version discriminator.  It is created
--- and committed in the same isolated transaction as every proposed table.
+-- and committed in the same workflow-owned transaction as every table.
 CREATE TABLE workflow_adapter_versions (version INTEGER PRIMARY KEY CHECK(version=1));
 CREATE TABLE workflow_template_drafts (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, template_name TEXT NOT NULL, definition_bytes BLOB NOT NULL, definition_digest TEXT NOT NULL, compiler_pin TEXT NOT NULL, validator_pin TEXT NOT NULL, source_pin TEXT NOT NULL, author_principal TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE workflow_template_versions (id TEXT PRIMARY KEY, draft_id TEXT NOT NULL REFERENCES workflow_template_drafts(id), namespace TEXT NOT NULL, template_name TEXT NOT NULL, version INTEGER NOT NULL CHECK(version>0), definition_bytes BLOB NOT NULL, definition_digest TEXT NOT NULL, compiler_pin TEXT NOT NULL, validator_pin TEXT NOT NULL, source_pin TEXT NOT NULL, published_by TEXT NOT NULL, published_at TEXT NOT NULL, UNIQUE(namespace,template_name,version));
@@ -20,8 +20,8 @@ CREATE TABLE workflow_instance_contributors (instance_id TEXT NOT NULL REFERENCE
 CREATE TABLE workflow_rounds (id TEXT PRIMARY KEY, instance_id TEXT NOT NULL REFERENCES workflow_instances(id), submission_id TEXT NOT NULL REFERENCES workflow_submissions(id), current_revision INTEGER NOT NULL CHECK(current_revision>0), state TEXT NOT NULL CHECK(state IN ('reviewing','closed','superseded')), UNIQUE(instance_id,current_revision));
 CREATE TABLE workflow_review_requests (id TEXT PRIMARY KEY, round_id TEXT NOT NULL REFERENCES workflow_rounds(id), principal TEXT NOT NULL, assignment_generation INTEGER NOT NULL CHECK(assignment_generation>0), request_scope_bytes BLOB NOT NULL, request_scope_digest TEXT NOT NULL UNIQUE, status TEXT NOT NULL CHECK(status IN ('pending','approved','changes_requested','superseded')), supersedes_request_id TEXT REFERENCES workflow_review_requests(id), UNIQUE(round_id,principal,assignment_generation));
 CREATE TABLE workflow_review_receipts (id TEXT PRIMARY KEY, request_id TEXT NOT NULL REFERENCES workflow_review_requests(id), submission_id TEXT NOT NULL, submission_digest TEXT NOT NULL, assignment_generation INTEGER NOT NULL CHECK(assignment_generation>0), request_scope_digest TEXT NOT NULL, proof_bytes BLOB NOT NULL, proof_digest TEXT NOT NULL UNIQUE, outcome TEXT NOT NULL CHECK(outcome IN ('approved','changes_requested')), supersedes_receipt_id TEXT REFERENCES workflow_review_receipts(id), created_at TEXT NOT NULL, FOREIGN KEY(submission_id,submission_digest) REFERENCES workflow_submissions(id,submission_digest), UNIQUE(request_id,assignment_generation));
--- These three test-only relations are the F2 provenance bridge.  They are not
--- publication/outbox protocol: those separate F4/F5 models are proved below.
+-- These three inert relations reserve the F2 provenance bridge for a later
+-- unit. U1A installs no publication/outbox behavior.
 CREATE TABLE workflow_task_results (id TEXT PRIMARY KEY, instance_id TEXT NOT NULL, task_id TEXT NOT NULL, session_id TEXT NOT NULL, principal TEXT NOT NULL, generation INTEGER NOT NULL CHECK(generation>0), lifecycle TEXT NOT NULL CHECK(lifecycle='completed'), result_bytes BLOB NOT NULL, result_digest TEXT NOT NULL, FOREIGN KEY(instance_id,task_id,session_id) REFERENCES workflow_instance_tasks(instance_id,task_id,session_id), UNIQUE(instance_id,task_id,session_id,id));
 CREATE TABLE workflow_current_assignments (instance_id TEXT NOT NULL REFERENCES workflow_instances(id), role_key TEXT NOT NULL, principal TEXT NOT NULL, task_id TEXT NOT NULL, session_id TEXT NOT NULL, result_id TEXT NOT NULL, generation INTEGER NOT NULL CHECK(generation>0), lifecycle TEXT NOT NULL CHECK(lifecycle='completed'), PRIMARY KEY(instance_id,role_key), FOREIGN KEY(instance_id,task_id,session_id,result_id) REFERENCES workflow_task_results(instance_id,task_id,session_id,id));
 -- Evidence is separate from the receipt. SQL binds durable result/context/
@@ -32,17 +32,16 @@ CREATE INDEX workflow_instances_root_idx ON workflow_instances(root_task_id);
 CREATE INDEX workflow_instance_tasks_state_idx ON workflow_instance_tasks(instance_id,state);
 CREATE INDEX workflow_events_instance_idx ON workflow_events(instance_id);
 CREATE INDEX workflow_requests_round_idx ON workflow_review_requests(round_id,status);
--- F4/F5 proposed authority-publication model.  These are isolated evidence
--- relations, not a runtime migration or an installed coordination protocol.
+-- Inert F4/F5 authority-publication layout. U1A installs no coordinator.
 CREATE TABLE workflow_authority_pointers (namespace TEXT PRIMARY KEY, current_generation INTEGER NOT NULL CHECK(current_generation>=0), journal_id TEXT, snapshot_digest TEXT, state TEXT NOT NULL CHECK(state IN ('ready','fenced')), profile_fence INTEGER NOT NULL DEFAULT 0 CHECK(profile_fence>=0), CHECK((current_generation=0 AND journal_id IS NULL AND snapshot_digest IS NULL) OR (current_generation>0 AND journal_id IS NOT NULL AND snapshot_digest IS NOT NULL)));
 CREATE TABLE workflow_publication_journals (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, generation INTEGER NOT NULL CHECK(generation>0), expected_generation INTEGER NOT NULL CHECK(expected_generation>=0), snapshot_bytes BLOB NOT NULL, snapshot_digest TEXT NOT NULL, publisher TEXT NOT NULL, publisher_invocation TEXT NOT NULL, profile_fence INTEGER NOT NULL CHECK(profile_fence>=0), state TEXT NOT NULL CHECK(state IN ('prepared','file_phase_reserved','canonical_published','forward_recovery_required','pointer_committed','cache_installed','aborted')), recovery_owner TEXT NOT NULL, file_phase_owner TEXT, CHECK(generation=expected_generation+1), CHECK((state='file_phase_reserved' AND file_phase_owner IS NOT NULL) OR state!='file_phase_reserved'));
 CREATE TABLE workflow_publication_leases (namespace TEXT PRIMARY KEY, owner_token TEXT NOT NULL, owner_pid INTEGER NOT NULL CHECK(owner_pid>0));
 CREATE TABLE workflow_admission_records (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, generation INTEGER NOT NULL CHECK(generation>0), request_digest TEXT NOT NULL, admitted_by TEXT NOT NULL, UNIQUE(namespace,id), FOREIGN KEY(namespace) REFERENCES workflow_authority_pointers(namespace));
 CREATE INDEX workflow_publication_journals_namespace_state_idx ON workflow_publication_journals(namespace,state,generation);
 CREATE INDEX workflow_admission_records_namespace_generation_idx ON workflow_admission_records(namespace,generation);
--- F4 proposed machine-global profile membership/activation coordinator.  This is
--- an isolated evidence relation set, not an installed migration and not a claim
--- of a distributed atomic commit.  The coordinator is same-host cooperative
+-- Inert F4 machine-global profile membership/activation contract. Installing
+-- these org-local records is not a coordinator or a claim of distributed
+-- atomic commit. The future coordinator is same-host cooperative
 -- only: a cross-process lease serializes operations, and any same-UID direct
 -- database/file mutation stays outside the guarantee.  The per-organization
 -- authority pointer/journal/lease/file/cache relations above remain the only
@@ -77,9 +76,8 @@ CREATE TABLE workflow_profile_dependencies (org_namespace TEXT NOT NULL, profile
 CREATE INDEX workflow_profile_operations_profile_state_idx ON workflow_profile_operations(profile_name,state,target_generation);
 CREATE INDEX workflow_profile_dependencies_profile_idx ON workflow_profile_dependencies(profile_name,state);
 CREATE INDEX workflow_profile_dependencies_org_state_idx ON workflow_profile_dependencies(org_namespace,state);
--- F5 proposed workflow-owned request/task/outbox boundary.  These relations are
--- isolated evidence only.  They do not claim a production migration, a durable
--- host execution identity, or exactly-once host launch.
+-- Inert F5 workflow-owned request/task/outbox boundary. U1A does not implement
+-- a durable host execution identity or claim exactly-once host launch.
 CREATE TABLE workflow_dispatch_operations (id TEXT PRIMARY KEY, org_slug TEXT NOT NULL, principal TEXT NOT NULL, operation_key TEXT NOT NULL, request_digest TEXT NOT NULL, instance_id TEXT NOT NULL REFERENCES workflow_instances(id), round_id TEXT NOT NULL REFERENCES workflow_rounds(id), request_id TEXT NOT NULL UNIQUE REFERENCES workflow_review_requests(id), state TEXT NOT NULL CHECK(state IN ('admitted','cancelled','completed')), created_at TEXT NOT NULL, UNIQUE(org_slug,principal,operation_key));
 CREATE TABLE workflow_request_task_bridges (request_id TEXT PRIMARY KEY REFERENCES workflow_review_requests(id), operation_id TEXT NOT NULL UNIQUE REFERENCES workflow_dispatch_operations(id), instance_id TEXT NOT NULL REFERENCES workflow_instances(id), task_id TEXT NOT NULL UNIQUE, assigned_principal TEXT NOT NULL, assignment_generation INTEGER NOT NULL CHECK(assignment_generation>0), session_id TEXT, result_id TEXT, state TEXT NOT NULL CHECK(state IN ('queued','claimed','running','cancelled','uncertain','completed')), created_at TEXT NOT NULL, CHECK((state IN ('running','completed') AND session_id IS NOT NULL) OR state NOT IN ('running','completed')), CHECK((state='completed' AND result_id IS NOT NULL) OR state!='completed'));
 CREATE TABLE workflow_dispatch_outbox (id TEXT PRIMARY KEY, operation_id TEXT NOT NULL UNIQUE REFERENCES workflow_dispatch_operations(id), request_id TEXT NOT NULL UNIQUE REFERENCES workflow_review_requests(id), effect_key TEXT NOT NULL UNIQUE, authority_namespace TEXT NOT NULL, authority_generation INTEGER NOT NULL CHECK(authority_generation>0), authority_digest TEXT NOT NULL, artifact_revision INTEGER NOT NULL CHECK(artifact_revision>0), state TEXT NOT NULL CHECK(state IN ('queued','claimed','running','cancelled','uncertain','completed')), claim_token TEXT, claim_owner TEXT, host_launch_started INTEGER NOT NULL DEFAULT 0 CHECK(host_launch_started IN (0,1)), host_execution_key TEXT NOT NULL UNIQUE, host_execution_id TEXT, recovery_owner TEXT NOT NULL, last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, CHECK((state IN ('claimed','running','uncertain') AND claim_token IS NOT NULL) OR state NOT IN ('claimed','running','uncertain')), CHECK((state='running' AND host_execution_id IS NOT NULL) OR state!='running'));
@@ -93,7 +91,7 @@ CREATE TABLE workflow_dispatch_callbacks (id TEXT PRIMARY KEY, outbox_id TEXT NO
 CREATE TABLE workflow_dispatch_effects (id TEXT PRIMARY KEY, outbox_id TEXT NOT NULL REFERENCES workflow_dispatch_outbox(id), effect_key TEXT NOT NULL UNIQUE, effect_kind TEXT NOT NULL CHECK(effect_kind='host_launch_observed'), task_id TEXT NOT NULL, session_id TEXT NOT NULL, host_execution_id TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE INDEX workflow_dispatch_outbox_state_idx ON workflow_dispatch_outbox(state,recovery_owner);
 CREATE INDEX workflow_dispatch_callbacks_outbox_idx ON workflow_dispatch_callbacks(outbox_id,created_at);
--- F6 proposed compatibility/cutover and immutable template identity model.
+-- U1A compatibility marker plus inert later cutover/template identity layout.
 -- The singleton cutover row is the only workflow schema/cutover marker.  It
 -- does not reinterpret a legacy table or grant an old binary recovery
 -- ownership. Reopen derives the complete canonical table/column/key/CHECK/

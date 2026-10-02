@@ -31,12 +31,69 @@ def test_tasks_subcommand():
     args = parser.parse_args(["tasks"])
     assert args.command == "tasks"
     assert args.limit == 20
+    assert args.agent is None
+    assert args.all_pages is False
+    assert args.json is False
 
 
 def test_tasks_with_limit():
     parser = build_parser()
     args = parser.parse_args(["tasks", "--limit", "5"])
     assert args.limit == 5
+
+
+def test_cmd_tasks_all_pages_filters_agent_and_follows_cursor(capsys):
+    from cli.main import cmd_tasks
+
+    fake = MagicMock()
+    fake.get.side_effect = [
+        MagicMock(status_code=200, json=lambda: {
+            "tasks": [{"task_id": "TASK-3", "brief": "three", "status": "completed"}],
+            "next_cursor": "TASK-3",
+        }),
+        MagicMock(status_code=200, json=lambda: {
+            "tasks": [{"task_id": "TASK-1", "brief": "one", "status": "completed"}],
+            "next_cursor": None,
+        }),
+    ]
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
+        cmd_tasks(MagicMock(
+            org=None, limit=1000, status=None, block_kind=None,
+            agent="dev_agent", all_pages=True, json=True,
+        ))
+    assert [row["task_id"] for row in json.loads(capsys.readouterr().out)] == [
+        "TASK-1", "TASK-3",
+    ]
+    assert fake.get.call_args_list[0].kwargs["params"] == {
+        "limit": 1000, "assigned_agent": "dev_agent",
+    }
+    assert fake.get.call_args_list[1].kwargs["params"] == {
+        "limit": 1000, "assigned_agent": "dev_agent", "before": "TASK-3",
+    }
+
+
+def test_cmd_tasks_all_pages_refuses_nonprogressing_cursor(capsys):
+    from cli.main import cmd_tasks
+
+    fake = MagicMock()
+    fake.get.side_effect = [
+        MagicMock(status_code=200, json=lambda: {
+            "tasks": [{"task_id": "TASK-3"}], "next_cursor": "TASK-3",
+        }),
+        MagicMock(status_code=200, json=lambda: {
+            "tasks": [], "next_cursor": "TASK-3",
+        }),
+    ]
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]), \
+         pytest.raises(SystemExit) as excinfo:
+        cmd_tasks(MagicMock(
+            org=None, limit=1000, status=None, block_kind=None,
+            agent="dev_agent", all_pages=True, json=True,
+        ))
+    assert excinfo.value.code == 1
+    assert "task pagination cursor" in capsys.readouterr().err
 
 
 def test_init_agent_subcommand():
@@ -888,6 +945,7 @@ def test_audit_subcommand_defaults():
     assert args.since is None
     assert args.limit is None
     assert args.json is False
+    assert args.all_pages is False
 
 
 def test_audit_subcommand_with_filters():
@@ -897,13 +955,88 @@ def test_audit_subcommand_with_filters():
         "--agent", "engineering_head",
         "--action", "session_end",
         "--limit", "5",
+        "--all-pages",
         "--json",
     ])
     assert args.task_id == "TASK-007"
     assert args.agent == "engineering_head"
     assert args.action == "session_end"
     assert args.limit == 5
+    assert args.all_pages is True
     assert args.json is True
+
+
+def test_cmd_audit_all_pages_follows_cursor_and_emits_one_json_array(capsys):
+    from cli.main import cmd_audit
+
+    fake = MagicMock()
+    fake.get.side_effect = [
+        MagicMock(
+            status_code=200,
+            json=lambda: {
+                "entries": [{"id": 3, "task_id": "TASK-3"}],
+                "next_cursor": "cursor-2",
+            },
+        ),
+        MagicMock(
+            status_code=200,
+            json=lambda: {
+                "entries": [
+                    {"id": 1, "task_id": "TASK-1"},
+                    {"id": 2, "task_id": "TASK-2"},
+                ],
+                "next_cursor": None,
+            },
+        ),
+    ]
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
+        cmd_audit(MagicMock(
+            org=None, task_id=None, agent="dev_agent", action=None,
+            since=None, limit=1000, json=True, all_pages=True,
+        ))
+
+    assert json.loads(capsys.readouterr().out) == [
+        {"id": 1, "task_id": "TASK-1"},
+        {"id": 2, "task_id": "TASK-2"},
+        {"id": 3, "task_id": "TASK-3"},
+    ]
+    assert fake.get.call_args_list[0].kwargs["params"] == {
+        "agent": "dev_agent", "limit": 1000,
+    }
+    assert fake.get.call_args_list[1].kwargs["params"] == {
+        "agent": "dev_agent", "limit": 1000, "cursor": "cursor-2",
+    }
+
+
+@pytest.mark.parametrize("bad_page", [
+    {"entries": [], "next_cursor": "same"},
+    {"entries": "not-a-list", "next_cursor": None},
+    {"entries": [{"id": 1}, {"id": 1}], "next_cursor": None},
+])
+def test_cmd_audit_all_pages_refuses_malformed_or_nonprogressing_pages(
+        bad_page, capsys):
+    from cli.main import cmd_audit
+
+    fake = MagicMock()
+    if bad_page["next_cursor"] == "same":
+        fake.get.side_effect = [
+            MagicMock(status_code=200, json=lambda: {
+                "entries": [{"id": 2}], "next_cursor": "same",
+            }),
+            MagicMock(status_code=200, json=lambda: bad_page),
+        ]
+    else:
+        fake.get.return_value = MagicMock(status_code=200, json=lambda: bad_page)
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]), \
+         pytest.raises(SystemExit) as excinfo:
+        cmd_audit(MagicMock(
+            org=None, task_id=None, agent="dev_agent", action=None,
+            since=None, limit=1000, json=True, all_pages=True,
+        ))
+    assert excinfo.value.code == 1
+    assert "audit pagination" in capsys.readouterr().err
 
 
 def test_cmd_audit_sends_filters_and_prints_table(capsys):
@@ -2962,7 +3095,11 @@ def _details_output(client, capsys, *, task_id="T-1"):
     return capsys.readouterr().out
 
 
-def _stub_detail_response(ws: dict, task: dict | None = None) -> MagicMock:
+def _stub_detail_response(
+    ws: dict,
+    task: dict | None = None,
+    escalation_reason: dict | None = None,
+) -> MagicMock:
     client = MagicMock()
     response = MagicMock()
     response.status_code = 200
@@ -2977,6 +3114,7 @@ def _stub_detail_response(ws: dict, task: dict | None = None) -> MagicMock:
     response.json.return_value = {
         "task": base_task, "results": [], "audit_log": [],
         "work_status": ws,
+        "escalation_reason": escalation_reason,
     }
     client.get.return_value = response
     return client
@@ -3020,6 +3158,39 @@ def test_cmd_details_shows_recent_progress_message(capsys):
     assert "Work status: Recent update recorded" in out
     assert "Phase 3 of 6: tests passing" in out
     assert "Update:" in out
+
+
+def test_cmd_details_shows_v2_primary_and_secondary_instead_of_raw_note(capsys):
+    client = _stub_detail_response(
+        {"applicable": False, "state": "not_applicable", "label": "Not applicable"},
+        task={
+            "status": "escalated",
+            "note": "authority_v2_refusal:final_commit_failed",
+        },
+        escalation_reason={
+            "primary": "Founder must restart the reviewed service.",
+            "refusal_code": "final_commit_failed",
+            "secondary": "Automatic continuation couldn't be committed, so this was escalated to you.",
+        },
+    )
+    out = _details_output(client, capsys)
+    assert "Escalation reason: Founder must restart the reviewed service." in out
+    assert "Automatic escalation: Automatic continuation couldn't be committed" in out
+    assert "authority_v2_refusal:final_commit_failed" not in out
+
+
+def test_cmd_details_keeps_ordinary_note_output_byte_identical(capsys):
+    client = _stub_detail_response(
+        {"applicable": False, "state": "not_applicable", "label": "Not applicable"},
+        task={"status": "escalated", "note": "Ordinary founder question"},
+        escalation_reason={
+            "primary": "Ordinary founder question", "refusal_code": None, "secondary": None,
+        },
+    )
+    out = _details_output(client, capsys)
+    assert "Note:       Ordinary founder question" in out
+    assert "Escalation reason:" not in out
+    assert "Automatic escalation:" not in out
 
 
 def test_cmd_details_stale_but_alive_no_receipt(capsys):

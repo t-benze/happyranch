@@ -9,9 +9,15 @@
  * route (`/onboarding`: OnboardingPage, ConnectRuntimeStep and the shared
  * ConnectFlow). W2c (THR-118) migrates the Settings surface (page chrome and
  * the Assistant/Organization/Executors/Daemon-Capacity sections) and adds the
- * production-gated `preferences` route (`PreferencesSection`). The shared
+ * `preferences` route (`PreferencesSection`), production-gated until W3b-2.
+ * The shared
  * Work Hours-owned `EligibilityEditorDialog` mounted by Organization stays
- * English until W4. The other mounted product surfaces and the later slices
+ * English until W4. W3a migrates Dashboard + Threads and W3b-1 migrates the
+ * Tasks route family (`tasks`, `tasks/:task_id` and its owned dialogs); W3b-2
+ * migrates the Jobs route family (`jobs`, `jobs/:job_id` and its owned
+ * dialogs) and opens the Preferences language preview in production. W4a-1
+ * migrates Runtime Health (`health`) and Dreams (`dreams`, incl. the dream
+ * detail drawer). The other mounted product surfaces and the later slices
  * (assistant dock body = W4, route families = W3/W4) remain `english-only` —
  * fallback English is never treated as coverage.
  * Redirect-only/catch-all
@@ -93,13 +99,16 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'dashboard',
     routeTokens: ['dashboard'],
-    status: 'english-only',
+    // W3a: DashboardPage and its mounted cards/narratives/states.
+    status: 'translated',
     surfaces: ['DashboardPage'],
   },
   {
     namespace: 'threads',
     routeTokens: ['threads', 'threads/:thread_id'],
-    status: 'english-only',
+    // W3a: list/detail panes, composer, strips and the directly owned dialogs
+    // (incl. the shared NewThreadDialog it mounts).
+    status: 'translated',
     surfaces: [
       'ThreadsPage',
       'NewThreadDialog',
@@ -111,7 +120,9 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'tasks',
     routeTokens: ['tasks', 'tasks/:task_id'],
-    status: 'english-only',
+    // W3b-1: list/detail panes, filters, status/fan-out presentation, states
+    // and the directly owned dialogs. Jobs stays english-only until W3b-2.
+    status: 'translated',
     surfaces: [
       'TasksPage',
       'TaskDetailPage',
@@ -167,13 +178,13 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'jobs',
     routeTokens: ['jobs', 'jobs/:job_id'],
-    status: 'english-only',
+    status: 'translated',
     surfaces: ['JobsPage', 'JobDetailPage', 'RunJobDialog', 'RejectJobDialog'],
   },
   {
     namespace: 'health',
     routeTokens: ['health'],
-    status: 'english-only',
+    status: 'translated',
     surfaces: ['HealthPage'],
   },
   {
@@ -185,7 +196,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'dreams',
     routeTokens: ['dreams'],
-    status: 'english-only',
+    status: 'translated',
     surfaces: ['DreamsPage'],
   },
   {
@@ -202,8 +213,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   },
   {
     namespace: 'settings',
-    // `preferences` is mounted only when the W2c closed gate is opened
-    // (`VITE_ENABLE_I18N_PREFERENCES=true`, test/evidence builds); W3 exposes it.
+    // `preferences` (W2c) is mounted in ordinary production builds since W3b-2.
     routeTokens: [
       'settings/*',
       'assistant',

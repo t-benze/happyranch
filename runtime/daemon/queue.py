@@ -83,6 +83,11 @@ class TaskQueue:
 
     def enqueue(self, slug: str, task_id: str, *, metadata: dict | None = None) -> None:
         with self._admission_lock:
+            if self._stopping:
+                logger.warning(
+                    "task queue is stopping; refusing %s/%s", slug, task_id,
+                )
+                return
             self._queue.put_nowait((slug, task_id, metadata))
             self._pending_counts[(slug, task_id)] += 1
 
@@ -113,6 +118,11 @@ class TaskQueue:
         """
         key = slug, task_id
         with self._admission_lock:
+            if self._stopping:
+                logger.warning(
+                    "task queue is stopping; refusing %s/%s", slug, task_id,
+                )
+                return False
             if self._pending_counts[key] or key in self._admission_reservations:
                 return False
             self._admission_reservations.add(key)
@@ -200,7 +210,8 @@ class TaskQueue:
             }
 
     async def stop(self, *, timeout: float = 5.0) -> None:
-        self._stopping = True
+        with self._admission_lock:
+            self._stopping = True
         for t in self._worker_tasks:
             t.cancel()
         await asyncio.gather(*self._worker_tasks, return_exceptions=True)

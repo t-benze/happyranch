@@ -30,6 +30,7 @@ real ``StrictFakeAuthorityEvaluator`` / policy):
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 import hashlib
 import json
 from pathlib import Path
@@ -38,6 +39,7 @@ import pytest
 
 from runtime.config import Settings
 from runtime.infrastructure.database import Database
+from runtime.infrastructure.workflow_schema import install_or_recover
 from runtime.models import BlockKind, TaskRecord, TaskStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.authority import (
@@ -90,8 +92,13 @@ def runtime(tmp_path: Path) -> OrgPaths:
 
 
 @pytest.fixture
-def db(runtime: OrgPaths) -> Database:
-    return Database(runtime.db_path)
+def db(runtime: OrgPaths) -> Iterator[Database]:
+    database = Database(runtime.db_path)
+    install_or_recover(database)
+    try:
+        yield database
+    finally:
+        database.close()
 
 
 def _make_report(output_summary: str, status: str = "completed"):
@@ -394,6 +401,14 @@ def test_second_failed_child_owner_proposal_reaches_real_continue_hook(
 
     def run(task_id, agent, prompt, on_session_started=None):
         nonlocal owner_turns
+        result = _make_result()
+        session_id = (
+            "proposal-session" if task_id == "T-ROOT" and owner_turns == 2
+            else result.session_id
+        )
+        db.update_task(task_id, assigned_agent=agent, current_session_id=session_id)
+        if on_session_started is not None:
+            on_session_started(task_id, agent, session_id)
         if task_id == "T-ROOT":
             owner_turns += 1
             if owner_turns == 1:
@@ -412,8 +427,8 @@ def test_second_failed_child_owner_proposal_reaches_real_continue_hook(
                     session_id="proposal-session", status="completed",
                     confidence_score=80, output_summary=encoded, decision_json=encoded,
                 )
-            return _make_result(), _make_report(output_summary=json.dumps(decision))
-        return _make_result(), _make_report(
+            return result, _make_report(output_summary=json.dumps(decision))
+        return result, _make_report(
             output_summary="terminal child failure", status="blocked",
         )
 
@@ -516,6 +531,7 @@ def test_escalate_golden_byte_identical_behavior(runtime, db, monkeypatch):
     assert db.list_authority_candidates_for_root("T-X") == []
 
     db2 = Database(runtime.db_path.parent / "golden-hook.db")  # fresh DB file
+    install_or_recover(db2)
     fake = StrictFakeAuthorityEvaluator()
     _seed_root(db2, task_id="T-X")
     orch2 = _make_orch(runtime, db2, evaluator=fake)

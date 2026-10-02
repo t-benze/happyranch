@@ -12,6 +12,7 @@ from runtime.orchestrator.active_authority_policy import (
     assert_no_reserved_team_policy_header,
     load_session_policy_snapshot,
     persist_session_policy_binding,
+    render_active_team_policy,
     resolve_policy_manager_team,
     resolve_active_team_policy_snapshot,
     resolve_active_team_policy_section,
@@ -96,6 +97,7 @@ def test_manager_gets_exact_authenticated_section_and_worker_is_byte_absent(tmp_
         action="bootstrap", actor_kind="shared_local_operator_credential",
         request_id="REQ-1", request_digest="1" * 64,
     ))
+    store.ensure_authority_selector("engineering")
     section = resolve_active_team_policy_section(
         store=store, root=tmp_path, teams=teams, team="engineering",
         agent_name="engineering_manager", eligible=True,
@@ -109,9 +111,46 @@ def test_manager_gets_exact_authenticated_section_and_worker_is_byte_absent(tmp_
     ) == ""
 
 
+@pytest.mark.parametrize(("render_kwargs", "expected_digest"), [
+    pytest.param(
+        {
+            "provider_id": "codex", "executor_kind": "codex",
+            "model_id": "gpt-test", "root_task_id": "TASK-FROZEN",
+            "manager_session_id": "sess-frozen",
+        },
+        "6deaf28836182bfca2a88e6aa5a56d457e5c89aa26d26881374436e8525afc6a",
+        id="bound",
+    ),
+    pytest.param(
+        {},
+        "6df608ea0104ed482a94ce74ba7e70f2043640de9d5a498711c84c6b97148fdd",
+        id="unbound",
+    ),
+])
+def test_legacy_v1_bound_and_unbound_render_bytes_remain_frozen(
+    render_kwargs, expected_digest,
+):
+    release = _release(1)
+    activation = AuthorityPolicyActivation.create(
+        id="APA-FROZEN", team="engineering", epoch=7, release_id=release.id,
+        action="bootstrap", actor_kind="shared_local_operator_credential",
+        request_id="REQ-FROZEN", request_digest="f" * 64,
+    )
+    rendered = render_active_team_policy(
+        release=release, activation=activation, **render_kwargs,
+    )
+    assert hashlib.sha256(rendered.encode()).hexdigest() == expected_digest
+
+
 def test_no_active_policy_is_ordinary_empty_and_reserved_impersonation_rejected(tmp_path):
     teams = _manager_context(tmp_path)
     store = AuthorityPolicyStore(Database(tmp_path / "db.sqlite"))
+    with pytest.raises(ActiveAuthorityPolicyError, match="selector is uninitialized"):
+        resolve_active_team_policy_section(
+            store=store, root=tmp_path, teams=teams, team="engineering",
+            agent_name="engineering_manager", eligible=True,
+        )
+    store.ensure_authority_selector("engineering")
     assert resolve_active_team_policy_section(
         store=store, root=tmp_path, teams=teams, team="engineering",
         agent_name="engineering_manager", eligible=True,
@@ -143,6 +182,7 @@ def test_session_binding_survives_activation_swap_and_restart(tmp_path):
         action="bootstrap", actor_kind="shared_local_operator_credential",
         request_id="REQ-1", request_digest="1" * 64,
     ))
+    store.ensure_authority_selector("engineering")
     launch = resolve_active_team_policy_snapshot(
         store=store, root=tmp_path, teams=teams, team="engineering",
         agent_name="engineering_manager", eligible=True,

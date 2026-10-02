@@ -198,8 +198,10 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
             "Shared daily/manual own-workspace cleanup contract (THR-195/THR-259): "
             "bounded, Git-aware, non-force reclamation of registered non-primary "
             "task worktrees and their dependency caches, gated by an exact "
-            "same-user process observation and authoritative terminal/history/peer "
-            "joins."
+            "closed-schema task-bound host-job process-observation receipt, "
+            "complete candidate-specific terminal/history/peer joins, exact "
+            "registered-parent and recursive-boundary checks, complete PR "
+            "pagination, and verified post-action absence."
         ),
         when_to_use=(
             "Use when the task brief begins with the exact workspace-cleanup "

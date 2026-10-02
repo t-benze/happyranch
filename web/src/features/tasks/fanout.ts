@@ -18,6 +18,7 @@
  * values, artifact links, or merge summaries.
  */
 import type { TaskRecallNode, TaskStatus } from '@/lib/api/types';
+import { translate, type Locale } from '@/lib/i18n';
 
 /** A planned child in a pending fan-out, parsed from `children_details`.
  *  Both fields are optional because the payload may only carry one of them —
@@ -183,13 +184,25 @@ export function summarizeChildStatuses(
   return counts;
 }
 
-/** Compact "N of M complete · a running · b failed · c queued" progress line.
- *  Omits any zero segment past the leading complete count. */
-export function progressSummary(counts: ChildStatusCounts): string {
-  const parts = [`${counts.completed} of ${counts.total} complete`];
-  if (counts.running > 0) parts.push(`${counts.running} running`);
-  if (counts.failed > 0) parts.push(`${counts.failed} failed`);
-  if (counts.queued > 0) parts.push(`${counts.queued} queued`);
+/** Compact "N of M complete · a running · b failed · c queued" progress line
+ *  in an explicit display locale. Omits any zero segment past the leading
+ *  complete count. */
+export function progressSummary(counts: ChildStatusCounts, locale: Locale): string {
+  const parts = [
+    translate(locale, 'tasks.fanout.progress.complete', {
+      completed: counts.completed,
+      total: counts.total,
+    }),
+  ];
+  if (counts.running > 0) {
+    parts.push(translate(locale, 'tasks.fanout.progress.running', { count: counts.running }));
+  }
+  if (counts.failed > 0) {
+    parts.push(translate(locale, 'tasks.fanout.progress.failed', { count: counts.failed }));
+  }
+  if (counts.queued > 0) {
+    parts.push(translate(locale, 'tasks.fanout.progress.queued', { count: counts.queued }));
+  }
   return parts.join(' · ');
 }
 

@@ -8,12 +8,28 @@ class AuditLogger:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    def log_session_start(self, task_id: str, agent: str, workspace: str) -> None:
+    def log_session_start(
+        self,
+        task_id: str,
+        agent: str,
+        workspace: str,
+        *,
+        session_id: str | None = None,
+        invocation_purpose: str = "unattributed",
+        executor: str | None = None,
+        model: str | None = None,
+    ) -> None:
         self._db.insert_audit_log(
             task_id=task_id,
             agent=agent,
             action="session_start",
-            payload={"workspace": workspace},
+            payload={
+                "workspace": workspace,
+                "session_id": session_id,
+                "invocation_purpose": invocation_purpose,
+                "executor": executor,
+                "model": model,
+            },
         )
 
     def log_session_end(
@@ -2001,45 +2017,6 @@ class AuditLogger:
             },
         )
 
-    def log_job_reconciled_orphaned(
-        self,
-        *,
-        task_id: str,
-        job_id: str,
-        reason: str,
-        evidence: dict,
-        before: dict,
-        after: dict,
-    ) -> None:
-        """Durable audit for the never-started pending-job reconciliation seam.
-
-        Records the founder-authorized bookkeeping terminalization of an
-        abandoned never-dispatched job (THR-195): the full non-live proof
-        evidence, the row's before/after lifecycle state, and the reason, so
-        the action is auditable and recovery-aware. ``agent`` is ``"system"``
-        — the transition is a system reconciliation, not a founder or agent
-        review decision.
-
-        The row is inserted UNCOMMITTED (``insert_audit_log_uncommitted``) and
-        participates in the caller's transaction: the caller must commit via
-        ``Database.commit()`` — and ``rollback()`` on any failure — so the
-        guarded job transition and this audit record are atomic; an audit
-        failure can never leave a terminalized job without its durable
-        non-live proof.
-        """
-        self._db.insert_audit_log_uncommitted(
-            task_id=task_id,
-            agent="system",
-            action="job_reconciled_orphaned",
-            payload={
-                "job_id": job_id,
-                "reason": reason,
-                "evidence": evidence,
-                "before": before,
-                "after": after,
-            },
-        )
-
     def log_job_stopped(
         self, *, job_id: str, task_id: str, stopped_by: str,
     ) -> None:
@@ -2071,11 +2048,18 @@ class AuditLogger:
             payload={"local_date": local_date},
         )
 
-    def log_dream_started(self, dream_id: str, agent: str) -> None:
+    def log_dream_started(
+        self,
+        dream_id: str,
+        agent: str,
+        *,
+        executor: str | None = None,
+        model: str | None = None,
+    ) -> None:
         self._db.insert_audit_log(
             task_id=dream_id, agent=agent,
             action="dream_started",
-            payload={},
+            payload={"executor": executor, "model": model},
         )
 
     def log_dream_completed(

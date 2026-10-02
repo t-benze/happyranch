@@ -17,16 +17,23 @@ escalated}.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import os
 import stat
 import subprocess
+import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import ModuleType
 from typing import TYPE_CHECKING, Callable, NamedTuple
 
+from runtime.infrastructure.database import (
+    Committed, InvalidLineage, LostClaim, PendingRetry, RetryClaim, SpawnOutcome,
+)
 from runtime.models import BlockKind, TaskStatus
 from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.executors import _meaningful_stderr
@@ -55,8 +62,15 @@ _TERMINAL_WORKTREE_STATUSES = frozenset({
 })
 _TERMINAL_WORKTREE_TIMEOUT_SECONDS = 5.0
 _TERMINAL_WORKTREE_OUTPUT_LIMIT = 1_000_000
-_TERMINAL_WORKTREE_MAX_PROCESSES = 32_768
-_TERMINAL_WORKTREE_MAX_FDS = 131_072
+_TERMINAL_WORKTREE_SCANNER_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "skills/bundled/workspace-cleanup/scripts/check_path_use.py"
+)
+_TERMINAL_WORKTREE_SCANNER_MODULE_NAME = (
+    "_happyranch_terminal_worktree_check_path_use"
+)
+_TERMINAL_WORKTREE_SCANNER_MODULE: ModuleType | None = None
+_TERMINAL_WORKTREE_SCANNER_LOCK = threading.Lock()
 
 
 class TerminalWorktreeReclaimOutcome(NamedTuple):
@@ -96,79 +110,54 @@ def _terminal_worktree_path_has_symlink(path: Path) -> bool:
     return False
 
 
-def _terminal_worktree_path_contains(root: Path, target: str) -> bool:
-    if target.endswith(" (deleted)"):
-        target = target[:-10]
-    if not os.path.isabs(target):
-        return False
-    try:
-        return os.path.commonpath((str(root), os.path.normpath(target))) == str(root)
-    except (OSError, ValueError):
-        return False
+def _load_terminal_worktree_scanner() -> ModuleType:
+    """Load the bundled scanner by path as the single process-rule source."""
+    global _TERMINAL_WORKTREE_SCANNER_MODULE
+    if _TERMINAL_WORKTREE_SCANNER_MODULE is not None:
+        return _TERMINAL_WORKTREE_SCANNER_MODULE
+    with _TERMINAL_WORKTREE_SCANNER_LOCK:
+        if _TERMINAL_WORKTREE_SCANNER_MODULE is not None:
+            return _TERMINAL_WORKTREE_SCANNER_MODULE
+        spec = importlib.util.spec_from_file_location(
+            _TERMINAL_WORKTREE_SCANNER_MODULE_NAME,
+            _TERMINAL_WORKTREE_SCANNER_PATH,
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError("bundled workspace-cleanup scanner is unavailable")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            if sys.modules.get(spec.name) is module:
+                sys.modules.pop(spec.name, None)
+            raise
+        _TERMINAL_WORKTREE_SCANNER_MODULE = module
+        return module
 
 
 def _terminal_worktree_process_reference(
     candidate: Path, deadline: float,
 ) -> str | None:
-    """Return a preservation reason for a live/uncertain same-UID /proc ref."""
-    proc = Path("/proc")
-    if not proc.is_dir():
-        return "process-probe-unavailable"
+    """Map the shared same-user scanner outcome to terminal-hook reasons."""
     try:
-        entries = [entry for entry in proc.iterdir() if entry.name.isdigit()]
-    except OSError:
-        return "process-probe-unavailable"
-    if len(entries) > _TERMINAL_WORKTREE_MAX_PROCESSES:
-        return "process-probe-truncated"
-
-    uid = os.getuid()
-    observed_fds = 0
-    for entry in entries:
+        scanner = _load_terminal_worktree_scanner()
+        bounds = scanner.Bounds(
+            deadline_seconds=_terminal_worktree_remaining(deadline),
+        )
+        result = scanner.scan(candidate, bounds=bounds)
         _terminal_worktree_remaining(deadline)
-        try:
-            owner = entry.stat(follow_symlinks=False).st_uid
-        except FileNotFoundError:
-            continue
-        except OSError:
-            return "process-probe-uncertain"
-        if owner != uid:
-            continue
-
-        try:
-            cwd_target = os.readlink(entry / "cwd")
-        except FileNotFoundError:
-            continue
-        except OSError:
-            if not entry.exists():
-                continue
-            return "process-probe-uncertain"
-        if _terminal_worktree_path_contains(candidate, cwd_target):
-            return "live-process-reference"
-
-        try:
-            with os.scandir(entry / "fd") as fds:
-                for fd in fds:
-                    _terminal_worktree_remaining(deadline)
-                    observed_fds += 1
-                    if observed_fds > _TERMINAL_WORKTREE_MAX_FDS:
-                        return "process-probe-truncated"
-                    try:
-                        fd_target = os.readlink(fd.path)
-                    except FileNotFoundError:
-                        continue
-                    except OSError:
-                        if not entry.exists():
-                            break
-                        return "process-probe-uncertain"
-                    if _terminal_worktree_path_contains(candidate, fd_target):
-                        return "live-process-reference"
-        except FileNotFoundError:
-            continue
-        except OSError:
-            if not entry.exists():
-                continue
-            return "process-probe-uncertain"
-    return None
+    except Exception:
+        logger.warning(
+            "terminal worktree shared process scanner failed closed",
+            exc_info=True,
+        )
+        return "process-probe-uncertain"
+    if result.state == "clear_observation":
+        return None
+    if result.state == "blocked":
+        return "live-process-reference"
+    return "process-probe-uncertain"
 
 
 def _reclaim_terminal_task_worktree(
@@ -1549,6 +1538,10 @@ def _consume_completion_report_body(
         {} if reclaim_terminal_worktree
         else {"reclaim_terminal_worktree": False}
     )
+    # The retry claim binds the result supplied for this report. The authority
+    # hook's legacy latest-row lookup below may find earlier synthetic feedback
+    # when a scripted executor returns a report without persisting a result.
+    expected_claim = RetryClaim.from_task(task, result_row_id=result_row_id)
     # THR-181 Track A (founder lifecycle envelope): the single-use continuation
     # envelope, when ACTIVE, marks this consumption as the continued turn's
     # decision — PROVIDED the consumed report is NOT a replay of the original
@@ -1638,7 +1631,13 @@ def _consume_completion_report_body(
     # provenance, safe to read post-claim.
     if task.task_type == "task":
         decision = orch._parse_next_step(report)
-        if recovery_reentry and db.has_orchestration_step_audit(
+        # A persisted orchestration step number is the durable idempotency key
+        # for every consumer entry, not only callers that happened to label
+        # themselves as recovery.  Startup and zombie recovery rebuild the
+        # same report row but historically did not both propagate
+        # ``recovery_reentry``; never append a second decision audit for the
+        # already-recorded step.
+        if db.has_orchestration_step_audit(
             task_id=task_id, step_number=next_count,
         ):
             _step_audit_id = None
@@ -1709,9 +1708,8 @@ def _consume_completion_report_body(
         if not is_root(task):
             # THR-033 Change A defensive guard: a non-root task never escalates
             # directly to the founder — it fails and hands back to its parent
-            # (bounded failure-recovery carries it up). Currently inert (only a
-            # task_type='task' parses a decision, and in production those are
-            # roots), but locks the invariant against future regressions.
+            # (bounded failure-recovery carries it up). Manager-owned fan-out
+            # and chained children make this a live shipping guard.
             _fail(
                 orch, task_id,
                 note=f"non-root escalation requested ({reason}); routed to parent",
@@ -1747,18 +1745,85 @@ def _consume_completion_report_body(
             # returned to pending for its next manager decision step and was
             # re-enqueued. The escalation is NOT committed.
             return
-        if hook_outcome in ("v2_continued", "v2_refused", "v2_pending"):
-            # THR-229 C3d5a: a session whose authenticated launch binding
-            # selected the v2 family is served entirely by the accepted
-            # pre-final/final v2 path.  ``v2_continued`` committed the final
-            # continuation (post-final settlement/publication may still be
-            # pending); ``v2_refused`` committed durable refusal housekeeping;
-            # ``v2_pending`` could not safely finalize and refusal itself did
-            # not commit, leaving a bounded housekeeping obligation with the
-            # prior state intact.  In every case the ordinary root escalation,
-            # audit and notification path must NOT run, and no ordinary enqueue
-            # fallback is authorized.
+        if hook_outcome == "v2_continued":
+            # The v2 final continuation committed (post-final settlement or
+            # publication may still be pending); no ordinary escalation runs.
             return
+        if hook_outcome == "v2_refused":
+            refusal_status = getattr(hook_outcome, "status", None)
+            task_disposition = getattr(hook_outcome, "task_disposition", None)
+            refused_task = orch._db.get_task(task_id)
+            expected_prefix = "authority_v2_refusal:"
+            if (
+                refusal_status == "refused"
+                and task_disposition == "failed"
+                and refused_task is not None
+                and refused_task.parent_task_id is not None
+                and refused_task.status == TaskStatus.FAILED
+                and refused_task.completed_at is not None
+                and (refused_task.note or "").startswith(expected_prefix)
+            ):
+                expected_note = refused_task.note or ""
+                if recovery_owner is None:
+                    _fail_terminal_tail(
+                        orch,
+                        task_id,
+                        expected_note=expected_note,
+                        reclaim_terminal_worktree=reclaim_kwargs.get(
+                            "reclaim_terminal_worktree", True,
+                        ),
+                    )
+                    if _task_matches_authority_v2_refusal_failure(
+                        orch, task_id, expected_note,
+                    ):
+                        _enqueue_parent_if_waiting(orch, task_id)
+                    if _task_matches_authority_v2_refusal_failure(
+                        orch, task_id, expected_note,
+                    ):
+                        _maybe_post_thread_followup(
+                            orch,
+                            task_id,
+                            status=TaskStatus.FAILED,
+                            auto_revisit_spawned=False,
+                        )
+                else:
+                    _handoff_consumed_recovery_terminal_effects(
+                        orch,
+                        task_id,
+                        recovery_owner[0],
+                        recovery_owner[1],
+                        recovery_result_id,
+                        TaskStatus.FAILED.value,
+                        after_recovery_cleanup=lambda: (
+                            _enqueue_parent_if_waiting(orch, task_id)
+                            if _task_matches_authority_v2_refusal_failure(
+                                orch, task_id, expected_note,
+                            )
+                            else None
+                        ),
+                    )
+                return
+            if (
+                refusal_status == "refused"
+                and task_disposition == "escalated"
+                and refused_task is not None
+                and refused_task.parent_task_id is None
+                and refused_task.status == TaskStatus.ESCALATED
+                and refused_task.completed_at is None
+                and (refused_task.note or "").startswith(expected_prefix)
+            ):
+                # Root refusal retains the pre-existing escalation projection.
+                orch.notify_escalated(
+                    task_id=task_id, agent=agent, reason=reason,
+                    last_summary=getattr(report, "output_summary", "") or "",
+                )
+                _maybe_post_thread_escalation(orch, task_id, reason=reason)
+            return
+        # A bounded v2_pending outcome means refusal housekeeping did not
+        # commit.  Failing closed must still terminate and surface the root, so
+        # continue through the ordinary exactly-once escalation CAS below.  A
+        # later refusal-housekeeping discovery may close the retained attempt;
+        # it cannot re-run this consumer once the task is already escalated.
         # Atomic CAS: transition to ESCALATED only if not cancelled
         # or terminal. Closes the post-_is_already_terminal race (Codex P2 on
         # PR #34) by serializing against /cancel via the Database RLock.
@@ -2006,6 +2071,7 @@ def _consume_completion_report_body(
                     agent,
                     next_count,
                     f"fanout child {i + 1}: {retry_link_err}",
+                    expected_claim=expected_claim,
                 )
                 return
 
@@ -2025,14 +2091,18 @@ def _consume_completion_report_body(
                     for l in c.then
                 ]
             children_payload.append(cd)
-        _spawn_fanout_children(
+        outcome = _spawn_fanout_children(
             orch, task, task_id, next_count,
             children=children_payload,
             width=width,
             manager_agent=agent,
             join_summary=decision.join_summary,
             step_audit_id=_step_audit_id,
+            expected_claim=expected_claim,
         )
+        if isinstance(outcome, InvalidLineage):
+            _reject_retry_link_decision(orch, task_id, agent, next_count, outcome.reason,
+                                        expected_claim=expected_claim)
         return
 
     if decision.action == "delegate":
@@ -2109,6 +2179,7 @@ def _consume_completion_report_body(
         if retry_link_err is not None:
             _reject_retry_link_decision(
                 orch, task_id, agent, next_count, retry_link_err,
+                expected_claim=expected_claim,
             )
             return
 
@@ -2121,6 +2192,8 @@ def _consume_completion_report_body(
         # genuine revise cycles. Re-delegating to QA/reviewer is *not* a
         # revision and must not bump the count (spec
         # historical team design: "manager escalates after 2 rounds").
+        revision_delta = 0
+        cap = load_org_config(orch._paths).max_revise_rounds
         existing_children = db.get_children(task_id)
         completed_children = []
         for cid in existing_children:
@@ -2135,7 +2208,6 @@ def _consume_completion_report_body(
             # NOT a revise cycle — only bump when re-delegating to a DIFFERENT
             # worker-of-record. `agent` is this task's owner.
             if worker_of_record == decision.agent and decision.agent != agent:
-                cap = load_org_config(orch._paths).max_revise_rounds
                 if cap > 0 and task.revision_count >= cap:
                     # THR-026 seq33: revise-round budget exhausted.
                     # DELIBERATE stop-with-best — do NOT increment, do NOT
@@ -2172,7 +2244,7 @@ def _consume_completion_report_body(
                     )
                     _maybe_post_thread_escalation(orch, task_id, reason=reason)
                     return
-                db.increment_revision_count(task_id)
+                revision_delta = 1
         child_id = db.next_task_id()
         child = TaskRecord(
             id=child_id,
@@ -2236,18 +2308,27 @@ def _consume_completion_report_body(
                 step_audit_id=_step_audit_id,
             )
             chain_json = chain.serialize()
-        if not db.try_delegate(
+        outcome = db.try_delegate(
             task_id, child,
             parent_note=f"Delegated to {decision.agent} (child={child_id})",
             attachments=delegate_attachment_params,
             active_chain_json=chain_json,
             uploaded_by=agent,
-        ):
+            expected_claim=expected_claim,
+            revision_delta=revision_delta, revision_cap=cap,
+        )
+        if isinstance(outcome, InvalidLineage):
+            _reject_retry_link_decision(orch, task_id, agent, next_count, outcome.reason,
+                                        expected_claim=expected_claim)
+            return
+        if isinstance(outcome, LostClaim):
             logger.debug(
                 "run_step %s: cancelled between re-check and delegate, dropping",
                 task_id,
             )
             return
+        if not isinstance(outcome, Committed):
+            raise TypeError(f"Unexpected spawn outcome: {type(outcome).__name__}")
         logger.debug("run_step %s: try_delegate SUCCEEDED, child=%s", task_id, child_id)
         _enqueue_task_generation_aware(orch, child_id)
         return
@@ -2452,36 +2533,14 @@ def _check_retry_link_required(
     THR-078 seq15: when this parent has FAILED children and the delegate
     re-targets the agent of any FAILED child, ``revisit_of_task_id`` is
     MANDATORY — even the first retry is disallowed without the field. A
-    supplied link must resolve to a FAILED child of this parent assigned to
-    the re-targeted agent. Returns None only for a valid retry or a fresh
+    supplied link must identify a same-agent FAILED child under this parent
+    or a predecessor root connected by verified recorded supersessions. Returns None only for a valid retry or a fresh
     dispatch without a link."""
     if target_agent is None:
-        return None  # shouldn't happen after _validate_delegate, but safe.
-    db = orch._db
-    children = db.get_children(task_id)
-    failed_sibling_ids: set[str] = set()
-    for cid in children:
-        child = db.get_task(cid)
-        if child is None:
-            continue
-        if child.status == TaskStatus.FAILED and child.assigned_agent == target_agent:
-            failed_sibling_ids.add(child.id)
-
-    if revisit_of_task_id is None:
-        if failed_sibling_ids:
-            failed_ids = ", ".join(sorted(failed_sibling_ids))
-            return (
-                f"cannot re-delegate to {target_agent!r} without "
-                f"revisit_of_task_id — this agent has FAILED child(ren) "
-                f"({failed_ids}) under the same parent"
-            )
         return None
-
-    if revisit_of_task_id not in failed_sibling_ids:
-        return (
-            f"revisit_of_task_id {revisit_of_task_id!r} must reference a "
-            f"FAILED child of this parent assigned to {target_agent!r}"
-        )
+    outcome = orch._db.verify_retry_link(task_id, target_agent, revisit_of_task_id)
+    if isinstance(outcome, InvalidLineage):
+        return f"FAILED child retry for {target_agent!r}: {outcome.reason} (revisit_of_task_id required and must identify a valid failed predecessor)"
     return None
 
 
@@ -2557,6 +2616,7 @@ def _reject_retry_link_decision(
     agent: str,
     next_count: int,
     retry_link_err: str,
+    *, expected_claim: RetryClaim,
 ) -> None:
     """Fail closed with feedback when a delegate or fan-out retry is invalid."""
     feedback = (
@@ -2564,7 +2624,10 @@ def _reject_retry_link_decision(
         f"When re-delegating to an agent with a FAILED child under this parent, "
         f"you MUST set revisit_of_task_id to that failed predecessor's task id."
     )
-    _feedback_and_reenqueue(orch, task_id, agent, next_count, feedback)
+    pending = orch._db.try_retry_feedback(expected_claim, feedback)
+    if isinstance(pending, PendingRetry):
+        enqueue = None if orch._queue is None else lambda: orch._queue.put_nowait(orch._slug, task_id)
+        orch._db.admit_retry_feedback(pending, enqueue)
 
 
 def _legs_out_of_scope(orch: "Orchestrator", owner: str, decision) -> list[tuple[str, str]]:
@@ -2683,7 +2746,7 @@ def _prepare_workspace_cleanup_reclamation_context(
     from runtime.daemon.task_scratch_reclamation import (
         collect_revalidate_seal_consume_disposable,
     )
-    from runtime.daemon.task_scratch_report import _STARTED_MONOTONIC
+    from runtime.orchestrator.task_scratch_report import _STARTED_MONOTONIC
 
     facts: list[str] = []
     for candidate in selection.candidates:
@@ -3074,7 +3137,25 @@ def _blocked_jobs_resume_header_if_applicable(
     ]
     for jid in job_ids:
         status = outcomes.get(jid, "unknown")
-        lines.append(f"  {jid}  {status}")
+        try:
+            detail = orch._db.get_job(jid)
+        except Exception:
+            # Legacy/test-crafted rows can predate required JobRecord fields.
+            # The status string in the audit payload remains the durable
+            # compatibility floor; optional presentation detail must never
+            # make a resumed task fail before its provider launch.
+            logger.warning(
+                "resume header could not load optional job detail for %s/%s",
+                task_id, jid,
+            )
+            detail = None
+        detail_parts: list[str] = []
+        if detail is not None and detail.reason is not None:
+            detail_parts.append(detail.reason)
+        if detail is not None and detail.exit_code is not None:
+            detail_parts.append(f"exit {detail.exit_code}")
+        detail_suffix = f" ({', '.join(detail_parts)})" if detail_parts else ""
+        lines.append(f"  {jid}  {status}{detail_suffix}")
         lines.append(f"          → happyranch jobs show {jid}")
         lines.append(f"          → happyranch jobs output {jid}")
     lines.append("")
@@ -3353,10 +3434,49 @@ def _fail(
         note=note,
         completed_at=datetime.now(timezone.utc).isoformat(),
     )
-    _log_verdict_if_delegated(orch, task_id, success=False)
-    orch._update_task_history(task_id)
-    _kill_jobs_for_terminating_task(orch, task_id)
-    if reclaim_terminal_worktree:
+    _fail_terminal_tail(
+        orch,
+        task_id,
+        reclaim_terminal_worktree=reclaim_terminal_worktree,
+    )
+
+
+def _task_matches_authority_v2_refusal_failure(
+    orch: "Orchestrator", task_id: str, expected_note: str,
+) -> bool:
+    """Fence each refusal tail effect to the exact committed FAILED owner."""
+    task = orch._db.get_task(task_id)
+    return bool(
+        task is not None
+        and task.status == TaskStatus.FAILED
+        and task.note == expected_note
+        and task.completed_at is not None
+    )
+
+
+def _fail_terminal_tail(
+    orch: "Orchestrator",
+    task_id: str,
+    *,
+    reclaim_terminal_worktree: bool = True,
+    expected_note: str | None = None,
+) -> None:
+    """Run `_fail`'s post-transition effects, optionally owner-fenced."""
+    def current() -> bool:
+        return (
+            expected_note is None
+            or _task_matches_authority_v2_refusal_failure(
+                orch, task_id, expected_note,
+            )
+        )
+
+    if current():
+        _log_verdict_if_delegated(orch, task_id, success=False)
+    if current():
+        orch._update_task_history(task_id)
+    if current():
+        _kill_jobs_for_terminating_task(orch, task_id)
+    if reclaim_terminal_worktree and current():
         _reclaim_terminal_task_worktree(orch, task_id)
 
 
@@ -4109,7 +4229,10 @@ def _enqueue_parent_if_waiting(
         # clear the chain.
         is_chain_trigger = (
             child.status == TaskStatus.COMPLETED
-            or _child_has_landed_terminal_result(orch, child)
+            or (
+                child.status not in TERMINAL_STATES
+                and _child_has_landed_terminal_result(orch, child)
+            )
         )
         if is_chain_trigger:
             children_ids = orch._db.get_children(parent.id)
@@ -4754,12 +4877,13 @@ def _spawn_fanout_children(
     task_id: str,
     next_count: int,
     *,
+    expected_claim: RetryClaim,
     children: list[dict],
     width: int,
     manager_agent: str,
     join_summary: str | None = None,
     step_audit_id: int | None = None,
-) -> None:
+) -> SpawnOutcome:
     """Allocate child IDs, build TaskRecords, atomically insert all N children
     and park the parent in in_progress(delegated) with active_fanout set.
     Shared by the fresh dispatch path and the review-gate re-entry path.
@@ -4770,8 +4894,9 @@ def _spawn_fanout_children(
     delegated; it does NOT run an agent session.  Plain children (empty ``then``,
     no ``expect_verdict``) are dispatched as bare PENDING subtasks, unchanged.
 
-    On cancel-race (try_delegate_many returns False), logs and returns
-    silently — the parent was cancelled between validation and spawn.
+    Only Committed writes fanout_spawned and enqueues child/first-leg tasks.
+    InvalidLineage is returned to the consumer for owned retry feedback;
+    LostClaim drops stale input. Transaction exceptions propagate.
     """
     from runtime.models import TaskRecord
     from runtime.orchestrator.fanout import FanoutState
@@ -4893,7 +5018,7 @@ def _spawn_fanout_children(
                 orch, task_id,
                 status=TaskStatus.FAILED, auto_revisit_spawned=False,
             )
-            return
+            return LostClaim()
 
         # Build per-child params from the per-child prevalidated lists.
         for child_pv in per_child_prevalidated:
@@ -4983,18 +5108,20 @@ def _spawn_fanout_children(
     # are all written in the same transaction as child inserts + parent park +
     # attachment links/audit — no crash gap between spawn and metadata
     # persistence. Any failure rolls back everything.
-    if not db.try_delegate_many(
+    outcome = db.try_delegate_many(
         task_id, child_records, parent_note=parent_note,
         active_fanout_json=fanout_state.serialize(),
         children_attachments=children_att_params,
         carrier_chains=carrier_chains_data,
         uploaded_by=manager_agent,
-    ):
+        expected_claim=expected_claim,
+    )
+    if not isinstance(outcome, Committed):
         logger.debug(
             "run_step %s: cancelled between re-check and fanout spawn, dropping",
             task_id,
         )
-        return
+        return outcome
 
     orch._audit.log_fanout_spawned(
         task_id=task_id,
@@ -5015,6 +5142,8 @@ def _spawn_fanout_children(
         for cc in (carrier_chains_data or []):
             if cc["child_index"] == i:
                 _enqueue_task_generation_aware(orch, cc["first_leg_id"])
+
+    return outcome
 
 
 def _inject_fanout_join_context(

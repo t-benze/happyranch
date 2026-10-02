@@ -9,8 +9,10 @@
  *
  * Language names are endonyms ("English", "简体中文") and are intentionally not
  * translated; each carries its own `lang` so CJK glyphs render with a CJK font.
- * Mounting is gated by `isLanguagePreferenceEnabled()` in `SettingsPage` until
- * W3 accepts the public preview.
+ * THR-118 W3b-2 mounts it in ordinary production builds as an opt-in preview:
+ * an unset preference stays English (no browser-language detection), and a
+ * visible disclosure says secondary, not-yet-translated pages may still appear
+ * in English.
  */
 import { useId } from 'react';
 import { useI18n } from '@/hooks/i18n';
@@ -42,6 +44,9 @@ export function PreferencesSection(): JSX.Element {
         </legend>
         <p id={descriptionId} className="text-text-secondary text-sm">
           {t('settings.preferences.languageHelp')}
+        </p>
+        <p className="text-text-secondary text-sm">
+          {t('settings.preferences.coverageDisclosure')}
         </p>
         <div className="flex flex-col gap-2">
           {LANGUAGE_OPTIONS.map((option) => (

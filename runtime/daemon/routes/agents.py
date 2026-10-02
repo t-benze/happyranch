@@ -49,8 +49,10 @@ from runtime.models import (
 )
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.active_authority_policy import is_eligible_policy_manager
 from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.agent_def import AgentDef, AgentParseError, Executor
+from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 from runtime.orchestrator.context_builder import ContextBuilder
 from runtime.orchestrator.workspace_adapters import (
     InstructionPairConflict,
@@ -624,20 +626,23 @@ async def manage_repo(
         description=agent_def.description,
         model=agent_def.model,
     )
-    active_path = paths.agents_dir / f"{agent_name}.md"
-    fd, tmp = tempfile.mkstemp(
-        prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir),
-    )
-    try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(render_agent_text(updated))
-        os.replace(tmp, active_path)
-    except Exception:
+    async with org.workflow_authority.supported_change_async(
+        publisher="manage_repo",
+    ):
+        active_path = paths.agents_dir / f"{agent_name}.md"
+        fd, tmp = tempfile.mkstemp(
+            prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir),
+        )
         try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
-        raise
+            with os.fdopen(fd, "w") as fh:
+                fh.write(render_agent_text(updated))
+            os.replace(tmp, active_path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            raise
 
     # Clone/remove repo dir as before
     if body.action == RepoAction.add:
@@ -686,7 +691,12 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
         if not body.description or not body.system_prompt:
             raise HTTPException(status_code=422, detail="description and system_prompt required for enroll")
         _validate_executor(body.executor or "claude")
-        async with org.teams_lock:
+        async with (
+            org.workflow_authority.async_writer_interval(
+                publisher="manage_agent_enroll",
+            ) as authority_change,
+            org.teams_lock,
+        ):
             # Never reuse a name that has ever been enrolled (active, pending,
             # or terminated), to keep historical identity unambiguous. This must
             # share the lock with the synchronous pending write: the helper
@@ -721,8 +731,9 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                 description=body.description,
                 model=body.model if body.model else None,
             )
-            prompt_loader.write_pending_agent(paths, agent)
-            org.teams.add_worker(manager_team, body.name)
+            with authority_change.canonical_change():
+                prompt_loader.write_pending_agent(paths, agent)
+                org.teams.add_worker(manager_team, body.name)
         audit.log_agent_managed(
             scope_id=scope_id,
             action="enroll",
@@ -735,154 +746,159 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
     elif body.action == ManageAgentAction.update:
         if body.expected_revision is None or not re.fullmatch(r"[0-9a-f]{64}", body.expected_revision):
             raise HTTPException(status_code=422, detail={"code": "expected_revision_required", "message": "update requires a 64-character expected_revision"})
-        async with org.teams_lock:
-            loaded = prompt_loader.load_agent_snapshot(paths, body.name)
-            if loaded is None:
-                raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
-            existing, current_revision, original_bytes = loaded
-            agent_team = org.teams.team_for_agent(body.name) if org.teams is not None else None
-            if agent_team != manager_team:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail={
-                        "code": "cross_team_forbidden",
-                        "caller_team": manager_team,
-                        "agent_team": agent_team,
-                    },
-                )
-            if current_revision != body.expected_revision:
-                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": "stale_agent_revision", "current_revision": current_revision})
-            if body.executor is not None:
-                _validate_executor(body.executor)
-            # Build the updated AgentDef, preserving fields not being updated.
-            # model: use Pydantic field-set detection to distinguish omitted
-            # (preserve existing) vs explicit null (clear).
-            model_is_set = "model" in body.model_fields_set
-            executor_changed = (
-                body.executor is not None and body.executor != existing.executor
-            )
-            if model_is_set:
-                resolved_model = body.model if body.model else None
-            elif executor_changed:
-                # A model override is executor-specific. Never carry an omitted
-                # value from the old executor into a newly selected executor.
-                resolved_model = None
-            else:
-                resolved_model = existing.model
-            updated = AgentDef(
-                name=existing.name,
-                team=existing.team,
-                role=existing.role,
-                executor=body.executor or existing.executor,
-                allow_rules=tuple(body.allow_rules) if body.allow_rules is not None else existing.allow_rules,
-                repos=body.repos if body.repos is not None else existing.repos,
-                enrolled_by=existing.enrolled_by,
-                enrolled_at_task=existing.enrolled_at_task,
-                enrolled_at=existing.enrolled_at,
-                system_prompt=body.system_prompt if body.system_prompt is not None else existing.system_prompt,
-                description=body.description if body.description is not None else existing.description,
-                model=resolved_model,
-            )
-            active_path = paths.agents_dir / f"{body.name}.md"
-            from runtime.orchestrator.agent_def import render_agent_text
-            fd, tmp = tempfile.mkstemp(prefix=f".{body.name}.", suffix=".md", dir=str(paths.agents_dir))
-            try:
-                updated_bytes = render_agent_text(updated).encode("utf-8")
-                with os.fdopen(fd, "wb") as fh:
-                    fh.write(updated_bytes)
-                os.replace(tmp, active_path)
-            except Exception:
-                try:
-                    os.unlink(tmp)
-                except FileNotFoundError:
-                    pass
-                raise
-        workspace = paths.workspaces_dir / body.name
-        if workspace.exists() and (body.system_prompt or body.executor is not None):
-            # Reconcile the workspace bootstrap for the (possibly new) executor
-            # profile. Use the preserved or updated system prompt so the
-            # bootstrap files reflect the current agent definition — not only
-            # the caller-supplied body.system_prompt.
-            ctx = ContextBuilder(org.settings, paths, slug=org.slug)
-            await asyncio.to_thread(
-                ctx.ensure_workspace_ready,
-                workspace,
-                body.name,
-                updated.system_prompt,
-                provider=updated.executor,
-            )
-        # THR-200: a SUCCESSFUL executor switch invalidates every thread
-        # participant session row for this agent — a later switch back to a
-        # resume-capable executor must start from a fresh full-prompt launch,
-        # never reuse a provider session minted under a different executor.
-        # The reset and its invalidation audit commit in ONE database-owned
-        # transaction: if either fails, rollback restores prior frontmatter
-        # and re-reconciles the workspace only while this operation still owns
-        # the canonical revision; a newer or missing definition is preserved.
-        if executor_changed:
-            try:
-                org.db.reset_thread_sessions_for_agent(
-                    body.name,
-                    audit_scope_id=scope_id,
-                    audit_agent=manager_name,
-                    audit_reason="executor_switch",
-                )
-            except Exception:
-                _logger = logging.getLogger(__name__)
-                _logger.exception(
-                    "executor-switch session invalidation failed for %s; "
-                    "rolling back the switch", body.name,
-                )
-                # Restore only the exact canonical bytes this operation owns.
-                # The original read/commit happened under teams_lock; after
-                # workspace bootstrap yielded, another accepted route update
-                # may have won.  Do not overwrite that newer definition.
-                restored = False
-                try:
-                    async with org.teams_lock:
-                        current = prompt_loader.load_agent_with_revision(paths, body.name)
-                        written_revision = hashlib.sha256(updated_bytes).hexdigest()
-                        if current is not None and current[1] == written_revision:
-                            fd, tmp = tempfile.mkstemp(
-                                prefix=f".{body.name}.", suffix=".md",
-                                dir=str(paths.agents_dir),
-                            )
-                            try:
-                                with os.fdopen(fd, "wb") as fh:
-                                    fh.write(original_bytes)
-                                os.replace(tmp, active_path)
-                                restored = True
-                            except Exception:
-                                try:
-                                    os.unlink(tmp)
-                                except FileNotFoundError:
-                                    pass
-                                raise
-                        else:
-                            _logger.warning(
-                                "executor-switch rollback conflict for %s; "
-                                "canonical definition changed or disappeared",
-                                body.name,
-                            )
-                except Exception:
-                    _logger.exception(
-                        "failed to restore agent file for %s", body.name,
+        async with org.workflow_authority.async_writer_interval(
+            publisher="manage_agent_update",
+        ) as authority_change:
+            async with org.teams_lock:
+                loaded = prompt_loader.load_agent_snapshot(paths, body.name)
+                if loaded is None:
+                    raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
+                existing, current_revision, original_bytes = loaded
+                agent_team = org.teams.team_for_agent(body.name) if org.teams is not None else None
+                if agent_team != manager_team:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail={
+                            "code": "cross_team_forbidden",
+                            "caller_team": manager_team,
+                            "agent_team": agent_team,
+                        },
                     )
-                if restored:
+                if current_revision != body.expected_revision:
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": "stale_agent_revision", "current_revision": current_revision})
+                if body.executor is not None:
+                    _validate_executor(body.executor)
+                # Build the updated AgentDef, preserving fields not being updated.
+                # model: use Pydantic field-set detection to distinguish omitted
+                # (preserve existing) vs explicit null (clear).
+                model_is_set = "model" in body.model_fields_set
+                executor_changed = (
+                    body.executor is not None and body.executor != existing.executor
+                )
+                if model_is_set:
+                    resolved_model = body.model if body.model else None
+                elif executor_changed:
+                    # A model override is executor-specific. Never carry an omitted
+                    # value from the old executor into a newly selected executor.
+                    resolved_model = None
+                else:
+                    resolved_model = existing.model
+                updated = AgentDef(
+                    name=existing.name,
+                    team=existing.team,
+                    role=existing.role,
+                    executor=body.executor or existing.executor,
+                    allow_rules=tuple(body.allow_rules) if body.allow_rules is not None else existing.allow_rules,
+                    repos=body.repos if body.repos is not None else existing.repos,
+                    enrolled_by=existing.enrolled_by,
+                    enrolled_at_task=existing.enrolled_at_task,
+                    enrolled_at=existing.enrolled_at,
+                    system_prompt=body.system_prompt if body.system_prompt is not None else existing.system_prompt,
+                    description=body.description if body.description is not None else existing.description,
+                    model=resolved_model,
+                )
+                with authority_change.canonical_change():
+                    active_path = paths.agents_dir / f"{body.name}.md"
+                    from runtime.orchestrator.agent_def import render_agent_text
+                    fd, tmp = tempfile.mkstemp(prefix=f".{body.name}.", suffix=".md", dir=str(paths.agents_dir))
                     try:
-                        if workspace.exists():
-                            ctx = ContextBuilder(org.settings, paths, slug=org.slug)
-                            await asyncio.to_thread(
-                                ctx.ensure_workspace_ready,
-                                workspace, body.name,
-                                existing.system_prompt,
-                                provider=existing.executor,
-                            )
+                        updated_bytes = render_agent_text(updated).encode("utf-8")
+                        with os.fdopen(fd, "wb") as fh:
+                            fh.write(updated_bytes)
+                        os.replace(tmp, active_path)
+                    except Exception:
+                        try:
+                            os.unlink(tmp)
+                        except FileNotFoundError:
+                            pass
+                        raise
+            workspace = paths.workspaces_dir / body.name
+            if workspace.exists() and (body.system_prompt or body.executor is not None):
+                # Reconcile the workspace bootstrap for the (possibly new) executor
+                # profile. Use the preserved or updated system prompt so the
+                # bootstrap files reflect the current agent definition — not only
+                # the caller-supplied body.system_prompt.
+                ctx = ContextBuilder(org.settings, paths, slug=org.slug)
+                await asyncio.to_thread(
+                    ctx.ensure_workspace_ready,
+                    workspace,
+                    body.name,
+                    updated.system_prompt,
+                    provider=updated.executor,
+                )
+            # THR-200: a SUCCESSFUL executor switch invalidates every thread
+            # participant session row for this agent — a later switch back to a
+            # resume-capable executor must start from a fresh full-prompt launch,
+            # never reuse a provider session minted under a different executor.
+            # The reset and its invalidation audit commit in ONE database-owned
+            # transaction: if either fails, rollback restores prior frontmatter
+            # and re-reconciles the workspace only while this operation still owns
+            # the canonical revision; a newer or missing definition is preserved.
+            if executor_changed:
+                try:
+                    org.db.reset_thread_sessions_for_agent(
+                        body.name,
+                        audit_scope_id=scope_id,
+                        audit_agent=manager_name,
+                        audit_reason="executor_switch",
+                    )
+                except Exception:
+                    _logger = logging.getLogger(__name__)
+                    _logger.exception(
+                        "executor-switch session invalidation failed for %s; "
+                        "rolling back the switch", body.name,
+                    )
+                    # Restore only the exact canonical bytes this operation owns.
+                    # The original read/commit happened under teams_lock; after
+                    # workspace bootstrap yielded, another accepted route update
+                    # may have won.  Do not overwrite that newer definition.
+                    restored = False
+                    try:
+                        async with org.teams_lock:
+                            current = prompt_loader.load_agent_with_revision(paths, body.name)
+                            written_revision = hashlib.sha256(updated_bytes).hexdigest()
+                            if current is not None and current[1] == written_revision:
+                                with authority_change.canonical_change():
+                                    fd, tmp = tempfile.mkstemp(
+                                        prefix=f".{body.name}.", suffix=".md",
+                                        dir=str(paths.agents_dir),
+                                    )
+                                    try:
+                                        with os.fdopen(fd, "wb") as fh:
+                                            fh.write(original_bytes)
+                                        os.replace(tmp, active_path)
+                                        restored = True
+                                    except Exception:
+                                        try:
+                                            os.unlink(tmp)
+                                        except FileNotFoundError:
+                                            pass
+                                        raise
+                            else:
+                                _logger.warning(
+                                    "executor-switch rollback conflict for %s; "
+                                    "canonical definition changed or disappeared",
+                                    body.name,
+                                )
                     except Exception:
                         _logger.exception(
-                            "failed to re-reconcile workspace for %s", body.name,
+                            "failed to restore agent file for %s", body.name,
                         )
-                raise
+                    if restored:
+                        try:
+                            if workspace.exists():
+                                ctx = ContextBuilder(org.settings, paths, slug=org.slug)
+                                await asyncio.to_thread(
+                                    ctx.ensure_workspace_ready,
+                                    workspace, body.name,
+                                    existing.system_prompt,
+                                    provider=existing.executor,
+                                )
+                        except Exception:
+                            _logger.exception(
+                                "failed to re-reconcile workspace for %s", body.name,
+                            )
+                    raise
         # THR-095: agent.yaml executor/model sync REMOVED.
         # The .md frontmatter is the single source of truth.
         audit.log_agent_managed(
@@ -976,7 +992,12 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                 },
             )
 
-        async with org.teams_lock:
+        async with (
+            org.workflow_authority.async_writer_interval(
+                publisher="manage_agent_terminate",
+            ) as authority_change,
+            org.teams_lock,
+        ):
             # The outer checks make ordinary refusals cheap, but this await
             # permits another accepted writer to change the canonical file,
             # its role, or archive/workspace occupancy.  Refresh precisely
@@ -1063,11 +1084,75 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
             # that await use teams_lock, while synchronous no-await event-loop
             # writers cannot interleave this archive/cleanup segment. It does
             # not make a claim about external same-UID or multiprocess writers.
-            os.rename(active_path, terminated_agent_path)
-            if workspace_exists:
+            with authority_change.canonical_change():
+                os.rename(active_path, terminated_agent_path)
+                if workspace_exists:
+                    try:
+                        _move_dir_atomically(workspace, terminated_workspace)
+                    except Exception:
+                        try:
+                            if (
+                                not active_path.exists()
+                                and terminated_agent_path.exists()
+                                and terminated_agent_path.read_bytes()
+                                == archived_agent_bytes
+                            ):
+                                os.rename(terminated_agent_path, active_path)
+                            else:
+                                logging.getLogger(__name__).warning(
+                                    "terminate workspace rollback conflict for %s; "
+                                    "canonical definition changed or disappeared",
+                                    body.name,
+                                )
+                        except OSError:
+                            logging.getLogger(__name__).exception(
+                                "failed to roll back agent file archive for %s", body.name,
+                            )
+                        raise HTTPException(
+                            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail={
+                                "code": "workspace_archive_failed",
+                                "name": body.name,
+                            },
+                        )
+
+                # Remove team membership while still holding the lock. If the
+                # subsequent DB cleanup fails, we roll this back together with the
+                # filesystem archive.
+                org.teams.remove_worker(manager_team, body.name)
+
+                # Atomically cancel armed schedules, skip pending wakes/dreams, and
+                # decline unstarted invocations. A failure here rolls back the team
+                # and filesystem archive so the agent stays active and consistent.
                 try:
-                    _move_dir_atomically(workspace, terminated_workspace)
+                    org.db.terminate_agent_cleanups(
+                        body.name,
+                        audit_scope_id=scope_id,
+                        audit_agent=manager_name,
+                    )
                 except Exception:
+                    _logger = logging.getLogger(__name__)
+                    _logger.exception(
+                        "terminate cleanup failed for %s; rolling back archive",
+                        body.name,
+                    )
+                    # Roll back team membership first.
+                    try:
+                        org.teams.add_worker(manager_team, body.name)
+                    except Exception:
+                        _logger.exception(
+                            "failed to roll back team membership for %s",
+                            body.name,
+                        )
+                    # Roll back the filesystem archive.
+                    try:
+                        if workspace_exists and terminated_workspace.exists():
+                            _move_dir_atomically(terminated_workspace, workspace)
+                    except Exception:
+                        _logger.exception(
+                            "failed to roll back workspace archive for %s",
+                            body.name,
+                        )
                     try:
                         if (
                             not active_path.exists()
@@ -1077,86 +1162,23 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                         ):
                             os.rename(terminated_agent_path, active_path)
                         else:
-                            logging.getLogger(__name__).warning(
-                                "terminate workspace rollback conflict for %s; "
+                            _logger.warning(
+                                "terminate cleanup rollback conflict for %s; "
                                 "canonical definition changed or disappeared",
                                 body.name,
                             )
                     except OSError:
-                        logging.getLogger(__name__).exception(
-                            "failed to roll back agent file archive for %s", body.name,
+                        _logger.exception(
+                            "failed to roll back agent file archive for %s",
+                            body.name,
                         )
                     raise HTTPException(
                         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                         detail={
-                            "code": "workspace_archive_failed",
+                            "code": "terminate_cleanup_failed",
                             "name": body.name,
                         },
                     )
-
-            # Remove team membership while still holding the lock. If the
-            # subsequent DB cleanup fails, we roll this back together with the
-            # filesystem archive.
-            org.teams.remove_worker(manager_team, body.name)
-
-            # Atomically cancel armed schedules, skip pending wakes/dreams, and
-            # decline unstarted invocations. A failure here rolls back the team
-            # and filesystem archive so the agent stays active and consistent.
-            try:
-                org.db.terminate_agent_cleanups(
-                    body.name,
-                    audit_scope_id=scope_id,
-                    audit_agent=manager_name,
-                )
-            except Exception:
-                _logger = logging.getLogger(__name__)
-                _logger.exception(
-                    "terminate cleanup failed for %s; rolling back archive",
-                    body.name,
-                )
-                # Roll back team membership first.
-                try:
-                    org.teams.add_worker(manager_team, body.name)
-                except Exception:
-                    _logger.exception(
-                        "failed to roll back team membership for %s",
-                        body.name,
-                    )
-                # Roll back the filesystem archive.
-                try:
-                    if workspace_exists and terminated_workspace.exists():
-                        _move_dir_atomically(terminated_workspace, workspace)
-                except Exception:
-                    _logger.exception(
-                        "failed to roll back workspace archive for %s",
-                        body.name,
-                    )
-                try:
-                    if (
-                        not active_path.exists()
-                        and terminated_agent_path.exists()
-                        and terminated_agent_path.read_bytes()
-                        == archived_agent_bytes
-                    ):
-                        os.rename(terminated_agent_path, active_path)
-                    else:
-                        _logger.warning(
-                            "terminate cleanup rollback conflict for %s; "
-                            "canonical definition changed or disappeared",
-                            body.name,
-                        )
-                except OSError:
-                    _logger.exception(
-                        "failed to roll back agent file archive for %s",
-                        body.name,
-                    )
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail={
-                        "code": "terminate_cleanup_failed",
-                        "name": body.name,
-                    },
-                )
 
         audit.log_agent_managed(
             scope_id=scope_id,
@@ -1210,8 +1232,13 @@ async def founder_create_agent(
                 detail={"code": "role_team_mismatch"},
             )
 
-    # ---- team mutation + agent file write, under the same lock ----
-    async with org.teams_lock:
+    # ---- team mutation + agent file write, under the same locks ----
+    async with (
+        org.workflow_authority.async_writer_interval(
+            publisher="founder_create_agent",
+        ) as authority_change,
+        org.teams_lock,
+    ):
         # Duplicate check inside the lock to close TOCTOU between check + write.
         # Terminated names are also unavailable to preserve historical identity.
         if prompt_loader.is_name_unavailable(paths, body.name):
@@ -1228,7 +1255,6 @@ async def founder_create_agent(
                     detail={"code": "unknown_team", "team": body.team},
                 )
             team_name = body.team
-            org.teams.add_worker(team_name, body.name)
         else:
             assert body.new_team is not None
             if body.new_team in org.teams.teams():
@@ -1237,60 +1263,79 @@ async def founder_create_agent(
                     detail={"code": "team_exists", "team": body.new_team},
                 )
             team_name = body.new_team
-            try:
-                org.teams.add_team(team_name, manager=body.name)
-            except ValueError:
-                # Defense in depth — the in-lock check above should make this
-                # unreachable, but if a future refactor drifts, surface as 409
-                # rather than a bare 500.
-                raise HTTPException(
-                    status_code=409,
-                    detail={"code": "team_exists", "team": body.new_team},
-                )
 
-        agent_def = AgentDef(
-            name=body.name,
-            team=team_name,
-            role=body.role,
-            executor=body.executor,
-            allow_rules=tuple(body.allow_rules or []),
-            repos=body.repos or {},
-            enrolled_by="founder",
-            enrolled_at_task=None,
-            enrolled_at=datetime.now(timezone.utc),
-            system_prompt=body.system_prompt,
-            description=body.description,
-            model=body.model if body.model else None,
-        )
-
-        # Atomic write directly into active agents/ (skip _pending/).
-        from runtime.orchestrator.agent_def import render_agent_text
-        paths.agents_dir.mkdir(parents=True, exist_ok=True)
-        active_path = paths.agents_dir / f"{body.name}.md"
-        fd, tmp = tempfile.mkstemp(
-            prefix=f".{body.name}.", suffix=".md",
-            dir=str(paths.agents_dir),
-        )
-        try:
-            with os.fdopen(fd, "w") as fh:
-                fh.write(render_agent_text(agent_def))
-            os.replace(tmp, active_path)
-        except Exception:
-            try:
-                os.unlink(tmp)
-            except FileNotFoundError:
-                pass
-            # Roll back the registry mutation (add_worker or add_team)
-            # so we don't leave a phantom team-membership entry without
-            # the corresponding agent file. Without this rollback the
-            # manager-branch case is unrecoverable on retry (returns
-            # 409 team_exists even though no manager file ever landed).
+        with authority_change.canonical_change():
             if body.role == "worker":
-                org.teams.remove_worker(team_name, body.name)
+                org.teams.add_worker(team_name, body.name)
             else:
-                org.teams.remove_team(team_name)
-            raise
+                try:
+                    org.teams.add_team(team_name, manager=body.name)
+                except ValueError:
+                    # Defense in depth — the in-lock check above should make this
+                    # unreachable, but if a future refactor drifts, surface as 409
+                    # rather than a bare 500.
+                    raise HTTPException(
+                        status_code=409,
+                        detail={"code": "team_exists", "team": body.new_team},
+                    )
 
+            agent_def = AgentDef(
+                name=body.name,
+                team=team_name,
+                role=body.role,
+                executor=body.executor,
+                allow_rules=tuple(body.allow_rules or []),
+                repos=body.repos or {},
+                enrolled_by="founder",
+                enrolled_at_task=None,
+                enrolled_at=datetime.now(timezone.utc),
+                system_prompt=body.system_prompt,
+                description=body.description,
+                model=body.model if body.model else None,
+            )
+
+            # Atomic write directly into active agents/ (skip _pending/).
+            from runtime.orchestrator.agent_def import render_agent_text
+            paths.agents_dir.mkdir(parents=True, exist_ok=True)
+            active_path = paths.agents_dir / f"{body.name}.md"
+            fd, tmp = tempfile.mkstemp(
+                prefix=f".{body.name}.", suffix=".md",
+                dir=str(paths.agents_dir),
+            )
+            active_landed = False
+            try:
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(render_agent_text(agent_def))
+                os.replace(tmp, active_path)
+                active_landed = True
+                if body.role == "manager":
+                    # The new team and its now-live eligible manager become
+                    # launchable in this SAME coordinator-owned canonical
+                    # mutation. Publication therefore observes the initialized
+                    # selector and advances exactly one authority generation.
+                    AuthorityPolicyStore(org.db).ensure_authority_selector(
+                        team_name,
+                    )
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except FileNotFoundError:
+                    pass
+                if active_landed:
+                    try:
+                        active_path.unlink()
+                    except FileNotFoundError:
+                        pass
+                # Roll back the registry mutation (add_worker or add_team)
+                # so we don't leave a phantom team-membership entry without
+                # the corresponding agent file. Without this rollback the
+                # manager-branch case is unrecoverable on retry (returns
+                # 409 team_exists even though no manager file ever landed).
+                if body.role == "worker":
+                    org.teams.remove_worker(team_name, body.name)
+                else:
+                    org.teams.remove_team(team_name)
+                raise
     # ---- workspace bootstrap (THR-095: no agent.yaml writes) ----
     workspace = paths.workspaces_dir / body.name
     workspace.mkdir(parents=True, exist_ok=True)
@@ -2148,7 +2193,12 @@ async def set_agent_executor(
     # Final supported-route compare/mutate boundary: no await occurs while
     # teams_lock is held. Atomic replace provides durable bytes, while this
     # fresh read prevents a stale whole-definition write among ASGI writers.
-    async with org.teams_lock:
+    async with (
+        org.workflow_authority.async_writer_interval(
+            publisher="set_agent_executor",
+        ) as authority_change,
+        org.teams_lock,
+    ):
         latest = prompt_loader.load_agent(paths, agent_name)
         if latest is None:
             raise HTTPException(status_code=404, detail={"code": "agent_not_found", "agent": agent_name})
@@ -2166,9 +2216,10 @@ async def set_agent_executor(
         active_path = paths.agents_dir / f"{agent_name}.md"
         fd, tmp = tempfile.mkstemp(prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir))
         try:
-            with os.fdopen(fd, "w") as fh:
-                fh.write(render_agent_text(updated))
-            os.replace(tmp, active_path)
+            with authority_change.canonical_change():
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(render_agent_text(updated))
+                os.replace(tmp, active_path)
         except Exception:
             try:
                 os.unlink(tmp)
@@ -2284,21 +2335,24 @@ async def set_agent_model(
         description=existing.description,
         model=body.model if body.model else None,
     )
-    from runtime.orchestrator.agent_def import render_agent_text
-    active_path = paths.agents_dir / f"{agent_name}.md"
-    fd, tmp = tempfile.mkstemp(
-        prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir),
-    )
-    try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(render_agent_text(updated))
-        os.replace(tmp, active_path)
-    except Exception:
+    async with org.workflow_authority.supported_change_async(
+        publisher="set_agent_model",
+    ):
+        from runtime.orchestrator.agent_def import render_agent_text
+        active_path = paths.agents_dir / f"{agent_name}.md"
+        fd, tmp = tempfile.mkstemp(
+            prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir),
+        )
         try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
-        raise
+            with os.fdopen(fd, "w") as fh:
+                fh.write(render_agent_text(updated))
+            os.replace(tmp, active_path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            raise
 
     after_model = _resolve_agent_model(paths, agent_name)
 
@@ -2430,10 +2484,38 @@ async def approve_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
             },
         )
 
-    try:
-        agent_def = prompt_loader.approve_agent(paths, agent_name)
-    except FileExistsError:
-        raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
+    async with org.workflow_authority.supported_change_async(
+        publisher="approve_agent",
+    ):
+        promoted = False
+        try:
+            agent_def = prompt_loader.approve_agent(paths, agent_name)
+            promoted = True
+            if (
+                agent_def.role == "manager"
+                and is_eligible_policy_manager(
+                    root=org.root,
+                    agent_name=agent_name,
+                    team=agent_def.team,
+                    teams=org.teams,
+                )
+            ):
+                # Bootstrap-manager approval is the supported lifecycle that
+                # can make an already-registered team's manager eligible.
+                # Initialize inside this same supported canonical change so
+                # the published snapshot and launch resolver cannot diverge.
+                AuthorityPolicyStore(org.db).ensure_authority_selector(
+                    agent_def.team,
+                )
+        except FileExistsError:
+            raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
+        except Exception:
+            if promoted:
+                active_path = paths.agents_dir / f"{agent_name}.md"
+                pending_path = paths.pending_agents_dir / f"{agent_name}.md"
+                if active_path.exists() and not pending_path.exists():
+                    os.replace(active_path, pending_path)
+            raise
 
     workspace = paths.workspaces_dir / agent_name
     workspace.mkdir(parents=True, exist_ok=True)
@@ -2470,28 +2552,34 @@ async def approve_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
 async def reject_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
     paths = OrgPaths(root=org.root)
 
-    # Fresh-read after acquiring the lock so a promotion or replacement that
+    # Fresh-read after acquiring the locks so a promotion or replacement that
     # wins while this request waits cannot be unlinked or removed by stale team.
-    async with org.teams_lock:
-        pending = prompt_loader.load_pending_agent(paths, agent_name)
-        if pending is None:
-            existing = prompt_loader.load_agent(paths, agent_name)
-            if existing is not None:
-                raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
-            raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
-        # Drop the file first; holding teams_lock keeps the synchronous unlink
-        # and teams-yaml mutation paired with the freshly read pending state.
-        try:
-            prompt_loader.reject_agent(paths, agent_name)
-        except FileNotFoundError:
-            raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
-        # manage_agent.enroll added this worker to teams.yaml when it wrote the
-        # pending file. Reject must undo both — otherwise the agent stays in
-        # team membership forever and re-enrollment hits "duplicate" on the
-        # team-side too. remove_worker is a no-op if the agent isn't a worker
-        # under pending.team, so this is safe even if teams drifted.
-        if org.teams is not None and pending.team in org.teams.teams():
-            org.teams.remove_worker(pending.team, agent_name)
+    async with (
+        org.workflow_authority.async_writer_interval(
+            publisher="reject_agent",
+        ) as authority_change,
+        org.teams_lock,
+    ):
+        with authority_change.canonical_change():
+            pending = prompt_loader.load_pending_agent(paths, agent_name)
+            if pending is None:
+                existing = prompt_loader.load_agent(paths, agent_name)
+                if existing is not None:
+                    raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
+                raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+            # Drop the file first; holding teams_lock keeps the synchronous unlink
+            # and teams-yaml mutation paired with the freshly read pending state.
+            try:
+                prompt_loader.reject_agent(paths, agent_name)
+            except FileNotFoundError:
+                raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+            # manage_agent.enroll added this worker to teams.yaml when it wrote the
+            # pending file. Reject must undo both — otherwise the agent stays in
+            # team membership forever and re-enrollment hits "duplicate" on the
+            # team-side too. remove_worker is a no-op if the agent isn't a worker
+            # under pending.team, so this is safe even if teams drifted.
+            if org.teams is not None and pending.team in org.teams.teams():
+                org.teams.remove_worker(pending.team, agent_name)
 
     return {"ok": True}
 

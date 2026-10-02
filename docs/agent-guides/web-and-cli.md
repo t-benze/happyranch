@@ -29,6 +29,44 @@ read-only `scripts/check_path_use.py` returns only `clear_observation`,
 process name AND bounded cgroup role for fixed daemons; any other unreadable
 same-user process is `unknown`).
 
+Cleanup history reads use the backward-compatible `tasks --agent --all-pages
+--json` and `audit --all-pages --json` surfaces to exhaust candidate-specific
+keyset pages. Scanner execution is job-only and fail-closed on any non-exact,
+stale, spoofed, truncated, or incomplete structured receipt. `jobs submit
+--json` returns the authenticated submission identity; `jobs show --json` and
+`jobs output --json` require the current task/session and return the same closed
+receipt containing stored execution identity and complete output accounting.
+Human-readable `happyranch jobs show` keeps its existing layout and adds a
+`Reason:` line only when the existing job `reason` field is non-null; graceful
+daemon-shutdown kills therefore show `failed`, `daemon_shutdown`, and the real
+exit code without an API-field change.
+An owning origin task branch whose head equals or descends from the candidate,
+an owning-task merged PR, and a containing any-task merged PR can preserve a
+clean candidate in addition to the accepted durable ref. An existing owning
+branch is authoritative: non-containment or failed containment evidence refuses
+without merged-PR fallback. The any-task route
+uses complete stable double-read discovery, then separately confirms
+merged/default-branch state and candidate-to-PR-head containment; discovery
+alone and other-task unmerged PRs never count, while owning-branch unmerged
+evidence still refuses. Merged integration does not promise original commit
+topology. Dirty whole worktrees are never removed, while a literal root
+dependency cache can qualify under the separate 24-hour cache gates without
+changing tracked source bytes or Git status. The removable worktree must be at
+its owning primary checkout's exact registered `.claude/worktrees/<TASK>` path.
+The literal root and descendants are walked without following symlinks before
+and at action time; nested mounts, cross-device or foreign-owned entries,
+protected descendants, incomplete evidence, and identity drift refuse. A
+success receipt requires measured root-plus-descendant bytes, actual candidate
+absence, and unchanged protected-path identities.
+
+The independent forward-only terminal task-worktree hook has no Web/CLI or
+configuration surface. Its final process gate loads this same bundled scanner
+by explicit file path inside the existing task worker thread: root-owned
+processes are out of scope, only exact name-plus-expected-cgroup helpers are
+exempt, any other unreadable same-user process is uncertain, and a positive
+reference preserves. The hook retains one five-second total deadline and one
+literal non-force removal attempt.
+
 ## Web UI
 
 ### Dashboard projection
@@ -47,7 +85,7 @@ The SPA supports mutations, including task cancellation/revisit and Settings.
 Use `web/src/routes.tsx`, API functions, and the OpenAPI snapshot for the current
 surface. The daemon defaults to loopback; remote access uses the connector.
 
-### Internationalization (W1 foundation + W2a shell + W2b onboarding + W2c Settings)
+### Internationalization (W1 foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs/preview + W4a-1 Health/Dreams)
 
 The web console has a first-party, typed English/Simplified-Chinese contract in
 `web/src/lib/i18n/` (`locale`, `catalog`, `format`, `coverage`) with the
@@ -112,28 +150,32 @@ Preferences** language selector (`sections/PreferencesSection.tsx`: English /
 splits the Settings shell so the `preferences` route renders OUTSIDE the
 `useSettings` loading/error/data gate; every other panel keeps that gate
 unchanged. Choosing a language never writes org settings or issues any API
-request. **The selector is closed in production until W3:**
-`src/features/settings/languagePreferenceGate.ts` mounts the sub-nav entry and
-route only when the build sets `VITE_ENABLE_I18N_PREFERENCES=true` (the
-existing `VITE_ENABLE_PROTOTYPES`/`VITE_ENABLE_KB_COMPOSE` build-flag pattern).
-Ordinary builds tree-shake the component out, and a direct
-`/settings/preferences` URL falls through to the existing settings catch-all
-redirect (Assistant). Vitest opens the gate per test with `vi.stubEnv`; the W2c
-browser harness (`web/scripts/w2c-preferences-browser-evidence.mjs`) builds a
-separate preview dist with the flag and checks that the ordinary dist excludes
-the component. It also proves that state-held Settings messages follow a locale
+request. Until W3b-2 the selector was closed in production by a
+`VITE_ENABLE_I18N_PREFERENCES` build gate (`languagePreferenceGate.ts`, now
+removed — see W3b-2 below). The W2c browser harness
+(`web/scripts/w2c-preferences-browser-evidence.mjs`) originally built a separate
+preview dist with that flag; since W3b-2 both of its dists are ordinary builds
+and its case A asserts the mounted selector (route renders, unset preference
+stays English). It also proves that state-held Settings messages follow a locale
 switch (the Organization Work Hours banner re-translates in place) while raw
 daemon diagnostics stay verbatim, with causal negatives for a pre-translated
-banner (`--defect-dist`) and a translated diagnostic. There is no W3 secondary-pages disclosure yet, no browser/system
-language defaulting (unset/invalid stays English), and no preview is live.
+banner (`--defect-dist`) and a translated diagnostic. There is no browser/system
+language defaulting (unset/invalid stays English).
 
-The rest of the console is still English: **route families are W3/W4 and the
-assistant dock body is W4. No public language selector is exposed and preview
-is not enabled.** Native preference persistence is N0/N1; full-mode automatic
+**W3a** translated the mounted Dashboard and Threads route families (`features/dashboard/**`, `features/threads/**` list/detail/composer/strips/dialogs and the shared `shared/threads/NewThreadDialog.tsx` it mounts); pure design-system patterns (Composer, ThreadHeader, InboxRow, StatValue, CrescentMoonBadge, RecipientsInput, MentionTextarea, …) take optional localized label props with English defaults, so their other callers are unchanged. Thread errors are held as locale-neutral `ThreadErrorView` descriptors (`lib/threadErrors.ts`: mapped catalog key/params, or `raw` text rendered byte-for-byte even when empty or equal to a catalog string) and rendered at render time. Authored thread titles, message Markdown, names, IDs, filenames/hrefs, raw delivery payloads and machine values stay verbatim; a locale switch keeps drafts, attachments, selection, open dialogs and focus and issues no request. W3a browser evidence runs `scripts/w3a-core-browser-evidence.mjs` against the ORDINARY dist only (storage-event switching, no in-app instrumentation); since W3b-2 its gate case G asserts the ordinary bundle contains the Preferences selector, `/settings/preferences` renders it, and an unset preference on a Chinese navigator stays English (the former preview-dist positive control is gone with the flag).
+
+**W3b-1** translated the mounted Tasks route family (`tasks`, `tasks/:task_id`: `features/tasks/**` list/detail panes, filters, group/status/rollup presentation, fan-out band, chain/lineage timeline, recall tree, activity log, property rail and execution-status card, loading/empty/error states, and the owned Cancel/Revisit/ResolveEscalation dialogs). The shared `StatusBadge` takes an optional localized `waitingLabels` prop with an English default, so its Jobs and TaskCard callers are unchanged. Dialog errors are held as locale-neutral `TaskErrorView` descriptors (`features/tasks/strings.ts`: mapped catalog key; an unmapped daemon code or, with no code, a non-empty string diagnostic rendered verbatim; otherwise the localized fallback) and the Revisit validation message is a state-held key, so both re-translate in place. Briefs, summaries, notes, agent names, task/thread/job IDs, status/block-kind/verdict/reason machine values, unknown escalation flavors and work-status states (the daemon label), raw event actions/payloads, hrefs and shortcut keys stay verbatim; group and lineage React keys stay locale-neutral, so a locale switch keeps rows, selection, open dialogs, typed drafts and focus and issues no request. W3b-1 browser evidence runs `scripts/w3b-tasks-browser-evidence.mjs` against the ORDINARY dist.
+
+**W3b-2** translated the mounted Jobs route family (`jobs`, `jobs/:job_id`: `features/jobs/**` list chrome, needs-you callout, status groups, columns and pending relative age; detail states, header actions, command card, If-approved cascade, gated notice, property rail and output panel; the owned Run/Reject dialogs). Daemon values stay verbatim: job/task IDs, titles, script text, rationale, agent names, interpreter/cwd values, job status tokens and `exit <code>`, exit codes, stdout/stderr and their stream names, the live `[done]` log line and rejection/failure reasons. Run/Reject/Stop errors are locale-neutral `JobErrorView` descriptors (`features/jobs/strings.ts` `classifyJobError`, the same F1 boundary as `classifyTaskError`: recognized code -> catalog key; unknown non-empty code -> raw; no/empty code with a non-empty string diagnostic -> verbatim; otherwise the localized fallback), replacing the former English `Error <status>: API <status> (<code>)` text. W3b-2 also **enables the opt-in language preview**: the `languagePreferenceGate.ts` / `VITE_ENABLE_I18N_PREFERENCES` gate is removed, so Settings ▸ Preferences ▸ Language is mounted in ordinary production builds. An unset preference stays English (production resolves in `preview` mode and never reads the browser language), and the selector discloses that secondary, not-yet-translated pages may still appear in English (`settings.preferences.coverageDisclosure`). Browser evidence runs `scripts/w3b-jobs-browser-evidence.mjs` against the ORDINARY dist.
+
+**W4a-1** translated the mounted Runtime Health and Dreams routes (`features/health/HealthPage.tsx`: header, history-window toggle, stat cards, uptime/relative-age units, loop and HTTP-latency tables, trends; `features/dreams/**`: header eyebrow plural, feed, status pills, counts, quiet state, overview rail and the dream detail drawer with its candidate review gate). Daemon values (loop names, route templates, dream IDs, agent names, local dates, summaries, transcripts, error text, candidate title/slug/topic/rationale/body, KB slugs, unknown status tokens) stay verbatim. Accept/Dismiss errors are `DreamErrorView` descriptors (`features/dreams/strings.ts` `classifyDreamError`, the same F1 boundary as `classifyJobError`); `DREAM_STRINGS` is replaced by `dreams.*` catalog keys. Browser evidence: `scripts/w4a-browser-evidence.mjs` against the ORDINARY dist; its `API_ROUTES`/`VIEW_ROUTES`/`SWITCH_ROUTES` tables are extended by W4a-2 (artifacts) and W4a-3 (usage).
+
+The rest of the console is still English: **the other route families and the
+assistant dock body are W4**; the opt-in preview selector discloses this. Native preference persistence is N0/N1; full-mode automatic
 environment detection is implemented and unit-tested but not enabled until W5.
-`web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b/W2c-migrated namespaces
+`web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1-migrated namespaces
 (`root-shell`, `not-found`, `app-shell`, `help-and-palette`, `onboarding`,
-`settings`) `translated` and every other mounted route namespace `english-only` (copy-free
+`settings`, `dashboard`, `threads`, `tasks`, `jobs`, `health`, `dreams`) `translated` and every other mounted route namespace `english-only` (copy-free
 redirects `not-applicable`), listing the actual mounted dialogs, so English
 fallback is never mistaken for coverage. Foundation browser evidence (isolated
 Storybook probe + the real `main.tsx` startup in headless Chrome) runs via
@@ -244,6 +286,28 @@ root's own severity and all escalations are preserved (see
 `features-and-invariants.md` §Bounded failure-recovery). Task detail owns
 subtask browsing. No New task flow is
 exposed by this list.
+
+### Current escalation reason display
+
+Task detail (including its root recall-tree Outcome), `happyranch details`,
+and the dashboard Waiting on you inbox use
+the additive `escalation_reason` read projection. Ordinary escalations retain
+their existing `task.note`, API values, and presentation. When the current
+escalation audit is an `authority_v2_refusal`, `primary` comes only from an
+`orchestration_step` whose decision is `escalate` within the current episode;
+the previous and current `escalation` audit IDs are the exclusive episode
+boundaries. The UI and CLI show that manager-authored text first, followed by
+the server-owned plain-English explanation for the refusal code. A refusal
+episode with no escalate decision shows only the explanation, and an unknown
+code is shown verbatim. A resolved older episode is never searched. On task
+detail the two labels (`tasks.detail.escalationReason`,
+`tasks.detail.automaticEscalation`) follow the UI locale (W3b-1); the
+`primary`/`secondary` values are daemon text rendered verbatim in every locale.
+
+The read is exact-task scoped and bounded. It does not alter `tasks.note`, the
+refusal finalizer, any audit payload, or the `audit_log.task_id` scope-prefix
+contract. Task list rows and the resolution dialog do not display escalation
+reason text; their behavior is unchanged.
 
 ### Thread-detail system rows
 
@@ -472,6 +536,44 @@ as `expected_revision` (or `--expected-revision` for the direct CLI form).
 The daemon returns 422 for missing, null, or malformed revisions and 409 for a
 stale base. On 409, reread and deliberately reapply the intended field change;
 do not pair older composed content with a newer roster revision.
+
+### Workflow template authoring (U1B)
+
+U1B publishes inert immutable `product-design` template definitions; it does
+not activate or execute them. An active, uniquely registered team manager uses
+its verified task/session binding, and the server derives its organization,
+principal and `org/<org>/team/<manager-team>` namespace:
+
+```bash
+happyranch workflows templates publish --org <org> --from-file /absolute/template.json --session-id <session-id>
+```
+
+Founder omits `--session-id`, supplies `team_slug` in the JSON payload, and the
+command uses the existing daemon bearer. The payload contains
+`operation_key`, `template_name`, `expected_current_version`, `definition`,
+and (Founder only) `team_slug`; publisher, principal, namespace, org, task and
+session claims are rejected. `--from-file` must be absolute. The closed
+definition is `kind=product-design`, with `schema_version` set to the genuine
+JSON integer `1` (not a boolean, float, string or null), a Product Lead agent
+author of an immutable PRD revision, Founder/implementer/tester reviewers, all
+three required on the current revision, and request-changes returning to the
+author. A non-empty description is the only variable descriptive field;
+unknown fields and kinds fail closed.
+
+Founder reads exact immutable versions with:
+
+```bash
+happyranch workflows templates list --org <org> --team <team> [--json]
+happyranch workflows templates show --org <org> <team> <template-name> <version> [--json]
+```
+
+The matching APIs are `POST /api/v1/orgs/{slug}/workflows/templates/publish`,
+`GET /api/v1/orgs/{slug}/workflows/templates?team_slug=...`, and
+`GET /api/v1/orgs/{slug}/workflows/templates/{team_slug}/{template_name}/{version}`.
+Responses return canonical JSON, base64 of the same UTF-8 bytes, SHA-256,
+version/pins/timestamp and authenticated publisher provenance. Conflict,
+stale-CAS, duplicate-content and authorization errors retain stable
+machine-readable `detail.code` values; refusals leave no template residue.
 
 Slug resolution for per-org commands: explicit `--org <slug>` > `HAPPYRANCH_ORG_SLUG` > auto-infer only when exactly one org exists > error. Container-level commands take no `--org`.
 
@@ -710,6 +812,46 @@ happyranch tokens --by-agent | --by-task | --by-thread | --by-purpose
 (`--since`, `--thread-id`, `--agent`, `--purpose`, `--scope-type`,
 `--scope-id`, `--task-id`) AND-compose with any view.
 
+Usage v1 efficiency cohorts do not derive historical executor/model from this
+usage view or from current agent configuration. Lifecycle records capture the
+effective launch tuple: thread invocations use nullable executor/model columns,
+task `session_start` adds runtime session ID + actual spawn purpose +
+executor/model, and `dream_started` adds executor/model. NULL remains unknown;
+there is no historical inference or `"default"` sentinel.
+
+The read-only Usage v1 API is `GET /usage/workload?compare=bool` and
+`GET /usage/efficiency?compare=bool`. Efficiency without a cohort returns
+options and unattributed counts; a selected cohort requires `executor` plus
+exactly one of `model` or `model_unpinned=true`. Both routes use the same
+bearer authentication and org scoping as `GET /tokens`. They return rolling
+seven-day UTC bounds with the resolved org timezone for display. Workload
+emits only current-window agents. Each period's
+`reply_outcome_coverage` reports linked `recorded` replies out of
+`total_consumed` REPLY wakes; a NULL `reply_message_seq` is unknown, does not
+count as a Reply, and withholds only the Replies delta when comparison is on.
+
+The web Usage page (`/orgs/<slug>/usage`, `web/src/features/usage/`) is the
+Usage v1 UI over these two routes and no longer reads `GET /tokens`. It shows
+a fixed "Last 7 days" window taken from the response (with Data through and
+generated-at in the response timezone) and a Compare toggle that is off by
+default. Workload lists exactly the returned agents: Task runs, Thread wakes,
+Recorded runtime (agent runtime with known/total coverage; missing runtime is
+"Not recorded", never zero), Deliveries (unclassified results are footnoted),
+and Replies (recorded X of Y, with the unknown portion labelled "reply outcome
+not recorded"). Efficiency renders nothing until exactly one CLI and then one
+model are chosen from `cohorts`; the NULL-model cohort is its own "CLI default
+(not pinned)" option, and there is no aggregate option. The five run-type rows
+always render in fixed order. A null class reads "Not reported", or "Unknown"
+when no run in the row has usage, and is never zero. A partial Fresh input is
+labelled with its class denominator, and decline waste appears only on the two
+thread rows. Unattributed lifecycle counts are listed outside the rows. Every
+delta is rendered from the server's `UsageDelta`, with neutral styling. A
+withheld delta shows a dash, both periods' coverage and a plain-language
+reason, never the raw code. Loading, per-view error with retry, stale (earlier
+figures kept after a failed refetch), and empty states are explicit. Below
+`md` both tables scroll sideways under a frozen identity column. There is no
+export, cost, or blended token total.
+
 Rollup modifiers (presentation-side; require a `--by-*` flag):
 
 - `--top N` — rank by churn (`total`) DESC and keep the top N; ties: sessions DESC then key ASC.
@@ -770,12 +912,20 @@ unknown and worker targets fail closed without an editable fallback.
 
 For a v2-bound manager escalation, the injected role guidance supplies the
 binding identities and requires one structured `manager_self_evaluation` beside
-the ordinary `decision`. `happyranch report-completion --from-file` preserves
-that member for strict server validation; omission, explicit null, malformed or
-uncertain evidence fails closed. The CLI does not embed policy prose, a clause
-identifier, a canonical continuation phrase, or a second evaluator. Worker and
-ordinary non-escalation callbacks omit this field unless their injected contract
-explicitly requires it.
+the ordinary `decision`. The active policy block is authoritative for its exact
+object shape and supplies a filled launch-bound example in that manager-decision
+task; managers set both assessments honestly rather than treating the displayed
+values as defaults. Policy blocks rendered for thread, wake, schedule, and dream
+contexts have no bound manager-decision identity and show shape/type placeholders
+only, not values to submit. A manager self-evaluation is submitted only from the
+manager-decision task's report-completion using that task's bound root/session
+identities.
+`happyranch report-completion --from-file` preserves that member for strict
+server validation; omission, explicit null, malformed or uncertain evidence
+fails closed. The CLI does not embed policy prose, a clause identifier, a
+canonical continuation phrase, or a second evaluator. Worker and ordinary
+non-escalation callbacks omit this field unless their injected contract explicitly
+requires it.
 
 The checked-in browser receipt driver is
 `web/scripts/screenshot-harness/shot-thr229-v2-policy.mjs`. It uses an owned

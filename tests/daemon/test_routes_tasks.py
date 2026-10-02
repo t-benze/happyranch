@@ -160,6 +160,91 @@ def test_manager_policy_identity_connected_launch_completion_hook(
     assert len(org.db.list_authority_candidates_for_root(task_id)) == 1
 
 
+def test_authority_release_schema_reference_matches_canonical_org(
+    tmp_path, monkeypatch,
+) -> None:
+    from runtime.infrastructure.database import Database
+    from runtime.infrastructure.workflow_schema import install_or_recover
+    from runtime.orchestrator import authority
+
+    org_db = Database(tmp_path / "canonical-org.db")
+    try:
+        install_or_recover(org_db)
+        monkeypatch.setattr(authority, "_release_schema_digest_cache", None)
+        assert authority._release_schema_digest() == authority._live_schema_digest(org_db)
+    finally:
+        org_db.close()
+
+
+def test_authority_release_schema_reference_leaves_generic_database_unchanged(
+    tmp_path, monkeypatch,
+) -> None:
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator import authority
+
+    generic = Database(tmp_path / "generic.db")
+    try:
+        before = authority._live_schema_digest(generic)
+        monkeypatch.setattr(authority, "_release_schema_digest_cache", None)
+        assert authority._release_schema_digest() != before
+        assert authority._live_schema_digest(generic) == before
+        assert generic.execute(
+            "SELECT name FROM sqlite_schema "
+            "WHERE name LIKE 'workflow\\_%' ESCAPE '\\'"
+        ).fetchall() == []
+    finally:
+        generic.close()
+
+
+def test_authority_release_schema_reference_leaves_runtime_audit_free(
+    tmp_path, monkeypatch,
+) -> None:
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator import authority
+
+    audit = Database(tmp_path / "runtime-audit.db")
+    try:
+        before = authority._live_schema_digest(audit)
+        monkeypatch.setattr(authority, "_release_schema_digest_cache", None)
+        authority._release_schema_digest()
+        assert authority._live_schema_digest(audit) == before
+        assert audit.execute(
+            "SELECT name FROM sqlite_schema "
+            "WHERE name LIKE 'workflow\\_%' ESCAPE '\\'"
+        ).fetchall() == []
+    finally:
+        audit.close()
+
+
+@pytest.mark.parametrize(
+    "drift_sql",
+    [
+        "CREATE TABLE drift_sentinel (id INTEGER PRIMARY KEY)",
+        "CREATE INDEX drift_extra_idx ON workflow_instances(status)",
+        "DROP INDEX workflow_instances_root_idx",
+        "DROP INDEX workflow_admission_records_namespace_generation_idx",
+    ],
+)
+def test_authority_org_reference_rejects_complete_schema_drift(
+    tmp_path, monkeypatch, drift_sql,
+) -> None:
+    from runtime.infrastructure.database import Database
+    from runtime.infrastructure.workflow_schema import install_or_recover
+    from runtime.orchestrator import authority
+
+    org_db = Database(tmp_path / "drifted-org.db")
+    try:
+        install_or_recover(org_db)
+        monkeypatch.setattr(authority, "_release_schema_digest_cache", None)
+        release_digest = authority._release_schema_digest()
+        org_db.execute(drift_sql)
+        org_db._conn.commit()
+        assert authority._live_schema_digest(org_db) != release_digest
+        assert authority._release_schema_digest() == release_digest
+    finally:
+        org_db.close()
+
+
 def test_submit_task_idle_returns_409(tmp_home, app_idle, auth_headers) -> None:
     r = TestClient(app_idle).post(
         "/api/v1/orgs/alpha/tasks",
@@ -4294,3 +4379,151 @@ def test_completion_lands_result_but_row_stays_in_progress_thr211(
     assert detail.status_code == 200
     assert detail.json()["task"]["status"] == "in_progress"
     assert len(detail.json()["results"]) == 1
+
+
+@pytest.mark.parametrize("edges", [0, 1, 2, 18, 19, 20, 21])
+@pytest.mark.parametrize("producer", ["revisit", "resolve-escalation"])
+def test_verified_retry_actual_founder_producers_and_record_bound(client_with_runtime, edges, producer):
+    from runtime.infrastructure.database import InvalidLineage, VerifiedRetry
+    from runtime.models import TaskRecord, TaskStatus
+
+    client, org = client_with_runtime
+    db = org.db
+    original = db.next_task_id()
+    db.insert_task(TaskRecord(id=original, brief="original", team="engineering",
+                              assigned_agent="engineering_head", status=TaskStatus.ESCALATED))
+    failed = db.next_task_id()
+    db.insert_task(TaskRecord(id=failed, brief="failed work", team="engineering",
+                              assigned_agent="dev_agent", status=TaskStatus.FAILED,
+                              parent_task_id=original, task_type="subtask"))
+    before = dict(db.execute("SELECT * FROM tasks WHERE id=?", (failed,)).fetchone())
+    path = [original]
+    for _ in range(edges):
+        db.update_task(path[-1], status=TaskStatus.ESCALATED, block_kind=None)
+        response = client.post(
+            f"/api/v1/orgs/alpha/tasks/{path[-1]}/{producer}",
+            json={"founder_note": "retry correction"} if producer == "revisit" else {
+                "decision": "supersede", "rationale": "correction",
+                "brief": "retry continuation", "actor": "founder",
+            },
+        )
+        assert response.status_code == 200, response.text
+        if producer == "revisit":
+            successor = response.json()["new_root_task_id"]
+        else:
+            successor = next(row["payload"]["successor_root"] for row in db.get_audit_logs(path[-1])
+                             if row["action"] == "escalation_superseded")
+        path.append(successor)
+    statements = []
+    changes = db._conn.total_changes
+    db._conn.set_trace_callback(statements.append)
+    try:
+        result = db.verify_retry_link(path[-1], "dev_agent", failed)
+    finally:
+        db._conn.set_trace_callback(None)
+    assert db._conn.total_changes == changes
+    assert not db._conn.in_transaction
+    assert all(statement.lstrip().startswith("SELECT") for statement in statements)
+    incoming_queries = [sql for sql in statements
+                        if sql.startswith("SELECT * FROM manager_supersessions WHERE successor_task_id=")]
+    assert len(incoming_queries) == min(edges, 19)
+    if edges < 20:
+        assert result == VerifiedRetry(tuple(reversed(path)))
+    else:
+        assert result == InvalidLineage("lineage_record_limit_20")
+    assert dict(db.execute("SELECT * FROM tasks WHERE id=?", (failed,)).fetchone()) == before
+    assert db.get_children(path[-1]) == ([failed] if edges == 0 else [])
+
+
+@pytest.mark.parametrize("order", ["MH", "MR", "HM", "RM", "HR", "RH"])
+def test_verified_retry_mixed_actual_producers(client_with_runtime, order):
+    from runtime.infrastructure.database import VerifiedRetry
+    from runtime.models import TaskRecord, TaskStatus
+
+    client, org = client_with_runtime
+    db = org.db
+    root = db.next_task_id()
+    db.insert_task(TaskRecord(id=root, brief="original", team="engineering",
+                              assigned_agent="engineering_head", status=TaskStatus.ESCALATED))
+    failed = db.next_task_id()
+    db.insert_task(TaskRecord(id=failed, brief="failed", team="engineering",
+                              assigned_agent="dev_agent", status=TaskStatus.FAILED,
+                              parent_task_id=root, task_type="subtask"))
+    before = dict(db.execute("SELECT * FROM tasks WHERE id=?", (failed,)).fetchone())
+    path = [root]
+    for producer in order:
+        parent = path[-1]
+        if producer == "M":
+            db.update_task(parent, status=TaskStatus.IN_PROGRESS, block_kind=None,
+                           current_session_id="actual-producer-claim")
+            successor = db.try_manager_supersede(
+                parent, actor_agent="engineering_head", actor_session_id="actual-producer-claim",
+                expected_team="engineering", successor_brief="continuation", rationale="correction",
+                attestation={"recovery_reason": "correction", "policy_product_intent_unchanged": True,
+                             "no_budget_or_external_commitment": True, "no_permission_or_cross_team_change": True,
+                             "no_schema_auth_security_privacy_or_data_access_change": True,
+                             "no_unresolved_founder_gate": True},
+            )
+            assert successor is not None
+        else:
+            db.update_task(parent, status=TaskStatus.ESCALATED, block_kind=None)
+            route = "revisit" if producer == "R" else "resolve-escalation"
+            response = client.post(f"/api/v1/orgs/alpha/tasks/{parent}/{route}", json=(
+                {"founder_note": "correction"} if producer == "R" else
+                {"decision": "supersede", "rationale": "correction", "brief": "continuation", "actor": "founder"}
+            ))
+            assert response.status_code == 200, response.text
+            successor = (response.json()["new_root_task_id"] if producer == "R" else
+                         next(a["payload"]["successor_root"] for a in db.get_audit_logs(parent)
+                              if a["action"] == "escalation_superseded"))
+        path.append(successor)
+    assert db.verify_retry_link(path[-1], "dev_agent", failed) == VerifiedRetry(tuple(reversed(path)))
+    assert dict(db.execute("SELECT * FROM tasks WHERE id=?", (failed,)).fetchone()) == before
+    assert db.get_children(path[-1]) == []
+
+
+@pytest.mark.parametrize("status", ["failed", "completed"])
+def test_verified_retry_ordinary_revisit_is_not_an_edge(client_with_runtime, status):
+    from runtime.infrastructure.database import InvalidLineage
+    from runtime.models import TaskRecord, TaskStatus
+
+    client, org = client_with_runtime
+    db = org.db
+    root = db.next_task_id()
+    db.insert_task(TaskRecord(id=root, brief="terminal root", team="engineering",
+                              assigned_agent="engineering_head", status=TaskStatus(status)))
+    failed = db.next_task_id()
+    db.insert_task(TaskRecord(id=failed, brief="failed", team="engineering", assigned_agent="dev_agent",
+                              status=TaskStatus.FAILED, parent_task_id=root, task_type="subtask"))
+    response = client.post(f"/api/v1/orgs/alpha/tasks/{root}/revisit", json={"founder_note": "ordinary"})
+    assert response.status_code == 200, response.text
+    successor = response.json()["new_root_task_id"]
+    assert db.get_task(root).status.value == status
+    assert db.verify_retry_link(successor, "dev_agent", failed) == InvalidLineage("no_verified_supersession")
+    assert db.get_children(successor) == []
+
+
+def test_verified_retry_prior_continue_does_not_poison_later_supersession(client_with_runtime):
+    from runtime.infrastructure.database import VerifiedRetry
+    from runtime.models import TaskRecord, TaskStatus
+
+    client, org = client_with_runtime
+    db = org.db
+    root = db.next_task_id()
+    db.insert_task(TaskRecord(id=root, brief="escalated", team="engineering",
+                              assigned_agent="engineering_head", status=TaskStatus.ESCALATED))
+    failed = db.next_task_id()
+    db.insert_task(TaskRecord(id=failed, brief="failed", team="engineering", assigned_agent="dev_agent",
+                              status=TaskStatus.FAILED, parent_task_id=root, task_type="subtask"))
+    response = client.post(f"/api/v1/orgs/alpha/tasks/{root}/resolve-escalation",
+                           json={"decision": "continue", "rationale": "try again", "actor": "founder"})
+    assert response.status_code == 200, response.text
+    assert db.get_task(root).status == TaskStatus.PENDING
+    assert not any(a["action"] == "escalation_superseded" for a in db.get_audit_logs(root))
+    db.update_task(root, status=TaskStatus.ESCALATED)
+    response = client.post(f"/api/v1/orgs/alpha/tasks/{root}/resolve-escalation", json={
+        "decision": "supersede", "rationale": "correction", "brief": "continuation", "actor": "founder"})
+    assert response.status_code == 200, response.text
+    successor = next(a["payload"]["successor_root"] for a in db.get_audit_logs(root)
+                     if a["action"] == "escalation_superseded")
+    assert db.verify_retry_link(successor, "dev_agent", failed) == VerifiedRetry((successor, root))

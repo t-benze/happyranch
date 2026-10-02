@@ -37,6 +37,8 @@ from runtime.daemon.routes import (
     teams,
     threads,
     tokens,
+    usage,
+    workflow_templates,
     work_hours,
     schedules,
 )
@@ -139,7 +141,10 @@ async def _lifespan(app: FastAPI):
         # THR-095: one-shot reconcile agent.yaml executor/repos/model → .md
         try:
             from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
-            migration_results = migrate_agent_yaml_to_frontmatter(OrgPaths(root=org.root))
+            migration_results = migrate_agent_yaml_to_frontmatter(
+                OrgPaths(root=org.root),
+                workflow_authority=org.workflow_authority,
+            )
             if migration_results:
                 changed = {k: v for k, v in migration_results.items() if v != "unchanged"}
                 if changed:
@@ -383,9 +388,12 @@ async def _lifespan(app: FastAPI):
         zombie_reaper_task.cancel()
         direct_connect_projection_sweep_task.cancel()
         workspace_cleanup_scheduler_task.cancel()
+        # Fence task consumers and every producer entrypoint before job
+        # shutdown can fire a blocked-task resume check. The parked task then
+        # stays blocked_on_job until the next startup recovery pass.
+        await state.queue.stop()
         from runtime.daemon.jobs_runner import terminate_all_inflight
         await terminate_all_inflight(grace_seconds=5)
-        await state.queue.stop()
         await state.close_all()
 
 
@@ -437,6 +445,8 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(teams.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(audit.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(tokens.router, prefix="/api/v1/orgs/{slug}")
+    app.include_router(usage.router, prefix="/api/v1/orgs/{slug}", tags=["usage"])
+    app.include_router(workflow_templates.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-templates"])
     app.include_router(kb.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(skills.router, prefix="/api/v1/orgs/{slug}", tags=["skills"])
     app.include_router(skills.agent_skills_router, prefix="/api/v1/orgs/{slug}", tags=["skills"])

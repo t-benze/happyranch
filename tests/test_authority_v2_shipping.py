@@ -52,6 +52,8 @@ import pytest
 import uvicorn
 
 from runtime.daemon.app import create_app
+from runtime.infrastructure.database import Database
+from runtime.infrastructure.workflow_schema import install_or_recover
 from runtime.models import (
     AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
     BlockKind,
@@ -86,6 +88,12 @@ _HELD_LOOPS = (
     ("runtime.daemon.direct_connect_projection_sweep", "direct_connect_projection_sweep_loop"),
     ("runtime.daemon.workspace_cleanup_scheduler", "workspace_cleanup_scheduler_loop"),
 )
+
+
+def _open_live_org_database(path: Path) -> Database:
+    db = Database(path)
+    install_or_recover(db)
+    return db
 
 
 # --------------------------------------------------------------------------
@@ -351,6 +359,10 @@ class _ShippingFixture:
             for root in self.org_roots.values():
                 reconstruct_historical_database(OrgPaths(root=root).db_path)
 
+        for root in self.org_roots.values():
+            live_db = _open_live_org_database(OrgPaths(root=root).db_path)
+            live_db.close()
+
         paths_mod.ensure_daemon_home()
         token = paths_mod.ensure_token()
         assert token
@@ -373,6 +385,9 @@ class _ShippingFixture:
         string reassigned on a live object).
         """
         from runtime.daemon.state import DaemonState
+        from runtime.orchestrator.active_authority_policy import (
+            is_eligible_policy_manager,
+        )
         from runtime.orchestrator._paths import OrgPaths
         from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
 
@@ -399,6 +414,24 @@ class _ShippingFixture:
         assert set(self.state.orgs.keys()) == set(self.org_slugs)
         self.orgs = self.state.orgs
         self.org = self.orgs[self.org_slugs[0]]
+
+        # This fixture enters below the shipping `_build_state` boundary. Model
+        # its coordinated selector initialization before any queue worker can
+        # launch, using the same production coordinator API and eligibility
+        # predicate rather than teaching the launch reader to mutate authority.
+        for org in self.orgs.values():
+            for team in org.teams.teams():
+                manager = org.teams.manager_for_team(team).name
+                if is_eligible_policy_manager(
+                    root=org.root,
+                    agent_name=manager,
+                    team=team,
+                    teams=org.teams,
+                ):
+                    org.workflow_authority.ensure_authority_selector(
+                        team=team,
+                        publisher="shipping-fixture:selector-initialization",
+                    )
 
         # Fixture-owned workspace bootstrap through the supported Codex adapter
         # for EVERY loaded org (single-org default unchanged).
@@ -1166,27 +1199,23 @@ def test_shipping_historically_migrated_schema_automatic_continuation(
     Proves the fixture wires into the owned R3 shipping venue and that the
     automatic v2 continuation holds on a migrated DB.
     """
-    from runtime.orchestrator.authority import (
-        _V2_MIGRATED_TABLE_CREATE_SQL,
-        _v2_build_reference_inventories,
-        _v2_capture_inventory,
-    )
-
     fixture = _ShippingFixture(tmp_path, monkeypatch, seed_historical=True)
     fixture.start()
     try:
-        inventory = _v2_capture_inventory(fixture.org.db._conn)
-        references = _v2_build_reference_inventories()
-        # The venue really ran on the accepted migrated layout, not a fresh one.
-        assert inventory["tables"]["threads"]["xinfo"] == (
-            references[1]["tables"]["threads"]["xinfo"]
-        )
-        assert inventory["tables"]["threads"]["xinfo"] != (
-            references[0]["tables"]["threads"]["xinfo"]
-        )
-        assert inventory["tables"]["thread_messages"]["sql"] == (
-            _V2_MIGRATED_TABLE_CREATE_SQL["thread_messages"]
-        )
+        migrated_sql = fixture.org.db._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='threads'"
+        ).fetchone()[0]
+        fresh = Database(tmp_path / "fresh-shipping-control.db")
+        try:
+            fresh_sql = fresh._conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='table' AND name='threads'"
+            ).fetchone()[0]
+        finally:
+            fresh._conn.close()
+        # The venue really ran on a migrated representation, not a fresh one.
+        assert migrated_sql != fresh_sql
+        assert "composed_from_dream_id TEXT" in migrated_sql
         _run_positive_core(fixture)
     finally:
         fixture.stop()
@@ -1202,12 +1231,6 @@ def test_shipping_historically_migrated_request_changes_is_diagnostic(
     shipping boundaries.  The external provider launch remains the fixture's
     sole double.
     """
-    from runtime.orchestrator.authority import (
-        _V2_MIGRATED_TABLE_CREATE_SQL,
-        _v2_build_reference_inventories,
-        _v2_capture_inventory,
-    )
-
     fixture = _ShippingFixture(
         tmp_path, monkeypatch, seed_historical=True, queue_workers=3,
         dequeue_gate=True,
@@ -1215,19 +1238,21 @@ def test_shipping_historically_migrated_request_changes_is_diagnostic(
     fixture.start()
     try:
         db = fixture.org.db
-        inventory = _v2_capture_inventory(db._conn)
-        references = _v2_build_reference_inventories()
-        # The accepted historical raw-DDL inequality identifies this migrated
-        # venue.  It is evidence, never a veto or an alternate evaluator.
-        assert inventory["tables"]["threads"]["xinfo"] == (
-            references[1]["tables"]["threads"]["xinfo"]
-        )
-        assert inventory["tables"]["threads"]["xinfo"] != (
-            references[0]["tables"]["threads"]["xinfo"]
-        )
-        assert inventory["tables"]["thread_messages"]["sql"] == (
-            _V2_MIGRATED_TABLE_CREATE_SQL["thread_messages"]
-        )
+        migrated_sql = db._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='threads'"
+        ).fetchone()[0]
+        fresh = Database(tmp_path / "fresh-c04-control.db")
+        try:
+            fresh_sql = fresh._conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='table' AND name='threads'"
+            ).fetchone()[0]
+        finally:
+            fresh._conn.close()
+        # The historical raw-DDL inequality identifies this migrated venue.
+        # It is observed diagnostics, never a veto or alternate evaluator.
+        assert migrated_sql != fresh_sql
+        assert "composed_from_dream_id TEXT" in migrated_sql
 
         fixture.activate_v2_pair()
         fixture.org.bind_authority_v2_owner()
@@ -3763,10 +3788,8 @@ def _reopen_owned_db(db, *, origin_boot_id: str, expect_envelope_id: str):
     process/boot context through normal isolated fixture wiring, and proves the
     committed durable state reconstructs from the NEW connection.
     """
-    from runtime.infrastructure.database import Database
-
     old_conn = db._conn
-    reopened = Database(db.db_path)
+    reopened = _open_live_org_database(db.db_path)
     assert reopened is not db
     assert reopened.db_path == db.db_path
     assert reopened._conn is not old_conn

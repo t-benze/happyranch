@@ -381,6 +381,24 @@ def test_get_script_detail(client_with_runtime):
     assert body["script_text"] == "echo 1"
 
 
+def test_get_job_detail_carries_existing_reason_field(client_with_runtime):
+    """S4: the existing API shape carries reason; no new field is added."""
+    client, org = client_with_runtime
+    job_id = _submit_pending(client, org)
+    org.db._conn.execute(
+        "UPDATE jobs SET status='failed', reason='daemon_shutdown', exit_code=-15 "
+        "WHERE id=?",
+        (job_id,),
+    )
+    org.db._conn.commit()
+
+    response = client.get(f"/api/v1/orgs/alpha/jobs/{job_id}")
+
+    assert response.status_code == 200
+    assert response.json()["reason"] == "daemon_shutdown"
+    assert response.json()["exit_code"] == -15
+
+
 def test_get_script_detail_404(client_with_runtime):
     client, _org = client_with_runtime
     r = client.get("/api/v1/orgs/alpha/jobs/SR-999")
@@ -515,6 +533,105 @@ def test_output_after_run(tmp_home, daemon_state):
     assert "def" in body["stderr"]
     assert body["total_stdout_bytes"] >= 4
     assert body["truncated_stdout"] is False
+
+
+def test_structured_receipt_binds_exact_session_job_and_complete_output(
+    tmp_home, daemon_state,
+):
+    """The additive receipt is server-authenticated and non-lossy."""
+    import time
+    from fastapi.testclient import TestClient
+    from runtime.daemon.app import create_app
+    from runtime.daemon import paths as paths_mod
+
+    org = daemon_state.orgs["alpha"]
+    app = create_app(daemon_state)
+    with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+        task_id, sid = _make_active_session(org)
+        workspace = org.root / "workspaces" / "engineering_head"
+        workspace.mkdir(parents=True, exist_ok=True)
+        submitted = client.post(
+            "/api/v1/orgs/alpha/jobs/submit",
+            json={
+                "task_id": task_id,
+                "session_id": sid,
+                "title": "structured",
+                "rationale": "receipt",
+                "script": "printf abc; printf def >&2\n",
+                "interpreter": "bash",
+            },
+        )
+        assert submitted.status_code == 201, submitted.text
+        submit_body = submitted.json()
+        assert submit_body["authentication"] == {
+            "task_id": task_id,
+            "session_id": sid,
+        }
+        job_id = submit_body["id"]
+        for _ in range(50):
+            record = org.db.get_job(job_id)
+            if record is not None and record.status.value in ("completed", "failed"):
+                break
+            time.sleep(0.1)
+        receipt = client.get(
+            f"/api/v1/orgs/alpha/jobs/{job_id}/receipt",
+            params={"task_id": task_id, "session_id": sid},
+        )
+    assert receipt.status_code == 200, receipt.text
+    body = receipt.json()
+    assert set(body) == {"authentication", "job", "output"}
+    assert body["authentication"] == {"task_id": task_id, "session_id": sid}
+    assert body["job"]["id"] == job_id
+    assert body["job"]["task_id"] == task_id
+    assert body["job"]["agent_name"] == "engineering_head"
+    assert body["job"]["script_text"] == "printf abc; printf def >&2\n"
+    assert body["job"]["interpreter"] == "bash"
+    assert body["job"]["cwd_resolved"] == str(workspace.resolve())
+    assert body["job"]["status"] == "completed"
+    assert body["job"]["exit_code"] == 0
+    assert body["job"]["reason"] is None
+    assert body["job"]["created_at"]
+    assert body["job"]["started_at"]
+    assert body["job"]["finished_at"]
+    assert body["output"] == {
+        "stdout": "abc",
+        "stderr": "def",
+        "truncated_stdout": False,
+        "truncated_stderr": False,
+        "total_stdout_bytes": 3,
+        "total_stderr_bytes": 3,
+    }
+
+
+@pytest.mark.parametrize("wrong", ["task", "session"])
+def test_structured_receipt_refuses_wrong_exact_session_binding(
+    client_with_runtime, wrong,
+):
+    client, org = client_with_runtime
+    task_id, sid = _make_active_session(org)
+    submitted = client.post(
+        "/api/v1/orgs/alpha/jobs/submit",
+        json={
+            "task_id": task_id,
+            "session_id": sid,
+            "title": "pending",
+            "rationale": "receipt",
+            "script": "true",
+            "interpreter": "bash",
+            "review_required": True,
+        },
+    )
+    job_id = submitted.json()["id"]
+    params = {
+        "task_id": "TASK-WRONG" if wrong == "task" else task_id,
+        "session_id": "sid-wrong" if wrong == "session" else sid,
+    }
+    response = client.get(
+        f"/api/v1/orgs/alpha/jobs/{job_id}/receipt", params=params,
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "session_mismatch"
 
 
 def test_output_pending_409(client_with_runtime):

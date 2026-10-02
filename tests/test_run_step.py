@@ -2,10 +2,13 @@
 a task one subprocess call at a time under the new async execution model."""
 from __future__ import annotations
 
+from collections.abc import Iterator
+import importlib.util
 import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -123,6 +126,88 @@ def _admit_terminal_worktree(monkeypatch) -> None:
     )
 
 
+def _load_terminal_worktree_scanner_for_test():
+    helper = (
+        Path(__file__).resolve().parents[1]
+        / "runtime/skills/bundled/workspace-cleanup/scripts/check_path_use.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "test_run_step_check_path_use", helper,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_TERMINAL_SCANNER = _load_terminal_worktree_scanner_for_test()
+
+
+def _scanner_process(
+    pid: str,
+    *,
+    uid: int,
+    comm: str = "bash",
+    cgroup: str = "",
+    ppid: str = "1",
+    cwd: str = "/tmp",
+    fds: dict[str, str] | None = None,
+) -> dict:
+    return {
+        "pid": pid,
+        "uid": [uid, uid, uid, uid],
+        "comm": comm,
+        "ppid": ppid,
+        "exe": None,
+        "exe_stat": None,
+        "cwd": cwd,
+        "root": "/",
+        "maps": [],
+        "fds": dict(fds or {}),
+        "threads": {},
+        "cgroup": cgroup,
+        "ns": {
+            "pid": "pid:[4026]",
+            "mnt": "mnt:[4026]",
+            "user": "user:[4026531837]",
+        },
+        "starttime": 100,
+    }
+
+
+def _install_terminal_scanner_fixture(monkeypatch, population, *, deny=()) -> None:
+    """Drive run_step through the real bundled scan() with deterministic /proc."""
+    from runtime.orchestrator import run_step as run_step_module
+
+    scanner = _TERMINAL_SCANNER
+    uid = os.getuid()
+
+    class Adapter:
+        Bounds = scanner.Bounds
+
+        @staticmethod
+        def scan(target, *, bounds):
+            target = str(target)
+            target_stat = os.stat(target)
+            proc = scanner.FakeProc(
+                population(target),
+                deny=deny,
+                stat_map={target: (target_stat.st_dev, target_stat.st_ino)},
+            )
+            return scanner.scan(
+                target,
+                proc=proc,
+                self_pid="9999",
+                agent_uid=uid,
+                bounds=bounds,
+            )
+
+    monkeypatch.setattr(
+        run_step_module, "_load_terminal_worktree_scanner", lambda: Adapter,
+    )
+
+
 def _record_terminal_worktree_outcomes(monkeypatch):
     """Observe the real helper while a production terminal seam owns the call."""
     from runtime.orchestrator import run_step as run_step_module
@@ -171,8 +256,12 @@ def runtime(tmp_path: Path) -> OrgPaths:
 
 
 @pytest.fixture
-def db(runtime: OrgPaths) -> Database:
-    return Database(runtime.db_path)
+def db(runtime: OrgPaths) -> Iterator[Database]:
+    database = Database(runtime.db_path)
+    try:
+        yield database
+    finally:
+        database.close()
 
 
 def test_run_step_silent_noop_when_task_missing(runtime, db):
@@ -798,7 +887,6 @@ def test_run_step_done_completes_task_and_enqueues_parent(
             output_dir="output/run-1",
         )
     monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
-
     orch.run_step("T-CHD")
 
     child = db.get_task("T-CHD")
@@ -842,6 +930,13 @@ def test_run_step_nonroot_escalate_fails_and_routes_to_parent(
             output_summary=json.dumps({"action": "escalate", "reason": "needs founder"}),
         )
     monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+    escalation_writer_calls = []
+
+    def forbidden_escalation_writer(*args, **kwargs):
+        escalation_writer_calls.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr(db, "try_escalate", forbidden_escalation_writer)
 
     orch.run_step("T-CHD")
 
@@ -855,6 +950,7 @@ def test_run_step_nonroot_escalate_fails_and_routes_to_parent(
     # No escalation audit row was written for the child.
     escalations = [a for a in db.get_audit_logs("T-CHD") if a["action"] == "escalation"]
     assert escalations == []
+    assert escalation_writer_calls == []
 
     # Parent woken for a bounded-recovery decision step (1 failed child < bound).
     assert q.qsize() == 1
@@ -918,7 +1014,7 @@ def test_run_step_delegate_spawns_child_and_blocks_self(
                 "prompt": "Write a PR",
             }),
         )
-    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+    monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
 
     orch.run_step("T-1")
 
@@ -966,7 +1062,7 @@ def test_run_step_delegate_inherits_session_timeout(runtime, db, monkeypatch):
                 "action": "delegate", "agent": "dev_agent", "prompt": "Do it",
             }),
         )
-    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+    monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
 
     orch.run_step("T-1")
 
@@ -2131,6 +2227,207 @@ def test_terminal_worktree_live_process_reference_is_one_shot(
     assert candidate.exists()
 
 
+def test_terminal_worktree_real_scanner_exempts_host_helpers_and_removes(
+    runtime, db, monkeypatch,
+):
+    """TASK-9125 host shape clears through the shared seq171/seq185 scanner."""
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = "TASK-SCANNER-EXEMPT"
+    orch, primary, candidate = _terminal_worktree(runtime, db, task_id)
+    _admit_real_terminal_worktree_reclamation(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+    uid = os.getuid()
+    user_slice = f"/user.slice/user-{uid}.slice"
+    user_service = f"{user_slice}/user@{uid}.service"
+    app = f"{user_service}/app.slice"
+
+    def population(_target):
+        return {
+            "1": _scanner_process("1", uid=0, comm="systemd", cgroup="/init.scope"),
+            "600": _scanner_process(
+                "600", uid=uid, comm="systemd",
+                cgroup=f"{user_service}/init.scope",
+            ),
+            "601": _scanner_process(
+                "601", uid=uid, comm="(sd-pam)", ppid="600",
+                cgroup=f"{user_service}/init.scope",
+            ),
+            "602": _scanner_process(
+                "602", uid=uid, comm="ssh-agent",
+                cgroup=f"{app}/ssh-agent.service",
+            ),
+            "603": _scanner_process(
+                "603", uid=uid, comm="ssh-agent",
+                cgroup=f"{app}/gcr-ssh-agent.service",
+            ),
+            "604": _scanner_process(
+                "604", uid=uid, comm="gpg-agent",
+                cgroup=f"{app}/gpg-agent.service",
+            ),
+            "605": _scanner_process(
+                "605", uid=uid, comm="sshd-session",
+                cgroup=f"{user_slice}/session-8.scope",
+            ),
+            "9999": _scanner_process("9999", uid=uid, comm="scanner"),
+        }
+
+    unreadable = [
+        (pid, rel)
+        for pid in ("1", "600", "601", "602", "603", "604", "605")
+        for rel in ("exe", "cwd", "root", "maps", "fd", "task", "ns/mnt", "ns/user")
+    ]
+    _install_terminal_scanner_fixture(
+        monkeypatch, population, deny=unreadable,
+    )
+
+    _fail(orch, task_id, note="failed")
+
+    assert outcomes == [("removed", "eligible")]
+    assert not candidate.exists()
+    assert _git(
+        primary, "show-ref", "--verify", f"refs/heads/task/{task_id}",
+    ).returncode == 0
+
+
+def test_terminal_worktree_scanner_failure_maps_to_existing_uncertain_reason(
+    tmp_path, monkeypatch,
+):
+    from runtime.orchestrator import run_step as run_step_module
+
+    monkeypatch.setattr(
+        run_step_module,
+        "_load_terminal_worktree_scanner",
+        lambda: (_ for _ in ()).throw(OSError("scanner unavailable")),
+    )
+
+    assert run_step_module._terminal_worktree_process_reference(
+        tmp_path, time.monotonic() + 5,
+    ) == "process-probe-uncertain"
+
+
+@pytest.mark.parametrize(
+    "shape,expected_reason",
+    [
+        ("unreadable-member", "process-probe-uncertain"),
+        ("name-only", "process-probe-uncertain"),
+        ("cgroup-only", "process-probe-uncertain"),
+        ("cwd-reference", "live-process-reference"),
+        ("fd-reference", "live-process-reference"),
+    ],
+)
+def test_terminal_worktree_real_scanner_preserves_non_exempt_risks(
+    runtime, db, monkeypatch, shape, expected_reason,
+):
+    """Unreadable/lookalike members fail closed; positive refs always block."""
+    from runtime.orchestrator.run_step import _fail
+
+    task_id = f"TASK-SCANNER-{shape.upper()}"
+    orch, primary, candidate = _terminal_worktree(runtime, db, task_id)
+    _admit_real_terminal_worktree_reclamation(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+    uid = os.getuid()
+    app = f"/user.slice/user-{uid}.slice/user@{uid}.service/app.slice"
+
+    def population(target):
+        kwargs = {"uid": uid, "comm": "bash"}
+        if shape == "name-only":
+            kwargs["comm"] = "ssh-agent"
+        elif shape == "cgroup-only":
+            kwargs["cgroup"] = f"{app}/ssh-agent.service"
+        elif shape == "cwd-reference":
+            kwargs["cwd"] = target
+        elif shape == "fd-reference":
+            kwargs["fds"] = {"3": str(Path(target) / "tracked.txt")}
+        return {
+            "700": _scanner_process("700", **kwargs),
+            "9999": _scanner_process("9999", uid=uid, comm="scanner"),
+        }
+
+    deny = [("700", "cwd")] if shape in {
+        "unreadable-member", "name-only", "cgroup-only",
+    } else []
+    _install_terminal_scanner_fixture(monkeypatch, population, deny=deny)
+
+    _fail(orch, task_id, note="failed")
+
+    assert outcomes == [("preserved", expected_reason)]
+    assert candidate.exists()
+    assert str(candidate) in _git(
+        primary, "worktree", "list", "--porcelain",
+    ).stdout
+
+
+@pytest.mark.skipif(not Path("/proc").is_dir(), reason="Linux /proc is absent")
+@pytest.mark.parametrize("holder_cwd", [False, True], ids=["clear", "cwd-reference"])
+def test_terminal_worktree_real_proc_end_to_end(
+    runtime, db, monkeypatch, holder_cwd,
+):
+    """Exercise the un-stubbed production process scan on disposable worktrees."""
+    from runtime.orchestrator.run_step import (
+        _fail,
+        _load_terminal_worktree_scanner,
+    )
+
+    task_id = f"TASK-REAL-SCANNER-{'HELD' if holder_cwd else 'CLEAR'}"
+    orch, _primary, candidate = _terminal_worktree(runtime, db, task_id)
+    _admit_real_terminal_worktree_reclamation(monkeypatch)
+    outcomes = _record_terminal_worktree_outcomes(monkeypatch)
+    scanner = _load_terminal_worktree_scanner()
+    real_scan = scanner.scan
+    scan_classifications = []
+
+    def observe_scan(*args, **kwargs):
+        try:
+            result = real_scan(*args, **kwargs)
+        except Exception:
+            scan_classifications.append("failure")
+            raise
+        scan_classifications.append(result.state)
+        return result
+
+    monkeypatch.setattr(scanner, "scan", observe_scan)
+    holder = None
+    if holder_cwd:
+        holder = subprocess.Popen(
+            [sys.executable, "-c", "print('ready', flush=True); input()"],
+            cwd=candidate,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "ready"
+    try:
+        _fail(orch, task_id, note="failed")
+    finally:
+        if holder is not None and holder.poll() is None:
+            assert holder.stdin is not None
+            holder.stdin.write("\n")
+            holder.stdin.flush()
+            holder.wait(timeout=5)
+
+    assert len(scan_classifications) == 1
+    classification = scan_classifications[0]
+    print(f"terminal worktree real scanner classification: {classification}")
+    if holder_cwd:
+        assert classification == "blocked"
+        assert outcomes == [("preserved", "live-process-reference")]
+        assert candidate.exists()
+        assert holder is not None and holder.returncode == 0
+    else:
+        expected_by_classification = {
+            "clear_observation": (("removed", "eligible"), False),
+            "blocked": (("preserved", "live-process-reference"), True),
+            "unknown": (("preserved", "process-probe-uncertain"), True),
+            "failure": (("preserved", "process-probe-uncertain"), True),
+        }
+        expected_outcome, expected_exists = expected_by_classification[classification]
+        assert outcomes == [expected_outcome]
+        assert candidate.exists() is expected_exists
+
+
 @pytest.mark.skipif(not Path("/proc").is_dir(), reason="Linux /proc proof")
 @pytest.mark.parametrize("reference_kind", ["cwd", "fd"])
 def test_terminal_worktree_real_proc_reference_preserves_without_exit_retry(
@@ -3137,18 +3434,18 @@ def test_run_step_delegate_atomic_against_cancel_between_recheck_and_cas(
     # _run_agent returns a delegate without cancelling — Guard B re-fetch
     # will pass. The cancel races in via the monkey-patched try_delegate.
     monkeypatch.setattr(orch, "_run_agent",
-                        lambda *a, **k: (_make_result(), _make_report(
+                        _owned_executor_fixture(db, lambda *a, **k: (_make_result(), _make_report(
                             output_summary=json.dumps({
                                 "action": "delegate", "agent": "dev_agent",
                                 "prompt": "ship it",
                             }),
-                        )))
+                        ))))
 
     # Wrap try_delegate so the cancel lands at the worst moment: AFTER Guard B
     # re-checks but BEFORE the CAS write. The atomic SELECT inside try_delegate
     # should observe the cancel and return False.
     real_try_delegate = db.try_delegate
-    def racy_try_delegate(parent_id, child, *, parent_note, attachments=None, active_chain_json=None, uploaded_by="orchestrator"):
+    def racy_try_delegate(parent_id, child, *, parent_note, attachments=None, active_chain_json=None, uploaded_by="orchestrator", **claim_args):
         # Simulate founder cancel landing just before the CAS SELECT.
         now = datetime.now(timezone.utc).isoformat()
         db.update_task(
@@ -3159,7 +3456,7 @@ def test_run_step_delegate_atomic_against_cancel_between_recheck_and_cas(
         )
         return real_try_delegate(parent_id, child, parent_note=parent_note,
                                   attachments=attachments, active_chain_json=active_chain_json,
-                                  uploaded_by=uploaded_by)
+                                  uploaded_by=uploaded_by, **claim_args)
     monkeypatch.setattr(db, "try_delegate", racy_try_delegate)
 
     orch.run_step("T-RACE2")
@@ -3365,7 +3662,7 @@ def test_delegated_child_is_typed_subtask(runtime, db, monkeypatch):
             output_summary=json.dumps(
                 {"action": "delegate", "agent": "dev_agent", "prompt": "build"}),
         )
-    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+    monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
 
     orch.run_step("T-1")
     children = db.get_children("T-1")
@@ -3389,7 +3686,7 @@ def test_non_manager_self_delegation_is_allowed(runtime, db, monkeypatch):
         return _make_result(), _make_report(
             output_summary=json.dumps(
                 {"action": "delegate", "agent": "dev_agent", "prompt": "phase 2"}))
-    monkeypatch.setattr(orch, "_run_agent", fake)
+    monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake))
 
     orch.run_step("T-1")
     children = db.get_children("T-1")
@@ -4329,7 +4626,7 @@ def test_delegate_without_revisit_of_task_id_when_failed_sibling_is_rejected(run
                 # OMIT revisit_of_task_id — should be REJECTED.
             }),
         )
-    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+    monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
 
     # Run the step — the delegate handler should REJECT before spawning.
     orch.run_step("T-NOLINK")
@@ -4389,7 +4686,7 @@ def test_fanout_without_revisit_of_task_id_when_failed_sibling_is_rejected(runti
             "width_cap_ack": 2,
         }))
 
-    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+    monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
     orch.run_step("T-FANOUT-NOLINK")
 
     parent = db.get_task("T-FANOUT-NOLINK")
@@ -4429,7 +4726,7 @@ def test_delegate_with_invalid_revisit_link_is_rejected(runtime, db, monkeypatch
             "revisit_of_task_id": "TASK-NOT-A-FAILED-SIBLING",
         }))
 
-    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+    monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
     orch.run_step("T-BADLINK")
 
     parent = db.get_task("T-BADLINK")
@@ -4471,12 +4768,12 @@ def test_delegate_rejects_wrong_parent_or_agent_retry_link(
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
                         slug="test", teams=TeamsRegistry.load(runtime.root))
     orch._queue = _SlugQueue()
-    monkeypatch.setattr(orch, "_run_agent", lambda *args, **kwargs: (
+    monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, lambda *args, **kwargs: (
         _make_result(), _make_report(output_summary=json.dumps({
             "action": "delegate", "agent": target_agent, "prompt": "bad retry",
             "revisit_of_task_id": invalid_link,
         })),
-    ))
+    )))
 
     orch.run_step("T-BADLINK")
     assert db.get_children("T-BADLINK") == ["T-BADLINK-C1"]
@@ -4538,7 +4835,7 @@ def test_fanout_retry_link_reaches_second_failure_escalation(runtime, db, monkey
             response["children"][0]["revisit_of_task_id"] = failed_slice_id
         return _make_result(), _make_report(output_summary=json.dumps(response))
 
-    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+    monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, fake_run_agent))
     orch.run_step("T-FANOUT-RETRY")
 
     first_round = [db.get_task(cid) for cid in db.get_children("T-FANOUT-RETRY")]
@@ -4954,7 +5251,7 @@ def test_fanout_dispatched_manager_owns_failed_child_not_carrier(runtime, db, mo
             return _make_result(success=False), None
         return _make_result(), _make_report(output_summary=json.dumps(decision))
 
-    monkeypatch.setattr(orch, "_run_agent", run)
+    monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, run))
     orch.run_step("T-OWNER-ROOT")
     owner = next(db.get_task(cid) for cid in db.get_children("T-OWNER-ROOT") if db.get_task(cid).task_type == "task")
     orch.run_step(owner.id)
@@ -5031,7 +5328,7 @@ def test_serial_second_failure_wakes_owner_with_real_terminal_and_revised_dispat
             output_summary=f"terminal failure {ordinal}", status="blocked", verdict="FAIL",
         )
 
-    monkeypatch.setattr(orch, "_run_agent", run)
+    monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, run))
     orch.run_step("T-SERIAL")
     original = db.get_children("T-SERIAL")[0]
     orch.run_step(original)
@@ -5098,7 +5395,7 @@ def test_passive_carrier_join_keeps_causal_leaf_details(runtime, db, monkeypatch
         {"agent": "dev_agent", "prompt": "pipeline", "then": [{"agent": "qa_engineer", "prompt": "qa", "expect_verdict": "PASS"}]},
         {"agent": "dev_agent", "prompt": "live sibling"},
     ]}
-    monkeypatch.setattr(orch, "_run_agent", lambda *a, **kw: (_make_result(), _make_report(output_summary=json.dumps(decision))))
+    monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, lambda *a, **kw: (_make_result(), _make_report(output_summary=json.dumps(decision)))))
     orch.run_step("T-CARRIER-ROOT")
     carrier = next(db.get_task(cid) for cid in db.get_children("T-CARRIER-ROOT") if db.get_task(cid).active_chain)
     leaf = db.get_children(carrier.id)[0]
@@ -5109,7 +5406,7 @@ def test_passive_carrier_join_keeps_causal_leaf_details(runtime, db, monkeypatch
     db.update_task(sibling, status=TaskStatus.COMPLETED, note="unrelated successful sibling")
     _enqueue_parent_if_waiting(orch, sibling)
     prompts: list[str] = []
-    monkeypatch.setattr(orch, "_run_agent", lambda task_id, agent, prompt, **kw: (prompts.append(prompt), _make_result(), _make_report(output_summary=json.dumps({"action": "done", "summary": "handled"})))[1:])
+    monkeypatch.setattr(orch, "_run_agent", _owned_executor_fixture(db, lambda task_id, agent, prompt, **kw: (prompts.append(prompt), _make_result(), _make_report(output_summary=json.dumps({"action": "done", "summary": "handled"})))[1:]))
     orch.run_step("T-CARRIER-ROOT")
     assert len(prompts) == 1
     assert f"carrier chain leg {leaf} failed" in prompts[0]
@@ -7117,3 +7414,85 @@ async def test_workspace_cleanup_hook_initial_config_failure_aborts_step_before_
     assert contract.root.is_dir()
     assert _reclamation_audits(db, owner_id) == []
     assert db.get_task_results(owner_id) == []
+
+
+
+def _owned_executor_fixture(db, run):
+    """Model the session binding performed by the real executor before its body."""
+    def bound(task_id, agent, prompt, **kwargs):
+        task = db.get_task(task_id)
+        assert task.status == TaskStatus.IN_PROGRESS and task.block_kind is None
+        db.update_task(task_id, current_session_id=_make_result().session_id)
+        return run(task_id, agent, prompt, **kwargs)
+    return bound
+
+
+@pytest.mark.parametrize("fanout", [False, True])
+@pytest.mark.parametrize("outcome", ["committed", "invalid", "lost", "error"])
+def test_retry_spawn_outcome(runtime, db, monkeypatch, fanout, outcome):
+    """Drive real final transactions; mutate only at the preflight/writer boundary."""
+    import sqlite3
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _consume_completion_report
+    from runtime.models import CompletionReport, NextStep
+    from runtime.infrastructure.database import RetryClaim
+    for name in ("engineering_head","dev_agent","qa_engineer"):
+        (runtime.workspaces_dir/name).mkdir(parents=True,exist_ok=True)
+    db.insert_task(TaskRecord(id="RC-P",brief="parent",team="engineering",
+        assigned_agent="engineering_head",status=TaskStatus.IN_PROGRESS,
+        current_session_id="rc-owner",orchestration_step_count=4,revision_count=1,note="retained"))
+    db.insert_task(TaskRecord(id="RC-F",brief="failed",parent_task_id="RC-P",
+        assigned_agent="dev_agent",status=TaskStatus.FAILED))
+    decision = {"action":"delegate","agent":"dev_agent","prompt":"retry","revisit_of_task_id":"RC-F"}
+    if fanout:
+        decision={"action":"fanout","width_cap_ack":2,"children":[
+            {"agent":"dev_agent","prompt":"retry","revisit_of_task_id":"RC-F"},
+            {"agent":"qa_engineer","prompt":"other"}]}
+    report=CompletionReport(task_id="RC-P",agent="engineering_head",status="completed",
+        confidence=90,output_summary="retry",decision=NextStep(**decision))
+    db.insert_task_result(task_id="RC-P",agent="engineering_head",session_id="rc-owner",
+                          confidence_score=90,output_summary="retry",decision_json=json.dumps(decision))
+    rid=db._conn.execute("SELECT max(id) FROM task_results").fetchone()[0]
+    before=dict(db._conn.execute("SELECT * FROM task_results WHERE id=?",(rid,)).fetchone())
+    claim=RetryClaim.from_task(db.get_task("RC-P"),result_row_id=rid)
+    orch=Orchestrator(db=db,settings=Settings(),paths=runtime,slug="test",teams=TeamsRegistry.load(runtime.root))
+    orch._queue=_SlugQueue()
+    name="try_delegate_many" if fanout else "try_delegate"
+    original=getattr(db,name)
+    def intercepted(*args, **kwargs):
+        assert kwargs["expected_claim"] == claim
+        if outcome == "invalid":
+            db.update_task("RC-F",status=TaskStatus.COMPLETED)
+        elif outcome == "lost":
+            db.update_task("RC-P",current_session_id="new-owner")
+        elif outcome == "error":
+            db._conn.execute("CREATE TEMP TRIGGER spawn_fault BEFORE INSERT ON tasks "
+                             "BEGIN SELECT RAISE(ABORT,'actual_spawn_fault'); END")
+        return original(*args, **kwargs)
+    monkeypatch.setattr(db,name,intercepted)
+    if outcome == "error":
+        with pytest.raises(sqlite3.IntegrityError,match="^actual_spawn_fault$"):
+            _consume_completion_report(orch,"RC-P",report,result_row_id=rid)
+    else:
+        _consume_completion_report(orch,"RC-P",report,result_row_id=rid)
+    new_children=[c for c in db.get_children("RC-P") if c != "RC-F"]
+    feedback=[r for r in db.get_task_results("RC-P") if r["session_id"] == ""]
+    assert dict(db._conn.execute("SELECT * FROM task_results WHERE id=?",(rid,)).fetchone()) == before
+    if outcome == "committed":
+        assert len(new_children) == (2 if fanout else 1)
+        assert orch._queue.qsize() == len(new_children)
+        assert db.get_task("RC-P").revision_count == (1 if fanout else 2)
+        assert not feedback
+    elif outcome == "invalid":
+        assert not new_children
+        assert len(feedback) == 1
+        assert orch._queue.qsize() == 1
+        assert orch._queue.get_nowait() == ("test","RC-P")
+        assert db.get_task("RC-P").status == TaskStatus.PENDING
+        assert db.get_task("RC-P").revision_count == 1
+    else:
+        assert not new_children and not feedback
+        assert orch._queue.qsize() == 0
+        assert db.get_task("RC-P").revision_count == 1
+        assert db.get_task("RC-P").current_session_id == ("new-owner" if outcome == "lost" else "rc-owner")
+    assert not db._conn.in_transaction

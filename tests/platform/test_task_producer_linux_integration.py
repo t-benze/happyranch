@@ -120,9 +120,12 @@ def test_run_command_contained_success_path_descendant_cleanup_real(
 def test_run_command_contained_clean_exit_receipt_kernel_values_real(backend, tmp_path):
     """THE shipping seam on the real host: a contained command that exits
     cleanly (the executor's ``communicate`` reaps it; systemd collects the
-    transient scope before the supervisor's terminal finish) must produce a
-    receipt with non-null KERNEL memory/CPU/process peaks — the deployed
-    defect was 3-for-3 null on exactly this path."""
+    transient scope before the supervisor's terminal finish) must produce
+    non-null memory/CPU/process peaks. Normally the exit-instant read wins and
+    all three values are KERNEL. If systemd collection wins the documented
+    race, all three may instead be the last-live SAMPLED values, but only with
+    the exact explicit loss evidence — the deployed defect was 3-for-3 null on
+    exactly this path."""
     supervisor = HostSessionSupervisor(
         backend=backend,
         policy=canary_policy(sample_interval_seconds=0.1),
@@ -164,11 +167,20 @@ def test_run_command_contained_clean_exit_receipt_kernel_values_real(backend, tm
     assert outcome.terminal_reason is TerminalReason.SUCCESS
     assert outcome.receipt is not None
     assert outcome.receipt.memory_peak_bytes is not None
-    assert outcome.receipt.memory_peak_provenance is MeasurementProvenance.KERNEL
     assert outcome.receipt.cpu_total_seconds is not None
-    assert outcome.receipt.cpu_total_provenance is MeasurementProvenance.KERNEL
     assert outcome.receipt.process_peak is not None
-    assert outcome.receipt.process_peak_provenance is MeasurementProvenance.KERNEL
+    provenances = {
+        outcome.receipt.memory_peak_provenance,
+        outcome.receipt.cpu_total_provenance,
+        outcome.receipt.process_peak_provenance,
+    }
+    if provenances == {MeasurementProvenance.SAMPLED}:
+        assert set(outcome.receipt.enforcement_events) == {
+            "cgroup_vanished",
+            "capture_final_read_lost:memory.peak,cpu.stat,pids.peak",
+        }
+    else:
+        assert provenances == {MeasurementProvenance.KERNEL}
     assert outcome.receipt.cleanup_status is CleanupStatus.CLEAN
     assert outcome.receipt.quiescent is True
     assert supervisor.active_count() == 0

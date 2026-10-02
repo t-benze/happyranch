@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Iterator
 import hashlib
 import json
 import os
@@ -10,8 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from runtime.daemon.agent_config import set_executor, write_default_agent_config
 from runtime.infrastructure.database import Database
+from runtime.infrastructure.workflow_schema import install_or_recover
 from runtime.models import (
     TaskRecord,
     TaskStatus,
@@ -46,14 +47,24 @@ def _seed_active_agents_for_orchestrator(test_runtime):
 
 
 @pytest.fixture
-def orchestrator(test_settings, test_runtime):
+def orchestrator(test_settings, test_runtime) -> Iterator[Orchestrator]:
     test_runtime.root.mkdir(parents=True, exist_ok=True)
-    db = Database(test_runtime.db_path)
+    db = _open_live_org_database(test_runtime.db_path)
     teams = TeamsRegistry.load(test_runtime.root)
-    return Orchestrator(
+    orch = Orchestrator(
         db=db, settings=test_settings,
         paths=test_runtime, slug="test", teams=teams,
     )
+    try:
+        yield orch
+    finally:
+        db.close()
+
+
+def _open_live_org_database(path: Path) -> Database:
+    db = Database(path)
+    install_or_recover(db)
+    return db
 
 
 _DEFAULT_AGENTS = ["engineering_head", "product_manager", "dev_agent", "payment_agent"]
@@ -98,12 +109,18 @@ def _setup_workspaces(runtime, agents: list[str] | None = None):
         # directory at the link path would cause ordinary_dir_at_link_path.
 
 
+def _write_residual_agent_yaml(workspace: Path, executor: str) -> None:
+    """Seed the retired workspace config shape used by compatibility fixtures."""
+    (workspace / "agent.yaml").write_text(
+        f"executor: {executor}\nrepos: {{}}\n",
+    )
+
+
 def _setup_codex_workspace(runtime, agent: str) -> None:
     ws = runtime.workspaces_dir / agent
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
-    write_default_agent_config(ws)
-    set_executor(ws, "codex")
+    _write_residual_agent_yaml(ws, "codex")
     _seed_instruction_pair(ws, f"# Agent: {agent}\n")
     # THR-095: executor is now read from org/agents/<name>.md (single source),
     # not agent.yaml. Write the .md with the matching executor.
@@ -122,8 +139,7 @@ def _setup_opencode_workspace(runtime, agent: str) -> None:
     ws = runtime.workspaces_dir / agent
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
-    write_default_agent_config(ws)
-    set_executor(ws, "opencode")
+    _write_residual_agent_yaml(ws, "opencode")
     _seed_instruction_pair(ws, f"# Agent: {agent}\n")
     # THR-095: executor is now read from org/agents/<name>.md (single source)
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
@@ -141,8 +157,7 @@ def _setup_pi_workspace(runtime, agent: str) -> None:
     ws = runtime.workspaces_dir / agent
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
-    write_default_agent_config(ws)
-    set_executor(ws, "pi")
+    _write_residual_agent_yaml(ws, "pi")
     _seed_instruction_pair(ws, f"# Agent: {agent}\n")
     # THR-095: executor is now read from org/agents/<name>.md (single source)
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
@@ -359,6 +374,105 @@ def test_worker_prompt_omits_role_guidance_block(
     assert "  |\n" not in prompt
 
 
+@pytest.mark.parametrize(
+    ("task_id", "task_type", "expected_purpose"),
+    [
+        ("TASK-WORKER-MODE", "subtask", "worker_execution"),
+        ("TASK-DECISION-MODE", "task", "manager_decision"),
+    ],
+)
+def test_run_agent_session_start_uses_actual_spawn_mode_and_exact_payload(
+    orchestrator, test_runtime, monkeypatch,
+    task_id, task_type, expected_purpose,
+):
+    """The immutable spawn mode, not agent title or root shape, owns purpose."""
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    orchestrator._db.insert_task(TaskRecord(
+        id=task_id,
+        brief="lifecycle attribution",
+        assigned_agent="dev_agent",
+        task_type=task_type,
+    ))
+    session_id = f"sess-{expected_purpose}"
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: session_id)
+    fake = MagicMock()
+    fake.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id=session_id,
+    )
+
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator._run_agent(task_id, "dev_agent", "")
+
+    workspace = str(test_runtime.workspaces_dir / "dev_agent")
+    start = next(
+        row for row in orchestrator._db.get_audit_logs(task_id)
+        if row["action"] == "session_start"
+    )
+    assert set(start["payload"]) == {
+        "workspace", "session_id", "invocation_purpose", "executor", "model",
+    }
+    assert start["payload"] == {
+        "workspace": workspace,
+        "session_id": session_id,
+        "invocation_purpose": expected_purpose,
+        "executor": "claude",
+        "model": None,
+    }
+
+
+def test_run_step_session_start_session_id_joins_usage_row_at_real_spawn_seam(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """A fake provider drives real run_step -> _run_agent -> usage persistence."""
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    task_id = "TASK-USAGE-JOIN"
+    orchestrator._db.insert_task(TaskRecord(
+        id=task_id,
+        brief="prove lifecycle usage join",
+        assigned_agent="dev_agent",
+        task_type="subtask",
+    ))
+    runtime_session_id = "sess-lifecycle-usage-join"
+    monkeypatch.setattr(
+        orchestrator, "_build_session_id", lambda: runtime_session_id,
+    )
+
+    class _CallbackExecutor:
+        def run(self, **kwargs):
+            assert kwargs["session_id"] == runtime_session_id
+            assert orchestrator._db.admit_task_completion_callback(
+                task_id=task_id,
+                agent="dev_agent",
+                session_id=runtime_session_id,
+                status="completed",
+                output_summary="done",
+                confidence_score=100,
+            )
+            return ExecutorResult(
+                success=True,
+                duration_seconds=1,
+                session_id=runtime_session_id,
+                token_usage=TokenUsage(
+                    input_tokens=7, output_tokens=3, model="provider-observed",
+                ),
+            )
+
+    with patch.object(
+        orchestrator, "_build_executor", return_value=_CallbackExecutor(),
+    ):
+        orchestrator.run_step(task_id)
+
+    start = next(
+        row for row in orchestrator._db.get_audit_logs(task_id)
+        if row["action"] == "session_start"
+    )
+    usage = orchestrator._db.list_session_token_usage(task_id=task_id)
+    assert len(usage) == 1
+    assert start["payload"]["session_id"] == usage[0]["session_id"]
+    assert start["payload"]["session_id"] == runtime_session_id
+    assert start["payload"]["invocation_purpose"] == "worker_execution"
+
+
 def test_run_agent_shipping_seam_injects_manager_policy_binds_session_and_omits_worker(
     orchestrator, test_runtime, monkeypatch,
 ):
@@ -401,6 +515,106 @@ def test_run_agent_shipping_seam_injects_manager_policy_binds_session_and_omits_
     with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
         orchestrator._run_agent(worker_task, "dev_agent", "")
     assert RESERVED_TEAM_POLICY_HEADER not in mock_executor.run.call_args.kwargs["prompt"]
+
+
+def test_dynamic_add_cold_org_coordinates_selector_before_real_launch(
+    tmp_path, test_settings, monkeypatch,
+):
+    """A lazily attached org is coherent before any real launch can read it."""
+    from runtime.daemon.state import DaemonState
+    from runtime.orchestrator.active_authority_policy import (
+        RESERVED_TEAM_POLICY_HEADER,
+    )
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    from runtime.runtime import RuntimeDir
+
+    runtime = RuntimeDir.init(tmp_path / "dynamic-runtime")
+    state = DaemonState.from_runtime(runtime, test_settings)
+    paths = OrgPaths(root=runtime.orgs_dir / "alpha")
+    paths.agents_dir.mkdir(parents=True)
+    paths.teams_config_path.write_text(
+        "teams:\n"
+        "  engineering:\n"
+        "    manager: engineering_manager\n"
+        "    workers: [code_reviewer]\n"
+    )
+    manager = AgentDef(
+        name="engineering_manager", team="engineering", role="manager",
+        executor="claude", allow_rules=(), repos={}, enrolled_by=None,
+        enrolled_at_task=None, enrolled_at=None, system_prompt="You manage.",
+        description="Manager", model=None,
+    )
+    (paths.agents_dir / "engineering_manager.md").write_text(
+        render_agent_text(manager)
+    )
+    reviewer = AgentDef(
+        name="code_reviewer", team="engineering", role="worker",
+        executor="claude", allow_rules=(), repos={}, enrolled_by=None,
+        enrolled_at_task=None, enrolled_at=None, system_prompt="You review.",
+        description="Reviewer", model=None,
+    )
+    (paths.agents_dir / "code_reviewer.md").write_text(
+        render_agent_text(reviewer)
+    )
+    _setup_workspaces(paths, ["engineering_manager"])
+
+    org = asyncio.run(state.add_org("alpha"))
+    store = AuthorityPolicyStore(org.db)
+    # Keep this regression at the real in-process launch seam; containment is
+    # independently covered and would require an unrelated systemd venue.
+    org.orchestrator.attach_host_supervisor(None)
+
+    # Once the dynamic org is attachable, launch policy resolution must be a
+    # read. Any direct initializer here is the exact stale-publication bug.
+    def forbid_launch_initializer(*_args, **_kwargs):
+        raise AssertionError("launch resolver mutated the authority selector")
+
+    monkeypatch.setattr(
+        AuthorityPolicyStore, "ensure_authority_selector",
+        forbid_launch_initializer,
+    )
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="provider-session",
+    )
+
+    first_task = org.orchestrator.create_task("first manager launch")
+    monkeypatch.setattr(
+        org.orchestrator, "_build_session_id", lambda: "sess-dynamic-first",
+    )
+    with patch.object(org.orchestrator, "_build_executor", return_value=mock_executor):
+        org.orchestrator._run_agent(
+            first_task, "engineering_manager", "decide",
+        )
+
+    selector = store.get_authority_selector("engineering")
+    assert selector is not None and selector.family == "empty"
+    first_ready = org.workflow_authority.verify_admission_ready()
+    assert first_ready.generation == 2
+    assert json.loads(first_ready.snapshot_bytes)["active_policy_selectors"] == [{
+        "selector": selector.model_dump(mode="json"),
+        "team": "engineering",
+    }]
+    assert RESERVED_TEAM_POLICY_HEADER not in mock_executor.run.call_args.kwargs["prompt"]
+    history_count = org.db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_active_selector_history"
+    ).fetchone()[0]
+
+    second_task = org.orchestrator.create_task("repeat manager launch")
+    monkeypatch.setattr(
+        org.orchestrator, "_build_session_id", lambda: "sess-dynamic-second",
+    )
+    with patch.object(org.orchestrator, "_build_executor", return_value=mock_executor):
+        org.orchestrator._run_agent(
+            second_task, "engineering_manager", "decide again",
+        )
+
+    assert org.workflow_authority.verify_admission_ready() == first_ready
+    assert org.db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_active_selector_history"
+    ).fetchone()[0] == history_count == 1
 
 
 def test_run_agent_v2_shipping_seam_renders_dual_text_and_persists_binding(
@@ -722,6 +936,21 @@ def test_run_step_codex_clean_omission_recovers_through_real_callback_admission(
     assert [row["session_id"] for row in usage] == sorted(
         (origin_runtime_id, recovery_runtime_id)
     )
+    starts = [
+        row["payload"] for row in orchestrator._db.get_audit_logs(task_id)
+        if row["action"] == "session_start"
+    ]
+    assert [payload["session_id"] for payload in starts] == [
+        origin_runtime_id, recovery_runtime_id,
+    ]
+    assert [payload["invocation_purpose"] for payload in starts] == [
+        "manager_decision", "unattributed",
+    ]
+    recovery_receipt = orchestrator._db.execute(
+        "SELECT recovery_session_id FROM task_completion_recoveries WHERE task_id=?",
+        (task_id,),
+    ).fetchone()
+    assert recovery_receipt["recovery_session_id"] == starts[1]["session_id"]
 
 
 @pytest.mark.parametrize(
@@ -2195,7 +2424,7 @@ def _setup_provider_workspace(runtime, agent: str, provider: str) -> None:
     """Seed an active workspace + agent frontmatter for ``provider``."""
     _setup_codex_workspace(runtime, agent)
     ws = runtime.workspaces_dir / agent
-    set_executor(ws, provider)
+    _write_residual_agent_yaml(ws, provider)
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     ad = AgentDef(
         name=agent, team="engineering", role="manager",
@@ -3373,7 +3602,7 @@ class TestDecisionAttachments:
         store.put("da-key", b"data")
 
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         decision = NextStep(action="delegate", agent="dev_agent", prompt="build",
@@ -3407,7 +3636,7 @@ class TestDecisionAttachments:
             created_at=now, updated_at=now,
         ))
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         decision = NextStep(action="delegate", agent="dev_agent", prompt="build",
@@ -3435,7 +3664,7 @@ class TestDecisionAttachments:
             created_at=now, updated_at=now,
         ))
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         decision = NextStep(action="delegate", agent="dev_agent", prompt="build")
@@ -3477,16 +3706,17 @@ class TestDecisionAttachments:
         child = TaskRecord(id="T-ATOMIC-C", team="engineering", brief="child",
                            assigned_agent="dev_agent", parent_task_id=pid,
                            status=TaskStatus.PENDING, created_at=now, updated_at=now)
-        try:
+        expected_claim = _fixture_retry_claim(db, pid)
+        owned_parent_before = db.get_task(pid)
+        import sqlite3
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
             db.try_delegate(pid, child, parent_note="test",
                           attachments=[{"ordinal": 0, "storage_key": "atom-dup",
                                        "display_name": "x.png", "size_bytes": 1,
                                        "content_type": "image/png"}],
-                          uploaded_by="test")
-        except Exception:
-            pass
+                          uploaded_by="test", expected_claim=expected_claim)
         assert db.get_task("T-ATOMIC-C") is None, "Child must not exist after rollback"
-        assert db.get_task(pid).status == TaskStatus.PENDING
+        assert db.get_task(pid) == owned_parent_before
 
     def test_chain_leg_attachment_persists(self, test_settings, test_runtime):
         """Chain leg attachments persist when auto-advancing."""
@@ -3574,10 +3804,11 @@ class TestDecisionAttachments:
             {"agent": "qa_engineer", "prompt": "task B",
              "attachments": [{"storage_key": "fan-k2", "display_name": "b.png"}]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=2,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         children = db.get_children(pid)
         assert len(children) == 2
@@ -3612,10 +3843,11 @@ class TestDecisionAttachments:
             {"agent": "qa_engineer", "prompt": "task B",
              "attachments": [{"storage_key": "fan-dup-key", "display_name": "b.png"}]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=2,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         parent = db.get_task(pid)
         assert parent.status == TaskStatus.FAILED
@@ -3650,10 +3882,11 @@ class TestDecisionAttachments:
              "then": [{"agent": "qa_engineer", "prompt": "qa", "expect_verdict": "PASS"}],
              "attachments": [{"storage_key": "pipe-key", "display_name": "spec.md"}]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=1,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         children = db.get_children(pid)
         assert len(children) == 1
@@ -3715,7 +3948,7 @@ class TestDecisionAttachments:
             created_at=now, updated_at=now,
         ))
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         # Direct leg has NO attachments, but later chain leg references
@@ -3841,10 +4074,11 @@ class TestDecisionAttachments:
              "attachments": [{"storage_key": "pipe-carrier-key",
                               "display_name": "spec.md"}]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=1,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         children = db.get_children(pid)
         assert len(children) == 1
@@ -3903,10 +4137,11 @@ class TestDecisionAttachments:
                  {"storage_key": "fam-b3", "display_name": "b3.png"},
              ]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=2,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         parent_after = db.get_task(pid)
         assert parent_after.status == TaskStatus.IN_PROGRESS
@@ -4005,18 +4240,18 @@ class TestDecisionAttachments:
         # Call try_delegate_many — the first leg INSERT should collide and
         # the entire transaction should roll back.
         import sqlite3
+        expected_claim = _fixture_retry_claim(db, pid)
+        owned_parent_before = db.get_task(pid)
         with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint"):
             db.try_delegate_many(
                 pid, [child], parent_note="test",
                 children_attachments=[child_atts],
                 carrier_chains=carrier_chains,
-                uploaded_by="test",
-            )
+                uploaded_by="test", expected_claim=expected_claim)
 
         # Verify nothing was committed.
         parent_after = db.get_task(pid)
-        assert parent_after.status == TaskStatus.PENDING, \
-            f"Parent should still be PENDING, got {parent_after.status}"
+        assert db.get_task(pid) == owned_parent_before
         assert parent_after.active_fanout is None
         assert db.get_task(carrier_id) is None
         # Our pre-inserted row still exists (was committed before the test).
@@ -4051,7 +4286,7 @@ class TestDecisionAttachments:
         store.put("dup-key", b"data")
 
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         # Same key in both direct and later leg — must reject whole decision.
@@ -4090,7 +4325,7 @@ class TestDecisionAttachments:
         ))
 
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         decision = NextStep(
@@ -4129,7 +4364,7 @@ class TestDecisionAttachments:
         ))
 
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         decision = NextStep(
@@ -4178,7 +4413,7 @@ class TestDecisionAttachments:
                                    content_type="image/png", uploaded_by="founder")
 
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         # Later leg references an already-claimed key — must reject before child.
@@ -4229,10 +4464,11 @@ class TestDecisionAttachments:
                   "attachments": [{"storage_key": "nonexistent-pipe-nested"}]},
              ]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=1,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         parent = db.get_task(pid)
         assert parent.status == TaskStatus.FAILED
@@ -4280,10 +4516,11 @@ class TestDecisionAttachments:
                                    "display_name": "x.png"}]},
              ]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=1,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         parent = db.get_task(pid)
         assert parent.status == TaskStatus.FAILED
@@ -4325,10 +4562,11 @@ class TestDecisionAttachments:
                                    "display_name": "spec.md"}]},
              ]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=1,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         parent = db.get_task(pid)
         assert parent.status == TaskStatus.FAILED
@@ -4375,10 +4613,11 @@ class TestDecisionAttachments:
                                    "display_name": "x.png"}]},
              ]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=2,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         parent = db.get_task(pid)
         assert parent.status == TaskStatus.FAILED
@@ -4439,7 +4678,7 @@ class TestDecisionAttachments:
         )
 
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         decision = NextStep(
@@ -4456,13 +4695,8 @@ class TestDecisionAttachments:
 
         # try_delegate catches the ABORT, rolls back, and re-raises.
         # The exception propagates out of run_step_impl → run_step.
-        error_raised = False
-        try:
+        with pytest.raises(sqlite3.IntegrityError, match="injected transaction failure"):
             run_task_to_completion(orch, task_id=pid)
-        except Exception:
-            error_raised = True
-        assert error_raised, \
-            "Expected db.try_delegate to raise after trigger ABORT"
 
         # Verify the trigger fired — proves the real DB write path was
         # reached (child + link INSERT happened before the abort).
@@ -5440,3 +5674,20 @@ def test_prompt_time_line_shared_loader_config_failure_escapes(
     test_runtime.org_config_path.write_text("workspace_cleanup: {\n")
     with pytest.raises(OrgConfigError):
         orchestrator._current_time_line(None)
+
+
+from runtime.infrastructure.database import RetryClaim, Committed, LostClaim
+
+
+def _fixture_retry_claim(db, task_id):
+    """Establish the direct caller's owned fixture before entering the writer."""
+    from runtime.models import TaskRecord, TaskStatus
+    task = db.get_task(task_id)
+    if task is None:
+        return RetryClaim.from_task(TaskRecord(id=task_id, brief="missing claim",
+            assigned_agent="engineering_head", current_session_id="fixture-owner"))
+    if task.status == TaskStatus.PENDING:
+        db.update_task(task_id, status=TaskStatus.IN_PROGRESS, block_kind=None,
+                       assigned_agent=task.assigned_agent or "engineering_head",
+                       current_session_id="fixture-owner", orchestration_step_count=1)
+    return RetryClaim.from_task(db.get_task(task_id))
