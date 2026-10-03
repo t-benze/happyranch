@@ -16,27 +16,40 @@
  *     line-1 with right-pinned status/dream pills; IdBadge + AgentChip on
  *     line-2. Renders the `active`/`done` status pills (THREADS-05).
  *
- *   - `thread`  — THR-099 id-first single-line row (a-threads `.thread`): a
+ *   - `thread`  — THR-099 id-first grouped-list row (a-threads `.thread`): a
  *     leading STATUS-driven dot (open=green accent, archived=grey), then the
  *     mono thread id, the serif subject, the status BADGE routed through the
  *     shared `semanticTone` vocabulary (open→info/blue, archived→neutral/grey),
  *     an inline `from dream` pill, and `last <last_speaker>`; the relative
- *     timestamp (`meta`) is right-aligned. Line-2 (multi-participant list) is
- *     intentionally omitted — `participants` is not on the thread-LIST payload
- *     (honesty fence); only the backed `last_speaker` is shown.
+ *     timestamp (`meta`) is right-aligned. Line-2 renders backed current
+ *     participant names supplied by the bounded list response.
  *
  * The finer Direction-A states (waiting-on-you / review / merged / live / idle)
  * are intentionally absent — no field on the thread-list payload backs them.
  *
- * Founder-approved interactive-row mapping: bg-surface border-border-default
- * rounded-sm (8px) with shadow-pasture-sm. Active row uses accent-muted + left
- * marker; nested status/dream pills and indicators retain their own radii.
+ * Default rows retain their rounded bordered shell; thread rows are flush inside
+ * the enclosing bordered, divider-separated list. Active thread rows use the
+ * accent-muted marker; nested status/dream pills retain their own radii.
  */
 import type { ReactNode } from 'react';
 import { AgentChip } from './AgentChip';
 import { CrescentMoonBadge } from './CrescentMoonBadge';
 import { IdBadge } from './IdBadge';
 import { toneClass } from './semanticTone';
+
+/**
+ * Optional product-copy overrides (THR-118 W3a). Omitted fields keep the
+ * historical English copy. `statusLabel` is DISPLAY-only — the machine
+ * `status` prop still drives the dot/tone logic.
+ */
+export interface InboxRowLabels {
+  statusLabel?: string;
+  fromDream?: string;
+  /** Accessible name of the dream-origin badge; omitted keeps English. */
+  dreamBadge?: string;
+  last?: string;
+  needsYou?: string;
+}
 
 interface InboxRowProps {
   threadId: string;
@@ -50,7 +63,7 @@ interface InboxRowProps {
   fromDream?: boolean;
   /**
    * Row model. `default` is the historical two-line shape (unchanged);
-   * `thread` is the THR-099 id-first single-line thread-list row.
+   * `thread` is the THR-099 id-first grouped thread-list row.
    */
   layout?: 'default' | 'thread';
   /** Destination URL for the row. Used as the `<a href>`. */
@@ -61,12 +74,9 @@ interface InboxRowProps {
    * `onSelect` and fall through to default anchor behaviour.
    */
   onSelect?: () => void;
-  /**
-   * THR-209: optional sibling control (e.g. a pin toggle) rendered beside
-   * the row anchor. A sibling, never nested inside the `<a>` — interactive
-   * inside interactive is invalid HTML and breaks assistive tech.
-   */
-  pinControl?: ReactNode;
+  participants?: string[];
+  /** Optional localized product copy. */
+  labels?: InboxRowLabels;
 }
 
 const FROM_DREAM_PILL =
@@ -84,8 +94,10 @@ export function InboxRow({
   layout = 'default',
   href,
   onSelect,
-  pinControl,
+  participants = [],
+  labels,
 }: InboxRowProps): JSX.Element {
+  const fromDreamLabel = labels?.fromDream ?? 'from dream';
   const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     if (e.defaultPrevented) return;
     if (e.button !== 0) return; // ignore non-primary clicks
@@ -95,10 +107,10 @@ export function InboxRow({
     onSelect();
   };
 
-  const shellCls = `group relative block w-full rounded-sm border px-3 py-2 text-left no-underline transition-colors ${
+  const shellCls = `group relative block w-full ${layout === 'thread' ? 'px-3 py-2' : 'rounded-sm border px-3 py-2'} text-left no-underline ${
     active
-      ? 'bg-accent-muted border-accent-muted shadow-pasture-sm'
-      : 'bg-surface border-border-default shadow-pasture-sm hover:border-border-strong'
+      ? `bg-accent-muted ${layout === 'thread' ? '' : 'border-accent-muted shadow-pasture-sm'}`
+      : `bg-surface ${layout === 'thread' ? '' : 'border-border-default shadow-pasture-sm hover:border-border-strong'}`
   }`;
   const activeMarker = active && (
     <span
@@ -108,7 +120,7 @@ export function InboxRow({
   );
 
   if (layout === 'thread') {
-    // id-first single-line row (a-threads `.thread`). Status-driven leading dot
+    // id-first two-line row (a-threads `.thread`). Status-driven leading dot
     // (open=green accent, archived=grey); status badge routed through the shared
     // semanticTone vocabulary; inline `from dream` + `last <last_speaker>`.
     const dotCls = status === 'open' ? 'bg-accent' : 'bg-border-strong';
@@ -133,17 +145,17 @@ export function InboxRow({
             <span
               className={`inline-flex items-center rounded-full px-2 py-px text-xs leading-relaxed font-semibold ${toneClass(status)}`}
             >
-              {status}
+              {labels?.statusLabel ?? status}
             </span>
             {fromDream && (
               <span className={FROM_DREAM_PILL}>
-                <CrescentMoonBadge className="h-3 w-3" />
-                from dream
+                <CrescentMoonBadge className="h-3 w-3" label={labels?.dreamBadge} />
+                {fromDreamLabel}
               </span>
             )}
             {lastSpeaker && (
               <span className="text-caption text-text-muted inline-flex items-center gap-1">
-                last
+                {labels?.last ?? 'last'}
                 <span className="text-text-secondary font-mono">
                   {lastSpeaker.name}
                 </span>
@@ -156,19 +168,15 @@ export function InboxRow({
             </span>
           )}
         </div>
+        <div className="text-caption text-text-muted mt-1 ml-[18px] truncate font-mono">
+          {participants.join(' · ')}
+        </div>
       </a>
     );
-    return pinControl ? (
-      <div className="flex items-center gap-1">
-        <div className="min-w-0 flex-1">{rowEl}</div>
-        {pinControl}
-      </div>
-    ) : (
-      rowEl
-    );
+    return rowEl;
   }
 
-  const statusLabel = status === 'open' ? 'active' : 'done';
+  const statusLabel = labels?.statusLabel ?? (status === 'open' ? 'active' : 'done');
   const statusPillCls =
     status === 'open'
       ? 'bg-accent-soft text-accent-text'
@@ -186,7 +194,7 @@ export function InboxRow({
         <div className="flex min-w-0 items-center gap-2">
           {needsYou && (
             <span
-              aria-label="needs you"
+              aria-label={labels?.needsYou ?? 'needs you'}
               className="bg-accent inline-block h-1.5 w-1.5 shrink-0 rounded-full"
             />
           )}
@@ -197,8 +205,8 @@ export function InboxRow({
         <span className="flex shrink-0 items-center gap-1">
           {fromDream && (
             <span className={FROM_DREAM_PILL}>
-              <CrescentMoonBadge className="h-3 w-3" />
-              from dream
+              <CrescentMoonBadge className="h-3 w-3" label={labels?.dreamBadge} />
+              {fromDreamLabel}
             </span>
           )}
           <span
@@ -223,12 +231,5 @@ export function InboxRow({
     </a>
   );
 
-  return pinControl ? (
-    <div className="flex items-center gap-1">
-      <div className="min-w-0 flex-1">{rowEl}</div>
-      {pinControl}
-    </div>
-  ) : (
-    rowEl
-  );
+  return rowEl;
 }

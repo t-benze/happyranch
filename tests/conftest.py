@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -182,9 +183,13 @@ def test_runtime(tmp_dir: Path) -> OrgPaths:
 
 
 @pytest.fixture
-def db(tmp_dir: Path) -> Database:
+def db(tmp_dir: Path) -> Iterator[Database]:
     """A fresh Database instance backed by a temporary file."""
-    return Database(tmp_dir / "test.db")
+    database = Database(tmp_dir / "test.db")
+    try:
+        yield database
+    finally:
+        database.close()
 
 
 @pytest.fixture(autouse=True)

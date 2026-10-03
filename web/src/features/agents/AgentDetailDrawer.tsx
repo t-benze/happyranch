@@ -35,6 +35,8 @@ import {
 import { useTasksRoutes } from '@/hooks/tasks';
 import { useJobsList } from '@/hooks/jobs';
 import { useDensity } from '@/hooks/density';
+import { useTranslation } from '@/hooks/i18n';
+import { classifyAgentError, renderAgentError } from './strings';
 
 interface AgentDetailDrawerProps {
   agentName: string;
@@ -42,6 +44,7 @@ interface AgentDetailDrawerProps {
 
 export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.Element {
   const navigate = useNavigate();
+  const { t, render } = useTranslation();
   const { slug } = useParams<{ slug: string }>();
   const agentsRoutes = useAgentsRoutes();
   const taskRoutes = useTasksRoutes();
@@ -71,11 +74,11 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
           <DrawerDescription className="text-fg-muted mt-2 text-xs">
             {agent ? (
               <>
-                <span>team: {agent.team ?? '—'}</span>
-                {agent.executor && <span> · executor: {agent.executor}</span>}
+                <span>{t('agents.meta.team', { team: agent.team ?? '—' })}</span>
+                {agent.executor && <span> · {t('agents.meta.executor', { executor: agent.executor })}</span>}
               </>
             ) : (
-              'Loading…'
+              t('agents.common.loading')
             )}
           </DrawerDescription>
           {agent?.description && (
@@ -83,7 +86,7 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
           )}
           {agent && agent.repos && Object.keys(agent.repos).length > 0 && (
             <div className="mt-2">
-              <p className="text-fg-muted mb-1 text-xs font-medium">Repositories</p>
+              <p className="text-fg-muted mb-1 text-xs font-medium">{t('agents.detail.repos')}</p>
               <div className="flex flex-wrap gap-1">
                 {Object.entries(agent.repos).map(([key, _url]) => (
                   <span
@@ -106,7 +109,7 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
               className="text-fg-muted hover:text-fg flex w-full items-center gap-1 text-xs font-medium tracking-wider uppercase transition-colors"
             >
               {showPrompt ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-              System prompt
+              {t('agents.field.systemPrompt')}
             </button>
             {showPrompt && (
               <pre className="bg-bg-raised border-border mt-2 max-h-48 overflow-auto rounded border p-3 text-xs whitespace-pre-wrap">
@@ -118,10 +121,10 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
 
         <section className="flex-1 overflow-y-auto p-4">
           <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
-            Recent tasks
+            {t('agents.detail.recentTasks')}
           </h3>
           {tasksQuery.isLoading ? (
-            <p className="text-fg-muted text-xs">Loading tasks…</p>
+            <p className="text-fg-muted text-xs">{t('agents.detail.loadingTasks')}</p>
           ) : tasksQuery.data && tasksQuery.data.tasks.length > 0 ? (
             <ul className="space-y-2">
               {tasksQuery.data.tasks.map((t) => (
@@ -137,24 +140,22 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
             </ul>
           ) : (
             <p className="text-fg-muted text-xs">
-              No tasks where this agent was the assigned manager.
+              {t('agents.detail.noTasks')}
             </p>
           )}
 
           <h3 className="text-fg-muted mt-6 mb-2 text-xs font-medium tracking-wider uppercase">
-            Learnings
+            {t('agents.detail.learnings')}
           </h3>
           {learningsQuery.isLoading ? (
-            <p className="text-fg-muted text-xs">Loading learnings…</p>
+            <p className="text-fg-muted text-xs">{t('agents.detail.learningsLoading')}</p>
           ) : learningsError?.status === 412 ? (
             <p className="text-fg-muted text-xs">
-              This workspace hasn't been migrated to the per-entry memory
-              layout yet. Run <code>happyranch memory reindex</code> from the
-              CLI to upgrade.
+              {render('agents.detail.learningsNotMigrated', { command: <code>happyranch memory reindex</code> })}
             </p>
           ) : learningsError ? (
             <p className="text-tier-red text-xs">
-              Failed to load learnings ({learningsError.status}).
+              {renderAgentError(classifyAgentError(learningsError, 'agents.detail.learningsError'), t)}
             </p>
           ) : learningsQuery.data && learningsQuery.data.entries.length > 0 ? (
             <ul className="space-y-2">
@@ -174,15 +175,15 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
             </ul>
           ) : (
             <EmptyState
-              title="No learnings"
-              body="This agent has not filed any learnings yet."
+              title={t('agents.detail.noLearningsTitle')}
+              body={t('agents.detail.noLearningsBody')}
             />
           )}
 
           {jobsQuery.data && jobsQuery.data.jobs.length > 0 && (
             <>
               <h3 className="text-fg-muted mt-6 mb-2 text-xs font-medium tracking-wider uppercase">
-                Recent jobs
+                {t('agents.detail.recentJobs')}
               </h3>
               <ul className="space-y-1 text-sm">
                 {jobsQuery.data.jobs.map((j) => (

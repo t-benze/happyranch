@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import type { CatalogSkillItem } from '@/hooks/skills';
+import { translate } from '@/lib/i18n';
 import {
   applyFilter,
   isBundled,
@@ -89,30 +90,27 @@ describe('isReadOnly — system contracts are non-toggleable', () => {
 
 describe('validationLabel — product language, not permission wording', () => {
   test('validated → Validated (positive)', () => {
-    expect(validationLabel('validated')).toEqual({
-      text: 'Validated',
-      tone: 'positive',
-    });
+    const label = validationLabel('validated');
+    expect(label).toEqual({ key: 'skills.status.validated', tone: 'positive' });
+    expect(translate('en', label.key)).toBe('Validated');
   });
 
   test('failed_validation → Needs attention (attention)', () => {
-    expect(validationLabel('failed_validation')).toEqual({
-      text: 'Needs attention',
-      tone: 'attention',
-    });
+    const label = validationLabel('failed_validation');
+    expect(label).toEqual({ key: 'skills.status.needsAttention', tone: 'attention' });
+    expect(translate('en', label.key)).toBe('Needs attention');
   });
 
   test('in_catalog → In catalog (neutral)', () => {
-    expect(validationLabel('in_catalog')).toEqual({
-      text: 'In catalog',
-      tone: 'neutral',
-    });
+    const label = validationLabel('in_catalog');
+    expect(label).toEqual({ key: 'skills.status.inCatalog', tone: 'neutral' });
+    expect(translate('en', label.key)).toBe('In catalog');
   });
 
   test('no label uses forbidden "active"/"pending"/permission words', () => {
     const words = ['validated', 'failed_validation', 'in_catalog'] as const;
     for (const s of words) {
-      const t = validationLabel(s).text.toLowerCase();
+      const t = translate('en', validationLabel(s).key).toLowerCase();
       expect(t).not.toContain('active');
       expect(t).not.toContain('pending');
       expect(t).not.toContain('approve');

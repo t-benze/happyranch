@@ -1,0 +1,913 @@
+"""THR-229 TASK-8766 startup refusal discovery and zombie CAS callers.
+
+These cases drive the production startup/reaper entries over real SQLite state.
+They intentionally exercise the caller ordering and transaction predicates, not
+helper-only replicas.  Broad ``tests/integration`` remains skipped under
+THR-243 seq42.
+"""
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from runtime.daemon.__main__ import _sweep_on_startup
+from runtime.daemon.queue import TaskQueue
+from runtime.daemon.zombie_reaper import (
+    FLAG_TTL_NO_FINGERPRINT_SECONDS,
+    STALE_HEARTBEAT_SECONDS,
+    _consume_zombie_fingerprint,
+    _sweep_org_zombies,
+)
+from runtime.infrastructure.database import Database
+from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.models import BlockKind, TaskRecord, TaskStatus
+from runtime.orchestrator.authority import (
+    refuse_authority_policy_v2_pre_final_on_startup,
+)
+from runtime.orchestrator.active_authority_policy import (
+    SESSION_POLICY_BINDING_ACTION,
+)
+from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+from tests.test_authority_v2_attempt_admission import _seed_bound_task, _store
+from tests.test_authority_v2_evaluation_stage import (
+    _admitted,
+    _audit_consumption,
+    _audit_evaluation,
+    _claim,
+    _claim_audit,
+    _consume,
+    _evaluate,
+)
+from tests.test_authority_v2_hook import (
+    _admitted as _hook_admitted,
+    _carrier_with,
+    _log_ordinary_completion,
+    _orch,
+)
+from tests.authority_v2_historical_schema import (
+    add_historical_agent_enrollments,
+)
+
+
+class _CommitFailingConn:
+    """Inject one transaction-boundary failure without changing production."""
+
+    def __init__(self, real):
+        self._real = real
+        self._failed = False
+
+    def commit(self):
+        if not self._failed:
+            self._failed = True
+            raise RuntimeError("injected commit failure")
+        return self._real.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def _drive_stage(store, row, attempt, stage: str) -> None:
+    if stage == "admitted":
+        return
+    assert _claim(store, row, attempt).status == "claimed"
+    if stage == "claimed":
+        return
+    assert _claim_audit(store, row, attempt).status == "claim_audited"
+    if stage == "claim_audited":
+        return
+    assert _evaluate(store, row, attempt).status == "evaluated"
+    if stage == "evaluated":
+        return
+    assert _audit_evaluation(store, row, attempt).status == "evaluation_audited"
+    if stage == "evaluation_audited":
+        return
+    assert _consume(store, row, attempt).status == "consumed"
+    if stage == "consumed":
+        return
+    assert _audit_consumption(store, row, attempt).status == "consumed_audited"
+
+
+@pytest.mark.parametrize(
+    ("stage", "expected_code"),
+    [
+        ("admitted", "interrupted_pre_final"),
+        ("claimed", "claim_audit_missing"),
+        ("claim_audited", "evaluation_failed"),
+        ("evaluated", "evaluation_audit_missing"),
+        ("evaluation_audited", "consume_failed"),
+        ("consumed", "consume_audit_missing"),
+        ("consumed_audited", "final_commit_failed"),
+    ],
+)
+def test_startup_refuses_every_old_boot_pre_final_stage_before_other_recovery(
+    tmp_path, stage, expected_code,
+):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    _drive_stage(store, row, attempt, stage)
+    store.bind_v2_process_boot_id("boot-after-restart")
+    store._db._v2_live_attempt_owners.clear()
+
+    queue = TaskQueue()
+    _sweep_on_startup(store._db, queue, "test")
+
+    task = store._db.get_task(attempt.root_task_id)
+    final = store._db.get_authority_policy_v2_attempt_for_result(row["id"])
+    assert task.status is TaskStatus.ESCALATED
+    assert final.finalization_state == "refused"
+    assert final.stage == stage
+    assert final.refusal_code == expected_code
+    assert queue._queue.empty()
+
+
+def test_startup_does_not_steal_same_boot_live_owner(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store.bind_v2_process_boot_id(attempt.origin_boot_id)
+
+    _sweep_on_startup(store._db, TaskQueue(), "test")
+
+    task = store._db.get_task(attempt.root_task_id)
+    final = store._db.get_authority_policy_v2_attempt_for_result(row["id"])
+    assert task.status is TaskStatus.IN_PROGRESS
+    assert final.finalization_state == "unfinalized"
+    assert _claim(store, row, attempt).status == "claimed"
+
+
+def test_startup_refusal_write_failure_preserves_residue_and_fences_later_branches(
+    tmp_path, monkeypatch,
+):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store.bind_v2_process_boot_id("boot-after-restart")
+    store._db._v2_live_attempt_owners.clear()
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("refusal audit unavailable")
+
+    monkeypatch.setattr(
+        AuthorityPolicyStore, "finalize_v2_attempt_refusal", fail,
+    )
+    _sweep_on_startup(store._db, TaskQueue(), "test")
+
+    task = store._db.get_task(attempt.root_task_id)
+    final = store._db.get_authority_policy_v2_attempt_for_result(row["id"])
+    assert task.status is TaskStatus.IN_PROGRESS
+    assert final.finalization_state == "unfinalized"
+    assert store.list_v2_unfinalized_attempts()[0].attempt_id == attempt.attempt_id
+
+
+def test_startup_refusal_commit_failure_reopens_for_refusal_only_retry(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store.bind_v2_process_boot_id("boot-after-restart")
+    store._db._v2_live_attempt_owners.clear()
+    real = store._db._conn
+    store._db._conn = _CommitFailingConn(real)
+    try:
+        _sweep_on_startup(store._db, TaskQueue(), "test")
+    finally:
+        store._db._conn = real
+
+    assert store._db.get_task(attempt.root_task_id).status is TaskStatus.IN_PROGRESS
+    assert store._db.get_authority_policy_v2_attempt_for_result(
+        row["id"]
+    ).finalization_state == "unfinalized"
+
+    reopened = AuthorityPolicyStore(Database(tmp_path / "c2.db"))
+    reopened.bind_v2_process_boot_id("boot-another-restart")
+    _sweep_on_startup(reopened._db, TaskQueue(), "test")
+    assert reopened._db.get_task(attempt.root_task_id).status is TaskStatus.ESCALATED
+    assert reopened._db.get_authority_policy_v2_attempt_for_result(
+        row["id"]
+    ).refusal_code == "interrupted_pre_final"
+
+
+def test_startup_refusal_replay_surfaces_new_transition_exactly_once(
+    tmp_path, monkeypatch,
+):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store.bind_v2_process_boot_id("boot-after-restart")
+    store._db._v2_live_attempt_owners.clear()
+    notifications: list[dict] = []
+    thread_followups: list[tuple[str, str]] = []
+    orch = _reaper_orch(store)
+    orch.notify_escalated = lambda **kwargs: notifications.append(kwargs)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._maybe_post_thread_escalation",
+        lambda _orch, task_id, *, reason: thread_followups.append(
+            (task_id, reason)
+        ),
+    )
+
+    for _ in range(2):
+        _sweep_on_startup(store._db, TaskQueue(), "test", orchestrator=orch)
+
+    task = store._db.get_task(attempt.root_task_id)
+    final = store._db.get_authority_policy_v2_attempt_for_result(row["id"])
+    audits = store._db.get_audit_logs(attempt.root_task_id)
+    assert task.status is TaskStatus.ESCALATED
+    assert final is not None and final.finalization_state == "refused"
+    assert [a["action"] for a in audits].count("escalation") == 1
+    assert len(notifications) == 1
+    assert len(thread_followups) == 1
+
+
+def test_startup_admitted_blocked_result_is_not_refused_or_fenced(tmp_path):
+    """D2-B' regression: the real sweep reaches Branch 2 in the same pass."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store._db._conn.execute(
+        "UPDATE task_results SET status='blocked', decision_json=NULL WHERE id=?",
+        (row["id"],),
+    )
+    store._db._conn.commit()
+    store._db.update_task(
+        attempt.root_task_id,
+        status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED,
+    )
+    store._db.insert_task(TaskRecord(
+        id="TASK-D2-TERMINAL-CHILD",
+        brief="terminal child",
+        parent_task_id=attempt.root_task_id,
+        status=TaskStatus.COMPLETED,
+        completed_at="2026-01-01T00:00:00+00:00",
+    ))
+    store.bind_v2_process_boot_id("boot-after-restart")
+    store._db._v2_live_attempt_owners.clear()
+    orch = _reaper_orch(store)
+    queue = TaskQueue()
+
+    fenced = refuse_authority_policy_v2_pre_final_on_startup(
+        store._db, orchestrator=orch,
+    )
+    _sweep_on_startup(store._db, queue, "test", orchestrator=orch)
+
+    # The returned fence set and Branch 2's enqueue independently prove that
+    # classification did not suppress ordinary recovery in this boot.
+    assert attempt.root_task_id not in fenced
+    assert store._db.get_task(attempt.root_task_id).block_kind is BlockKind.DELEGATED
+    assert queue._queue.qsize() == 1
+    assert store._db.get_authority_policy_v2_attempt_for_result(
+        row["id"]
+    ).finalization_state == "unfinalized"
+    actions = [a["action"] for a in store._db.get_audit_logs(attempt.root_task_id)]
+    assert "escalation" not in actions
+    assert "authority_v2_refusal_task_failed" not in actions
+    assert "daemon_restart_failure" not in actions
+
+
+def test_startup_non_escalate_classification_without_orchestrator_fails_closed(tmp_path):
+    """M4: database-only startup callers cannot reproduce parser semantics."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store._db._conn.execute(
+        "UPDATE task_results SET decision_json=? WHERE id=?",
+        (json.dumps({"action": "done"}), row["id"]),
+    )
+    store._db._conn.commit()
+    store.bind_v2_process_boot_id("boot-after-restart")
+    store._db._v2_live_attempt_owners.clear()
+
+    _sweep_on_startup(store._db, TaskQueue(), "test")
+
+    assert store._db.get_task(attempt.root_task_id).status is TaskStatus.ESCALATED
+    assert store._db.get_authority_policy_v2_attempt_for_result(
+        row["id"]
+    ).finalization_state == "refused"
+
+
+def test_startup_non_admitted_non_escalate_result_still_refuses(tmp_path):
+    """M3: classification is admitted-only; a claimed attempt is interrupted."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    assert _claim(store, row, attempt).status == "claimed"
+    store._db._conn.execute(
+        "UPDATE task_results SET decision_json=? WHERE id=?",
+        (json.dumps({"action": "done"}), row["id"]),
+    )
+    store._db._conn.commit()
+    store.bind_v2_process_boot_id("boot-after-restart")
+    store._db._v2_live_attempt_owners.clear()
+
+    _sweep_on_startup(
+        store._db, TaskQueue(), "test", orchestrator=_reaper_orch(store),
+    )
+
+    assert store._db.get_task(attempt.root_task_id).status is TaskStatus.ESCALATED
+    assert store._db.get_authority_policy_v2_attempt_for_result(
+        row["id"]
+    ).refusal_code == "claim_audit_missing"
+
+
+def test_startup_non_escalate_admission_is_read_only_across_two_boots(tmp_path):
+    """M5: two boots skip J and consume an accepted Q no more than once."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store._db._conn.execute(
+        "UPDATE task_results SET decision_json=? WHERE id=?",
+        (json.dumps({"action": "done"}), row["id"]),
+    )
+    store._db.update_task(
+        attempt.root_task_id,
+        status=TaskStatus.IN_PROGRESS,
+        block_kind=None,
+    )
+    store._db._conn.execute(
+        """INSERT INTO task_completion_recoveries
+           (task_id, agent, origin_session_id, recovery_session_id,
+            provider_session_id, claimed_at, expires_at, state,
+            accepted_result_id, accepted_result_session_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            attempt.root_task_id,
+            attempt.manager_agent,
+            "sess-origin",
+            attempt.manager_session_id,
+            "provider-1",
+            "2026-01-01T00:00:00+00:00",
+            "2999-01-01T00:02:00+00:00",
+            "callback_accepted",
+            row["id"],
+            attempt.manager_session_id,
+        ),
+    )
+    store._db._conn.commit()
+    store.bind_v2_process_boot_id("boot-after-restart")
+    store._db._v2_live_attempt_owners.clear()
+    orch = _reaper_orch(store)
+    _sweep_on_startup(store._db, TaskQueue(), "test", orchestrator=orch)
+    after_first = store._db._conn.execute(
+        "SELECT COUNT(*) FROM audit_log"
+    ).fetchone()[0]
+    receipt_after_first = store._db._conn.execute(
+        "SELECT state FROM task_completion_recoveries WHERE task_id=?",
+        (attempt.root_task_id,),
+    ).fetchone()["state"]
+
+    _sweep_on_startup(store._db, TaskQueue(), "test", orchestrator=orch)
+
+    assert store._db._conn.execute(
+        "SELECT COUNT(*) FROM audit_log"
+    ).fetchone()[0] == after_first
+    receipt_after_second = store._db._conn.execute(
+        "SELECT state FROM task_completion_recoveries WHERE task_id=?",
+        (attempt.root_task_id,),
+    ).fetchone()["state"]
+    assert receipt_after_first == "callback_consumed"
+    assert receipt_after_second == "callback_consumed"
+    assert store._db.get_authority_policy_v2_attempt_for_result(
+        row["id"]
+    ).finalization_state == "unfinalized"
+
+
+def _flag_v2_zombie(store, *, age: int) -> tuple[datetime, object]:
+    task = store._db.get_task("TASK-C2")
+    now = datetime.now(timezone.utc)
+    flag = now - timedelta(seconds=age)
+    store._db.update_task(
+        task.id,
+        last_heartbeat=(now - timedelta(seconds=STALE_HEARTBEAT_SECONDS + 10)).isoformat(),
+        executor_pid=99999,
+        zombie_flagged_at=flag.isoformat(),
+    )
+    return now, store._db.get_task(task.id)
+
+
+def _reaper_orch(store):
+    orch = _orch(store)
+    orch._audit = AuditLogger(store._db)
+    orch._parse_next_step = lambda report: report.decision
+    orch._update_task_history = lambda _task_id: None
+    return orch
+
+
+def test_v2_result_present_uses_real_consumer_then_exact_marker_clear(tmp_path):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store.bind_v2_process_boot_id(attempt.origin_boot_id)
+    _log_ordinary_completion(store._db, row["id"])
+    now, _ = _flag_v2_zombie(store, age=10)
+
+    _sweep_org_zombies(
+        store._db, now=now, uptime=999, warm_up_seconds=0,
+        orchestrator=_reaper_orch(store),
+    )
+
+    task = store._db.get_task(attempt.root_task_id)
+    assert task.status is TaskStatus.PENDING
+    assert task.zombie_flagged_at is None
+    assert [a["action"] for a in store._db.get_audit_logs(task.id)].count(
+        "zombie_cleared"
+    ) == 1
+
+
+def test_historical_schema_zombie_recovery_evaluates_and_continues_exactly_once(
+    tmp_path, monkeypatch,
+):
+    """The accepted historical table reaches evaluation at the real reaper seam."""
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    db = store._db
+    store.bind_v2_process_boot_id(attempt.origin_boot_id)
+    add_historical_agent_enrollments(db)
+    _log_ordinary_completion(db, row["id"])
+    now, _ = _flag_v2_zombie(store, age=10)
+    result_id = row["id"]
+    attempt_id = attempt.attempt_id
+    notifications: list[dict] = []
+    thread_followups: list[tuple[str, str]] = []
+    orch = _reaper_orch(store)
+    orch.notify_escalated = lambda **kwargs: notifications.append(kwargs)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._maybe_post_thread_escalation",
+        lambda _orch, task_id, *, reason: thread_followups.append(
+            (task_id, reason)
+        ),
+    )
+    monkeypatch.setattr(
+        "runtime.daemon.zombie_reaper._pid_is_dead", lambda _pid: True,
+    )
+
+    for _ in range(3):
+        _sweep_org_zombies(
+            db, now=now, uptime=999, warm_up_seconds=0, orchestrator=orch,
+        )
+
+    task = db.get_task(attempt.root_task_id)
+    final = db.get_authority_policy_v2_attempt_for_result(result_id)
+    audits = db.get_audit_logs(attempt.root_task_id)
+    assert task.status is TaskStatus.PENDING
+    assert task.zombie_flagged_at is None
+    assert final is not None
+    assert final.attempt_id == attempt_id
+    assert final.finalization_state == "continued"
+    assert db.get_latest_task_result(
+        attempt.root_task_id, attempt.manager_agent, attempt.manager_session_id,
+    )["id"] == result_id
+    assert [a["action"] for a in audits].count("orchestration_step") == 1
+    assert [a["action"] for a in audits].count("escalation") == 0
+    assert notifications == []
+    assert thread_followups == []
+    assert db.get_children(attempt.root_task_id) == []
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_candidates"
+    ).fetchone()[0] == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_evaluations"
+    ).fetchone()[0] == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_recovery_notifications"
+    ).fetchone()[0] == 1
+    assert len(orch._queue.puts) == 1
+
+
+def test_historical_schema_zombie_recovery_evaluates_and_escalates_exactly_once(
+    tmp_path, monkeypatch,
+):
+    """The accepted historical table reaches a real escalate evaluation once."""
+    store = _store(tmp_path)
+    binding = _seed_bound_task(store)
+    carrier, admission = _carrier_with(
+        binding, escalate="applies", continue_="does_not_apply",
+    )
+    store, _, _, row, attempt = _hook_admitted(
+        tmp_path, carrier=carrier, admission=admission,
+        prebound=(store, binding),
+    )
+    db = store._db
+    store.bind_v2_process_boot_id(attempt.origin_boot_id)
+    add_historical_agent_enrollments(db)
+    _log_ordinary_completion(db, row["id"])
+    now, _ = _flag_v2_zombie(store, age=10)
+    result_id = row["id"]
+    attempt_id = attempt.attempt_id
+    notifications: list[dict] = []
+    thread_followups: list[tuple[str, str]] = []
+    orch = _reaper_orch(store)
+    orch.notify_escalated = lambda **kwargs: notifications.append(kwargs)
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._maybe_post_thread_escalation",
+        lambda _orch, task_id, *, reason: thread_followups.append(
+            (task_id, reason)
+        ),
+    )
+    monkeypatch.setattr(
+        "runtime.daemon.zombie_reaper._pid_is_dead", lambda _pid: True,
+    )
+
+    for _ in range(3):
+        _sweep_org_zombies(
+            db, now=now, uptime=999, warm_up_seconds=0, orchestrator=orch,
+        )
+
+    task = db.get_task(attempt.root_task_id)
+    final = db.get_authority_policy_v2_attempt_for_result(result_id)
+    evaluation = db.get_authority_policy_v2_evaluation_for_result(result_id)
+    audits = db.get_audit_logs(attempt.root_task_id)
+    assert task.status is TaskStatus.ESCALATED
+    assert task.zombie_flagged_at is None
+    assert final is not None
+    assert final.attempt_id == attempt_id
+    assert final.finalization_state == "refused"
+    assert evaluation is not None and evaluation.outcome == "escalate_applies"
+    assert db.get_latest_task_result(
+        attempt.root_task_id, attempt.manager_agent, attempt.manager_session_id,
+    )["id"] == result_id
+    assert [a["action"] for a in audits].count("orchestration_step") == 1
+    assert [a["action"] for a in audits].count("escalation") == 1
+    assert len(notifications) == 1
+    assert len(thread_followups) == 1
+    assert db.get_children(attempt.root_task_id) == []
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_candidates"
+    ).fetchone()[0] == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_evaluations"
+    ).fetchone()[0] == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_continue_envelopes"
+    ).fetchone()[0] == 0
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_recovery_notifications"
+    ).fetchone()[0] == 0
+    assert orch._queue.puts == []
+
+
+def test_v2_pending_zombie_recovery_uses_ordinary_escalation_exactly_once(
+    tmp_path, monkeypatch,
+):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    db = store._db
+    store.bind_v2_process_boot_id(attempt.origin_boot_id)
+    _log_ordinary_completion(db, row["id"])
+    now, _ = _flag_v2_zombie(store, age=10)
+    notifications: list[dict] = []
+    thread_followups: list[tuple[str, str]] = []
+    orch = _reaper_orch(store)
+    orch.notify_escalated = lambda **kwargs: notifications.append(kwargs)
+    monkeypatch.setattr(
+        "runtime.orchestrator.authority.run_authority_hook",
+        lambda *_args, **_kwargs: "v2_pending",
+    )
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._maybe_post_thread_escalation",
+        lambda _orch, task_id, *, reason: thread_followups.append(
+            (task_id, reason)
+        ),
+    )
+    monkeypatch.setattr(
+        "runtime.daemon.zombie_reaper._pid_is_dead", lambda _pid: True,
+    )
+
+    for _ in range(3):
+        _sweep_org_zombies(
+            db, now=now, uptime=999, warm_up_seconds=0, orchestrator=orch,
+        )
+
+    task = db.get_task(attempt.root_task_id)
+    audits = db.get_audit_logs(attempt.root_task_id)
+    assert task.status is TaskStatus.ESCALATED
+    assert [a["action"] for a in audits].count("orchestration_step") == 1
+    assert [a["action"] for a in audits].count("escalation") == 1
+    assert len(notifications) == 1
+    assert len(thread_followups) == 1
+    assert db.get_children(attempt.root_task_id) == []
+    assert orch._queue.puts == []
+
+
+def test_v2_result_present_marker_race_preserves_winner(tmp_path, monkeypatch):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store.bind_v2_process_boot_id(attempt.origin_boot_id)
+    _log_ordinary_completion(store._db, row["id"])
+    now, selected = _flag_v2_zombie(store, age=10)
+    replacement_marker = (now - timedelta(seconds=3)).isoformat()
+
+    import runtime.orchestrator.run_step as run_step
+    real_consumer = run_step._consume_completion_report
+
+    def consume_then_replace(*args, **kwargs):
+        real_consumer(*args, **kwargs)
+        store._db.update_task(attempt.root_task_id, zombie_flagged_at=replacement_marker)
+
+    monkeypatch.setattr(run_step, "_consume_completion_report", consume_then_replace)
+    _sweep_org_zombies(
+        store._db, now=now, uptime=999, warm_up_seconds=0,
+        orchestrator=_reaper_orch(store),
+    )
+
+    task = store._db.get_task(attempt.root_task_id)
+    assert task.status is TaskStatus.PENDING
+    assert task.zombie_flagged_at.isoformat() == replacement_marker
+    assert not [
+        a for a in store._db.get_audit_logs(task.id)
+        if a["action"] == "zombie_cleared"
+    ]
+
+
+@pytest.mark.parametrize(
+    "winner",
+    ["session", "agent", "cancel", "status", "result"],
+)
+def test_v2_result_present_clear_cas_preserves_identity_race(
+    tmp_path, winner,
+):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store.bind_v2_process_boot_id(attempt.origin_boot_id)
+    _log_ordinary_completion(store._db, row["id"])
+    _, selected = _flag_v2_zombie(store, age=10)
+    _consume_zombie_fingerprint(
+        store._db, attempt.root_task_id, row, selected, _reaper_orch(store),
+    )
+    marker = selected.zombie_flagged_at
+    if winner == "session":
+        store._db.update_task(attempt.root_task_id, current_session_id="sess-new")
+    elif winner == "agent":
+        store._db.update_task(attempt.root_task_id, assigned_agent="other-agent")
+    elif winner == "cancel":
+        store._db.update_task(
+            attempt.root_task_id, cancelled_at="2026-01-01T00:00:00+00:00",
+        )
+    elif winner == "status":
+        store._db.update_task(attempt.root_task_id, status=TaskStatus.COMPLETED)
+    else:
+        store._db._conn.execute(
+            "UPDATE task_results SET session_id='sess-mutated' WHERE id=?",
+            (row["id"],),
+        )
+        store._db._conn.commit()
+
+    assert store._db.consume_v2_fingerprint_and_clear_zombie(
+        task_id=attempt.root_task_id, expected_agent="engineering_manager",
+        expected_session_id="sess-c2", result_id=row["id"],
+        expected_zombie_flagged_at=marker,
+    ) is False
+    assert store._db.get_task(attempt.root_task_id).zombie_flagged_at == marker
+
+
+def test_v2_result_present_clear_audit_failure_rolls_back_and_reopen_retries(
+    tmp_path, monkeypatch,
+):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store.bind_v2_process_boot_id(attempt.origin_boot_id)
+    _log_ordinary_completion(store._db, row["id"])
+    _, selected = _flag_v2_zombie(store, age=10)
+    _consume_zombie_fingerprint(
+        store._db, attempt.root_task_id, row, selected, _reaper_orch(store),
+    )
+    marker = selected.zombie_flagged_at
+    original = store._db.insert_audit_log_uncommitted
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("clear audit unavailable")
+
+    monkeypatch.setattr(store._db, "insert_audit_log_uncommitted", fail)
+    with pytest.raises(RuntimeError):
+        store._db.consume_v2_fingerprint_and_clear_zombie(
+            task_id=attempt.root_task_id, expected_agent="engineering_manager",
+            expected_session_id="sess-c2", result_id=row["id"],
+            expected_zombie_flagged_at=marker,
+        )
+    monkeypatch.setattr(store._db, "insert_audit_log_uncommitted", original)
+    assert store._db.get_task(attempt.root_task_id).zombie_flagged_at == marker
+
+    reopened = Database(tmp_path / "c2.db")
+    assert reopened.consume_v2_fingerprint_and_clear_zombie(
+        task_id=attempt.root_task_id, expected_agent="engineering_manager",
+        expected_session_id="sess-c2", result_id=row["id"],
+        expected_zombie_flagged_at=marker,
+    ) is True
+    assert reopened.get_task(attempt.root_task_id).zombie_flagged_at is None
+
+
+def test_v2_result_present_clear_commit_failure_rolls_back_and_reopen_retries(
+    tmp_path,
+):
+    store, _, _, _, row, attempt = _admitted(tmp_path)
+    store.bind_v2_process_boot_id(attempt.origin_boot_id)
+    _log_ordinary_completion(store._db, row["id"])
+    _, selected = _flag_v2_zombie(store, age=10)
+    _consume_zombie_fingerprint(
+        store._db, attempt.root_task_id, row, selected, _reaper_orch(store),
+    )
+    marker = selected.zombie_flagged_at
+    real = store._db._conn
+    store._db._conn = _CommitFailingConn(real)
+    try:
+        with pytest.raises(RuntimeError, match="commit failure"):
+            store._db.consume_v2_fingerprint_and_clear_zombie(
+                task_id=attempt.root_task_id,
+                expected_agent="engineering_manager",
+                expected_session_id="sess-c2", result_id=row["id"],
+                expected_zombie_flagged_at=marker,
+            )
+    finally:
+        store._db._conn = real
+    assert store._db.get_task(attempt.root_task_id).zombie_flagged_at == marker
+
+    reopened = Database(tmp_path / "c2.db")
+    assert reopened.consume_v2_fingerprint_and_clear_zombie(
+        task_id=attempt.root_task_id, expected_agent="engineering_manager",
+        expected_session_id="sess-c2", result_id=row["id"],
+        expected_zombie_flagged_at=marker,
+    ) is True
+
+
+def test_v2_result_absent_ttl_cas_denies_result_appearing_after_selection(
+    tmp_path, monkeypatch,
+):
+    store = _store(tmp_path)
+    _seed_bound_task(store)
+    now, selected = _flag_v2_zombie(
+        store, age=FLAG_TTL_NO_FINGERPRINT_SECONDS + 5,
+    )
+    second = Database(tmp_path / "c2.db")
+    original = store._db.cancel_zombie_without_fingerprint
+
+    def result_wins(**kwargs):
+        second.insert_task_result(
+            task_id="TASK-C2", agent="engineering_manager",
+            session_id="sess-c2", status="completed", confidence_score=90,
+            output_summary="late result",
+        )
+        return original(**kwargs)
+
+    monkeypatch.setattr(store._db, "cancel_zombie_without_fingerprint", result_wins)
+    _sweep_org_zombies(
+        store._db, now=now, uptime=999, warm_up_seconds=0,
+        orchestrator=_reaper_orch(store),
+    )
+
+    task = store._db.get_task("TASK-C2")
+    assert task.status is TaskStatus.IN_PROGRESS
+    assert task.zombie_flagged_at == selected.zombie_flagged_at
+    assert not [
+        a for a in store._db.get_audit_logs(task.id)
+        if a["action"] == "zombie_cancelled"
+    ]
+
+
+def test_result_absent_malformed_session_binding_cannot_use_legacy_ttl_fallback(
+    tmp_path,
+):
+    store = _store(tmp_path)
+    db = store._db
+    task_id = "TASK-MALFORMED-BINDING"
+    session_id = "sess-malformed-binding"
+    now = datetime.now(timezone.utc)
+    marker = now - timedelta(seconds=FLAG_TTL_NO_FINGERPRINT_SECONDS + 5)
+    db.insert_task(TaskRecord(
+        id=task_id, brief="malformed binding", team="engineering",
+        assigned_agent="engineering_manager", status=TaskStatus.IN_PROGRESS,
+    ))
+    db.update_task(
+        task_id, current_session_id=session_id, executor_pid=99999,
+        last_heartbeat=(
+            now - timedelta(seconds=STALE_HEARTBEAT_SECONDS + 10)
+        ).isoformat(),
+        zombie_flagged_at=marker.isoformat(),
+    )
+    db.insert_audit_log(
+        task_id, "engineering_manager", SESSION_POLICY_BINDING_ACTION,
+        {"session_id": session_id, "mode": "unknown-family"},
+    )
+
+    _sweep_org_zombies(
+        db, now=now, uptime=999, warm_up_seconds=0,
+        orchestrator=_reaper_orch(store),
+    )
+
+    task = db.get_task(task_id)
+    assert task.status is TaskStatus.IN_PROGRESS
+    assert task.zombie_flagged_at == marker
+    assert not [
+        a for a in db.get_audit_logs(task_id)
+        if a["action"] == "zombie_cancelled"
+    ]
+
+
+def test_v2_result_absent_ttl_cas_commits_before_single_parent_wake(
+    tmp_path, monkeypatch,
+):
+    store = _store(tmp_path)
+    _seed_bound_task(store)
+    now, _ = _flag_v2_zombie(
+        store, age=FLAG_TTL_NO_FINGERPRINT_SECONDS + 5,
+    )
+    wakes: list[str] = []
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._enqueue_parent_if_waiting",
+        lambda orch, task_id: wakes.append(task_id),
+    )
+
+    _sweep_org_zombies(
+        store._db, now=now, uptime=999, warm_up_seconds=0,
+        orchestrator=_reaper_orch(store),
+    )
+    _sweep_org_zombies(
+        store._db, now=now, uptime=999, warm_up_seconds=0,
+        orchestrator=_reaper_orch(store),
+    )
+
+    task = store._db.get_task("TASK-C2")
+    assert task.status is TaskStatus.CANCELLED
+    assert wakes == ["TASK-C2"]
+    assert [a["action"] for a in store._db.get_audit_logs(task.id)].count(
+        "zombie_cancelled"
+    ) == 1
+
+
+@pytest.mark.parametrize(
+    "winner",
+    ["marker", "session", "status", "block", "cancel"],
+)
+def test_v2_result_absent_ttl_cas_preserves_winning_task_race(tmp_path, winner):
+    store = _store(tmp_path)
+    _seed_bound_task(store)
+    now, selected = _flag_v2_zombie(
+        store, age=FLAG_TTL_NO_FINGERPRINT_SECONDS + 5,
+    )
+    if winner == "marker":
+        store._db.update_task("TASK-C2", zombie_flagged_at=now.isoformat())
+    elif winner == "session":
+        store._db.update_task("TASK-C2", current_session_id="sess-new")
+    elif winner == "status":
+        store._db.update_task("TASK-C2", status=TaskStatus.PENDING)
+    elif winner == "block":
+        store._db.update_task("TASK-C2", block_kind="delegated")
+    else:
+        store._db.update_task(
+            "TASK-C2", cancelled_at="2026-01-01T00:00:00+00:00",
+        )
+
+    assert store._db.cancel_zombie_without_fingerprint(
+        task_id="TASK-C2", expected_agent="engineering_manager",
+        expected_session_id="sess-c2",
+        expected_zombie_flagged_at=selected.zombie_flagged_at,
+        cancelled_at=now.isoformat(),
+    ) is False
+    assert store._db.get_task("TASK-C2").status is not TaskStatus.CANCELLED
+    assert not [
+        a for a in store._db.get_audit_logs("TASK-C2")
+        if a["action"] == "zombie_cancelled"
+    ]
+
+
+def test_v2_result_absent_cancel_audit_failure_rolls_back_then_reopen_commits(
+    tmp_path, monkeypatch,
+):
+    store = _store(tmp_path)
+    _seed_bound_task(store)
+    now, selected = _flag_v2_zombie(
+        store, age=FLAG_TTL_NO_FINGERPRINT_SECONDS + 5,
+    )
+    original = store._db.insert_audit_log_uncommitted
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("cancel audit unavailable")
+
+    monkeypatch.setattr(store._db, "insert_audit_log_uncommitted", fail)
+    with pytest.raises(RuntimeError):
+        store._db.cancel_zombie_without_fingerprint(
+            task_id="TASK-C2", expected_agent="engineering_manager",
+            expected_session_id="sess-c2",
+            expected_zombie_flagged_at=selected.zombie_flagged_at,
+            cancelled_at=now.isoformat(),
+        )
+    monkeypatch.setattr(store._db, "insert_audit_log_uncommitted", original)
+    assert store._db.get_task("TASK-C2").status is TaskStatus.IN_PROGRESS
+    assert store._db.get_task("TASK-C2").zombie_flagged_at == selected.zombie_flagged_at
+
+    reopened = Database(tmp_path / "c2.db")
+    assert reopened.cancel_zombie_without_fingerprint(
+        task_id="TASK-C2", expected_agent="engineering_manager",
+        expected_session_id="sess-c2",
+        expected_zombie_flagged_at=selected.zombie_flagged_at,
+        cancelled_at=now.isoformat(),
+    ) is True
+    assert reopened.get_task("TASK-C2").status is TaskStatus.CANCELLED
+
+
+def test_v2_result_absent_cancel_commit_failure_rolls_back_then_reopen_commits(
+    tmp_path,
+):
+    store = _store(tmp_path)
+    _seed_bound_task(store)
+    now, selected = _flag_v2_zombie(
+        store, age=FLAG_TTL_NO_FINGERPRINT_SECONDS + 5,
+    )
+    real = store._db._conn
+    store._db._conn = _CommitFailingConn(real)
+    try:
+        with pytest.raises(RuntimeError, match="commit failure"):
+            store._db.cancel_zombie_without_fingerprint(
+                task_id="TASK-C2", expected_agent="engineering_manager",
+                expected_session_id="sess-c2",
+                expected_zombie_flagged_at=selected.zombie_flagged_at,
+                cancelled_at=now.isoformat(),
+            )
+    finally:
+        store._db._conn = real
+    assert store._db.get_task("TASK-C2").status is TaskStatus.IN_PROGRESS
+    assert store._db.get_task("TASK-C2").zombie_flagged_at == selected.zombie_flagged_at
+
+    reopened = Database(tmp_path / "c2.db")
+    assert reopened.cancel_zombie_without_fingerprint(
+        task_id="TASK-C2", expected_agent="engineering_manager",
+        expected_session_id="sess-c2",
+        expected_zombie_flagged_at=selected.zombie_flagged_at,
+        cancelled_at=now.isoformat(),
+    ) is True

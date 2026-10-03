@@ -5,6 +5,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { AppProvider } from '@/design-system/providers/AppProvider';
 import { AddAgentDialog } from './AddAgentDialog';
+import { I18nTestBoundary } from '@/test/render';
+import { en } from '@/lib/i18n/catalog';
 import { agents as agentsApi, health as healthApi, runtimeExecutors as runtimeExecutorsApi, teams as teamsApi } from '@/lib/api';
 
 function renderDialog(props: { open?: boolean; onOpenChange?: (v: boolean) => void } = {}) {
@@ -16,9 +18,11 @@ function renderDialog(props: { open?: boolean; onOpenChange?: (v: boolean) => vo
           <Route
             path="/orgs/:slug/agents"
             element={
-              <AppProvider client={qc}>
-                <AddAgentDialog open={props.open ?? true} onOpenChange={props.onOpenChange ?? (() => {})} />
-              </AppProvider>
+              <I18nTestBoundary>
+                <AppProvider client={qc}>
+                  <AddAgentDialog open={props.open ?? true} onOpenChange={props.onOpenChange ?? (() => {})} />
+                </AppProvider>
+              </I18nTestBoundary>
             }
           />
         </Routes>
@@ -38,9 +42,11 @@ function renderDialogWithClient(props: { open?: boolean; onOpenChange?: (v: bool
           <Route
             path="/orgs/:slug/agents"
             element={
-              <AppProvider client={qc}>
-                <AddAgentDialog open={props.open ?? true} onOpenChange={props.onOpenChange ?? (() => {})} />
-              </AppProvider>
+              <I18nTestBoundary>
+                <AppProvider client={qc}>
+                  <AddAgentDialog open={props.open ?? true} onOpenChange={props.onOpenChange ?? (() => {})} />
+                </AppProvider>
+              </I18nTestBoundary>
             }
           />
         </Routes>
@@ -145,7 +151,7 @@ describe('AddAgentDialog', () => {
     await user.selectOptions(screen.getByLabelText(/team/i), 'engineering');
     await user.type(screen.getByLabelText(/description/i), 'desc');
     await user.type(screen.getByLabelText(/system prompt/i), 'prompt');
-    await user.click(screen.getByRole('button', { name: /create/i }));
+    await user.click(screen.getByRole('button', { name: en['agents.add.create'] }));
 
     await waitFor(() =>
       expect(spy).toHaveBeenCalledWith('test', expect.objectContaining({
@@ -170,7 +176,7 @@ describe('AddAgentDialog', () => {
     await user.type(screen.getByLabelText(/^name$/i), 'delta_head');
     await user.type(screen.getByLabelText(/description/i), 'desc');
     await user.type(screen.getByLabelText(/system prompt/i), 'prompt');
-    await user.click(screen.getByRole('button', { name: /create/i }));
+    await user.click(screen.getByRole('button', { name: en['agents.add.create'] }));
 
     await waitFor(() =>
       expect(spy).toHaveBeenCalledWith('test', expect.objectContaining({
@@ -186,11 +192,11 @@ describe('AddAgentDialog', () => {
     vi.spyOn(teamsApi, 'listTeams').mockResolvedValue({ teams: [] });
     const user = userEvent.setup();
     renderDialog();
-    await waitFor(() => screen.getByText(/no teams yet/i));
+    await waitFor(() => screen.getByText(en['agents.add.noTeams']));
     await user.type(screen.getByLabelText(/^name$/i), 'alpha_w1');
     await user.type(screen.getByLabelText(/description/i), 'desc');
     await user.type(screen.getByLabelText(/system prompt/i), 'prompt');
-    expect(screen.getByRole('button', { name: /create/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: en['agents.add.create'] })).toBeDisabled();
   });
 
   // ── NEW executor tests ─────────────────────────────────────────────────
@@ -221,7 +227,7 @@ describe('AddAgentDialog', () => {
     await user.type(screen.getByLabelText(/^name$/i), 'alpha_w1');
     await user.type(screen.getByLabelText(/description/i), 'desc');
     await user.type(screen.getByLabelText(/system prompt/i), 'prompt');
-    await user.click(screen.getByRole('button', { name: /create/i }));
+    await user.click(screen.getByRole('button', { name: en['agents.add.create'] }));
 
     await waitFor(() =>
       expect(spy).toHaveBeenCalledWith('test', expect.objectContaining({
@@ -278,7 +284,7 @@ describe('AddAgentDialog', () => {
     await user.type(screen.getByLabelText(/^name$/i), 'alpha_w1');
     await user.type(screen.getByLabelText(/description/i), 'desc');
     await user.type(screen.getByLabelText(/system prompt/i), 'prompt');
-    await user.click(screen.getByRole('button', { name: /create/i }));
+    await user.click(screen.getByRole('button', { name: en['agents.add.create'] }));
 
     await waitFor(() =>
       expect(spy).toHaveBeenCalledWith('test', expect.objectContaining({
@@ -303,7 +309,7 @@ describe('AddAgentDialog', () => {
     );
     expect(screen.getByText(/claude, codex, opencode, pi/i)).toBeInTheDocument();
     // Settings → Executors link is present and points to the correct destination.
-    const settingsLink = screen.getByRole('link', { name: /Settings → Executors/i });
+    const settingsLink = screen.getByRole('link', { name: en['agents.executor.settingsLink'] });
     expect(settingsLink).toBeInTheDocument();
     expect(settingsLink).toHaveAttribute('href', '/orgs/test/settings/executors');
     // The link text confirms the Settings → Executors destination.
@@ -316,7 +322,7 @@ describe('AddAgentDialog', () => {
     await user.type(screen.getByLabelText(/system prompt/i), 'prompt');
 
     // Create stays disabled (no executor to select).
-    expect(screen.getByRole('button', { name: /create/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: en['agents.add.create'] })).toBeDisabled();
   });
 
   test('non-four-name built-in executor (e.g. "gemini") with present=true is selectable and can be submitted', async () => {
@@ -358,7 +364,7 @@ describe('AddAgentDialog', () => {
     await user.type(screen.getByLabelText(/^name$/i), 'alpha_w1');
     await user.type(screen.getByLabelText(/description/i), 'desc');
     await user.type(screen.getByLabelText(/system prompt/i), 'prompt');
-    await user.click(screen.getByRole('button', { name: /create/i }));
+    await user.click(screen.getByRole('button', { name: en['agents.add.create'] }));
 
     await waitFor(() =>
       expect(spy).toHaveBeenCalledWith('test', expect.objectContaining({
@@ -424,7 +430,7 @@ describe('AddAgentDialog', () => {
     await user.type(screen.getByLabelText(/^name$/i), 'alpha_w1');
     await user.type(screen.getByLabelText(/description/i), 'desc');
     await user.type(screen.getByLabelText(/system prompt/i), 'prompt');
-    await user.click(screen.getByRole('button', { name: /create/i }));
+    await user.click(screen.getByRole('button', { name: en['agents.add.create'] }));
 
     await waitFor(() =>
       expect(spy).toHaveBeenCalledWith('test', expect.objectContaining({
@@ -476,7 +482,7 @@ describe('AddAgentDialog', () => {
     await user.type(screen.getByLabelText(/^name$/i), 'alpha_w1');
     await user.type(screen.getByLabelText(/description/i), 'desc');
     await user.type(screen.getByLabelText(/system prompt/i), 'prompt');
-    await user.click(screen.getByRole('button', { name: /create/i }));
+    await user.click(screen.getByRole('button', { name: en['agents.add.create'] }));
 
     await waitFor(() =>
       expect(spy).toHaveBeenCalledWith('test', expect.objectContaining({
@@ -496,7 +502,7 @@ describe('AddAgentDialog', () => {
     renderDialog();
 
     await waitFor(() =>
-      expect(screen.getByText(/could not load the executor list/i)).toBeInTheDocument(),
+      expect(screen.getByText(en['agents.add.executorError'])).toBeInTheDocument(),
     );
 
     await user.selectOptions(screen.getByLabelText(/team/i), 'engineering');
@@ -505,6 +511,6 @@ describe('AddAgentDialog', () => {
     await user.type(screen.getByLabelText(/system prompt/i), 'prompt');
 
     // No executor dropdown — Create is disabled.
-    expect(screen.getByRole('button', { name: /create/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: en['agents.add.create'] })).toBeDisabled();
   });
 });

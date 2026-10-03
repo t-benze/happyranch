@@ -1,28 +1,55 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { AlertCircle } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/design-system/primitives/Dialog';
 import { ApiError } from '@/lib/api';
 import {
-  type AuthorityPolicyTemplate,
-  useActivateTeamEscalationPolicyRelease,
-  useCreateTeamEscalationPolicyRelease,
+  authorityPolicyActiveEpoch,
+  type TeamEscalationPolicyResponse,
+  type V2AuthorityPolicyControlResponse,
+  type V2PairedControlRequest,
+  useCreateTeamEscalationPolicyV2Release,
   useTeamEscalationPolicy,
-  useTeamEscalationPolicyHistory,
-  useTeamEscalationPolicyOutcomes,
+  useTeamEscalationPolicyV2History,
 } from '@/hooks/authorityPolicy';
 import { useAgentsRoutes } from '@/hooks/agents';
+import { useTranslation } from '@/hooks/i18n';
+import type { MessageKey, MessageParams } from '@/lib/i18n';
+import { formatDateShapeFor } from '@/lib/i18n/format';
+import { classifyAgentError, renderAgentError, type Translate } from './strings';
+
+/** A locale-neutral status message, rendered through `t` on every render. */
+interface PolicyMessage {
+  key: MessageKey;
+  params?: MessageParams;
+}
+
+interface V2Draft {
+  policyId: string;
+  title: string;
+  whatToEscalate: string;
+  whatNotToEscalate: string;
+}
+
+interface V2EditorState {
+  draft: V2Draft;
+  baseline: string;
+  basedOnSelectorId: string | null;
+  action: 'bootstrap' | 'activate';
+  sourceKey: string;
+}
 
 export function TeamEscalationPolicyEntryCard({ agent }: { agent: { name: string; team: string; role: string } }): JSX.Element {
   const query = useTeamEscalationPolicy(agent);
   const routes = useAgentsRoutes();
+  const { t } = useTranslation();
   return (
     <PolicyShell>
-      <h3 className="font-display text-text-primary text-base font-medium">Manager-only team escalation policy</h3>
-      <p className="text-text-muted mt-1 text-xs">Engineering Manager access only.</p>
-      {query.isLoading ? <p className="text-text-muted mt-3 text-xs">Loading active policy status…</p> : query.isError || !query.data ? <p role="alert" className="text-tier-red mt-3 text-xs">Could not load policy status.</p> : query.data.active ? <p className="text-text-muted mt-3 text-xs">Active v{query.data.active.release.version} · epoch {query.data.active.epoch} · {query.data.active.release.digest.slice(0, 12)}</p> : <p className="text-text-muted mt-3 text-xs">No active release. Canonical bootstrap is available.</p>}
-      <Button asChild size="sm" className="mt-3"><Link to={routes.policy(agent.name)}>Open team escalation policy</Link></Button>
+      <h3 className="font-display text-text-primary text-base font-medium">{t('agents.policy.entryTitle')}</h3>
+      <p className="text-text-muted mt-1 text-xs">{t('agents.policy.entryMeta', { team: agent.team, name: agent.name })}</p>
+      {query.isLoading ? <p className="text-text-muted mt-3 text-xs">{t('agents.policy.statusLoading')}</p> : query.isError || !query.data ? <p role="alert" className="text-tier-red mt-3 text-xs">{renderAgentError(classifyAgentError(query.error, 'agents.policy.statusError'), t)}</p> : query.data.family === 'empty' ? <p className="text-text-muted mt-3 text-xs">{t('agents.policy.noActive')}</p> : <p className="text-text-muted mt-3 text-xs">{t(query.data.family === 'v2' ? 'agents.policy.activeV2' : 'agents.policy.activeLegacy', { version: query.data.active.release.version, epoch: authorityPolicyActiveEpoch(query.data.active), digest: query.data.active.release.digest.slice(0, 12) })}</p>}
+      <Button asChild size="sm" className="mt-3"><Link to={routes.policy(agent.name)}>{t('agents.policy.open')}</Link></Button>
     </PolicyShell>
   );
 }
@@ -35,113 +62,158 @@ export function TeamEscalationPolicyCard({
   onDirtyChange?: (dirty: boolean) => void;
 }): JSX.Element {
   const query = useTeamEscalationPolicy(agent);
-  const createRelease = useCreateTeamEscalationPolicyRelease();
-  const activateRelease = useActivateTeamEscalationPolicyRelease();
-  const history = useTeamEscalationPolicyHistory(agent);
-  const outcomes = useTeamEscalationPolicyOutcomes(agent);
-  const [draft, setDraft] = useState<AuthorityPolicyTemplate | null>(null);
-  const [baseline, setBaseline] = useState('');
-  const [message, setMessage] = useState<string | null>(null);
-  const [confirm, setConfirm] = useState<'activate' | { releaseId: string; version: number } | null>(null);
-  const [savedInactive, setSavedInactive] = useState<{ id: string; version: number } | null>(null);
+  const { t, render } = useTranslation();
+  const createV2Release = useCreateTeamEscalationPolicyV2Release();
+  const v2History = useTeamEscalationPolicyV2History(agent);
+  const [editor, setEditor] = useState<V2EditorState | null>(null);
+  const [message, setMessage] = useState<PolicyMessage | null>(null);
+  const [confirm, setConfirm] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [reviewingConflict, setReviewingConflict] = useState(false);
+  const [conflict, setConflict] = useState(false);
+  const [retryRequest, setRetryRequest] = useState<V2PairedControlRequest | null>(null);
+  const submittingRef = useRef(false);
 
-  const source = useMemo(() => query.data?.active?.release ?? query.data?.bootstrap_template, [query.data]);
+  const data = query.data;
   useEffect(() => {
-    if (!source) return;
-    const next = {
-      title: source.title,
-      normative_text: source.normative_text,
-      clauses: source.clauses.map((clause) => ({ ...clause })),
-      continuation_phrase: source.continuation_phrase,
-    };
-    setDraft(next);
-    setBaseline(JSON.stringify(next));
-    setMessage(null);
-    setConfirm(null);
-    setSavedInactive(null);
-  }, [source]);
+    if (!data) return;
+    const next = editorFromProjection(data);
+    setEditor((current) => {
+      if (!current) return next;
+      if (current.sourceKey === next.sourceKey) return current;
+      if (draftKey(current.draft) !== current.baseline) return current;
+      return next;
+    });
+  }, [data]);
 
-  const dirty = draft ? JSON.stringify(draft) !== baseline : false;
+  const dirty = editor ? draftKey(editor.draft) !== editor.baseline : false;
   useEffect(() => {
     onDirtyChange?.(dirty);
   }, [dirty, onDirtyChange]);
   useEffect(() => {
     if (!dirty) return;
-    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = true;
+    };
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
   }, [dirty]);
 
-  if (query.isLoading) return <PolicyShell><p className="text-text-muted text-sm">Loading team policy…</p></PolicyShell>;
-  if (query.isError || !query.data || !draft) {
-    return <PolicyShell><div role="alert" className="text-tier-red flex flex-wrap items-center gap-2 text-sm"><AlertCircle size={14} /><span>Could not load the team policy.</span><Button size="sm" variant="ghost" onClick={() => void query.refetch()}>Retry</Button></div></PolicyShell>;
+  if (query.isLoading) return <PolicyShell><p className="text-text-muted text-sm">{t('agents.policy.loading')}</p></PolicyShell>;
+  if (query.isError || !data) {
+    return <PolicyShell><div role="alert" className="text-tier-red flex flex-wrap items-center gap-2 text-sm"><AlertCircle size={14} /><span>{renderAgentError(classifyAgentError(query.error, 'agents.policy.loadError'), t)}</span><Button size="sm" variant="ghost" onClick={() => void query.refetch()}>{t('common.retry')}</Button></div></PolicyShell>;
+  }
+  if (!editor) {
+    return <PolicyShell><p className="text-text-muted text-sm">{t('agents.policy.preparing')}</p></PolicyShell>;
   }
 
-  const expected = query.data.bootstrap_template;
-  const validationError = validateDraft(draft, expected);
-  const active = query.data.active;
-  const historyItems = history.data?.pages.flatMap((page) => page.items) ?? [];
-  const outcomeItems = outcomes.data?.pages.flatMap((page) => page.items) ?? [];
+  const validationError = validateV2Draft(editor.draft);
+  const v2HistoryItems = v2History.data?.pages.flatMap((page) => page.items) ?? [];
+  const pending = submitting || createV2Release.isPending;
+  const canSave = data.family === 'empty' || dirty;
 
-  const save = async (andActivate: boolean) => {
-    if (validationError) { setMessage(validationError); return; }
+  const updateText = (field: 'whatToEscalate' | 'whatNotToEscalate', value: string) => {
+    setEditor((current) => current ? { ...current, draft: { ...current.draft, [field]: value } } : current);
+    setRetryRequest(null);
+    setConflict(false);
     setMessage(null);
+  };
+
+  const buildRequest = (): V2PairedControlRequest => ({
+    team: data.team,
+    policy_id: editor.draft.policyId,
+    title: editor.draft.title,
+    create_request_id: crypto.randomUUID(),
+    activation_request_id: crypto.randomUUID(),
+    based_on_selector_id: editor.basedOnSelectorId,
+    expected_selector_id: editor.basedOnSelectorId,
+    action: editor.action,
+    what_to_escalate: editor.draft.whatToEscalate,
+    what_not_to_escalate: editor.draft.whatNotToEscalate,
+    acknowledge_shared_credential_attribution: true,
+  });
+
+  const submit = async (exactRequest?: V2PairedControlRequest) => {
+    if (submittingRef.current || validationError) return;
+    const request = exactRequest ?? buildRequest();
+    submittingRef.current = true;
+    setSubmitting(true);
+    setConfirm(false);
+    setConflict(false);
+    setMessage({ key: 'agents.policy.msg.saving' });
     try {
-      const saved = await createRelease.mutateAsync({
-        agentName: agent.name,
-        body: {
-          ...draft,
-          based_on_release_id: active?.release.id ?? null,
-          request_id: crypto.randomUUID(),
+      const control = await createV2Release.mutateAsync({ agentName: agent.name, body: request });
+      if (!receiptMatchesRequest(control, request)) {
+        setRetryRequest(request);
+        setMessage({ key: 'agents.policy.msg.receiptMismatch' });
+        return;
+      }
+      const refetched = await query.refetch();
+      const readback = refetchedData(refetched);
+      if (!readback || !readbackMatches(control, request, readback)) {
+        setRetryRequest(request);
+        setMessage({ key: 'agents.policy.msg.readbackMismatch' });
+        return;
+      }
+      setEditor(editorFromProjection(readback));
+      setRetryRequest(null);
+      setMessage({
+        key: 'agents.policy.msg.saved',
+        params: {
+          release: control.receipt.release_id,
+          activation: control.receipt.activation_id,
+          selector: control.receipt.selector_id,
+          digest: control.receipt.policy_digest,
         },
       });
-      setBaseline(JSON.stringify(draft));
-      setSavedInactive({ id: saved.release.id, version: saved.release.version });
-      setMessage(`Immutable version ${saved.release.version} saved inactive.`);
-      if (andActivate) {
-        try {
-          await activateRelease.mutateAsync({
-            agentName: agent.name,
-            body: {
-              release_id: saved.release.id,
-              expected_previous_epoch: active?.epoch ?? 0,
-              request_id: crypto.randomUUID(),
-              action: 'activate',
-              acknowledge_shared_credential_attribution: true,
-            },
-          });
-        } catch (error) {
-          const api = error instanceof ApiError ? error : null;
-          const detail = api?.message ? ` Server response: ${api.message}` : '';
-          setMessage(`Immutable version ${saved.release.version} was saved inactive, but activation failed.${detail} Retry activation from this saved version after resolving the error.`);
-        }
-      }
     } catch (error) {
       const api = error instanceof ApiError ? error : null;
-      if (api?.code === 'base_release_changed' || api?.status === 409) {
-        setMessage('The active base changed. Your draft was preserved; reload before saving again.');
+      if (api?.status === 409) {
+        setRetryRequest(null);
+        setConflict(true);
+        setMessage({ key: 'agents.policy.msg.conflict' });
       } else if (api?.status === 422) {
-        setMessage('The server rejected this policy contract. Review the highlighted canonical fields.');
+        setRetryRequest(null);
+        setMessage({ key: 'agents.policy.msg.rejected' });
       } else {
-        setMessage('The policy could not be saved. Your draft was preserved; try again.');
+        setRetryRequest(request);
+        setMessage({ key: 'agents.policy.msg.unknown' });
       }
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
     }
   };
 
-  const rollback = async (target: { releaseId: string; version: number }) => {
-    setConfirm(null); setMessage(null);
+  const reviewCurrentSelector = async () => {
+    if (reviewingConflict) return;
+    setReviewingConflict(true);
     try {
-      await activateRelease.mutateAsync({ agentName: agent.name, body: {
-        release_id: target.releaseId, expected_previous_epoch: active?.epoch ?? 0,
-        request_id: crypto.randomUUID(), action: 'reactivate_rollback',
-        acknowledge_shared_credential_attribution: true,
-      } });
-      setMessage(`Older immutable version ${target.version} reactivated as a new epoch.`);
-    } catch (error) {
-      const api = error instanceof ApiError ? error : null;
-      setMessage(api?.status === 409
-        ? 'Rollback conflicted with a newer activation. Reload history and try again.'
-        : 'Rollback failed without changing the active policy.');
+      const result = await query.refetch();
+      const current = refetchedData(result);
+      if (!current) {
+        setMessage({ key: 'agents.policy.msg.selectorLoadFailed' });
+        return;
+      }
+      const source = editorFromProjection(current);
+      setEditor((prior) => prior ? {
+        ...prior,
+        draft: {
+          ...prior.draft,
+          policyId: source.draft.policyId,
+          title: source.draft.title,
+        },
+        basedOnSelectorId: source.basedOnSelectorId,
+        action: source.action,
+        sourceKey: source.sourceKey,
+      } : source);
+      setConflict(false);
+      setMessage({ key: 'agents.policy.msg.selectorLoaded' });
+    } catch {
+      setMessage({ key: 'agents.policy.msg.selectorLoadFailed' });
+    } finally {
+      setReviewingConflict(false);
     }
   };
 
@@ -149,74 +221,181 @@ export function TeamEscalationPolicyCard({
     <PolicyShell>
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h3 className="font-display text-text-primary text-base font-medium">Team escalation policy</h3>
-          <p className="text-text-muted mt-1 text-xs">Owned by the Engineering team, not by this agent.</p>
+          <h3 className="font-display text-text-primary text-base font-medium">{t('agents.policy.title')}</h3>
+          <p className="text-text-muted mt-1 text-xs">{t('agents.policy.ownedBy', { team: data.team })}</p>
         </div>
-        <span className="bg-accent-soft text-accent-text rounded-full px-2 py-1 text-xs">Team-owned</span>
+        <span className="bg-accent-soft text-accent-text rounded-full px-2 py-1 text-xs">{t('agents.policy.teamOwned')}</span>
       </div>
       <div className="bg-tier-amber-soft text-text-secondary mt-3 rounded-md p-3 text-xs">
-        Changes are attributed only to the <strong>shared local operator credential</strong>. Individual operator identity is not available.
+        {render('agents.policy.attribution', { credential: <strong>{t('agents.policy.sharedCredential')}</strong> })}
       </div>
-      {active ? <p className="text-text-muted mt-3 text-xs">Active v{active.release.version} · epoch {active.epoch} · {active.release.digest.slice(0, 12)}</p> : <p className="text-text-muted mt-3 text-xs">No active release. Start from the canonical server bootstrap template.</p>}
-      {savedInactive && <p className="text-accent-text mt-1 text-xs">Saved inactive v{savedInactive.version} · {savedInactive.id}</p>}
-      <label className="text-text-secondary mt-4 block text-xs font-medium">Title
-        <input className="border-border-subtle bg-surface mt-1 w-full rounded-md border px-3 py-2 text-sm" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
+
+      {data.family === 'empty' ? (
+        <p className="text-text-muted mt-3 text-xs">{t('agents.policy.emptySelector')}</p>
+      ) : data.family === 'legacy_v1' ? (
+        <p className="text-text-muted mt-3 text-xs">{t('agents.policy.legacySelector', { version: data.active.release.version, activation: data.active.activation_id, epoch: data.selector_epoch, selector: data.selector_id })}</p>
+      ) : (
+        <p className="text-text-muted mt-3 break-all text-xs">{t('agents.policy.v2Selector', { version: data.active.release.version, release: data.active.release.id, activation: data.active.activation_id, epoch: data.selector_epoch, selector: data.selector_id, digest: data.active.release.digest })}</p>
+      )}
+
+      <dl className="bg-surface-sunken mt-4 rounded-md p-3 text-xs">
+        <div><dt className="text-text-muted inline">{t('agents.policy.titleLabel')} </dt><dd className="text-text-primary inline">{editor.draft.title}</dd></div>
+        <div className="mt-1"><dt className="text-text-muted inline">{t('agents.policy.policyLabel')} </dt><dd className="text-text-primary inline font-mono">{editor.draft.policyId}</dd></div>
+      </dl>
+
+      <label className="text-text-secondary mt-4 block text-xs font-medium">{t('agents.policy.whatTo')}
+        <textarea className="border-border-subtle bg-surface mt-1 min-h-32 w-full rounded-md border px-3 py-2 font-mono text-xs" value={editor.draft.whatToEscalate} onChange={(event) => updateText('whatToEscalate', event.target.value)} />
       </label>
-      <label className="text-text-secondary mt-3 block text-xs font-medium">Normative policy
-        <textarea className="border-border-subtle bg-surface mt-1 min-h-40 w-full rounded-md border px-3 py-2 font-mono text-xs" value={draft.normative_text} onChange={(e) => setDraft({ ...draft, normative_text: e.target.value })} />
+      <label className="text-text-secondary mt-3 block text-xs font-medium">{t('agents.policy.whatNot')}
+        <textarea className="border-border-subtle bg-surface mt-1 min-h-32 w-full rounded-md border px-3 py-2 font-mono text-xs" value={editor.draft.whatNotToEscalate} onChange={(event) => updateText('whatNotToEscalate', event.target.value)} />
       </label>
-      <div className="mt-3 space-y-2">
-        {draft.clauses.map((clause, index) => (
-          <div key={clause.id} className="border-border-subtle bg-surface-sunken rounded-md border p-3">
-            <div className="text-text-muted flex flex-wrap gap-2 font-mono text-xs"><span>{clause.id}</span><span>· {clause.category}</span><span>· {clause.action}</span></div>
-            <textarea aria-label={`${clause.id} condition`} className="border-border-subtle bg-surface mt-2 min-h-20 w-full rounded border px-2 py-1 text-xs" value={clause.condition} onChange={(e) => setDraft({ ...draft, clauses: draft.clauses.map((item, i) => i === index ? { ...item, condition: e.target.value } : item) })} />
-          </div>
-        ))}
-      </div>
-      <label className="text-text-secondary mt-3 block text-xs font-medium">Canonical continuation phrase
-        <input readOnly className="border-border-subtle bg-surface-sunken mt-1 w-full rounded-md border px-3 py-2 font-mono text-xs" value={draft.continuation_phrase} />
-      </label>
-      {(validationError || message) && <p role="status" className={`mt-3 text-xs ${validationError ? 'text-tier-red' : 'text-text-secondary'}`}>{validationError ?? message}</p>}
-      <Dialog open={confirm !== null} onOpenChange={(open) => { if (!open) setConfirm(null); }}>
-        <DialogContent aria-label="activate policy confirmation">
+
+      {(validationError || message) && <p role="status" className={`mt-3 break-all text-xs ${validationError ? 'text-tier-red' : 'text-text-secondary'}`}>{validationError ? renderValidation(validationError, t) : message ? t(message.key, message.params) : null}</p>}
+      <Dialog open={confirm} onOpenChange={(open) => { if (!pending) setConfirm(open); }}>
+        <DialogContent aria-label={t('agents.policy.confirmAria')} closeLabel={t('common.close')}>
           <DialogHeader>
-            <DialogTitle>Confirm policy activation</DialogTitle>
-            <DialogDescription>{confirm === 'activate' ? 'Save a new immutable version and activate it?' : confirm ? `Reactivate immutable version ${confirm.version} as a new epoch?` : ''}</DialogDescription>
+            <DialogTitle>{t('agents.policy.confirmTitle')}</DialogTitle>
+            <DialogDescription>{t('agents.policy.confirmBody')}</DialogDescription>
           </DialogHeader>
-          <DialogFooter><Button size="sm" onClick={() => { if (confirm === 'activate') { setConfirm(null); void save(true); } else if (confirm) { void rollback(confirm); } }}>Confirm</Button><Button size="sm" variant="ghost" onClick={() => setConfirm(null)}>Cancel</Button></DialogFooter>
+          <DialogFooter>
+            <Button size="sm" disabled={pending} onClick={() => void submit()}>{t('agents.policy.confirmSave')}</Button>
+            <Button size="sm" variant="ghost" disabled={pending} onClick={() => setConfirm(false)}>{t('common.cancel')}</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
       <div className="mt-4 flex flex-wrap gap-2">
-        <Button size="sm" disabled={!dirty || !!validationError || createRelease.isPending} onClick={() => void save(false)}>Save immutable version</Button>
-        <Button size="sm" disabled={!dirty || !!validationError || createRelease.isPending} onClick={() => setConfirm('activate')}>Save &amp; activate</Button>
-        {message?.includes('base changed') && <Button size="sm" variant="ghost" onClick={() => window.location.reload()}>Reload base</Button>}
+        <Button size="sm" disabled={!canSave || !!validationError || pending} onClick={() => setConfirm(true)}>{pending ? t('agents.policy.saving') : t('agents.policy.save')}</Button>
+        {retryRequest && <Button size="sm" variant="ghost" disabled={pending} onClick={() => void submit(retryRequest)}>{t('agents.policy.retryExact')}</Button>}
+        {conflict && <Button size="sm" variant="ghost" disabled={reviewingConflict} onClick={() => void reviewCurrentSelector()}>{reviewingConflict ? t('agents.policy.loadingSelector') : t('agents.policy.reviewSelector')}</Button>}
       </div>
-      <section aria-labelledby="policy-history-heading" className="border-border-subtle mt-5 border-t pt-4">
-        <h4 id="policy-history-heading" className="text-text-primary text-sm font-medium">Immutable release history</h4>
-        {history.isLoading ? <p className="text-text-muted mt-2 text-xs">Loading history…</p> : history.isError && !historyItems.length ? <p role="alert" className="text-tier-red mt-2 text-xs">Could not load policy history.</p> : !historyItems.length ? <p className="text-text-muted mt-2 text-xs">No immutable releases yet.</p> : <ul className="mt-2 space-y-2">{historyItems.map((item) => <li key={`${item.release_id}-${item.activation?.id ?? 'inactive'}`} className="bg-surface-sunken rounded p-2 text-xs"><div>v{item.version} · {item.release_id} · {item.policy_digest.slice(0, 12)}</div><div className="text-text-muted">{item.activation ? `epoch ${item.activation.epoch} · ${item.activation.action}` : 'saved inactive'} · {item.actor_attribution}</div>{active && item.activation && item.release_id !== active.release.id && item.version < active.release.version && <Button size="sm" variant="ghost" onClick={() => setConfirm({ releaseId: item.release_id, version: item.version })}>Reactivate v{item.version}</Button>}</li>)}</ul>}
-        {history.isError && historyItems.length > 0 && <p role="alert" className="text-tier-red mt-2 text-xs">Could not load more policy history. Loaded releases are preserved.</p>}
-        {!history.isLoading && historyItems.length > 0 && <Button size="sm" variant="ghost" disabled={!history.hasNextPage || history.isFetchingNextPage} aria-label={history.isError ? 'Retry loading policy history' : 'Load more policy history'} onClick={() => void history.fetchNextPage()}>{history.isFetchingNextPage ? 'Loading more history…' : history.isError ? 'Retry loading history' : history.hasNextPage ? 'Load more history' : 'End of policy history'}</Button>}
-      </section>
-      <section aria-labelledby="policy-outcomes-heading" className="border-border-subtle mt-5 border-t pt-4">
-        <h4 id="policy-outcomes-heading" className="text-text-primary text-sm font-medium">Manager self-evaluation outcomes</h4>
-        {outcomes.isLoading ? <p className="text-text-muted mt-2 text-xs">Loading outcomes…</p> : outcomes.isError && !outcomeItems.length ? <p role="alert" className="text-tier-red mt-2 text-xs">Could not load outcomes.</p> : !outcomeItems.length ? <p className="text-text-muted mt-2 text-xs">No manager self-evaluation outcomes yet.</p> : <ul className="mt-2 space-y-2">{outcomeItems.map((item) => <li key={item.candidate_id} className="bg-surface-sunken rounded p-2 font-mono text-xs"><div>{item.disposition ?? 'pending'} · {item.disposition_code ?? 'no durable evaluation'}</div><div className="text-text-muted">task {item.root_task_id} · session {item.manager_session_id} · release {item.release_id ?? 'missing'}</div><div className={item.receipt_state === 'complete' ? 'text-tier-green' : 'text-tier-amber'}>{item.receipt_state}</div></li>)}</ul>}
-        {outcomes.isError && outcomeItems.length > 0 && <p role="alert" className="text-tier-red mt-2 text-xs">Could not load more outcomes. Loaded outcomes are preserved.</p>}
-        {!outcomes.isLoading && outcomeItems.length > 0 && <Button size="sm" variant="ghost" disabled={!outcomes.hasNextPage || outcomes.isFetchingNextPage} aria-label={outcomes.isError ? 'Retry loading evaluation outcomes' : 'Load more evaluation outcomes'} onClick={() => void outcomes.fetchNextPage()}>{outcomes.isFetchingNextPage ? 'Loading more outcomes…' : outcomes.isError ? 'Retry loading outcomes' : outcomes.hasNextPage ? 'Load more outcomes' : 'End of evaluation outcomes'}</Button>}
-      </section>
+
+      <V2HistorySection history={v2History} items={v2HistoryItems} />
     </PolicyShell>
   );
 }
 
-function validateDraft(draft: AuthorityPolicyTemplate, expected: AuthorityPolicyTemplate): string | null {
-  if (!draft.title.trim() || !draft.normative_text.trim()) return 'Title and normative policy are required.';
-  if (draft.continuation_phrase !== expected.continuation_phrase) return 'The canonical continuation phrase cannot be changed.';
-  if (draft.clauses.length !== expected.clauses.length) return 'Every canonical clause is required.';
-  for (let index = 0; index < expected.clauses.length; index += 1) {
-    const actual = draft.clauses[index]; const canonical = expected.clauses[index];
-    if (!actual || actual.id !== canonical.id || actual.category !== canonical.category || actual.action !== canonical.action) return 'Clause ids, order, categories, and actions are server-controlled.';
-    if (!actual.condition.trim()) return `Clause ${actual.id} needs a condition.`;
-  }
+function V2HistorySection({ history, items }: {
+  history: ReturnType<typeof useTeamEscalationPolicyV2History>;
+  items: NonNullable<ReturnType<typeof useTeamEscalationPolicyV2History>['data']>['pages'][number]['items'];
+}): JSX.Element {
+  const { t, locale } = useTranslation();
+  return (
+    <section aria-labelledby="v2-policy-history-heading" className="border-border-subtle mt-5 border-t pt-4">
+      <h4 id="v2-policy-history-heading" className="text-text-primary text-sm font-medium">{t('agents.policy.history.title')}</h4>
+      {history.isLoading ? <p className="text-text-muted mt-2 text-xs">{t('agents.policy.history.loading')}</p> : history.isError && !items.length ? <div className="mt-2 flex items-center gap-2"><p role="alert" className="text-tier-red text-xs">{renderAgentError(classifyAgentError(history.error, 'agents.policy.history.error'), t)}</p><Button size="sm" variant="ghost" onClick={() => void history.refetch()}>{t('agents.policy.history.retry')}</Button></div> : !items.length ? <p className="text-text-muted mt-2 text-xs">{t('agents.policy.history.empty')}</p> : <ul className="mt-2 space-y-3">{items.map((item) => <li key={`${item.release_id}-${item.activation?.id ?? 'inactive'}`} className="bg-surface-sunken rounded p-3 text-xs">
+        <div className="font-medium">v{item.version} · {item.title}</div>
+        <div className="text-text-muted mt-1 break-all font-mono">{t('agents.policy.history.release', { release: item.release_id, policyDigest: item.policy_digest, contract: item.contract_digest, created: formatDateShapeFor(locale, new Date(item.release_created_at), 'dateTime') })}</div>
+        <div className="text-text-muted mt-1 break-all font-mono">{item.activation ? t('agents.policy.history.activation', { activation: item.activation.id, epoch: item.activation.selector_epoch, action: item.activation.action, digest: item.activation.digest, created: formatDateShapeFor(locale, new Date(item.activation.created_at), 'dateTime') }) : t('agents.policy.history.neverActivated')}</div>
+        <div className="mt-2"><span className="font-medium">{t('agents.policy.whatTo')}</span><p className="mt-1 whitespace-pre-wrap font-mono">{item.what_to_escalate}</p></div>
+        <div className="mt-2"><span className="font-medium">{t('agents.policy.whatNot')}</span><p className="mt-1 whitespace-pre-wrap font-mono">{item.what_not_to_escalate}</p></div>
+        <div className="text-text-muted mt-2">{item.actor_attribution}</div>
+      </li>)}</ul>}
+      {history.isError && items.length > 0 && <p role="alert" className="text-tier-red mt-2 text-xs">{t('agents.policy.history.moreError')}</p>}
+      {!history.isLoading && items.length > 0 && <Button size="sm" variant="ghost" disabled={!history.hasNextPage || history.isFetchingNextPage} aria-label={history.isError ? t('agents.policy.history.retryMore') : t('agents.policy.history.loadMore')} onClick={() => void history.fetchNextPage()}>{history.isFetchingNextPage ? t('agents.policy.history.loadingMore') : history.isError ? t('agents.policy.history.retryMore') : history.hasNextPage ? t('agents.policy.history.loadMore') : t('agents.policy.history.end')}</Button>}
+    </section>
+  );
+}
+
+function draftKey(draft: V2Draft): string {
+  return JSON.stringify(draft);
+}
+
+function editorFromProjection(data: TeamEscalationPolicyResponse): V2EditorState {
+  const draft: V2Draft = data.family === 'v2' ? {
+    policyId: data.active.release.policy_id,
+    title: data.active.release.title,
+    whatToEscalate: data.active.release.what_to_escalate,
+    whatNotToEscalate: data.active.release.what_not_to_escalate,
+  } : {
+    policyId: data.v2_starter.policy_id,
+    title: data.v2_starter.title,
+    whatToEscalate: data.v2_starter.what_to_escalate,
+    whatNotToEscalate: data.v2_starter.what_not_to_escalate,
+  };
+  return {
+    draft,
+    baseline: draftKey(draft),
+    basedOnSelectorId: data.family === 'empty' ? null : data.selector_id,
+    action: data.family === 'empty' ? 'bootstrap' : 'activate',
+    sourceKey: data.family === 'v2'
+      ? `${data.family}:${data.selector_id}:${data.active.release.id}:${data.active.release.digest}`
+      : `${data.team}:${data.family}:${data.selector_id}:${data.selector_epoch}:${data.v2_starter.policy_id}`,
+  };
+}
+
+const V2_TEXT_MAX = 20_000;
+
+/** A locale-neutral validation failure; `label` names the offending field. */
+interface V2ValidationError {
+  key: 'agents.policy.validation.required' | 'agents.policy.validation.unsupported' | 'agents.policy.validation.tooLong';
+  label: 'agents.policy.whatTo' | 'agents.policy.whatNot';
+}
+
+function validateV2Draft(draft: V2Draft): V2ValidationError | null {
+  return validateV2Text('agents.policy.whatTo', draft.whatToEscalate)
+    ?? validateV2Text('agents.policy.whatNot', draft.whatNotToEscalate);
+}
+
+function validateV2Text(label: V2ValidationError['label'], value: string): V2ValidationError | null {
+  if (!value.length || !value.trim().length) return { key: 'agents.policy.validation.required', label };
+  if (value.includes('\0') || hasUnpairedSurrogate(value)) return { key: 'agents.policy.validation.unsupported', label };
+  if ([...value].length > V2_TEXT_MAX) return { key: 'agents.policy.validation.tooLong', label };
   return null;
+}
+
+function renderValidation(error: V2ValidationError, t: Translate): string {
+  return t(error.key, { label: t(error.label), count: V2_TEXT_MAX });
+}
+
+function hasUnpairedSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function refetchedData(value: unknown): TeamEscalationPolicyResponse | undefined {
+  if (typeof value !== 'object' || value === null || !('data' in value)) return undefined;
+  return (value as { data?: TeamEscalationPolicyResponse }).data;
+}
+
+function receiptMatchesRequest(control: V2AuthorityPolicyControlResponse, request: V2PairedControlRequest): boolean {
+  const receipt = control.receipt;
+  return control.control === 'v2_create_activate'
+    && receipt.kind === control.control
+    && receipt.create_request_id === request.create_request_id
+    && receipt.activation_request_id === request.activation_request_id
+    && receipt.action === request.action
+    && receipt.selector_id === control.selector_id
+    && receipt.selector_epoch === control.selector_epoch
+    && receipt.previous_selector_id === control.previous_selector_id;
+}
+
+function readbackMatches(
+  control: V2AuthorityPolicyControlResponse,
+  request: V2PairedControlRequest,
+  readback: TeamEscalationPolicyResponse,
+): boolean {
+  const receipt = control.receipt;
+  return readback.family === 'v2'
+    && readback.selector_id === receipt.selector_id
+    && readback.selector_epoch === receipt.selector_epoch
+    && readback.active.selector_epoch === receipt.selector_epoch
+    && readback.active.activation_id === receipt.activation_id
+    && readback.active.release.id === receipt.release_id
+    && readback.active.release.version === receipt.release_version
+    && readback.active.release.digest === receipt.policy_digest
+    && readback.active.release.policy_id === request.policy_id
+    && readback.active.release.title === request.title
+    && readback.active.release.what_to_escalate === request.what_to_escalate
+    && readback.active.release.what_not_to_escalate === request.what_not_to_escalate;
 }
 
 function PolicyShell({ children }: { children: ReactNode }): JSX.Element {

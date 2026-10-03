@@ -300,8 +300,10 @@ def cmd_set_executor(args: argparse.Namespace) -> None:
 
     THR-095: writes to org/agents/<name>.md frontmatter ONLY
     (single source of truth).  The executor bootstrap is regenerated.
-    Warns about stale Claude-only files when switching away from Claude;
-    pass ``--clean`` to delete them.
+    Warns about the stale Claude executor settings file when switching
+    away from Claude; ``--clean`` removes only that accepted stale settings
+    file (``.claude/settings.json``) and preserves the canonical
+    ``AGENTS.md``/``CLAUDE.md`` instruction pair and ``.claude/skills``.
     """
     try:
         client = OpcClient.from_env()
@@ -332,10 +334,10 @@ def cmd_set_executor(args: argparse.Namespace) -> None:
         if result.get("cleaned"):
             print(f"  removed stale Claude files: {', '.join(result.get('removed') or [])}")
         else:
-            print("  WARNING: stale Claude-only files remain (no longer managed by the new executor):")
+            print("  WARNING: stale Claude executor settings remain (no longer managed by the new executor):")
             for name in stale:
                 print(f"    - {name}")
-            print("  Re-run with --clean to delete them.")
+            print("  Re-run with --clean to remove only those stale settings.")
 
 
 
@@ -400,7 +402,11 @@ def register(sub) -> None:
     )
     p_setexec.add_argument(
         "--clean", action="store_true",
-        help="Delete stale Claude-only files (CLAUDE.md, .claude/) when switching away from Claude",
+        help=(
+            "Remove only the stale Claude executor settings "
+            "(.claude/settings.json) when switching away from Claude; the "
+            "canonical AGENTS.md/CLAUDE.md pair and .claude/skills are preserved"
+        ),
     )
     p_setexec.set_defaults(func=cmd_set_executor)
 

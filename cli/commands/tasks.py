@@ -122,10 +122,47 @@ def cmd_tasks(args: argparse.Namespace) -> None:
         params["status"] = args.status
     if getattr(args, "block_kind", None):
         params["block_kind"] = args.block_kind
-    r = client.get(f"/api/v1/orgs/{slug}/tasks", params=params)
-    if not _ok(r):
+    agent = getattr(args, "agent", None)
+    if isinstance(agent, str) and agent:
+        params["assigned_agent"] = agent
+    all_pages = getattr(args, "all_pages", False) is True
+    tasks: list[dict] = []
+    seen_ids: set[str] = set()
+    seen_cursors: set[str] = set()
+    cursor: str | None = None
+    while True:
+        page_params = dict(params)
+        if cursor is not None:
+            page_params["before"] = cursor
+        r = client.get(f"/api/v1/orgs/{slug}/tasks", params=page_params)
+        if not _ok(r):
+            return
+        body = r.json()
+        page = body.get("tasks") if isinstance(body, dict) else None
+        next_cursor = body.get("next_cursor") if isinstance(body, dict) else None
+        if not isinstance(page, list) or any(not isinstance(row, dict) for row in page):
+            print("Error: task pagination returned malformed entries", file=sys.stderr)
+            sys.exit(1)
+        for row in page:
+            task_id = row.get("task_id")
+            if not isinstance(task_id, str) or not task_id or task_id in seen_ids:
+                print("Error: task pagination returned duplicate or malformed ids", file=sys.stderr)
+                sys.exit(1)
+            seen_ids.add(task_id)
+            tasks.append(row)
+        if not all_pages or next_cursor is None:
+            break
+        if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
+            print("Error: task pagination cursor did not advance", file=sys.stderr)
+            sys.exit(1)
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+    if all_pages:
+        tasks.sort(key=lambda row: row["task_id"])
+    if getattr(args, "json", False) is True:
+        import json as _json
+        print(_json.dumps(tasks, indent=2))
         return
-    tasks = r.json()["tasks"]
     if not tasks:
         print("No tasks found.")
         return
@@ -268,7 +305,18 @@ def cmd_details(args: argparse.Namespace) -> None:
             agent = leg.get("agent", "")
             prompt_excerpt = (leg.get("prompt") or "")[:40]
             print(f"  {marker} Leg {i}  {agent:<14} {prompt_excerpt}{verdict_note}")
-    if task.get("note"):
+    escalation_reason = body.get("escalation_reason")
+    is_v2_refusal = (
+        task.get("status") == "escalated"
+        and isinstance(escalation_reason, dict)
+        and bool(escalation_reason.get("refusal_code"))
+    )
+    if is_v2_refusal:
+        if escalation_reason.get("primary"):
+            print(f"Escalation reason: {escalation_reason['primary']}")
+        if escalation_reason.get("secondary"):
+            print(f"Automatic escalation: {escalation_reason['secondary']}")
+    elif task.get("note"):
         print(f"Note:       {task['note']}")
     if body.get("results"):
         print(f"\nResults ({len(body['results'])}):")
@@ -325,13 +373,46 @@ def cmd_audit(args: argparse.Namespace) -> None:
         params["action"] = args.action
     if args.since is not None:
         params["since"] = args.since
+    all_pages = getattr(args, "all_pages", False) is True
     if args.limit is not None:
         params["limit"] = args.limit
+    elif all_pages:
+        params["limit"] = 1000
 
-    r = client.get(f"/api/v1/orgs/{slug}/audit", params=params)
-    if not _ok(r):
-        return
-    entries = r.json()["entries"]
+    entries: list[dict] = []
+    seen_ids: set[int] = set()
+    seen_cursors: set[str] = set()
+    cursor: str | None = None
+    while True:
+        page_params = dict(params)
+        if cursor is not None:
+            page_params["cursor"] = cursor
+        r = client.get(f"/api/v1/orgs/{slug}/audit", params=page_params)
+        if not _ok(r):
+            return
+        body = r.json()
+        page = body.get("entries") if isinstance(body, dict) else None
+        next_cursor = body.get("next_cursor") if isinstance(body, dict) else None
+        if not isinstance(page, list) or any(not isinstance(row, dict) for row in page):
+            print("Error: audit pagination returned malformed entries", file=sys.stderr)
+            sys.exit(1)
+        for row in page:
+            row_id = row.get("id")
+            if not isinstance(row_id, int) or isinstance(row_id, bool) or row_id in seen_ids:
+                print("Error: audit pagination returned duplicate or malformed ids", file=sys.stderr)
+                sys.exit(1)
+            seen_ids.add(row_id)
+            entries.append(row)
+        if not all_pages or next_cursor is None:
+            break
+        if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
+            print("Error: audit pagination cursor did not advance", file=sys.stderr)
+            sys.exit(1)
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+
+    if all_pages:
+        entries.sort(key=lambda row: row["id"])
 
     if args.json:
         print(_json.dumps(entries, indent=2))
@@ -628,11 +709,40 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
     <path>` keeps the tool call a single line.
 
     Returns ``(task_id, body)`` shaped for the daemon's completion endpoint.
+
+    THR-229 checkpoint C2: when the payload carries a v2
+    ``manager_self_evaluation`` the affected transport is decoded with the
+    repository's strict decoder *before* the ordinary lossy parse is trusted,
+    so duplicate JSON members, UTF-16/32, a BOM, non-finite numbers and
+    invalid JSON are rejected at the wire boundary with no durable write and
+    no raw-content echo.  Omission versus an explicit ``null`` is preserved
+    (membership check, never truthiness).
     """
     import json as _json
+
+    from runtime.models import decode_authority_policy_v2_json
+
     _shared.require_absolute_payload_path(path, kind="completion")
-    with open(path) as f:
-        data = _json.load(f)
+    with open(path, "rb") as f:
+        raw = f.read()
+    strict: dict | None = None
+    try:
+        strict = decode_authority_policy_v2_json(raw)
+    except ValueError:
+        strict = None
+    data = _json.loads(raw)
+    # Classify the transport from the lossless-enough ordinary parse and
+    # require the strict decode whenever the payload declares v2 evidence; a
+    # strict failure (duplicate member, BOM, non-finite number, invalid
+    # UTF-8) then refuses with a bounded message that never echoes content.
+    _mse = data.get("manager_self_evaluation") if isinstance(data, dict) else None
+    if isinstance(_mse, dict) and _mse.get("contract_id") == "authority_policy_v2":
+        if strict is None:
+            raise ValueError(
+                "v2 manager_self_evaluation transport must be strict UTF-8 JSON "
+                "with no duplicate members, BOM, or non-finite numbers"
+            )
+        data = strict
     required = ["task_id", "session_id", "agent", "status", "summary"]
     missing = [k for k in required if not data.get(k)]
     if missing:
@@ -658,6 +768,10 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
     # the orchestrator parses it via the NextStep pydantic model.
     if data.get("decision") is not None:
         body["decision"] = data["decision"]
+    # Preserve the caller's exact supplied evaluation value for daemon-side
+    # validation. Explicit null/false/empty/invalid values are not omission.
+    if "manager_self_evaluation" in data:
+        body["manager_self_evaluation"] = data["manager_self_evaluation"]
     # Agents self-blocking on jobs pass `waiting_on_job_ids` so the daemon's
     # block-on-jobs branch (run_step's self-blocked handler) transitions the
     # task to BLOCKED+BLOCKED_ON_JOB instead of the legacy self-escalate path.
@@ -1010,6 +1124,12 @@ def register(sub) -> None:
     p_tasks = sub.add_parser("tasks", help="List recent tasks")
     p_tasks.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_tasks.add_argument("--limit", type=int, default=20, help="Max tasks to show")
+    p_tasks.add_argument("--agent", default=None, help="Filter by assigned agent")
+    p_tasks.add_argument(
+        "--all-pages", action="store_true",
+        help="Follow task keyset pages to exhaustion; --limit is the page size",
+    )
+    p_tasks.add_argument("--json", action="store_true", help="Emit raw JSON")
     p_tasks.add_argument(
         "--status", default=None,
         help="Filter by task status (e.g. in_progress, escalated, completed, "
@@ -1033,6 +1153,11 @@ def register(sub) -> None:
                          help="ISO-8601 timestamp; only entries at or after this time")
     p_audit.add_argument("--limit", type=int, default=None,
                          help="Cap to the most recent N entries")
+    p_audit.add_argument(
+        "--all-pages", action="store_true",
+        help=("Follow the audit keyset cursor to exhaustion; --limit becomes "
+              "the bounded page size (default 1000)"),
+    )
     p_audit.add_argument("--json", action="store_true",
                          help="Emit raw JSON instead of the human-readable table")
     p_audit.set_defaults(func=cmd_audit)

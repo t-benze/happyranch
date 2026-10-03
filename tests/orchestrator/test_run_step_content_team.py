@@ -73,7 +73,7 @@ def test_pass_path_completes_task(paths: OrgPaths, db: Database, monkeypatch) ->
     orch = _make_orch(paths, db)
     tid = _seed_task(db)
 
-    scripted = ScriptedRunAgent()
+    scripted = ScriptedRunAgent(db)
     # CM step 1: delegate to content_writer
     scripted.enqueue(
         "content_manager",
@@ -123,7 +123,7 @@ def test_revise_path_bumps_revision_count(paths: OrgPaths, db: Database, monkeyp
     orch = _make_orch(paths, db)
     tid = _seed_task(db)
 
-    scripted = ScriptedRunAgent()
+    scripted = ScriptedRunAgent(db)
     # CM step 1: delegate to writer (first time)
     scripted.enqueue(
         "content_manager",
@@ -182,7 +182,7 @@ def test_reject_path_escalates(paths: OrgPaths, db: Database, monkeypatch) -> No
     orch = _make_orch(paths, db)
     tid = _seed_task(db)
 
-    scripted = ScriptedRunAgent()
+    scripted = ScriptedRunAgent(db)
     # CM step 1: delegate to writer
     scripted.enqueue(
         "content_manager",
@@ -261,7 +261,7 @@ def test_revise_cap_trips_deliberate_stop_non_root(
         "runtime.orchestrator.run_step.load_org_config", lambda p: cfg,
     )
 
-    scripted = ScriptedRunAgent()
+    scripted = ScriptedRunAgent(db)
     # CM step 1: delegate to writer (first time, revision_count=0)
     scripted.enqueue(
         "content_manager",
@@ -357,7 +357,7 @@ def test_revise_below_cap_proceeds_normally(
         "runtime.orchestrator.run_step.load_org_config", lambda p: cfg,
     )
 
-    scripted = ScriptedRunAgent()
+    scripted = ScriptedRunAgent(db)
     # CM step 1: delegate to writer
     scripted.enqueue(
         "content_manager",
@@ -427,7 +427,7 @@ def test_revise_cap_zero_disabled_never_trips(
         "runtime.orchestrator.run_step.load_org_config", lambda p: cfg,
     )
 
-    scripted = ScriptedRunAgent()
+    scripted = ScriptedRunAgent(db)
     # Two REVISE cycles — should all proceed normally with cap=0.
     for round_num in (1, 2):
         scripted.enqueue(
@@ -504,7 +504,7 @@ def test_revise_cap_off_by_one_k1_exactly_one_revise(
         "runtime.orchestrator.run_step.load_org_config", lambda p: cfg,
     )
 
-    scripted = ScriptedRunAgent()
+    scripted = ScriptedRunAgent(db)
     # Round 1: initial delegation → QA REVISE → CM re-delegates (REVISE #1, revision_count 0→1, cap=1, proceed)
     scripted.enqueue(
         "content_manager",
@@ -582,7 +582,7 @@ def test_revise_cap_off_by_one_k2_exactly_two_revises(
         "runtime.orchestrator.run_step.load_org_config", lambda p: cfg,
     )
 
-    scripted = ScriptedRunAgent()
+    scripted = ScriptedRunAgent(db)
     # Three REVISE cycles should be queued; the 3rd delegate (round 3 CM) bumps
     # count 1→2 (allowed), and the 4th CM re-entry would trip the cap.
     # The 4th-entry cap-stop assertion lives in
@@ -645,7 +645,7 @@ def test_revise_cap_root_escalates(
         notified.append((task_id, agent, reason))
     monkeypatch.setattr(orch, "notify_escalated", _fake_notify)
 
-    scripted = ScriptedRunAgent()
+    scripted = ScriptedRunAgent(db)
     # First delegate → QA REVISE → CM re-delegates (REVISE #1, revision_count 0→1, cap=1, proceed)
     scripted.enqueue(
         "content_manager",
@@ -769,7 +769,7 @@ def test_revise_cap_preserves_best_attempt_no_teardown(
         "runtime.orchestrator.run_step._kill_jobs_for_terminating_task", _spy_kill,
     )
 
-    scripted = ScriptedRunAgent()
+    scripted = ScriptedRunAgent(db)
     # First delegate → QA REVISE → CM re-delegates (REVISE #1, count 0→1, cap=1, proceed)
     scripted.enqueue(
         "content_manager",

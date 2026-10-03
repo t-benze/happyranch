@@ -1,6 +1,6 @@
 """Phase-2 mention routing (THR-198) Slice B — production wake routing.
 
-Slice B wires the merged pure resolver (runtime/daemon/thread_mentions.py)
+Slice B wires the merged pure resolver (runtime/infrastructure/thread_mentions.py)
 into the two conversational store seams using the persisted structured
 mention signal and the thread's default-enabled setting. Ratified matrix:
 

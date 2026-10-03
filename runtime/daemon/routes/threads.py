@@ -757,6 +757,10 @@ async def _compose_agent_thread_multipart(
             status_code=409,
             detail={"code": "session_mismatch", "active": active_sid, "got": body.session_id},
         )
+    # Multipart follows the same purpose boundary as JSON compose. This must
+    # precede attachment storage and inline thread creation below.
+    if org.sessions.is_recovery_session(body.task_id, body.composer, body.session_id):
+        raise HTTPException(status_code=403, detail={"code": "recovery_purpose_forbidden"})
 
     # Dedupe recipients.
     seen_rcpt: set[str] = set()
@@ -969,6 +973,8 @@ async def compose_thread_as_agent(
             status_code=409,
             detail={"code": "session_mismatch", "active": active_sid, "got": body.session_id},
         )
+    if org.sessions.is_recovery_session(body.task_id, body.composer, body.session_id):
+        raise HTTPException(status_code=403, detail={"code": "recovery_purpose_forbidden"})
 
     # Dedupe recipients (preserve order).
     seen: set[str] = set()
@@ -1056,7 +1062,35 @@ def _wire_status(db_status: str) -> str:
     return db_status
 
 
-def _thread_row_to_dict(t: ThreadRecord) -> dict:
+class ThreadListRowResponse(BaseModel):
+    """Read-only inbox projection; participants are not persisted thread fields."""
+    model_config = ConfigDict(extra="forbid")
+    thread_id: str
+    subject: str
+    status: str
+    started_at: str
+    archived_at: str | None
+    forwarded_from_id: str | None
+    forwarded_from_kind: str | None
+    turn_cap: int
+    turns_used: int
+    summary: str | None
+    transcript_path: str | None
+    composed_by: str | None
+    composed_from_task_id: str | None
+    composed_from_dream_id: str | None
+    last_speaker: str | None
+    pinned: bool
+    pinned_at: str | None
+    last_activity_at: str | None
+    participants: list[str]
+
+
+class ThreadListResponse(BaseModel):
+    threads: list[ThreadListRowResponse]
+
+
+def _thread_row_to_dict(t: ThreadRecord, *, participants: list[str] | None = None) -> dict:
     return {
         "thread_id": t.id,
         "subject": t.subject,
@@ -1076,6 +1110,7 @@ def _thread_row_to_dict(t: ThreadRecord) -> dict:
         "pinned": t.pinned_at is not None,
         "pinned_at": t.pinned_at.isoformat() if t.pinned_at else None,
         "last_activity_at": t.last_activity_at.isoformat() if t.last_activity_at else None,
+        "participants": participants or [],
     }
 
 
@@ -1135,15 +1170,18 @@ def _msg_to_dict(m, responders: list[dict] | None = None) -> dict:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/threads")
+@router.get("/threads", response_model=ThreadListResponse)
 async def list_threads_endpoint(
     slug: str,
     org: OrgDep,
     status: str | None = None,
     limit: int = 50,
-) -> dict:
+) -> ThreadListResponse:
     rows = org.db.list_threads(status=status, limit=min(limit, 500))
-    return {"threads": [_thread_row_to_dict(t) for t in rows]}
+    participants = org.db.list_thread_participant_names_for_threads([t.id for t in rows])
+    return ThreadListResponse(
+        threads=[_thread_row_to_dict(t, participants=participants[t.id]) for t in rows]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1935,6 +1973,8 @@ def _validate_task_session_binding(
         raise _SendThreadError(
             409, "session_mismatch", active=active_sid, got=session_id,
         )
+    if org.sessions.is_recovery_session(task_id, composer, session_id):
+        raise _SendThreadError(403, "recovery_purpose_forbidden")
 
 
 async def _send_thread_message_inprocess(

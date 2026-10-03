@@ -1,0 +1,1 @@
+{"scenario":"findings-revision","ancestors":["TASK-201","TASK-202"],"facts":{"maker":"maker-b","revision":"r2","digest":"d-r2","authority":"current","prior_receipt":"r1-stale","reviewers":["founder","implementation","test"],"historical_makers":["maker-a","maker-b"]}}

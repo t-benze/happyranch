@@ -1144,6 +1144,14 @@ reference commands that actually exist (`command -v uv`, `uv --version`,
 `scripts/daemon.sh start`). `cmd_stop` / `cmd_status` / `cmd_maintenance`
 are unchanged.
 
+After launch, `cmd_start` waits for the configured bind host's public
+`GET /api/v1/health` endpoint, not merely the port file. The wait is controlled
+by the positive-integer `HAPPYRANCH_DAEMON_START_TIMEOUT` (default 30 seconds),
+and wildcard binds are probed through loopback. A dead launch fails fast; a
+dead launch or timeout prints the last 20 daemon-log lines. If `curl` is
+unavailable, the script announces its fallback to the fresh `daemon.port`
+file. This readiness wait does not replace the relocation gates above.
+
 **Daemon-child CLI parity (after start, before any agent work) — accurately
 bounded.** Agent callbacks and skills invoke bare `happyranch` inside
 executor children. The daemon prepends the standard tool dirs

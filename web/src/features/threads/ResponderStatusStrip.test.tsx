@@ -1,7 +1,12 @@
-import { render, screen } from '@testing-library/react';
+import { render as rtlRender, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { describe, it, expect } from 'vitest';
+import { I18nTestBoundary } from '@/test/render';
 import type { ResponderStatusEntry } from '@/lib/api/types';
 import { ResponderStatusStrip } from './ResponderStatusStrip';
+
+// THR-118 W3a: the strip reads copy from the real I18nProvider (English here).
+const render = (ui: ReactElement) => rtlRender(ui, { wrapper: I18nTestBoundary });
 
 /** One responder entry — purpose defaults to 'reply' (TASK-5553 wire field). */
 function rs(

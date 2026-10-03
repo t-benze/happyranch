@@ -1,15 +1,22 @@
-"""Tests for the Node-24 runtime guard in ``scripts/local_ci.sh``.
+"""Tests for ``scripts/local_ci.sh``.
 
-The web/all targets of the local CI wrapper must run under effective Node.js
-major exactly 24 (the repository ``.nvmrc`` declaration, matching the GitHub
-"Web (Node 24)" job). These tests exercise the wrapper against controlled fake
-``node``/``npm``/``npx``/``uv`` shims on a temporary PATH so they are fully
-deterministic and do not depend on the host's real Node/npm/uv:
+Two behaviors are covered against the real shell entrypoint with controlled
+fake tool shims on a temporary ``PATH``:
 
-* a fake ``v26`` node is rejected before any ``uv`` or ``npm`` work runs;
-* a fake ``v24`` node permits the web/all commands to execute through the shims;
-* the optional ``nvm`` selection branch selects ``v24`` and re-verifies;
-* a malformed/absent ``.nvmrc`` declaration fails closed.
+1. **Node-24 runtime guard (web/all).** The web/all targets must run under
+   effective Node.js major exactly 24 (the repository ``.nvmrc`` declaration,
+   matching the GitHub "Web (Node 24)" job):
+
+   * a fake ``v26`` node is rejected before any ``uv`` or ``npm`` work runs;
+   * a fake ``v24`` node permits the web/all commands to execute through shims;
+   * the optional ``nvm`` selection branch selects ``v24`` and re-verifies;
+   * a malformed/absent ``.nvmrc`` declaration fails closed.
+
+2. **Per-run pytest basetemp lifecycle (python/integration/all).** Each Python
+   pytest invocation must receive an explicit, freshly and uniquely created
+   ``--basetemp`` beneath the effective ``TMPDIR``, and the wrapper must remove
+   exactly that directory on success, pytest/setup failure and catchable
+   HUP/INT/TERM — never ``TMPDIR`` itself or any sibling/pre-existing content.
 
 The fakes shadow the real tools by prepending a temp ``bin`` dir to ``PATH``;
 ``NVM_DIR``/``HOME`` are pointed at empty dirs so the selection branch cannot
@@ -19,7 +26,10 @@ accidentally pick up a real Node 24 installed on the host.
 from __future__ import annotations
 
 import os
+import shutil
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -31,6 +41,26 @@ COLOUR_GATE_COMMAND = "bash scripts/verify-design-system-colour-gate.sh"
 
 NODE_VERSION_FILE_VAR = "LOCAL_CI_FAKE_NODE_VERSION_FILE"
 INVOCATION_LOG_VAR = "LOCAL_CI_FAKE_INVOCATION_LOG"
+
+# Controls for the richer fake ``uv`` used by the basetemp-lifecycle tests.
+BASETEMP_CAPTURE_VAR = "LOCAL_CI_FAKE_BASETEMP_CAPTURE"
+BASETEMP_DURING_VAR = "LOCAL_CI_FAKE_BASETEMP_DURING"
+UV_SYNC_EXIT_VAR = "LOCAL_CI_FAKE_UV_SYNC_EXIT"
+UV_RUN_EXIT_VAR = "LOCAL_CI_FAKE_UV_RUN_EXIT"
+UV_RUN_SLEEP_VAR = "LOCAL_CI_FAKE_UV_RUN_SLEEP"
+UV_RUN_READY_VAR = "LOCAL_CI_FAKE_UV_RUN_READY"
+RM_EXIT_VAR = "LOCAL_CI_FAKE_RM_EXIT"
+MKTEMP_CAPTURE_VAR = "LOCAL_CI_FAKE_MKTEMP_CAPTURE"
+RM_BLOCK_READY_VAR = "LOCAL_CI_FAKE_RM_BLOCK_READY"
+RM_BLOCK_RELEASE_VAR = "LOCAL_CI_FAKE_RM_BLOCK_RELEASE"
+RM_BLOCK_SIGNAL_VAR = "LOCAL_CI_FAKE_RM_BLOCK_SIGNAL"
+RM_BLOCK_COUNT_VAR = "LOCAL_CI_FAKE_RM_BLOCK_COUNT"
+
+SIGNAL_EXIT = {
+    signal.SIGHUP: 128 + signal.SIGHUP,
+    signal.SIGINT: 128 + signal.SIGINT,
+    signal.SIGTERM: 128 + signal.SIGTERM,
+}
 
 
 def _write_executable(path: Path, content: str) -> None:
@@ -63,11 +93,58 @@ def _fake_node(bin_dir: Path) -> None:
 
 
 def _fake_recorder(bin_dir: Path, name: str) -> None:
-    """A fake tool (npm/npx/uv) that records its invocation and exits 0."""
+    """A fake tool (npm/npx) that records its invocation and exits 0."""
     _write_executable(
         bin_dir / name,
         "#!/usr/bin/env bash\n"
         f'echo "{name} $*" >> "${{LOCAL_CI_FAKE_INVOCATION_LOG}}"\n'
+        "exit 0\n",
+    )
+
+
+def _fake_uv(bin_dir: Path) -> None:
+    """A fake ``uv`` that models sync/run and captures the pytest basetemp.
+
+    * ``uv sync ...`` records and exits with ``LOCAL_CI_FAKE_UV_SYNC_EXIT``.
+    * ``uv run ...`` records, extracts the ``--basetemp`` value, writes it to
+      ``LOCAL_CI_FAKE_BASETEMP_CAPTURE``, appends whether that directory exists
+      to ``LOCAL_CI_FAKE_BASETEMP_DURING`` (and drops a marker inside it), then
+      optionally signals readiness, optionally ``exec sleep``s (for the signal
+      tests), and exits with ``LOCAL_CI_FAKE_UV_RUN_EXIT``.
+    """
+    _write_executable(
+        bin_dir / "uv",
+        "#!/usr/bin/env bash\n"
+        'echo "uv $*" >> "${LOCAL_CI_FAKE_INVOCATION_LOG}"\n'
+        'if [ "${1:-}" = "sync" ]; then\n'
+        '  exit "${LOCAL_CI_FAKE_UV_SYNC_EXIT:-0}"\n'
+        "fi\n"
+        'if [ "${1:-}" = "run" ]; then\n'
+        '  basetemp=""\n'
+        '  prev=""\n'
+        '  for arg in "$@"; do\n'
+        '    if [ "$prev" = "--basetemp" ]; then basetemp="$arg"; fi\n'
+        '    prev="$arg"\n'
+        "  done\n"
+        '  if [ -n "${LOCAL_CI_FAKE_BASETEMP_CAPTURE:-}" ]; then\n'
+        '    printf \'%s\' "$basetemp" > "${LOCAL_CI_FAKE_BASETEMP_CAPTURE}"\n'
+        "  fi\n"
+        '  if [ -n "${LOCAL_CI_FAKE_BASETEMP_DURING:-}" ]; then\n'
+        '    if [ -n "$basetemp" ] && [ -d "$basetemp" ]; then\n'
+        '      printf \'exists=yes\\n\' >> "${LOCAL_CI_FAKE_BASETEMP_DURING}"\n'
+        '      printf \'marker\\n\' > "$basetemp/pytest-during-marker"\n'
+        "    else\n"
+        '      printf \'exists=no\\n\' >> "${LOCAL_CI_FAKE_BASETEMP_DURING}"\n'
+        "    fi\n"
+        "  fi\n"
+        '  if [ -n "${LOCAL_CI_FAKE_UV_RUN_READY:-}" ]; then\n'
+        '    printf \'ready\\n\' > "${LOCAL_CI_FAKE_UV_RUN_READY}"\n'
+        "  fi\n"
+        '  if [ -n "${LOCAL_CI_FAKE_UV_RUN_SLEEP:-}" ]; then\n'
+        '    exec sleep "${LOCAL_CI_FAKE_UV_RUN_SLEEP}"\n'
+        "  fi\n"
+        '  exit "${LOCAL_CI_FAKE_UV_RUN_EXIT:-0}"\n'
+        "fi\n"
         "exit 0\n",
     )
 
@@ -91,8 +168,9 @@ def _setup_fake_env(
         version_file.write_text(node_version if raw else node_version + "\n")
     log_file = tmp_path / "invocations.log"
     _fake_node(bin_dir)
-    for name in ("npm", "npx", "uv"):
+    for name in ("npm", "npx"):
         _fake_recorder(bin_dir, name)
+    _fake_uv(bin_dir)
     _write_executable(
         bin_dir / "df",
         "#!/usr/bin/env bash\n"
@@ -173,6 +251,142 @@ def _run_in_tree(
         capture_output=True,
         text=True,
     )
+
+
+def _build_tmp_root(tmp_path: Path) -> Path:
+    """A controlled ``TMPDIR`` containing unrelated sentinel siblings.
+
+    The basetemp must be created beneath this directory and must never disturb
+    the sentinels — proving cleanup is limited to the exact created child.
+    """
+    tmp_root = tmp_path / "tmpdir"
+    tmp_root.mkdir()
+    sentinel_file = tmp_root / "unrelated-sentinel.txt"
+    sentinel_file.write_text("keep me\n")
+    sentinel_dir = tmp_root / "unrelated-sentinel-dir"
+    sentinel_dir.mkdir()
+    (sentinel_dir / "nested.txt").write_text("keep me too\n")
+    return tmp_root
+
+
+def _assert_sentinels_survive(tmp_root: Path) -> None:
+    assert (tmp_root / "unrelated-sentinel.txt").read_text() == "keep me\n"
+    assert (tmp_root / "unrelated-sentinel-dir" / "nested.txt").read_text() == (
+        "keep me too\n"
+    )
+
+
+def _fake_rm(bin_dir: Path) -> None:
+    """A fake ``rm`` that records and exits with the controlled status."""
+    _write_executable(
+        bin_dir / "rm",
+        "#!/usr/bin/env bash\n"
+        'echo "rm $*" >> "${LOCAL_CI_FAKE_INVOCATION_LOG}"\n'
+        'exit "${LOCAL_CI_FAKE_RM_EXIT:-0}"\n',
+    )
+
+
+def _fake_blocking_rm(bin_dir: Path, real_rm: str) -> None:
+    """Block the first cleanup removal until a signal and explicit release.
+
+    The first invocation catches the process-group signal, records that it
+    arrived while ``rm`` itself was blocked, and returns a controlled failure
+    after the test writes the explicit release file. A safe EXIT-trap retry is
+    the second invocation, which delegates the same literal arguments to real
+    ``rm`` and removes the exact basetemp.
+    """
+    _write_executable(
+        bin_dir / "rm",
+        "#!/usr/bin/env bash\n"
+        "set -u\n"
+        f"real_rm={real_rm!r}\n"
+        'count_file="${LOCAL_CI_FAKE_RM_BLOCK_COUNT}"\n'
+        "count=0\n"
+        'if [ -f "$count_file" ]; then count="$(cat "$count_file")"; fi\n'
+        "count=$((count + 1))\n"
+        'printf \'%s\\n\' "$count" > "$count_file"\n'
+        'echo "rm $*" >> "${LOCAL_CI_FAKE_INVOCATION_LOG}"\n'
+        'if [ "$count" -eq 1 ]; then\n'
+        '  signal_file="${LOCAL_CI_FAKE_RM_BLOCK_SIGNAL}"\n'
+        '  trap \'printf "signal\\n" > "$signal_file"\' HUP INT TERM\n'
+        '  printf \'ready\\n\' > "${LOCAL_CI_FAKE_RM_BLOCK_READY}"\n'
+        "  attempts=0\n"
+        '  while [ ! -f "${LOCAL_CI_FAKE_RM_BLOCK_RELEASE}" ]; do\n'
+        "    attempts=$((attempts + 1))\n"
+        "    [ \"$attempts\" -lt 2000 ] || exit 73\n"
+        "    sleep 0.01\n"
+        "  done\n"
+        '  [ -f "$signal_file" ] || exit 74\n'
+        "  exit 75\n"
+        "fi\n"
+        'exec "$real_rm" "$@"\n',
+    )
+
+
+def _fake_mktemp(bin_dir: Path, real_mktemp: str) -> None:
+    """A recording ``mktemp`` that delegates to the real tool.
+
+    Installed only in tests that need to observe the created basetemp path even
+    when the wrapper fails before pytest runs (e.g. ``uv sync`` failure). It is
+    not part of the default fake env because the Node guard also calls
+    ``mktemp``.
+    """
+    _write_executable(
+        bin_dir / "mktemp",
+        "#!/usr/bin/env bash\n"
+        f"real={real_mktemp!r}\n"
+        'out="$("$real" "$@")"\n'
+        "rc=$?\n"
+        'if [ "$rc" -eq 0 ]; then\n'
+        '  echo "mktemp $* -> $out" >> "${LOCAL_CI_FAKE_INVOCATION_LOG}"\n'
+        '  if [ -n "${LOCAL_CI_FAKE_MKTEMP_CAPTURE:-}" ]; then\n'
+        '    printf \'%s\\n\' "$out" >> "${LOCAL_CI_FAKE_MKTEMP_CAPTURE}"\n'
+        "  fi\n"
+        "fi\n"
+        'printf \'%s\\n\' "$out"\n'
+        'exit "$rc"\n',
+    )
+
+
+def _spawn_local_ci(
+    target: str,
+    bin_dir: Path,
+    version_file: Path,
+    log_file: Path,
+    env_extra: dict[str, str],
+) -> subprocess.Popen[str]:
+    """Start the real wrapper in its own session so signals can target it.
+
+    ``start_new_session=True`` puts the wrapper and its fake-``uv`` child in a
+    dedicated process group (mirroring a terminal foreground job), so sending a
+    signal to the group reaches both exactly as Ctrl-C would.
+    """
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+    env[NODE_VERSION_FILE_VAR] = str(version_file)
+    env[INVOCATION_LOG_VAR] = str(log_file)
+    env["NVM_DIR"] = str(version_file.parent / "no-nvm-dir")
+    env["HOME"] = str(version_file.parent)
+    env.update(env_extra)
+    return subprocess.Popen(
+        ["bash", str(SCRIPT), target],
+        cwd=str(REPO_ROOT),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+
+
+def _wait_for_file(path: Path, timeout: float = 15.0) -> bool:
+    """Bounded wait for an explicit ready file (no timing sleeps)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return True
+        time.sleep(0.01)
+    return False
 
 
 def test_all_rejects_mismatched_node_before_any_work(tmp_path: Path) -> None:
@@ -419,3 +633,342 @@ def test_valid_declaration_accepted(tmp_path: Path, declaration: str) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "npm ci" in log_file.read_text()
+
+
+# ── Per-run pytest basetemp lifecycle ─────────────────────────────────────
+# Each Python pytest invocation must get an explicit, freshly created and
+# uniquely named --basetemp beneath the effective TMPDIR, and the wrapper must
+# remove exactly that directory (never TMPDIR, never a sibling) on success,
+# failure and catchable signals while preserving the meaningful exit status.
+
+
+@pytest.mark.parametrize("target", ["python", "integration"], ids=["python", "integration"])
+def test_python_and_integration_pass_explicit_unique_basetemp(
+    tmp_path: Path, target: str
+) -> None:
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.0.0")
+    tmp_root = _build_tmp_root(tmp_path)
+    capture = tmp_path / "basetemp-capture"
+    during = tmp_path / "basetemp-during"
+
+    result = _run_local_ci(
+        target,
+        bin_dir,
+        version_file,
+        log_file,
+        {
+            "TMPDIR": str(tmp_root),
+            BASETEMP_CAPTURE_VAR: str(capture),
+            BASETEMP_DURING_VAR: str(during),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    log = log_file.read_text()
+    assert "uv sync --frozen" in log
+    assert "uv run pytest" in log
+    assert "--basetemp" in log
+    # The directory existed while pytest ran and is gone afterwards.
+    assert during.read_text().strip() == "exists=yes"
+    basetemp = Path(capture.read_text())
+    assert basetemp.parent == tmp_root
+    assert basetemp.name.startswith("happyranch-pytest-basetemp")
+    assert not basetemp.exists()
+    _assert_sentinels_survive(tmp_root)
+
+
+def test_all_python_phase_passes_basetemp_and_cleans_up(tmp_path: Path) -> None:
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.0.0")
+    tmp_root = _build_tmp_root(tmp_path)
+    capture = tmp_path / "basetemp-capture"
+    during = tmp_path / "basetemp-during"
+
+    result = _run_local_ci(
+        "all",
+        bin_dir,
+        version_file,
+        log_file,
+        {
+            "TMPDIR": str(tmp_root),
+            BASETEMP_CAPTURE_VAR: str(capture),
+            BASETEMP_DURING_VAR: str(during),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    log = log_file.read_text()
+    assert "uv run pytest" in log
+    assert "--basetemp" in log
+    assert "npm ci" in log
+    assert during.read_text().strip() == "exists=yes"
+    basetemp = Path(capture.read_text())
+    assert basetemp.parent == tmp_root
+    assert not basetemp.exists()
+    _assert_sentinels_survive(tmp_root)
+
+
+def test_two_sequential_invocations_do_not_reuse_a_stale_basetemp(
+    tmp_path: Path,
+) -> None:
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.0.0")
+    tmp_root = _build_tmp_root(tmp_path)
+    seen: list[Path] = []
+
+    for index in range(2):
+        capture = tmp_path / f"basetemp-capture-{index}"
+        during = tmp_path / f"basetemp-during-{index}"
+        result = _run_local_ci(
+            "python",
+            bin_dir,
+            version_file,
+            log_file,
+            {
+                "TMPDIR": str(tmp_root),
+                BASETEMP_CAPTURE_VAR: str(capture),
+                BASETEMP_DURING_VAR: str(during),
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        basetemp = Path(capture.read_text())
+        assert during.read_text().strip() == "exists=yes"
+        assert not basetemp.exists()
+        seen.append(basetemp)
+
+    assert seen[0] != seen[1]
+    _assert_sentinels_survive(tmp_root)
+
+
+def test_pytest_failure_removes_basetemp_and_preserves_exit_status(
+    tmp_path: Path,
+) -> None:
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.0.0")
+    tmp_root = _build_tmp_root(tmp_path)
+    capture = tmp_path / "basetemp-capture"
+    during = tmp_path / "basetemp-during"
+
+    result = _run_local_ci(
+        "python",
+        bin_dir,
+        version_file,
+        log_file,
+        {
+            "TMPDIR": str(tmp_root),
+            BASETEMP_CAPTURE_VAR: str(capture),
+            BASETEMP_DURING_VAR: str(during),
+            UV_RUN_EXIT_VAR: "7",
+        },
+    )
+
+    assert result.returncode == 7, result.stderr
+    assert during.read_text().strip() == "exists=yes"
+    basetemp = Path(capture.read_text())
+    assert not basetemp.exists()
+    _assert_sentinels_survive(tmp_root)
+
+
+def test_uv_sync_failure_removes_basetemp_and_preserves_exit_status(
+    tmp_path: Path,
+) -> None:
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.0.0")
+    real_mktemp = shutil.which("mktemp")
+    assert real_mktemp is not None
+    _fake_mktemp(bin_dir, real_mktemp)
+    tmp_root = _build_tmp_root(tmp_path)
+    capture = tmp_path / "mktemp-capture"
+
+    result = _run_local_ci(
+        "python",
+        bin_dir,
+        version_file,
+        log_file,
+        {
+            "TMPDIR": str(tmp_root),
+            MKTEMP_CAPTURE_VAR: str(capture),
+            UV_SYNC_EXIT_VAR: "9",
+        },
+    )
+
+    assert result.returncode == 9, result.stderr
+    # The basetemp was created before sync and removed on the sync failure.
+    assert capture.exists(), result.stderr
+    basetemp = Path(capture.read_text().strip().splitlines()[-1])
+    assert basetemp.parent == tmp_root
+    assert not basetemp.exists()
+    # pytest never ran.
+    assert "uv run pytest" not in log_file.read_text()
+    _assert_sentinels_survive(tmp_root)
+
+
+@pytest.mark.parametrize(
+    "signum",
+    [signal.SIGHUP, signal.SIGINT, signal.SIGTERM],
+    ids=["HUP", "INT", "TERM"],
+)
+def test_catchable_signal_removes_basetemp_and_preserves_signal_status(
+    tmp_path: Path, signum: int
+) -> None:
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.0.0")
+    tmp_root = _build_tmp_root(tmp_path)
+    capture = tmp_path / "basetemp-capture"
+    ready = tmp_path / "uv-run-ready"
+
+    proc = _spawn_local_ci(
+        "python",
+        bin_dir,
+        version_file,
+        log_file,
+        {
+            "TMPDIR": str(tmp_root),
+            BASETEMP_CAPTURE_VAR: str(capture),
+            UV_RUN_READY_VAR: str(ready),
+            UV_RUN_SLEEP_VAR: "30",
+        },
+    )
+    try:
+        assert _wait_for_file(ready), "fake uv run never signalled readiness"
+        os.killpg(os.getpgid(proc.pid), signum)
+        _stdout, stderr = proc.communicate(timeout=20)
+    finally:
+        if proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait(timeout=10)
+
+    assert proc.returncode == SIGNAL_EXIT[signum], stderr
+    basetemp = Path(capture.read_text())
+    assert basetemp.parent == tmp_root
+    assert not basetemp.exists(), stderr
+    _assert_sentinels_survive(tmp_root)
+
+
+@pytest.mark.parametrize(
+    "signum",
+    [signal.SIGHUP, signal.SIGINT, signal.SIGTERM],
+    ids=["HUP", "INT", "TERM"],
+)
+def test_cleanup_phase_signal_retries_exact_basetemp_on_exit(
+    tmp_path: Path, signum: int
+) -> None:
+    """A signal during blocked removal keeps identity for the EXIT retry."""
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.0.0")
+    real_rm = shutil.which("rm")
+    assert real_rm is not None
+    _fake_blocking_rm(bin_dir, real_rm)
+    tmp_root = _build_tmp_root(tmp_path)
+    capture = tmp_path / "basetemp-capture"
+    ready = tmp_path / "rm-ready"
+    release = tmp_path / "rm-release"
+    signal_seen = tmp_path / "rm-signal-seen"
+    count = tmp_path / "rm-count"
+    proc = _spawn_local_ci(
+        "python",
+        bin_dir,
+        version_file,
+        log_file,
+        {
+            "TMPDIR": str(tmp_root),
+            BASETEMP_CAPTURE_VAR: str(capture),
+            RM_BLOCK_READY_VAR: str(ready),
+            RM_BLOCK_RELEASE_VAR: str(release),
+            RM_BLOCK_SIGNAL_VAR: str(signal_seen),
+            RM_BLOCK_COUNT_VAR: str(count),
+        },
+    )
+    try:
+        assert _wait_for_file(ready), "cleanup rm never signalled readiness"
+        os.killpg(os.getpgid(proc.pid), signum)
+        assert _wait_for_file(signal_seen), "blocked cleanup rm missed the signal"
+        # Explicitly release the first rm only after proving that the signal
+        # arrived during its blocked cleanup phase.
+        release.write_text("release\n")
+        _stdout, stderr = proc.communicate(timeout=20)
+    finally:
+        if proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait(timeout=10)
+
+    assert proc.returncode == SIGNAL_EXIT[signum], stderr
+    basetemp = Path(capture.read_text())
+    assert basetemp.parent == tmp_root
+    assert not basetemp.exists(), stderr
+    assert tmp_root.is_dir()
+    _assert_sentinels_survive(tmp_root)
+    # First invocation was interrupted; the second proves safe EXIT re-entry
+    # retried the same exact path rather than forgetting or broadening it.
+    assert count.read_text().strip() == "2"
+
+
+@pytest.mark.parametrize(
+    "target", ["web", "help", "not-a-target"], ids=["web", "help", "invalid"]
+)
+def test_non_python_targets_create_no_basetemp(tmp_path: Path, target: str) -> None:
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.0.0")
+    tmp_root = _build_tmp_root(tmp_path)
+    capture = tmp_path / "basetemp-capture"
+
+    result = _run_local_ci(
+        target,
+        bin_dir,
+        version_file,
+        log_file,
+        {"TMPDIR": str(tmp_root), BASETEMP_CAPTURE_VAR: str(capture)},
+    )
+
+    assert not capture.exists()
+    if target == "web":
+        assert result.returncode == 0, result.stderr
+    elif target == "help":
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode != 0
+    assert not any(
+        entry.name.startswith("happyranch-pytest-basetemp")
+        for entry in tmp_root.iterdir()
+    )
+
+
+def test_basetemp_creation_failure_is_explicit_and_nonzero(tmp_path: Path) -> None:
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.0.0")
+    # A TMPDIR that does not exist makes mktemp -d fail.
+    missing_tmp = tmp_path / "missing-tmpdir"
+
+    result = _run_local_ci(
+        "python", bin_dir, version_file, log_file, {"TMPDIR": str(missing_tmp)}
+    )
+
+    assert result.returncode != 0
+    assert "pytest basetemp" in result.stderr.lower()
+    # No uv work at all: creation is refused before sync/pytest.
+    assert not log_file.exists()
+
+
+def test_basetemp_cleanup_failure_is_explicit_and_nonzero(tmp_path: Path) -> None:
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.0.0")
+    _fake_rm(bin_dir)
+    tmp_root = _build_tmp_root(tmp_path)
+    capture = tmp_path / "basetemp-capture"
+
+    result = _run_local_ci(
+        "python",
+        bin_dir,
+        version_file,
+        log_file,
+        {
+            "TMPDIR": str(tmp_root),
+            BASETEMP_CAPTURE_VAR: str(capture),
+            RM_EXIT_VAR: "1",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "failed to remove pytest basetemp" in result.stderr.lower()
+    # The failure is reported honestly: the directory is not silently claimed
+    # as cleaned, and the run is not a clean local-CI pass.
+    basetemp = Path(capture.read_text())
+    assert basetemp.exists()
+    _assert_sentinels_survive(tmp_root)

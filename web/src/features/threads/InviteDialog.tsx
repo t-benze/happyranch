@@ -9,10 +9,10 @@ import {
 } from '@/design-system/primitives/Dialog';
 import { Button } from '@/design-system/primitives/Button';
 import { FormField } from '@/design-system/patterns/FormField';
-import { ApiError } from '@/lib/api';
 import { useInviteAgent } from '@/hooks/threads';
 import { RecipientsInput } from './RecipientsInput';
-import { describeError } from './strings';
+import { useTranslation } from '@/hooks/i18n';
+import { classifyThreadError, renderThreadError, type ThreadErrorView } from '@/lib/threadErrors';
 import type { AgentSummary } from '@/lib/api/types';
 
 interface Props {
@@ -23,20 +23,22 @@ interface Props {
 }
 
 export function InviteDialog({ threadId, open, onClose, agents = [] }: Props): JSX.Element {
+  const { t } = useTranslation();
   const invite = useInviteAgent(threadId);
   const [recipientsRaw, setRecipientsRaw] = useState('');
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Locale-neutral error descriptor rendered at render time (see ArchiveDialog).
+  const [errorView, setErrorView] = useState<ThreadErrorView | null>(null);
   const nameId = useId();
 
   useEffect(() => {
     if (!open) return;
     setRecipientsRaw('');
-    setErrorMsg(null);
+    setErrorView(null);
   }, [open]);
 
   const submit = async (e?: React.FormEvent) => {
     e?.preventDefault();
-    setErrorMsg(null);
+    setErrorView(null);
     // Parse comma-separated tokens, trim, discard empties, deduplicate
     // preserving selection order — RecipientsInput builds comma-separated
     // selected names, and the backend POST /threads/{id}/invite accepts
@@ -47,7 +49,7 @@ export function InviteDialog({ threadId, open, onClose, agents = [] }: Props): J
       .map((s) => s.trim())
       .filter(Boolean);
     if (names.length === 0) {
-      setErrorMsg('Agent name is required.');
+      setErrorView({ detail: { kind: 'mapped', key: 'threads.dialog.invite.required' } });
       return;
     }
     const uniqueNames = [...new Set(names)];
@@ -63,9 +65,7 @@ export function InviteDialog({ threadId, open, onClose, agents = [] }: Props): J
       // failure landed — the dialog stays open so the user can retry or
       // close. useInviteAgent onSuccess invalidates ['thread', slug, threadId]
       // on every individual success, so successful invites are reflected.
-      setErrorMsg(
-        err instanceof ApiError ? describeError(err.code, `HTTP ${err.status}`) : String(err),
-      );
+      setErrorView({ detail: classifyThreadError(err) });
     }
   };
 
@@ -73,13 +73,13 @@ export function InviteDialog({ threadId, open, onClose, agents = [] }: Props): J
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Invite participant</DialogTitle>
+          <DialogTitle>{t('threads.dialog.invite.title')}</DialogTitle>
           <DialogDescription className="sr-only">
-            Invite an additional agent or founder to this thread.
+            {t('threads.dialog.invite.description')}
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="flex flex-col gap-3">
-          <FormField label="Agent name" htmlFor={nameId} error={errorMsg ?? undefined}>
+          <FormField label={t('threads.dialog.invite.agentLabel')} htmlFor={nameId}>
             <RecipientsInput
               id={nameId}
               value={recipientsRaw}
@@ -87,11 +87,18 @@ export function InviteDialog({ threadId, open, onClose, agents = [] }: Props): J
               agents={agents}
               placeholder="agent_a, agent_b"
             />
+            {/* FormField's error node, gated on the descriptor so an empty raw
+                diagnostic still renders byte-for-byte. */}
+            {errorView !== null && (
+              <p className="text-caption text-feedback-danger" role="alert">
+                {renderThreadError(errorView, t)}
+              </p>
+            )}
           </FormField>
           <DialogFooter>
-            <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button type="button" variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
             <Button type="submit" disabled={invite.isPending}>
-              {invite.isPending ? 'Inviting…' : 'Invite'}
+              {invite.isPending ? t('threads.dialog.invite.pending') : t('threads.dialog.invite.confirm')}
             </Button>
           </DialogFooter>
         </form>

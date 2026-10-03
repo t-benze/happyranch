@@ -1,12 +1,21 @@
 /**
- * Mock implementation of `SettingsApi` for the prototype sandbox.
+ * Mock implementation of `SettingsApi` for the designer/prototype sandbox.
  *
- * Retained for direct SettingsDialog tests; no application or prototype route
- * mounts that dialog. The fixture remains read-only and makes no backend calls.
+ * Consumed by `PrototypeProvider`, and therefore reachable from every
+ * Storybook story that decorates with that provider (for example
+ * `design-system/TasksList.stories.tsx`). Because this module ships to the
+ * browser it must stay free of test-runner imports: an earlier `vi.fn()` spy
+ * dependency on `vitest` crashed the Storybook preview with "Vitest failed to
+ * access its internal state". The mutation hooks below resolve ordinary typed
+ * fixture values instead; tests that need call assertions supply their own
+ * spies (see `src/features/settings/SettingsDialog.test.tsx`). The fixture
+ * remains read-only and makes no backend calls.
  */
-import { vi } from 'vitest';
 import type { SettingsApi, QueryLike } from './DataContext';
+import type { CapacityQueryLike } from './_capacity-ordering';
 import type {
+  DaemonCapacitySnapshot,
+  DaemonCapacityWrite,
   NextWakesResponse,
   OrgSettingsPatch,
   SettingsSnapshot,
@@ -14,6 +23,33 @@ import type {
 
 function ok<T>(data: T): QueryLike<T> {
   return { data, isLoading: false, isError: false, error: null };
+}
+
+/**
+ * Capacity mirror of `ok()`. The capacity slot is widened with
+ * refresh/receipt/ordering members (TASK-8537 G1), so the mock must implement
+ * the same surface or the provider contract stops type-checking. The receipt is
+ * a fixed prototype value — this mock performs no network request, so advancing
+ * a clock here would fabricate a receipt the design forbids (S5-R5).
+ */
+function okCapacity<T>(data: T, revision: string): CapacityQueryLike<T> {
+  return {
+    data,
+    isLoading: false,
+    isError: false,
+    error: null,
+    refetch: () => Promise.resolve(data),
+    isFetching: false,
+    observation: {
+      issuedSeq: 1,
+      settledSeq: 2,
+      // The mock serves a fixture read, never a write result.
+      origin: 'read' as const,
+      outcome: 'usable' as const,
+      receiptAt: 0,
+      sourceRevision: revision,
+    },
+  };
 }
 
 const FIXTURE: SettingsSnapshot = {
@@ -66,33 +102,52 @@ const NEXT_WAKES_FIXTURE: NextWakesResponse = {
   error: null,
 };
 
+const DAEMON_CAPACITY_FIXTURE: DaemonCapacitySnapshot = {
+  running_at_daemon_start: { queue_workers: 6, host_global_session_cap: 13 },
+  running_provenance: 'Resolved when the HappyRanch service started',
+  persisted_yaml: { queue_workers: null, host_global_session_cap: null },
+  next_start: { queue_workers: 6, host_global_session_cap: 13 },
+  environment_shadowed: [], environment_warning: null,
+  producer_envelope: 13,
+  producer_components: { task_workers: 6, thread_workers: 4, dream_workers: 1, wake_workers: 1, schedule_workers: 1 },
+  effective_admission_cap: 13,
+  effective_admission_reason: 'Prototype capability snapshot',
+  warnings: [],
+  revision: 'sha256:prototype', restart_required: false, restart_pending: false,
+  guidance: {
+    queue_workers: 'Suggested starting range: 4–6. Adjust based on task wait times. This is guidance, not a required range.',
+    host_global_session_cap: 'Suggested starting range: 11–13. This applies to HappyRanch supervised sessions, not every process on the machine. The range is not enforced.',
+    enforced: false,
+  },
+  authorization: 'Local operator; daemon bearer required. Bearer authorization cannot be attributed to a verified person.',
+};
+
+/** Browser-safe stand-in for the no-op mutation callbacks previously supplied by `vi.fn()`. */
+function noop(): void {}
+
+/** The mock performs no network write, so no request ever has a settlement. */
+function noSettlement(): null {
+  return null;
+}
+
 export const mockSettingsApi: SettingsApi = {
   useSettings: () => ok(FIXTURE),
   useUpdateOrgSettings: () => ({
-    mutate: vi.fn(),
-    mutateAsync: vi.fn((_patch: OrgSettingsPatch) => Promise.resolve(FIXTURE)),
-    reset: vi.fn(),
+    mutate: noop,
+    mutateAsync: (_patch: OrgSettingsPatch) => Promise.resolve(FIXTURE),
+    reset: noop,
     isPending: false,
     isSuccess: false,
     isError: false,
     error: null,
     data: undefined,
   }),
-  useDaemonCapacity: () => ok({
-    running_at_daemon_start: { queue_workers: 6, host_global_session_cap: 13 },
-    running_provenance: 'startup-resolved settings snapshot',
-    persisted_yaml: { queue_workers: null, host_global_session_cap: null },
-    next_start: { queue_workers: 6, host_global_session_cap: 13 },
-    environment_shadowed: [], environment_warning: null,
-    producer_envelope: 13,
-    producer_components: { task_workers: 6, thread_workers: 4, dream_workers: 1, wake_workers: 1, schedule_workers: 1 },
-    effective_admission_cap: 13,
-    effective_admission_reason: 'Prototype capability snapshot',
-    warnings: [],
-    revision: 'sha256:prototype', restart_required: false, restart_pending: false,
-    guidance: { queue_workers: 'Empirical guidance', host_global_session_cap: 'Empirical guidance', enforced: false },
-    authorization: 'Local operator; daemon bearer required. Bearer authorization cannot be attributed to a verified person.',
+  useDaemonCapacity: () =>
+    okCapacity(DAEMON_CAPACITY_FIXTURE, DAEMON_CAPACITY_FIXTURE.revision),
+  useUpdateDaemonCapacity: () => ({
+    mutateAsync: (_capacity: DaemonCapacityWrite) => Promise.resolve(DAEMON_CAPACITY_FIXTURE),
+    isPending: false,
+    settlementOf: noSettlement,
   }),
-  useUpdateDaemonCapacity: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useNextWakes: () => ok(NEXT_WAKES_FIXTURE),
 };

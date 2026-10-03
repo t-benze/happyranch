@@ -311,6 +311,58 @@ def test_resume_header_rendered_after_audit_row(db_and_orch):
     assert "happyranch jobs show JOB-1" in header
 
 
+def test_resume_header_includes_terminal_reason_and_exit_code(db_and_orch):
+    """S3: the agent sees the persisted shutdown cause and real exit code."""
+    db, orch = db_and_orch
+    db.insert_task(TaskRecord(
+        id="TASK-1", team="engineering", brief="t",
+        status=TaskStatus.IN_PROGRESS, parent_task_id=None,
+    ))
+    _insert_job(db, "JOB-1", "failed")
+    db._conn.execute(
+        "UPDATE jobs SET rationale = 'r', reason = 'daemon_shutdown', "
+        "exit_code = -15 WHERE id = 'JOB-1'"
+    )
+    db._conn.commit()
+    orch._audit.log_task_resumed_from_jobs(
+        task_id="TASK-1",
+        blocking_job_ids=["JOB-1"],
+        trigger="startup_recovery",
+        triggering_job_id=None,
+        job_outcomes={"JOB-1": "failed"},
+    )
+
+    header = _blocked_jobs_resume_header_if_applicable(orch, "TASK-1")
+
+    assert header is not None
+    assert "JOB-1  failed (daemon_shutdown, exit -15)" in header
+
+
+def test_resume_header_legacy_null_details_remains_status_only(db_and_orch):
+    """S3 keeper: old rows/payloads without details still render safely."""
+    db, orch = db_and_orch
+    db.insert_task(TaskRecord(
+        id="TASK-1", team="engineering", brief="t",
+        status=TaskStatus.IN_PROGRESS, parent_task_id=None,
+    ))
+    _insert_job(db, "JOB-1", "completed")
+    db._conn.execute("UPDATE jobs SET rationale = 'r' WHERE id = 'JOB-1'")
+    db._conn.commit()
+    orch._audit.log_task_resumed_from_jobs(
+        task_id="TASK-1",
+        blocking_job_ids=["JOB-1", "JOB-MISSING"],
+        trigger="startup_recovery",
+        triggering_job_id=None,
+        job_outcomes={"JOB-1": "completed", "JOB-MISSING": "failed"},
+    )
+
+    header = _blocked_jobs_resume_header_if_applicable(orch, "TASK-1")
+
+    assert header is not None
+    assert "JOB-1  completed\n" in header
+    assert "JOB-MISSING  failed\n" in header
+
+
 def test_resume_header_skipped_after_step_runs(db_and_orch):
     """Once an orchestration_step row exists newer than the audit row, the
     header stops rendering."""

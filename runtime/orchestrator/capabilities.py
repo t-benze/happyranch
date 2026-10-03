@@ -155,7 +155,9 @@ def build_capabilities_prompt(
         "```json",
         '{"action": "supersede", "successor_brief": "<nonblank replacement brief>", "rationale": "<nonblank factual reason>", "attestation": {"recovery_reason": "<nonblank recovery reason>", "policy_product_intent_unchanged": true, "no_budget_or_external_commitment": true, "no_permission_or_cross_team_change": true, "no_schema_auth_security_privacy_or_data_access_change": true, "no_unresolved_founder_gate": true}}',
         "```",
-        "Available to the assigned manager of its currently claimed root, for any team. "
+        "Available only to the assigned manager of its currently claimed root, for any team. "
+        "If a non-root manager task returns this decision, that task fails with a "
+        "non-root supersede refusal and its delegated parent is woken; no successor is created. "
         "It never accepts a target, actor, team, assignment, revisit, or override field. "
         "You MUST escalate instead for policy/product intent, budget/external commitments, permissions, cross-team ownership, schema/auth/security/privacy/data access, or any unresolved Founder gate. "
         "The attestation is immutable postmortem evidence, not proof that its declarations are true and not a server-verifiable authority decision. "

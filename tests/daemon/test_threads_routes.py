@@ -148,6 +148,210 @@ def test_list_threads_returns_recent(tmp_home, app, org_state, auth_headers):
     data = resp.json()
     assert len(data["threads"]) == 2
     assert data["threads"][0]["subject"] in {"a", "b"}
+    assert data["threads"][0]["participants"] == ["dev_agent"]
+
+
+def test_list_threads_participants_are_bounded_to_returned_rows(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    _seed_agent(org_state, "alpha")
+    _seed_agent(org_state, "bravo")
+    first = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "first", "recipients": ["alpha"], "body_markdown": "x"},
+        headers=auth_headers,
+    ).json()["thread_id"]
+    second = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "second", "recipients": ["bravo"], "body_markdown": "x"},
+        headers=auth_headers,
+    ).json()["thread_id"]
+
+    response = client.get("/api/v1/orgs/alpha/threads?limit=1", headers=auth_headers)
+    assert response.status_code == 200
+    rows = response.json()["threads"]
+    assert len(rows) == 1
+    assert rows[0]["thread_id"] == second
+    assert rows[0]["participants"] == ["bravo"]
+    assert first != second
+
+
+def test_list_threads_batches_current_participants_without_transcript_reads(
+    tmp_home, app, org_state, auth_headers,
+):
+    """The list projection adds one bounded membership query, never N rows.
+
+    ``list_threads`` itself has two scalar message subqueries for existing
+    last-speaker/activity fields.  The assertion below pins the route-level
+    statement count: one list statement plus one participant batch, regardless
+    of how many returned rows there are.  It deliberately does not fetch a
+    transcript/detail endpoint for any row.
+    """
+    client = TestClient(app)
+    _seed_agent(org_state, "alpha")
+    _seed_agent(org_state, "bravo")
+    thread_ids = []
+    for index in range(8):
+        thread_ids.append(
+            client.post(
+                "/api/v1/orgs/alpha/threads",
+                json={
+                    "subject": f"thread {index}",
+                    "recipients": ["alpha", "bravo"],
+                    "body_markdown": "x",
+                },
+                headers=auth_headers,
+            ).json()["thread_id"]
+        )
+    # A removed member must not remain in the list projection; an empty
+    # membership remains an honest empty list rather than a fabricated name.
+    org_state.db.remove_thread_participant(thread_ids[0], "bravo")
+    org_state.db.remove_thread_participant(thread_ids[0], "alpha")
+
+    statements: list[str] = []
+    org_state.db._conn.set_trace_callback(statements.append)
+    try:
+        response = client.get("/api/v1/orgs/alpha/threads?limit=8", headers=auth_headers)
+    finally:
+        org_state.db._conn.set_trace_callback(None)
+
+    assert response.status_code == 200, response.text
+    rows = response.json()["threads"]
+    assert len(rows) == 8
+    assert next(row for row in rows if row["thread_id"] == thread_ids[0])["participants"] == []
+    assert all(
+        row["participants"] == ["alpha", "bravo"]
+        for row in rows
+        if row["thread_id"] != thread_ids[0]
+    )
+    selects = [statement for statement in statements if statement.lstrip().upper().startswith("SELECT")]
+    assert len(selects) == 2
+    assert sum("FROM thread_participants" in statement for statement in selects) == 1
+    assert not any("transcript" in statement.lower() for statement in selects)
+
+
+def test_list_threads_negative_limit_preserves_rows_in_500_id_membership_batches(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Legacy ``limit=-1`` stays unlimited, while the added projection is finite.
+
+    501 returned rows must mean exactly ceil(501 / 500) membership statements,
+    never one oversized IN list and never one detail/transcript query per row.
+    """
+    client = TestClient(app)
+    for _ in range(501):
+        thread_id = org_state.db.next_thread_id()
+        org_state.db.insert_thread(ThreadRecord(id=thread_id, subject=thread_id))
+        org_state.db.add_thread_participant(thread_id, "alpha", added_by="founder")
+
+    statements: list[str] = []
+    org_state.db._conn.set_trace_callback(statements.append)
+    try:
+        response = client.get("/api/v1/orgs/alpha/threads?limit=-1", headers=auth_headers)
+    finally:
+        org_state.db._conn.set_trace_callback(None)
+
+    assert response.status_code == 200, response.text
+    rows = response.json()["threads"]
+    assert len(rows) == 501
+    assert all(row["participants"] == ["alpha"] for row in rows)
+    membership = [s for s in statements if "FROM thread_participants" in s]
+    assert len(membership) == 2
+    # Trace output has substituted values; a 500-ID batch has 499 commas in IN.
+    assert max(s.split(" IN (", 1)[-1].split(")", 1)[0].count(",") + 1 for s in membership) == 500
+
+
+def test_list_threads_limit_boundaries_preserve_list_and_projection_cardinality(
+    tmp_home, app, org_state, auth_headers,
+):
+    """The production route keeps its historical limit semantics at every boundary."""
+    client = TestClient(app)
+    for _ in range(501):
+        thread_id = org_state.db.next_thread_id()
+        org_state.db.insert_thread(ThreadRecord(id=thread_id, subject=thread_id))
+        org_state.db.add_thread_participant(thread_id, "alpha", added_by="founder")
+
+    for limit, expected_rows, expected_batches in ((0, 0, 0), (1, 1, 1), (500, 500, 1), (999, 500, 1), (-1, 501, 2)):
+        statements: list[str] = []
+        org_state.db._conn.set_trace_callback(statements.append)
+        try:
+            response = client.get(f"/api/v1/orgs/alpha/threads?limit={limit}", headers=auth_headers)
+        finally:
+            org_state.db._conn.set_trace_callback(None)
+
+        assert response.status_code == 200, response.text
+        assert len(response.json()["threads"]) == expected_rows
+        selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+        membership = [s for s in selects if "FROM thread_participants" in s]
+        assert len(membership) == expected_batches
+        assert not any("transcript" in s.lower() or "thread_messages" in s.lower() for s in membership)
+        assert all(s.split(" IN (", 1)[-1].split(")", 1)[0].count(",") + 1 <= 500 for s in membership)
+
+
+@pytest.mark.parametrize(
+    ("slug", "status", "expected"),
+    [
+        ("alpha", "open", {"THR-OVERLAP-OPEN": ["alpha-current"], "THR-ALPHA-EMPTY": []}),
+        ("alpha", "archived", {"THR-OVERLAP-ARCHIVED": ["alpha-archived"]}),
+        ("beta", "open", {"THR-OVERLAP-OPEN": ["beta-current"], "THR-BETA-EMPTY": []}),
+        ("beta", "archived", {"THR-OVERLAP-ARCHIVED": ["beta-archived"]}),
+    ],
+)
+def test_list_threads_org_dep_status_projection_isolated_and_batched(
+    tmp_home, app, org_state, daemon_state, auth_headers, slug, status, expected,
+):
+    """The real OrgDep route keeps same IDs and current members per org/status.
+
+    This is deliberately a four-cell HTTP matrix: the two stores reuse IDs,
+    but membership and empty/removed rows are independently projected.  Each
+    request stays one list read plus one batch membership read, never a
+    per-row detail or transcript lookup.
+    """
+    from runtime.config import Settings
+    from runtime.daemon.org_state import OrgState
+
+    beta_root = org_state.root.parent / "beta"
+    beta_root.mkdir(parents=True, exist_ok=True)
+    (beta_root / "org").mkdir(exist_ok=True)
+    (beta_root / "org" / "teams.yaml").write_text(
+        "teams:\n  engineering:\n    manager: engineering_head\n    workers: [dev_agent]\n",
+    )
+    beta = OrgState.load(slug="beta", root=beta_root, settings=Settings())
+    daemon_state.orgs["beta"] = beta
+
+    now = datetime.now(timezone.utc)
+    for state, prefix in ((org_state, "alpha"), (beta, "beta")):
+        state.db.insert_thread(ThreadRecord(id="THR-OVERLAP-OPEN", subject=f"{prefix} open"))
+        state.db.add_thread_participant("THR-OVERLAP-OPEN", f"{prefix}-current", added_by="founder")
+        state.db.add_thread_participant("THR-OVERLAP-OPEN", f"{prefix}-removed", added_by="founder")
+        state.db.remove_thread_participant("THR-OVERLAP-OPEN", f"{prefix}-removed")
+        state.db.insert_thread(ThreadRecord(id=f"THR-{prefix.upper()}-EMPTY", subject=f"{prefix} empty"))
+        state.db.insert_thread(ThreadRecord(
+            id="THR-OVERLAP-ARCHIVED",
+            subject=f"{prefix} archived",
+            status=ThreadStatus.ARCHIVED,
+            archived_at=now,
+        ))
+        state.db.add_thread_participant("THR-OVERLAP-ARCHIVED", f"{prefix}-archived", added_by="founder")
+        state.db.add_thread_participant("THR-OVERLAP-ARCHIVED", f"{prefix}-removed-archived", added_by="founder")
+        state.db.remove_thread_participant("THR-OVERLAP-ARCHIVED", f"{prefix}-removed-archived")
+
+    state = daemon_state.orgs[slug]
+    statements: list[str] = []
+    state.db._conn.set_trace_callback(statements.append)
+    try:
+        response = TestClient(app).get(
+            f"/api/v1/orgs/{slug}/threads?status={status}", headers=auth_headers,
+        )
+    finally:
+        state.db._conn.set_trace_callback(None)
+
+    assert response.status_code == 200, response.text
+    assert {row["thread_id"]: row["participants"] for row in response.json()["threads"]} == expected
+    assert not any("removed" in name for row in response.json()["threads"] for name in row["participants"])
+    selects = [statement for statement in statements if statement.lstrip().upper().startswith("SELECT")]
+    assert len(selects) == 2
+    assert sum("FROM thread_participants" in statement for statement in selects) == 1
+    assert not any("SELECT * FROM threads WHERE id" in statement for statement in selects)
 
 
 def test_get_thread_returns_messages_and_participants(tmp_home, app, org_state, auth_headers):
@@ -962,6 +1166,27 @@ def test_founder_send_appends_and_enqueues(tmp_home, app, org_state, auth_header
     assert by_agent["dev_agent"].through_seq == 2
     assert by_agent["qa_engineer"].state == "queued"
     assert by_agent["qa_engineer"].through_seq == 2
+
+
+def test_synthetic_bearer_can_create_and_control_unbound_thread(
+    tmp_home, app, org_state, auth_headers,
+):
+    """The accepted bearer-only residual is deliberately outside recovery binding."""
+    _seed_agent(org_state, "dev_agent")
+    client = TestClient(app)
+    created = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "bearer residual", "recipients": ["dev_agent"], "body_markdown": "open"},
+        headers=auth_headers,
+    )
+    assert created.status_code == 200, created.text
+    thread_id = created.json()["thread_id"]
+    controlled = client.post(
+        f"/api/v1/orgs/alpha/threads/{thread_id}/send",
+        json={"body_markdown": "unbound bearer control"}, headers=auth_headers,
+    )
+    assert controlled.status_code == 200, controlled.text
+    assert [m.body_markdown for m in org_state.db.list_thread_messages(thread_id)] == ["open", "unbound bearer control"]
 
 
 def test_thread_send_accepts_attachment_only(client, auth_headers, org_state) -> None:
@@ -2435,17 +2660,29 @@ def test_supported_replacement_lineage_shapes_hit_permanent_fence_without_residu
         revisit_of_task_id=replacement_id if revisit else None,
         task_type="subtask" if parent else "task",
     )
+    if parent:
+        from runtime.infrastructure.database import Committed, RetryClaim
+
+        assert org_state.db.try_claim_for_step(
+            replacement_id, TaskStatus.PENDING, None, 1,
+        )
+        org_state.db.update_task(
+            replacement_id, current_session_id=f"session-{shape}",
+        )
+        expected_claim = RetryClaim.from_task(org_state.db.get_task(replacement_id))
     if root_state == "fanout":
         assert org_state.db.try_delegate_many(
             replacement_id, [source], parent_note="fanout",
             active_fanout_json=json.dumps({"children": [source_id]}),
-        )
+            expected_claim=expected_claim,
+        ) == Committed((source_id,))
     elif parent:
         assert org_state.db.try_delegate(
             replacement_id, source, parent_note=shape,
             active_chain_json=(json.dumps({"current": source_id})
                                if root_state == "chain" else None),
-        )
+            expected_claim=expected_claim,
+        ) == Committed((source_id,))
     else:
         # The revisit HTTP producer's final persistence seam is insert_task;
         # revisit_of_task_id is the existing, unchanged lineage authority.
@@ -2687,6 +2924,31 @@ def test_post_as_agent_appends_and_mints_to_other_participants(
         (tid, data["seq"]),
     ).fetchone()
     assert row["sent_from_task_id"] == "TASK-900"
+
+
+def test_recovery_bound_send_and_post_as_agent_leave_existing_thread_unchanged(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Both existing-thread write forms enforce recovery purpose before append."""
+    client = TestClient(app)
+    tid = _seed_open_thread(org_state, participants=["dev_agent", "qa_engineer"])
+    _bind_task_session(org_state, agent="dev_agent", task_id="TASK-RECOVERY-SEND", sid="recovery-send")
+    org_state.sessions.register_recovery_session("TASK-RECOVERY-SEND", "dev_agent", "recovery-send")
+    before = len(org_state.db.list_thread_messages(tid))
+    payload = {"composer": "dev_agent", "task_id": "TASK-RECOVERY-SEND",
+               "session_id": "recovery-send", "body_markdown": "must not append"}
+    for suffix in ("send", "post-as-agent"):
+        denied = client.post(f"/api/v1/orgs/alpha/threads/{tid}/{suffix}", json=payload, headers=auth_headers)
+        assert denied.status_code == 403, denied.text
+        assert denied.json()["detail"]["code"] == "recovery_purpose_forbidden"
+        assert len(org_state.db.list_thread_messages(tid)) == before
+
+    _bind_task_session(org_state, agent="dev_agent", task_id="TASK-ORDINARY-SEND", sid="ordinary-send")
+    ordinary = {**payload, "task_id": "TASK-ORDINARY-SEND", "session_id": "ordinary-send", "body_markdown": "allowed"}
+    for suffix in ("send", "post-as-agent"):
+        allowed = client.post(f"/api/v1/orgs/alpha/threads/{tid}/{suffix}", json=ordinary, headers=auth_headers)
+        assert allowed.status_code == 200, allowed.text
+    assert len(org_state.db.list_thread_messages(tid)) == before + 2
 
 
 def test_post_as_agent_rejects_non_participant(tmp_home, app, org_state, auth_headers):
@@ -4493,3 +4755,67 @@ def test_route_abort_emits_cancelled_audits_per_pair(
         "dev_agent", "qa_engineer",
     }
     assert all(c["payload"]["reason"] == "founder_aborted" for c in cancelled)
+
+
+@pytest.mark.parametrize("status", ["pending", "consumed", "declined", "timeout", "failed"])
+@pytest.mark.parametrize("corruption", ["assignment", "unknown_status", "purpose", "trigger", "message", "audit", "thread"])
+def test_verified_retry_dispatch_retains_real_invocation_lifecycle(client_with_runtime, status, corruption):
+    from runtime.infrastructure.database import InvalidLineage, VerifiedRetry
+
+    client, org = client_with_runtime
+    db = org.db
+    manager = "engineering_head"
+    _seed_agent(org, manager, role="manager")
+    thread_id = "THR-RETRY"
+    db.insert_thread(ThreadRecord(id=thread_id, subject="retry", status=ThreadStatus.OPEN))
+    db.add_thread_participant(thread_id, manager, added_by="founder")
+    seq = db.append_thread_message(thread_id=thread_id, speaker="founder",
+                                   kind=ThreadMessageKind.MESSAGE, body_markdown="continue")
+    invocation = db.mint_thread_invocation(thread_id=thread_id, agent_name=manager,
+                                           triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY)
+    original = db.next_task_id()
+    db.insert_task(TaskRecord(id=original, brief="original", team="engineering",
+                              assigned_agent=manager, status=TaskStatus.ESCALATED))
+    failed = db.next_task_id()
+    db.insert_task(TaskRecord(id=failed, brief="failed work", team="engineering",
+                              assigned_agent="dev_agent", status=TaskStatus.FAILED,
+                              parent_task_id=original, task_type="subtask"))
+    response = client.post(f"/api/v1/orgs/alpha/threads/{thread_id}/dispatch", json={
+        "thread_id": thread_id, "invocation_token": invocation.invocation_token,
+        "dispatcher": manager, "target_agent": manager, "team": "engineering",
+        "brief": "retry continuation", "resolves": original,
+    })
+    assert response.status_code == 200, response.text
+    successor = response.json()["task_id"]
+    if status == "consumed":
+        db.consume_invocation(invocation.invocation_token)
+    elif status == "declined":
+        db.mark_invocation_declined(invocation.invocation_token, decline_reason="fixture decline")
+    elif status in ("timeout", "failed"):
+        db.discard_reply_delivery(thread_id, agent_name=manager,
+                                  decline_reason="fixture termination", status=ThreadInvocationStatus(status))
+    retained = db.get_invocation_any_status(invocation.invocation_token)
+    assert retained.status.value == status
+    assert retained.dispatched_task_id == successor
+    assert db.verify_retry_link(successor, "dev_agent", failed) == VerifiedRetry((successor, original))
+    assert db.get_children(successor) == []
+    # Corruption of this binding fails closed without rescuing it by proximity.
+    if corruption in ("assignment", "unknown_status", "purpose", "trigger"):
+        assignments = {
+            "assignment": "dispatched_task_id=NULL",
+            "unknown_status": "status='unknown'",
+            "purpose": "purpose='task_followup'",
+            "trigger": "triggering_seq=999999",
+        }
+        db.execute(f"UPDATE thread_invocations SET {assignments[corruption]} WHERE invocation_token=?",
+                   (invocation.invocation_token,))
+    elif corruption == "message":
+        db.execute("UPDATE thread_messages SET speaker='other' WHERE thread_id=? AND kind='system'",
+                   (thread_id,))
+    elif corruption == "audit":
+        db.execute("UPDATE audit_log SET agent='other' WHERE task_id=? AND action='thread_dispatch'",
+                   (thread_id,))
+    else:
+        db.execute("UPDATE tasks SET dispatched_from_thread_id='missing-thread' WHERE id=?", (successor,))
+    db._conn.commit()
+    assert db.verify_retry_link(successor, "dev_agent", failed) == InvalidLineage("invocation_binding")

@@ -8,7 +8,12 @@ vi.mock('@/hooks/metrics', async () => {
 });
 
 import { useMetrics, useMetricsHistory } from '@/hooks/metrics';
+import { translate, type MessageKey, type MessageParams } from '@/lib/i18n';
+import { I18nTestBoundary } from '@/test/render';
 import { HealthPage, fmtUptime, fmtMs, fmtRelTime } from './HealthPage';
+
+// English copy comes from the typed catalog (THR-118 W4a-1).
+const t = (key: MessageKey, params?: MessageParams) => translate('en', key, params);
 
 const asQuery = <T,>(over: Partial<{ data: T; isLoading: boolean; isError: boolean }>) => ({
   data: undefined,
@@ -19,11 +24,11 @@ const asQuery = <T,>(over: Partial<{ data: T; isLoading: boolean; isError: boole
 
 describe('health formatters (honesty fence)', () => {
   it('fmtUptime renders coarse human duration', () => {
-    expect(fmtUptime(0)).toBe('0s');
-    expect(fmtUptime(42)).toBe('42s');
-    expect(fmtUptime(5 * 60 + 12)).toBe('5m 12s');
-    expect(fmtUptime(3 * 3600 + 14 * 60)).toBe('3h 14m');
-    expect(fmtUptime(2 * 86400 + 3 * 3600)).toBe('2d 3h');
+    expect(fmtUptime(0, t)).toBe('0s');
+    expect(fmtUptime(42, t)).toBe('42s');
+    expect(fmtUptime(5 * 60 + 12, t)).toBe('5m 12s');
+    expect(fmtUptime(3 * 3600 + 14 * 60, t)).toBe('3h 14m');
+    expect(fmtUptime(2 * 86400 + 3 * 3600, t)).toBe('2d 3h');
   });
 
   it('fmtMs converts latency seconds to ms and renders em dash for null', () => {
@@ -35,10 +40,10 @@ describe('health formatters (honesty fence)', () => {
 
   it('fmtRelTime renders compact relative time', () => {
     const now = Date.parse('2026-07-09T00:00:00Z');
-    expect(fmtRelTime('2026-07-09T00:00:00Z', now)).toBe('0s ago');
-    expect(fmtRelTime('2026-07-08T23:59:30Z', now)).toBe('30s ago');
-    expect(fmtRelTime('2026-07-08T23:55:00Z', now)).toBe('5m ago');
-    expect(fmtRelTime('not-a-date', now)).toBe('not-a-date');
+    expect(fmtRelTime('2026-07-09T00:00:00Z', t, now)).toBe('0s ago');
+    expect(fmtRelTime('2026-07-08T23:59:30Z', t, now)).toBe('30s ago');
+    expect(fmtRelTime('2026-07-08T23:55:00Z', t, now)).toBe('5m ago');
+    expect(fmtRelTime('not-a-date', t, now)).toBe('not-a-date');
   });
 });
 
@@ -70,11 +75,15 @@ describe('HealthPage', () => {
       asQuery({ data: [] }) as ReturnType<typeof useMetricsHistory>,
     );
 
-    render(<HealthPage />);
+    render(
+      <I18nTestBoundary>
+        <HealthPage />
+      </I18nTestBoundary>,
+    );
 
-    expect(screen.getByText('Runtime Health')).toBeInTheDocument();
+    expect(screen.getByText(t('health.title'))).toBeInTheDocument();
     expect(screen.getByText('3h 14m')).toBeInTheDocument(); // uptime
-    expect(screen.getByText('All routes')).toBeInTheDocument(); // aggregate http row
+    expect(screen.getByText(t('health.http.allRoutes'))).toBeInTheDocument(); // aggregate http row
     expect(screen.getByText('work_hours_scheduler_loop')).toBeInTheDocument();
   });
 
@@ -86,7 +95,11 @@ describe('HealthPage', () => {
       asQuery({ data: [] }) as ReturnType<typeof useMetricsHistory>,
     );
 
-    render(<HealthPage />);
-    expect(screen.getByText(/No persisted snapshots/i)).toBeInTheDocument();
+    render(
+      <I18nTestBoundary>
+        <HealthPage />
+      </I18nTestBoundary>,
+    );
+    expect(screen.getByText(t('health.trends.empty'))).toBeInTheDocument();
   });
 });

@@ -1,6 +1,35 @@
-import { describe, expect, test } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, expect, test, vi } from 'vitest';
+import { createEvent, fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { InboxRow } from './InboxRow';
+
+describe.each(['default', 'thread'] as const)('InboxRow — %s navigation', (layout) => {
+  test('keeps a native link, plain-click/Enter selection and no pin control', async () => {
+    const onSelect = vi.fn();
+    render(<InboxRow threadId="THR-10" subject="Navigate" status="open" needsYou={false} active={false} layout={layout} href="/threads/THR-10" onSelect={onSelect} />);
+    const row = screen.getByRole('link', { name: /Navigate/ });
+    expect(row).toHaveAttribute('href', '/threads/THR-10');
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    await userEvent.click(row);
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    row.focus();
+    expect(row).toHaveFocus();
+    await userEvent.keyboard('{Enter}');
+    expect(onSelect).toHaveBeenCalledTimes(2);
+  });
+
+  test('leaves modified and non-primary clicks to native anchor behavior', () => {
+    const onSelect = vi.fn();
+    render(<InboxRow threadId="THR-10" subject="Navigate" status="open" needsYou={false} active={false} layout={layout} href="#thread-10" onSelect={onSelect} />);
+    const row = screen.getByRole('link');
+    for (const init of [{ metaKey: true }, { ctrlKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }, { button: 2 }]) {
+      const event = createEvent.click(row, init);
+      fireEvent(row, event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+});
 
 /**
  * THREADS-05 — the inbox row maps the honest, data-derivable subset of the
@@ -91,7 +120,7 @@ describe('InboxRow — semantic status pills (THREADS-05)', () => {
 });
 
 /**
- * THR-099 — the `layout="thread"` row model is id-first and single-line: a
+ * THR-099 — the `layout="thread"` row model is id-first and two-line: a
  * status-driven leading dot (open=green accent, archived=grey), the mono thread
  * id, the serif subject, the status BADGE routed through the shared semanticTone
  * vocabulary (open→"open"/blue, archived→"archived"/grey — NOT active/done), an
@@ -167,5 +196,72 @@ describe('InboxRow — thread layout (THR-099 id-first row)', () => {
     expect(screen.getByLabelText(/Dream-originated/)).toBeInTheDocument();
     // Additive: the status badge still renders alongside the dream pill.
     expect(screen.getByText('open')).toHaveClass('text-info', 'bg-info-soft');
+  });
+
+  test('renders the bounded list participant projection on its second line', () => {
+    render(
+      <InboxRow
+        threadId="THR-006"
+        subject="Participant visibility"
+        status="open"
+        needsYou={false}
+        active={false}
+        layout="thread"
+        participants={['engineering_manager', 'dev_agent']}
+        href="#"
+      />,
+    );
+    expect(screen.getByText('engineering_manager · dev_agent')).toBeInTheDocument();
+  });
+
+  test('uses flush grouped-row geometry while the default consumer keeps its card shell', () => {
+    const { rerender } = render(
+      <InboxRow threadId="THR-007" subject="Long grouped row" status="open" needsYou={false} active={false} layout="thread" href="#" participants={['agent']} />,
+    );
+    expect(screen.getByRole('link')).not.toHaveClass('rounded-sm', 'border', 'shadow-pasture-sm');
+    expect(screen.getByText('agent')).toHaveClass('ml-[18px]');
+    rerender(<InboxRow threadId="THR-008" subject="Default row" status="open" needsYou={false} active={false} href="#" />);
+    expect(screen.getByRole('link')).toHaveClass('rounded-sm', 'border', 'shadow-pasture-sm');
+  });
+
+  test('keeps semantic row colors immediate when the theme changes', () => {
+    render(
+      <InboxRow threadId="THR-009" subject="Theme switch" status="open" needsYou={false} active={false} layout="thread" href="#" />,
+    );
+    expect(screen.getByRole('link')).toHaveClass('bg-surface');
+    expect(screen.getByRole('link')).not.toHaveClass('transition-colors');
+  });
+});
+
+describe('InboxRow dream badge accessible name (THR-118 W3a)', () => {
+  test.each(['default', 'thread'] as const)('%s layout: labels.dreamBadge names the badge; omitted keeps English', (layout) => {
+    const { rerender } = render(
+      <InboxRow
+        threadId="THR-007"
+        subject="Dream reflection"
+        status="open"
+        needsYou={false}
+        active={false}
+        fromDream
+        layout={layout}
+        href="#"
+        labels={{ fromDream: '来自梦境', dreamBadge: '源自梦境' }}
+      />,
+    );
+    const badge = screen.getByRole('img', { name: '源自梦境' });
+    expect(screen.queryByRole('img', { name: 'Dream-originated' })).not.toBeInTheDocument();
+    rerender(
+      <InboxRow
+        threadId="THR-007"
+        subject="Dream reflection"
+        status="open"
+        needsYou={false}
+        active={false}
+        fromDream
+        layout={layout}
+        href="#"
+      />,
+    );
+    expect(screen.getByRole('img', { name: 'Dream-originated' })).toBe(badge);
   });
 });

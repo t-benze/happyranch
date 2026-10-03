@@ -4,6 +4,7 @@ import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import { Markdown } from '@/design-system/patterns/Markdown';
 import { useTasksRoutes } from '@/hooks/tasks';
+import { useTranslation } from '@/hooks/i18n';
 
 // Depth-to-Tailwind padding map. Tailwind needs static class names at build
 // time, so we cannot interpolate `pl-[${depth*16}px]`. Clamp at 10 levels —
@@ -15,15 +16,21 @@ const DEPTH_PL = [
 
 const COLLAPSE_THRESHOLD = 240;
 
+const TOGGLE_KEYS = {
+  brief: { show: 'tasks.recall.showFullBrief', hide: 'tasks.recall.hideBrief' },
+  summary: { show: 'tasks.recall.showFullSummary', hide: 'tasks.recall.hideSummary' },
+} as const;
+
 function CollapsibleBody({
   body,
-  label,
+  kind,
   muted = false,
 }: {
   body: string;
-  label: string;
+  kind: keyof typeof TOGGLE_KEYS;
   muted?: boolean;
 }): JSX.Element {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const shouldCollapse = body.length > COLLAPSE_THRESHOLD;
   const shown = shouldCollapse && !expanded
@@ -38,7 +45,9 @@ function CollapsibleBody({
           onClick={() => setExpanded((v) => !v)}
           className="text-accent mt-1 text-xs hover:underline"
         >
-          {expanded ? `Hide ${label}` : `Show full ${label} (${body.length} chars)`}
+          {expanded
+            ? t(TOGGLE_KEYS[kind].hide)
+            : t(TOGGLE_KEYS[kind].show, { count: body.length })}
         </button>
       )}
     </div>
@@ -47,6 +56,7 @@ function CollapsibleBody({
 
 export function TaskRecallTree({ node, depth = 0 }: { node: TaskRecallNode; depth?: number }): JSX.Element {
   const routes = useTasksRoutes();
+  const { t } = useTranslation();
   const pl = DEPTH_PL[Math.min(depth, DEPTH_PL.length - 1)];
   return (
     <div className={`${pl} py-2`}>
@@ -59,15 +69,15 @@ export function TaskRecallTree({ node, depth = 0 }: { node: TaskRecallNode; dept
       </div>
       {node.brief && (
         <div className="mt-1">
-          <CollapsibleBody body={node.brief} label="brief" />
+          <CollapsibleBody body={node.brief} kind="brief" />
         </div>
       )}
       {node.output_summary && (
         <div className="mt-2 border-l-2 border-border-subtle pl-3">
           <div className="text-fg-muted text-xs font-medium tracking-wider uppercase">
-            Outcome
+            {t('tasks.recall.outcome')}
           </div>
-          <CollapsibleBody body={node.output_summary} label="summary" muted />
+          <CollapsibleBody body={node.output_summary} kind="summary" muted />
         </div>
       )}
       {node.children.map((c) => (

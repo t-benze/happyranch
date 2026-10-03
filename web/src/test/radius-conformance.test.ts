@@ -112,7 +112,7 @@ const RADIUS_CONTRACT: readonly RadiusRow[] = [
     expected: "rounded-sm",
     token: "--radius-sm",
     source: "layouts/AppShell/Sidebar.tsx",
-    startPattern: 'aria-label\\s*=\\s*"Account: You, Founder"',
+    startPattern: "aria-label=\\{t\\('shell\\.account\\.label'",
     endPattern: '<span\\s+aria-hidden\\s*=\\s*"true"',
   },
   {
@@ -146,7 +146,7 @@ const RADIUS_CONTRACT: readonly RadiusRow[] = [
     token: "--radius-pill",
     source: "patterns/StatusBadge.tsx",
     startPattern: "<span\\s+className=\\{\`text-mono-sm",
-    endPattern: "\\$\\{cls\\}\`\\}",
+    endPattern: "\\$\\{cls\\} \\$\\{presentation === 'tasks' \\? 'tasks-status' : ''\\}\`\\}",
   },
   {
     id: "agent-chip",
@@ -284,13 +284,13 @@ const RADIUS_CONTRACT: readonly RadiusRow[] = [
   {
     id: "inbox-row",
     component: "InboxRow",
-    region: "interactive shell",
+    region: "default interactive shell",
     referenceSelector: ".thread (seq. 61 interactive mapping)",
     expected: "rounded-sm",
     token: "--radius-sm",
     source: "patterns/InboxRow.tsx",
     startPattern: "const\\s+shellCls\\s*=",
-    endPattern: "\\$\\{",
+    endPattern: ";\\n\\s*const\\s+activeMarker",
   },
 ] as const;
 

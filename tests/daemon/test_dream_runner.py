@@ -148,6 +148,11 @@ async def test_run_dream_marks_running_and_waits_for_callback(org_state):
     assert dream.status == DreamStatus.FAILED
     assert "no_callback" in dream.error
     assert fake.calls[0]["workspace"] == Path(workspace)
+    started = next(
+        row for row in org_state.db.get_audit_logs("DREAM-001")
+        if row["action"] == "dream_started"
+    )
+    assert started["payload"] == {"executor": "claude", "model": None}
 
 
 async def test_run_dream_records_custom_skill_materialization_with_pre_spawn_session(org_state):

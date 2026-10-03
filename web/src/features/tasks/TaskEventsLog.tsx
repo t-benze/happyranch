@@ -1,6 +1,8 @@
 import { useCallback, useRef, useState } from 'react';
 import { useTaskTailSSE } from '@/hooks/tasks';
 import type { TaskEvent } from '@/lib/api/types';
+import { useTranslation } from '@/hooks/i18n';
+import { translate, type Locale, type MessageKey } from '@/lib/i18n';
 
 /**
  * Stable signature for an SSE TaskEvent. EventBus.subscribe replays the full
@@ -16,11 +18,11 @@ function signature(ev: TaskEvent): string {
 /** Render an SSE timestamp in the browser viewer's local date and time.
  * Missing or malformed timestamps (e.g. legacy synthetic terminal events that
  * predate timestamp synthesis) must never visibly render 'Invalid Date'. */
-function formatEventTimestamp(timestamp: string | null | undefined): string {
-  if (!timestamp) return 'Time unavailable';
+function formatEventTimestamp(timestamp: string | null | undefined, locale: Locale): string {
+  if (!timestamp) return translate(locale, 'tasks.events.timeUnavailable');
   const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return 'Time unavailable';
-  return date.toLocaleString();
+  if (Number.isNaN(date.getTime())) return translate(locale, 'tasks.events.timeUnavailable');
+  return date.toLocaleString(locale);
 }
 
 /**
@@ -41,13 +43,15 @@ export function eventLabel(ev: TaskEvent): string {
  * actions are prettified. Kept separate from `eventLabel` so `rowTone` still
  * matches on the raw semantic action name.
  */
-const FANOUT_LABELS: Readonly<Record<string, string>> = {
-  fanout_spawned: 'Fan-out spawned',
-  fanout_join: 'Fan-out joined',
+const FANOUT_LABELS: Readonly<Record<string, MessageKey>> = {
+  fanout_spawned: 'tasks.events.fanoutSpawned',
+  fanout_join: 'tasks.events.fanoutJoined',
 };
 
-export function prettyLabel(rawLabel: string): string {
-  return FANOUT_LABELS[rawLabel] ?? rawLabel;
+export function prettyLabel(rawLabel: string, locale: Locale): string {
+  return Object.prototype.hasOwnProperty.call(FANOUT_LABELS, rawLabel)
+    ? translate(locale, FANOUT_LABELS[rawLabel])
+    : rawLabel;
 }
 
 function rowTone(label: string): string {
@@ -62,6 +66,7 @@ function rowTone(label: string): string {
 }
 
 export function TaskEventsLog({ taskId }: { taskId: string }): JSX.Element {
+  const { locale, t } = useTranslation();
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [connectionState, setConnectionState] = useState<'connecting' | 'empty' | 'error'>(
@@ -93,14 +98,14 @@ export function TaskEventsLog({ taskId }: { taskId: string }): JSX.Element {
     if (connectionState === 'error') {
       return (
         <p role="alert" className="text-status-abandoned text-xs">
-          Unable to load events for {taskId}.
+          {t('tasks.events.error', { taskId })}
         </p>
       );
     }
     if (connectionState === 'connecting') {
-      return <p className="text-fg-muted text-xs">Loading events for {taskId}…</p>;
+      return <p className="text-fg-muted text-xs">{t('tasks.events.loading', { taskId })}</p>;
     }
-    return <p className="text-fg-muted text-xs">No events for {taskId} yet.</p>;
+    return <p className="text-fg-muted text-xs">{t('tasks.events.empty', { taskId })}</p>;
   }
   return (
     <ol className="space-y-1 text-xs">
@@ -119,11 +124,11 @@ export function TaskEventsLog({ taskId }: { taskId: string }): JSX.Element {
               }`}
               aria-expanded={hasPayload ? isOpen : undefined}
             >
-              <span className="text-fg-muted font-mono">{formatEventTimestamp(ev.timestamp)}</span>
+              <span className="text-fg-muted font-mono">{formatEventTimestamp(ev.timestamp, locale)}</span>
               <span
                 className={`inline-block rounded-sm px-1.5 py-px font-mono font-semibold ${rowTone(label)}`}
               >
-                {prettyLabel(label)}
+                {prettyLabel(label, locale)}
               </span>
               {ev.agent && <span className="text-fg-muted">· {ev.agent}</span>}
               {hasPayload && (

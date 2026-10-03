@@ -1,0 +1,432 @@
+{
+ "fixture_version": 1,
+ "historical_inventory_digest": "d76d5086c2d0ea7238f17071964fe10577c9cb7a027e907fb29b2b41261ecd24",
+ "initial_rows": [],
+ "object_count": 68,
+ "objects": [
+  {
+   "name": "tasks",
+   "sql": "CREATE TABLE tasks (\n                id TEXT PRIMARY KEY,\n                status TEXT NOT NULL DEFAULT 'pending',\n                assigned_agent TEXT,\n                team TEXT NOT NULL DEFAULT 'engineering',\n                brief TEXT NOT NULL,\n                task_type TEXT NOT NULL DEFAULT 'task',\n                revision_count INTEGER NOT NULL DEFAULT 0,\n                created_at TEXT NOT NULL,\n                updated_at TEXT NOT NULL,\n                completed_at TEXT,\n                parent_task_id TEXT,\n                final_output_summary TEXT,\n                final_output_dir TEXT,\n                executor_pid INTEGER\n            , block_kind TEXT, note TEXT, orchestration_step_count INTEGER DEFAULT 0, cancelled_at TEXT, revisit_of_task_id TEXT, last_heartbeat TEXT, session_timeout_seconds INTEGER, blocked_on_job_ids TEXT, dispatched_from_thread_id TEXT, active_chain TEXT, active_fanout TEXT, current_session_id TEXT, zombie_flagged_at TEXT)",
+   "tbl_name": "tasks",
+   "type": "table"
+  },
+  {
+   "name": "audit_log",
+   "sql": "CREATE TABLE audit_log (\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                task_id TEXT NOT NULL,\n                agent TEXT NOT NULL,\n                action TEXT NOT NULL,\n                payload TEXT,\n                timestamp TEXT NOT NULL\n            )",
+   "tbl_name": "audit_log",
+   "type": "table"
+  },
+  {
+   "name": "task_results",
+   "sql": "CREATE TABLE task_results (\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                task_id TEXT NOT NULL,\n                agent TEXT NOT NULL,\n                session_id TEXT NOT NULL,\n                status TEXT NOT NULL DEFAULT 'completed',\n                output_summary TEXT,\n                decision_json TEXT,\n                confidence_score INTEGER,\n                learnings TEXT,\n                risks_flagged TEXT,\n                duration_seconds INTEGER,\n                token_count INTEGER,\n                estimated_cost REAL,\n                output_dir TEXT,\n                created_at TEXT NOT NULL\n            , waiting_on_job_ids TEXT, verdict TEXT)",
+   "tbl_name": "task_results",
+   "type": "table"
+  },
+  {
+   "name": "dreams",
+   "sql": "CREATE TABLE dreams (\n                id TEXT PRIMARY KEY,\n                agent_name TEXT NOT NULL,\n                local_date TEXT NOT NULL,\n                scheduled_for TEXT NOT NULL,\n                window_start TEXT,\n                window_end TEXT NOT NULL,\n                started_at TEXT,\n                ended_at TEXT,\n                status TEXT NOT NULL DEFAULT 'pending',\n                summary TEXT,\n                transcript_path TEXT,\n                new_learnings_count INTEGER NOT NULL DEFAULT 0,\n                kb_candidate_count INTEGER NOT NULL DEFAULT 0,\n                founder_thread_id TEXT,\n                session_id TEXT,\n                error TEXT,\n                created_at TEXT NOT NULL,\n                UNIQUE(agent_name, local_date)\n            )",
+   "tbl_name": "dreams",
+   "type": "table"
+  },
+  {
+   "name": "idx_dreams_agent_date",
+   "sql": "CREATE INDEX idx_dreams_agent_date\n                ON dreams(agent_name, local_date)",
+   "tbl_name": "dreams",
+   "type": "index"
+  },
+  {
+   "name": "idx_dreams_status",
+   "sql": "CREATE INDEX idx_dreams_status\n                ON dreams(status)",
+   "tbl_name": "dreams",
+   "type": "index"
+  },
+  {
+   "name": "dream_kb_candidates",
+   "sql": "CREATE TABLE dream_kb_candidates (\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                dream_id TEXT NOT NULL,\n                agent_name TEXT NOT NULL,\n                slug TEXT NOT NULL,\n                title TEXT NOT NULL,\n                topic TEXT NOT NULL,\n                rationale TEXT NOT NULL,\n                body_markdown TEXT NOT NULL,\n                status TEXT NOT NULL DEFAULT 'pending',\n                promoted_kb_slug TEXT,\n                created_at TEXT NOT NULL,\n                updated_at TEXT NOT NULL,\n                UNIQUE(dream_id, slug),\n                FOREIGN KEY (dream_id) REFERENCES dreams(id)\n            )",
+   "tbl_name": "dream_kb_candidates",
+   "type": "table"
+  },
+  {
+   "name": "idx_dream_candidates_dream",
+   "sql": "CREATE INDEX idx_dream_candidates_dream\n                ON dream_kb_candidates(dream_id)",
+   "tbl_name": "dream_kb_candidates",
+   "type": "index"
+  },
+  {
+   "name": "idx_dream_candidates_status",
+   "sql": "CREATE INDEX idx_dream_candidates_status\n                ON dream_kb_candidates(status)",
+   "tbl_name": "dream_kb_candidates",
+   "type": "index"
+  },
+  {
+   "name": "work_hours",
+   "sql": "CREATE TABLE work_hours (\n                id TEXT PRIMARY KEY,\n                agent_name TEXT NOT NULL,\n                local_date TEXT NOT NULL,\n                slot TEXT NOT NULL,\n                mode TEXT NOT NULL,\n                scheduled_for TEXT NOT NULL,\n                started_at TEXT,\n                ended_at TEXT,\n                status TEXT NOT NULL DEFAULT 'pending',\n                routine_count INTEGER NOT NULL DEFAULT 0,\n                dropped_count INTEGER NOT NULL DEFAULT 0,\n                spawned_task_ids TEXT,\n                spawned_task_count INTEGER NOT NULL DEFAULT 0,\n                summary TEXT,\n                transcript_path TEXT,\n                session_id TEXT,\n                error TEXT,\n                created_at TEXT NOT NULL,\n                UNIQUE(agent_name, local_date, slot)\n            )",
+   "tbl_name": "work_hours",
+   "type": "table"
+  },
+  {
+   "name": "idx_work_hours_agent_date",
+   "sql": "CREATE INDEX idx_work_hours_agent_date\n                ON work_hours(agent_name, local_date)",
+   "tbl_name": "work_hours",
+   "type": "index"
+  },
+  {
+   "name": "idx_work_hours_status",
+   "sql": "CREATE INDEX idx_work_hours_status\n                ON work_hours(status)",
+   "tbl_name": "work_hours",
+   "type": "index"
+  },
+  {
+   "name": "schedules",
+   "sql": "CREATE TABLE schedules (\n                id TEXT PRIMARY KEY,\n                agent_name TEXT NOT NULL,\n                team TEXT NOT NULL DEFAULT 'engineering',\n                kind TEXT NOT NULL,\n                fire_at TEXT NOT NULL,\n                recurrence TEXT,\n                timezone TEXT NOT NULL DEFAULT 'UTC',\n                normalized_brief TEXT NOT NULL,\n                source_instruction TEXT NOT NULL,\n                status TEXT NOT NULL DEFAULT 'armed',\n                active INTEGER NOT NULL DEFAULT 1,\n                expires_at TEXT,\n                indefinite INTEGER NOT NULL DEFAULT 0,\n                spawned_task_ids TEXT,\n                last_fired_at TEXT,\n                fire_count INTEGER NOT NULL DEFAULT 0,\n                session_id TEXT,\n                error TEXT,\n                transcript_path TEXT,\n                created_at TEXT NOT NULL,\n                updated_at TEXT NOT NULL\n            )",
+   "tbl_name": "schedules",
+   "type": "table"
+  },
+  {
+   "name": "idx_schedules_agent_status",
+   "sql": "CREATE INDEX idx_schedules_agent_status\n                ON schedules(agent_name, status)",
+   "tbl_name": "schedules",
+   "type": "index"
+  },
+  {
+   "name": "idx_schedules_status_fire_at",
+   "sql": "CREATE INDEX idx_schedules_status_fire_at\n                ON schedules(status, fire_at)",
+   "tbl_name": "schedules",
+   "type": "index"
+  },
+  {
+   "name": "session_token_usage",
+   "sql": "CREATE TABLE session_token_usage (\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                task_id    TEXT,\n                agent      TEXT NOT NULL,\n                session_id TEXT NOT NULL,\n                executor   TEXT NOT NULL,\n                model      TEXT,\n                input_tokens          INTEGER,\n                output_tokens         INTEGER,\n                cache_read_tokens     INTEGER,\n                cache_creation_tokens INTEGER,\n                reasoning_tokens      INTEGER,\n                usage_raw_json TEXT,\n                scope_type TEXT,\n                scope_id TEXT,\n                thread_id TEXT,\n                invocation_purpose TEXT,\n                created_at TEXT NOT NULL,\n                UNIQUE (task_id, agent, session_id)\n            )",
+   "tbl_name": "session_token_usage",
+   "type": "table"
+  },
+  {
+   "name": "escalation_notifications",
+   "sql": "CREATE TABLE escalation_notifications (\n                feishu_message_id TEXT PRIMARY KEY,\n                org_slug          TEXT NOT NULL,\n                task_id           TEXT NOT NULL,\n                chat_id           TEXT NOT NULL,\n                created_at        TEXT NOT NULL,\n                expires_at        TEXT NOT NULL,\n                consumed_at       TEXT,\n                consumed_by       TEXT,\n                kind              TEXT NOT NULL DEFAULT 'escalation'\n            )",
+   "tbl_name": "escalation_notifications",
+   "type": "table"
+  },
+  {
+   "name": "idx_escalation_notifications_task",
+   "sql": "CREATE INDEX idx_escalation_notifications_task\n                ON escalation_notifications (task_id)",
+   "tbl_name": "escalation_notifications",
+   "type": "index"
+  },
+  {
+   "name": "processed_event_ids",
+   "sql": "CREATE TABLE processed_event_ids (\n                org_slug          TEXT NOT NULL,\n                feishu_event_id   TEXT NOT NULL,\n                processed_at      TEXT NOT NULL,\n                outcome           TEXT NOT NULL,\n                reason            TEXT,\n                PRIMARY KEY (org_slug, feishu_event_id)\n            )",
+   "tbl_name": "processed_event_ids",
+   "type": "table"
+  },
+  {
+   "name": "threads",
+   "sql": "CREATE TABLE threads (\n                id TEXT PRIMARY KEY,\n                subject TEXT NOT NULL,\n                started_at TEXT NOT NULL,\n                archived_at TEXT,\n                status TEXT NOT NULL DEFAULT 'open',\n                forwarded_from_id TEXT,\n                forwarded_from_kind TEXT,\n                turn_cap INTEGER NOT NULL DEFAULT 500,\n                turns_used INTEGER NOT NULL DEFAULT 0,\n                summary TEXT,\n                transcript_path TEXT\n            , composed_by TEXT NOT NULL DEFAULT 'founder', composed_from_task_id TEXT, composed_from_dream_id TEXT)",
+   "tbl_name": "threads",
+   "type": "table"
+  },
+  {
+   "name": "idx_threads_status",
+   "sql": "CREATE INDEX idx_threads_status ON threads(status)",
+   "tbl_name": "threads",
+   "type": "index"
+  },
+  {
+   "name": "idx_threads_started",
+   "sql": "CREATE INDEX idx_threads_started ON threads(started_at)",
+   "tbl_name": "threads",
+   "type": "index"
+  },
+  {
+   "name": "thread_participants",
+   "sql": "CREATE TABLE thread_participants (\n                thread_id TEXT NOT NULL,\n                agent_name TEXT NOT NULL,\n                added_at TEXT NOT NULL,\n                added_by TEXT NOT NULL,\n                agent_session_id TEXT,\n                last_resumed_seq INTEGER NOT NULL DEFAULT 0,\n                PRIMARY KEY (thread_id, agent_name),\n                FOREIGN KEY (thread_id) REFERENCES threads(id)\n            )",
+   "tbl_name": "thread_participants",
+   "type": "table"
+  },
+  {
+   "name": "idx_thread_participants_agent",
+   "sql": "CREATE INDEX idx_thread_participants_agent\n                ON thread_participants(agent_name)",
+   "tbl_name": "thread_participants",
+   "type": "index"
+  },
+  {
+   "name": "thread_messages",
+   "sql": "CREATE TABLE thread_messages (\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                thread_id TEXT NOT NULL,\n                seq INTEGER NOT NULL,\n                speaker TEXT NOT NULL,\n                kind TEXT NOT NULL,\n                body_markdown TEXT,\n                addressed_to_json TEXT,\n                decline_reason TEXT,\n                system_payload_json TEXT,\n                sent_from_task_id TEXT,\n                created_at TEXT NOT NULL,\n                FOREIGN KEY (thread_id) REFERENCES threads(id)\n            )",
+   "tbl_name": "thread_messages",
+   "type": "table"
+  },
+  {
+   "name": "idx_thread_messages_thread_seq",
+   "sql": "CREATE UNIQUE INDEX idx_thread_messages_thread_seq\n                ON thread_messages(thread_id, seq)",
+   "tbl_name": "thread_messages",
+   "type": "index"
+  },
+  {
+   "name": "thread_message_attachments",
+   "sql": "CREATE TABLE thread_message_attachments (\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                thread_id TEXT NOT NULL,\n                message_seq INTEGER NOT NULL,\n                ordinal INTEGER NOT NULL,\n                artifact_name TEXT NOT NULL,\n                display_name TEXT NOT NULL,\n                size_bytes INTEGER,\n                content_type TEXT,\n                uploaded_by TEXT NOT NULL,\n                created_at TEXT NOT NULL, thread_attachment_id TEXT,\n                FOREIGN KEY (thread_id) REFERENCES threads(id),\n                UNIQUE(thread_id, message_seq, ordinal)\n            )",
+   "tbl_name": "thread_message_attachments",
+   "type": "table"
+  },
+  {
+   "name": "idx_thread_message_attachments_message",
+   "sql": "CREATE INDEX idx_thread_message_attachments_message\n                ON thread_message_attachments(thread_id, message_seq)",
+   "tbl_name": "thread_message_attachments",
+   "type": "index"
+  },
+  {
+   "name": "thread_scoped_attachments",
+   "sql": "CREATE TABLE thread_scoped_attachments (\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                attachment_id TEXT NOT NULL UNIQUE,\n                thread_id TEXT NOT NULL,\n                display_name TEXT NOT NULL,\n                size_bytes INTEGER,\n                content_type TEXT,\n                uploaded_by TEXT NOT NULL,\n                created_at TEXT NOT NULL,\n                FOREIGN KEY (thread_id) REFERENCES threads(id)\n            )",
+   "tbl_name": "thread_scoped_attachments",
+   "type": "table"
+  },
+  {
+   "name": "idx_thread_scoped_attachments_thread",
+   "sql": "CREATE INDEX idx_thread_scoped_attachments_thread\n                ON thread_scoped_attachments(thread_id)",
+   "tbl_name": "thread_scoped_attachments",
+   "type": "index"
+  },
+  {
+   "name": "task_attachments",
+   "sql": "CREATE TABLE task_attachments (\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                task_id TEXT NOT NULL,\n                ordinal INTEGER NOT NULL,\n                storage_key TEXT NOT NULL,\n                display_name TEXT NOT NULL,\n                size_bytes INTEGER,\n                content_type TEXT,\n                uploaded_by TEXT NOT NULL,\n                created_at TEXT NOT NULL,\n                legacy_status TEXT,\n                FOREIGN KEY (task_id) REFERENCES tasks(id),\n                UNIQUE(task_id, ordinal),\n                UNIQUE(storage_key)\n            )",
+   "tbl_name": "task_attachments",
+   "type": "table"
+  },
+  {
+   "name": "idx_task_attachments_task",
+   "sql": "CREATE INDEX idx_task_attachments_task\n                ON task_attachments(task_id)",
+   "tbl_name": "task_attachments",
+   "type": "index"
+  },
+  {
+   "name": "thread_invocations",
+   "sql": "CREATE TABLE thread_invocations (\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                thread_id TEXT NOT NULL,\n                agent_name TEXT NOT NULL,\n                invocation_token TEXT NOT NULL UNIQUE,\n                triggering_seq INTEGER NOT NULL,\n                purpose TEXT NOT NULL,\n                status TEXT NOT NULL DEFAULT 'pending',\n                enqueued_at TEXT NOT NULL,\n                started_at TEXT,\n                consumed_at TEXT,\n                session_id TEXT,\n                dispatched_task_id TEXT,\n                decline_reason TEXT,\n                FOREIGN KEY (thread_id) REFERENCES threads(id)\n            )",
+   "tbl_name": "thread_invocations",
+   "type": "table"
+  },
+  {
+   "name": "idx_thread_invocations_token",
+   "sql": "CREATE INDEX idx_thread_invocations_token\n                ON thread_invocations(invocation_token)",
+   "tbl_name": "thread_invocations",
+   "type": "index"
+  },
+  {
+   "name": "idx_thread_invocations_thread",
+   "sql": "CREATE INDEX idx_thread_invocations_thread\n                ON thread_invocations(thread_id)",
+   "tbl_name": "thread_invocations",
+   "type": "index"
+  },
+  {
+   "name": "idx_thread_invocations_pending",
+   "sql": "CREATE INDEX idx_thread_invocations_pending\n                ON thread_invocations(status) WHERE status = 'pending'",
+   "tbl_name": "thread_invocations",
+   "type": "index"
+  },
+  {
+   "name": "jobs",
+   "sql": "CREATE TABLE jobs (\n                id                       TEXT PRIMARY KEY,\n                task_id                  TEXT NOT NULL,\n                agent_name               TEXT NOT NULL,\n                title                    TEXT NOT NULL,\n                rationale                TEXT,\n                script_text              TEXT NOT NULL,\n                interpreter              TEXT NOT NULL,\n                cwd_hint                 TEXT,\n                review_required          INTEGER NOT NULL DEFAULT 0,\n                persistent               INTEGER NOT NULL DEFAULT 0,\n                max_runtime_seconds      INTEGER,\n                max_output_bytes         INTEGER NOT NULL DEFAULT 52428800,\n                status                   TEXT NOT NULL DEFAULT 'pending',\n                exit_code                INTEGER,\n                reason                   TEXT,\n                duration_ms              INTEGER,\n                stdout_head              TEXT,\n                stderr_head              TEXT,\n                stdout_path              TEXT,\n                stderr_path              TEXT,\n                stdout_bytes             INTEGER,\n                stderr_bytes             INTEGER,\n                cwd_resolved             TEXT,\n                started_at               TEXT,\n                finished_at              TEXT,\n                reviewed_at              TEXT,\n                reviewed_by              TEXT,\n                reject_reason            TEXT,\n                created_at               TEXT NOT NULL\n            )",
+   "tbl_name": "jobs",
+   "type": "table"
+  },
+  {
+   "name": "jobs_task_id_idx",
+   "sql": "CREATE INDEX jobs_task_id_idx ON jobs(task_id)",
+   "tbl_name": "jobs",
+   "type": "index"
+  },
+  {
+   "name": "jobs_status_idx",
+   "sql": "CREATE INDEX jobs_status_idx  ON jobs(status)",
+   "tbl_name": "jobs",
+   "type": "index"
+  },
+  {
+   "name": "kb_views",
+   "sql": "CREATE TABLE kb_views (\n                slug           TEXT PRIMARY KEY,\n                view_count     INTEGER NOT NULL DEFAULT 0,\n                last_viewed_at TEXT\n            )",
+   "tbl_name": "kb_views",
+   "type": "table"
+  },
+  {
+   "name": "org_settings",
+   "sql": "CREATE TABLE org_settings (\n                section     TEXT NOT NULL PRIMARY KEY,\n                value_json  TEXT NOT NULL,\n                updated_at  TEXT NOT NULL,\n                updated_by  TEXT DEFAULT 'founder'\n            )",
+   "tbl_name": "org_settings",
+   "type": "table"
+  },
+  {
+   "name": "skill_validation_events",
+   "sql": "CREATE TABLE skill_validation_events (\n                id             INTEGER PRIMARY KEY AUTOINCREMENT,\n                skill_id       TEXT NOT NULL,\n                slug           TEXT NOT NULL,\n                agent          TEXT,\n                source         TEXT NOT NULL DEFAULT 'user_authored',\n                severity       TEXT NOT NULL DEFAULT 'info',\n                ok             INTEGER NOT NULL DEFAULT 1,\n                version        TEXT,\n                findings       TEXT,\n                reason_codes   TEXT,\n                created_at     TEXT NOT NULL\n            )",
+   "tbl_name": "skill_validation_events",
+   "type": "table"
+  },
+  {
+   "name": "idx_sve_skill_id",
+   "sql": "CREATE INDEX idx_sve_skill_id\n                ON skill_validation_events(skill_id)",
+   "tbl_name": "skill_validation_events",
+   "type": "index"
+  },
+  {
+   "name": "idx_sve_agent",
+   "sql": "CREATE INDEX idx_sve_agent\n                ON skill_validation_events(agent)",
+   "tbl_name": "skill_validation_events",
+   "type": "index"
+  },
+  {
+   "name": "skill_lifecycle_packages",
+   "sql": "CREATE TABLE skill_lifecycle_packages (\n                id          INTEGER PRIMARY KEY AUTOINCREMENT,\n                skill_id    TEXT NOT NULL,\n                slug        TEXT NOT NULL,\n                name        TEXT NOT NULL,\n                version     TEXT NOT NULL,\n                content_hash TEXT NOT NULL,\n                policy_class TEXT NOT NULL DEFAULT 'standard_operational',\n                description TEXT NOT NULL DEFAULT '',\n                skill_md    TEXT NOT NULL DEFAULT '',\n                content_artifact_key TEXT,\n                status      TEXT NOT NULL DEFAULT 'proposed',\n                created_at  TEXT NOT NULL,\n                created_by  TEXT NOT NULL DEFAULT '',\n                proposal_task_id    TEXT,\n                proposal_session_id TEXT,\n                proposer_agent      TEXT,\n                reviewer          TEXT,\n                review_decision   TEXT,\n                review_rationale  TEXT,\n                reviewed_at       TEXT,\n                publisher              TEXT,\n                published_at           TEXT,\n                publication_decision_id INTEGER\n            )",
+   "tbl_name": "skill_lifecycle_packages",
+   "type": "table"
+  },
+  {
+   "name": "idx_lifecycle_packages_skill_id",
+   "sql": "CREATE INDEX idx_lifecycle_packages_skill_id\n                ON skill_lifecycle_packages(skill_id)",
+   "tbl_name": "skill_lifecycle_packages",
+   "type": "index"
+  },
+  {
+   "name": "idx_lifecycle_packages_status",
+   "sql": "CREATE INDEX idx_lifecycle_packages_status\n                ON skill_lifecycle_packages(status)",
+   "tbl_name": "skill_lifecycle_packages",
+   "type": "index"
+  },
+  {
+   "name": "idx_lifecycle_packages_hash",
+   "sql": "CREATE UNIQUE INDEX idx_lifecycle_packages_hash\n                ON skill_lifecycle_packages(skill_id, content_hash)",
+   "tbl_name": "skill_lifecycle_packages",
+   "type": "index"
+  },
+  {
+   "name": "skill_lifecycle_events",
+   "sql": "CREATE TABLE skill_lifecycle_events (\n                id                  INTEGER PRIMARY KEY AUTOINCREMENT,\n                skill_id            TEXT NOT NULL,\n                package_version_id  INTEGER,\n                event_type          TEXT NOT NULL,\n                actor               TEXT NOT NULL DEFAULT '',\n                actor_role          TEXT NOT NULL DEFAULT '',\n                previous_status     TEXT,\n                new_status          TEXT,\n                content_hash        TEXT,\n                metadata_json       TEXT,\n                created_at          TEXT NOT NULL,\n                task_id             TEXT,\n                session_id          TEXT,\n                FOREIGN KEY (package_version_id) REFERENCES skill_lifecycle_packages(id)\n            )",
+   "tbl_name": "skill_lifecycle_events",
+   "type": "table"
+  },
+  {
+   "name": "idx_lifecycle_events_skill_id",
+   "sql": "CREATE INDEX idx_lifecycle_events_skill_id\n                ON skill_lifecycle_events(skill_id)",
+   "tbl_name": "skill_lifecycle_events",
+   "type": "index"
+  },
+  {
+   "name": "idx_lifecycle_events_created_at",
+   "sql": "CREATE INDEX idx_lifecycle_events_created_at\n                ON skill_lifecycle_events(created_at)",
+   "tbl_name": "skill_lifecycle_events",
+   "type": "index"
+  },
+  {
+   "name": "skill_lifecycle_assignments",
+   "sql": "CREATE TABLE skill_lifecycle_assignments (\n                id                  INTEGER PRIMARY KEY AUTOINCREMENT,\n                skill_id            TEXT NOT NULL,\n                agent_name          TEXT NOT NULL,\n                package_version_id  INTEGER NOT NULL,\n                version             TEXT NOT NULL,\n                content_hash        TEXT NOT NULL,\n                assigned_by         TEXT NOT NULL DEFAULT '',\n                assigned_at         TEXT NOT NULL,\n                active              INTEGER NOT NULL DEFAULT 1,\n                rolled_back_by            TEXT,\n                rolled_back_at            TEXT,\n                rollback_reason           TEXT,\n                rollback_target_version_id INTEGER,\n                FOREIGN KEY (package_version_id) REFERENCES skill_lifecycle_packages(id)\n            )",
+   "tbl_name": "skill_lifecycle_assignments",
+   "type": "table"
+  },
+  {
+   "name": "idx_lifecycle_assignments_skill",
+   "sql": "CREATE INDEX idx_lifecycle_assignments_skill\n                ON skill_lifecycle_assignments(skill_id)",
+   "tbl_name": "skill_lifecycle_assignments",
+   "type": "index"
+  },
+  {
+   "name": "idx_lifecycle_assignments_agent",
+   "sql": "CREATE INDEX idx_lifecycle_assignments_agent\n                ON skill_lifecycle_assignments(agent_name)",
+   "tbl_name": "skill_lifecycle_assignments",
+   "type": "index"
+  },
+  {
+   "name": "idx_lifecycle_assignments_unique_active",
+   "sql": "CREATE UNIQUE INDEX idx_lifecycle_assignments_unique_active\n                ON skill_lifecycle_assignments(skill_id, agent_name)\n                WHERE active = 1",
+   "tbl_name": "skill_lifecycle_assignments",
+   "type": "index"
+  },
+  {
+   "name": "skill_lifecycle_materializations",
+   "sql": "CREATE TABLE skill_lifecycle_materializations (\n                id                  INTEGER PRIMARY KEY AUTOINCREMENT,\n                skill_id            TEXT NOT NULL,\n                agent_name          TEXT NOT NULL,\n                package_version_id  INTEGER NOT NULL,\n                version             TEXT NOT NULL,\n                content_hash        TEXT NOT NULL,\n                success             INTEGER NOT NULL DEFAULT 0,\n                error_message       TEXT,\n                session_context     TEXT,\n                created_at          TEXT NOT NULL,\n                FOREIGN KEY (package_version_id) REFERENCES skill_lifecycle_packages(id)\n            )",
+   "tbl_name": "skill_lifecycle_materializations",
+   "type": "table"
+  },
+  {
+   "name": "idx_lifecycle_materializations_skill_agent",
+   "sql": "CREATE INDEX idx_lifecycle_materializations_skill_agent\n                ON skill_lifecycle_materializations(skill_id, agent_name)",
+   "tbl_name": "skill_lifecycle_materializations",
+   "type": "index"
+  },
+  {
+   "name": "idx_session_token_usage_task",
+   "sql": "CREATE INDEX idx_session_token_usage_task ON session_token_usage (task_id)",
+   "tbl_name": "session_token_usage",
+   "type": "index"
+  },
+  {
+   "name": "idx_session_token_usage_agent",
+   "sql": "CREATE INDEX idx_session_token_usage_agent ON session_token_usage (agent, created_at)",
+   "tbl_name": "session_token_usage",
+   "type": "index"
+  },
+  {
+   "name": "idx_session_token_usage_scope",
+   "sql": "CREATE INDEX idx_session_token_usage_scope ON session_token_usage (scope_type, scope_id)",
+   "tbl_name": "session_token_usage",
+   "type": "index"
+  },
+  {
+   "name": "idx_session_token_usage_thread",
+   "sql": "CREATE INDEX idx_session_token_usage_thread ON session_token_usage (thread_id) WHERE thread_id IS NOT NULL",
+   "tbl_name": "session_token_usage",
+   "type": "index"
+  },
+  {
+   "name": "idx_session_token_usage_scope_unique",
+   "sql": "CREATE UNIQUE INDEX idx_session_token_usage_scope_unique ON session_token_usage (COALESCE(scope_type, 'task'), COALESCE(scope_id, task_id), agent, session_id)",
+   "tbl_name": "session_token_usage",
+   "type": "index"
+  },
+  {
+   "name": "idx_tasks_parent",
+   "sql": "CREATE INDEX idx_tasks_parent ON tasks(parent_task_id)",
+   "tbl_name": "tasks",
+   "type": "index"
+  },
+  {
+   "name": "idx_tasks_revisit_of",
+   "sql": "CREATE INDEX idx_tasks_revisit_of ON tasks(revisit_of_task_id)",
+   "tbl_name": "tasks",
+   "type": "index"
+  },
+  {
+   "name": "idx_tasks_dispatched_from_thread_id",
+   "sql": "CREATE INDEX idx_tasks_dispatched_from_thread_id ON tasks(dispatched_from_thread_id) WHERE dispatched_from_thread_id IS NOT NULL",
+   "tbl_name": "tasks",
+   "type": "index"
+  },
+  {
+   "name": "idx_threads_composed_from_task",
+   "sql": "CREATE INDEX idx_threads_composed_from_task ON threads(composed_from_task_id) WHERE composed_from_task_id IS NOT NULL",
+   "tbl_name": "threads",
+   "type": "index"
+  },
+  {
+   "name": "idx_threads_composed_from_dream",
+   "sql": "CREATE INDEX idx_threads_composed_from_dream ON threads(composed_from_dream_id) WHERE composed_from_dream_id IS NOT NULL",
+   "tbl_name": "threads",
+   "type": "index"
+  },
+  {
+   "name": "idx_task_attachments_storage_key_unique",
+   "sql": "CREATE UNIQUE INDEX idx_task_attachments_storage_key_unique ON task_attachments(storage_key)",
+   "tbl_name": "task_attachments",
+   "type": "index"
+  }
+ ],
+ "provenance": {
+  "generated_by": "tests/authority_v2_historical_schema.py",
+  "module_sha256": {
+   "models": "c352df63bd183d19433a392252b42a9e0bc733e4961d1fbaf09666630c3be9e5",
+   "runtime": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "schedule_store": "d996ee28d9ae8f1cbf1fa7eb12ca4b8b0cc0c8ac884bbb7c732b962bd768c8e3",
+   "work_hours_store": "405d076049403701c04e61dd72afb291cc7ffb49061245d6688c2231c7ab1559"
+  },
+  "python_version": "3.14.4",
+  "runtime_source_file_count": 134,
+  "runtime_source_sha256": "976474448092af94fab1ea7514f294be18696fd034fa878581aa54857bfa1c7e",
+  "sanitized_paths": true,
+  "source_commit": "f39b4934611ca13ab7d8b7fa2d7be983a4bfb7a5",
+  "source_parent": "37df230c00a2e75e9f1e58e82dac0f9d5dad781b",
+  "sqlite_version": "3.46.1"
+ }
+}

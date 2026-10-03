@@ -491,11 +491,14 @@ def test_case7_two_submitters_one_post(fake,tmp_path):
 
 def test_case6_persisted_expiry_resume_and_offline_show(fake,tmp_path):
     b,f=fake;p=tmp_path/'r'
-    assert cli(b,p,'--deadline','.1','submit').returncode==0
-    expiry=json.loads(p.read_text())['deadline_at'];time.sleep(.12);f.seen=[]
+    # Submit through the real CLI/server with ordinary setup headroom; only
+    # the persisted expiry, not subprocess startup, is the behavior under test.
+    assert cli(b,p,'--deadline','2','submit').returncode==0
+    expiry=json.loads(p.read_text())['deadline_at']
+    time.sleep(max(0,expiry-time.time()+.1));f.seen=[]
     assert cli(b,p,'--deadline','900','wait').returncode==3
     assert not f.seen and json.loads(p.read_text())['deadline_at']==expiry
-    shown=cli(b,p,'show');assert shown.returncode==0 and json.loads(shown.stdout)['phase']=='queued' and json.loads(shown.stdout)['queue_id']==7
+    shown=cli(b,p,'show');assert not f.seen and shown.returncode==0 and json.loads(shown.stdout)['phase']=='queued' and json.loads(shown.stdout)['queue_id']==7
 
 def test_case9_local_interruption_no_remote_cancel(fake,tmp_path):
     b,f=fake;p=tmp_path/'r';x=jj.open_receipt(p,b,'folder/demo');x.update(phase='queued',queue_id=7);jj.save_receipt(p,x)

@@ -44,14 +44,6 @@ def _default_skills_root() -> Path:
     return repo_root / "runtime" / "skills"
 
 
-def _default_policy_path() -> Path | None:
-    """Return the default eligibility policy path (org config skills section)."""
-    cli_dir = Path(__file__).resolve().parent.parent
-    repo_root = cli_dir.parent
-    path = repo_root / "org" / "config.yaml"
-    return path if path.is_file() else None
-
-
 def _load_eligibility_policy(policy_path: Path | None) -> dict:
     """Load the skills eligibility block from an org config YAML.
 
@@ -227,7 +219,7 @@ def cmd_skills_catalog_validate(args: argparse.Namespace) -> None:
     - Skills that fail the catalog gate (visible but flagged)
     """
     skills_root = Path(args.skills_root) if args.skills_root else _default_skills_root()
-    policy_path = Path(args.policy_path) if args.policy_path else _default_policy_path()
+    policy_path = Path(args.policy_path) if args.policy_path else None
     registry = SkillRegistry(skills_root=skills_root)
     all_entries = registry.list_all()
     all_ids = {e.id for e in all_entries}
@@ -321,7 +313,7 @@ def cmd_skills_effective(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     skills_root = Path(args.skills_root) if args.skills_root else _default_skills_root()
-    policy_path = Path(args.policy_path) if args.policy_path else _default_policy_path()
+    policy_path = Path(args.policy_path) if args.policy_path else None
     registry = SkillRegistry(skills_root=skills_root)
     policy = _load_eligibility_policy(policy_path)
     resolver = EligibilityResolver(policy)
@@ -466,7 +458,7 @@ def cmd_skills_policy_explain(args: argparse.Namespace) -> None:
 
     skill_id = args.skill_id
     skills_root = Path(args.skills_root) if args.skills_root else _default_skills_root()
-    policy_path = Path(args.policy_path) if args.policy_path else _default_policy_path()
+    policy_path = Path(args.policy_path) if args.policy_path else None
     registry = SkillRegistry(skills_root=skills_root)
     entry = registry.get(skill_id)
 
@@ -881,7 +873,10 @@ def register(sub) -> None:
 
     p_validate = cat_sub.add_parser("validate", help="Validate registry and eligibility policy")
     p_validate.add_argument("--skills-root", help="Path to skills directory")
-    p_validate.add_argument("--policy", dest="policy_path", help="Path to eligibility policy YAML")
+    p_validate.add_argument(
+        "--policy", dest="policy_path",
+        help="Path to eligibility policy YAML (loaded only when explicitly provided)",
+    )
     p_validate.add_argument("--json", action="store_true", help="Output as JSON")
     p_validate.set_defaults(func=cmd_skills_catalog_validate)
 
@@ -891,7 +886,10 @@ def register(sub) -> None:
     p_eff.add_argument("--org", help="Org slug (default: happyranch)")
     p_eff.add_argument("--team", help="Team name (default: engineering)")
     p_eff.add_argument("--skills-root", help="Path to skills directory")
-    p_eff.add_argument("--policy", dest="policy_path", help="Path to eligibility policy YAML")
+    p_eff.add_argument(
+        "--policy", dest="policy_path",
+        help="Path to eligibility policy YAML (loaded only when explicitly provided)",
+    )
     p_eff.add_argument("--json", action="store_true", help="Output as JSON")
     p_eff.add_argument(
         "--context",
@@ -915,7 +913,10 @@ def register(sub) -> None:
     p_exp.add_argument("--org", help="Org slug (default: happyranch)")
     p_exp.add_argument("--team", help="Team name (default: engineering)")
     p_exp.add_argument("--skills-root", help="Path to skills directory")
-    p_exp.add_argument("--policy", dest="policy_path", help="Path to eligibility policy YAML")
+    p_exp.add_argument(
+        "--policy", dest="policy_path",
+        help="Path to eligibility policy YAML (loaded only when explicitly provided)",
+    )
     p_exp.add_argument("--json", action="store_true", help="Output as JSON")
     p_exp.set_defaults(func=cmd_skills_policy_explain)
 

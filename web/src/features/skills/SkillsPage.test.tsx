@@ -2,6 +2,7 @@ import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
+import { translate } from '@/lib/i18n';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
@@ -135,11 +136,11 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
     mount();
     await screen.findByText('kb-curation');
     // failed_validation → "Needs attention" label on the custom draft.
-    expect(screen.getAllByText('Needs attention').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(translate('en', 'skills.status.needsAttention')).length).toBeGreaterThan(0);
     // in_catalog → "In catalog"
-    expect(screen.getByText('In catalog')).toBeInTheDocument();
+    expect(screen.getByText(translate('en', 'skills.status.inCatalog'))).toBeInTheDocument();
     // validated managed skill → "Validated"
-    expect(screen.getAllByText('Validated').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(translate('en', 'skills.status.validated')).length).toBeGreaterThan(0);
   });
 
   test('does not expose a Proposals navigation link', async () => {
@@ -161,9 +162,9 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
     );
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/skills/proposals` });
 
-    expect(await screen.findByText('Could not load this skill')).toBeInTheDocument();
+    expect(await screen.findByText(translate('en', 'skills.detail.loadErrorTitle'))).toBeInTheDocument();
     expect(
-      screen.getByText('This skill is unavailable right now, or the link is out of date.'),
+      screen.getByText(translate('en', 'skills.detail.loadErrorBody')),
     ).toBeInTheDocument();
     expect(document.querySelector('main')?.textContent).not.toMatch(
       /proposal|queue|approve|reject|claim/i,
@@ -199,7 +200,7 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
       .closest('article') as HTMLElement;
     // The skill-level validation badge renders on EVERY catalog row — read-only
     // only suppresses interactive controls, not the validation_state label.
-    expect(within(card).getByText('Validated')).toBeInTheDocument();
+    expect(within(card).getByText(translate('en', 'skills.status.validated'))).toBeInTheDocument();
   });
 
   test('read-only lock label is wrapped in a positioned container (THR-092 whole-surface-scroll guard)', async () => {
@@ -214,7 +215,7 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
     // resolves to the ICB, it escapes the catalog's overflow-y-auto scroller,
     // and the WHOLE surface window-scrolls (the founder-reported THR-092 bug).
     // Token-aware (classList.contains), never a word-boundary regex.
-    const srLabel = within(card).getByText('Read-only system contract', {
+    const srLabel = within(card).getByText(translate('en', 'skills.card.readOnlyContract'), {
       selector: 'span',
     });
     const wrapper = srLabel.parentElement as HTMLElement;
@@ -226,8 +227,8 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
     await screen.findByText('founder-escalation-protocol');
     // Facets render in both the desktop rail and the mobile chips (jsdom
     // ignores `md:` visibility), so each label appears twice.
-    expect(screen.getAllByRole('button', { name: 'Bundled' })).toHaveLength(2);
-    expect(screen.getAllByRole('button', { name: 'Custom' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: translate('en', 'skills.catalog.facet.bundled') })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: translate('en', 'skills.catalog.facet.custom') })).toHaveLength(2);
     expect(
       screen.queryByRole('button', { name: /all skills/i }),
     ).toBeNull();
@@ -240,7 +241,7 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
       'article',
     ) as HTMLElement;
     expect(
-      within(card).getByText('Takes effect next session'),
+      within(card).getByText(translate('en', 'skills.card.takesEffect')),
     ).toBeInTheDocument();
   });
 
@@ -249,10 +250,10 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
     await screen.findByText('founder-escalation-protocol');
     expect(requests.b2Catalog).toBe(0);
     await userEvent.click(
-      screen.getAllByRole('button', { name: 'Custom' })[0],
+      screen.getAllByRole('button', { name: translate('en', 'skills.catalog.facet.custom') })[0],
     );
     expect(await screen.findByText('agent-first-guidance')).toBeInTheDocument();
-    expect(screen.getByText('Hidden — eligibility not configured')).toBeInTheDocument();
+    expect(screen.getByText(translate('en', 'skills.status.hiddenNoEligibility'))).toBeInTheDocument();
     expect(screen.queryByText('vendor-comms-style')).not.toBeInTheDocument();
     expect(screen.queryByText('founder-escalation-protocol')).not.toBeInTheDocument();
     expect(screen.queryByText('kb-curation')).not.toBeInTheDocument();
@@ -263,42 +264,42 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
   test('Custom facet links B2 rows to the encoded B2 editor route and never shows its legacy empty state', async () => {
     mount();
     await screen.findByText('kb-curation');
-    await userEvent.click(screen.getAllByRole('button', { name: 'Custom' })[0]);
+    await userEvent.click(screen.getAllByRole('button', { name: translate('en', 'skills.catalog.facet.custom') })[0]);
     const custom = await screen.findByRole('link', { name: 'View agent-first-guidance' });
     expect(custom).toHaveAttribute(
       'href',
       `/orgs/${SLUG}/skills/custom/${encodeURIComponent(B2_CUSTOM.id)}`,
     );
-    expect(screen.queryByText('No custom skills yet')).not.toBeInTheDocument();
+    expect(screen.queryByText(translate('en', 'skills.customList.emptyTitle'))).not.toBeInTheDocument();
   });
 
   test('Custom facet owns the B2 loading state', async () => {
     mount(ALL, [], () => new Promise<Response>(() => {}));
     await screen.findByText('kb-curation');
-    await userEvent.click(screen.getAllByRole('button', { name: 'Custom' })[0]);
+    await userEvent.click(screen.getAllByRole('button', { name: translate('en', 'skills.catalog.facet.custom') })[0]);
     expect(document.querySelectorAll('[aria-hidden="true"] .animate-pulse')).toHaveLength(3);
   });
 
   test('Custom facet owns the B2 empty state', async () => {
     mount(ALL, []);
     await screen.findByText('kb-curation');
-    await userEvent.click(screen.getAllByRole('button', { name: 'Custom' })[0]);
-    expect(await screen.findByText('No skills here yet')).toBeInTheDocument();
-    expect(screen.getByText('No custom skills yet. Custom skills you add will appear here.')).toBeInTheDocument();
+    await userEvent.click(screen.getAllByRole('button', { name: translate('en', 'skills.catalog.facet.custom') })[0]);
+    expect(await screen.findByText(translate('en', 'skills.catalog.emptyTitle'))).toBeInTheDocument();
+    expect(screen.getByText(translate('en', 'skills.catalog.emptyCustom'))).toBeInTheDocument();
   });
 
   test('Custom facet owns B2 generic-error and founder-denied states', async () => {
     mount(ALL, [], () => new HttpResponse('unavailable', { status: 500 }));
     await screen.findByText('kb-curation');
-    await userEvent.click(screen.getAllByRole('button', { name: 'Custom' })[0]);
-    expect(await screen.findByText('Could not load custom skills')).toBeInTheDocument();
+    await userEvent.click(screen.getAllByRole('button', { name: translate('en', 'skills.catalog.facet.custom') })[0]);
+    expect(await screen.findByText(translate('en', 'skills.catalog.customErrorTitle'))).toBeInTheDocument();
   });
 
   test('Custom facet keeps the founder-denied B2 state at its owning surface', async () => {
     mount(ALL, [], () => new HttpResponse('forbidden', { status: 403 }));
     await screen.findByText('kb-curation');
-    await userEvent.click(screen.getAllByRole('button', { name: 'Custom' })[0]);
-    expect(await screen.findByText('Founder access required')).toBeInTheDocument();
+    await userEvent.click(screen.getAllByRole('button', { name: translate('en', 'skills.catalog.facet.custom') })[0]);
+    expect(await screen.findByText(translate('en', 'skills.founderRequired.title'))).toBeInTheDocument();
   });
 
   test('Custom facet switches to removed tombstones without changing the Bundled catalog', async () => {
@@ -307,15 +308,15 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
       skills: new URL(request.url).searchParams.get('view') === 'removed' ? [removed] : [B2_CUSTOM],
     }));
     await screen.findByText('kb-curation');
-    await userEvent.click(screen.getAllByRole('button', { name: 'Custom' })[0]);
+    await userEvent.click(screen.getAllByRole('button', { name: translate('en', 'skills.catalog.facet.custom') })[0]);
     expect(await screen.findByText('agent-first-guidance')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Add custom skill' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: translate('en', 'skills.addCustom') })).toHaveAttribute(
       'href', `/orgs/${SLUG}/skills/custom/new`,
     );
-    await userEvent.click(screen.getByRole('button', { name: 'Removed' }));
-    expect(await screen.findByText('Permanently removed')).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'Add custom skill' })).not.toBeInTheDocument();
-    expect(screen.getByText('Reservation retained')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: translate('en', 'skills.view.removed') }));
+    expect(await screen.findByText(translate('en', 'skills.status.permanentlyRemoved'))).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: translate('en', 'skills.addCustom') })).not.toBeInTheDocument();
+    expect(screen.getByText(translate('en', 'skills.reservationRetained'))).toBeInTheDocument();
     expect(requests.legacyFilters).not.toContain('Custom');
     expect(requests.legacyFilters).toEqual([null]);
   });

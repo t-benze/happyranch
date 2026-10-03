@@ -8,7 +8,7 @@ green when the gate on _WHOLESALE_DUMP_ENABLED stops both bootstrap and
 session-time wholesale copy.
 
 REAL-SOURCE GUARD: This test reads the REAL in-repo artifacts —
-  - ``org/config.yaml`` (eligibility policy, shipped in Phase 2-3)
+  - ``tests/fixtures/skill_eligibility/config.yaml`` (eligibility policy)
   - ``runtime/skills/`` (managed catalog with real approval states)
   - ``runtime/skills/bundled/`` (injection + bootstrap source skill bodies)
 If the shipped policy, catalog, or source dirs drift (e.g. reflection's policy_class changes, or a catalog entry
@@ -41,9 +41,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 #
 # This EXPLICIT, DOCUMENTED representative roster replaces the prior fabricated
 # list. It spans every eligibility class against the REAL in-repo
-# org/config.yaml and every executor adapter:
+# tests/fixtures/skill_eligibility/config.yaml and every executor adapter:
 #
-# Eligibility classes (from the real org/config.yaml on main):
+# Eligibility classes (from the real skill-eligibility fixture on main):
 #   A. reflection-eligible via org-wide allow (skills.org.allow: [hr:reflection])
 #      — dev_agent, code_reviewer, qa_engineer, frontend_engineer
 #   B. reflection-eligible (org) + manage-*-eligible via agent list
@@ -86,20 +86,20 @@ _REFLECTION_ELIGIBLE: frozenset[str] = frozenset({
 # superset to prevent cross-context withdrawal.
 SYSTEM_CONTRACT_EXPECTATIONS: dict[str, dict[bool, set[str]]] = {
     "task": {
-        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"},
-        False: {"start-task", "jobs", "thread", "dream", "todos"},
+        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"},
+        False: {"start-task", "jobs", "thread", "dream", "todos", "workspace-cleanup"},
     },
     "thread": {
-        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"},
-        False: {"start-task", "jobs", "thread", "dream", "todos"},
+        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"},
+        False: {"start-task", "jobs", "thread", "dream", "todos", "workspace-cleanup"},
     },
     "wake": {
-        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"},
-        False: {"start-task", "jobs", "thread", "dream", "todos"},
+        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"},
+        False: {"start-task", "jobs", "thread", "dream", "todos", "workspace-cleanup"},
     },
     "dream": {
-        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"},
-        False: {"start-task", "jobs", "thread", "dream", "todos"},
+        True:  {"start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"},
+        False: {"start-task", "jobs", "thread", "dream", "todos", "workspace-cleanup"},
     },
 }
 
@@ -110,11 +110,13 @@ def _assert_real_sources_present() -> None:
     """Fail-fast at import time if the real in-repo sources are missing.
 
     This is a canary: if CI suddenly loses these files (e.g. a bad checkout,
-    a restructure that moves org/config.yaml), the guard fails loudly rather
-    than silently degrading to synthetic fallbacks.
+    a restructure that moves the skill-eligibility fixture), the guard fails
+    loudly rather than silently degrading to synthetic fallbacks.
     """
     missing: list[str] = []
-    config_path = _REPO_ROOT / "org" / "config.yaml"
+    config_path = (
+        _REPO_ROOT / "tests" / "fixtures" / "skill_eligibility" / "config.yaml"
+    )
     if not config_path.is_file():
         missing.append(str(config_path))
     catalog_path = _REPO_ROOT / "runtime" / "skills"
@@ -188,13 +190,15 @@ def _write_teams_config(paths: OrgPaths) -> None:
 
 
 def _copy_real_eligibility_config(settings: Settings, paths: OrgPaths) -> None:
-    """Copy the REAL in-repo org/config.yaml to the test's project_root and
-    org_dir so the eligibility resolver reads the actual shipped policy.
+    """Copy the REAL in-repo eligibility fixture to the test's project_root
+    and org_dir so the resolver reads the actual policy.
 
     We READ the real file from the repo rather than synthesizing the string
     so the guard fails if the shipped policy drifts.
     """
-    real_config = _REPO_ROOT / "org" / "config.yaml"
+    real_config = (
+        _REPO_ROOT / "tests" / "fixtures" / "skill_eligibility" / "config.yaml"
+    )
     content = real_config.read_text()
     for parent in (settings.project_root / "org", paths.org_dir):
         parent.mkdir(parents=True, exist_ok=True)
@@ -448,7 +452,7 @@ class TestContractCompletenessPostCutover:
                             )
 
                     # manage-agent / manage-repo: exposed for eligible managers (THR-055 seq 55)
-                    # Per real org/config.yaml:
+                    # Per the real skill-eligibility fixture:
                     #   engineering_manager: allow [manage-agent, manage-repo]
                     #   product_lead: allow [manage-agent, manage-repo]
                     #   All others: NO manage-* eligibility

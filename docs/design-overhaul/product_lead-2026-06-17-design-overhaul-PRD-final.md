@@ -444,6 +444,16 @@ to **§A**.
     rollup walks recursively (N queries or a recursive-CTE helper) — still **no
     schema change**. P1: the rollup must reflect **real** aggregated subtree state,
     never a guessed severity.
+
+    > **Current-status clarification (TASK-8671 / THR-266):** the shipped derive
+    > reduces the worst **current** status over the `parent_task_id` descendants
+    > and curates only a historical FAILED descendant whose forward same-parent
+    > `revisit_of_task_id` lineage leaves no unresolved FAILED leaf (retired
+    > COMPLETED/SUPERSEDED, active PENDING/IN_PROGRESS, cancelled, or otherwise
+    > resolved). The root's own severity, every escalation, and all non-FAILED
+    > statuses are preserved, and root-level revisit links are never followed.
+    > The raw-subtree paragraphs above remain the historical design intent;
+    > `docs/agent-guides/features-and-invariants.md` is current.
   - Group-by segmented control and **Filter** re-query/re-group; **New task**
     opens task creation. *(All three are stubs in the prototype — wire them.)*
 - **States + transitions.** Loading (skeleton rows by group); **Empty** per group
@@ -1157,7 +1167,7 @@ RESOLVED** (the finalised design conforms to the locked decision in each case);
 
 | # | Surface | Interaction | Verdict (TASK-461) |
 |---|---|---|---|
-| **B.1** | Tasks (§4.3) | **Severity rollup** on each root row = worst-of-subtree | **DAEMON-BACKED (DERIVE), no schema/store.** Subtree = `parent_task_id` children (`get_children()`), **not** the revisit chain; LIST route reduces real child `status` to worst-of at render/derive time (recursive walk for a true subtree). Folded into §4.3. |
+| **B.1** | Tasks (§4.3) | **Severity rollup** on each root row = worst-of-subtree | **DAEMON-BACKED (DERIVE), no schema/store.** Subtree = `parent_task_id` children (`get_children()`), **not** the revisit chain; LIST route reduces real child `status` to worst-of at render/derive time (recursive walk for a true subtree). Folded into §4.3. **Current-status clarification (TASK-8671 / THR-266):** the shipped derive reduces the worst **current** status and, of FAILED contributions only, excludes a historical FAILED descendant whose forward same-parent `revisit_of_task_id` lineage leaves no unresolved FAILED leaf; the subtree remains the `parent_task_id` descendants (never the predecessor-root chain) and root severity, non-FAILED statuses and all escalations are preserved. |
 | **B.2** | Knowledge / Dreams (§4.5/4.8) | **"Edit first"** on a KB candidate | **DEFERRED for v1 (no new store, no new edit-then-accept route).** v1 ships **Accept / Dismiss** (status mutation on the existing `dream_kb_candidates` table) + **accept-then-edit-the-live-entry** via the **existing KB edit paths**. The edit-the-candidate-body-before-accepting route is post-v1 (§6 D10). Folded into §4.5/§4.8. |
 | **B.3** | Threads (§4.2) | **Unread→read** clears on open | **DEFERRED for v1 (no new read-state store).** No backed per-(founder, thread) read/unread state exists; v1 **omits persistent unread styling** rather than render it as if backed (P1). Persistent unread tracking is post-v1 (§6 D11). Folded into §4.2. |
 | **B.4** | Spend (§4.7) | **Window toggle** (24h/7d/30d) re-queries all cards | **DAEMON-BACKED (render/derive), no store.** `GET /tokens` `since` (ISO-8601) AND-composes across every aggregation; window = `since = now − window`, consistent across breakdowns. **Caveat:** no `model` group_by exists yet (`valid_groups` lacks `model`) — the **Model** pivot needs a new aggregation (DERIVE, no schema) or drop it. Folded into §4.7. |

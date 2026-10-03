@@ -26,6 +26,7 @@ from runtime.models import (
     NextStep,
     StepRecord,
     TaskRecord,
+    TaskStatus,
 )
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.executors import (
@@ -41,6 +42,7 @@ from runtime.orchestrator.task_scratch import (
     prepare_task_scratch,
     reset_task_scratch,
 )
+from runtime.orchestrator.task_scratch_report import report_task_scratch
 from runtime.orchestrator.org_config import (
     load_org_config,
     render_current_time_line,
@@ -98,6 +100,13 @@ def completion_report_from_result_row(
         except (json.JSONDecodeError, TypeError):
             risks = []
 
+    waiting_on_job_ids = row.get("waiting_on_job_ids") or []
+    if isinstance(waiting_on_job_ids, str):
+        try:
+            waiting_on_job_ids = json.loads(waiting_on_job_ids)
+        except (json.JSONDecodeError, TypeError):
+            waiting_on_job_ids = []
+
     return CompletionReport(
         task_id=task_id,
         agent=row.get("agent") or fallback_agent,
@@ -109,7 +118,7 @@ def completion_report_from_result_row(
         manager_self_evaluation=manager_self_evaluation,
         risks_flagged=risks,
         output_dir=row.get("output_dir"),
-        waiting_on_job_ids=row.get("waiting_on_job_ids") or [],
+        waiting_on_job_ids=waiting_on_job_ids,
         local_ci=local_ci,
     )
 
@@ -738,6 +747,13 @@ class Orchestrator:
         agent: str,
         prompt: str,
         on_session_started: Callable[[str, str, str], None] | None = None,
+        *,
+        runtime_session_id: str | None = None,
+        resume_session_id: str | None = None,
+        origin_runtime_session_id: str | None = None,
+        timeout_seconds_override: int | None = None,
+        recovery_deadline_monotonic: float | None = None,
+        recovery: bool = False,
     ) -> tuple[ExecutorResult, CompletionReport | None]:
         """Set up workspace and run an agent session.
 
@@ -771,7 +787,9 @@ class Orchestrator:
             team = "engineering"
         skills_root = self._settings.project_root / "runtime" / "skills"
         org_root = self._paths.root
-        session_id = self._build_session_id()
+        # A recovery has a new daemon invocation identity.  The provider's
+        # opaque conversation identity is deliberately passed separately.
+        session_id = runtime_session_id or self._build_session_id()
 
         # Issue #536: serialize the complete pre-spawn skill materialization
         # transaction under a process-local workspace lock so concurrent
@@ -835,6 +853,10 @@ class Orchestrator:
                 ),
                 status=TaskStatus.FAILED,
             )
+            from runtime.orchestrator.run_step import (
+                _reclaim_terminal_task_worktree,
+            )
+            _reclaim_terminal_task_worktree(self, task_id)
             return ExecutorResult(
                 success=False,
                 duration_seconds=0,
@@ -848,6 +870,28 @@ class Orchestrator:
         # ── Per-retry launch validator closure ───────────────────────
         # Wrapped so throttle retries after rate-limited responses
         # re-validate integrity before the next Popen.
+        def _recovery_launch_validator() -> None:
+            """Fence recovery ownership/budget at its actual launch seam."""
+            if recovery:
+                if recovery_deadline_monotonic is not None and time.monotonic() >= recovery_deadline_monotonic:
+                    raise RuntimeError("completion recovery live budget expired")
+                if not self._db.task_completion_recovery_launch_allowed(
+                    task_id=task_id, agent=agent_name,
+                    recovery_session_id=session_id,
+                ):
+                    raise RuntimeError(
+                        "completion recovery launch ownership lost"
+                    )
+                if (
+                    self._sessions is not None
+                    and not self._sessions.is_recovery_session(
+                        task_id, agent_name, session_id,
+                    )
+                ):
+                    raise RuntimeError(
+                        "completion recovery tracker ownership lost"
+                    )
+
         def _pre_launch_integrity_validator() -> None:
             validate_workspace_skills_integrity(
                 workspace,
@@ -857,12 +901,32 @@ class Orchestrator:
                 agent_name=agent_name,
                 task_id=task_id,
             )
+            adapter_error = getattr(executor, "verify_launch_ready", lambda: None)()
+            if adapter_error:
+                raise RuntimeError(adapter_error)
+            _recovery_launch_validator()
 
         # The orchestrator relies on the start-task skill to bridge prompt →
         # agent work → completion callback. If the workspace was bootstrapped
         # before skills existed (or the user wiped it), the agent never calls
         # `happyranch report-completion` and the task silently rejects. Fail fast
         # with an actionable message instead.
+        # THR-262 Slice B (founder seq59): every provider must present the
+        # canonical instruction pair — regular ``AGENTS.md`` plus a raw
+        # relative ``CLAUDE.md -> AGENTS.md`` resolving to that exact file —
+        # before an executor is launched. Read-only refusal; no mutation and
+        # no recovery. The single profile marker remains an additional check
+        # below, never a substitute for the pair.
+        from runtime.orchestrator.workspace_adapters import instruction_pair_refusal
+
+        pair_refusal = instruction_pair_refusal(workspace)
+        if pair_refusal is not None:
+            raise WorkspaceNotInitialized(
+                f"workspace for {agent_name!r} does not have the canonical "
+                f"AGENTS.md/CLAUDE.md instruction pair ({pair_refusal}). Run "
+                f"`happyranch init-agent {agent_name}` to complete it."
+            )
+
         skill_marker = self._readiness_marker(workspace, provider)
         if not skill_marker.exists():
             raise WorkspaceNotInitialized(
@@ -922,8 +986,9 @@ class Orchestrator:
         from runtime.orchestrator.active_authority_policy import (
             assert_no_reserved_team_policy_header,
             persist_session_policy_binding,
-            render_active_team_policy,
+            render_selected_team_policy,
             resolve_active_team_policy_snapshot,
+            resolve_policy_manager_team,
         )
         from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
         assert_no_reserved_team_policy_header(brief, source="task brief")
@@ -932,19 +997,28 @@ class Orchestrator:
         assert_no_reserved_team_policy_header(managed_skills_index, source="managed skills index")
         assert_no_reserved_team_policy_header(repo_refresh_note, source="repository refresh note")
         assert_no_reserved_team_policy_header(attachments_block, source="attachment manifest")
+        # One snapshot is resolved, rendered and persisted for this launch; the
+        # resolved executor tuple is carried into both the rendered section and
+        # the durable binding. A binding/audit failure raises before the
+        # external launch, so no success is ever fabricated.
+        policy_team = resolve_policy_manager_team(
+            root=self._paths.root, agent_name=agent_name,
+            teams=self._teams, team_hint=team,
+        )
         policy_snapshot = resolve_active_team_policy_snapshot(
-            store=AuthorityPolicyStore(self._db), team=team, agent_name=agent_name,
-            eligible=self._teams.is_team_manager(agent_name),
+            store=AuthorityPolicyStore(self._db), root=self._paths.root,
+            teams=self._teams, team=team, agent_name=agent_name,
+            eligible=policy_team == team,
         )
         active_policy_section = (
-            render_active_team_policy(
-                release=policy_snapshot.release, activation=policy_snapshot.activation,
+            render_selected_team_policy(
+                policy_snapshot,
                 provider_id=provider, executor_kind=provider,
                 model_id=model_name or "default",
                 root_task_id=task_id, manager_session_id=session_id,
             ) if policy_snapshot is not None else ""
         )
-        if self._teams.is_team_manager(agent_name):
+        if policy_team == team:
             persist_session_policy_binding(
                 db=self._db, task_id=task_id, session_id=session_id,
                 agent_name=agent_name, snapshot=policy_snapshot,
@@ -965,8 +1039,35 @@ class Orchestrator:
             active_policy_section=(f"\n{active_policy_section}" if active_policy_section else ""),
         )
 
+        # Publish the durable invocation fence before exposing this generation
+        # to callback routes.  A route can therefore never observe a tracker
+        # generation that has no matching tasks.current_session_id yet.
+        if recovery:
+            publish = lambda: self._db.publish_task_completion_recovery_binding(
+                task_id=task_id, agent=agent_name,
+                # Provider conversation identity is not the daemon's
+                # invocation identity.  The durable claim compares the latter.
+                origin_session_id=origin_runtime_session_id or "",
+                recovery_session_id=session_id,
+            )
+            published = (
+                self._sessions.publish_recovery_session(
+                    task_id, agent_name, session_id, org_slug=self._slug,
+                    publish=publish, recovery_deadline_monotonic=recovery_deadline_monotonic,
+                ) if self._sessions is not None else publish()
+            )
+            if not published:
+                return ExecutorResult(
+                    success=False, duration_seconds=0, session_id=session_id,
+                    error="completion recovery ownership lost before publication",
+                ), None
+        else:
+            self._db.update_task(
+                task_id, assigned_agent=agent_name, current_session_id=session_id,
+            )
         if self._sessions is not None:
-            self._sessions.set_active(task_id, agent_name, session_id, org_slug=self._slug)
+            if not recovery:
+                self._sessions.set_active(task_id, agent_name, session_id, org_slug=self._slug)
         if on_session_started is not None:
             on_session_started(task_id, agent_name, session_id)
 
@@ -987,8 +1088,25 @@ class Orchestrator:
                     budget=budget,
                 )
 
-        self._audit.log_session_start(task_id, agent_name, str(workspace))
-        self._db.update_task(task_id, assigned_agent=agent_name)
+        if recovery:
+            invocation_purpose = "unattributed"
+        elif task is not None and task.task_type == "task":
+            invocation_purpose = "manager_decision"
+        elif task is not None and task.task_type == "subtask":
+            invocation_purpose = "worker_execution"
+        else:
+            invocation_purpose = "unattributed"
+        self._audit.log_session_start(
+            task_id,
+            agent_name,
+            str(workspace),
+            session_id=session_id,
+            invocation_purpose=invocation_purpose,
+            executor=provider,
+            model=model_name,
+        )
+        if not recovery:
+            self._db.update_task(task_id, assigned_agent=agent_name)
 
         # Capture pid into SessionTracker the moment Popen returns so the
         # /cancel route can cancel the subprocess mid-session without racing
@@ -1001,9 +1119,9 @@ class Orchestrator:
             if self._sessions is not None:
                 self._sessions.set_pid(task_id, agent_name, session_id, pid)
             # THR-079: persist executor OS pid for daemon-restart liveness probe.
-            # THR-090 Track A: also persist the current session id so the
-            # daemon-restart sweep can scope orphaned-result detection.
-            self._db.update_task(task_id, executor_pid=pid, current_session_id=session_id)
+            self._db.set_task_executor_pid_if_current(
+                task_id=task_id, agent=agent_name, session_id=session_id, pid=pid,
+            )
 
         # Layer-1 throttle audit surfacing (issue #85): the per-provider throttle
         # in executors._run_command calls this on a slot wait or a 429 backoff.
@@ -1012,7 +1130,7 @@ class Orchestrator:
         def _on_throttle_event(action: str, payload: dict) -> None:
             self._db.insert_audit_log(task_id, agent_name, action, payload)
 
-        timeout_seconds = self._resolve_session_timeout(agent_name, task_id=task_id)
+        timeout_seconds = timeout_seconds_override if timeout_seconds_override is not None else self._resolve_session_timeout(agent_name, task_id=task_id)
         try:
             scratch = prepare_task_scratch(
                 workspace=workspace,
@@ -1043,9 +1161,23 @@ class Orchestrator:
                 on_started=_on_started,
                 on_throttle_event=_on_throttle_event,
                 pre_launch_integrity_validator=_pre_launch_integrity_validator,
+                recovery_launch_validator=_recovery_launch_validator,
+                resume_session_id=resume_session_id,
+                recovery_deadline_monotonic=recovery_deadline_monotonic,
+                recovery=recovery,
             )
         finally:
             reset_task_scratch(scratch_token)
+        # Observation follows scratch-context teardown and is intentionally
+        # outside completion/session/containment ownership.
+        try:
+            report_task_scratch(
+                db=self._db, sessions=self._sessions, task_id=task_id,
+                agent=agent_name, workspace=workspace, source="teardown",
+                observation_id=session_id,
+            )
+        except Exception:
+            logger.exception("task scratch teardown report failed for %s", task_id)
         self._audit.log_session_end(
             task_id=task_id,
             agent=agent_name,
@@ -1066,6 +1198,10 @@ class Orchestrator:
         model_name: str | None, executor, session_id: str, full_prompt: str,
         timeout_seconds: int, on_started: Callable[[int], None],
         on_throttle_event, pre_launch_integrity_validator: Callable[[], None],
+        recovery_launch_validator: Callable[[], None],
+        resume_session_id: str | None = None,
+        recovery_deadline_monotonic: float | None = None,
+        recovery: bool = False,
     ) -> ExecutorResult:
         """Launch after the task scratch context has been installed."""
         if self._host_supervisor is not None:
@@ -1086,21 +1222,51 @@ class Orchestrator:
                 on_started=on_started,
                 on_throttle_event=on_throttle_event,
                 pre_launch_integrity_validator=pre_launch_integrity_validator,
+                recovery_launch_validator=recovery_launch_validator,
+                resume_session_id=resume_session_id,
+                recovery_deadline_monotonic=recovery_deadline_monotonic,
+                recovery=recovery,
             )
         else:
             # Legacy uncontained path (tests / idle state): executor
             # self-launches exactly as before.
-            result = executor.run(
-                workspace=workspace,
-                prompt=full_prompt,
-                session_id=session_id,
-                timeout_seconds=timeout_seconds,
-                on_started=on_started,
-                on_throttle_event=on_throttle_event,
-                model=model_name,
-                pre_launch_validator=pre_launch_integrity_validator,
-                org_slug=self._slug,
-            )
+            try:
+                result = executor.run(
+                    workspace=workspace,
+                    prompt=full_prompt,
+                    session_id=session_id,
+                    timeout_seconds=timeout_seconds,
+                    on_started=on_started,
+                    on_throttle_event=on_throttle_event,
+                    model=model_name,
+                    pre_launch_validator=pre_launch_integrity_validator,
+                    org_slug=self._slug,
+                    resume_session_id=resume_session_id,
+                    # A server-authorized recovery is a single provider
+                    # opportunity.  Its no-supervisor fallback must not inherit
+                    # configured executor 429 retries.  Resume identity alone is
+                    # not sufficient: ordinary resumes retain their policy.
+                    throttle_backoff_seconds=() if recovery else None,
+                    # This is a recovery-only Codex contract extension.  The
+                    # other concrete executors deliberately retain their
+                    # ordinary run signatures.
+                    # This is a Codex-only executor extension.  Recovery is
+                    # an orchestrator policy, not a widened provider call
+                    # contract: Claude, Opencode, Pi and custom adapters must
+                    # keep receiving their ordinary signatures.
+                    **({"recovery_deadline_monotonic": recovery_deadline_monotonic}
+                       if recovery and provider == "codex" else {}),
+                )
+            finally:
+                # The contained supervisor invokes its terminal hook before
+                # release.  The legacy fallback preserves its ordinary
+                # lifecycle behavior, but the one-shot recovery has no later
+                # owner and must clear only its own generation after terminal
+                # failure so its PID/control cannot survive as stale authority.
+                if recovery and self._sessions is not None:
+                    self._sessions.clear_if_active_session(
+                        task_id, agent_name, session_id
+                    )
         return result
 
     def _run_agent_launch_contained(
@@ -1118,6 +1284,10 @@ class Orchestrator:
         on_started: Callable[[int], None],
         on_throttle_event: "Callable[[str, dict], None] | None",
         pre_launch_integrity_validator: Callable[[], None],
+        recovery_launch_validator: Callable[[], None],
+        resume_session_id: str | None = None,
+        recovery_deadline_monotonic: float | None = None,
+        recovery: bool = False,
     ) -> ExecutorResult:
         """THR-207 task-producer wiring: run one task session through the
         daemon-wide ``HostSessionSupervisor``.
@@ -1199,6 +1369,7 @@ class Orchestrator:
                 model=model_name,
                 org_slug=self._slug,
                 timeout_seconds=timeout_seconds,
+                resume_session_id=resume_session_id,
             )
         except Exception as exc:
             _clear_tracker()
@@ -1210,14 +1381,12 @@ class Orchestrator:
             )
 
         # Per-attempt pre-launch validator (runs for supervisor-level 429
-        # retries too): workspace skill integrity + adapter artifact
-        # readiness when the executor exposes it. Runs BEFORE
+        # retries too): the caller supplied validator performs workspace skill
+        # integrity, adapter artifact readiness, then (for recovery) its final
+        # durable/tracker ownership check. Runs BEFORE
         # backend.prepare/launch so a failing check never creates a scope.
         def _pre_launch_validator() -> None:
             pre_launch_integrity_validator()
-            adapter_error = getattr(executor, "verify_launch_ready", lambda: None)()
-            if adapter_error:
-                raise RuntimeError(adapter_error)
 
         def _launch_body(running: RunningHandle) -> LaunchResult:
             # Real backend: the subprocess is already launched into
@@ -1242,6 +1411,11 @@ class Orchestrator:
                 org_slug=self._slug,
                 running=running if contained else None,
                 throttle_backoff_seconds=() if not contained else None,
+                resume_session_id=resume_session_id,
+                # Keep recovery fencing at the producer boundary; ordinary
+                # provider adapters must not receive a recovery-only kwarg.
+                **({"recovery_deadline_monotonic": recovery_deadline_monotonic}
+                   if recovery and provider == "codex" else {}),
             )
             return LaunchResult(
                 success=result.success,
@@ -1269,7 +1443,17 @@ class Orchestrator:
             launch_spec=launch_spec,
             launch_body=_launch_body,
             pre_launch_validator=_pre_launch_validator,
+            # Only the bounded completion-recovery checker is repeated after
+            # prepare. Ordinary task integrity validation keeps its existing
+            # single pre-prepare timing/count.
+            final_prelaunch_validator=(
+                recovery_launch_validator if recovery else None
+            ),
             on_terminal=lambda _outcome: _clear_tracker(),
+            # The one-shot Codex completion recovery is one provider
+            # opportunity: a 429 remains its honest terminal result rather
+            # than consuming the ordinary supervisor backoff/re-admission.
+            allow_retries=not recovery,
         )
         launch = outcome.payload
         if launch is None:
@@ -1345,8 +1529,34 @@ class Orchestrator:
         task_id: str,
         result: ExecutorResult,
         report: CompletionReport | None,
+        *,
+        result_row_id: int | None = None,
     ) -> None:
         if report is None:
+            return
+        # THR-229 C3d2 correction: a v2 manager result carries an admitted
+        # attempt bound to the immutable ``task_results`` row.  Attribute the
+        # ordinary completion audit to that exact result/session so the later
+        # settlement authenticates the CURRENT event instead of counting all
+        # manager history.  The v1/legacy path is byte-identical (no
+        # attribution, unchanged AuditLogger behavior).
+        attribution: dict = {}
+        if result_row_id is not None:
+            attempt = self._db.get_authority_policy_v2_attempt_for_result(
+                result_row_id
+            )
+            if attempt is not None:
+                attribution = {
+                    "_result_row_id": result_row_id,
+                    "_result_session_id": attempt.manager_session_id,
+                }
+        if attribution:
+            self._db.insert_audit_log(
+                task_id=task_id,
+                agent=report.agent,
+                action="completion_report",
+                payload={**report.model_dump(), **attribution},
+            )
             return
         self._audit.log_completion_report(report=report)
 

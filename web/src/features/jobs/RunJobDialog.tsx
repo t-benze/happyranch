@@ -10,9 +10,10 @@ import {
 import { Button } from '@/design-system/primitives/Button';
 import { FormField } from '@/design-system/patterns/FormField';
 import { Input } from '@/design-system/primitives/Input';
-import { ApiError } from '@/lib/api';
 import { useRunJob } from '@/hooks/jobs';
+import { useTranslation } from '@/hooks/i18n';
 import type { JobRecord } from '@/lib/api/types';
+import { classifyJobError, renderJobError, type JobErrorView } from './strings';
 
 interface Props {
   job: JobRecord;
@@ -34,10 +35,11 @@ function initialTimeout(job: JobRecord): string {
 }
 
 export function RunJobDialog({ job, open, onClose, onSuccess }: Props): JSX.Element {
+  const { t } = useTranslation();
   const run = useRunJob();
   const [cwdOverride, setCwdOverride] = useState('');
   const [timeoutSecondsInput, setTimeoutSecondsInput] = useState(initialTimeout(job));
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [error, setError] = useState<JobErrorView | null>(null);
   const cwdId = useId();
   const timeoutId = useId();
 
@@ -45,7 +47,7 @@ export function RunJobDialog({ job, open, onClose, onSuccess }: Props): JSX.Elem
     if (!open) return;
     setCwdOverride('');
     setTimeoutSecondsInput(initialTimeout(job));
-    setErrorMsg(null);
+    setError(null);
   }, [open, job]);
 
   const parsedTimeout = timeoutSecondsInput.trim() === ''
@@ -55,7 +57,7 @@ export function RunJobDialog({ job, open, onClose, onSuccess }: Props): JSX.Elem
     parsedTimeout !== null && (!Number.isFinite(parsedTimeout) || parsedTimeout < 1);
 
   const submit = async () => {
-    setErrorMsg(null);
+    setError(null);
     const body: { cwd_override?: string; timeout_seconds?: number } = {};
     if (cwdOverride.trim()) body.cwd_override = cwdOverride.trim();
     if (parsedTimeout !== null && parsedTimeout !== job.max_runtime_seconds) {
@@ -66,11 +68,7 @@ export function RunJobDialog({ job, open, onClose, onSuccess }: Props): JSX.Elem
       onSuccess?.();
       onClose();
     } catch (err) {
-      setErrorMsg(
-        err instanceof ApiError
-          ? `Error ${err.status}: ${err.message}`
-          : String(err),
-      );
+      setError(classifyJobError(err, 'jobs.run.failed'));
     }
   };
 
@@ -79,10 +77,12 @@ export function RunJobDialog({ job, open, onClose, onSuccess }: Props): JSX.Elem
       <DialogContent>
         <DialogHeader>
           <DialogTitle className="font-display">
-            {job.review_required ? `Approve & run ${job.id}` : `Run ${job.id}`}
+            {job.review_required
+              ? t('jobs.run.titleApprove', { jobId: job.id })
+              : t('jobs.run.titleRun', { jobId: job.id })}
           </DialogTitle>
           <DialogDescription className="sr-only">
-            Approve and run this job. The script will execute immediately.
+            {t('jobs.run.description')}
           </DialogDescription>
         </DialogHeader>
 
@@ -90,9 +90,11 @@ export function RunJobDialog({ job, open, onClose, onSuccess }: Props): JSX.Elem
         <div className="min-w-0 space-y-3">
           <div className="min-w-0">
             <p className="text-text-muted mb-1 text-xs font-medium tracking-wider uppercase">
-              Script
+              {t('jobs.run.script')}
               <span className="ml-1 normal-case">
-                ({job.interpreter}{job.cwd_hint ? ` · cwd hint: ${job.cwd_hint}` : ''})
+                {job.cwd_hint
+                  ? t('jobs.run.scriptMetaCwd', { interpreter: job.interpreter, cwd: job.cwd_hint })
+                  : t('jobs.run.scriptMeta', { interpreter: job.interpreter })}
               </span>
             </p>
             <pre className="bg-surface-sunken border-border-default text-text-primary max-h-40 max-w-full min-w-0 overflow-x-auto overflow-y-auto rounded-lg border p-3 text-xs whitespace-pre">
@@ -100,18 +102,18 @@ export function RunJobDialog({ job, open, onClose, onSuccess }: Props): JSX.Elem
             </pre>
           </div>
 
-          <FormField label="Working directory override" htmlFor={cwdId}>
+          <FormField label={t('jobs.run.cwdOverride')} htmlFor={cwdId}>
             <Input
               id={cwdId}
               type="text"
-              placeholder={job.cwd_hint ?? 'default (agent workspace)'}
+              placeholder={job.cwd_hint ?? t('jobs.run.cwdPlaceholder')}
               value={cwdOverride}
               onChange={(e) => setCwdOverride(e.target.value)}
             />
           </FormField>
 
           <FormField
-            label={job.persistent ? 'Timeout (seconds, blank = unbounded)' : 'Timeout (seconds)'}
+            label={job.persistent ? t('jobs.run.timeoutUnbounded') : t('jobs.run.timeout')}
             htmlFor={timeoutId}
           >
             <Input
@@ -123,21 +125,25 @@ export function RunJobDialog({ job, open, onClose, onSuccess }: Props): JSX.Elem
             />
           </FormField>
 
-          {errorMsg && (
-            <p className="text-feedback-danger text-sm">{errorMsg}</p>
+          {error !== null && (
+            <p className="text-feedback-danger text-sm">{renderJobError(error, t)}</p>
           )}
         </div>
 
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button
             variant="default"
             onClick={submit}
             disabled={run.isPending || timeoutInvalid}
           >
-            {run.isPending ? 'Running…' : job.review_required ? 'Approve & run' : 'Run'}
+            {run.isPending
+              ? t('jobs.run.running')
+              : job.review_required
+                ? t('jobs.action.approveRun')
+                : t('jobs.action.run')}
           </Button>
         </DialogFooter>
       </DialogContent>

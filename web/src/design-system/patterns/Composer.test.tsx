@@ -94,6 +94,24 @@ describe('Composer / drafts', () => {
       }),
     ]);
   });
+
+  // TASK-8599 C5.3: selections must be identified by a stable non-metadata id,
+  // so the same File selected twice yields two distinct chips and removing one
+  // leaves the other.
+  it('keeps duplicate identical File selections distinct', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn(async () => {});
+    const file = new File(['dup'], 'dup.txt', { type: 'text/plain' });
+    render(<ControlledComposer onSend={onSend} />);
+
+    await user.upload(screen.getByLabelText(/Attach files/i), [file, file]);
+    expect(screen.getAllByRole('button', { name: 'Remove attachment' })).toHaveLength(2);
+    expect(screen.getAllByText('dup.txt')).toHaveLength(2);
+
+    await user.click(screen.getAllByRole('button', { name: 'Remove attachment' })[0]);
+    expect(screen.getAllByRole('button', { name: 'Remove attachment' })).toHaveLength(1);
+    expect(screen.getAllByText('dup.txt')).toHaveLength(1);
+  });
 });
 
 function ControlledComposer({

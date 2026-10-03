@@ -48,29 +48,113 @@ Tracked source is split by product surface:
 |   |-- thread_forward.py
 |   `-- client/client.py
 |-- runtime/                     # Python runtime package shipped by pyproject
-|   |-- config.py, models.py, runtime.py
-|   |-- daemon/                  # FastAPI app, routes, queue, sessions, jobs/thread runners
-|   |-- infrastructure/          # SQLite, audit, KB, learnings, threads, artifacts
-|   |-- orchestrator/            # task state machine, executors, prompts, teams, workspaces, chains
-|   |-- skills/bundled/          # release-owned agent instructions and supporting assets
+|   |-- config.py, models.py, runtime.py, system_assistant.py
+|   |-- adapters/                # Claude, Codex, opencode, and Pi adapters
+|   |-- daemon/                  # FastAPI app, routes, queue, sessions, runners, compatibility aliases
+|   |-- infrastructure/          # SQLite, audit, KB, learnings, threads, artifacts, mention routing
+|   |   `-- db/                  # Database facade mixins: task core, dreams, knowledge, jobs, attachments, audit, sessions, workspace cleanup, threads, reply delivery/exchange, schema bootstrap/migrations, authority v1 claims/fences, authority v2 attempts/candidates/finalization, authority v2 continuation/settlement/publication/generation/spend/decision dispatch/zombie consumption, authority policy release/activation/selector/session binding
+|   |-- orchestrator/            # task state machine, executors, prompts, teams, workspaces, task-scratch reports
+|   |-- platform/                # process/session backends and platform enforcement
+|   |-- portability/             # org portability classification helpers
+|   |-- remote_access/           # managed remote-access client and packaging support
+|   |-- remote_jobs/             # pure v1 remote-job contracts; no transport/controller yet
+|   |-- skills/                  # bundled contracts, managed catalog packages, and skill machinery
+|   |   |-- bundled/             # release-owned instructions and supporting assets
+|   |   `-- <managed-slug>/      # catalog package when skill.yaml is present
 |   `-- tools/                   # runtime tooling
 |-- web/                         # React SPA; build output goes to web/dist/
 |   |-- src/                     # features, hooks, design-system, host, lib/api, mocks, tests
 |   |-- public/                  # static brand assets
 |   `-- scripts/                 # web-local build/design-system helpers
+|-- app/                         # macOS app and Linux connector/sidecar sources
+|-- deploy/remote-access/        # remote-access deployment assets and runbook
+|-- labs/tenant_isolation/       # isolated tenant-isolation research harness
+|-- packaging/                   # daemon packaging/build entrypoints
+|-- scripts/                     # daemon/web helpers, local CI, and migrations
+|   `-- migrations/              # forward-only DB/filesystem migration scripts
 |-- skills/happyranch/           # founder-facing CLI skill and shell helper
 |-- docs/
 |   |-- agent-guides/            # on-demand agent/developer reference
-|   |-- product/                 # product notes
-|   |-- setup/
-|   `-- superpowers/{plans,specs}/
+|   |-- adr/                     # architecture decision records
+|   |-- design-overhaul/         # dated product/design project artifacts
+|   |-- manual/                  # documentation-site source
+|   |-- operations/              # operator runbooks and release checklists
+|   |-- product/                 # product notes and PRDs
+|   |-- superpowers/{plans,specs}/ # historical plans and indexed design history
+|   `-- local-ci.md, jenkins-jobs.md # supported development/CI operations
 |-- examples/orgs/hk-macau-tourism/  # canonical sample org tree
-|-- scripts/                     # daemon/web helpers and one-off migrations
-|   `-- migrations/              # forward-only DB/filesystem migration scripts
-`-- tests/                       # root tests plus client/, daemon/, infrastructure/, integration/, orchestrator/, contract/
+`-- tests/                       # Python tests; see the forward-only placement rules below
 ```
 
 `pyproject.toml` packages `runtime` and `cli`; imports in tests and app code should use those packages. Do not treat top-level `src/` as canonical source unless tracked `.py` files are added there and packaging/imports are updated.
+
+The task-scratch report, coverage, and evidence implementations live under
+`runtime/orchestrator/`, and the pure thread-mention resolver lives under
+`runtime/infrastructure/`. Their former `runtime/daemon/` module paths are
+identity aliases retained for import and monkeypatch compatibility.
+
+`runtime/infrastructure/database.py` remains the stable `Database` facade.
+Capability-owned methods move incrementally into mixins under
+`runtime/infrastructure/db/`; callers continue importing and instantiating the
+facade from its original module.
+
+`db/tasks.py` owns `TasksMixin`: task core CRUD, query filtering/pagination,
+subtree severity, ancestor/revisit walks and recall, including `_SEVERITY_RANK`
+and `LineageTooDeep`, plus verified retry lineage, atomic single/fanout child
+spawning and retry feedback/admission, ordinary task claim and budget failure,
+manager supersession and non-root/thread-origin refusal, transactional chain
+advance, revision increments, task-ID allocation and state queries, plus the
+completion-recovery ledger claim/publication/launch/expiry lifecycle, accepted
+and consumed receipt selection/settlement, receipt-owned parent handoff, and
+completion-result readers and projection (`get_task_results`,
+`get_agent_task_results`, `get_latest_task_result`,
+`get_latest_completion_report`, and `_row_to_completion_report`), plus atomic
+task/attachment admission (`insert_task_with_attachments`) and causal
+task-followup replacement (`dispatch_task_followup_replacement`). These two
+writers use the existing shared `_late_database_now` helper as `_now`, resolving
+the whole facade clock after import; the shared decorator still resolves the
+facade `_time` late and uses the same instance RLock.
+`LineageTooDeep`, `VerifiedRetry`,
+`InvalidLineage`, `RetryClaim`, `Committed`, `LostClaim`, `SpawnOutcome`,
+`PendingRetry` and `_RetryEvidenceRefusal` remain identity-re-exported from
+`database.py`. Callback admission, result writers, logger-dependent
+escalation and cross-domain writers remain in the facade. PR #955's
+`try_fail_nonroot_manager_supersede` now belongs to `TasksMixin`, unchanged.
+The seven remaining task keepers are `try_escalate`, `try_escalate_runtime`,
+`try_escalate_over_budget`, `insert_task_result`, `_insert_task_result`,
+`admit_task_completion_callback`, and `terminate_agent_cleanups`.
+The exact S8a/S8b/S8c/S8d/S8e/S8f method inventories and remaining collision holds are
+recorded in
+`docs/superpowers/plans/2026-10-01-backend-decomposition.md`.
+
+## Test placement
+
+Test placement is forward-only. New tests mirror the production package and
+module they exercise: for example, `runtime/daemon/<x>.py` maps to
+`tests/daemon/test_<x>.py`, `runtime/orchestrator/<x>.py` maps to
+`tests/orchestrator/test_<x>.py`, and CLI package paths map to the corresponding
+`tests/` subpackage. Existing domain directories include `daemon`,
+`orchestrator`, `infrastructure`, `platform`, `client`, `unit`, `remote_access`,
+`remote_jobs`, and `workflows`. Use an existing mirror when it matches the
+production surface; if no mirror exists yet (for example, `cli/commands/` has no
+`tests/commands/` directory), the first new test for that area creates it.
+
+Cross-surface contract tests, including the OpenAPI snapshot and route
+classification coverage, belong in `tests/contract/`. True end-to-end tests
+that run a real daemon with fake CLIs and carry the `integration` marker belong
+in `tests/integration/`.
+
+At adoption, 187 legacy tests remain as flat `tests/test_*.py` files. Move a
+legacy flat test only when its production area is already being changed in the
+same PR; do not perform a mass move. This rule governs new work going forward.
+
+The tracked skill-eligibility fixture lives at
+`tests/fixtures/skill_eligibility/config.yaml` and is read by
+`tests/test_skill_cutover_completeness.py`. The fixture is not a CLI default:
+`happyranch skills catalog validate`, `skills effective`, and
+`skills policy explain` load an eligibility policy only when `--policy` is
+provided. Deployed org content lives under `<runtime>/orgs/<slug>/org/`, while
+the canonical bootstrap example remains `examples/orgs/hk-macau-tourism/`.
 
 ## Runtime Container
 
@@ -87,7 +171,7 @@ Runtime container shape:
     |-- org/                           # editable org content
     |   |-- charter.md, escalation-rules.md, teams.yaml, config.yaml
     |   `-- agents/                    # active `<name>.md` + `_pending/<name>.md`
-    |-- workspaces/<agent>/            # agent.yaml (legacy, THR-095), CLAUDE.md|AGENTS.md, .claude|.agents, repos, memory/, task_history.md
+    |-- workspaces/<agent>/            # agent.yaml (legacy, THR-095), regular AGENTS.md + raw relative CLAUDE.md -> AGENTS.md, .claude|.agents, repos, memory/, task_history.md
     |-- kb/                            # per-org KB
     |-- threads/                       # THR-NNN.md
     |-- jobs/                          # JOB-NNN.{out,err,script}

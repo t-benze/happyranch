@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
+import { translate } from '@/lib/i18n';
 import type {
   AgentSummary,
   NextWakesResponse,
@@ -128,7 +129,7 @@ describe('Work-Hours Agent Detail (S2)', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText('Effective schedule — provenance'),
+        screen.getByText(translate('en', 'workHours.detail.provenanceHeading')),
       ).toBeInTheDocument();
     });
 
@@ -139,12 +140,18 @@ describe('Work-Hours Agent Detail (S2)', () => {
     expect(screen.getByText('▶ America/Los_Angeles')).toBeInTheDocument();
 
     // Provenance badges present.
-    expect(screen.getAllByText('This agent').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('Org default').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText(/Team: eng/).length).toBeGreaterThanOrEqual(1);
+    expect(
+      screen.getAllByText(translate('en', 'workHours.provenance.agent')).length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      screen.getAllByText(translate('en', 'workHours.provenance.org')).length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      screen.getAllByText(translate('en', 'workHours.provenance.teamNamed', { team: 'eng' })).length,
+    ).toBeGreaterThanOrEqual(1);
 
     // Manage operating control link present.
-    const manageLink = screen.getByText('Manage operating control');
+    const manageLink = screen.getByText(translate('en', 'workHours.manageOperatingControl'));
     expect(manageLink.tagName).toBe('A');
     expect(manageLink.getAttribute('href')).toBe(
       `/orgs/${SLUG}/settings/organization`,
@@ -175,11 +182,13 @@ describe('Work-Hours Agent Detail (S2)', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText('Next wakes')).toBeInTheDocument();
+      expect(screen.getByText(translate('en', 'workHours.detail.nextWakes'))).toBeInTheDocument();
     });
     // "On each wake it dispatches:" shows the routine bullets.
     expect(
-      screen.getByText(/On each wake it dispatches/),
+      screen.getByText(
+        translate('en', 'workHours.detail.dispatches', { tasks: 'Review open PRs; Triage bugs' }),
+      ),
     ).toBeInTheDocument();
   });
 
@@ -200,7 +209,11 @@ describe('Work-Hours Agent Detail (S2)', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText(/Incomplete schedule/),
+        screen.getByText(
+          translate('en', 'workHours.detail.incomplete', {
+            error: 'windowed mode requires days (after resolution)',
+          }),
+        ),
       ).toBeInTheDocument();
     });
   });

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,12 +22,14 @@ from runtime.daemon.sessions import SessionTracker
 from runtime.daemon.thread_queue import ThreadQueue
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.thread_store import ThreadStore
+from runtime.infrastructure.workflow_schema import install_or_recover
 from runtime.models import BlockKind, TaskStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.dashboard_projection import DashboardProjectionManager
 from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.org_validation import validate_team_membership
 from runtime.orchestrator.teams import TeamsRegistry
+from runtime.workflows.authority import WorkflowAuthorityCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +51,7 @@ class OrgState:
     teams: TeamsRegistry
     settings: Settings
     orchestrator: Orchestrator
+    workflow_authority: WorkflowAuthorityCoordinator = field(init=False)
     sessions: SessionTracker = field(default_factory=SessionTracker)
     db_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     kb_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -62,6 +66,11 @@ class OrgState:
     # every 10s by a coalesced asyncio scheduler. The HTTP route reads ONLY
     # from this projection; it never calls compose_dashboard_summary directly.
     dashboard_projection: DashboardProjectionManager = field(init=False)
+    # THR-229 checkpoint C2: owning daemon-process UUID recorded as the
+    # ``origin_boot_id`` on every admitted v2 attempt.  It is allocated once per
+    # live OrgState (daemon process), never per request and never from an OS
+    # boot identifier.  It is an ownership marker, not a credential.
+    authority_v2_origin_boot_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     _TERMINAL_STATUS_TO_EVENT = {
         TaskStatus.COMPLETED: "task_complete",
@@ -80,6 +89,12 @@ class OrgState:
     }
 
     def __post_init__(self) -> None:
+        self.workflow_authority = WorkflowAuthorityCoordinator(
+            db=self.db,
+            org_slug=self.slug,
+            root=self.root,
+            teams=self.teams,
+        )
         self.dashboard_projection = DashboardProjectionManager(
             org_slug=self.slug, org_root=self.root,
         )
@@ -115,6 +130,31 @@ class OrgState:
             return history
         self.event_bus = EventBus(history_loader=loader)
         self.thread_store = ThreadStore(self.root / "threads")
+
+    def bind_authority_v2_owner(self) -> None:
+        """Bind the real owning-process identity + permission-surface reader.
+
+        THR-229 checkpoint C3d4b: the v2 claim/publication/housekeeping writers
+        read a trusted daemon-process boot identity and a server-owned
+        permission-surface digest.  Both bindings previously existed only on the
+        test/store seam; production now binds them once per live ``OrgState``,
+        BEFORE any startup recovery/publication and before the API admits work.
+
+        This allocates no new identity (``authority_v2_origin_boot_id`` already
+        exists) and rewrites no permission generation: the reader is the existing
+        strict server-side digest reader, closed over this org's orchestrator.
+        """
+        from runtime.orchestrator.authority import _strict_permission_surface_digest
+
+        self.db.bind_authority_policy_v2_process_boot_id(
+            self.authority_v2_origin_boot_id
+        )
+        orchestrator = self.orchestrator
+
+        def _reader(agent: str) -> str:
+            return _strict_permission_surface_digest(orchestrator, agent)
+
+        self.db.bind_authority_policy_v2_permission_surface_reader(_reader)
 
     def _synthesize_terminal_event(self, task) -> dict | None:
         if task.status in self._TERMINAL_STATUS_TO_EVENT:
@@ -158,48 +198,65 @@ class OrgState:
     def load(cls, *, slug: str, root: Path, settings: Settings) -> "OrgState":
         paths = OrgPaths(root=root)
         db = Database(paths.db_path)
-        teams = TeamsRegistry.load(root)
-        # THR-095: one-shot seed — copy the 4 web-writable knobs from
-        # config.yaml into the org_settings DB table exactly once per org.
-        # Idempotent (sentinel); runs on every daemon startup but is a no-op
-        # after the first run.
         try:
-            from runtime.orchestrator.org_config import (
-                backfill_reviewer_agents_setting,
-                seed_org_settings_from_config,
-            )
-            seed_org_settings_from_config(paths, db)
-            # THR-175: reviewer_agents is a 5th knob orgs seeded before this
-            # change never received.  Backfill is idempotent (row-absent) and
-            # never overwrites an explicit setting.
-            backfill_reviewer_agents_setting(paths, db)
-        except Exception as exc:
-            logger.warning(
-                "org %r: org_settings seed skipped (non-fatal): %s", slug, exc
-            )
+            install_or_recover(db)
+            teams = TeamsRegistry.load(root)
+            # THR-095: one-shot seed — copy the 4 web-writable knobs from
+            # config.yaml into the org_settings DB table exactly once per org.
+            # Idempotent (sentinel); runs on every daemon startup but is a no-op
+            # after the first run.
+            try:
+                from runtime.orchestrator.org_config import (
+                    backfill_reviewer_agents_setting,
+                    seed_org_settings_from_config,
+                )
+                seed_org_settings_from_config(paths, db)
+                # THR-175: reviewer_agents is a 5th knob orgs seeded before this
+                # change never received.  Backfill is idempotent (row-absent) and
+                # never overwrites an explicit setting.
+                backfill_reviewer_agents_setting(paths, db)
+            except Exception as exc:
+                logger.warning(
+                    "org %r: org_settings seed skipped (non-fatal): %s", slug, exc
+                )
 
-        # Refuse to attach if agent files and teams.yaml disagree. Raises
-        # OrgConsistencyError on drift; DaemonState.from_runtime catches
-        # per-org so one broken org cannot crash daemon startup, while
-        # add_org propagates so explicit founder actions fail loudly.
-        validate_team_membership(paths, teams)
-        orchestrator = Orchestrator(
-            db=db,
-            settings=settings,
-            paths=paths,
-            slug=slug,
-            teams=teams,
-            authority_evaluator=_build_authority_evaluator(),
-        )
-        return cls(
-            slug=slug,
-            root=root,
-            db=db,
-            teams=teams,
-            settings=settings,
-            orchestrator=orchestrator,
-        )
+            # Refuse to attach if agent files and teams.yaml disagree. Raises
+            # OrgConsistencyError on drift; DaemonState.from_runtime catches
+            # per-org so one broken org cannot crash daemon startup, while
+            # add_org propagates so explicit founder actions fail loudly.
+            validate_team_membership(paths, teams)
+            orchestrator = Orchestrator(
+                db=db,
+                settings=settings,
+                paths=paths,
+                slug=slug,
+                teams=teams,
+                authority_evaluator=_build_authority_evaluator(),
+            )
+            state = cls(
+                slug=slug,
+                root=root,
+                db=db,
+                teams=teams,
+                settings=settings,
+                orchestrator=orchestrator,
+            )
+            # U2A publishes/reconciles the org authority generation before the
+            # state is returned. Failure remains fail-closed in the workflow
+            # pointer but does not detach the org or alter legacy task/chain
+            # behavior; later supported writers and the next cold start retain
+            # the same recovery path.
+            try:
+                state.workflow_authority.recover_or_publish()
+            except Exception:
+                logger.exception(
+                    "org %r: workflow authority startup publication remains fenced",
+                    slug,
+                )
+            return state
+        except Exception:
+            db.close()
+            raise
 
     def close(self) -> None:
         self.db.close()
-

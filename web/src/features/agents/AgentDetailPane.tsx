@@ -21,6 +21,7 @@ import {
   useAgentLearnings,
   useAgentsList,
   useAgentTasks,
+  useCleanupActivity,
   useManageAgentRepo,
   useSetAgentExecutor,
   useSetAgentModel,
@@ -28,9 +29,14 @@ import {
 import { useTasksRoutes } from '@/hooks/tasks';
 import { useJobsList } from '@/hooks/jobs';
 import { useDensity } from '@/hooks/density';
+import { useTeamsList } from '@/hooks/teams';
+import { isEligiblePolicyManager } from '@/hooks/authorityPolicy';
 import { AgentAvatar } from './AgentAvatar';
 import { useExecutorOptions } from './useExecutorOptions';
 import { TeamEscalationPolicyEntryCard } from './TeamEscalationPolicyCard';
+import { useTranslation } from '@/hooks/i18n';
+import { formatDateShapeFor } from '@/lib/i18n/format';
+import { classifyAgentError, renderAgentError, type AgentErrorView, type Translate } from './strings';
 
 interface AgentDetailPaneProps {
   agentName: string;
@@ -50,6 +56,29 @@ interface DirtyState {
   removedRepos?: Set<string>;
 }
 
+/**
+ * One locale-neutral save-error entry. Held in state and rendered through `t`
+ * on every render, so a locale switch re-translates the copy while daemon
+ * diagnostics (via `classifyAgentError`) stay verbatim.
+ */
+type SaveErrorItem =
+  | { kind: 'executorUnavailable'; name: string }
+  | { kind: 'executor' | 'model'; view: AgentErrorView }
+  | { kind: 'repo'; name: string; view: AgentErrorView };
+
+function renderSaveError(item: SaveErrorItem, t: Translate): string {
+  switch (item.kind) {
+    case 'executorUnavailable':
+      return t('agents.detail.saveErr.executorUnavailable', { name: item.name });
+    case 'executor':
+      return t('agents.detail.saveErr.executor', { message: renderAgentError(item.view, t) });
+    case 'model':
+      return t('agents.detail.saveErr.model', { message: renderAgentError(item.view, t) });
+    case 'repo':
+      return t('agents.detail.saveErr.repo', { name: item.name, message: renderAgentError(item.view, t) });
+  }
+}
+
 function useAccountabilityMetrics(agentName: string) {
   const tasksQuery = useAgentTasks(agentName);
   const tasks = tasksQuery.data?.tasks ?? [];
@@ -64,12 +93,15 @@ function useAccountabilityMetrics(agentName: string) {
 
 export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDetailPaneProps): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
+  const { t, locale, render } = useTranslation();
   const agentsQuery = useAgentsList();
+  const teamsQuery = useTeamsList();
   const { density } = useDensity();
   const taskRoutes = useTasksRoutes();
   const learningsQuery = useAgentLearnings(agentName);
   const jobsQuery = useJobsList({ agent: agentName, status: 'all', limit: 10 });
   const { done, total, tasksQuery } = useAccountabilityMetrics(agentName);
+  const cleanupQuery = useCleanupActivity(agentName);
 
   const setExecutor = useSetAgentExecutor();
   const setModel = useSetAgentModel();
@@ -77,11 +109,14 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
   const executorOptions = useExecutorOptions();
 
   const agent = agentsQuery.data?.agents.find((a) => a.name === agentName);
+  const policyAgent = agent?.team && agent.role
+    ? { name: agent.name, team: agent.team, role: agent.role }
+    : undefined;
   const repos = useMemo(() => agent?.repos ?? {}, [agent?.repos]);
 
   // --- Dirty state ---
   const [dirty, setDirty] = useState<DirtyState>({});
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<SaveErrorItem[] | null>(null);
   const [saving, setSaving] = useState(false);
   const [showPrompt, setShowPrompt] = useState(false);
   const [repoAddName, setRepoAddName] = useState('');
@@ -185,13 +220,13 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
     if (!slug) return;
     setSaving(true);
     setSaveError(null);
-    const errors: string[] = [];
+    const errors: SaveErrorItem[] = [];
 
     // Save executor if dirty — guard: don't send an executor that is no
     // longer selectable (e.g., refetched away or unavailable).
     if (dirty.executor && dirty.executor !== agent?.executor) {
       if (!liveSelectableNames.has(dirty.executor)) {
-        errors.push(`Executor "${dirty.executor}" is no longer available.`);
+        errors.push({ kind: 'executorUnavailable', name: dirty.executor });
       } else {
         try {
           await setExecutor.mutateAsync({
@@ -199,11 +234,10 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
             body: { executor: dirty.executor },
           });
         } catch (err: unknown) {
-          const e = err as { message?: string };
-          errors.push(`Executor: ${e.message ?? 'save failed'}`);
+          errors.push({ kind: 'executor', view: classifyAgentError(err, 'agents.error.saveFailed') });
           // Preserve dirty state on error — user can retry.
           setSaving(false);
-          setSaveError(errors.join('; '));
+          setSaveError(errors);
           return;
         }
       }
@@ -220,8 +254,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
             body: { model: targetModel },
           });
         } catch (err: unknown) {
-          const e = err as { message?: string };
-          errors.push(`Model: ${e.message ?? 'save failed'}`);
+          errors.push({ kind: 'model', view: classifyAgentError(err, 'agents.error.saveFailed') });
         }
       }
     }
@@ -239,8 +272,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
               body: { action: 'remove', repo_name: key },
             });
           } catch (err: unknown) {
-            const e = err as { message?: string };
-            errors.push(`Repo ${key}: ${e.message ?? 'remove failed'}`);
+            errors.push({ kind: 'repo', name: key, view: classifyAgentError(err, 'agents.error.removeFailed') });
           }
         }
       }
@@ -253,8 +285,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
               body: { action: 'add', repo_name: key, url },
             });
           } catch (err: unknown) {
-            const e = err as { message?: string };
-            errors.push(`Repo ${key}: ${e.message ?? 'add failed'}`);
+            errors.push({ kind: 'repo', name: key, view: classifyAgentError(err, 'agents.error.addFailed') });
           }
         }
       }
@@ -267,15 +298,14 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
               body: { action: 'update', repo_name: key, url },
             });
           } catch (err: unknown) {
-            const e = err as { message?: string };
-            errors.push(`Repo ${key}: ${e.message ?? 'update failed'}`);
+            errors.push({ kind: 'repo', name: key, view: classifyAgentError(err, 'agents.error.updateFailed') });
           }
         }
       }
     }
 
     if (errors.length > 0) {
-      setSaveError(errors.join('; '));
+      setSaveError(errors);
     } else {
       setDirty({});
     }
@@ -357,10 +387,10 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
         {onStartThread ? (
           <Button size="sm" className="shrink-0" onClick={onStartThread}>
             <MessageCircle size={14} className="mr-1" aria-hidden="true" />
-            Start Thread
+            {t('agents.detail.startThread')}
           </Button>
         ) : (
-          <Button variant="ghost" size="sm" className="shrink-0" onClick={onClose}>
+          <Button variant="ghost" size="sm" className="shrink-0" onClick={onClose} aria-label={t('common.close')}>
             <X size={16} />
           </Button>
         )}
@@ -368,59 +398,60 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
 
       {/* --- Editable fields — Pasture card sections --- */}
       <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
-        {agent?.role === 'manager' && agent.team === 'engineering' && agent.name === 'engineering_manager' && (
-          <TeamEscalationPolicyEntryCard agent={{ name: agent.name, team: agent.team, role: agent.role }} />
+        {isEligiblePolicyManager(
+          policyAgent,
+          teamsQuery.data?.teams,
+        ) && policyAgent && (
+          <TeamEscalationPolicyEntryCard agent={policyAgent} />
         )}
         {/* Executor — live-derived dropdown (same source as AddAgentDialog) */}
         <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
           <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
-            Executor
+            {t('agents.executor.label')}
           </h3>
           {executorOptions.state === 'loading' ? (
-            <p className="text-text-muted text-sm">Loading executor list…</p>
+            <p className="text-text-muted text-sm">{t('agents.executor.loading')}</p>
           ) : executorOptions.state === 'error' ? (
             <p className="text-tier-red text-xs">
-              Could not load executor list. Editing is disabled.
+              {t('agents.detail.executorError')}
             </p>
           ) : (
             <select
               value={displayExecutor}
               onChange={(e) => onExecutorChange(e.target.value)}
               className="border-border-subtle bg-surface w-full max-w-xs rounded border p-2 text-sm"
-              aria-label="Executor"
+              aria-label={t('agents.executor.label')}
             >
               {/* Stale current executor — visible but not assignable */}
               {currentExecutorIsStale && (
                 <option key={currentExecutorName} value={currentExecutorName} disabled>
-                  {currentExecutorName} (current, no longer registered)
+                  {t('agents.detail.staleOption', { name: currentExecutorName })}
                 </option>
               )}
               {/* Unavailable current executor that IS known but not launchable */}
               {!currentExecutorIsStale &&
                 executorOptions.unavailable.some((o) => o.name === displayExecutor) && (
                 <option key={displayExecutor} value={displayExecutor} disabled>
-                  {displayExecutor} (current, unavailable — Settings → Executors)
+                  {t('agents.detail.unavailableCurrentOption', { name: displayExecutor })}
                 </option>
               )}
               {executorOptions.selectable.map((opt) => (
                 <option key={opt.name} value={opt.name}>
-                  {opt.name}
-                  {opt.kind === 'custom' ? ' (custom)' : ''}
+                  {opt.kind === 'custom' ? t('agents.executor.customOption', { name: opt.name }) : opt.name}
                 </option>
               ))}
               {executorOptions.unavailable
                 .filter((o) => o.name !== displayExecutor)
                 .length > 0 && (
                 <>
-                  <option disabled>── unavailable ──</option>
+                  <option disabled>{t('agents.executor.unavailableHeader')}</option>
                   {executorOptions.unavailable
                     .filter((o) => o.name !== displayExecutor)
                     .map((opt) => (
                       <option key={opt.name} value={opt.name} disabled>
-                        {opt.name}
                         {opt.kind === 'custom'
-                          ? ' (custom, unavailable — Settings → Executors)'
-                          : ' (not registered — Settings → Executors)'}
+                          ? t('agents.detail.customUnavailableOption', { name: opt.name })
+                          : t('agents.detail.notRegisteredOption', { name: opt.name })}
                       </option>
                     ))}
                 </>
@@ -428,12 +459,11 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
             </select>
           )}
           <p className="text-text-muted mt-2 text-xs">
-            Takes effect on this agent's next task.
+            {t('agents.detail.nextTask')}
             {currentExecutorIsStale && (
               <>
                 {' '}
-                The current executor &ldquo;{currentExecutorName}&rdquo; is no longer
-                registered and cannot be assigned to new agents.
+                {t('agents.detail.staleNote', { name: currentExecutorName })}
               </>
             )}
           </p>
@@ -441,10 +471,10 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
           {slug && (currentExecutorIsStale || executorOptions.unavailable.length > 0) && (
             <p className="text-text-muted mt-1 text-xs">
               {currentExecutorIsStale
-                ? 'The current executor is no longer registered.'
-                : 'Unavailable executors need to be registered.'}{' '}
+                ? t('agents.detail.staleLink')
+                : t('agents.executor.needRegister')}{' '}
               <Link to={`/orgs/${slug}/settings/executors`} className="text-accent-text underline">
-                Settings → Executors
+                {t('agents.executor.settingsLink')}
               </Link>
             </p>
           )}
@@ -453,18 +483,18 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
         {/* Model — freeform text input (executor-dependent, not a fixed enum) */}
         <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
           <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
-            Model
+            {t('agents.detail.model')}
           </h3>
           <input
             type="text"
             value={displayModel}
             onChange={(e) => onModelChange(e.target.value)}
-            placeholder={agent?.executor ? `Default for ${agent.executor}` : 'Unset'}
+            placeholder={agent?.executor ? t('agents.detail.modelDefault', { executor: agent.executor }) : t('agents.detail.modelUnset')}
             className="border-border-subtle bg-surface w-full max-w-xs rounded-md border px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-accent-soft"
-            aria-label="Model"
+            aria-label={t('agents.detail.model')}
           />
           <p className="text-text-muted mt-2 text-xs">
-            Empty = use default model. Takes effect on this agent's next task.
+            {t('agents.detail.modelHelp')}
           </p>
         </section>
 
@@ -477,7 +507,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
               className="text-text-secondary hover:text-text-primary flex w-full items-center gap-2 px-4 py-3 text-xs font-medium tracking-wider uppercase transition-colors"
             >
               {showPrompt ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-              System prompt
+              {t('agents.field.systemPrompt')}
             </button>
             {showPrompt && (
               <div className="border-border-default border-t px-4 pb-4">
@@ -486,10 +516,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
                 </pre>
                 <div className="text-text-muted mt-2 flex items-center gap-1.5 text-xs">
                   <AlertCircle size={12} />
-                  <span>
-                    Read-only. Updating system prompt from the web UI requires a
-                    founder-facing route.
-                  </span>
+                  <span>{t('agents.detail.systemPromptReadOnly')}</span>
                 </div>
               </div>
             )}
@@ -500,12 +527,12 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
         {agent?.description && (
           <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
             <h3 className="text-overline text-text-muted mb-2 tracking-wider uppercase">
-              Description
+              {t('agents.field.description')}
             </h3>
             <p className="text-text-secondary text-sm leading-relaxed">{agent.description}</p>
             <div className="text-text-muted mt-2 flex items-center gap-1.5 text-xs">
               <AlertCircle size={12} />
-              <span>Read-only — no founder-facing update route for description.</span>
+              <span>{t('agents.detail.descriptionReadOnly')}</span>
             </div>
           </section>
         )}
@@ -513,7 +540,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
         {/* Repo chips — rounded-full tag pattern */}
         <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
           <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
-            Repositories
+            {t('agents.detail.repos')}
           </h3>
           <div className="mb-3 flex flex-wrap gap-1.5">
             {Object.entries(displayRepos).map(([key, url]) => (
@@ -534,36 +561,36 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
                   type="button"
                   onClick={() => onRepoRemove(key)}
                   className="text-text-muted hover:text-tier-red ml-0.5 transition-colors"
-                  aria-label={`Remove ${key}`}
+                  aria-label={t('agents.detail.removeRepo', { name: key })}
                 >
                   <X size={12} />
                 </button>
               </span>
             ))}
             {Object.keys(displayRepos).length === 0 && (
-              <span className="text-text-muted text-xs">No repositories configured.</span>
+              <span className="text-text-muted text-xs">{t('agents.detail.noRepos')}</span>
             )}
           </div>
           {showRepoAdd ? (
             <div className="bg-surface-sunken border-border-default space-y-2 rounded-lg border p-3">
               <input
                 className="border-border-subtle bg-surface w-full rounded-md border px-2.5 py-1.5 text-xs"
-                placeholder="Repo name (e.g. happyranch)"
+                placeholder={t('agents.detail.repoNamePlaceholder')}
                 value={repoAddName}
                 onChange={(e) => setRepoAddName(e.target.value)}
               />
               <input
                 className="border-border-subtle bg-surface w-full rounded-md border px-2.5 py-1.5 text-xs"
-                placeholder="Git URL"
+                placeholder={t('agents.detail.repoUrlPlaceholder')}
                 value={repoAddUrl}
                 onChange={(e) => setRepoAddUrl(e.target.value)}
               />
               <div className="flex gap-2">
                 <Button size="sm" onClick={onRepoAdd} disabled={!repoAddName.trim() || !repoAddUrl.trim()}>
-                  Add
+                  {t('agents.detail.repoAdd')}
                 </Button>
                 <Button size="sm" variant="ghost" onClick={() => setShowRepoAdd(false)}>
-                  Cancel
+                  {t('common.cancel')}
                 </Button>
               </div>
             </div>
@@ -574,7 +601,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
               onClick={() => setShowRepoAdd(true)}
             >
               <Plus size={14} className="mr-1" />
-              Add repository
+              {t('agents.detail.addRepo')}
             </Button>
           )}
         </section>
@@ -582,13 +609,13 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
         {/* Accountability metrics — display font, card */}
         <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
           <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
-            Accountability
+            {t('agents.detail.accountability')}
           </h3>
           {tasksQuery.isLoading ? (
-            <p className="text-text-muted text-xs">Loading…</p>
+            <p className="text-text-muted text-xs">{t('agents.common.loading')}</p>
           ) : tasksQuery.isError ? (
             <p className="text-tier-red text-xs">
-              Failed to load task counts.
+              {renderAgentError(classifyAgentError(tasksQuery.error, 'agents.detail.taskCountsError'), t)}
             </p>
           ) : (
             <div className="flex items-baseline gap-3">
@@ -596,14 +623,14 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
                 {total}
               </span>
               <span className="text-text-secondary text-sm tabular-nums">
-                tasks
+                {t('agents.detail.tasksUnit', { count: total })}
               </span>
               <span aria-hidden="true" className="text-text-muted">·</span>
               <span className="font-display text-text-primary text-2xl font-medium tabular-nums">
                 {done}
               </span>
               <span className="text-text-secondary text-sm tabular-nums">
-                done
+                {t('agents.detail.doneUnit', { count: done })}
               </span>
             </div>
           )}
@@ -612,10 +639,10 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
         {/* Recent tasks */}
         <section>
           <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
-            Recent tasks
+            {t('agents.detail.recentTasks')}
           </h3>
           {tasksQuery.isLoading ? (
-            <p className="text-text-muted text-xs">Loading tasks…</p>
+            <p className="text-text-muted text-xs">{t('agents.detail.loadingTasks')}</p>
           ) : tasksQuery.data && tasksQuery.data.tasks.length > 0 ? (
             <ul className="space-y-2">
               {tasksQuery.data.tasks.map((t) => (
@@ -631,27 +658,35 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
             </ul>
           ) : (
             <p className="text-text-muted text-xs">
-              No tasks where this agent was the assigned manager.
+              {t('agents.detail.noTasks')}
             </p>
           )}
+        </section>
+
+        <section>
+          <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">{t('agents.detail.cleanup')}</h3>
+          {cleanupQuery.isLoading ? <p className="text-text-muted text-xs">{t('agents.detail.cleanupLoading')}</p>
+            : cleanupQuery.isError ? <div><p className="text-tier-red text-xs">{renderAgentError(classifyAgentError(cleanupQuery.error, 'agents.detail.cleanupError'), t)}</p><Button size="sm" variant="ghost" onClick={() => cleanupQuery.refetch()}>{t('common.retry')}</Button></div>
+            : cleanupQuery.data?.activities.length ? <ul className="space-y-2">{cleanupQuery.data.activities.map((activity) => {
+              const summary = activity.output_summary?.trim() || t('agents.detail.summaryUnavailable');
+              return <li key={activity.task_id} className="border-border-default bg-surface shadow-pasture-sm rounded-lg border p-3"><Link to={taskRoutes.detail(activity.task_id)} className="text-accent-text break-all text-sm hover:underline">{activity.task_id}</Link><p className="text-text-muted mt-1 text-xs">{t('agents.detail.cleanupRun', { date: formatDateShapeFor(locale, new Date(activity.created_at), 'monthDayYear'), status: activity.status })}{activity.result_status ? ` · ${t('agents.detail.cleanupResult', { result: activity.result_status })}` : ''}</p><p className="text-text-primary mt-2 break-words text-sm whitespace-pre-wrap">{summary}</p></li>;
+            })}</ul> : <p className="text-text-muted text-xs">{t('agents.detail.noCleanup')}</p>}
         </section>
 
         {/* Learnings */}
         <section>
           <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
-            Learnings
+            {t('agents.detail.learnings')}
           </h3>
           {learningsQuery.isLoading ? (
-            <p className="text-text-muted text-xs">Loading learnings…</p>
+            <p className="text-text-muted text-xs">{t('agents.detail.learningsLoading')}</p>
           ) : learningsError?.status === 412 ? (
             <p className="text-text-muted text-xs">
-              This workspace hasn't been migrated to the per-entry memory
-              layout yet. Run <code>happyranch memory reindex</code> from the
-              CLI to upgrade.
+              {render('agents.detail.learningsNotMigrated', { command: <code>happyranch memory reindex</code> })}
             </p>
           ) : learningsError ? (
             <p className="text-tier-red text-xs">
-              Failed to load learnings ({learningsError.status}).
+              {renderAgentError(classifyAgentError(learningsError, 'agents.detail.learningsError'), t)}
             </p>
           ) : learningsQuery.data && learningsQuery.data.entries.length > 0 ? (
             <ul className="space-y-2">
@@ -671,8 +706,8 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
             </ul>
           ) : (
             <EmptyState
-              title="No learnings"
-              body="This agent has not filed any learnings yet."
+              title={t('agents.detail.noLearningsTitle')}
+              body={t('agents.detail.noLearningsBody')}
             />
           )}
         </section>
@@ -681,7 +716,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
         {jobsQuery.data && jobsQuery.data.jobs.length > 0 && (
           <section>
             <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
-              Recent jobs
+              {t('agents.detail.recentJobs')}
             </h3>
             <ul className="space-y-1.5 text-sm">
               {jobsQuery.data.jobs.map((j) => (
@@ -719,21 +754,23 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
             {saveError && (
               <div className="text-tier-red flex items-center gap-1.5 text-xs">
                 <AlertCircle size={12} />
-                <span>Save error: {saveError}</span>
+                <span>{t('agents.detail.saveError', { message: saveError.map((item) => renderSaveError(item, t)).join('; ') })}</span>
               </div>
             )}
             {!saveError && (
               <p className="text-text-muted text-xs">
-                You have unsaved changes. <kbd className="bg-surface border-border-default rounded border px-1.5 py-px font-mono text-xs">⌘S</kbd> to save.
+                {render('agents.detail.unsaved', {
+                  shortcut: <kbd className="bg-surface border-border-default rounded border px-1.5 py-px font-mono text-xs">⌘S</kbd>,
+                })}
               </p>
             )}
           </div>
           <div className="flex gap-2">
             <Button variant="ghost" size="sm" onClick={onReset}>
-              Reset
+              {t('agents.detail.reset')}
             </Button>
             <Button size="sm" onClick={onSave} disabled={saving}>
-              {saving ? 'Saving…' : 'Save agent'}
+              {saving ? t('agents.detail.saving') : t('agents.detail.save')}
             </Button>
           </div>
         </footer>

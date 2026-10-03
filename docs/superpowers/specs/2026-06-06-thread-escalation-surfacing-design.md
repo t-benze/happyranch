@@ -3,6 +3,10 @@
 **Date:** 2026-06-06
 **Status:** Draft, pending implementation.
 **Origin:** Founder-reported gap on tourism-org THR-016 (2026-06-06): `TASK-893` (EH Phase-2 deploy) was dispatched from THR-016, escalated to `blocked/escalated`, and the daemon sent the Feishu escalation notification — but nothing appeared in THR-016. The founder watches the thread and expected the escalation to surface where the conversation lives.
+
+> **Supersession note (THR-277):** current escalation surfacing is root-only.
+> A non-root decision escalation or authority-v2 refusal becomes FAILED and
+> uses the terminal parent/follow-up route; it emits no `task_escalated` event.
 **Relates to:**
 - `docs/superpowers/specs/2026-05-28-thread-task-followup-design.md` — the terminal task-followup mechanism this extends to the escalated (non-terminal) state. This spec reuses its system-message + re-invocation machinery.
 - `docs/superpowers/specs/2026-05-13-threads-design.md` — the threads primitive.

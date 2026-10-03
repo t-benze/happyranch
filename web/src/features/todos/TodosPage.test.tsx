@@ -8,10 +8,14 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, it, expect, beforeEach } from 'vitest'
 import { AppRoutes } from '@/routes'
-import { renderWithProviders } from '@/test/render'
+import { I18nTestBoundary, renderWithProviders } from '@/test/render'
+import { translate, type MessageKey, type MessageParams } from '@/lib/i18n'
 import { server } from '@/test/server'
 import type { ScheduleRecord, ScheduleStatus } from '@/lib/api/types'
 import { StatusPill } from './components/StatusPill'
+
+/** English catalog lookup — assertions follow the typed catalog (THR-118 W4b). */
+const en = (key: MessageKey, params?: MessageParams): string => translate('en', key, params)
 
 /* ---------------------------------------------------------------- */
 /*  Fixtures                                                        */
@@ -369,22 +373,22 @@ describe('TodosPage — list view', () => {
     mockSchedules(ALL_SCHEDULES)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
 
-    await screen.findByRole('heading', { name: 'Todos' })
-    expect(screen.getByText('Agent commitments')).toBeTruthy()
+    await screen.findByRole('heading', { name: en('todos.list.title') })
+    expect(screen.getByText(en('todos.list.eyebrow'))).toBeTruthy()
     expect(
-      screen.getByText('Scheduled commitments agents created from your instructions.'),
+      screen.getByText(en('todos.list.subtitle')),
     ).toBeTruthy()
   })
 
   it('renders all filter tabs', async () => {
     mockSchedules(ALL_SCHEDULES)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
-    await screen.findByRole('heading', { name: 'Todos' })
-    expect(screen.getByText('All')).toBeTruthy()
-    expect(screen.getByText('Active')).toBeTruthy()
-    expect(screen.getByText('Paused')).toBeTruthy()
-    expect(screen.getByText('Needs attention')).toBeTruthy()
-    expect(screen.getByText('History')).toBeTruthy()
+    await screen.findByRole('heading', { name: en('todos.list.title') })
+    expect(screen.getByText(en('todos.filter.all'))).toBeTruthy()
+    expect(screen.getByText(en('todos.group.active'))).toBeTruthy()
+    expect(screen.getByText(en('todos.group.paused'))).toBeTruthy()
+    expect(screen.getByText(en('todos.group.needsAttention'))).toBeTruthy()
+    expect(screen.getByText(en('todos.group.history'))).toBeTruthy()
   })
 
   it('shows schedule items after load', async () => {
@@ -402,14 +406,14 @@ describe('TodosPage — list view', () => {
       http.all(`${API_BASE}/*`, () => HttpResponse.json({})),
     )
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
-    await screen.findByText('Failed to load Todos')
-    expect(screen.getByText('Retry')).toBeTruthy()
+    await screen.findByText(en('todos.list.errorTitle'))
+    expect(screen.getByText(en('todos.retry'))).toBeTruthy()
   })
 
   it('shows empty state when list is empty', async () => {
     mockSchedules([])
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
-    await screen.findByText('No Todos yet')
+    await screen.findByText(en('todos.list.emptyTitle'))
   })
 
   it('groups schedules into sections with counts', async () => {
@@ -417,10 +421,10 @@ describe('TodosPage — list view', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
     await screen.findByText('Send the weekly market update')
     const bodyText = document.body.textContent ?? ''
-    expect(bodyText).toContain('Active')
-    expect(bodyText).toContain('Needs attention')
-    expect(bodyText).toContain('Paused')
-    expect(bodyText).toContain('History')
+    expect(bodyText).toContain(en('todos.group.active'))
+    expect(bodyText).toContain(en('todos.group.needsAttention'))
+    expect(bodyText).toContain(en('todos.group.paused'))
+    expect(bodyText).toContain(en('todos.group.history'))
   })
 
   it('shows summary line with counts', async () => {
@@ -428,22 +432,22 @@ describe('TodosPage — list view', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
     await screen.findByText('Send the weekly market update')
     const bodyText = document.body.textContent ?? ''
-    expect(bodyText).toContain('3 active')
-    expect(bodyText).toContain('2 needs attention')
+    expect(bodyText).toContain(en('todos.list.summaryActive', { count: 3, n: '3' }))
+    expect(bodyText).toContain(en('todos.list.summaryAttention', { count: 2, n: '2' }))
   })
 
   it('shows status pill labels', async () => {
     mockSchedules(ALL_SCHEDULES)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
     await screen.findByText('Send the weekly market update')
-    expect(screen.getAllByText('Armed').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Firing now').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Paused').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Cancelled').length).toBeGreaterThan(0)
-    expect(screen.getByText('Completed')).toBeTruthy()
-    expect(screen.getByText('Review expired')).toBeTruthy()
-    expect(screen.getAllByText('Needs attention').length).toBeGreaterThanOrEqual(1)
-    expect(screen.getByText('Timed out')).toBeTruthy()
+    expect(screen.getAllByText(en('todos.status.armed')).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(en('todos.status.firing')).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(en('todos.status.paused')).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(en('todos.status.cancelled')).length).toBeGreaterThan(0)
+    expect(screen.getByText(en('todos.status.fired'))).toBeTruthy()
+    expect(screen.getByText(en('todos.status.expired'))).toBeTruthy()
+    expect(screen.getAllByText(en('todos.status.failed')).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText(en('todos.status.timeout'))).toBeTruthy()
   })
 
   it('shows schedule IDs as plain text (not as nested links)', async () => {
@@ -455,6 +459,22 @@ describe('TodosPage — list view', () => {
     const rowLink = screen.getByText('Send the weekly market update').closest('a')
     expect(rowLink).toBeTruthy()
     expect(rowLink?.getAttribute('href')).toBe(`/orgs/${ORG_SLUG}/todos/SCHEDULE-042`)
+  })
+
+  it('row metadata wraps inside the card instead of overflowing it (TASK-9471 zh-CN 390px clip)', async () => {
+    mockSchedules(ALL_SCHEDULES)
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos` })
+    await screen.findByText('Send the weekly market update')
+    const idSpan = screen.getAllByText('SCHEDULE-042')[0]
+    // The id may break, never ellipsize: daemon bytes stay fully readable.
+    expect(idSpan.classList.contains('break-all')).toBe(true)
+    expect(idSpan.classList.contains('truncate')).toBe(false)
+    const group = idSpan.parentElement as HTMLElement
+    expect(group.classList.contains('shrink-0')).toBe(false)
+    expect(group.classList.contains('min-w-0')).toBe(true)
+    expect(group.classList.contains('flex-wrap')).toBe(true)
+    const line = group.parentElement as HTMLElement
+    expect(line.classList.contains('flex-wrap')).toBe(true)
   })
 
   it('rows are navigable Links to the detail route', async () => {
@@ -527,7 +547,7 @@ describe('TodoDetailPage — indefinite flag', () => {
     mockDetail(ARMED_WEEKLY_TZ)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
     await waitForDetailHeading('Send the weekly market update')
-    expect(screen.queryByText('Indefinite')).not.toBeInTheDocument()
+    expect(screen.queryByText(en('todos.indefinite'))).not.toBeInTheDocument()
     expect(screen.queryByText('0', { exact: true })).not.toBeInTheDocument()
   })
 
@@ -535,7 +555,7 @@ describe('TodoDetailPage — indefinite flag', () => {
     mockDetail(FIRING)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-064` })
     await waitForDetailHeading('Run the nightly regression sweep')
-    expect(screen.getByText('Indefinite')).toBeInTheDocument()
+    expect(screen.getByText(en('todos.indefinite'))).toBeInTheDocument()
     expect(screen.queryByText('0', { exact: true })).not.toBeInTheDocument()
   })
 })
@@ -561,7 +581,7 @@ describe('TodoDetailPage — provenance and links', () => {
     mockDetail(FIRED)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-019` })
     await waitForDetailHeading('Check the release health metric')
-    const link = screen.getByText('View related activity')
+    const link = screen.getByText(en('todos.detail.viewActivity'))
     expect(link.closest('a')?.getAttribute('href')).toBe(`/orgs/${ORG_SLUG}/audit?task_id=SCHEDULE-019`)
   })
 
@@ -570,7 +590,7 @@ describe('TodoDetailPage — provenance and links', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-019` })
     await waitForDetailHeading('Check the release health metric')
     expect(
-      screen.getByText('This Todo fired once. See the linked task for the work outcome.'),
+      screen.getByText(en('todos.detail.firedOnce')),
     ).toBeTruthy()
   })
 
@@ -578,46 +598,46 @@ describe('TodoDetailPage — provenance and links', () => {
     mockDetail(FIRED)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-019` })
     await waitForDetailHeading('Check the release health metric')
-    expect(screen.queryByText('Pause')).toBeNull()
-    expect(screen.queryByText('Edit')).toBeNull()
-    expect(screen.queryByText('Cancel')).toBeNull()
+    expect(screen.queryByText(en('todos.action.pause'))).toBeNull()
+    expect(screen.queryByText(en('todos.action.edit'))).toBeNull()
+    expect(screen.queryByText(en('todos.action.cancel'))).toBeNull()
   })
 
   it('shows Pause, Edit, Cancel for armed schedule', async () => {
     mockDetail(ARMED_WEEKLY_TZ)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
     await waitForDetailHeading('Send the weekly market update')
-    expect(screen.getByText('Pause')).toBeTruthy()
-    expect(screen.getByText('Edit')).toBeTruthy()
-    expect(screen.getByText('Cancel')).toBeTruthy()
+    expect(screen.getByText(en('todos.action.pause'))).toBeTruthy()
+    expect(screen.getByText(en('todos.action.edit'))).toBeTruthy()
+    expect(screen.getByText(en('todos.action.cancel'))).toBeTruthy()
   })
 
   it('shows Edit, Cancel (no Pause, no Resume) for paused schedule', async () => {
     mockDetail(PAUSED)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-031` })
     await waitForDetailHeading('Review roadmap risks')
-    expect(screen.queryByText('Pause')).toBeNull()
+    expect(screen.queryByText(en('todos.action.pause'))).toBeNull()
     expect(screen.queryByText('Resume')).toBeNull()
-    expect(screen.getByText('Edit')).toBeTruthy()
-    expect(screen.getByText('Cancel')).toBeTruthy()
+    expect(screen.getByText(en('todos.action.edit'))).toBeTruthy()
+    expect(screen.getByText(en('todos.action.cancel'))).toBeTruthy()
   })
 
   it('shows no actions for firing schedule', async () => {
     mockDetail(FIRING)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-064` })
     await waitForDetailHeading('Run the nightly regression sweep')
-    expect(screen.queryByText('Pause')).toBeNull()
-    expect(screen.queryByText('Edit timing')).toBeNull()
-    expect(screen.queryByText('Cancel')).toBeNull()
+    expect(screen.queryByText(en('todos.action.pause'))).toBeNull()
+    expect(screen.queryByText(en('todos.edit.title'))).toBeNull()
+    expect(screen.queryByText(en('todos.action.cancel'))).toBeNull()
   })
 
   it('shows no actions for failed schedule', async () => {
     mockDetail(FAILED)
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-071` })
     await waitForDetailHeading('Sync the customer changelog')
-    expect(screen.queryByText('Pause')).toBeNull()
-    expect(screen.queryByText('Edit timing')).toBeNull()
-    expect(screen.queryByText('Cancel')).toBeNull()
+    expect(screen.queryByText(en('todos.action.pause'))).toBeNull()
+    expect(screen.queryByText(en('todos.edit.title'))).toBeNull()
+    expect(screen.queryByText(en('todos.action.cancel'))).toBeNull()
   })
 
   it('shows read-only source instruction', async () => {
@@ -686,10 +706,10 @@ describe('TodoDetailPage — mutations', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
     await waitForDetailHeading('Send the weekly market update')
 
-    await userEvent.click(screen.getByRole('button', { name: 'Pause' }))
-    await screen.findByText('Pause this Todo')
+    await userEvent.click(screen.getByRole('button', { name: en('todos.action.pause') }))
+    await screen.findByText(en('todos.pause.title'))
     const dialog = screen.getByRole('dialog')
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Pause' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: en('todos.action.pause') }))
 
     await waitFor(() => {
       expect(pauseCalled).toBe(true)
@@ -713,8 +733,8 @@ describe('TodoDetailPage — mutations', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
     await waitForDetailHeading('Send the weekly market update')
 
-    await userEvent.click(screen.getByRole('button', { name: 'Pause' }))
-    await screen.findByText('Pause this Todo')
+    await userEvent.click(screen.getByRole('button', { name: en('todos.action.pause') }))
+    await screen.findByText(en('todos.pause.title'))
     const dialog = screen.getByRole('dialog')
     const dialogText = dialog.textContent ?? ''
     expect(dialogText).not.toContain('resume')
@@ -741,9 +761,9 @@ describe('TodoDetailPage — mutations', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
     await waitForDetailHeading('Send the weekly market update')
 
-    await userEvent.click(screen.getByText('Cancel'))
-    await screen.findByText('Cancel this Todo')
-    await userEvent.click(screen.getByText('Cancel Todo'))
+    await userEvent.click(screen.getByText(en('todos.action.cancel')))
+    await screen.findByText(en('todos.cancel.title'))
+    await userEvent.click(screen.getByText(en('todos.cancel.confirm')))
 
     await waitFor(() => {
       expect(cancelCalled).toBe(true)
@@ -778,9 +798,9 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
     await waitForDetailHeading('Send the weekly market update')
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    await screen.findByRole('heading', { name: 'Edit timing' })
-    await userEvent.click(screen.getByText('Save changes'))
+    await userEvent.click(screen.getByRole('button', { name: en('todos.action.edit') }))
+    await screen.findByRole('heading', { name: en('todos.edit.title') })
+    await userEvent.click(screen.getByText(en('todos.edit.save')))
 
     await waitFor(() => {
       expect(capturedBody).not.toBeNull()
@@ -808,12 +828,12 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
     await waitForDetailHeading('Review the recurring portfolio allocation')
     expect(screen.getByText(/Every 2 months on the second Monday at 09:00 Asia\/Shanghai/)).toBeTruthy()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    await screen.findByRole('heading', { name: 'Edit timing' })
-    expect(screen.getByText('Monthly pattern')).toBeTruthy()
-    expect(screen.getByText('Named weekday')).toBeTruthy()
-    expect(screen.getByText('After count')).toBeTruthy()
-    await userEvent.click(screen.getByText('Save changes'))
+    await userEvent.click(screen.getByRole('button', { name: en('todos.action.edit') }))
+    await screen.findByRole('heading', { name: en('todos.edit.title') })
+    expect(screen.getByText(en('todos.edit.monthlyPattern'))).toBeTruthy()
+    expect(screen.getByText(en('todos.edit.namedWeekday'))).toBeTruthy()
+    expect(screen.getByText(en('todos.edit.endsAfter'))).toBeTruthy()
+    await userEvent.click(screen.getByText(en('todos.edit.save')))
 
     await waitFor(() => expect(capturedBody).not.toBeNull())
     expect(capturedBody!.timezone).toBe('Asia/Shanghai')
@@ -834,9 +854,9 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
 
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-120` })
     await waitForDetailHeading('Review the recurring portfolio allocation')
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    await userEvent.type(screen.getByLabelText('Rephase starting on (optional)'), '2026-09-14')
-    await userEvent.click(screen.getByText('Save changes'))
+    await userEvent.click(screen.getByRole('button', { name: en('todos.action.edit') }))
+    await userEvent.type(screen.getByLabelText(en('todos.edit.rephase')), '2026-09-14')
+    await userEvent.click(screen.getByText(en('todos.edit.save')))
 
     await waitFor(() => expect(capturedBody).not.toBeNull())
     expect(capturedBody!.start_date).toBe('2026-09-14')
@@ -852,19 +872,19 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
 
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-120` })
     await waitForDetailHeading('Review the recurring portfolio allocation')
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    await screen.findByRole('heading', { name: 'Edit timing' })
+    await userEvent.click(screen.getByRole('button', { name: en('todos.action.edit') }))
+    await screen.findByRole('heading', { name: en('todos.edit.title') })
 
-    const interval = screen.getByLabelText('Repeat every')
+    const interval = screen.getByLabelText(en('todos.edit.repeatEvery'))
     await userEvent.clear(interval)
     await userEvent.type(interval, '3')
-    await userEvent.click(screen.getByLabelText('Frequency'))
-    await userEvent.click(await screen.findByRole('option', { name: 'week' }))
-    expect(screen.getByText('Repeat on')).toBeTruthy()
-    await userEvent.click(screen.getByLabelText('Tuesday'))
-    await userEvent.click(screen.getByLabelText('Thursday'))
-    await userEvent.click(screen.getByLabelText('Never'))
-    await userEvent.click(screen.getByText('Save changes'))
+    await userEvent.click(screen.getByLabelText(en('todos.edit.frequency')))
+    await userEvent.click(await screen.findByRole('option', { name: en('todos.edit.unit.week') }))
+    expect(screen.getByText(en('todos.edit.repeatOn'))).toBeTruthy()
+    await userEvent.click(screen.getByLabelText(en('todos.weekday.tue')))
+    await userEvent.click(screen.getByLabelText(en('todos.weekday.thu')))
+    await userEvent.click(screen.getByLabelText(en('todos.edit.endsNever')))
+    await userEvent.click(screen.getByText(en('todos.edit.save')))
 
     await waitFor(() => expect(capturedBody).not.toBeNull())
     expect(capturedBody!.recurrence).toEqual({
@@ -883,16 +903,16 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
 
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-120` })
     await waitForDetailHeading('Review the recurring portfolio allocation')
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    await screen.findByRole('heading', { name: 'Edit timing' })
+    await userEvent.click(screen.getByRole('button', { name: en('todos.action.edit') }))
+    await screen.findByRole('heading', { name: en('todos.edit.title') })
 
-    await userEvent.click(screen.getByLabelText('Calendar date'))
-    const date = screen.getByLabelText('Date')
+    await userEvent.click(screen.getByLabelText(en('todos.edit.calendarDate')))
+    const date = screen.getByLabelText(en('todos.edit.date'))
     await userEvent.clear(date)
     await userEvent.type(date, '15')
-    await userEvent.click(screen.getByLabelText('On date'))
-    await userEvent.type(screen.getByLabelText('End date'), '2026-12-31')
-    await userEvent.click(screen.getByText('Save changes'))
+    await userEvent.click(screen.getByLabelText(en('todos.edit.endsOn')))
+    await userEvent.type(screen.getByLabelText(en('todos.edit.endDate')), '2026-12-31')
+    await userEvent.click(screen.getByText(en('todos.edit.save')))
 
     await waitFor(() => expect(capturedBody).not.toBeNull())
     expect(capturedBody!.recurrence).toEqual({
@@ -918,10 +938,10 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
 
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-120` })
     await waitForDetailHeading('Review the recurring portfolio allocation')
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    await screen.findByRole('heading', { name: 'Edit timing' })
-    await userEvent.click(screen.getByLabelText('Named weekday'))
-    await userEvent.click(screen.getByText('Save changes'))
+    await userEvent.click(screen.getByRole('button', { name: en('todos.action.edit') }))
+    await screen.findByRole('heading', { name: en('todos.edit.title') })
+    await userEvent.click(screen.getByLabelText(en('todos.edit.namedWeekday')))
+    await userEvent.click(screen.getByText(en('todos.edit.save')))
 
     await waitFor(() => expect(capturedBody).not.toBeNull())
     expect(capturedBody!.recurrence).toEqual({
@@ -947,11 +967,11 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
 
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-120` })
     await waitForDetailHeading('Review the recurring portfolio allocation')
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    await screen.findByRole('heading', { name: 'Edit timing' })
-    await userEvent.click(screen.getByLabelText('Frequency'))
-    await userEvent.click(await screen.findByRole('option', { name: 'day' }))
-    await userEvent.click(screen.getByText('Save changes'))
+    await userEvent.click(screen.getByRole('button', { name: en('todos.action.edit') }))
+    await screen.findByRole('heading', { name: en('todos.edit.title') })
+    await userEvent.click(screen.getByLabelText(en('todos.edit.frequency')))
+    await userEvent.click(await screen.findByRole('option', { name: en('todos.edit.unit.day') }))
+    await userEvent.click(screen.getByText(en('todos.edit.save')))
 
     await waitFor(() => expect(capturedBody).not.toBeNull())
     expect(capturedBody!.recurrence).toEqual({
@@ -970,11 +990,11 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
 
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-120` })
     await waitForDetailHeading('Review the recurring portfolio allocation')
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    await screen.findByRole('heading', { name: 'Edit timing' })
-    await userEvent.click(screen.getByLabelText('Frequency'))
-    await userEvent.click(await screen.findByRole('option', { name: 'year' }))
-    await userEvent.click(screen.getByText('Save changes'))
+    await userEvent.click(screen.getByRole('button', { name: en('todos.action.edit') }))
+    await screen.findByRole('heading', { name: en('todos.edit.title') })
+    await userEvent.click(screen.getByLabelText(en('todos.edit.frequency')))
+    await userEvent.click(await screen.findByRole('option', { name: en('todos.edit.unit.year') }))
+    await userEvent.click(screen.getByText(en('todos.edit.save')))
 
     await waitFor(() => expect(capturedBody).not.toBeNull())
     expect(capturedBody!.recurrence).toEqual({
@@ -994,9 +1014,9 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-099` })
     await waitForDetailHeading('Tokyo market briefing')
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    await screen.findByRole('heading', { name: 'Edit timing' })
-    await userEvent.click(screen.getByText('Save changes'))
+    await userEvent.click(screen.getByRole('button', { name: en('todos.action.edit') }))
+    await screen.findByRole('heading', { name: en('todos.edit.title') })
+    await userEvent.click(screen.getByText(en('todos.edit.save')))
 
     await waitFor(() => {
       expect(capturedBody).not.toBeNull()
@@ -1021,18 +1041,18 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-058` })
     await waitForDetailHeading('Follow up on the Acme trial issue')
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    await screen.findByRole('heading', { name: 'Edit timing' })
+    await userEvent.click(screen.getByRole('button', { name: en('todos.action.edit') }))
+    await screen.findByRole('heading', { name: en('todos.edit.title') })
 
     // Schedule is America/New_York; change the local date/time and save.
-    const dateInput = screen.getByLabelText('Date')
-    const timeInput = screen.getByLabelText('Time')
+    const dateInput = screen.getByLabelText(en('todos.edit.date'))
+    const timeInput = screen.getByLabelText(en('todos.edit.time'))
     await userEvent.clear(dateInput)
     await userEvent.type(dateInput, '2026-08-05')
     await userEvent.clear(timeInput)
     await userEvent.type(timeInput, '09:00')
 
-    await userEvent.click(screen.getByText('Save changes'))
+    await userEvent.click(screen.getByText(en('todos.edit.save')))
 
     await waitFor(() => {
       expect(capturedBody).not.toBeNull()
@@ -1081,17 +1101,17 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-058` })
     await waitForDetailHeading('Follow up on the Acme trial issue')
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    await screen.findByRole('heading', { name: 'Edit timing' })
+    await userEvent.click(screen.getByRole('button', { name: en('todos.action.edit') }))
+    await screen.findByRole('heading', { name: en('todos.edit.title') })
 
-    const dateInput = screen.getByLabelText('Date')
-    const timeInput = screen.getByLabelText('Time')
+    const dateInput = screen.getByLabelText(en('todos.edit.date'))
+    const timeInput = screen.getByLabelText(en('todos.edit.time'))
     await userEvent.clear(dateInput)
     await userEvent.type(dateInput, '2026-03-08')
     await userEvent.clear(timeInput)
     await userEvent.type(timeInput, '02:30')
 
-    await userEvent.click(screen.getByText('Save changes'))
+    await userEvent.click(screen.getByText(en('todos.edit.save')))
 
     await screen.findByText(/does not exist in/)
     expect(patchCalled).toBe(false)
@@ -1112,16 +1132,16 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-113` })
     await waitForDetailHeading('Prepare the Sunday status brief')
 
-    await user.click(screen.getByRole('button', { name: 'Edit' }))
-    await screen.findByRole('heading', { name: 'Edit timing' })
+    await user.click(screen.getByRole('button', { name: en('todos.action.edit') }))
+    await screen.findByRole('heading', { name: en('todos.edit.title') })
 
     // America/New_York springs forward 02:00 -> 03:00 on 2026-03-08.
     // A weekly Sunday 02:30 occurrence does not exist that day.
-    const timeInput = screen.getByLabelText('Time')
+    const timeInput = screen.getByLabelText(en('todos.edit.time'))
     await user.clear(timeInput)
     await user.type(timeInput, '02:30')
 
-    await user.click(screen.getByText('Save changes'))
+    await user.click(screen.getByText(en('todos.edit.save')))
 
     await screen.findByText(/does not exist in/)
     expect(patchCalled).toBe(false)
@@ -1208,12 +1228,12 @@ describe('TodoDetailPage — 409 conflict handling', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
     await waitForDetailHeading('Send the weekly market update')
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    await screen.findByRole('heading', { name: 'Edit timing' })
-    await userEvent.click(screen.getByText('Save changes'))
+    await userEvent.click(screen.getByRole('button', { name: en('todos.action.edit') }))
+    await screen.findByRole('heading', { name: en('todos.edit.title') })
+    await userEvent.click(screen.getByText(en('todos.edit.save')))
 
-    await screen.findByText('This Todo was modified')
-    expect(screen.getByRole('button', { name: 'Reload' })).toBeTruthy()
+    await screen.findByText(en('todos.edit.conflictTitle'))
+    expect(screen.getByRole('button', { name: en('todos.edit.reload') })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
   })
 
@@ -1241,9 +1261,9 @@ describe('TodoDetailPage — 409 conflict handling', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
     await waitForDetailHeading('Send the weekly market update')
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    await screen.findByRole('heading', { name: 'Edit timing' })
-    await userEvent.click(screen.getByText('Save changes'))
+    await userEvent.click(screen.getByRole('button', { name: en('todos.action.edit') }))
+    await screen.findByRole('heading', { name: en('todos.edit.title') })
+    await userEvent.click(screen.getByText(en('todos.edit.save')))
 
     const conflictDialog = await screen.findByRole('dialog')
     const dialogText = conflictDialog.textContent ?? ''
@@ -1252,7 +1272,7 @@ describe('TodoDetailPage — 409 conflict handling', () => {
     expect(dialogText).not.toContain('fired')
     expect(dialogText).not.toContain('saved')
     expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
-    expect(screen.getByRole('button', { name: 'Reload' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: en('todos.edit.reload') })).toBeTruthy()
   })
 
   it('shows validation error inline on non-409 error', async () => {
@@ -1276,13 +1296,13 @@ describe('TodoDetailPage — 409 conflict handling', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-042` })
     await waitForDetailHeading('Send the weekly market update')
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    await screen.findByRole('heading', { name: 'Edit timing' })
-    await userEvent.click(screen.getByText('Save changes'))
+    await userEvent.click(screen.getByRole('button', { name: en('todos.action.edit') }))
+    await screen.findByRole('heading', { name: en('todos.edit.title') })
+    await userEvent.click(screen.getByText(en('todos.edit.save')))
 
     await screen.findByText('fire_at must be in the future')
     expect(screen.queryByText('Reload record')).toBeNull()
-    expect(screen.getByRole('heading', { name: 'Edit timing' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: en('todos.edit.title') })).toBeTruthy()
   })
 })
 
@@ -1293,14 +1313,14 @@ describe('TodoDetailPage — 409 conflict handling', () => {
 describe('strings — status labels and grouping', () => {
   it('statusLabel returns correct labels', async () => {
     const mod = await import('./strings')
-    expect(mod.statusLabel('armed')).toBe('Armed')
-    expect(mod.statusLabel('firing')).toBe('Firing now')
-    expect(mod.statusLabel('fired')).toBe('Completed')
-    expect(mod.statusLabel('paused')).toBe('Paused')
-    expect(mod.statusLabel('cancelled')).toBe('Cancelled')
-    expect(mod.statusLabel('expired')).toBe('Review expired')
-    expect(mod.statusLabel('failed')).toBe('Needs attention')
-    expect(mod.statusLabel('timeout')).toBe('Timed out')
+    expect(mod.statusLabel('armed', en)).toBe(en('todos.status.armed'))
+    expect(mod.statusLabel('firing', en)).toBe(en('todos.status.firing'))
+    expect(mod.statusLabel('fired', en)).toBe(en('todos.status.fired'))
+    expect(mod.statusLabel('paused', en)).toBe(en('todos.status.paused'))
+    expect(mod.statusLabel('cancelled', en)).toBe(en('todos.status.cancelled'))
+    expect(mod.statusLabel('expired', en)).toBe(en('todos.status.expired'))
+    expect(mod.statusLabel('failed', en)).toBe(en('todos.status.failed'))
+    expect(mod.statusLabel('timeout', en)).toBe(en('todos.status.timeout'))
   })
 
   /**
@@ -1309,14 +1329,14 @@ describe('strings — status labels and grouping', () => {
    * the first match would let a second, differently-toned pill ship unnoticed.
    */
   const TONE_EXPECTATIONS = [
-    { label: 'Armed', tone: 'positive', instances: 2, led: true },
-    { label: 'Firing now', tone: 'positive', instances: 1, led: true },
-    { label: 'Completed', tone: 'positive', instances: 1, led: false },
-    { label: 'Needs attention', tone: 'attention', instances: 1, led: false },
-    { label: 'Timed out', tone: 'attention', instances: 1, led: false },
-    { label: 'Paused', tone: 'neutral', instances: 1, led: false },
-    { label: 'Cancelled', tone: 'neutral', instances: 1, led: false },
-    { label: 'Review expired', tone: 'neutral', instances: 1, led: false },
+    { label: en('todos.status.armed'), tone: 'positive', instances: 2, led: true },
+    { label: en('todos.status.firing'), tone: 'positive', instances: 1, led: true },
+    { label: en('todos.status.fired'), tone: 'positive', instances: 1, led: false },
+    { label: en('todos.status.failed'), tone: 'attention', instances: 1, led: false },
+    { label: en('todos.status.timeout'), tone: 'attention', instances: 1, led: false },
+    { label: en('todos.status.paused'), tone: 'neutral', instances: 1, led: false },
+    { label: en('todos.status.cancelled'), tone: 'neutral', instances: 1, led: false },
+    { label: en('todos.status.expired'), tone: 'neutral', instances: 1, led: false },
   ] as const
 
   /** Approved THR-105 pill geometry — preserved by the tone convergence. */
@@ -1391,7 +1411,7 @@ describe('strings — status labels and grouping', () => {
       route: `/orgs/${ORG_SLUG}/todos/${FAILED.schedule_id}`,
     })
     await waitForDetailHeading('Sync the customer changelog')
-    const detailPills = statusPills('Needs attention')
+    const detailPills = statusPills(en('todos.status.failed'))
     expect(detailPills.length).toBeGreaterThan(0)
     for (const pill of detailPills) {
       for (const cls of TONE_CLASS.attention.split(' ')) expect(pill).toHaveClass(cls)
@@ -1401,7 +1421,11 @@ describe('strings — status labels and grouping', () => {
 
   it('shipping StatusPill renders an unknown status with the neutral fallback', async () => {
     const { TONE_CLASS } = await import('@/design-system/patterns/semanticTone')
-    render(<StatusPill status={'unknown' as ScheduleStatus} />)
+    render(
+      <I18nTestBoundary>
+        <StatusPill status={'unknown' as ScheduleStatus} />
+      </I18nTestBoundary>,
+    )
     const pill = screen.getByText('unknown')
     for (const cls of TONE_CLASS.neutral.split(' ')) expect(pill).toHaveClass(cls)
     for (const cls of PILL_GEOMETRY) expect(pill).toHaveClass(cls)

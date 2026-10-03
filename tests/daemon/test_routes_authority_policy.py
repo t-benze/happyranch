@@ -3,10 +3,26 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
+from fastapi import Response
 
-from runtime.models import AuthorityPolicyActivation, AuthorityPolicyRelease, TaskRecord, ThreadRecord, TaskStatus
+from runtime.config import Settings
+from runtime.daemon.org_state import OrgState
+from runtime.daemon.routes.authority_policy import (
+    CreatePolicyReleaseRequest,
+    create_team_escalation_policy_release,
+    get_team_escalation_policy,
+)
+from runtime.models import (
+    AuthorityPolicyActivation,
+    AuthorityPolicyRelease,
+    AuthorityPolicySelector,
+    TaskRecord,
+    TaskStatus,
+    ThreadRecord,
+)
 from runtime.orchestrator.active_authority_policy import (
     SELF_EVALUATION_CONTRACT_DIGEST, SELF_EVALUATION_CONTRACT_ID,
     SELF_EVALUATION_CONTRACT_VERSION, SESSION_POLICY_BINDING_ACTION,
@@ -14,16 +30,25 @@ from runtime.orchestrator.active_authority_policy import (
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+from runtime.orchestrator.teams import TeamManager
 from runtime.orchestrator.authority_policy import (
+    AuthorityClause,
+    AuthorityPolicy,
     CONTINUE_ROUTINE_PHRASE,
     ENGINEERING_PRE_ESCALATION_POLICY,
     PROMPT_DIGEST,
     PROMPT_ID,
     PROMPT_VERSION,
 )
+from runtime.workflows.authority import WorkflowAuthorityError
 
 
 def _seed_agent(org, name="engineering_manager", *, team="engineering", role="manager"):
+    if role == "manager":
+        existing = org.teams._teams.get(team)
+        org.teams._teams[team] = TeamManager(
+            name=name, team=team, workers=() if existing is None else existing.workers,
+        )
     agent = AgentDef(
         name=name, team=team, role=role, executor="claude", allow_rules=tuple(),
         repos={}, enrolled_by=None, enrolled_at_task=None,
@@ -32,6 +57,47 @@ def _seed_agent(org, name="engineering_manager", *, team="engineering", role="ma
     paths = OrgPaths(root=org.root)
     paths.agents_dir.mkdir(parents=True, exist_ok=True)
     (paths.agents_dir / f"{name}.md").write_text(render_agent_text(agent))
+
+
+def test_content_manager_gets_null_legacy_template_and_server_projected_v2_starter(
+    client_with_runtime,
+):
+    client, org = client_with_runtime
+    _seed_agent(org, "content_manager", team="content")
+    base = "/api/v1/orgs/alpha/agents/content_manager/team-escalation-policy"
+
+    response = client.get(base)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["team"] == "content"
+    assert body["target_manager"] == "content_manager"
+    assert body["bootstrap_template"] is None
+    assert body["v2_starter"]["policy_id"] == "team-ed7002b439e9ac84-dual-text"
+    assert body["v2_starter"]["title"] == "Content escalation policy"
+    assert "Engineering pre-escalation" not in json.dumps(body)
+
+
+def test_content_legacy_controls_refuse_before_any_policy_store_access(client_with_runtime):
+    client, org = client_with_runtime
+    _seed_agent(org, "content_manager", team="content")
+    base = "/api/v1/orgs/alpha/agents/content_manager/team-escalation-policy"
+    counts = lambda: tuple(org.db.execute(f"SELECT COUNT(*) FROM {table} WHERE team='content'").fetchone()[0]
+                           for table in ("authority_policy_active_selector",
+                                         "authority_policy_active_selector_history",
+                                         "authority_policy_releases",
+                                         "authority_policy_v2_control_audit"))
+    before = counts()
+    create = client.post(f"{base}/releases", json=_release_body())
+    activate = client.post(f"{base}/activations", json={
+        "release_id": "APR-foreign", "expected_previous_epoch": 0,
+        "expected_selector_id": None, "request_id": "REQ-content-legacy",
+        "action": "activate", "acknowledge_shared_credential_attribution": True,
+    })
+    assert create.status_code == activate.status_code == 404
+    assert create.json() == activate.json() == {
+        "detail": {"code": "policy_surface_not_available"},
+    }
+    assert counts() == before == (0, 0, 0, 0)
 
 
 def _seed_active(org, *, normative_text="text"):
@@ -146,6 +212,120 @@ def _release_body(**updates):
     return body
 
 
+def _cold_policy_org(root: Path) -> OrgState:
+    paths = OrgPaths(root=root)
+    paths.agents_dir.mkdir(parents=True)
+    paths.teams_config_path.write_text(
+        "teams:\n  engineering:\n    manager: engineering_manager\n"
+        "    workers: [dev_agent, code_reviewer]\n"
+    )
+    for name, role in (
+        ("engineering_manager", "manager"),
+        ("dev_agent", "worker"),
+        ("code_reviewer", "worker"),
+    ):
+        agent = AgentDef(
+            name=name, team="engineering", role=role,
+            executor="claude", allow_rules=tuple(), repos={}, enrolled_by="founder",
+            enrolled_at_task="TASK-U2A", enrolled_at=datetime.now(timezone.utc),
+            system_prompt="prompt", description="desc",
+        )
+        (paths.agents_dir / f"{name}.md").write_text(render_agent_text(agent))
+    return OrgState.load(slug="alpha", root=root, settings=Settings())
+
+
+@pytest.mark.parametrize("initializer_path", ["get", "create-release"])
+def test_cold_selector_initializer_fences_and_publishes_once_at_real_handlers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    initializer_path: str,
+) -> None:
+    org = _cold_policy_org(tmp_path / initializer_path)
+    before = org.workflow_authority.verify_admission_ready()
+    assert json.loads(before.snapshot_bytes)["active_policy_selectors"] == [
+        {"selector": None, "team": "engineering"},
+    ]
+    original_ensure = AuthorityPolicyStore.ensure_authority_selector
+    observed_fenced: list[bool] = []
+
+    def ensure_while_observing_fence(
+        store: AuthorityPolicyStore, team: str,
+    ) -> AuthorityPolicySelector:
+        selector = original_ensure(store, team)
+        with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+            org.workflow_authority.verify_admission_ready()
+        observed_fenced.append(True)
+        return selector
+
+    monkeypatch.setattr(
+        AuthorityPolicyStore, "ensure_authority_selector", ensure_while_observing_fence,
+    )
+    if initializer_path == "get":
+        result = get_team_escalation_policy(
+            "alpha", "engineering_manager", org,
+        )
+        assert result["family"] == "empty"
+    else:
+        result = create_team_escalation_policy_release(
+            "alpha",
+            "engineering_manager",
+            CreatePolicyReleaseRequest.model_validate(_release_body()),
+            Response(),
+            org,
+        )
+        assert result["activated"] is False
+
+    ready = org.workflow_authority.verify_admission_ready()
+    selector = AuthorityPolicyStore(org.db).get_authority_selector("engineering")
+    assert selector is not None
+    assert ready.generation == before.generation + 1
+    assert json.loads(ready.snapshot_bytes)["active_policy_selectors"] == [{
+        "selector": selector.model_dump(mode="json"),
+        "team": "engineering",
+    }]
+    assert observed_fenced == [True]
+
+    assert get_team_escalation_policy(
+        "alpha", "engineering_manager", org,
+    )["family"] == "empty"
+    assert org.workflow_authority.verify_admission_ready().generation == ready.generation
+    assert observed_fenced == [True]
+    org.close()
+
+
+@pytest.mark.parametrize("initializer_path", ["get", "create-release"])
+def test_cold_selector_publication_failure_preserves_handler_response_and_fence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    initializer_path: str,
+) -> None:
+    org = _cold_policy_org(tmp_path / f"{initializer_path}-failure")
+
+    def fail_capture() -> bytes:
+        raise OSError("injected publication failure")
+
+    monkeypatch.setattr(org.workflow_authority, "capture_snapshot", fail_capture)
+    if initializer_path == "get":
+        result = get_team_escalation_policy(
+            "alpha", "engineering_manager", org,
+        )
+        assert result["family"] == "empty"
+    else:
+        result = create_team_escalation_policy_release(
+            "alpha",
+            "engineering_manager",
+            CreatePolicyReleaseRequest.model_validate(_release_body()),
+            Response(),
+            org,
+        )
+        assert result["activated"] is False
+
+    assert AuthorityPolicyStore(org.db).get_authority_selector("engineering") is not None
+    with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+        org.workflow_authority.verify_admission_ready()
+    org.close()
+
+
 def test_eligible_empty_omits_active_and_agent_payload_stays_clean(client_with_runtime):
     client, org = client_with_runtime
     _seed_agent(org)
@@ -169,6 +349,18 @@ def test_eligible_empty_omits_active_and_agent_payload_stays_clean(client_with_r
         ],
         "continuation_phrase": CONTINUE_ROUTINE_PHRASE,
     }
+    # Independent reviewed oracle: reconstruct from the wire projection with
+    # literal identity bytes, never from POLICY_BY_TEAM, and pin the complete
+    # title/normative/ordered-clause/phrase payload through its canonical digest.
+    projected = AuthorityPolicy(
+        id="engineering/pre-escalation-authority", version="v1",
+        team="engineering", title=template["title"],
+        normative_text=template["normative_text"],
+        clauses=tuple(AuthorityClause(**clause) for clause in template["clauses"]),
+    )
+    assert projected.digest == (
+        "13678a903533423ffe2d3345f7d19852d914f888480149b8afac57d6240c3082"
+    )
     roster = client.get("/api/v1/orgs/alpha/agents")
     assert roster.status_code == 200
     assert b"policy" not in roster.content
@@ -442,6 +634,7 @@ def test_activation_does_not_turn_guessed_release_into_oracle(client_with_runtim
         "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy/activations",
         json={
             "release_id": "APR-guessed", "expected_previous_epoch": 99,
+            "expected_selector_id": None,
             "request_id": "REQ-activate", "action": "reactivate_rollback",
             "acknowledge_shared_credential_attribution": True,
         },
@@ -455,17 +648,26 @@ def test_activation_does_not_turn_guessed_release_into_oracle(client_with_runtim
 
 
 def test_history_is_bounded_paginated_secret_free_and_activation_bootstraps(client_with_runtime):
+    from tests.workflows.authority_test_support import ensure_coherent_authority
+
     client, org = client_with_runtime
     _seed_agent(org)
+    ensure_coherent_authority(org)
     base = "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy"
     created = client.post(f"{base}/releases", json=_release_body()).json()["release"]
+    before_generation = ensure_coherent_authority(org)
     activated = client.post(f"{base}/activations", json={
         "release_id": created["id"], "expected_previous_epoch": 0,
+        "expected_selector_id": None,
         "request_id": "REQ-activate-first", "action": "activate",
         "acknowledge_shared_credential_attribution": True,
     })
     assert activated.status_code == 200
     assert activated.json()["activation"]["action"] == "bootstrap"
+    assert (
+        ensure_coherent_authority(org)
+        == before_generation + 1
+    )
     history = client.get(f"{base}/history?limit=1")
     assert history.status_code == 200
     item = history.json()["items"][0]

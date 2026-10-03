@@ -12,7 +12,7 @@ import { describe, expect, test, beforeEach } from 'vitest';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { AppRoutes } from '@/routes';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
-import { renderWithProviders } from '@/test/render';
+import { I18nTestBoundary, renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 
 const SLUG = 'hk-macau-tourism';
@@ -119,7 +119,7 @@ function stubKBStats(stats?: { slug: string; view_count: number; last_viewed_at:
 /** Exercise App's shipping outer wildcard router, not only a bare KB mount. */
 function renderWithOuterAppRoute(route: string) {
   const router = createMemoryRouter(
-    [{ path: '*', element: <AppProvider><AppRoutes /></AppProvider> }],
+    [{ path: '*', element: <AppProvider><I18nTestBoundary><AppRoutes /></I18nTestBoundary></AppProvider> }],
     { initialEntries: [route] },
   );
   return render(<RouterProvider router={router} />);
@@ -1531,7 +1531,7 @@ describe('KB search wire contract recovery', () => {
       return HttpResponse.json({ entries: summaries });
     }));
     const client = makeQueryClient();
-    const router = createMemoryRouter([{ path: '*', element: <AppProvider client={client}><AppRoutes /></AppProvider> }],
+    const router = createMemoryRouter([{ path: '*', element: <AppProvider client={client}><I18nTestBoundary><AppRoutes /></I18nTestBoundary></AppProvider> }],
       { initialEntries: [`/orgs/${SLUG}/kb`] });
     const user = userEvent.setup();
     render(<RouterProvider router={router} />);

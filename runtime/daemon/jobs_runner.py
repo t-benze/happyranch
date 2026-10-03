@@ -570,25 +570,41 @@ async def terminate_jobs_for_task(
 async def terminate_all_inflight(
     *, grace_seconds: int = 5, persist_timeout_seconds: float = 5.0,
 ) -> None:
-    """Daemon shutdown hook: SIGTERM every in-flight subprocess, then SIGKILL,
-    then await the runner background tasks so they can persist terminal state
-    (transition the SR row from `running` to `failed`/`completed`) BEFORE the
-    caller closes per-org DB connections.
+    """Daemon shutdown hook: classify then SIGTERM every live subprocess,
+    SIGKILL signalled survivors, and await runner tasks so they persist
+    ``failed/daemon_shutdown`` with the real exit code BEFORE the caller closes
+    per-org DB connections. Snapshot members already gone before signalling
+    retain their natural result; an existing ``task_ended`` cause wins.
 
     Without the runner-task wait, the row sits in `running` until the next
     daemon startup's recovery scan — making a dead SR look live to founders
     in the meantime.
     """
     procs = list(_INFLIGHT.items())
+    # Install every snapshot override before the first signal.  ``setdefault``
+    # preserves the more specific task-terminal cause if task cleanup already
+    # owns (or concurrently won) this job.  A daemon-shutdown override remains
+    # valid only when this function actually signals the still-running process;
+    # natural exits in the snapshot-to-signal window remove our own value.
+    for job_id, _ in procs:
+        _KILL_REASON_OVERRIDE.setdefault(job_id, "daemon_shutdown")
+    signalled: set[str] = set()
     for job_id, proc in procs:
+        if proc.returncode is not None:
+            if _KILL_REASON_OVERRIDE.get(job_id) == "daemon_shutdown":
+                _KILL_REASON_OVERRIDE.pop(job_id, None)
+            continue
         try:
             os.killpg(proc.pid, signal.SIGTERM)
         except ProcessLookupError:
-            pass
+            if _KILL_REASON_OVERRIDE.get(job_id) == "daemon_shutdown":
+                _KILL_REASON_OVERRIDE.pop(job_id, None)
+        else:
+            signalled.add(job_id)
     if procs:
         await asyncio.sleep(grace_seconds)
         for job_id, proc in procs:
-            if proc.returncode is None:
+            if job_id in signalled and proc.returncode is None:
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
                 except ProcessLookupError:

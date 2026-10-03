@@ -16,7 +16,7 @@
  *      filter drops to its own full-width line below `sm` — no clip/overflow.
  *   3. OPEN and ARCHIVED buckets share the identical responsive structure;
  *      the Pinned section remains the only OPEN-only difference.
- *   4. Keyboard/accessibility: tabs, filter, and per-row pin toggles stay
+ *   4. Keyboard/accessibility: tabs, filter, and native row links stay
  *      reachable and labelled at the collapsed width.
  */
 import { screen, waitFor, within } from '@testing-library/react';
@@ -197,11 +197,14 @@ describe('TASK-5987 — responsive header seam (ThreadsPage)', () => {
     expect(screen.queryByRole('heading', { name: /Pinned/i })).not.toBeInTheDocument();
     expect(screen.getByRole('tablist', { name: /Status filter/i })).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: /Filter threads/i })).toBeInTheDocument();
-    // Per-row pin toggle is a mutation control present in both buckets.
-    expect(screen.getByRole('button', { name: /Unpin thread THR-3/i })).toBeInTheDocument();
+    // Rows stay navigation-only in every bucket; pinning is detail-only.
+    expect(screen.queryByRole('button', { name: /Pin thread|Unpin thread/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Beta archived/i })).toHaveAttribute(
+      'href', `/orgs/${SLUG}/threads/THR-3`,
+    );
   });
 
-  test('keyboard traversal reaches tabs, filter, and pin toggles in the collapsed layout', async () => {
+  test('keyboard traversal reaches tabs, filter, and navigation-only row links in the collapsed layout', async () => {
     stubList([
       mkThread('THR-1', 'Alpha pinned', { pinned: true, pinned_at: '2026-05-20T00:00:00Z' }),
       mkThread('THR-2', 'Alpha ordinary'),
@@ -210,12 +213,10 @@ describe('TASK-5987 — responsive header seam (ThreadsPage)', () => {
     await waitFor(() => expect(screen.getByText(/Alpha pinned/i)).toBeInTheDocument());
 
     const user = userEvent.setup();
-    // Pin toggles carry labelled accessible names (keyboard + AT operable)
-    // in the Open bucket before any tab navigation.
-    for (const name of [/Unpin thread THR-1/i, /Pin thread THR-2/i]) {
-      const btn = screen.getByRole('button', { name });
-      expect(btn).toHaveAttribute('type', 'button');
-    }
+    expect(screen.queryByRole('button', { name: /Pin thread|Unpin thread/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Alpha pinned/i })).toHaveAttribute(
+      'href', `/orgs/${SLUG}/threads/THR-1`,
+    );
     // Keyboard traversal in the collapsed layout: Radix tabs use a roving
     // tabindex (arrow keys move within the tablist; Tab exits to the next
     // control). Tab from the active tab must land on the filter textbox.

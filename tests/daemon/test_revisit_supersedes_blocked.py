@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 from unittest.mock import MagicMock
 
 import pytest
@@ -333,6 +334,15 @@ async def test_revisit_family_sibling_gets_parent_wake(tmp_path: Path):
     from runtime.daemon.routes.tasks import revisit_from_notification
 
     org, state, db = _build_org(tmp_path)
+    org.orchestrator._slug = "acme"
+
+    def publish_if_absent(
+        _slug: str, _task_id: str, *, publisher: Callable[[], None],
+    ) -> bool:
+        publisher()
+        return True
+
+    org.orchestrator._queue.enqueue_if_absent.side_effect = publish_if_absent
 
     # Original escalated root.
     db.insert_task(TaskRecord(
@@ -367,14 +377,13 @@ async def test_revisit_family_sibling_gets_parent_wake(tmp_path: Path):
 
     # Parent-wake: the delegated parent TASK-P must be enqueued because
     # TASK-2 (its child) reached a terminal.
-    # _enqueue_parent_if_waiting enqueues via orch._queue.put_nowait(slug, task_id).
-    parent_enqueue_calls = [
-        c for c in org.orchestrator._queue.put_nowait.call_args_list
-        if c[0][1] == "TASK-P"
-    ]
-    assert len(parent_enqueue_calls) >= 1, (
-        f"Expected parent-wake enqueue for TASK-P, got {org.orchestrator._queue.put_nowait.call_args_list}"
-    )
+    # The producer selects the public atomic boundary, which invokes the
+    # unchanged generation-aware publisher exactly once for this wake.
+    admission = org.orchestrator._queue.enqueue_if_absent.call_args_list
+    assert len(admission) == 1
+    assert admission[0].args == ("acme", "TASK-P")
+    assert callable(admission[0].kwargs["publisher"])
+    org.orchestrator._queue.put_nowait.assert_called_once_with("acme", "TASK-P")
 
 
 @pytest.mark.asyncio

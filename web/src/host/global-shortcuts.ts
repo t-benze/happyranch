@@ -1,21 +1,23 @@
 /**
  * Cross-cutting keyboard shortcuts surfaced under the "Global" tab of the
  * HelpDrawer. Per spec `2026-05-19-web-polish-design.md` §5 + §6.
+ *
+ * THR-118 W2a: `description` values are catalog MESSAGE KEYS. The
+ * `HelpDrawerHost` caller resolves them through its locale translator, keeping
+ * this data file free of React/catalog-hook imports and the HelpSheet pattern
+ * pure. `keys` (the actual shortcut sequences) are unchanged.
  */
 import type { ShortcutEntry } from '@/design-system/patterns/HelpSheet';
 
 export const GLOBAL_SHORTCUTS: ShortcutEntry[] = [
-  { keys: ['Cmd', 'K'], description: 'Open assistant dock' },
-  { keys: ['?'], description: 'Show this help' },
-  { keys: ['Esc'], description: 'Close any dialog, drawer, or palette' },
-  { keys: ['g', 'd'], description: 'Jump to Dashboard' },
-  { keys: ['g', 'i'], description: 'Jump to Threads' },
-  { keys: ['g', 't'], description: 'Jump to Tasks' },
-  { keys: ['g', 'k'], description: 'Jump to Knowledge Base' },
-  { keys: ['g', 'l'], description: 'Jump to Threads' },
-  { keys: ['g', 'a'], description: 'Jump to Audit' },
-  { keys: ['g', 'g'], description: 'Jump to Agents' },
+  { keys: ['Cmd', 'K'], description: 'help.shortcut.openAssistant' },
+  { keys: ['?'], description: 'help.shortcut.showHelp' },
+  { keys: ['Esc'], description: 'help.shortcut.closeAny' },
+  { keys: ['g', 'd'], description: 'help.shortcut.jumpDashboard' },
+  { keys: ['g', 'i'], description: 'help.shortcut.jumpThreads' },
+  { keys: ['g', 't'], description: 'help.shortcut.jumpTasks' },
+  { keys: ['g', 'k'], description: 'help.shortcut.jumpKnowledge' },
+  { keys: ['g', 'l'], description: 'help.shortcut.jumpThreads' },
+  { keys: ['g', 'a'], description: 'help.shortcut.jumpAudit' },
+  { keys: ['g', 'g'], description: 'help.shortcut.jumpAgents' },
 ];
-
-export const GLOBAL_SHORTCUTS_FOOTNOTE =
-  'Shortcuts are suppressed when focus is inside an input, textarea, or contenteditable element.';

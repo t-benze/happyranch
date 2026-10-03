@@ -100,14 +100,16 @@ class FakeOrgState:
 
 
 class FakeTeams:
-    """Minimal teams registry — is_team_manager returns True for names in
-    ``managers``."""
+    """Minimal teams registry with one exact Engineering manager tuple."""
 
     def __init__(self, managers: set[str]):
         self._managers = managers
 
     def is_team_manager(self, name: str) -> bool:
         return name in self._managers
+
+    def teams_for_manager(self, name: str) -> tuple[str, ...]:
+        return ("engineering",) if name in self._managers else ()
 
 
 class FakeDB:
@@ -424,6 +426,10 @@ class _FakeExecutorResult:
 
 def _make_org_state_with_teams(db, root, manager_name: str = "engineering_head"):
     """Return an org_state-like object with a .teams registry."""
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+
+    AuthorityPolicyStore(db).ensure_authority_selector("engineering")
+
     class _OS:
         pass
     os = _OS()

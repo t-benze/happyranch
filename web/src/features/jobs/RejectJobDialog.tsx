@@ -10,8 +10,9 @@ import {
 import { Button } from '@/design-system/primitives/Button';
 import { FormField } from '@/design-system/patterns/FormField';
 import { Textarea } from '@/design-system/primitives/Textarea';
-import { ApiError } from '@/lib/api';
 import { useRejectJob } from '@/hooks/jobs';
+import { useTranslation } from '@/hooks/i18n';
+import { classifyJobError, renderJobError, type JobErrorView } from './strings';
 
 interface Props {
   jobId: string;
@@ -21,27 +22,28 @@ interface Props {
 }
 
 export function RejectJobDialog({ jobId, open, onClose, onSuccess }: Props): JSX.Element {
+  const { t } = useTranslation();
   const reject = useRejectJob();
   const [reason, setReason] = useState('');
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [error, setError] = useState<JobErrorView | null>(null);
   const reasonId = useId();
 
   useEffect(() => {
     if (!open) return;
     setReason('');
-    setErrorMsg(null);
+    setError(null);
   }, [open]);
 
   const canSubmit = reason.trim().length > 0 && reason.trim().length <= 1000;
 
   const submit = async () => {
-    setErrorMsg(null);
+    setError(null);
     if (!reason.trim()) {
-      setErrorMsg('Reason is required.');
+      setError({ kind: 'message', key: 'jobs.reject.required' });
       return;
     }
     if (reason.trim().length > 1000) {
-      setErrorMsg('Reason must be 1000 characters or fewer.');
+      setError({ kind: 'message', key: 'jobs.reject.tooLong' });
       return;
     }
     try {
@@ -49,11 +51,7 @@ export function RejectJobDialog({ jobId, open, onClose, onSuccess }: Props): JSX
       onSuccess?.();
       onClose();
     } catch (err) {
-      setErrorMsg(
-        err instanceof ApiError
-          ? `Error ${err.status}: ${err.message}`
-          : String(err),
-      );
+      setError(classifyJobError(err, 'jobs.reject.failed'));
     }
   };
 
@@ -61,17 +59,21 @@ export function RejectJobDialog({ jobId, open, onClose, onSuccess }: Props): JSX
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle className="font-display">Reject {jobId}</DialogTitle>
+          <DialogTitle className="font-display">{t('jobs.reject.title', { jobId })}</DialogTitle>
           <DialogDescription className="sr-only">
-            Reject this job. The requesting agent will be notified.
+            {t('jobs.reject.description')}
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
-          <FormField label="Reason" htmlFor={reasonId} error={errorMsg ?? undefined}>
+          <FormField
+            label={t('jobs.reject.reason')}
+            htmlFor={reasonId}
+            error={error !== null ? renderJobError(error, t) : undefined}
+          >
             <Textarea
               id={reasonId}
               rows={5}
-              placeholder="Reason (required, max 1000 chars)"
+              placeholder={t('jobs.reject.placeholder')}
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               autoFocus
@@ -82,13 +84,13 @@ export function RejectJobDialog({ jobId, open, onClose, onSuccess }: Props): JSX
           </p>
         </div>
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
           <Button
             variant="destructive"
             onClick={submit}
             disabled={!canSubmit || reject.isPending}
           >
-            {reject.isPending ? 'Rejecting…' : 'Reject'}
+            {reject.isPending ? t('jobs.reject.pending') : t('jobs.action.reject')}
           </Button>
         </DialogFooter>
       </DialogContent>

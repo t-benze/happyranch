@@ -12,6 +12,7 @@
  * - ``agent`` / ``task_id`` are deep-link params carried forward.
  */
 import type { AuditEntry } from '@/lib/api/types';
+import type { MessageKey } from '@/lib/i18n';
 
 export type SinceToken = '24h' | '7d' | 'all';
 
@@ -94,13 +95,14 @@ export const DOT_COLOR_CLASS: Record<DotColor, string> = {
   danger: 'bg-danger',
 };
 
-/** Per-class label + dot color (locked Pasture semantic tokens). */
-export const EVENT_CLASS_META: Record<EventClass, { label: string; color: DotColor }> = {
-  dispatch: { label: 'Dispatch', color: 'neutral' },
-  completed: { label: 'Completed', color: 'positive' },
-  merge: { label: 'Merge', color: 'info' },
-  escalation: { label: 'Escalation', color: 'attention' },
-  failure: { label: 'Failure', color: 'danger' },
+/** Per-class catalog label key + dot color (locked Pasture semantic tokens).
+ *  The class id stays the URL machine value; only the label is translated. */
+export const EVENT_CLASS_META: Record<EventClass, { labelKey: MessageKey; color: DotColor }> = {
+  dispatch: { labelKey: 'audit.class.dispatch', color: 'neutral' },
+  completed: { labelKey: 'audit.class.completed', color: 'positive' },
+  merge: { labelKey: 'audit.class.merge', color: 'info' },
+  escalation: { labelKey: 'audit.class.escalation', color: 'attention' },
+  failure: { labelKey: 'audit.class.failure', color: 'danger' },
 };
 
 function isEventClass(s: string | null): s is EventClass {
@@ -217,8 +219,8 @@ export function classOf(action: string): EventClass {
 
 export interface ClassLegendEntry {
   eventClass: EventClass;
-  /** Human-readable label for the legend row. */
-  label: string;
+  /** Catalog key of the human-readable label for the legend row. */
+  labelKey: MessageKey;
   /** Count of entries in the current window that belong to this class. */
   count: number;
   /** Dot color token (→ DOT_COLOR_CLASS). */
@@ -241,7 +243,7 @@ export function buildClassLegend(entries: AuditEntry[]): ClassLegendEntry[] {
   }
   return EVENT_CLASS_ORDER.map((c) => ({
     eventClass: c,
-    label: EVENT_CLASS_META[c].label,
+    labelKey: EVENT_CLASS_META[c].labelKey,
     count: counts.get(c) ?? 0,
     color: EVENT_CLASS_META[c].color,
   }));

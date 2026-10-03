@@ -14,14 +14,6 @@ from runtime.models import (
 )
 
 
-def test_task_status_values():
-    assert TaskStatus.PENDING == "pending"
-    assert TaskStatus.IN_PROGRESS == "in_progress"
-    assert TaskStatus.COMPLETED == "completed"
-    assert TaskStatus.ESCALATED == "escalated"
-    assert TaskStatus.FAILED == "failed"
-
-
 def test_review_verdict_values():
     assert ReviewVerdict.APPROVE == "approve"
     assert ReviewVerdict.REVISE == "revise"

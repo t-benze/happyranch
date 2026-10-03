@@ -33,6 +33,13 @@ export type BlockKind = 'delegated' | 'blocked_on_job' | 'escalated';
 interface StatusBadgeProps {
   status: ThreadStatus | TaskStatus;
   blockKind?: BlockKind | null;
+  /** Opt-in standalone Tasks list appearance; shared defaults stay unchanged. */
+  presentation?: 'tasks';
+  /**
+   * Optional localized waiting-qualifier text (without the leading `· `).
+   * Omitted keys keep the English defaults, so other callers are unchanged.
+   */
+  waitingLabels?: Partial<Record<'delegated' | 'blocked_on_job', string>>;
 }
 
 // Tinted pill tones read from the shared semantic colour vocabulary
@@ -63,10 +70,11 @@ const STATUS_STYLE: Record<ThreadStatus | TaskStatus, string> = {
 function waitingQualifier(
   status: ThreadStatus | TaskStatus,
   blockKind?: BlockKind | null,
+  labels?: StatusBadgeProps['waitingLabels'],
 ): string | null {
   if (status !== 'in_progress' || !blockKind) return null;
-  if (blockKind === 'delegated') return '· waiting on subtasks';
-  if (blockKind === 'blocked_on_job') return '· waiting on jobs';
+  if (blockKind === 'delegated') return `· ${labels?.delegated ?? 'waiting on subtasks'}`;
+  if (blockKind === 'blocked_on_job') return `· ${labels?.blocked_on_job ?? 'waiting on jobs'}`;
   return null;
 }
 
@@ -74,15 +82,17 @@ function label(status: ThreadStatus | TaskStatus): string {
   return status;
 }
 
-export function StatusBadge({ status, blockKind }: StatusBadgeProps): JSX.Element {
-  const cls = STATUS_STYLE[status];
-  const qualifier = waitingQualifier(status, blockKind);
+export function StatusBadge({ status, blockKind, presentation, waitingLabels }: StatusBadgeProps): JSX.Element {
+  const cls = presentation === 'tasks' && status === 'in_progress' ? TONE_CLASS.info
+    : presentation === 'tasks' && status === 'escalated' ? TONE_CLASS.attention
+    : STATUS_STYLE[status];
+  const qualifier = waitingQualifier(status, blockKind, waitingLabels);
   // Led dot for live/active states only (matches ds.css .tag led).
   const showDot =
     status === 'in_progress' || status === 'completed' || status === 'pending';
   return (
     <span
-      className={`text-mono-sm inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 font-semibold tabular-nums ${cls}`}
+      className={`text-mono-sm inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 font-semibold tabular-nums ${cls} ${presentation === 'tasks' ? 'tasks-status' : ''}`}
     >
       {showDot && (
         <span className="inline-block h-1.5 w-1.5 rounded-full bg-current opacity-70" aria-hidden />

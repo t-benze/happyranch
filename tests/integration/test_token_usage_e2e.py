@@ -94,15 +94,8 @@ def _write_codex_done_plan(plan_path: Path, agent: str = "engineering_head") -> 
 
 
 def _seed_codex_workspace(org_root: Path, agent: str) -> None:
-    """Create the minimum Codex workspace: AGENTS.md readiness marker +
-    agent.yaml declaring the codex executor.
-
-    The orchestrator's WorkspaceNotInitialized guard checks for AGENTS.md
-    when provider == "codex". Past that, fake_codex.sh parses task_id /
-    session_id from the prompt directly and runs the plan — no real Codex
-    bootstrap is needed."""
-    workspace = seed_workspace(org_root, agent, executor="codex")
-    (workspace / "AGENTS.md").write_text("# AGENTS (test stub)\n")
+    """Provision a Codex workspace through the production bootstrap helper."""
+    seed_workspace(org_root, agent, executor="codex")
 
 
 def test_claude_session_writes_token_usage_row(

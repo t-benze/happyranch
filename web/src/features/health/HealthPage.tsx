@@ -23,16 +23,20 @@ import { PageHeader } from '@/design-system/patterns/PageHeader';
 import { Sparkline } from '@/design-system/patterns/Sparkline';
 import { formatCount } from '@/lib/format';
 import { cn } from '@/lib/utils';
+import { useTranslation } from '@/hooks/i18n';
+import type { MessageKey, MessageParams } from '@/lib/i18n';
+
+type Translate = (key: MessageKey, params?: MessageParams) => string;
 
 /* ------------------------------------------------------------------ */
 /*  History window (drives the /metrics/history `since` bound)          */
 /* ------------------------------------------------------------------ */
 
 const WINDOWS = [
-  { label: '1h', ms: 60 * 60 * 1000 },
-  { label: '24h', ms: 24 * 60 * 60 * 1000 },
-  { label: '7d', ms: 7 * 24 * 60 * 60 * 1000 },
-] as const;
+  { label: 'health.window.1h', ms: 60 * 60 * 1000 },
+  { label: 'health.window.24h', ms: 24 * 60 * 60 * 1000 },
+  { label: 'health.window.7d', ms: 7 * 24 * 60 * 60 * 1000 },
+] as const satisfies readonly { label: MessageKey; ms: number }[];
 
 const STORAGE_KEY = 'hr-health-window';
 
@@ -62,16 +66,16 @@ function saveWindowIdx(idx: number): void {
 /* ------------------------------------------------------------------ */
 
 /** Human uptime from seconds, e.g. "2d 3h", "3h 14m", "5m 12s", "42s". */
-export function fmtUptime(seconds: number): string {
+export function fmtUptime(seconds: number, t: Translate): string {
   const s = Math.max(0, Math.floor(seconds));
   const d = Math.floor(s / 86_400);
   const h = Math.floor((s % 86_400) / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = s % 60;
-  if (d > 0) return `${d}d ${h}h`;
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m ${sec}s`;
-  return `${sec}s`;
+  if (d > 0) return t('health.uptime.days', { days: d, hours: h });
+  if (h > 0) return t('health.uptime.hours', { hours: h, minutes: m });
+  if (m > 0) return t('health.uptime.minutes', { minutes: m, seconds: sec });
+  return t('health.uptime.seconds', { seconds: sec });
 }
 
 /** Latency seconds → milliseconds label. Null (zero samples) → em dash. */
@@ -89,16 +93,16 @@ export function fmtMs(latencySeconds: number | null | undefined): string {
 const fmtInt = formatCount;
 
 /** Compact relative time from an ISO string, e.g. "12s ago", "3m ago". */
-export function fmtRelTime(iso: string, now: number = Date.now()): string {
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return iso;
-  const deltaS = Math.max(0, Math.round((now - t) / 1000));
-  if (deltaS < 60) return `${deltaS}s ago`;
+export function fmtRelTime(iso: string, t: Translate, now: number = Date.now()): string {
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return iso;
+  const deltaS = Math.max(0, Math.round((now - at) / 1000));
+  if (deltaS < 60) return t('health.ago.seconds', { count: deltaS });
   const m = Math.floor(deltaS / 60);
-  if (m < 60) return `${m}m ago`;
+  if (m < 60) return t('health.ago.minutes', { count: m });
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
+  if (h < 24) return t('health.ago.hours', { count: h });
+  return t('health.ago.days', { count: Math.floor(h / 24) });
 }
 
 const AGGREGATE_KEY = '__all__';
@@ -109,31 +113,41 @@ const AGGREGATE_KEY = '__all__';
 
 interface StatDef {
   key: string;
-  label: string;
-  value: (s: MetricsSnapshot) => string;
-  hint?: string;
+  label: MessageKey;
+  value: (s: MetricsSnapshot, t: Translate) => string;
+  hint?: MessageKey;
 }
 
 const STATS: StatDef[] = [
-  { key: 'uptime', label: 'Uptime', value: (s) => fmtUptime(s.uptime_seconds), hint: 'since daemon start' },
+  {
+    key: 'uptime',
+    label: 'health.metric.uptime',
+    value: (s, t) => fmtUptime(s.uptime_seconds, t),
+    hint: 'health.metric.uptimeHint',
+  },
   {
     key: 'tasks',
-    label: 'Tasks in flight',
+    label: 'health.metric.tasks',
     value: (s) => fmtInt(s.tasks.pending_and_in_flight),
-    hint: 'pending + in flight',
+    hint: 'health.metric.tasksHint',
   },
-  { key: 'jobs', label: 'Jobs in flight', value: (s) => fmtInt(s.jobs_in_flight), hint: 'running jobs' },
+  {
+    key: 'jobs',
+    label: 'health.metric.jobs',
+    value: (s) => fmtInt(s.jobs_in_flight),
+    hint: 'health.metric.jobsHint',
+  },
   {
     key: 'sessions',
-    label: 'Active sessions',
+    label: 'health.metric.sessions',
     value: (s) => fmtInt(s.executor_sessions_active),
-    hint: 'executor sessions',
+    hint: 'health.metric.sessionsHint',
   },
   {
     key: 'queue',
-    label: 'Queue depth',
+    label: 'health.metric.queue',
     value: (s) => fmtInt(s.run_step_queue_depth),
-    hint: 'run-step queue',
+    hint: 'health.metric.queueHint',
   },
 ];
 
@@ -162,6 +176,7 @@ function SummaryCards({
   snapshot: MetricsSnapshot | undefined;
   loading: boolean;
 }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
       {STATS.map((stat) =>
@@ -176,7 +191,12 @@ function SummaryCards({
             </div>
           </div>
         ) : (
-          <StatCard key={stat.key} label={stat.label} value={stat.value(snapshot)} hint={stat.hint} />
+          <StatCard
+            key={stat.key}
+            label={t(stat.label)}
+            value={stat.value(snapshot, t)}
+            hint={stat.hint ? t(stat.hint) : undefined}
+          />
         ),
       )}
     </div>
@@ -198,6 +218,7 @@ function LoopsCard({
   loops: Record<string, LoopStats> | undefined;
   loading: boolean;
 }): JSX.Element {
+  const { t } = useTranslation();
   const rows: LoopRow[] = useMemo(() => {
     if (!loops) return [];
     return Object.entries(loops)
@@ -208,7 +229,7 @@ function LoopsCard({
   return (
     <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
       <h2 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
-        Scheduler loops
+        {t('health.loops.title')}
       </h2>
       {loading ? (
         <div className="animate-pulse space-y-2">
@@ -217,16 +238,16 @@ function LoopsCard({
           ))}
         </div>
       ) : rows.length === 0 ? (
-        <p className="text-text-muted text-sm">No loop ticks recorded yet.</p>
+        <p className="text-text-muted text-sm">{t('health.loops.empty')}</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-left font-mono text-xs">
             <thead>
               <tr className="text-text-muted border-border-default border-b">
-                <th className="pr-3 pb-2 font-medium">Loop</th>
-                <th className="pr-3 pb-2 text-right font-medium">Interval</th>
-                <th className="pr-3 pb-2 text-right font-medium">Last duration</th>
-                <th className="pb-2 text-right font-medium">Last tick</th>
+                <th className="pr-3 pb-2 font-medium">{t('health.loops.column.loop')}</th>
+                <th className="pr-3 pb-2 text-right font-medium">{t('health.loops.column.interval')}</th>
+                <th className="pr-3 pb-2 text-right font-medium">{t('health.loops.column.lastDuration')}</th>
+                <th className="pb-2 text-right font-medium">{t('health.loops.column.lastTick')}</th>
               </tr>
             </thead>
             <tbody>
@@ -234,13 +255,13 @@ function LoopsCard({
                 <tr key={r.name} className="border-border-default border-b last:border-0">
                   <td className="text-text-primary py-2 pr-3">{r.name}</td>
                   <td className="text-text-muted py-2 pr-3 text-right tabular-nums">
-                    {r.interval_seconds}s
+                    {t('health.loops.interval', { value: r.interval_seconds })}
                   </td>
                   <td className="text-text-primary py-2 pr-3 text-right tabular-nums">
                     {fmtMs(r.last_duration_seconds)}
                   </td>
                   <td className="text-text-muted py-2 text-right tabular-nums">
-                    {fmtRelTime(r.last_tick_iso)}
+                    {fmtRelTime(r.last_tick_iso, t)}
                   </td>
                 </tr>
               ))}
@@ -268,6 +289,7 @@ function HttpCard({
   http: Record<string, HttpRouteStats> | undefined;
   loading: boolean;
 }): JSX.Element {
+  const { t } = useTranslation();
   const rows: HttpRow[] = useMemo(() => {
     if (!http) return [];
     const entries = Object.entries(http).map(
@@ -287,7 +309,7 @@ function HttpCard({
   return (
     <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
       <h2 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
-        HTTP latency
+        {t('health.http.title')}
       </h2>
       {loading ? (
         <div className="animate-pulse space-y-2">
@@ -296,17 +318,17 @@ function HttpCard({
           ))}
         </div>
       ) : rows.length === 0 ? (
-        <p className="text-text-muted text-sm">No requests recorded yet.</p>
+        <p className="text-text-muted text-sm">{t('health.http.empty')}</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-left font-mono text-xs">
             <thead>
               <tr className="text-text-muted border-border-default border-b">
-                <th className="pr-3 pb-2 font-medium">Route</th>
-                <th className="pr-3 pb-2 text-right font-medium">Count</th>
-                <th className="pr-3 pb-2 text-right font-medium">p50</th>
-                <th className="pr-3 pb-2 text-right font-medium">p95</th>
-                <th className="pb-2 text-right font-medium">Max</th>
+                <th className="pr-3 pb-2 font-medium">{t('health.http.column.route')}</th>
+                <th className="pr-3 pb-2 text-right font-medium">{t('health.http.column.count')}</th>
+                <th className="pr-3 pb-2 text-right font-medium">{t('health.http.column.p50')}</th>
+                <th className="pr-3 pb-2 text-right font-medium">{t('health.http.column.p95')}</th>
+                <th className="pb-2 text-right font-medium">{t('health.http.column.max')}</th>
               </tr>
             </thead>
             <tbody>
@@ -323,7 +345,7 @@ function HttpCard({
                       className={cn('block truncate', r.isAggregate ? 'text-text-primary font-medium' : 'text-text-primary')}
                       title={r.route}
                     >
-                      {r.isAggregate ? 'All routes' : r.route}
+                      {r.isAggregate ? t('health.http.allRoutes') : r.route}
                     </span>
                   </td>
                   <td className="text-text-muted py-2 pr-3 text-right tabular-nums">{fmtInt(r.count)}</td>
@@ -346,7 +368,7 @@ function HttpCard({
 
 interface TrendDef {
   key: string;
-  label: string;
+  label: MessageKey;
   pick: (s: MetricsSnapshot) => number | null;
   fmt: (v: number) => string;
   variant: 'default' | 'green' | 'yellow' | 'red';
@@ -355,35 +377,35 @@ interface TrendDef {
 const TRENDS: TrendDef[] = [
   {
     key: 'queue',
-    label: 'Queue depth',
+    label: 'health.metric.queue',
     pick: (s) => s.run_step_queue_depth,
     fmt: (v) => fmtInt(v),
     variant: 'default',
   },
   {
     key: 'sessions',
-    label: 'Active sessions',
+    label: 'health.metric.sessions',
     pick: (s) => s.executor_sessions_active,
     fmt: (v) => fmtInt(v),
     variant: 'green',
   },
   {
     key: 'tasks',
-    label: 'Tasks in flight',
+    label: 'health.metric.tasks',
     pick: (s) => s.tasks?.pending_and_in_flight ?? null,
     fmt: (v) => fmtInt(v),
     variant: 'default',
   },
   {
     key: 'jobs',
-    label: 'Jobs in flight',
+    label: 'health.metric.jobs',
     pick: (s) => s.jobs_in_flight,
     fmt: (v) => fmtInt(v),
     variant: 'yellow',
   },
   {
     key: 'p95',
-    label: 'p95 latency · all routes',
+    label: 'health.metric.p95',
     pick: (s) => s.http?.[AGGREGATE_KEY]?.p95 ?? null,
     fmt: (v) => fmtMs(v),
     variant: 'default',
@@ -412,14 +434,15 @@ function TrendCard({
   def: TrendDef;
   series: number[];
 }): JSX.Element {
+  const { t } = useTranslation();
   const current = series.length > 0 ? series[series.length - 1]! : null;
   const peak = series.length > 0 ? Math.max(...series) : null;
   return (
     <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
       <div className="flex items-baseline justify-between gap-2">
-        <p className="text-text-secondary text-xs font-semibold tracking-wider uppercase">{def.label}</p>
+        <p className="text-text-secondary text-xs font-semibold tracking-wider uppercase">{t(def.label)}</p>
         <p className="text-text-muted text-2xs tabular-nums">
-          {peak != null ? `peak ${def.fmt(peak)}` : ''}
+          {peak != null ? t('health.trends.peak', { value: def.fmt(peak) }) : ''}
         </p>
       </div>
       <p className="font-display text-h3 text-text-primary mt-2 font-medium tabular-nums">
@@ -429,7 +452,7 @@ function TrendCard({
         {series.length >= 2 ? (
           <Sparkline data={series} width={220} height={40} variant={def.variant} />
         ) : (
-          <p className="text-text-muted text-2xs">Not enough history yet.</p>
+          <p className="text-text-muted text-2xs">{t('health.trends.notEnough')}</p>
         )}
       </div>
     </div>
@@ -447,6 +470,7 @@ function HistorySection({
   error: boolean;
   windowLabel: string;
 }): JSX.Element {
+  const { t } = useTranslation();
   const seriesByKey = useMemo(() => {
     const map: Record<string, number[]> = {};
     for (const def of TRENDS) map[def.key] = trendSeries(rows ?? [], def.pick);
@@ -459,17 +483,17 @@ function HistorySection({
     <section>
       <div className="mb-3 flex items-center justify-between gap-2">
         <h2 className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
-          Trends · last {windowLabel}
+          {t('health.trends.title', { window: windowLabel })}
         </h2>
         {!loading && !error && (
           <span className="text-text-muted text-2xs tabular-nums">
-            {sampleCount} snapshot{sampleCount === 1 ? '' : 's'}
+            {t('health.trends.snapshots', { count: sampleCount })}
           </span>
         )}
       </div>
       {error ? (
         <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-6">
-          <p className="text-feedback-danger text-sm">Couldn't load metrics history — try again.</p>
+          <p className="text-feedback-danger text-sm">{t('health.trends.error')}</p>
         </div>
       ) : loading ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -488,9 +512,7 @@ function HistorySection({
         </div>
       ) : sampleCount === 0 ? (
         <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-6">
-          <p className="text-text-muted text-sm">
-            No persisted snapshots in this window yet. History accrues as the daemon runs.
-          </p>
+          <p className="text-text-muted text-sm">{t('health.trends.empty')}</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -514,8 +536,9 @@ function WindowToggle({
   winIdx: number;
   onChange: (i: number) => void;
 }): JSX.Element {
+  const { t } = useTranslation();
   return (
-    <div className="flex gap-1 font-mono text-xs" role="group" aria-label="History window">
+    <div className="flex gap-1 font-mono text-xs" role="group" aria-label={t('health.window.group')}>
       {WINDOWS.map((w, i) => (
         <button
           key={w.label}
@@ -529,7 +552,7 @@ function WindowToggle({
               : 'text-text-muted hover:text-text-primary',
           )}
         >
-          {w.label}
+          {t(w.label)}
         </button>
       ))}
     </div>
@@ -541,6 +564,7 @@ function WindowToggle({
 /* ------------------------------------------------------------------ */
 
 export function HealthPage(): JSX.Element {
+  const { t } = useTranslation();
   const [winIdx, setWinIdx] = useState<number>(loadWindowIdx);
   const win = WINDOWS[winIdx]!;
   const since = useMemo(() => new Date(Date.now() - win.ms).toISOString(), [win.ms]);
@@ -560,15 +584,13 @@ export function HealthPage(): JSX.Element {
       {/* a-health hl-wrap: 1120 centered cap (THR-099 Slice 7). */}
       <div className="max-w-content-wide mx-auto p-6">
         <header className="mb-6 flex items-start justify-between gap-3">
-          <PageHeader title="Runtime Health" meta="Live daemon metrics · all orgs" />
+          <PageHeader title={t('health.title')} meta={t('health.meta')} />
           <WindowToggle winIdx={winIdx} onChange={onChangeWindow} />
         </header>
 
         {liveQ.isError && (
           <div className="border-feedback-danger/30 bg-feedback-danger/5 mb-6 rounded-lg border p-4">
-            <p className="text-feedback-danger text-sm">
-              Couldn't load live metrics. Retrying automatically…
-            </p>
+            <p className="text-feedback-danger text-sm">{t('health.liveError')}</p>
           </div>
         )}
 
@@ -588,7 +610,7 @@ export function HealthPage(): JSX.Element {
           rows={historyQ.data}
           loading={historyQ.isLoading}
           error={historyQ.isError}
-          windowLabel={win.label}
+          windowLabel={t(win.label)}
         />
       </div>
     </div>

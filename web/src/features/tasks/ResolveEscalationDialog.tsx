@@ -9,7 +9,8 @@ import {
 import { Button } from '@/design-system/primitives/Button';
 import { Textarea } from '@/design-system/primitives/Textarea';
 import { useResolveEscalation } from '@/hooks/tasks';
-import { TASKS_ERROR_STRINGS } from './strings';
+import { useTranslation } from '@/hooks/i18n';
+import { classifyTaskError, renderTaskError, type TaskErrorView } from './strings';
 
 interface Props {
   taskId: string;
@@ -30,8 +31,9 @@ export function ResolveEscalationDialog({
   onClose,
   intent = 'continue',
 }: Props): JSX.Element {
+  const { t } = useTranslation();
   const [rationale, setRationale] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<TaskErrorView | null>(null);
   const resolve = useResolveEscalation(taskId);
   const isContinue = intent === 'continue';
 
@@ -49,8 +51,7 @@ export function ResolveEscalationDialog({
       await resolve.mutateAsync(body);
       onClose();
     } catch (e: unknown) {
-      const code = (e as { code?: string }).code;
-      setError(code ? (TASKS_ERROR_STRINGS[code] ?? code) : 'Resolve failed.');
+      setError(classifyTaskError(e, 'tasks.dialog.resolve.failed'));
     }
   };
 
@@ -63,7 +64,7 @@ export function ResolveEscalationDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            {isContinue ? 'Continue task' : 'Supersede task'}
+            {isContinue ? t('tasks.dialog.resolve.titleContinue') : t('tasks.dialog.resolve.titleSupersede')}
           </DialogTitle>
         </DialogHeader>
         <Textarea
@@ -71,22 +72,24 @@ export function ResolveEscalationDialog({
           onChange={(e) => setRationale(e.target.value)}
           rows={4}
           placeholder={
-            isContinue ? 'Rationale (required)' : 'Successor task brief (required)'
+            isContinue
+              ? t('tasks.dialog.resolve.placeholderContinue')
+              : t('tasks.dialog.resolve.placeholderSupersede')
           }
         />
-        {error && <p className="text-danger text-sm">{error}</p>}
+        {error !== null && <p className="text-danger text-sm">{renderTaskError(error, t)}</p>}
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>
-            Close
+            {t('common.close')}
           </Button>
           <Button disabled={submitDisabled} onClick={onSubmit}>
             {isContinue
               ? resolve.isPending
-                ? 'Continuing…'
-                : 'Continue task'
+                ? t('tasks.dialog.resolve.continuing')
+                : t('tasks.dialog.resolve.confirmContinue')
               : resolve.isPending
-                ? 'Superseding…'
-                : 'Supersede task'}
+                ? t('tasks.dialog.resolve.superseding')
+                : t('tasks.dialog.resolve.confirmSupersede')}
           </Button>
         </DialogFooter>
       </DialogContent>

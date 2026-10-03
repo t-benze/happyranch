@@ -285,7 +285,9 @@ This is the only behavioral change to the executor. `--allowedTools` and `--perm
    - `input_tokens` ← `token_usage.input_tokens`
    - `output_tokens` ← `token_usage.output_tokens`
    - `cache_read_tokens` ← `token_usage.cached_tokens`
-   - `cache_creation_tokens` ← `None` (Codex doesn't separate creation from read)
+   - `cache_creation_tokens` ← `usage.cache_write_input_tokens` when it is
+     an integer (including genuine `0`); an absent or non-integer field maps
+     to `None`
    - `reasoning_tokens` ← `token_usage.reasoning_tokens`
    - `model` ← top-level `model` field on the event
    - `usage_raw_json` ← raw event JSON
@@ -425,6 +427,24 @@ The original `total_tokens` was defined as `input + output + reasoning`, excludi
 ### Codex `input_tokens` includes `cached_input_tokens` (CONFIRMED, issue #216)
 
 Codex CLI follows the OpenAI convention where `input_tokens` is the inclusive total (includes `cached_input_tokens`). Confirmed live: one code_reviewer turn recorded input=4,412,984 with cached=4,307,072. On ingest, the parser normalizes `input_tokens` to net-fresh = max(input - cached, 0), making it apples-to-apples with Claude (where cache is tracked in a separate column). `cache_read_tokens` is preserved as-is. Normalization is forward-only; historical rows are NOT retro-corrected (founder accepted).
+
+### Usage v1 reported-state addendum (2026-09-30)
+
+Codex 0.153.4 adds `cache_write_input_tokens` to terminal
+`turn.completed.usage`. The parser now preserves a reported integer exactly,
+including `0`; absence and non-integer values remain SQL `NULL`. This is a
+forward-only parser correction. Existing rows are not rewritten.
+
+Usage v1 does not derive missing token classes with `COALESCE`. Its pure
+normalizer distinguishes `reported` (including zero) from `not_reported`,
+labels uncached input as a partial subtotal when cache write is absent, and
+uses declared parser reasoning semantics so reasoning is counted exactly once.
+The current contract and Codex resume re-verification procedure live in
+`docs/superpowers/specs/2026-09-30-usage-v1-design.md`.
+
+The existing churn/`total_tokens` contract is unchanged. It still adds stored
+reasoning to stored output, which double-counts Codex reasoning because Codex
+output already includes it. Usage v1 never consumes that legacy total.
 
 ### Opencode command shape and parser update
 

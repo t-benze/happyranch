@@ -31,6 +31,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import textwrap
 import time
 from pathlib import Path
 
@@ -50,6 +51,7 @@ def _run_start(
     env = {
         **os.environ,
         "HAPPYRANCH_DAEMON_HOME": str(home),
+        "HAPPYRANCH_DAEMON_START_TIMEOUT": "3",
         "PATH": path,
     }
     if extra_env:
@@ -227,6 +229,35 @@ def test_start_valid_uv_preserves_launch_behavior_and_binds_to_checkout(
     bindir = tmp_path / "bin"
     bindir.mkdir(parents=True)
     cwd_marker = tmp_path / "uv-cwd.txt"
+    health_server = tmp_path / "health_server.py"
+    health_server.write_text(
+        textwrap.dedent(
+            """\
+            import os
+            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            from pathlib import Path
+
+            class Handler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path == "/api/v1/health":
+                        self.send_response(200)
+                        self.end_headers()
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+
+                def log_message(self, format, *args):
+                    pass
+
+            home = Path(os.environ["HAPPYRANCH_DAEMON_HOME"])
+            home.mkdir(parents=True, exist_ok=True)
+            server = ThreadingHTTPServer(("127.0.0.1", 39123), Handler)
+            (home / "daemon.pid").write_text(str(os.getpid()))
+            (home / "daemon.port").write_text(str(server.server_port))
+            server.serve_forever()
+            """
+        )
+    )
     shim = bindir / "uv"
     shim.write_text(
         "#!/usr/bin/env bash\n"
@@ -236,11 +267,12 @@ def test_start_valid_uv_preserves_launch_behavior_and_binds_to_checkout(
         '  echo "Python 3.14.4"\n'
         "  exit 0\n"
         "fi\n"
+        'if [[ "$1" == "run" && "$2" == "python" && "$3" == "-c" ]]; then\n'
+        '  echo "127.0.0.1"\n'
+        "  exit 0\n"
+        "fi\n"
         'if [[ "$1" == "run" && "$2" == "python" && "$3" == "-m" && "$4" == "runtime.daemon" ]]; then\n'
-        '  mkdir -p "$HAPPYRANCH_DAEMON_HOME"\n'
-        '  echo $$ > "$HAPPYRANCH_DAEMON_HOME/daemon.pid"\n'
-        '  echo "39123" > "$HAPPYRANCH_DAEMON_HOME/daemon.port"\n'
-        "  exec sleep 600\n"
+        '  exec /usr/bin/python3 "' + str(health_server) + '"\n'
         "fi\n"
         'echo "unexpected: $*" >&2\n'
         "exit 1\n",

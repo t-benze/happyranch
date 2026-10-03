@@ -19,6 +19,11 @@
 #   integration  uv sync --frozen; uv run pytest tests/ -v -m integration
 #   all          python + web (default; mirrors GitHub PR CI)
 #   help         Show this help
+#
+# Scratch: every Python pytest invocation gets a fresh, uniquely named
+# --basetemp beneath the effective TMPDIR, and the wrapper removes exactly that
+# directory on success, failure, and catchable HUP/INT/TERM. Uncatchable
+# termination (SIGKILL, power loss, kernel crash) is outside any guarantee.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -28,6 +33,124 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
+
+# ── Per-run pytest scratch lifecycle ─────────────────────────────────────
+# Every Python pytest invocation receives an explicit --basetemp directory
+# freshly and uniquely created beneath the effective TMPDIR, and exactly that
+# directory is removed when the invocation ends: on normal success, on a
+# nonzero uv/pytest failure, and on a catchable HUP/INT/TERM. Cleanup never
+# touches TMPDIR itself or any sibling/pre-existing content, and is idempotent.
+# Creation or cleanup failure is an explicit nonzero local-CI failure — it can
+# never be reported as a clean pass. Uncatchable termination (SIGKILL, power
+# loss, kernel crash) cannot be observed or cleaned; it and the scratch it
+# leaves behind are outside any guarantee.
+
+PYTEST_BASETEMP=""
+
+pytest_basetemp_tmp_root() {
+  # The effective TMPDIR with one trailing slash removed.
+  local root="${TMPDIR:-/tmp}"
+  printf '%s\n' "${root%/}"
+}
+
+create_pytest_basetemp() {
+  # Prints a freshly created unique directory beneath the effective TMPDIR.
+  # Prints nothing and returns nonzero when creation or validation fails.
+  local root created
+  root="$(pytest_basetemp_tmp_root)"
+  created="$(mktemp -d "${root}/happyranch-pytest-basetemp.XXXXXX" 2>/dev/null)" || return 1
+  if [ -z "$created" ]; then
+    return 1
+  fi
+  # The result must be a non-empty strict child of the effective TMPDIR — never
+  # TMPDIR itself and never a path outside it.
+  if [ ! -d "$created" ] || [ "$created" = "$root" ] \
+      || [ "${created#"$root"/}" = "$created" ] \
+      || [ -z "${created#"$root"/}" ]; then
+    rm -rf -- "$created" 2>/dev/null || true
+    return 1
+  fi
+  printf '%s\n' "$created"
+}
+
+cleanup_pytest_basetemp() {
+  # Idempotent removal of exactly the basetemp created by this invocation.
+  local path="${PYTEST_BASETEMP:-}" root
+  [ -n "$path" ] || return 0
+  root="$(pytest_basetemp_tmp_root)"
+  if [ "$path" = "$root" ] \
+      || [ "${path#"$root"/}" = "$path" ] \
+      || [ -z "${path#"$root"/}" ]; then
+    echo -e "${RED}ERROR: refusing to remove invalid pytest basetemp path: ${path}${NC}" >&2
+    return 1
+  fi
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    if ! rm -rf -- "$path"; then
+      echo -e "${RED}ERROR: failed to remove pytest basetemp: ${path}${NC}" >&2
+      return 1
+    fi
+  fi
+  # Keep the exact identity live until removal has succeeded. If a catchable
+  # signal interrupts rm, the EXIT trap can therefore retry this same literal
+  # child instead of forgetting it.
+  PYTEST_BASETEMP=""
+  return 0
+}
+
+pytest_basetemp_on_exit() {
+  # Single cleanup path for ordinary exit. A cleanup failure turns an otherwise
+  # clean run nonzero; a run that is already failing keeps its meaningful
+  # status.
+  local status=$?
+  if ! cleanup_pytest_basetemp; then
+    if [ "$status" -eq 0 ]; then
+      status=1
+    fi
+  fi
+  exit "$status"
+}
+
+pytest_basetemp_on_signal() {
+  # Catchable HUP/INT/TERM. Exit with the conventional 128+signum so the
+  # signal status is preserved; the EXIT trap performs the one cleanup.
+  local signame="$1" signum code
+  signum="$(kill -l "$signame" 2>/dev/null)" || signum=""
+  code=1
+  if [[ "$signum" =~ ^[0-9]+$ ]]; then
+    code=$((128 + signum))
+  fi
+  # Clear the signal traps so a second signal keeps default behavior.
+  trap - HUP INT TERM
+  exit "$code"
+}
+
+trap pytest_basetemp_on_exit EXIT
+trap 'pytest_basetemp_on_signal HUP' HUP
+trap 'pytest_basetemp_on_signal INT' INT
+trap 'pytest_basetemp_on_signal TERM' TERM
+
+run_pytest_suite() {
+  # Creates the per-run basetemp, runs `uv sync --frozen` and the given pytest
+  # invocation against it, then removes the exact directory. Returns the
+  # meaningful status: the first nonzero uv/pytest status, or nonzero when
+  # basetemp creation or cleanup fails.
+  local basetemp status=0
+  if ! basetemp="$(create_pytest_basetemp)"; then
+    echo -e "${RED}ERROR: could not create a pytest basetemp under $(pytest_basetemp_tmp_root); refusing to run Python tests without one.${NC}" >&2
+    return 1
+  fi
+  PYTEST_BASETEMP="$basetemp"
+  uv sync --frozen || status=$?
+  if [ "$status" -eq 0 ]; then
+    uv run pytest "$@" --basetemp "$PYTEST_BASETEMP" || status=$?
+  fi
+  if ! cleanup_pytest_basetemp; then
+    if [ "$status" -eq 0 ]; then
+      status=1
+    fi
+  fi
+  return "$status"
+}
 
 # Advisory only: inode pressure can make mktemp, pytest, and Node tooling fail
 # even when byte capacity remains. This preflight never cleans up files and
@@ -204,8 +327,7 @@ ensure_node_declared() {
 
 run_python() {
   echo -e "${GREEN}=== Python unit tests ===${NC}"
-  uv sync --frozen
-  uv run pytest tests/ -v -n 4
+  run_pytest_suite tests/ -v -n 4
 }
 
 run_web() {
@@ -229,8 +351,7 @@ run_web() {
 
 run_integration() {
   echo -e "${GREEN}=== Python integration tests ===${NC}"
-  uv sync --frozen
-  uv run pytest tests/ -v -m integration
+  run_pytest_suite tests/ -v -m integration
 }
 
 run_all() {
@@ -270,6 +391,10 @@ show_help() {
   echo "  - Web CI runs vitest run (non-watch mode), matching GHA behavior."
   echo "  - uv sync --frozen ensures lockfile parity; run 'uv lock' first if"
   echo "    you've changed pyproject.toml."
+  echo "  - python/integration/all create a fresh pytest --basetemp under the"
+  echo "    effective TMPDIR and remove exactly that directory on success,"
+  echo "    failure, and catchable HUP/INT/TERM. SIGKILL, power loss, and"
+  echo "    kernel crash are uncatchable and leave scratch behind."
 }
 
 case "${1:-all}" in

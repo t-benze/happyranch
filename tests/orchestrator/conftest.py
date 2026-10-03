@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,7 @@ class ScriptedRunAgent:
 
     Usage::
 
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         scripted.enqueue("content_manager",
                          decision=NextStep(action="delegate", agent="content_writer", prompt="x"),
                          summary="delegating")
@@ -40,7 +41,8 @@ class ScriptedRunAgent:
     the report it already has in hand.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, db: Database) -> None:
+        self._db = db
         # agent_name -> FIFO list of (ExecutorResult, CompletionReport | None)
         self._queues: dict[str, list[tuple[ExecutorResult, CompletionReport | None]]] = (
             defaultdict(list)
@@ -89,7 +91,13 @@ class ScriptedRunAgent:
                 f"ScriptedRunAgent: unexpected call for agent={agent!r} task={task_id!r} "
                 f"(no enqueued responses left). Check test setup."
             )
-        return queue.pop(0)
+        result, report = queue.pop(0)
+        self._db.update_task(
+            task_id, assigned_agent=agent, current_session_id=result.session_id,
+        )
+        if on_session_started is not None:
+            on_session_started(task_id, agent, result.session_id)
+        return result, report
 
 
 # ---------------------------------------------------------------------------
@@ -187,5 +195,9 @@ def paths(tmp_path: Path) -> OrgPaths:
 
 
 @pytest.fixture
-def db(paths: OrgPaths) -> Database:
-    return Database(paths.db_path)
+def db(paths: OrgPaths) -> Iterator[Database]:
+    database = Database(paths.db_path)
+    try:
+        yield database
+    finally:
+        database.close()

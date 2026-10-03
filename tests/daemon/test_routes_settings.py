@@ -19,6 +19,12 @@ import yaml
 from fastapi.testclient import TestClient
 
 
+def _authority_generation(org_state) -> int:
+    from tests.workflows.authority_test_support import ensure_coherent_authority
+
+    return ensure_coherent_authority(org_state)
+
+
 # ----------------------------------------------------------------
 # Positive: correct shape
 # ----------------------------------------------------------------
@@ -92,6 +98,30 @@ def test_daemon_capacity_requires_bearer_without_leaking_values(tmp_home, app, o
     assert response.status_code == 401
     assert "queue_workers" not in response.text
     assert "host_global_session_cap" not in response.text
+
+
+def test_daemon_capacity_copy_is_plain_language(tmp_home, app, org_state, auth_headers) -> None:
+    body = TestClient(app).get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    assert body["running_provenance"] == "Resolved when the HappyRanch service started"
+    assert body["guidance"]["queue_workers"].startswith("Suggested starting range: 4–6.")
+    assert body["guidance"]["host_global_session_cap"].startswith("Suggested starting range: 11–13.")
+    cap = body["effective_admission_cap"]
+    if cap is None:
+        assert body["effective_admission_reason"] == (
+            "HappyRanch cannot currently verify the overall supervised-session limit."
+        )
+    elif cap < body["running_at_daemon_start"]["host_global_session_cap"]:
+        assert body["effective_admission_reason"] == (
+            "The active execution backend cannot enforce every host-safety check, "
+            "so HappyRanch is using a lower session limit."
+        )
+    else:
+        assert body["effective_admission_reason"] == (
+            "HappyRanch is using the session limit configured at startup; "
+            "the active execution backend does not require a lower limit."
+        )
 
 
 @pytest.mark.parametrize("value", [True, "6", 6.0, None])
@@ -1231,6 +1261,7 @@ def test_put_teams_add_and_remove_workers(
 
     client = TestClient(app)
     paths = OrgPaths(root=org_state.root)
+    before_generation = _authority_generation(org_state)
 
     # Seed agent files for all seeded workers + manager
     _seed_agent_file(paths, "qa_engineer", "engineering")
@@ -1254,6 +1285,10 @@ def test_put_teams_add_and_remove_workers(
     eng = next(t for t in teams if t["name"] == "engineering")
     assert "qa_engineer" in eng["workers"]
     assert "product_manager" in eng["workers"]
+    assert (
+        _authority_generation(org_state)
+        == before_generation + 1
+    )
 
     # Remove product_manager (agent file still declares team=engineering)
     # This should trigger 409 + rollback
@@ -1595,6 +1630,7 @@ def test_put_settings_updates_reviewer_agents(
 ) -> None:
     _seed_reviewer_agents_agents(org_state)
     client = TestClient(app)
+    before_generation = _authority_generation(org_state)
     r = client.put(
         f"/api/v1/orgs/{org_state.slug}/settings/org",
         headers=auth_headers,
@@ -1605,6 +1641,35 @@ def test_put_settings_updates_reviewer_agents(
     # Persisted in the DB.
     import json as _json
     assert _json.loads(org_state.db.get_org_setting("reviewer_agents")) == ["senior_dev"]
+    assert (
+        _authority_generation(org_state)
+        == before_generation + 1
+    )
+
+
+def test_settings_route_publication_failure_preserves_response_and_fences(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from unittest.mock import patch
+
+    from runtime.workflows.authority import WorkflowAuthorityError
+
+    _seed_reviewer_agents_agents(org_state)
+    with patch.object(
+        org_state.workflow_authority,
+        "publish_current",
+        side_effect=RuntimeError("injected publication failure"),
+    ):
+        response = TestClient(app).put(
+            f"/api/v1/orgs/{org_state.slug}/settings/org",
+            headers=auth_headers,
+            json={"reviewer_agents": ["senior_dev"]},
+        )
+    assert response.status_code == 200
+    assert response.json()["org"]["reviewer_agents"] == ["senior_dev"]
+    assert org_state.db.get_org_setting("reviewer_agents") is not None
+    with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+        org_state.workflow_authority.verify_admission_ready()
 
 
 def test_put_settings_rejects_unknown_reviewer_agent(

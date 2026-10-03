@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { http, HttpResponse } from 'msw';
 import { DataContext } from '@/design-system/providers/DataContext';
-import { renderWithProviders } from '@/test/render';
+import { I18nTestBoundary, renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 import { SettingsDialog } from './SettingsDialog';
 import { SettingsPage } from './SettingsPage';
@@ -151,7 +151,13 @@ function renderDialog(
           <Route
             element={
               <DataContext.Provider value={ctxValue}>
-                {page ? <SettingsPage /> : <SettingsDialog open onOpenChange={onClose} />}
+                {page ? (
+                  <I18nTestBoundary>
+                    <SettingsPage />
+                  </I18nTestBoundary>
+                ) : (
+                  <SettingsDialog open onOpenChange={onClose} />
+                )}
               </DataContext.Provider>
             }
           >

@@ -10,10 +10,130 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+import pytest
 import yaml as _yaml
 from fastapi.testclient import TestClient
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "skills"
+
+
+#: The accepted TASK-8588 §4.3 literal rows (baseline ``name: my-workflow``/
+#: ``description: d`` plus each stated delta), reused verbatim through the real
+#: ``_validate_skill_package`` seam so the ordered reason codes are asserted at
+#: the shipping validator boundary, not only at the pure helper.
+_LITERAL_CONTRACT_ROWS: list[tuple[str, str, list[str]]] = [
+    # 1 baseline
+    ("---\nname: my-workflow\ndescription: d\n---\n", "my-workflow", []),
+    # 2 baseline without description
+    ("---\nname: my-workflow\n---\n", "my-workflow", ["frontmatter_missing_description"]),
+    # 3 description only
+    ("---\ndescription: d\n---\n", "my-workflow", ["frontmatter_missing_name"]),
+    # 4 no opening fence (heading-first retired for new writes)
+    ("# Heading-first body\n\nBody text.\n", "my-workflow", ["skill_md_no_frontmatter"]),
+    # 5 unclosed fence
+    ("---\nname: my-workflow\n", "my-workflow", ["skill_md_unclosed_frontmatter"]),
+    # 6 malformed YAML
+    ("---\nname: [a\ndescription: d\n---\n", "my-workflow", ["skill_md_malformed_frontmatter"]),
+    # 7 malformed doc that merely spells a disallowed key
+    ("---\nname: my-workflow\ndescription: d\nallowed-tools: [Bash\n---\n",
+     "my-workflow", ["skill_md_malformed_frontmatter"]),
+    # 8 hooks: null
+    ("---\nname: my-workflow\ndescription: d\nhooks: null\n---\n",
+     "my-workflow", ["admission_field_not_allowed"]),
+    # 9 allowed-tools: []
+    ("---\nname: my-workflow\ndescription: d\nallowed-tools: []\n---\n",
+     "my-workflow", ["admission_field_not_allowed"]),
+    # 10 four disallowed keys in document order
+    ("---\nname: my-workflow\ndescription: d\n"
+     "allowed-tools: null\nhooks: false\nvendor-x: 1\nfuture-field: \"\"\n---\n",
+     "my-workflow", ["admission_field_not_allowed"] * 4),
+    # 11 vendor key
+    ("---\nname: my-workflow\ndescription: d\nvendor-x: 1\n---\n",
+     "my-workflow", ["admission_field_not_allowed"]),
+    # 12 duplicate name
+    ("---\nname: my-workflow\ndescription: d\nname: b\n---\n",
+     "my-workflow", ["frontmatter_duplicate_key"]),
+    # 13 duplicate excluded key whose last value is empty
+    ("---\nname: my-workflow\ndescription: d\nhooks: {}\nhooks: {}\n---\n",
+     "my-workflow", ["frontmatter_duplicate_key"]),
+    # 14 quoted digit-only string is admitted
+    ("---\nname: \"123\"\ndescription: d\n---\n", "123", []),
+    # 15 unquoted YAML int is a type failure, never coerced
+    ("---\nname: 123\ndescription: d\n---\n", "123", ["frontmatter_invalid_name"]),
+    # 16 YAML bool
+    ("---\nname: true\ndescription: d\n---\n", "my-workflow", ["frontmatter_invalid_name"]),
+    # 17b non-ASCII document name under an admitted ASCII identity
+    ("---\nname: café-workflow\ndescription: d\n---\n",
+     "my-workflow", ["frontmatter_invalid_name"]),
+    # 18 uppercase name with a matching (uppercase) slug
+    ("---\nname: My-Workflow\ndescription: d\n---\n",
+     "My-Workflow", ["frontmatter_invalid_name"]),
+    # 19 hyphen boundaries
+    ("---\nname: -a\ndescription: d\n---\n", "my-workflow", ["frontmatter_invalid_name"]),
+    ("---\nname: a-\ndescription: d\n---\n", "my-workflow", ["frontmatter_invalid_name"]),
+    ("---\nname: a--b\ndescription: d\n---\n", "my-workflow", ["frontmatter_invalid_name"]),
+    # 20 name/slug mismatch
+    ("---\nname: other-workflow\ndescription: d\n---\n",
+     "my-workflow", ["frontmatter_name_slug_mismatch"]),
+    # 21-25 description type/length
+    ("---\nname: my-workflow\ndescription: null\n---\n",
+     "my-workflow", ["frontmatter_invalid_description"]),
+    ("---\nname: my-workflow\ndescription: 5\n---\n",
+     "my-workflow", ["frontmatter_invalid_description"]),
+    ("---\nname: my-workflow\ndescription: \"\"\n---\n",
+     "my-workflow", ["frontmatter_invalid_description"]),
+    ("---\nname: my-workflow\ndescription: \"   \"\n---\n",
+     "my-workflow", ["frontmatter_invalid_description"]),
+    ("---\nname: my-workflow\ndescription: " + "x" * 1025 + "\n---\n",
+     "my-workflow", ["frontmatter_invalid_description"]),
+    # 26-29 optional scalar typing
+    ("---\nname: my-workflow\ndescription: d\nlicense: 1\n---\n",
+     "my-workflow", ["frontmatter_invalid_license"]),
+    ("---\nname: my-workflow\ndescription: d\ncompatibility: 0\n---\n",
+     "my-workflow", ["frontmatter_invalid_compatibility"]),
+    ("---\nname: my-workflow\ndescription: d\ncompatibility: \"\"\n---\n",
+     "my-workflow", ["frontmatter_invalid_compatibility"]),
+    ("---\nname: my-workflow\ndescription: d\ncompatibility: " + "x" * 501 + "\n---\n",
+     "my-workflow", ["frontmatter_invalid_compatibility"]),
+    # 30-35 metadata typing
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {a: 1}\n---\n",
+     "my-workflow", ["frontmatter_invalid_metadata"]),
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {1: x}\n---\n",
+     "my-workflow", ["frontmatter_invalid_metadata"]),
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {a: true}\n---\n",
+     "my-workflow", ["frontmatter_invalid_metadata"]),
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {a: null}\n---\n",
+     "my-workflow", ["frontmatter_invalid_metadata"]),
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {true: x}\n---\n",
+     "my-workflow", ["frontmatter_invalid_metadata"]),
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {a: [x]}\n---\n",
+     "my-workflow", ["frontmatter_invalid_metadata"]),
+    # 36 valid string-to-string metadata
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {a: \"b\", b: \"c\"}\n---\n",
+     "my-workflow", []),
+    # 37/38 standard-recognized and native-mechanism keys are admission-policy
+    ("---\nname: my-workflow\ndescription: d\nallowed-tools: Bash(git status *)\n---\n",
+     "my-workflow", ["admission_field_not_allowed"]),
+    ("---\nname: my-workflow\ndescription: d\nhooks: PreToolUse\n---\n",
+     "my-workflow", ["admission_field_not_allowed"]),
+    # 39/40 prose/string metadata mentions are not top-level declarations
+    ("---\nname: my-workflow\ndescription: \"mentions allowed-tools and hooks\"\n---\n",
+     "my-workflow", []),
+    ("---\nname: my-workflow\ndescription: d\nmetadata: {note: \"allowed-tools\"}\n---\n",
+     "my-workflow", []),
+    # 41 admission finding precedes the missing required field
+    ("---\nname: my-workflow\nallowed-tools: []\n---\n",
+     "my-workflow", ["admission_field_not_allowed", "frontmatter_missing_description"]),
+    # 42 admission finding precedes the optional-field finding
+    ("---\nname: my-workflow\ndescription: d\nallowed-tools: []\nlicense: 1\n---\n",
+     "my-workflow", ["admission_field_not_allowed", "frontmatter_invalid_license"]),
+    # literal duplicate-merge repair rows
+    ("---\nname: my-workflow\ndescription: d\n<<: {}\n<<: {}\n---\n",
+     "my-workflow", ["frontmatter_duplicate_key"]),
+    ("---\nname: my-workflow\ndescription: d\n<<: {name: inherited}\n---\n",
+     "my-workflow", ["admission_field_not_allowed"]),
+]
+
 
 
 def _seed_skills_and_config(
@@ -961,7 +1081,7 @@ class TestSkillsValidation:
 class TestValidationGuard:
     """Unit tests for the _validate_skill_package function (business logic)."""
 
-    _VALID_MD = "---\nname: My Skill\ndescription: test\n---\n\n# My Skill\n\nA test skill.\n"
+    _VALID_MD = "---\nname: my-skill\ndescription: test\n---\n"
 
     def test_valid_skill_passes_all_checks(self, tmp_home, app, org_state):
         """A well-formed frontmatter-first skill passes validation."""
@@ -1064,10 +1184,10 @@ class TestValidationGuard:
         assert result["ok"] is False
         assert "skill_md_no_frontmatter" in result["reason_codes"]
 
-    def test_heading_first_body_is_valid_for_new_authoring(self, tmp_home, app, org_state):
-        """THR-210 PR 2: a heading-first SKILL.md (column-zero Markdown
-        heading) is now accepted for NEW authoring — it validates OK and
-        is materializable, no longer legacy-only."""
+    def test_heading_first_body_is_retired_for_new_authoring(self, tmp_home, app, org_state):
+        """THR-262 retires the heading-first grammar for NEW authoring: a
+        column-zero Markdown heading with no frontmatter is classified
+        skill_md_no_frontmatter, never accepted."""
         from runtime.daemon.routes.skills import _validate_skill_package
 
         result = _validate_skill_package(
@@ -1079,8 +1199,8 @@ class TestValidationGuard:
             policy_class="standard_operational",
             skill_md="# My Skill\n\nGuidance content here.\n",
         )
-        assert result["ok"] is True
-        assert result["errors"] == []
+        assert result["ok"] is False
+        assert "skill_md_no_frontmatter" in result["reason_codes"]
 
     def test_leading_whitespace_before_heading_is_not_silently_healed(self, tmp_home, app, org_state):
         """The documented column-zero contract (no BOM/whitespace tolerance,
@@ -1100,8 +1220,9 @@ class TestValidationGuard:
         assert result["ok"] is False
         assert "skill_md_no_frontmatter" in result["reason_codes"]
 
-    def test_missing_post_frontmatter_heading_fails(self, tmp_home, app, org_state):
-        """Frontmatter without a following Markdown heading fails validation."""
+    def test_frontmatter_body_heading_is_retired(self, tmp_home, app, org_state):
+        """THR-262 retires the post-frontmatter body-heading requirement: a
+        frontmatter-only document (no body heading, empty body) is accepted."""
         from runtime.daemon.routes.skills import _validate_skill_package
 
         result = _validate_skill_package(
@@ -1111,10 +1232,10 @@ class TestValidationGuard:
             name="My Skill",
             version="1.0.0",
             policy_class="standard_operational",
-            skill_md="---\nname: My Skill\n---\njust some text without a heading",
+            skill_md="---\nname: my-skill\ndescription: test\n---\n",
         )
-        assert result["ok"] is False
-        assert "skill_md_no_heading" in result["reason_codes"]
+        assert result["ok"] is True
+        assert result["errors"] == []
 
     def test_malformed_frontmatter_fails(self, tmp_home, app, org_state):
         """Malformed YAML inside the frontmatter fence fails validation."""
@@ -1241,6 +1362,28 @@ class TestValidationGuard:
                 references={"..": "bad"},
                 assets={},
             )
+
+    @pytest.mark.parametrize("skill_md,expected_slug,expected_codes", _LITERAL_CONTRACT_ROWS)
+    def test_literal_contract_matrix_reason_codes_through_package_validator(
+        self, tmp_home, app, org_state, skill_md, expected_slug, expected_codes,
+    ):
+        """C2: the accepted literal §4.3 rows carry through the real
+        ``_validate_skill_package`` shipping seam and produce exactly the
+        documented ordered reason codes (positive, type, structural,
+        duplicate, admission-ordering and the duplicate-merge repair rows)."""
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug=expected_slug,
+            skill_id=f"custom:{expected_slug}",
+            name=expected_slug,
+            version="1",
+            policy_class="standard_operational",
+            skill_md=skill_md,
+        )
+        assert result["reason_codes"] == expected_codes
+        assert result["ok"] is (expected_codes == [])
 
 
 class TestPhase2FullFlow:

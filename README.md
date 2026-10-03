@@ -371,8 +371,10 @@ To enroll an agent with a non-default executor, the manager's `manage-agent` pay
 
 After approval, the requested executor and repos are persisted to the agent's
 `org/agents/<name>.md` frontmatter (`AgentDef`), the declared repos are cloned
-into the workspace, and the workspace is bootstrapped with the matching
-surface (`AGENTS.md` for non-Claude executors, `CLAUDE.md` for Claude).
+into the workspace, and every built-in executor workspace is bootstrapped with
+a regular `AGENTS.md` plus a raw relative `CLAUDE.md -> AGENTS.md` link. Startup
+refuses an incomplete or noncanonical pair before executor launch and directs
+the operator to repair it with `happyranch init-agent <agent>`.
 
 ### Managing the daemon
 
@@ -385,6 +387,13 @@ scripts/daemon.sh stop --force     # graceful shutdown (default daemon needs --f
 ```
 
 The daemon binds to port **8765** by default. Override with `HAPPYRANCH_DAEMON_PORT=<n>` before starting if that port is taken.
+`scripts/daemon.sh start` waits up to 30 seconds for the daemon's public
+`GET /api/v1/health` endpoint to answer. Set
+`HAPPYRANCH_DAEMON_START_TIMEOUT=<seconds>` to another positive integer for a
+slower host. If the daemon process exits during startup, the command fails
+immediately; process-exit and timeout failures print the last 20 log lines.
+When `curl` is unavailable, the script reports that it is falling back to the
+fresh `daemon.port` file as its readiness signal.
 
 > **Offline org relocation:** for the founder-operated manual procedure to move
 > an org between runtimes, see
@@ -405,12 +414,13 @@ Operational settings come from two places, highest precedence first:
 
 If a value isn't set in either, the code default applies. The file is optional — if it doesn't exist, defaults are used. Changes take effect on daemon restart. (This is distinct from each org's `<runtime>/orgs/<slug>/org/config.yaml`, which holds per-org settings.) Runtime paths are derived from the runtime container.
 
-The Settings → Daemon / Capacity page lets a local operator holding the shared
-daemon bearer atomically stage only `queue_workers` and
+The Settings → Capacity page lets a local operator holding the shared
+daemon access token atomically stage only `queue_workers` and
 `host_global_session_cap`. It is not a generic YAML editor and never applies or
-restarts the daemon. Bearer authorization cannot be attributed to a verified
+restarts the daemon. The access token cannot be attributed to a verified
 person. Environment values take precedence; when either key is shadowed the UI
-requires explicit acknowledgement that restart alone will not make YAML win.
+requires explicit acknowledgement that the environment setting will still
+override the saved value after a restart.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -598,7 +608,7 @@ client only hints field formats. Each save records an audit row.
 
 Each agent runs in its own persistent workspace inside the org directory. After `happyranch init-agent`, each workspace contains:
 
-- `CLAUDE.md` (Claude) or `AGENTS.md` (Codex/opencode/Pi) — agent identity, system prompt, available repos
+- A regular `AGENTS.md` plus a raw relative `CLAUDE.md -> AGENTS.md` link for every built-in executor — agent identity, system prompt, available repos. Startup refuses an incomplete or noncanonical pair before executor launch; repair it with `happyranch init-agent <agent>`.
 - `.claude/settings.json` + `.claude/skills/` (Claude) — permissions and skills
 - `.agents/skills/` (Codex/opencode/Pi) — shared skills tree
 - `opencode.json` (opencode only) — `permission.bash` map

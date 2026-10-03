@@ -37,6 +37,8 @@ from runtime.daemon.sessions import SessionTracker
 from runtime.infrastructure.database import Database
 from runtime.models import TaskRecord, TaskStatus, TokenUsage
 from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+from runtime.orchestrator.context_builder import ContextBuilder
 from runtime.orchestrator.executors import ExecutorResult
 from runtime.orchestrator.host_supervisor import (
     AdmissionRequest,
@@ -46,6 +48,7 @@ from runtime.orchestrator.host_supervisor import (
 )
 from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.teams import TeamsRegistry
+from runtime.orchestrator.workspace_adapters import write_canonical_instruction_pair
 from runtime.platform.session_backend import (
     Capability,
     CapabilityLevel,
@@ -212,12 +215,22 @@ class _RecordingExecutor:
         ]
         self._observer = observer
         self.calls: list[dict] = []
+        self.spec_calls: list[dict] = []
         self.lock = threading.Lock()
 
     def set_invocation_context(self, **kwargs):
         pass
 
-    def build_launch_spec(self, *, workspace, prompt, session_id=None, model=None, org_slug=None, timeout_seconds=1800) -> LaunchSpec:
+    def build_launch_spec(
+        self, *, workspace, prompt, session_id=None, model=None,
+        resume_session_id=None, org_slug=None, timeout_seconds=1800,
+    ) -> LaunchSpec:
+        self.spec_calls.append(
+            {
+                "session_id": session_id,
+                "resume_session_id": resume_session_id,
+            }
+        )
         return LaunchSpec(argv=("fake-cli",), cwd=str(workspace), env={})
 
     def verify_launch_ready(self) -> str | None:
@@ -256,7 +269,10 @@ class _RaisingSpecExecutor(_RecordingExecutor):
     argv gate etc.) — the producer fails closed and must still clear the
     SessionTracker control/session."""
 
-    def build_launch_spec(self, *, workspace, prompt, session_id=None, model=None, org_slug=None, timeout_seconds=1800) -> LaunchSpec:
+    def build_launch_spec(
+        self, *, workspace, prompt, session_id=None, model=None,
+        resume_session_id=None, org_slug=None, timeout_seconds=1800,
+    ) -> LaunchSpec:
         raise RuntimeError("argv gate refused")
 
 
@@ -283,14 +299,20 @@ def _seed_org(paths: OrgPaths, tmp_path: Path, test_settings: Settings) -> None:
     (paths.root / "org" / "config.yaml").write_text("timezone: Asia/Shanghai\n")
     # Protocol skill sources for the system-contract materializer.
     proto = test_settings.get_bundled_skills_dir()
-    for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "wake", "schedule"):
+    for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "wake", "schedule", "workspace-cleanup"):
         src = proto / sid
         src.mkdir(parents=True, exist_ok=True)
         (src / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
     ws = paths.workspaces_dir / _AGENT
-    ws.mkdir(parents=True, exist_ok=True)
-    (ws / "task_history.md").write_text("# Task History: dev_agent\n\n")
-    (ws / "agent.yaml").write_text("executor: claude\n")
+    ContextBuilder(test_settings, paths, slug="test").ensure_workspace_ready(
+        ws, _AGENT, "Build software.", provider="claude",
+    )
+    # U0 imports this fixture and launches both registered agents. Keep the
+    # manager's narrower fixture shape while using the production pair writer.
+    write_canonical_instruction_pair(
+        paths.workspaces_dir / "engineering_head",
+        "Manage the engineering team.\n",
+    )
     # NOTE: no pre-created skill directories — the canonical-store
     # SymlinkMaterializer creates the start-task link + readiness marker
     # during materialization; a pre-created ordinary dir at the link path
@@ -299,11 +321,20 @@ def _seed_org(paths: OrgPaths, tmp_path: Path, test_settings: Settings) -> None:
 
 def _make_orch(tmp_path: Path, backend: _FakeBackend, executor: _RecordingExecutor,
                monkeypatch, *, max_retry_attempts: int = 0, backoff_seconds=()):
+    from runtime.daemon import task_scratch_report as reports
+    from tests.test_task_scratch_report import _proc
+    monkeypatch.setattr(reports, "_PROC_ROOT", _proc(tmp_path))
+    monkeypatch.setattr(reports, "_STARTED_MONOTONIC", 0)
     test_settings = Settings(project_root=tmp_path / "proj")
     rt = tmp_path / "runtime"
     paths = OrgPaths(root=rt / "orgs" / "test")
     _seed_org(paths, tmp_path, test_settings)
     db = Database(paths.db_path)
+    # This harness intentionally constructs Orchestrator directly instead of
+    # entering shipping startup or DaemonState.add_org. Establish the same
+    # authenticated empty-selector prerequisite those lifecycle seams publish
+    # before any real launch; launch policy resolution itself stays read-only.
+    AuthorityPolicyStore(db).ensure_authority_selector("engineering")
     orch = Orchestrator(
         db=db, settings=test_settings, paths=paths, slug="test",
         teams=TeamsRegistry.load(paths.root),
@@ -363,6 +394,8 @@ def test_task_producer_contained_success_lifecycle(tmp_path, monkeypatch):
     # body (the supervisor's AdmissionRequest.on_started owns the PID), no
     # internal 429 retry.
     assert len(executor.calls) == 1
+    assert len(executor.spec_calls) == 1
+    assert executor.spec_calls[0]["resume_session_id"] is None
     call = executor.calls[0]
     assert call["running"] is backend.last_running
     assert call["on_started"] is None
@@ -385,6 +418,24 @@ def test_task_producer_contained_success_lifecycle(tmp_path, monkeypatch):
     assert tracker.get_cancel_control(task_id, _AGENT) is None
     assert tracker.get_pid(task_id, _AGENT) is None
     assert tracker.get_active(task_id, _AGENT) is None
+
+
+def test_recording_executor_keeps_runtime_and_provider_resume_ids_distinct(tmp_path):
+    """The fake matches the real build_launch_spec recovery/resume signature."""
+    executor = _RecordingExecutor()
+    executor.build_launch_spec(
+        workspace=tmp_path,
+        prompt="recover completion",
+        session_id="runtime-session",
+        resume_session_id="provider-session",
+    )
+
+    assert executor.spec_calls == [
+        {
+            "session_id": "runtime-session",
+            "resume_session_id": "provider-session",
+        }
+    ]
 
 
 def test_task_producer_429_retry_reacquires_fresh_handle(tmp_path, monkeypatch):
@@ -546,14 +597,6 @@ def test_session_tracker_cancel_control_lifecycle():
     assert tracker.get_pid("T-1", "dev_agent") is None
     assert tracker.get_active("T-1", "dev_agent") is None
     assert calls == []
-
-
-def test_cancel_route_invokes_opaque_control_not_pid_signal(tmp_path, monkeypatch):
-    """The /tasks/{id}/cancel route invokes the SessionTracker opaque control
-    (off the event loop) for a wired session and NEVER signals its PID."""
-    # Covered deterministically by test_cancel_route_invokes_control_and_skips_pid_kill
-    # below (the async route test); this sync marker documents the contract.
-    assert True
 
 
 @pytest.mark.asyncio
@@ -1022,3 +1065,153 @@ def test_supervisor_on_terminal_fires_on_cancelled_while_queued():
     assert outcome.cancelled_while_queued is True
     assert len(hook_calls) == 1
     assert hook_calls[0] is outcome
+
+
+@pytest.mark.parametrize("mode", ["terminal", "nonterminal", "newer", "observer_error", "publisher_error",
+                                  "recovery", "revisit", "linked", "pid", "root", "cwd", "fd"])
+def test_task_producer_real_scratch_report(tmp_path, monkeypatch, mode):
+    from runtime.daemon import task_scratch_report as reports, task_scratch_reclamation
+    from runtime.orchestrator import task_scratch
+    from tests.test_task_scratch_report import _snapshot
+
+    backend = _FakeBackend()
+    orch, supervisor, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
+    task_id = _seed_task(db)
+    workspace = orch._paths.workspaces_dir / _AGENT
+    events = []
+    snapshot = None
+    observation_checks = []
+    original_insert = db.insert_audit_log
+    supervisor._publisher = lambda receipt: events.append("receipt")
+    clear = tracker.clear_if_active_session
+
+    def record_clear(*args, **kwargs):
+        events.append("clear")
+        count = events.count("clear")
+        assert backend.calls["finish"] == count
+        assert supervisor._admission.released_total() == count - 1
+        return clear(*args, **kwargs)
+    monkeypatch.setattr(tracker, "clear_if_active_session", record_clear)
+
+    def audit(task_id, agent, action, payload=None, **kwargs):
+        if action == reports.AUDIT_ACTION:
+            events.append("report")
+            count = events.count("report")
+            observation_checks.append((
+                task_scratch._ACTIVE.get() is None,
+                backend.calls["finish"] == count,
+                supervisor._admission.released_total() == count,
+                supervisor.active_count() == 0,
+                snapshot == _snapshot(workspace),
+            ))
+            if mode == "publisher_error":
+                raise RuntimeError("audit unavailable")
+        return original_insert(task_id, agent, action, payload, **kwargs)
+    monkeypatch.setattr(db, "insert_audit_log", audit)
+    dormant_consumer_calls = []
+    executor_calls = []
+
+    def forbid_dormant_consumer(*args, **kwargs):
+        dormant_consumer_calls.append((args, kwargs))
+        raise AssertionError("dormant synchronous consumer called")
+
+    def forbid_executor(*args, **kwargs):
+        executor_calls.append((args, kwargs))
+        raise AssertionError("ledger executor called")
+
+    # These are the dormant consumer's actual module-global lookup sites.
+    # The real producer lifecycle must keep both unreachable in every mode.
+    monkeypatch.setattr(
+        task_scratch_reclamation,
+        "collect_revalidate_seal_consume_disposable",
+        forbid_dormant_consumer,
+    )
+    monkeypatch.setattr(task_scratch_reclamation, "execute_ledger", forbid_executor)
+
+    def callback():
+        nonlocal snapshot
+        scratch = task_scratch._ACTIVE.get()
+        assert scratch is not None
+        for index in range(256):
+            (scratch.root / str(index)).write_bytes(b"x" * 8192)
+        (workspace / "repos").mkdir(exist_ok=True)
+        (workspace / "repos/keep").write_bytes(b"repository")
+        (scratch.root.parent / "sibling").mkdir(exist_ok=True)
+        (scratch.root.parent / "sibling/keep").write_bytes(b"sibling")
+        if mode != "nonterminal":
+            db.update_task(task_id, status=TaskStatus.COMPLETED)
+        if mode == "newer":
+            tracker.set_active(task_id, _AGENT, "new-session")
+            tracker.set_pid(task_id, _AGENT, "new-session", 8888)
+        if mode == "recovery":
+            db.update_task_active_chain(task_id, '{"state":"pending"}')
+        elif mode == "revisit":
+            db.insert_task(TaskRecord(id="TASK-RETRY", brief="retry", assigned_agent=_AGENT,
+                current_session_id="retry", status=TaskStatus.IN_PROGRESS, revisit_of_task_id=task_id))
+        elif mode == "linked":
+            db.update_task(task_id, blocked_on_job_ids='["JOB-MISSING"]')
+        elif mode == "pid":
+            db.update_task(task_id, executor_pid=42)
+        elif mode in {"root", "cwd", "fd"}:
+            path = reports._PROC_ROOT / "42" / ("fd/3" if mode == "fd" else mode)
+            if path.is_symlink():
+                path.unlink()
+            path.symlink_to(scratch.root)
+        snapshot = _snapshot(workspace)
+        return {}
+
+    executor = _RecordingExecutor(observer=callback)
+    monkeypatch.setattr(orch, "_build_executor", lambda _: executor)
+    if mode == "observer_error":
+        monkeypatch.setattr(reports, "_identity", lambda *a: (_ for _ in ()).throw(OSError("observation failed")))
+    try:
+        orch.run_step(task_id)
+        assert backend.calls["finish"] == 1
+        assert supervisor._admission.admitted_total() == supervisor._admission.released_total() == 1
+        assert supervisor.active_count() == 0
+        assert events == ["receipt", "clear", "report"]
+        assert observation_checks == [(True,) * 5]
+        rows = [row for row in db.get_audit_logs(task_id) if row["action"] == reports.AUDIT_ACTION]
+        if mode == "publisher_error":
+            assert rows == []
+        else:
+            assert len(rows) == 1
+            payload = rows[0]["payload"]
+            expected = {"terminal": "would_reclaim", "nonterminal": "retain",
+                        "newer": "retain", "observer_error": "unavailable"}.get(mode, "retain")
+            assert payload["decision"] == expected, payload["reasons"]
+            assert payload["actual_reclaimed_bytes"] == payload["actual_reclaimed_inodes"] == 0
+            assert payload["source"] == "teardown" and payload["report_only"]
+            if mode == "nonterminal":
+                assert "nonterminal_or_unresolved_lineage" in payload["reasons"]
+            retention = {"newer": "active_session", "recovery": "nonterminal_or_unresolved_lineage",
+                         "revisit": "nonterminal_or_unresolved_lineage", "linked": "linked_job_authority_unavailable",
+                         "pid": "executor_pid_live_or_ambiguous", "root": "process_root_reference",
+                         "cwd": "process_cwd_reference", "fd": "open_fd_reference"}
+            if mode in retention:
+                assert retention[mode] in payload["reasons"]
+        if mode == "newer":
+            assert tracker.get_active(task_id, _AGENT) == "new-session"
+            assert tracker.get_pid(task_id, _AGENT) == 8888
+        else:
+            assert tracker.get_active(task_id, _AGENT) is None
+        assert db.get_task(task_id).status in (TaskStatus.COMPLETED, TaskStatus.FAILED)
+        assert not dormant_consumer_calls
+        assert not executor_calls
+        if mode == "terminal":
+            # A second real invocation creates another append-only observation;
+            # fixture settlement supplies terminal state, never production edits.
+            db.update_task(task_id, status=TaskStatus.PENDING)
+            orch.run_step(task_id)
+            repeated = [row for row in db.get_audit_logs(task_id) if row["action"] == reports.AUDIT_ACTION]
+            assert len(repeated) == 2
+            assert repeated[0]["payload"]["observation_id"] != repeated[1]["payload"]["observation_id"]
+            assert all(row["payload"]["decision"] == "would_reclaim" for row in repeated)
+            assert events == ["receipt", "clear", "report"] * 2
+            assert observation_checks == [(True,) * 5] * 2
+            assert supervisor._admission.released_total() == 2
+            assert supervisor.active_count() == 0
+            assert not dormant_consumer_calls
+            assert not executor_calls
+    finally:
+        db.close()

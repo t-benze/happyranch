@@ -4,7 +4,7 @@ This rollout is manual and restart-required. It does not change the provider
 ceiling (8), thread workers (4), per-session enforcement envelopes, CPU quota,
 or the aggregate `happyranch.slice`.
 
-For ordinary staging, a local operator may use Settings → Daemon / Capacity.
+For ordinary staging, a local operator may use Settings → Capacity.
 The page requires the shared daemon bearer; this bearer-based authorization
 cannot be attributed to a verified person. It stages the two values together,
 never applies them live, and never offers a browser restart. When an environment

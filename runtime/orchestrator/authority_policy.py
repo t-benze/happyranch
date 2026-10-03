@@ -42,7 +42,106 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
+from enum import StrEnum
+
+from runtime.models import (
+    AUTHORITY_POLICY_V2_ASSESSMENT_OUTCOMES,
+    AUTHORITY_POLICY_V2_EVALUATION_DIAGNOSTIC_CODES,
+    AuthorityPolicyV2Assessment,
+)
+
+
+# These v2 values are deliberately advisory until a later, persisted v2
+# consumer authenticates its launch binding.  They do not alter the legacy
+# policy, phrase contract, evaluator, or continuation hook in this module.
+AUTHORITY_POLICY_V2_CONTRACT_ID = "authority_policy_v2"
+AUTHORITY_POLICY_V2_CONTRACT_VERSION = "v2"
+
+
+class AuthorityPolicyV2AssessmentOutcome(StrEnum):
+    """Clause-free deterministic result of the two v2 applicability fields."""
+
+    ESCALATE_APPLIES = "escalate_applies"
+    CONTINUE_APPLIES = "continue_applies"
+    NEITHER_APPLY = "neither_apply"
+    UNCERTAIN = "uncertain"
+    INVALID = "invalid"
+
+
+def derive_authority_policy_v2_assessment_outcome(
+    what_to_escalate: AuthorityPolicyV2Assessment | dict[str, object] | object,
+    what_not_to_escalate: AuthorityPolicyV2Assessment | dict[str, object] | object,
+) -> AuthorityPolicyV2AssessmentOutcome:
+    """Apply the frozen v2 precedence without consulting prose or legacy clauses.
+
+    This helper is intentionally only value-layer logic.  A later consumer
+    must authenticate the persisted session/release/result identity before it
+    can use the derived outcome for any lifecycle operation.
+    """
+    try:
+        escalate = AuthorityPolicyV2Assessment.model_validate(what_to_escalate)
+        continue_assessment = AuthorityPolicyV2Assessment.model_validate(what_not_to_escalate)
+    except Exception:
+        return AuthorityPolicyV2AssessmentOutcome.INVALID
+    assessments = (escalate, continue_assessment)
+    if any(
+        item.applicability == "uncertain"
+        or item.confidence < 80
+        or item.uncertainty_codes
+        for item in assessments
+    ):
+        return AuthorityPolicyV2AssessmentOutcome.UNCERTAIN
+    if escalate.applicability == "applies":
+        return AuthorityPolicyV2AssessmentOutcome.ESCALATE_APPLIES
+    if (
+        escalate.applicability == "does_not_apply"
+        and continue_assessment.applicability == "applies"
+    ):
+        return AuthorityPolicyV2AssessmentOutcome.CONTINUE_APPLIES
+    return AuthorityPolicyV2AssessmentOutcome.NEITHER_APPLY
+
+
+if (
+    {item.value for item in AuthorityPolicyV2AssessmentOutcome}
+    != set(AUTHORITY_POLICY_V2_ASSESSMENT_OUTCOMES)
+):  # pragma: no cover - import-time contract guard
+    raise RuntimeError("v2 assessment outcome vocabulary diverged from models")
+
+
+def authority_policy_v2_persisted_assessment_outcome(
+    carrier: object,
+) -> tuple[AuthorityPolicyV2AssessmentOutcome, str | None]:
+    """Derive the accepted outcome ONCE from a persisted sanitized carrier.
+
+    Returns ``(outcome, diagnostic_code)``.  A valid sanitized
+    ``AuthorityPolicyV2ManagerSelfEvaluation`` snapshot yields its derived
+    outcome and ``None``.  The existing invalid-assessment diagnostic carrier
+    yields the fail-closed ``INVALID`` outcome together with its honest closed
+    error code; it never invents a valid assessment.  The pure precedence
+    helper above is invoked exactly once on every call, and identity
+    authentication of the carrier remains the caller's responsibility.
+    """
+    diagnostic: str | None = None
+    escalate_field: object = None
+    continue_field: object = None
+    if isinstance(carrier, dict) and "_error_code" in carrier:
+        raw_code = carrier.get("_error_code")
+        diagnostic = (
+            raw_code
+            if raw_code in AUTHORITY_POLICY_V2_EVALUATION_DIAGNOSTIC_CODES
+            else "malformed_output"
+        )
+    elif isinstance(carrier, dict):
+        escalate_field = carrier.get("what_to_escalate")
+        continue_field = carrier.get("what_not_to_escalate")
+    else:
+        diagnostic = "malformed_output"
+    outcome = derive_authority_policy_v2_assessment_outcome(
+        escalate_field, continue_field,
+    )
+    return outcome, diagnostic
 
 
 # Closed vocabulary of policy clause actions. The hook executes EXACTLY the
@@ -388,6 +487,47 @@ ENGINEERING_PRE_ESCALATION_POLICY = AuthorityPolicy(
 POLICY_BY_TEAM: dict[str, AuthorityPolicy] = {
     ENGINEERING_PRE_ESCALATION_POLICY.team: ENGINEERING_PRE_ESCALATION_POLICY,
 }
+
+AUTHORITY_POLICY_V2_STARTER_WHAT_TO_ESCALATE = (
+    "Escalate when the next action requires a product or external-contract change, "
+    "significant architecture change, or substantial development effort beyond the "
+    "approved scope. Also escalate decisions explicitly reserved for the founder that "
+    "lack applicable authorization. Existing approval carries through ordinary "
+    "implementation and recovery within its scope."
+)
+AUTHORITY_POLICY_V2_STARTER_WHAT_NOT_TO_ESCALATE = (
+    "Continue implementation, debugging, review corrections, testing, CI waits, "
+    "evidence collection and worker reassignment within approved scope. Failed reviews, "
+    "retries, incomplete worker results and recoverable execution failures alone do not "
+    "require founder escalation. Continue to enforce the required review, QA and merge gates."
+)
+
+
+def _authority_policy_team_display(team: str) -> str:
+    tokens = [token for token in re.split(r"[_-]+", team) if token]
+    if not tokens:
+        raise ValueError("team must contain a displayable token")
+    return " ".join(
+        (chr(ord(token[0]) - 32) if "a" <= token[0] <= "z" else token[0])
+        + token[1:]
+        for token in tokens
+    )
+
+
+def project_authority_policy_v2_starter(team: str) -> dict[str, str]:
+    """Project the one server-owned neutral starter for an exact team."""
+    if (
+        not isinstance(team, str) or not team or len(team) > 128
+        or team != team.strip()
+    ):
+        raise ValueError("team must be a nonblank bounded string")
+    suffix = hashlib.sha256(team.encode("utf-8")).hexdigest()[:16]
+    return {
+        "policy_id": f"team-{suffix}-dual-text",
+        "title": f"{_authority_policy_team_display(team)} escalation policy",
+        "what_to_escalate": AUTHORITY_POLICY_V2_STARTER_WHAT_TO_ESCALATE,
+        "what_not_to_escalate": AUTHORITY_POLICY_V2_STARTER_WHAT_NOT_TO_ESCALATE,
+    }
 
 # Stable evaluator prompt identity. ``PROMPT_VERSION``/``PROMPT_DIGEST`` are
 # part of the candidate claim tuple; a prompt change re-derives every claim

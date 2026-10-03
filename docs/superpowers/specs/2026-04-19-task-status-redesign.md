@@ -364,6 +364,9 @@ Using the existing fake-claude binary scaffold:
 - Assert event ordering via the SSE stream.
 
 **Integration — escalation roundtrip:**
+> **Superseded by THR-033/THR-277:** the historical child-escalated flow below
+> is no longer current. Non-root escalation/refusal becomes FAILED and wakes
+> the parent; only structural roots use `escalated`/resolve-escalation.
 - Child returns `escalate` → child becomes `blocked(ESCALATED)` → parent stays `blocked(DELEGATED)` → `POST /resolve-escalation approve` → child becomes `completed` → parent enqueued → parent runs to `done`.
 
 **Integration — crash recovery:**

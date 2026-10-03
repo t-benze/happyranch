@@ -1433,6 +1433,109 @@ def test_retry_exhaustion_preserves_rate_limited_result():
     assert backend.calls["finish"] == 2  # both attempts finished
 
 
+def test_per_invocation_retry_opt_out_finishes_rate_limit_once():
+    """A bounded recovery suppresses both retry paths, not just the sleep.
+
+    The configured supervisor retains its ordinary retry policy; the explicit
+    opt-out makes the original RATE_LIMITED outcome final after the normal
+    finish/receipt/terminal-hook-before-release ordering.
+    """
+    backend = FakeBackend()
+    sleeps: list[float] = []
+    supervisor, publisher = make_supervisor(
+        backend=backend,
+        max_retry_attempts=1,
+        backoff_seconds=(7.0,),
+        sleep=sleeps.append,
+    )
+    hooks: list[tuple[int | None, int, int, int]] = []
+
+    def rate_limited(_running):
+        return LaunchResult(
+            success=False, duration_seconds=1.0, rate_limited=True, error="429",
+        )
+
+    outcome = supervisor.run(
+        make_request("recovery"),
+        launch_spec=make_spec(),
+        launch_body=rate_limited,
+        allow_retries=False,
+        on_terminal=lambda result: hooks.append((
+            result.attempt if result is not None else None,
+            supervisor._admission.released_total(),
+            backend.calls["finish"],
+            publisher.count(),
+        )),
+    )
+
+    assert outcome.terminal_reason is TerminalReason.RATE_LIMITED
+    assert outcome.attempt == 0
+    assert backend.calls["prepare"] == backend.calls["launch"] == 1
+    assert backend.calls["finish"] == 1
+    assert publisher.count() == 1
+    assert sleeps == []
+    # Hook observes the final finish and receipt before the only lease release.
+    assert hooks == [(0, 0, 1, 1)]
+    assert supervisor._admission.admitted_total() == 1
+    assert supervisor._admission.released_total() == 1
+
+    # Default calls still take the configured retry path.
+    ordinary = supervisor.run(
+        make_request("ordinary"), launch_spec=make_spec(), launch_body=rate_limited,
+    )
+    assert ordinary.terminal_reason is TerminalReason.RATE_LIMITED
+    assert ordinary.attempt == 1
+    assert backend.calls["launch"] == 3
+    assert sleeps == [7.0]
+
+
+def test_final_prelaunch_validator_abandons_without_changing_ordinary_validation():
+    """The opt-in final hook fences a prepared recovery handle only.
+
+    Ordinary callers retain one pre-prepare validator invocation and never
+    receive a final hook implicitly.
+    """
+    backend = FakeBackend()
+    supervisor, _ = make_supervisor(backend=backend)
+    pre_checks: list[str] = []
+    final_checks: list[str] = []
+
+    def final_recovery_check() -> None:
+        final_checks.append("recovery")
+        raise RuntimeError("recovery ownership expired")
+
+    refused = supervisor.run(
+        make_request("recovery"),
+        launch_spec=make_spec(),
+        launch_body=_ok_body,
+        pre_launch_validator=lambda: pre_checks.append("recovery"),
+        final_prelaunch_validator=final_recovery_check,
+    )
+
+    assert refused.terminal_reason is TerminalReason.FAILURE
+    assert "final pre-launch validation failed: recovery ownership expired" in (refused.error or "")
+    assert pre_checks == ["recovery"]
+    assert final_checks == ["recovery"]
+    assert backend.calls["prepare"] == 1
+    assert backend.calls["abandon"] == 1
+    assert backend.calls["launch"] == backend.calls["finish"] == 0
+    assert supervisor._admission.admitted_total() == supervisor._admission.released_total() == 1
+
+    ordinary = supervisor.run(
+        make_request("ordinary"),
+        launch_spec=make_spec(),
+        launch_body=_ok_body,
+        pre_launch_validator=lambda: pre_checks.append("ordinary"),
+    )
+
+    assert ordinary.terminal_reason is TerminalReason.SUCCESS
+    assert pre_checks == ["recovery", "ordinary"]
+    assert final_checks == ["recovery"]
+    assert backend.calls["prepare"] == 2
+    assert backend.calls["launch"] == 1
+    assert backend.calls["finish"] == 1
+
+
 # ── cleanup error discipline ─────────────────────────────────────────
 
 

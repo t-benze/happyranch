@@ -136,8 +136,10 @@ export const mockTasksApi: TasksApi = {
   useTasksInfiniteList: () =>
     staticInfinite({ tasks: FIXTURES, next_cursor: null }),
   useTasksRoots: () => ok({ tasks: ROOT_FIXTURES }),
-  useTasksRootsInfinite: () =>
-    staticInfinite({ tasks: ROOT_FIXTURES, next_cursor: null }),
+  useTasksRootsInfinite: (params) =>
+    staticInfinite({ tasks: ROOT_FIXTURES.filter((task) =>
+      (!params?.status || task.status === params.status) &&
+      (!params?.assigned_agent || task.assigned_agent === params.assigned_agent)), next_cursor: null }),
   useTask: (taskId) =>
     ok(FIXTURES.find((t) => t.task_id === taskId) ?? FIXTURES[0]),
   useTaskRecall: () => ok(RECALL_TREE),

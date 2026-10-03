@@ -17,7 +17,7 @@ Design contract:
           --db <org>/happyranch.db --epoch 2026-08-26T14:25:23Z --mode all
 
 * STDLIB-ONLY. No new dependency. Reuses the pure resolver
-  ``runtime/daemon/thread_mentions.py`` (parse_mentions / valid_mentions /
+  ``runtime/infrastructure/thread_mentions.py`` (parse_mentions / valid_mentions /
   resolve_wake_set) for the pre-change replay.
 * DETERMINISTIC. All windows are half-open ``[start, end)`` over parsed UTC
   datetimes; ``as_of`` is explicit (defaults to now only at the CLI boundary,
@@ -855,7 +855,7 @@ def replay_baseline(
         for row in reply_in_window
     }
 
-    from runtime.daemon.thread_mentions import (  # pure, local
+    from runtime.infrastructure.thread_mentions import (  # pure, local
         parse_mentions, resolve_wake_set, valid_mentions,
     )
 

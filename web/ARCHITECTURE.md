@@ -7,7 +7,7 @@ design and `web/DESIGN_SYSTEM.md` for the design-system migration plan.
 ## Layers (strict)
 
 1. **`src/lib/api/<X>.ts`** — Daemon route mirror. One TS module per
-   `src/daemon/routes/<X>.py`. Pure functions over a shared `request()` helper.
+   `runtime/daemon/routes/<X>.py`. Pure functions over a shared `request()` helper.
    Returns typed objects. No React.
 2. **`src/design-system/`** — Code-owned design system. Replaces the previous
    `src/components/` folder. Splits into:
@@ -31,8 +31,9 @@ design and `web/DESIGN_SYSTEM.md` for the design-system migration plan.
    domain. Owns pages, dialogs, and TanStack Query hooks. May import only from
    `@/lib/`, `@/design-system/`, `@/shared/`, and `@/hooks/`. **No
    cross-feature imports.**
-5. **`src/lib/utils.ts`** — `cn` helper for class-name composition (used by
-   primitives only).
+5. **`src/lib/`** — Feature-neutral helpers, including `utils.ts` (`cn`) and
+   `modelClassification.ts` (the canonical token-rollup model labels shared by
+   Usage and Dashboard).
 
 ## Boundary rule
 
@@ -44,6 +45,142 @@ design and `web/DESIGN_SYSTEM.md` for the design-system migration plan.
 > `@/shared/` modules may import hooks, lib, and design-system but never
 > `@/features/`. Primitives may not import patterns, layouts, hooks, or
 > `@/lib/api`. Patterns may import primitives but not layouts.
+
+The repository-local `feature-boundaries/no-cross-feature-imports` ESLint rule
+mechanically checks every static import and export-from declaration below
+`src/features/<domain>/`. It resolves both `@/features/<domain>/...` aliases
+and relative paths, allows same-domain and neutral-layer edges, and remains
+active when a nearby comment disables `no-restricted-imports`. Type-only
+imports are static declarations and are covered. Runtime `import()` expressions
+are intentionally excluded because they are non-static loading; ordinary lint,
+typecheck, build, and tests still cover their syntax and resolution.
+
+## Internationalization (i18n)
+
+Web copy uses the first-party typed contract in `src/lib/i18n/` (`locale`,
+`catalog`, `format`, `coverage`) plus the `I18nProvider` in `src/hooks/i18n.tsx`
+(`<html lang>`, `setLocale`, `t`/`render`). English (`en`) and Simplified
+Chinese (`zh-CN`) catalogs are static and co-loaded; keys are typed, parameters
+are named, and plurals declare explicit per-locale forms with a parity check.
+
+The initial locale is resolved synchronously before the first React text
+(`bootstrapDocumentLocale` in `src/main.tsx`) from the saved
+`happyranch.ui.locale` value; production runs in preview mode, so an unset
+preference renders English regardless of the environment. That one resolution
+is handed through `App` → `AppShell` → `I18nProvider` (`initialResolution`) so
+the provider never rereads a changed adapter snapshot. Storage failures degrade
+to an in-memory session with an honest persistence result, and same-origin
+`storage` events sync other tabs without write loops. Persistence
+acknowledgements are sequenced, so a superseded write, an external change, or
+unmount can never report a stale durable success.
+
+Adapter ownership (`LocalePreferenceAdapter.authority`) decides who owns the
+persisted choice: the browser adapter keeps `localStorage` authoritative and
+consumes cross-tab events, while a `native` adapter's injected snapshot is
+authoritative and browser values/events are ignored so a stale origin-scoped
+value cannot override it.
+
+`src/lib/format.ts` remains the canonical display formatter; the explicit-locale
+interfaces in `src/lib/i18n/format.ts` delegate to it and do not fork a competing
+implementation (`formatCount` takes an OPTIONAL locale so legacy callers keep
+the host-default behaviour). An unexpected runtime gap renders the English
+message with English grammar (`resolveMessage` reports the supplying catalog
+locale), never a raw key. **W2a** translated the mounted shell (AppBar titles,
+Sidebar nav/aria/org-switcher/account, root loading and NotFound, the
+ErrorBoundary fallback copy, AddOrgDialog, and the shared help/palette
+presentation) and added CJK-capable SYSTEM font fallbacks to the tokens.
+**W2b** translated the onboarding route (`features/onboarding/OnboardingPage.tsx`,
+`ConnectRuntimeStep.tsx`) and the shared `shared/connect/ConnectFlow.tsx`,
+extracting the single `lib/addOrgError.ts` classifier consumed by both
+AddOrgDialog and onboarding. Because ConnectFlow is shared, its Settings ▸
+Executors mount is localized too. **W2c** translated the Settings surface
+(`features/settings/SettingsPage.tsx` header/sub-nav/loading/error/panel copy and
+the Assistant, Organization, Executors/custom-profiles/binaries and Daemon /
+Capacity section bodies; raw daemon detail, identifiers, config keys and every
+capacity number stay verbatim; the Work Hours-owned `EligibilityEditorDialog`
+stayed English until W4 and is translated by W4b) and built the client-only Settings ▸ Preferences
+language selector (`sections/PreferencesSection.tsx`). `SettingsPage` mounts the
+`preferences` route OUTSIDE the `useSettings` loading/error/data gate, so it
+works while the settings API is loading, failing or empty; the other panels
+keep that gate. Until W3b-2 a `VITE_ENABLE_I18N_PREFERENCES` build gate
+(`languagePreferenceGate.ts`, now removed) kept the selector out of ordinary
+production builds.
+**W3a** translated the mounted Dashboard and Threads route families (`features/dashboard/**`, `features/threads/**` list/detail/composer/strips/dialogs and the shared `shared/threads/NewThreadDialog.tsx` it mounts); pure design-system patterns (Composer, ThreadHeader, InboxRow, StatValue, CrescentMoonBadge, RecipientsInput, MentionTextarea, …) take optional localized label props with English defaults, so their other callers are unchanged. Thread errors are held as locale-neutral `ThreadErrorView` descriptors (`lib/threadErrors.ts`: mapped catalog key/params, or `raw` text rendered byte-for-byte even when empty or equal to a catalog string) and rendered at render time. Authored thread titles, message Markdown, names, IDs, filenames/hrefs, raw delivery payloads and machine values stay verbatim; a locale switch keeps drafts, attachments, selection, open dialogs and focus and issues no request. W3a browser evidence runs `scripts/w3a-core-browser-evidence.mjs` against the ORDINARY dist only (storage-event switching, no in-app instrumentation); since W3b-2 its gate case G asserts the ordinary bundle contains the Preferences selector, `/settings/preferences` renders it, and an unset preference on a Chinese navigator stays English (the former preview-dist positive control is gone with the flag).
+**W3b-1** translated the mounted Tasks route family (`features/tasks/**`: list/detail panes, filters, status/rollup/fan-out presentation, states and the owned Cancel/Revisit/ResolveEscalation dialogs). `StatusBadge` takes an optional localized `waitingLabels` prop with an English default (Jobs/TaskCard callers unchanged). Dialog errors are `TaskErrorView` descriptors (`features/tasks/strings.ts`: mapped key; an unmapped daemon code or, with no code, a non-empty string diagnostic rendered verbatim; otherwise the localized fallback) rendered at render time; briefs, notes, names, IDs, machine values, unknown flavors/work-status states and raw event actions/payloads stay verbatim, and group/lineage React keys are locale-neutral so a switch keeps rows, dialogs, drafts and focus with no request. Browser evidence: `scripts/w3b-tasks-browser-evidence.mjs` against the ORDINARY dist.
+**W3b-2** translated the mounted Jobs route family (`features/jobs/**`: list chrome/status groups/callout/columns/relative age, detail states/actions/command card/cascade/gated notice/rail/output, and the owned Run/Reject dialogs). Daemon values (IDs, titles, script text, rationale, agent names, status tokens, `exit <code>`, stdout/stderr, reasons) stay verbatim. Run/Reject/Stop errors are `JobErrorView` descriptors (`features/jobs/strings.ts` `classifyJobError`, the same boundary as `classifyTaskError`). W3b-2 also enabled the opt-in language preview: Settings ▸ Preferences ▸ Language is mounted in ordinary builds, an unset preference stays English (preview mode never reads the browser language), and the selector discloses that secondary pages may still appear in English. Browser evidence: `scripts/w3b-jobs-browser-evidence.mjs` against the ORDINARY dist.
+
+**W4a-1** translated the mounted Runtime Health and Dreams routes (`features/health/HealthPage.tsx`: header, history-window toggle, stat cards, uptime/relative-age units, loop and HTTP-latency tables, trends; `features/dreams/**`: header eyebrow plural, feed, status pills, counts, quiet state, overview rail and the dream detail drawer with its candidate review gate). Daemon values (loop names, route templates, dream IDs, agent names, local dates, summaries, transcripts, error text, candidate title/slug/topic/rationale/body, KB slugs, unknown status tokens) stay verbatim. Accept/Dismiss errors are `DreamErrorView` descriptors (`features/dreams/strings.ts` `classifyDreamError`, the same F1 boundary as `classifyJobError`); `DREAM_STRINGS` is replaced by `dreams.*` catalog keys. Browser evidence: `scripts/w4a-browser-evidence.mjs` against the ORDINARY dist; its `API_ROUTES`/`VIEW_ROUTES`/`SWITCH_ROUTES` tables are extended by later W4 slices (W4c Agents/Skills shipped; W4d artifacts/usage).
+
+**W4b** translated the mounted Todos (`features/todos/**`: list, detail, status pills, rows, recurrence/timezone presentation, Confirm/Edit dialogs), Work Hours (`features/work-hours-config/**`: overview, wakes, agent detail, TierEditorDialog; plus the Work Hours-owned `shared/work-hours/EligibilityEditorDialog.tsx` that Settings ▸ Organization mounts and its `ErrorPanel`) and Audit (`features/audit/**`: page, timeline, filters and the narrative, whose sentences are catalog templates with interpolation) route families. Agent names, task/schedule IDs, actions, timezones, cron/recurrence values and raw payload/error values stay verbatim; every visible date/time goes through `lib/i18n/format.ts` (`formatDateShapeFor` named shapes; feature-local `Intl.DateTimeFormat('en-US' | 'en-CA')` remains only for timezone-conversion parsing and `<input>` values, enforced by a `format.test.ts` source scan). Count-bearing Todos/Audit copy uses per-locale plural objects selected by a numeric `count`, and the two Work Hours dialogs pass `closeLabel={t('common.close')}`. Error sites use the same F1 boundary through feature-local `strings.ts` classifiers. Browser evidence: route-table rows added to `scripts/w4a-browser-evidence.mjs`.
+
+**W4c** translated the mounted Agents (`features/agents/**`: roster list, agent detail pane/drawer, pending enrollments, AddAgentDialog, TeamEscalationPolicyPage/Card) and Skills (`features/skills/**`: catalog, validation, skill detail + assignment panel, custom-skill list/create/detail) route families. User/daemon values (agent names, roles and team identifiers without translation or title-casing, team-policy bodies, contract ids, digests, skill names/slugs/descriptions/SKILL.md bodies, versions, provenance values) stay verbatim; visible dates/times, including policy release/activation history and custom-skill purge completion, use named shapes in `lib/i18n/format.ts` (`dateTime` for those timestamps; en/zh-CN rendered-state regressions complement the source scan, which rejects direct locale-formatting calls), count-bearing copy uses plural objects, in-scope dialogs pass `closeLabel={t('common.close')}`, and error sites use the F1 boundary through `classifyAgentError` / `classifySkillError`. Below `md` the Agents roster stacks above the detail pane (height-capped, internally scrolling) instead of a fixed 244px rail, so the detail is not squeezed at 390px. The detail main pane uses `max-md:min-h-0` only below `md`; at `md` and up its base computed min-height remains `auto`. Browser evidence: route-table rows added to `scripts/w4a-browser-evidence.mjs`.
+Other route families (W4) and the assistant dock body (W4) remain
+untranslated. The mount-time coverage
+inventory lives in `src/lib/i18n/coverage.ts`: it separates copy-bearing routes
+(root shell `index`, the `*` NotFound catch-all and onboarding — now
+`translated`) from
+copy-free redirects, disambiguates colliding tokens with `<scope>:<token>`
+qualified identities, and lists the ACTUAL mounted dialog components so
+fallback is never mistaken for coverage. Foundation browser evidence runs the
+isolated `src/design-system/i18n/I18nFoundation.stories.tsx` story and the real
+`main.tsx` startup through `scripts/i18n-browser-evidence.mjs` (headless Chrome
+over CDP, no new dependency). W2a shell evidence runs the same real startup
+through `scripts/w2a-shell-browser-evidence.mjs` under an independent
+`I18N_W2A_EVIDENCE` build gate, and W2b onboarding evidence drives the real
+`/onboarding` route through `scripts/w2b-onboarding-browser-evidence.mjs`
+against the ORDINARY build with NO evidence-only instrumentation — locale
+switches use the supported `localStorage` preference + same-origin `storage`
+event because there was no public selector at that time. W2c Preferences evidence runs
+`scripts/w2c-preferences-browser-evidence.mjs` against two builds of the head
+(`--preview-dist` for cases B–I and `--dist`; since W3b-2 removed the
+`VITE_ENABLE_I18N_PREFERENCES` flag both are ordinary builds). Its case A
+asserts the W3b-2 contract on the ordinary dist — the bundle contains the
+Preferences markers, `/settings/preferences` renders the panel, both radios and
+the sub-nav link, and an unset preference stays English (before W3b-2 it
+asserted the redirect and omission); it drives the real radios with CDP input and records focus, node
+identity, `<html lang>`, persistence status and a zero-request switch window,
+plus causal negatives for a wrong locale, a remount and an API write. It also
+drives Settings ▸ Organization and ▸ Executors: an already-visible Work Hours
+success banner must re-translate on a second-tab `storage` switch in both
+directions (same banner/switch/dirty-input nodes, value, focus, one PUT, zero
+switch-window requests), and raw executor diagnostics byte-equal to the English
+fallback must stay verbatim. With `--defect-dist` (a preview build of a head
+that stored the pre-translated banner) the same banner predicate must fail;
+an injected translated diagnostic must fail the raw predicate. Every page installs and asserts the real
+`navigator.language`/`navigator.languages` before app modules; the W1
+production path is built with `I18N_BROWSER_EVIDENCE` so `vite.config.ts`
+injects the test-only `src/test/i18n-evidence-consumer.tsx` next to
+`<AppRoutes />`, and the W2a path injects
+`src/test/w2a-shell-evidence-consumer.tsx` plus a test-only error trigger inside
+the real boundary. The W2a first-commit record is
+read from the ACTUAL committed
+Sidebar/AppBar DOM (a layout-effect capture that is frozen on first connection
+and never overwritten by a later locale correction), together with `<html lang>`
+and the real navigator read-back; `I18N_W2A_EVIDENCE=negative` additionally
+hands the provider a deliberately mismatched locale and corrects it afterwards,
+so the same positive predicate must reject the first shell (causal negative
+control). The W2b harness needs no consumer: it reads the onboarding DOM and
+generated prompt directly. S4-S6 and S8-S10 retain actual focus, stable
+test-only node identity, open phase/mode and raw values across both switch
+directions; every immediately scoped switch window proves zero
+settings/org/connect/mint mutations and zero `/api/` requests. A
+backward-compatible optional `DialogContent.closeLabel` supplies the
+localized accessible name for the built-in close control (defaulting to the
+legacy English `Close`); AddOrgDialog, HelpSheet and CommandPalette pass it from
+their callers and the patterns/primitives stay prop-driven with no locale hook
+import. The palette's container keydown defers Enter to natively-activatable
+descendants (`button`, `a[href]`, `[role="option"]`), so the localized X close
+control closes on Enter without selecting a row while the search input still
+selects the active row; the browser harness exercises this (S19: both locales,
+populated and empty results) and covers the shell/help (S11/S16), AddOrg (S12
+wide-light; S17 zh-narrow-light/en-narrow-dark/zh-wide-dark) and palette (S13
+wide-light; S18 zh-narrow-light/en-narrow-dark/zh-wide-dark) states across the
+observed 1440x900/390x844 light/dark combinations in both switch directions,
+recording the actual `document.activeElement`, retained node identity, open state
+and selection/value before and after each switch plus precisely scoped
+switch-window request assertions (positive receipt 375/375 assertions, 30 PNGs).
+Both env gates are no-ops for every ordinary build. See
+`docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
 
 ## What is intentionally not in here
 

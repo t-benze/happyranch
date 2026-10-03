@@ -62,15 +62,15 @@ def _capacity_context(request: Request) -> dict[str, Any]:
             "producer_envelope": sum(components.values()),
             "producer_components": components,
             "effective_admission_cap": None,
-            "effective_admission_reason": "No active host supervisor capability snapshot is available.",
+            "effective_admission_reason": "HappyRanch cannot currently verify the overall supervised-session limit.",
         }
     live = supervisor.health_snapshot()
     cap = live["admission"]["cap"]
     configured = running.host_global_session_cap
     reason = (
-        "Capability fallback binds below the configured cap because the active backend does not guarantee the complete memory/PID/CPU enforcement family."
+        "The active execution backend cannot enforce every host-safety check, so HappyRanch is using a lower session limit."
         if cap < configured else
-        "The startup-configured host global session cap is binding; the active backend capability does not lower it."
+        "HappyRanch is using the session limit configured at startup; the active execution backend does not require a lower limit."
     )
     return {
         "producer_envelope": supervisor._policy.producer_envelope,
@@ -879,7 +879,13 @@ def put_org_settings(slug: str, org: OrgDep, patch: OrgSettingsPatch) -> Setting
 
     # THR-095: write to DB (transactional per section: upsert + audit row).
     try:
-        write_org_setting_to_db(paths, org.db, patch_raw)
+        if "reviewer_agents" in patch_raw:
+            with org.workflow_authority.supported_change(
+                publisher="put_org_settings:reviewer_agents",
+            ):
+                write_org_setting_to_db(paths, org.db, patch_raw)
+        else:
+            write_org_setting_to_db(paths, org.db, patch_raw)
     except OrgConfigError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -1039,56 +1045,62 @@ async def put_teams(slug: str, org: OrgDep, patch: TeamsPatch) -> dict:
     m = teams.manager_for_team(patch.team)
     original_workers = m.workers
 
-    async with org.teams_lock:
-        for agent in patch.add_workers:
-            try:
-                teams.add_worker(patch.team, agent)
-            except KeyError:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"team {patch.team!r} not found",
-                )
-        for agent in patch.remove_workers:
-            try:
-                teams.remove_worker(patch.team, agent)
-            except KeyError:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"team {patch.team!r} not found",
-                )
+    async with (
+        org.workflow_authority.async_writer_interval(
+            publisher="put_teams",
+        ) as authority_change,
+        org.teams_lock,
+    ):
+        with authority_change.canonical_change():
+            for agent in patch.add_workers:
+                try:
+                    teams.add_worker(patch.team, agent)
+                except KeyError:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"team {patch.team!r} not found",
+                    )
+            for agent in patch.remove_workers:
+                try:
+                    teams.remove_worker(patch.team, agent)
+                except KeyError:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"team {patch.team!r} not found",
+                    )
 
-        # Re-validate consistency
-        try:
-            validate_team_membership(paths, teams)
-        except OrgConsistencyError as exc:
-            # Rollback: restore original workers
-            current = teams.manager_for_team(patch.team).workers
-            added = set(current) - set(original_workers)
-            removed = set(original_workers) - set(current)
-            for agent in added:
-                teams.remove_worker(patch.team, agent)
-            for agent in removed:
-                teams.add_worker(patch.team, agent)
-            raise HTTPException(
-                status_code=409,
-                detail={"code": "teams_consistency_drift", "message": str(exc)},
-            ) from exc
+            # Re-validate consistency
+            try:
+                validate_team_membership(paths, teams)
+            except OrgConsistencyError as exc:
+                # Rollback: restore original workers
+                current = teams.manager_for_team(patch.team).workers
+                added = set(current) - set(original_workers)
+                removed = set(original_workers) - set(current)
+                for agent in added:
+                    teams.remove_worker(patch.team, agent)
+                for agent in removed:
+                    teams.add_worker(patch.team, agent)
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "teams_consistency_drift", "message": str(exc)},
+                ) from exc
 
-        # Supplementary check: worker rows vs agent file declarations
-        worker_drift = _post_flight_worker_agent_drift(paths, teams)
-        if worker_drift:
-            # Rollback: restore original workers
-            current = teams.manager_for_team(patch.team).workers
-            added = set(current) - set(original_workers)
-            removed = set(original_workers) - set(current)
-            for agent in added:
-                teams.remove_worker(patch.team, agent)
-            for agent in removed:
-                teams.add_worker(patch.team, agent)
-            raise HTTPException(
-                status_code=409,
-                detail={"code": "teams_worker_agent_drift", "message": "; ".join(worker_drift)},
-            )
+            # Supplementary check: worker rows vs agent file declarations
+            worker_drift = _post_flight_worker_agent_drift(paths, teams)
+            if worker_drift:
+                # Rollback: restore original workers
+                current = teams.manager_for_team(patch.team).workers
+                added = set(current) - set(original_workers)
+                removed = set(original_workers) - set(current)
+                for agent in added:
+                    teams.remove_worker(patch.team, agent)
+                for agent in removed:
+                    teams.add_worker(patch.team, agent)
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "teams_worker_agent_drift", "message": "; ".join(worker_drift)},
+                )
 
     # Return updated teams list (mirrors GET /teams shape)
     rows = []

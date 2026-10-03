@@ -19,13 +19,17 @@ import { useMemo, useState } from 'react';
 import { useTopThreadTokens } from '@/hooks/tokens';
 import { cn } from '@/lib/utils';
 import { StatValue } from '@/design-system/patterns/StatValue';
-import { toTopRows } from '../topTokens';
+import { useTranslation } from '@/hooks/i18n';
+import type { MessageKey } from '@/lib/i18n';
+import { NO_THREAD_ID, toTopRows } from '../topTokens';
 
-const WINDOWS = [
-  { label: '24h', ms: 24 * 60 * 60 * 1000 },
-  { label: '7d', ms: 7 * 24 * 60 * 60 * 1000 },
-  { label: '30d', ms: 30 * 24 * 60 * 60 * 1000 },
-] as const;
+// `id` is the stable machine identity (React key); `labelKey` is the
+// localized display label resolved at render time.
+const WINDOWS: ReadonlyArray<{ id: string; labelKey: MessageKey; ms: number }> = [
+  { id: '24h', labelKey: 'dashboard.topTokens.window.24h', ms: 24 * 60 * 60 * 1000 },
+  { id: '7d', labelKey: 'dashboard.topTokens.window.7d', ms: 7 * 24 * 60 * 60 * 1000 },
+  { id: '30d', labelKey: 'dashboard.topTokens.window.30d', ms: 30 * 24 * 60 * 60 * 1000 },
+];
 
 const TOP_N = 8;
 // Narrower churn bar than the Usage table's: this panel lives in the ~320px
@@ -35,6 +39,7 @@ const BAR_W = 48; // px — SVG viewport for the churn bar
 const BAR_H = 8;
 
 export function TopTokenThreadsPanel(): JSX.Element {
+  const { t, locale } = useTranslation();
   const [winIdx, setWinIdx] = useState(1); // default 7d
   const win = WINDOWS[winIdx];
   // Stable per window selection — recomputing the `since` string every render
@@ -52,12 +57,12 @@ export function TopTokenThreadsPanel(): JSX.Element {
     <section className="border-border-default bg-surface shadow-pasture-sm rounded-lg border p-5">
       <header className="mb-4 flex items-baseline justify-between">
         <h2 className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
-          Top token threads · {win.label}
+          {t('dashboard.topTokens.title', { window: t(win.labelKey) })}
         </h2>
-        <div className="flex gap-1 font-mono text-xs" role="group" aria-label="Window">
+        <div className="flex gap-1 font-mono text-xs" role="group" aria-label={t('dashboard.topTokens.windowGroup')}>
           {WINDOWS.map((w, i) => (
             <button
-              key={w.label}
+              key={w.id}
               type="button"
               onClick={() => setWinIdx(i)}
               aria-pressed={i === winIdx}
@@ -68,53 +73,59 @@ export function TopTokenThreadsPanel(): JSX.Element {
                   : 'text-text-muted hover:text-text-primary',
               )}
             >
-              {w.label}
+              {t(w.labelKey)}
             </button>
           ))}
         </div>
       </header>
 
       {q.isLoading ? (
-        <p className="text-text-muted text-sm">Loading…</p>
+        <p className="text-text-muted text-sm">{t('dashboard.topTokens.loading')}</p>
       ) : q.isError ? (
-        <p className="text-feedback-danger text-sm">Failed to load token usage.</p>
+        <p className="text-feedback-danger text-sm">{t('dashboard.topTokens.error')}</p>
       ) : rows.length === 0 ? (
-        <p className="text-text-muted text-sm">No token usage in window.</p>
+        <p className="text-text-muted text-sm">{t('dashboard.topTokens.empty')}</p>
       ) : (
         <ul className="space-y-1.5 font-mono text-xs">
-          {rows.map((r) => (
-            <li key={r.threadId} className="flex items-center gap-2">
-              <span className="text-text-primary w-20 shrink-0 truncate" title={r.threadId}>
-                {r.threadId}
-              </span>
-              <svg
-                width={BAR_W}
-                height={BAR_H}
-                className="shrink-0"
-                aria-hidden="true"
-              >
-                <rect
-                  x={0}
-                  y={0}
-                  width={Math.max((r.totalTokens / max) * BAR_W, 1)}
+          {rows.map((r) => {
+            const threadLabel =
+              r.threadId === NO_THREAD_ID ? t('dashboard.topTokens.noThread') : r.threadId;
+            return (
+              <li key={r.threadId} className="flex items-center gap-2">
+                <span className="text-text-primary w-20 shrink-0 truncate" title={threadLabel}>
+                  {threadLabel}
+                </span>
+                <svg
+                  width={BAR_W}
                   height={BAR_H}
-                  rx={1}
-                  className="fill-accent"
+                  className="shrink-0"
+                  aria-hidden="true"
+                >
+                  <rect
+                    x={0}
+                    y={0}
+                    width={Math.max((r.totalTokens / max) * BAR_W, 1)}
+                    height={BAR_H}
+                    rx={1}
+                    className="fill-accent"
+                  />
+                </svg>
+                <StatValue
+                  value={r.totalTokens}
+                  align="inline"
+                  locale={locale}
+                  className="text-text-primary shrink-0"
                 />
-              </svg>
-              <StatValue
-                value={r.totalTokens}
-                align="inline"
-                className="text-text-primary shrink-0"
-              />
-              <StatValue
-                value={r.cacheReadTokens}
-                suffix="cache"
-                align="inline"
-                className="text-text-muted shrink-0"
-              />
-            </li>
-          ))}
+                <StatValue
+                  value={r.cacheReadTokens}
+                  suffix={t('dashboard.topTokens.cache')}
+                  align="inline"
+                  locale={locale}
+                  className="text-text-muted shrink-0"
+                />
+              </li>
+            );
+          })}
         </ul>
       )}
     </section>

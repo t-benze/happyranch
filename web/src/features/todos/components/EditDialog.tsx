@@ -26,21 +26,41 @@ import {
   SelectItem,
 } from '@/design-system/primitives/Select'
 import type { ScheduleRecord, ScheduleEditFields } from '@/lib/api/types'
+import type { MessageKey } from '@/lib/i18n'
+import { useTranslation } from '@/hooks/i18n'
+import { renderTodoError, type TodoErrorView } from '../strings'
+import { ORDINAL_KEYS } from '../recurrence'
 import {
   nextWeeklyOccurrence,
   formatPreviewInTz,
   serializeOneShotInTz,
 } from '../timezone'
 
-const WEEKDAYS = [
-  { value: 'Mon', label: 'Monday' },
-  { value: 'Tue', label: 'Tuesday' },
-  { value: 'Wed', label: 'Wednesday' },
-  { value: 'Thu', label: 'Thursday' },
-  { value: 'Fri', label: 'Friday' },
-  { value: 'Sat', label: 'Saturday' },
-  { value: 'Sun', label: 'Sunday' },
+const WEEKDAYS: { value: string; labelKey: MessageKey }[] = [
+  { value: 'Mon', labelKey: 'todos.weekday.mon' },
+  { value: 'Tue', labelKey: 'todos.weekday.tue' },
+  { value: 'Wed', labelKey: 'todos.weekday.wed' },
+  { value: 'Thu', labelKey: 'todos.weekday.thu' },
+  { value: 'Fri', labelKey: 'todos.weekday.fri' },
+  { value: 'Sat', labelKey: 'todos.weekday.sat' },
+  { value: 'Sun', labelKey: 'todos.weekday.sun' },
 ]
+
+const FREQUENCIES: [string, MessageKey][] = [
+  ['DAILY', 'todos.edit.unit.day'],
+  ['WEEKLY', 'todos.edit.unit.week'],
+  ['MONTHLY', 'todos.edit.unit.month'],
+  ['YEARLY', 'todos.edit.unit.year'],
+]
+
+const ORDINALS = ['first', 'second', 'third', 'fourth', 'fifth', 'last']
+
+/** Locale-neutral local validation error (rendered through `t` each render). */
+function localError(key: MessageKey, timezone?: string): TodoErrorView {
+  return timezone === undefined
+    ? { kind: 'message', key }
+    : { kind: 'message', key, params: { timezone } }
+}
 
 const TIMEZONES = [
   'UTC',
@@ -63,7 +83,8 @@ interface EditDialogProps {
   onOpenChange: (open: boolean) => void
   schedule: ScheduleRecord
   onSave: (fields: ScheduleEditFields) => Promise<void>
-  validationError?: string | null
+  /** Locale-neutral save diagnostic, rendered through `t` on every render. */
+  validationError?: TodoErrorView | null
   conflict?: boolean
   loading?: boolean
 }
@@ -77,6 +98,7 @@ export function EditDialog({
   conflict = false,
   loading = false,
 }: EditDialogProps): JSX.Element {
+  const { t, locale } = useTranslation()
   const isWeekly = schedule.kind === 'weekly'
   const isRecurring = schedule.kind === 'recurring'
   const initialRecurrence = schedule.recurrence ?? {}
@@ -108,9 +130,9 @@ export function EditDialog({
   // Blank by default: merely opening and saving an existing recurrence must
   // never change its server-owned cadence phase.
   const [startDate, setStartDate] = useState('')
-  const [localError, setLocalError] = useState<string | null>(null)
+  const [localErrorView, setLocalError] = useState<TodoErrorView | null>(null)
 
-  const displayedError = localError ?? validationError
+  const displayedError = localErrorView ?? validationError
 
   useEffect(() => {
     setLocalError(null)
@@ -192,23 +214,23 @@ export function EditDialog({
     if (isRecurring) {
       const parsedInterval = Number(interval)
       if (!Number.isInteger(parsedInterval) || parsedInterval < 1) {
-        setLocalError('Repeat interval must be a positive whole number.')
+        setLocalError(localError('todos.edit.error.interval'))
         return
       }
       if (frequency === 'WEEKLY' && recurrenceDays.length === 0) {
-        setLocalError('Choose at least one weekday for a weekly recurrence.')
+        setLocalError(localError('todos.edit.error.weekday'))
         return
       }
       if (frequency === 'MONTHLY' && monthMode === 'date' && (!Number.isInteger(Number(monthDay)) || Number(monthDay) < 1 || Number(monthDay) > 31)) {
-        setLocalError('Choose a calendar date from 1 through 31.')
+        setLocalError(localError('todos.edit.error.monthDay'))
         return
       }
       if (ends === 'on' && !until) {
-        setLocalError('Choose an end date.')
+        setLocalError(localError('todos.edit.error.endDate'))
         return
       }
       if (ends === 'after' && (!Number.isInteger(Number(count)) || Number(count) < 1)) {
-        setLocalError('Occurrence count must be a positive whole number.')
+        setLocalError(localError('todos.edit.error.count'))
         return
       }
       const recurrence: Record<string, string | number | string[] | null> = {
@@ -237,9 +259,7 @@ export function EditDialog({
       fields.timezone = tz
       const fireAtIso = nextWeeklyOccurrence(weekday, weeklyTime, tz)
       if (!fireAtIso) {
-        setLocalError(
-          `This date and time does not exist in ${tz} (for example, during a daylight-saving transition).`,
-        )
+        setLocalError(localError('todos.edit.error.dstGap', tz))
         return
       }
       fields.fire_at = fireAtIso
@@ -247,9 +267,7 @@ export function EditDialog({
       if (fireAtDate && fireAtTime) {
         const iso = serializeOneShotInTz(fireAtDate, fireAtTime, timezone || 'UTC')
         if (!iso) {
-          setLocalError(
-            `This date and time does not exist in ${timezone || 'UTC'} (for example, during a daylight-saving transition).`,
-          )
+          setLocalError(localError('todos.edit.error.dstGap', timezone || 'UTC'))
           return
         }
         fields.fire_at = iso
@@ -262,13 +280,10 @@ export function EditDialog({
   if (conflict) {
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent>
+        <DialogContent closeLabel={t('common.close')}>
           <DialogHeader>
-            <DialogTitle>This Todo was modified</DialogTitle>
-            <DialogDescription>
-              This Todo changed while you were editing it. Reload the page to
-              see the current state before editing again.
-            </DialogDescription>
+            <DialogTitle>{t('todos.edit.conflictTitle')}</DialogTitle>
+            <DialogDescription>{t('todos.edit.conflictBody')}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button
@@ -277,7 +292,7 @@ export function EditDialog({
                 window.location.reload()
               }}
             >
-              Reload
+              {t('todos.edit.reload')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -287,24 +302,21 @@ export function EditDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-md" closeLabel={t('common.close')}>
         <DialogHeader>
-          <DialogTitle>Edit timing</DialogTitle>
-          <DialogDescription>
-            Change when this Todo fires. The original instruction and normalized
-            commitment are not editable — only timing can change here.
-          </DialogDescription>
+          <DialogTitle>{t('todos.edit.title')}</DialogTitle>
+          <DialogDescription>{t('todos.edit.description')}</DialogDescription>
         </DialogHeader>
 
         <div className="mt-4 space-y-4">
           <div className="space-y-1">
-            <Label className="text-fg-subtle text-xs">Normalized commitment</Label>
+            <Label className="text-fg-subtle text-xs">{t('todos.detail.normalized')}</Label>
             <p className="border-border-subtle bg-bg-subtle text-fg rounded border px-3 py-2 text-sm">
               {schedule.normalized_brief}
             </p>
           </div>
           <div className="space-y-1">
-            <Label className="text-fg-subtle text-xs">Original instruction</Label>
+            <Label className="text-fg-subtle text-xs">{t('todos.detail.original')}</Label>
             <p className="border-border-subtle bg-bg-subtle text-fg-muted rounded border px-3 py-2 text-sm italic">
               {schedule.source_instruction}
             </p>
@@ -325,7 +337,7 @@ export function EditDialog({
                 count={count} setCount={setCount}
               />
               <div className="space-y-1">
-              <Label htmlFor="edit-recurrence-start-date">Rephase starting on (optional)</Label>
+              <Label htmlFor="edit-recurrence-start-date">{t('todos.edit.rephase')}</Label>
               <Input
                 id="edit-recurrence-start-date"
                 aria-describedby="edit-recurrence-start-date-help"
@@ -334,14 +346,14 @@ export function EditDialog({
                 onChange={(event) => setStartDate(event.target.value)}
               />
               <p id="edit-recurrence-start-date-help" className="text-fg-muted text-xs">
-                Leave blank to preserve this Todo’s current phase. When set, the server validates the date and derives the first fire.
+                {t('todos.edit.rephaseHelp')}
               </p>
               </div>
             </>
           ) : isWeekly ? (
             <>
               <div className="space-y-1">
-                <Label htmlFor="edit-weekday">Weekday</Label>
+                <Label htmlFor="edit-weekday">{t('todos.edit.weekday')}</Label>
                 <Select value={weekday} onValueChange={setWeekday}>
                   <SelectTrigger id="edit-weekday">
                     <SelectValue />
@@ -349,14 +361,14 @@ export function EditDialog({
                   <SelectContent>
                     {WEEKDAYS.map((d) => (
                       <SelectItem key={d.value} value={d.value}>
-                        {d.label}
+                        {t(d.labelKey)}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-1">
-                <Label htmlFor="edit-weekly-time">Time</Label>
+                <Label htmlFor="edit-weekly-time">{t('todos.edit.time')}</Label>
                 <Input
                   id="edit-weekly-time"
                   type="time"
@@ -368,7 +380,7 @@ export function EditDialog({
           ) : (
             <>
               <div className="space-y-1">
-                <Label htmlFor="edit-fire-date">Date</Label>
+                <Label htmlFor="edit-fire-date">{t('todos.edit.date')}</Label>
                 <Input
                   id="edit-fire-date"
                   type="date"
@@ -377,7 +389,7 @@ export function EditDialog({
                 />
               </div>
               <div className="space-y-1">
-                <Label htmlFor="edit-fire-time">Time</Label>
+                <Label htmlFor="edit-fire-time">{t('todos.edit.time')}</Label>
                 <Input
                   id="edit-fire-time"
                   type="time"
@@ -389,7 +401,7 @@ export function EditDialog({
           )}
 
           <div className="space-y-1">
-            <Label htmlFor="edit-timezone">Timezone</Label>
+            <Label htmlFor="edit-timezone">{t('todos.detail.timezone')}</Label>
             <Select value={timezone} onValueChange={setTimezone}>
               <SelectTrigger id="edit-timezone">
                 <SelectValue />
@@ -407,17 +419,17 @@ export function EditDialog({
           {nextFirePreview && (
             <div className="border-border-subtle bg-bg-subtle rounded border px-3 py-2">
               <span className="text-fg-subtle text-xs">
-                Expected next fire · {nextFirePreview.tz}
+                {t('todos.edit.preview', { timezone: nextFirePreview.tz })}
               </span>
               <p className="text-fg text-sm font-semibold">
-                {formatPreviewInTz(nextFirePreview.date, nextFirePreview.tz)}
+                {formatPreviewInTz(nextFirePreview.date, nextFirePreview.tz, locale)}
               </p>
             </div>
           )}
 
           {displayedError && (
             <div className="border-tier-red bg-tier-red-tint text-tier-red rounded border px-3 py-2 text-sm">
-              {displayedError}
+              {renderTodoError(displayedError, t)}
             </div>
           )}
         </div>
@@ -428,10 +440,10 @@ export function EditDialog({
             onClick={() => onOpenChange(false)}
             disabled={loading}
           >
-            Cancel
+            {t('todos.dialog.dismiss')}
           </Button>
           <Button onClick={handleSave} disabled={loading}>
-            {loading ? 'Saving…' : 'Save changes'}
+            {loading ? t('todos.edit.saving') : t('todos.edit.save')}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -449,15 +461,16 @@ interface RecurringFieldsProps {
 }
 
 function RecurringFields(props: RecurringFieldsProps): JSX.Element {
+  const { t } = useTranslation()
   const toggleDay = (day: string) => props.setDays(props.days.includes(day) ? props.days.filter((d) => d !== day) : [...props.days, day])
   return <>
     <div className="grid grid-cols-2 gap-3">
-      <div className="space-y-1"><Label htmlFor="edit-recurrence-interval">Repeat every</Label><Input id="edit-recurrence-interval" type="number" min="1" value={props.interval} onChange={(e) => props.setInterval(e.target.value)} /></div>
-      <div className="space-y-1"><Label htmlFor="edit-recurrence-frequency">Frequency</Label><Select value={props.frequency} onValueChange={props.setFrequency}><SelectTrigger id="edit-recurrence-frequency"><SelectValue /></SelectTrigger><SelectContent>{[['DAILY','day'],['WEEKLY','week'],['MONTHLY','month'],['YEARLY','year']].map(([value,label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>
+      <div className="space-y-1"><Label htmlFor="edit-recurrence-interval">{t('todos.edit.repeatEvery')}</Label><Input id="edit-recurrence-interval" type="number" min="1" value={props.interval} onChange={(e) => props.setInterval(e.target.value)} /></div>
+      <div className="space-y-1"><Label htmlFor="edit-recurrence-frequency">{t('todos.edit.frequency')}</Label><Select value={props.frequency} onValueChange={props.setFrequency}><SelectTrigger id="edit-recurrence-frequency"><SelectValue /></SelectTrigger><SelectContent>{FREQUENCIES.map(([value, labelKey]) => <SelectItem key={value} value={value}>{t(labelKey)}</SelectItem>)}</SelectContent></Select></div>
     </div>
-    {props.frequency === 'WEEKLY' && <fieldset className="space-y-2"><legend className="text-sm font-medium">Repeat on</legend><div className="flex flex-wrap gap-2">{WEEKDAYS.map((day) => <label key={day.value} className="text-fg flex items-center gap-1 text-sm"><input type="checkbox" checked={props.days.includes(day.value.toUpperCase().slice(0, 2))} onChange={() => toggleDay(day.value.toUpperCase().slice(0, 2))} />{day.label}</label>)}</div></fieldset>}
-    {props.frequency === 'MONTHLY' && <fieldset className="space-y-2"><legend className="text-sm font-medium">Monthly pattern</legend><div className="flex gap-4 text-sm"><label><input type="radio" name="monthly-mode" checked={props.monthMode === 'date'} onChange={() => props.setMonthMode('date')} /> Calendar date</label><label><input type="radio" name="monthly-mode" checked={props.monthMode === 'ordinal'} onChange={() => props.setMonthMode('ordinal')} /> Named weekday</label></div>{props.monthMode === 'date' ? <div className="space-y-1"><Label htmlFor="edit-month-day">Date</Label><Input id="edit-month-day" type="number" min="1" max="31" value={props.monthDay} onChange={(e) => props.setMonthDay(e.target.value)} /></div> : <div className="grid grid-cols-2 gap-3"><div className="space-y-1"><Label htmlFor="edit-month-ordinal">Ordinal</Label><Select value={props.ordinal} onValueChange={props.setOrdinal}><SelectTrigger id="edit-month-ordinal"><SelectValue /></SelectTrigger><SelectContent>{['first','second','third','fourth','fifth','last'].map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select></div><div className="space-y-1"><Label htmlFor="edit-month-weekday">Weekday</Label><Select value={props.ordinalDay} onValueChange={props.setOrdinalDay}><SelectTrigger id="edit-month-weekday"><SelectValue /></SelectTrigger><SelectContent>{WEEKDAYS.map((day) => <SelectItem key={day.value} value={day.value.toUpperCase().slice(0,2)}>{day.label}</SelectItem>)}</SelectContent></Select></div></div>}</fieldset>}
-    <div className="space-y-1"><Label htmlFor="edit-recurrence-time">Time</Label><Input id="edit-recurrence-time" type="time" value={props.time} onChange={(e) => props.setTime(e.target.value)} /></div>
-    <fieldset className="space-y-2"><legend className="text-sm font-medium">Ends</legend><div className="flex flex-wrap gap-3 text-sm"><label><input type="radio" name="recurrence-ends" checked={props.ends === 'never'} onChange={() => props.setEnds('never')} /> Never</label><label><input type="radio" name="recurrence-ends" checked={props.ends === 'on'} onChange={() => props.setEnds('on')} /> On date</label><label><input type="radio" name="recurrence-ends" checked={props.ends === 'after'} onChange={() => props.setEnds('after')} /> After count</label></div>{props.ends === 'on' && <Input aria-label="End date" type="date" value={props.until} onChange={(e) => props.setUntil(e.target.value)} />}{props.ends === 'after' && <Input aria-label="Occurrence count" type="number" min="1" value={props.count} onChange={(e) => props.setCount(e.target.value)} />}</fieldset>
+    {props.frequency === 'WEEKLY' && <fieldset className="space-y-2"><legend className="text-sm font-medium">{t('todos.edit.repeatOn')}</legend><div className="flex flex-wrap gap-2">{WEEKDAYS.map((day) => <label key={day.value} className="text-fg flex items-center gap-1 text-sm"><input type="checkbox" checked={props.days.includes(day.value.toUpperCase().slice(0, 2))} onChange={() => toggleDay(day.value.toUpperCase().slice(0, 2))} />{t(day.labelKey)}</label>)}</div></fieldset>}
+    {props.frequency === 'MONTHLY' && <fieldset className="space-y-2"><legend className="text-sm font-medium">{t('todos.edit.monthlyPattern')}</legend><div className="flex gap-4 text-sm"><label><input type="radio" name="monthly-mode" checked={props.monthMode === 'date'} onChange={() => props.setMonthMode('date')} /> {t('todos.edit.calendarDate')}</label><label><input type="radio" name="monthly-mode" checked={props.monthMode === 'ordinal'} onChange={() => props.setMonthMode('ordinal')} /> {t('todos.edit.namedWeekday')}</label></div>{props.monthMode === 'date' ? <div className="space-y-1"><Label htmlFor="edit-month-day">{t('todos.edit.date')}</Label><Input id="edit-month-day" type="number" min="1" max="31" value={props.monthDay} onChange={(e) => props.setMonthDay(e.target.value)} /></div> : <div className="grid grid-cols-2 gap-3"><div className="space-y-1"><Label htmlFor="edit-month-ordinal">{t('todos.edit.ordinal')}</Label><Select value={props.ordinal} onValueChange={props.setOrdinal}><SelectTrigger id="edit-month-ordinal"><SelectValue /></SelectTrigger><SelectContent>{ORDINALS.map((value) => <SelectItem key={value} value={value}>{t(ORDINAL_KEYS[value])}</SelectItem>)}</SelectContent></Select></div><div className="space-y-1"><Label htmlFor="edit-month-weekday">{t('todos.edit.weekday')}</Label><Select value={props.ordinalDay} onValueChange={props.setOrdinalDay}><SelectTrigger id="edit-month-weekday"><SelectValue /></SelectTrigger><SelectContent>{WEEKDAYS.map((day) => <SelectItem key={day.value} value={day.value.toUpperCase().slice(0,2)}>{t(day.labelKey)}</SelectItem>)}</SelectContent></Select></div></div>}</fieldset>}
+    <div className="space-y-1"><Label htmlFor="edit-recurrence-time">{t('todos.edit.time')}</Label><Input id="edit-recurrence-time" type="time" value={props.time} onChange={(e) => props.setTime(e.target.value)} /></div>
+    <fieldset className="space-y-2"><legend className="text-sm font-medium">{t('todos.edit.ends')}</legend><div className="flex flex-wrap gap-3 text-sm"><label><input type="radio" name="recurrence-ends" checked={props.ends === 'never'} onChange={() => props.setEnds('never')} /> {t('todos.edit.endsNever')}</label><label><input type="radio" name="recurrence-ends" checked={props.ends === 'on'} onChange={() => props.setEnds('on')} /> {t('todos.edit.endsOn')}</label><label><input type="radio" name="recurrence-ends" checked={props.ends === 'after'} onChange={() => props.setEnds('after')} /> {t('todos.edit.endsAfter')}</label></div>{props.ends === 'on' && <Input aria-label={t('todos.edit.endDate')} type="date" value={props.until} onChange={(e) => props.setUntil(e.target.value)} />}{props.ends === 'after' && <Input aria-label={t('todos.edit.occurrenceCount')} type="number" min="1" value={props.count} onChange={(e) => props.setCount(e.target.value)} />}</fieldset>
   </>
 }

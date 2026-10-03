@@ -1,20 +1,30 @@
+import asyncio
+from collections.abc import Iterator
 import hashlib
 import json
+import os
 import re
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from runtime.daemon.agent_config import set_executor, write_default_agent_config
 from runtime.infrastructure.database import Database
+from runtime.infrastructure.workflow_schema import install_or_recover
 from runtime.models import (
     TaskRecord,
     TaskStatus,
+    TokenUsage,
     ThreadRecord,
 )
 from runtime.orchestrator.executors import ExecutorResult
-from runtime.orchestrator.orchestrator import Orchestrator, AgentUnavailableError
+from runtime.orchestrator.orchestrator import (
+    Orchestrator,
+    AgentUnavailableError,
+    WorkspaceNotInitialized,
+)
 from runtime.orchestrator.teams import TeamsRegistry
 
 
@@ -37,14 +47,24 @@ def _seed_active_agents_for_orchestrator(test_runtime):
 
 
 @pytest.fixture
-def orchestrator(test_settings, test_runtime):
+def orchestrator(test_settings, test_runtime) -> Iterator[Orchestrator]:
     test_runtime.root.mkdir(parents=True, exist_ok=True)
-    db = Database(test_runtime.db_path)
+    db = _open_live_org_database(test_runtime.db_path)
     teams = TeamsRegistry.load(test_runtime.root)
-    return Orchestrator(
+    orch = Orchestrator(
         db=db, settings=test_settings,
         paths=test_runtime, slug="test", teams=teams,
     )
+    try:
+        yield orch
+    finally:
+        db.close()
+
+
+def _open_live_org_database(path: Path) -> Database:
+    db = Database(path)
+    install_or_recover(db)
+    return db
 
 
 _DEFAULT_AGENTS = ["engineering_head", "product_manager", "dev_agent", "payment_agent"]
@@ -52,7 +72,7 @@ _DEFAULT_AGENTS = ["engineering_head", "product_manager", "dev_agent", "payment_
 # System-contract IDs expected for "task" context with repos.
 # Must exist in runtime/skills/bundled/ so ensure_system_contracts_materialized
 # (TASK-2511) can inject + verify them.
-_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]
+_TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill", "workspace-cleanup"]
 
 
 def _setup_protocol_skills(settings, contract_ids: list[str] | None = None) -> None:
@@ -64,24 +84,44 @@ def _setup_protocol_skills(settings, contract_ids: list[str] | None = None) -> N
         (src / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {sid}.\n")
 
 
+def _seed_instruction_pair(ws: Path, content: str) -> None:
+    """Seed the canonical AGENTS.md + raw relative CLAUDE.md link.
+
+    THR-262 Slice B: session launch requires the canonical instruction pair
+    for every provider, so test workspaces seed it explicitly.
+    """
+    (ws / "AGENTS.md").write_text(content)
+    claude = ws / "CLAUDE.md"
+    if claude.is_symlink() or claude.exists():
+        claude.unlink()
+    os.symlink("AGENTS.md", claude)
+
+
 def _setup_workspaces(runtime, agents: list[str] | None = None):
     for agent in (agents or _DEFAULT_AGENTS):
         ws = runtime.workspaces_dir / agent
         ws.mkdir(parents=True, exist_ok=True)
         (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
+        _seed_instruction_pair(ws, f"# Agent: {agent}\n")
         # Under the canonical store model, workspace skill symlinks are
         # created by the SymlinkMaterializer during pre-spawn materialization,
         # NOT by pre-creating ordinary directories. Creating an ordinary
         # directory at the link path would cause ordinary_dir_at_link_path.
 
 
+def _write_residual_agent_yaml(workspace: Path, executor: str) -> None:
+    """Seed the retired workspace config shape used by compatibility fixtures."""
+    (workspace / "agent.yaml").write_text(
+        f"executor: {executor}\nrepos: {{}}\n",
+    )
+
+
 def _setup_codex_workspace(runtime, agent: str) -> None:
     ws = runtime.workspaces_dir / agent
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
-    write_default_agent_config(ws)
-    set_executor(ws, "codex")
-    (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+    _write_residual_agent_yaml(ws, "codex")
+    _seed_instruction_pair(ws, f"# Agent: {agent}\n")
     # THR-095: executor is now read from org/agents/<name>.md (single source),
     # not agent.yaml. Write the .md with the matching executor.
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
@@ -99,9 +139,8 @@ def _setup_opencode_workspace(runtime, agent: str) -> None:
     ws = runtime.workspaces_dir / agent
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
-    write_default_agent_config(ws)
-    set_executor(ws, "opencode")
-    (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+    _write_residual_agent_yaml(ws, "opencode")
+    _seed_instruction_pair(ws, f"# Agent: {agent}\n")
     # THR-095: executor is now read from org/agents/<name>.md (single source)
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     ad = AgentDef(
@@ -118,9 +157,8 @@ def _setup_pi_workspace(runtime, agent: str) -> None:
     ws = runtime.workspaces_dir / agent
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
-    write_default_agent_config(ws)
-    set_executor(ws, "pi")
-    (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+    _write_residual_agent_yaml(ws, "pi")
+    _seed_instruction_pair(ws, f"# Agent: {agent}\n")
     # THR-095: executor is now read from org/agents/<name>.md (single source)
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     ad = AgentDef(
@@ -336,6 +374,105 @@ def test_worker_prompt_omits_role_guidance_block(
     assert "  |\n" not in prompt
 
 
+@pytest.mark.parametrize(
+    ("task_id", "task_type", "expected_purpose"),
+    [
+        ("TASK-WORKER-MODE", "subtask", "worker_execution"),
+        ("TASK-DECISION-MODE", "task", "manager_decision"),
+    ],
+)
+def test_run_agent_session_start_uses_actual_spawn_mode_and_exact_payload(
+    orchestrator, test_runtime, monkeypatch,
+    task_id, task_type, expected_purpose,
+):
+    """The immutable spawn mode, not agent title or root shape, owns purpose."""
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    orchestrator._db.insert_task(TaskRecord(
+        id=task_id,
+        brief="lifecycle attribution",
+        assigned_agent="dev_agent",
+        task_type=task_type,
+    ))
+    session_id = f"sess-{expected_purpose}"
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: session_id)
+    fake = MagicMock()
+    fake.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id=session_id,
+    )
+
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator._run_agent(task_id, "dev_agent", "")
+
+    workspace = str(test_runtime.workspaces_dir / "dev_agent")
+    start = next(
+        row for row in orchestrator._db.get_audit_logs(task_id)
+        if row["action"] == "session_start"
+    )
+    assert set(start["payload"]) == {
+        "workspace", "session_id", "invocation_purpose", "executor", "model",
+    }
+    assert start["payload"] == {
+        "workspace": workspace,
+        "session_id": session_id,
+        "invocation_purpose": expected_purpose,
+        "executor": "claude",
+        "model": None,
+    }
+
+
+def test_run_step_session_start_session_id_joins_usage_row_at_real_spawn_seam(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """A fake provider drives real run_step -> _run_agent -> usage persistence."""
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    task_id = "TASK-USAGE-JOIN"
+    orchestrator._db.insert_task(TaskRecord(
+        id=task_id,
+        brief="prove lifecycle usage join",
+        assigned_agent="dev_agent",
+        task_type="subtask",
+    ))
+    runtime_session_id = "sess-lifecycle-usage-join"
+    monkeypatch.setattr(
+        orchestrator, "_build_session_id", lambda: runtime_session_id,
+    )
+
+    class _CallbackExecutor:
+        def run(self, **kwargs):
+            assert kwargs["session_id"] == runtime_session_id
+            assert orchestrator._db.admit_task_completion_callback(
+                task_id=task_id,
+                agent="dev_agent",
+                session_id=runtime_session_id,
+                status="completed",
+                output_summary="done",
+                confidence_score=100,
+            )
+            return ExecutorResult(
+                success=True,
+                duration_seconds=1,
+                session_id=runtime_session_id,
+                token_usage=TokenUsage(
+                    input_tokens=7, output_tokens=3, model="provider-observed",
+                ),
+            )
+
+    with patch.object(
+        orchestrator, "_build_executor", return_value=_CallbackExecutor(),
+    ):
+        orchestrator.run_step(task_id)
+
+    start = next(
+        row for row in orchestrator._db.get_audit_logs(task_id)
+        if row["action"] == "session_start"
+    )
+    usage = orchestrator._db.list_session_token_usage(task_id=task_id)
+    assert len(usage) == 1
+    assert start["payload"]["session_id"] == usage[0]["session_id"]
+    assert start["payload"]["session_id"] == runtime_session_id
+    assert start["payload"]["invocation_purpose"] == "worker_execution"
+
+
 def test_run_agent_shipping_seam_injects_manager_policy_binds_session_and_omits_worker(
     orchestrator, test_runtime, monkeypatch,
 ):
@@ -378,6 +515,167 @@ def test_run_agent_shipping_seam_injects_manager_policy_binds_session_and_omits_
     with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
         orchestrator._run_agent(worker_task, "dev_agent", "")
     assert RESERVED_TEAM_POLICY_HEADER not in mock_executor.run.call_args.kwargs["prompt"]
+
+
+def test_dynamic_add_cold_org_coordinates_selector_before_real_launch(
+    tmp_path, test_settings, monkeypatch,
+):
+    """A lazily attached org is coherent before any real launch can read it."""
+    from runtime.daemon.state import DaemonState
+    from runtime.orchestrator.active_authority_policy import (
+        RESERVED_TEAM_POLICY_HEADER,
+    )
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    from runtime.runtime import RuntimeDir
+
+    runtime = RuntimeDir.init(tmp_path / "dynamic-runtime")
+    state = DaemonState.from_runtime(runtime, test_settings)
+    paths = OrgPaths(root=runtime.orgs_dir / "alpha")
+    paths.agents_dir.mkdir(parents=True)
+    paths.teams_config_path.write_text(
+        "teams:\n"
+        "  engineering:\n"
+        "    manager: engineering_manager\n"
+        "    workers: [code_reviewer]\n"
+    )
+    manager = AgentDef(
+        name="engineering_manager", team="engineering", role="manager",
+        executor="claude", allow_rules=(), repos={}, enrolled_by=None,
+        enrolled_at_task=None, enrolled_at=None, system_prompt="You manage.",
+        description="Manager", model=None,
+    )
+    (paths.agents_dir / "engineering_manager.md").write_text(
+        render_agent_text(manager)
+    )
+    reviewer = AgentDef(
+        name="code_reviewer", team="engineering", role="worker",
+        executor="claude", allow_rules=(), repos={}, enrolled_by=None,
+        enrolled_at_task=None, enrolled_at=None, system_prompt="You review.",
+        description="Reviewer", model=None,
+    )
+    (paths.agents_dir / "code_reviewer.md").write_text(
+        render_agent_text(reviewer)
+    )
+    _setup_workspaces(paths, ["engineering_manager"])
+
+    org = asyncio.run(state.add_org("alpha"))
+    store = AuthorityPolicyStore(org.db)
+    # Keep this regression at the real in-process launch seam; containment is
+    # independently covered and would require an unrelated systemd venue.
+    org.orchestrator.attach_host_supervisor(None)
+
+    # Once the dynamic org is attachable, launch policy resolution must be a
+    # read. Any direct initializer here is the exact stale-publication bug.
+    def forbid_launch_initializer(*_args, **_kwargs):
+        raise AssertionError("launch resolver mutated the authority selector")
+
+    monkeypatch.setattr(
+        AuthorityPolicyStore, "ensure_authority_selector",
+        forbid_launch_initializer,
+    )
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="provider-session",
+    )
+
+    first_task = org.orchestrator.create_task("first manager launch")
+    monkeypatch.setattr(
+        org.orchestrator, "_build_session_id", lambda: "sess-dynamic-first",
+    )
+    with patch.object(org.orchestrator, "_build_executor", return_value=mock_executor):
+        org.orchestrator._run_agent(
+            first_task, "engineering_manager", "decide",
+        )
+
+    selector = store.get_authority_selector("engineering")
+    assert selector is not None and selector.family == "empty"
+    first_ready = org.workflow_authority.verify_admission_ready()
+    assert first_ready.generation == 2
+    assert json.loads(first_ready.snapshot_bytes)["active_policy_selectors"] == [{
+        "selector": selector.model_dump(mode="json"),
+        "team": "engineering",
+    }]
+    assert RESERVED_TEAM_POLICY_HEADER not in mock_executor.run.call_args.kwargs["prompt"]
+    history_count = org.db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_active_selector_history"
+    ).fetchone()[0]
+
+    second_task = org.orchestrator.create_task("repeat manager launch")
+    monkeypatch.setattr(
+        org.orchestrator, "_build_session_id", lambda: "sess-dynamic-second",
+    )
+    with patch.object(org.orchestrator, "_build_executor", return_value=mock_executor):
+        org.orchestrator._run_agent(
+            second_task, "engineering_manager", "decide again",
+        )
+
+    assert org.workflow_authority.verify_admission_ready() == first_ready
+    assert org.db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_active_selector_history"
+    ).fetchone()[0] == history_count == 1
+
+
+def test_run_agent_v2_shipping_seam_renders_dual_text_and_persists_binding(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """C1 real launch seam: selected v2 renders BOTH texts and binds the session."""
+    from runtime.orchestrator.active_authority_policy import (
+        RESERVED_TEAM_POLICY_HEADER, load_session_policy_binding,
+    )
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    from runtime.orchestrator.teams import TeamManager
+    from tests.conftest import seed_test_agents
+
+    what_to = "Escalate 产品 / external-contract change — explicitly."
+    what_not = "Continue 実装 and review corrections within scope."
+    seed_test_agents(test_runtime, ("engineering_manager", "dev_agent"))
+    _setup_workspaces(test_runtime, ["engineering_manager", "dev_agent"])
+    orchestrator._teams._teams["engineering"] = TeamManager(
+        name="engineering_manager", team="engineering", workers=("dev_agent",),
+    )
+    store = AuthorityPolicyStore(orchestrator._db)
+    selector = store.ensure_authority_selector("engineering")
+    receipt = store.create_and_activate_v2({
+        "team": "engineering", "policy_id": "engineering-dual-text", "title": "Dual",
+        "create_request_id": "req-create-v2", "activation_request_id": "req-activate-v2",
+        "based_on_selector_id": selector.selector_id,
+        "expected_selector_id": selector.selector_id,
+        "action": "bootstrap", "what_to_escalate": what_to,
+        "what_not_to_escalate": what_not,
+    })
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="provider-session",
+    )
+    task_id = orchestrator.create_task("manager work")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-v2-launch")
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
+        orchestrator._run_agent(task_id, "engineering_manager", "decide")
+
+    prompt = mock_executor.run.call_args.kwargs["prompt"]
+    assert prompt.count(RESERVED_TEAM_POLICY_HEADER) == 1
+    assert prompt.count("What to escalate:") == 1
+    assert prompt.count("What not to escalate:") == 1
+    assert what_to in prompt and what_not in prompt
+    assert receipt.release_id in prompt and receipt.activation_id in prompt
+    assert receipt.selector_id in prompt
+    binding = orchestrator._db.get_authority_policy_v2_session_binding(
+        root_task_id=task_id, manager_agent="engineering_manager",
+        manager_session_id="sess-v2-launch",
+    )
+    assert binding is not None
+    assert binding.selector_id == receipt.selector_id
+    assert binding.activation_id == receipt.activation_id
+    assert binding.release_id == receipt.release_id
+    assert binding.root_task_id == task_id
+    # No legacy self-evaluation binding is fabricated for a v2 launch.
+    legacy = load_session_policy_binding(
+        db=orchestrator._db, task_id=task_id, session_id="sess-v2-launch",
+        agent_name="engineering_manager",
+    )
+    assert legacy is not None and legacy.get("mode") == "v2"
 
 
 def test_manager_policy_shipping_seam_consumes_authenticated_self_evaluation(
@@ -526,6 +824,9 @@ def test_run_agent_registers_active_session_when_tracker_attached(
     `happyranch report-completion` callback hits 409 unknown_session and the task
     silently fails with note='agent session failed'."""
     from runtime.daemon.sessions import SessionTracker
+    from runtime.models import JobInterpreter, JobRecord, JobStatus
+    import runtime.daemon.jobs_runner as jobs_runner
+    import threading
 
     _setup_workspaces(test_runtime)
     tracker = SessionTracker()
@@ -542,6 +843,1312 @@ def test_run_agent_registers_active_session_when_tracker_attached(
         orchestrator._run_agent(task_id, "engineering_head", "any prompt")
 
     assert tracker.get_active(task_id, "engineering_head") == "sess-eh"
+
+
+def test_run_step_codex_clean_omission_recovers_through_real_callback_admission(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """THR-247 group A: a clean omission gets one bound, agent-authored recovery.
+
+    The provider continuation id is intentionally distinct from both daemon
+    invocation identities.  This exercises real ``run_step`` and ``_run_agent``;
+    only the external Codex executor is fake.
+    """
+    from runtime.daemon.sessions import SessionTracker
+
+    agent = "engineering_head"
+    origin_runtime_id = "sess-runtime-origin"
+    provider_origin_id = "provider-origin"
+    recovery_runtime_id = "sess-runtime-recovery"
+    _setup_codex_workspace(test_runtime, agent)
+    tracker = SessionTracker()
+    orchestrator.attach_sessions(tracker)
+    task_id = orchestrator.create_task("recover clean Codex callback omission")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    session_ids = iter((origin_runtime_id, recovery_runtime_id))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(session_ids))
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            invocation = len(self.calls)
+            if invocation == 1:
+                assert kwargs["session_id"] == origin_runtime_id
+                assert kwargs["resume_session_id"] is None
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id=origin_runtime_id,
+                    agent_session_id=provider_origin_id,
+                    token_usage=TokenUsage(input_tokens=11, output_tokens=7),
+                )
+
+            assert invocation == 2
+            assert kwargs["session_id"] == recovery_runtime_id
+            assert kwargs["resume_session_id"] == provider_origin_id
+            task = orchestrator._db.get_task(task_id)
+            assert task.current_session_id == recovery_runtime_id
+            assert tracker.is_recovery_session(task_id, agent, recovery_runtime_id)
+            claim = orchestrator._db.execute(
+                "SELECT origin_session_id, provider_session_id, recovery_session_id, state "
+                "FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+            ).fetchone()
+            assert dict(claim) == {
+                "origin_session_id": origin_runtime_id,
+                "provider_session_id": provider_origin_id,
+                "recovery_session_id": recovery_runtime_id,
+                "state": "claimed",
+            }
+            # This is the same transactional admission helper used by the route;
+            # its current durable binding is the recovery generation above.
+            assert orchestrator._db.admit_task_completion_callback(
+                task_id=task_id, agent=agent, session_id=recovery_runtime_id,
+                status="completed", output_summary="agent-authored completion",
+                decision_json=json.dumps({"action": "done", "summary": "finished"}),
+                confidence_score=100,
+            )
+            return ExecutorResult(
+                success=True, duration_seconds=1, session_id=recovery_runtime_id,
+                agent_session_id=provider_origin_id,
+                token_usage=TokenUsage(input_tokens=3, output_tokens=2),
+            )
+
+    fake = FakeCodexExecutor()
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator.run_step(task_id)
+
+    assert len(fake.calls) == 2
+    recovery = orchestrator._db.execute(
+        "SELECT origin_session_id, provider_session_id, recovery_session_id, "
+        "state, accepted_result_id FROM task_completion_recoveries WHERE task_id=?",
+        (task_id,),
+    ).fetchall()
+    assert len(recovery) == 1
+    result = orchestrator._db.get_latest_task_result(task_id, agent, recovery_runtime_id)
+    assert result is not None
+    assert recovery[0]["accepted_result_id"] == result["id"]
+    assert orchestrator._db.get_task(task_id).status == TaskStatus.COMPLETED
+    usage = orchestrator._db.execute(
+        "SELECT session_id FROM session_token_usage WHERE task_id=? ORDER BY session_id",
+        (task_id,),
+    ).fetchall()
+    assert [row["session_id"] for row in usage] == sorted(
+        (origin_runtime_id, recovery_runtime_id)
+    )
+    starts = [
+        row["payload"] for row in orchestrator._db.get_audit_logs(task_id)
+        if row["action"] == "session_start"
+    ]
+    assert [payload["session_id"] for payload in starts] == [
+        origin_runtime_id, recovery_runtime_id,
+    ]
+    assert [payload["invocation_purpose"] for payload in starts] == [
+        "manager_decision", "unattributed",
+    ]
+    recovery_receipt = orchestrator._db.execute(
+        "SELECT recovery_session_id FROM task_completion_recoveries WHERE task_id=?",
+        (task_id,),
+    ).fetchone()
+    assert recovery_receipt["recovery_session_id"] == starts[1]["session_id"]
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "completion_timing"),
+    [(0, "before_callback"), (0, "after_callback"),
+     (7, "before_callback"), (7, "after_callback")],
+)
+@pytest.mark.parametrize("ordinary_outcome", ["completed", "timeout"])
+def test_run_step_recovered_blocked_callback_resumes_one_ordinary_owned_job_session(
+    orchestrator, test_runtime, monkeypatch, exit_code, completion_timing, ordinary_outcome,
+):
+    """D3a: a recovered blocked callback resumes exactly one ordinary session.
+
+    The fake is restricted to the external Codex process.  The shipping
+    recovery admission, blocked transaction, job-finished predicate, CAS
+    claim, ordinary launch, and session-purpose gate all run against SQLite.
+    """
+    from datetime import datetime, timezone
+
+    from fastapi import HTTPException
+    from runtime.daemon.event_bus import EventBus
+    from runtime.daemon.jobs_runner import fire_resume_check_for_job
+    from runtime.daemon.routes.tasks import ProgressBody, submit_progress
+    from runtime.daemon.sessions import SessionTracker
+    from runtime.models import JobInterpreter, JobRecord, JobStatus
+
+    agent = "engineering_head"
+    origin_id = "runtime-origin"
+    recovery_id = "runtime-recovery"
+    ordinary_id = "runtime-ordinary"
+    provider_id = "provider-origin"
+    _setup_codex_workspace(test_runtime, agent)
+    tracker = SessionTracker()
+    orchestrator.attach_sessions(tracker)
+    task_id = orchestrator.create_task("recover then resume owned job")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    job_id = orchestrator._db.next_job_id()
+    orchestrator._db.insert_job(JobRecord(
+        id=job_id, task_id=task_id, agent_name=agent, title="owned",
+        rationale="test recovery block", script_text="true",
+        interpreter=JobInterpreter.BASH, status=JobStatus.RUNNING,
+        started_at="2026-09-12T00:00:00+00:00",
+        created_at="2026-09-12T00:00:00+00:00",
+    ))
+    queued: list[tuple[str, str, dict | None]] = []
+
+    class Queue:
+        def enqueue(self, slug, queued_task_id, *, metadata=None):
+            queued.append((slug, queued_task_id, metadata))
+
+    orchestrator._queue = Queue()
+    org = SimpleNamespace(
+        db=orchestrator._db, db_lock=asyncio.Lock(), sessions=tracker,
+        orchestrator=orchestrator, event_bus=EventBus(lambda _task_id: []),
+    )
+    session_ids = iter((origin_id, recovery_id, ordinary_id))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(session_ids))
+    ordinary_timeout = orchestrator._resolve_session_timeout(agent, task_id=task_id)
+    assert orchestrator._settings.executor_rate_limit_backoff_seconds
+
+    def finish_job() -> None:
+        status = JobStatus.COMPLETED if exit_code == 0 else JobStatus.FAILED
+        orchestrator._db.transition_job_to_terminal(
+            job_id, status=status, exit_code=exit_code,
+            finished_at=datetime.now(timezone.utc).isoformat(), duration_ms=1,
+            stdout_head="", stderr_head="" if exit_code == 0 else "failed",
+            reason=None if exit_code == 0 else "nonzero_exit",
+        )
+        fire_resume_check_for_job(org, job_id)
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls: list[dict] = []
+            self.recovery_row: dict | None = None
+
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                assert kwargs["session_id"] == origin_id
+                assert kwargs["resume_session_id"] is None
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id=origin_id,
+                    agent_session_id=provider_id,
+                )
+            if len(self.calls) == 2:
+                assert kwargs["session_id"] == recovery_id
+                assert kwargs["resume_session_id"] == provider_id
+                assert tracker.is_recovery_session(task_id, agent, recovery_id)
+                with pytest.raises(HTTPException, match="recovery_purpose_forbidden"):
+                    asyncio.run(submit_progress(
+                        task_id, ProgressBody(session_id=recovery_id, agent=agent, message="no"), org,
+                    ))
+                if completion_timing == "before_callback":
+                    finish_job()
+                assert orchestrator._db.admit_task_completion_callback(
+                    task_id=task_id, agent=agent, session_id=recovery_id,
+                    status="blocked", output_summary="waiting on owned job",
+                    waiting_on_job_ids=[job_id], confidence_score=100,
+                )
+                self.recovery_row = dict(orchestrator._db.get_latest_task_result(
+                    task_id, agent, recovery_id,
+                ))
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id=recovery_id,
+                    agent_session_id=provider_id,
+                )
+
+            assert len(self.calls) == 3
+            assert kwargs["session_id"] == ordinary_id
+            # Ordinary blocked-job resume preserves established launch
+            # semantics: no provider-continuity id is supplied.
+            assert kwargs["resume_session_id"] is None
+            assert kwargs["timeout_seconds"] == ordinary_timeout
+            assert kwargs["throttle_backoff_seconds"] is None
+            assert not tracker.is_recovery_session(task_id, agent, ordinary_id)
+            assert tracker.recovery_deadline_monotonic(task_id, agent, ordinary_id) is None
+            assert "=== BLOCKED-JOBS-RESULTS (system) ===" in kwargs["prompt"]
+            assert f"{job_id}  {'completed' if exit_code == 0 else 'failed'}" in kwargs["prompt"]
+            assert asyncio.run(submit_progress(
+                task_id, ProgressBody(session_id=ordinary_id, agent=agent, message="ordinary admitted"), org,
+            )) == {"ok": True}
+            if ordinary_outcome == "timeout":
+                return ExecutorResult(
+                    success=False, duration_seconds=1, session_id=ordinary_id,
+                    error="ordinary provider timed out", failure_category="provider_timeout",
+                    provider_launched=True,
+                )
+            assert orchestrator._db.admit_task_completion_callback(
+                task_id=task_id, agent=agent, session_id=ordinary_id,
+                status="completed", output_summary="ordinary completion",
+                decision_json=json.dumps({"action": "done", "summary": "done"}),
+                confidence_score=100,
+            )
+            return ExecutorResult(
+                success=True, duration_seconds=1, session_id=ordinary_id,
+                agent_session_id="provider-ordinary",
+            )
+
+    fake = FakeCodexExecutor()
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator.run_step(task_id)
+        if completion_timing == "after_callback":
+            finish_job()
+        # Replay delivery before draining: duplicate enqueues are allowed, but
+        # run_step's persisted claim admits only one ordinary provider call.
+        fire_resume_check_for_job(org, job_id)
+        while queued:
+            _slug, queued_task_id, metadata = queued.pop(0)
+            orchestrator.run_step(queued_task_id, metadata=metadata)
+
+    assert len(fake.calls) == 3
+    task = orchestrator._db.get_task(task_id)
+    assert task.status == (TaskStatus.COMPLETED if ordinary_outcome == "completed" else TaskStatus.FAILED)
+    job = orchestrator._db.get_job(job_id)
+    assert job is not None and job.exit_code == exit_code
+    assert job.status == (JobStatus.COMPLETED if exit_code == 0 else JobStatus.FAILED)
+    assert job.reason != "task_ended"
+    recovery = orchestrator._db.execute(
+        "SELECT state, accepted_result_id FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+    ).fetchall()
+    assert len(recovery) == 1 and recovery[0]["state"] == "callback_consumed"
+    results = orchestrator._db.get_task_results(task_id)
+    assert len(results) == (2 if ordinary_outcome == "completed" else 1)
+    assert results[0]["session_id"] == recovery_id and results[0]["status"] == "blocked"
+    if ordinary_outcome == "completed":
+        assert results[1]["session_id"] == ordinary_id and results[1]["status"] == "completed"
+    assert recovery[0]["accepted_result_id"] == results[0]["id"]
+    assert dict(orchestrator._db.get_latest_task_result(task_id, agent, recovery_id)) == fake.recovery_row
+    resumed = [log for log in orchestrator._db.get_audit_logs(task_id)
+               if log["action"] == "task_resumed_from_jobs"]
+    assert len(resumed) == 1
+    assert resumed[0]["payload"]["job_outcomes"] == {
+        job_id: "completed" if exit_code == 0 else "failed",
+    }
+    assert len([log for log in orchestrator._db.get_audit_logs(task_id)
+                if log["action"] == "progress"]) == 1
+
+
+@pytest.mark.parametrize(("claim_delay", "expect_recovery"), [(40.0, True), (120.0, False)])
+def test_run_step_codex_recovery_claim_delay_consumes_the_single_live_budget(
+    orchestrator, test_runtime, monkeypatch, claim_delay, expect_recovery,
+):
+    """Claim contention consumes recovery time and never restarts its 120-second budget."""
+    import runtime.orchestrator.run_step as run_step_module
+
+    agent = "engineering_head"
+    _setup_codex_workspace(test_runtime, agent)
+    task_id = orchestrator.create_task("recovery claim timing")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    ids = iter(("origin", "recovery"))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(ids))
+    now = [0.0]
+    monkeypatch.setattr(run_step_module.time, "monotonic", lambda: now[0])
+    original_claim = orchestrator._db.claim_task_completion_recovery
+
+    def delayed_claim(**kwargs):
+        claimed = original_claim(**kwargs)
+        now[0] += claim_delay
+        return claimed
+
+    monkeypatch.setattr(orchestrator._db, "claim_task_completion_recovery", delayed_claim)
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id="origin",
+                    agent_session_id="provider-origin",
+                )
+            assert kwargs["timeout_seconds"] <= 80
+            return ExecutorResult(
+                success=False, duration_seconds=1, session_id="recovery",
+                agent_session_id="provider-origin", error="recovery omitted callback",
+            )
+
+    fake = FakeCodexExecutor()
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator.run_step(task_id)
+
+    assert len(fake.calls) == (2 if expect_recovery else 1)
+    row = orchestrator._db.execute(
+        "SELECT count(*) AS n, accepted_result_id FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+    ).fetchone()
+    assert row["n"] == 1
+    assert row["accepted_result_id"] is None
+    assert orchestrator._db.get_task(task_id).status == TaskStatus.FAILED
+
+
+def test_run_step_codex_origin_callback_winning_claim_is_consumed(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """An origin callback admitted immediately before the real claim wins.
+
+    The recovery id is intentionally allocated before ``claim``.  It is only
+    a candidate, so a failed claim must not treat the still-current origin
+    session as a displaced newer owner.
+    """
+    agent = "engineering_head"
+    origin_runtime_id = "sess-runtime-origin"
+    _setup_codex_workspace(test_runtime, agent)
+    task_id = orchestrator.create_task("origin callback races recovery claim")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: origin_runtime_id)
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls = 0
+
+        def run(self, **kwargs):
+            self.calls += 1
+            assert self.calls == 1
+            return ExecutorResult(
+                success=True, duration_seconds=1, session_id=origin_runtime_id,
+                agent_session_id="provider-origin",
+            )
+
+    original_claim = orchestrator._db.claim_task_completion_recovery
+
+    def _origin_wins_claim(**kwargs):
+        assert orchestrator._db.admit_task_completion_callback(
+            task_id=task_id, agent=agent, session_id=origin_runtime_id,
+            status="completed", output_summary="origin callback won",
+            decision_json=json.dumps({"action": "done", "summary": "done"}),
+            confidence_score=100,
+        )
+        return original_claim(**kwargs)
+
+    fake = FakeCodexExecutor()
+    monkeypatch.setattr(orchestrator._db, "claim_task_completion_recovery", _origin_wins_claim)
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator.run_step(task_id)
+
+    assert fake.calls == 1
+    assert orchestrator._db.execute(
+        "SELECT count(*) FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+    ).fetchone()[0] == 0
+    assert orchestrator._db.get_task(task_id).status == TaskStatus.COMPLETED
+
+
+@pytest.mark.parametrize(
+    ("failure_category", "error"),
+    [
+        ("provider_nonzero", "provider failed after callback"),
+        ("provider_timeout", "provider timed out after callback"),
+    ],
+)
+def test_run_step_codex_recovery_accepted_callback_wins_provider_failure(
+    orchestrator, test_runtime, monkeypatch, failure_category, error,
+):
+    """THR-247 C1b: a landed recovery callback, not provider prose, is terminal.
+
+    This retains the provider's unsuccessful result for diagnostics and usage;
+    it merely proves that it cannot erase the exact accepted callback.
+    """
+    from runtime.daemon.sessions import SessionTracker
+    from types import SimpleNamespace
+    import runtime.orchestrator.run_step as run_step_module
+
+    agent = "engineering_head"
+    origin_runtime_id = "sess-runtime-origin"
+    provider_origin_id = "provider-origin"
+    recovery_runtime_id = "sess-runtime-recovery"
+    _setup_codex_workspace(test_runtime, agent)
+    tracker = SessionTracker()
+    orchestrator.attach_sessions(tracker)
+    task_id = orchestrator.create_task("recover callback despite provider failure")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    session_ids = iter((origin_runtime_id, recovery_runtime_id))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(session_ids))
+    # Keep the full recovery path on an injected live clock.  The callback
+    # lands just before the budget ends; the provider then times out after it.
+    now = [0.0]
+    monkeypatch.setattr(run_step_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls = []
+            self.recovery_result = None
+
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id=origin_runtime_id,
+                    agent_session_id=provider_origin_id,
+                    token_usage=TokenUsage(input_tokens=11, output_tokens=7),
+                )
+            assert len(self.calls) == 2
+            assert kwargs["session_id"] == recovery_runtime_id
+            assert kwargs["resume_session_id"] == provider_origin_id
+            assert tracker.is_recovery_session(task_id, agent, recovery_runtime_id)
+            assert orchestrator._db.admit_task_completion_callback(
+                task_id=task_id, agent=agent, session_id=recovery_runtime_id,
+                status="completed", output_summary="accepted before provider failure",
+                decision_json=json.dumps({"action": "done", "summary": "finished"}),
+                confidence_score=100,
+            )
+            now[0] = 120.0
+            self.recovery_result = ExecutorResult(
+                success=False, duration_seconds=1, session_id=recovery_runtime_id,
+                agent_session_id=provider_origin_id, error=error,
+                failure_category=failure_category, provider_launched=True,
+                token_usage=TokenUsage(input_tokens=3, output_tokens=2),
+            )
+            return self.recovery_result
+
+    fake = FakeCodexExecutor()
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator.run_step(task_id)
+
+    assert len(fake.calls) == 2
+    assert fake.recovery_result is not None
+    assert fake.recovery_result.success is False
+    assert fake.recovery_result.failure_category == failure_category
+    assert fake.recovery_result.error == error
+    recoveries = orchestrator._db.execute(
+        "SELECT state, accepted_result_id FROM task_completion_recoveries WHERE task_id=?",
+        (task_id,),
+    ).fetchall()
+    assert len(recoveries) == 1
+    recovery = recoveries[0]
+    accepted = orchestrator._db.get_latest_task_result(task_id, agent, recovery_runtime_id)
+    assert recovery["state"] == "callback_consumed"
+    assert recovery["accepted_result_id"] == accepted["id"]
+    assert orchestrator._db.get_task(task_id).status == TaskStatus.COMPLETED
+    usage = orchestrator._db.execute(
+        "SELECT session_id, input_tokens, output_tokens FROM session_token_usage "
+        "WHERE task_id=? ORDER BY session_id", (task_id,),
+    ).fetchall()
+    assert [tuple(row) for row in usage] == [
+        (origin_runtime_id, 11, 7), (recovery_runtime_id, 3, 2),
+    ]
+
+
+def test_run_step_codex_recovery_timeout_without_callback_fails_closed(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """The timeout control spends one recovery and never recursively launches."""
+    agent = "engineering_head"
+    _setup_codex_workspace(test_runtime, agent)
+    task_id = orchestrator.create_task("recovery timeout without callback")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    session_ids = iter(("sess-origin", "sess-recovery"))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(session_ids))
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id="sess-origin",
+                    agent_session_id="provider-origin",
+                )
+            assert len(self.calls) == 2
+            # Recovery is server-marked; an ordinary provider resume alone
+            # would not justify suppressing configured executor retries.
+            assert kwargs["throttle_backoff_seconds"] == ()
+            return ExecutorResult(
+                success=False, duration_seconds=1, session_id="sess-recovery",
+                agent_session_id="provider-origin", error="provider timed out",
+                failure_category="provider_timeout", provider_launched=True,
+            )
+
+    fake = FakeCodexExecutor()
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator.run_step(task_id)
+
+    assert len(fake.calls) == 2
+    assert orchestrator._db.get_task(task_id).status == TaskStatus.FAILED
+    recovery = orchestrator._db.execute(
+        "SELECT accepted_result_id FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+    ).fetchone()
+    assert recovery["accepted_result_id"] is None
+
+
+@pytest.mark.parametrize(
+    "recovery_outcome",
+    ["timeout", "provider_error", "launch_exception", "second_clean_omission"],
+)
+def test_run_step_codex_second_omission_failure_spends_once_and_cleans_owned_jobs(
+    orchestrator, test_runtime, monkeypatch, recovery_outcome,
+):
+    """D3b: every eligible recovery failure closes one spent episode.
+
+    The rows and jobs are real SQLite state. Only the Codex provider boundary
+    is fake; a distinct older callback row proves that failure does not select
+    a task/agent-wide "latest" result.
+    """
+    from runtime.daemon.sessions import SessionTracker
+    import runtime.daemon.jobs_runner as jobs_runner
+    from runtime.models import JobInterpreter, JobRecord, JobStatus
+    import threading
+
+    agent = "engineering_head"
+    origin_id, recovery_id, old_id = "origin", "recovery", "older-session"
+    _setup_codex_workspace(test_runtime, agent)
+    tracker = SessionTracker()
+    orchestrator.attach_sessions(tracker)
+    task_id = orchestrator.create_task("recovery failure must fail closed")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    # This is a valid historical result for the same task/agent, but never an
+    # exact origin/recovery callback and therefore never an eligible fallback.
+    assert orchestrator._db.admit_task_completion_callback(
+        task_id=task_id, agent=agent, session_id=old_id, status="completed",
+        output_summary="older result must remain untouched",
+        decision_json=json.dumps({"action": "done", "summary": "old"}),
+        confidence_score=100,
+    )
+    older_before = dict(orchestrator._db.get_latest_task_result(task_id, agent, old_id))
+    owned_id = orchestrator._db.next_job_id()
+    unrelated_id = "JOB-UNRELATED"
+    for job_id, owner in ((owned_id, task_id), (unrelated_id, "unrelated-task")):
+        orchestrator._db.insert_job(JobRecord(
+            id=job_id, task_id=owner, agent_name=agent, title="running",
+            rationale="D3b", script_text="true", interpreter=JobInterpreter.BASH,
+            status=JobStatus.RUNNING, started_at="2026-09-12T00:00:00+00:00",
+            created_at="2026-09-12T00:00:00+00:00",
+        ))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(iter_ids))
+    iter_ids = iter((origin_id, recovery_id))
+
+    class ObservableProcess:
+        def __init__(self, pid: int) -> None:
+            self.pid, self.returncode = pid, None
+
+    # Exercise the shipping terminator with live controls, rather than merely
+    # proving its durable backstop can update rows.  Preserve both process
+    # registries even if the parameterized provider assertion fails.
+    prior_inflight = dict(jobs_runner._INFLIGHT)
+    prior_overrides = dict(jobs_runner._KILL_REASON_OVERRIDE)
+    owned, unrelated = ObservableProcess(101), ObservableProcess(202)
+    jobs_runner._INFLIGHT.clear()
+    jobs_runner._INFLIGHT.update({owned_id: owned, unrelated_id: unrelated})
+
+    def killpg(pid: int, _sig: int) -> None:
+        if pid == owned.pid:
+            owned.returncode = -15
+
+    async def no_wait(_seconds: float) -> None:
+        return None
+
+    class JoinedCleanupThread:
+        """Keep the real cleanup coroutine finite and observable in this test."""
+        def __init__(self, *, target, daemon):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(threading, "Thread", JoinedCleanupThread)
+    monkeypatch.setattr(jobs_runner.os, "killpg", killpg)
+    monkeypatch.setattr(jobs_runner.asyncio, "sleep", no_wait)
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id=origin_id,
+                    agent_session_id="provider-origin",
+                )
+            assert len(self.calls) == 2, "no third provider launch/restart retry"
+            assert kwargs["session_id"] == recovery_id
+            if recovery_outcome == "launch_exception":
+                raise RuntimeError("fake recovery launch failed")
+            if recovery_outcome == "second_clean_omission":
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id=recovery_id,
+                    agent_session_id="provider-origin", provider_launched=True,
+                )
+            return ExecutorResult(
+                success=False, duration_seconds=1, session_id=recovery_id,
+                agent_session_id="provider-origin", provider_launched=True,
+                error=("provider timed out" if recovery_outcome == "timeout" else "provider error"),
+                failure_category=("provider_timeout" if recovery_outcome == "timeout" else "provider_nonzero"),
+            )
+
+    fake = FakeCodexExecutor()
+    try:
+        with patch.object(orchestrator, "_build_executor", return_value=fake):
+            orchestrator.run_step(task_id)
+            # A terminal/restarted task cannot recursively launch a recovery.
+            orchestrator.run_step(task_id)
+
+        assert len(fake.calls) == 2
+        task = orchestrator._db.get_task(task_id)
+        assert task.status == TaskStatus.FAILED
+        recovery = orchestrator._db.execute(
+            "SELECT state, accepted_result_id FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+        ).fetchall()
+        assert len(recovery) == 1
+        assert recovery[0]["accepted_result_id"] is None
+        assert orchestrator._db.get_job(owned_id).reason == "task_ended"
+        assert orchestrator._db.get_job(unrelated_id).status == JobStatus.RUNNING
+        assert dict(orchestrator._db.get_latest_task_result(task_id, agent, old_id)) == older_before
+        # Both origin and recovery callbacks arrive too late and cannot mint rows.
+        for session_id in (origin_id, recovery_id):
+            assert not orchestrator._db.admit_task_completion_callback(
+                task_id=task_id, agent=agent, session_id=session_id, status="completed",
+                output_summary="late", decision_json=json.dumps({"action": "done"}),
+                confidence_score=100,
+            )
+        assert len(orchestrator._db.get_task_results(task_id)) == 1
+        assert owned.returncode == -15
+        assert unrelated.returncode is None
+    finally:
+        jobs_runner._INFLIGHT.clear()
+        jobs_runner._INFLIGHT.update(prior_inflight)
+        jobs_runner._KILL_REASON_OVERRIDE.clear()
+        jobs_runner._KILL_REASON_OVERRIDE.update(prior_overrides)
+
+
+@pytest.mark.parametrize(
+    "origin_outcome", ["timeout", "provider_error", "missing_provider_resume", "cancelled"],
+)
+def test_run_step_codex_ineligible_origin_never_claims_or_launches_recovery(
+    orchestrator, test_runtime, monkeypatch, origin_outcome,
+):
+    """D3b: only a clean Codex omission with a provider id can claim recovery."""
+    from runtime.daemon.event_bus import EventBus
+    from runtime.daemon.routes.tasks import CancelBody, cancel_task
+    from runtime.daemon.sessions import SessionTracker
+    from runtime.models import JobInterpreter, JobRecord, JobStatus
+    import runtime.daemon.jobs_runner as jobs_runner
+    import threading
+
+    agent = "engineering_head"
+    _setup_codex_workspace(test_runtime, agent)
+    tracker = SessionTracker()
+    orchestrator.attach_sessions(tracker)
+    task_id = orchestrator.create_task("ineligible Codex origin")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    assert orchestrator._db.admit_task_completion_callback(
+        task_id=task_id, agent=agent, session_id="older-session", status="completed",
+        output_summary="older result", decision_json=json.dumps({"action": "done"}),
+        confidence_score=100,
+    )
+    older_before = dict(orchestrator._db.get_latest_task_result(task_id, agent, "older-session"))
+    owned_id, unrelated_id = orchestrator._db.next_job_id(), "JOB-UNRELATED"
+    for job_id, owner in ((owned_id, task_id), (unrelated_id, "unrelated-task")):
+        orchestrator._db.insert_job(JobRecord(
+            id=job_id, task_id=owner, agent_name=agent, title="running",
+            rationale="ineligible recovery", script_text="true", interpreter=JobInterpreter.BASH,
+            status=JobStatus.RUNNING, started_at="2026-09-12T00:00:00+00:00",
+            created_at="2026-09-12T00:00:00+00:00",
+        ))
+    cleanup_calls: list[tuple[str, tuple[str, ...]]] = []
+    signals: list[tuple[int, int]] = []
+
+    class ObservableProcess:
+        def __init__(self, pid: int) -> None:
+            self.pid, self.returncode = pid, None
+
+    real_terminate = jobs_runner.terminate_jobs_for_task
+    prior_inflight = dict(jobs_runner._INFLIGHT)
+    prior_overrides = dict(jobs_runner._KILL_REASON_OVERRIDE)
+    jobs_runner._INFLIGHT.clear()
+    jobs_runner._INFLIGHT[owned_id] = ObservableProcess(101)
+    jobs_runner._INFLIGHT[unrelated_id] = ObservableProcess(202)
+
+    async def observe_real_terminate(task_id, *, inflight_to_task=None, grace_seconds=5.0):
+        result = await real_terminate(
+            task_id, inflight_to_task=inflight_to_task, grace_seconds=grace_seconds,
+        )
+        cleanup_calls.append((task_id, tuple(result)))
+        return result
+
+    async def no_wait(_seconds: float) -> None:
+        return None
+
+    class JoinedCleanupThread:
+        def __init__(self, *, target, daemon):
+            self.target, self.daemon = target, daemon
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(jobs_runner, "terminate_jobs_for_task", observe_real_terminate)
+    def killpg(pid, sig):
+        signals.append((pid, sig))
+        if pid == 101:
+            jobs_runner._INFLIGHT[owned_id].returncode = -15
+    monkeypatch.setattr(jobs_runner.os, "killpg", killpg)
+    monkeypatch.setattr(jobs_runner.asyncio, "sleep", no_wait)
+    monkeypatch.setattr(threading, "Thread", JoinedCleanupThread)
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "origin")
+    org = SimpleNamespace(
+        db=orchestrator._db, db_lock=asyncio.Lock(), sessions=tracker,
+        orchestrator=orchestrator, event_bus=EventBus(lambda _task_id: []),
+    )
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls = 0
+
+        def run(self, **kwargs):
+            self.calls += 1
+            assert self.calls == 1
+            if origin_outcome == "cancelled":
+                asyncio.run(cancel_task(task_id, CancelBody(rationale="founder stop"), org))
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id="origin",
+                    agent_session_id="provider-origin",
+                )
+            if origin_outcome == "missing_provider_resume":
+                return ExecutorResult(success=True, duration_seconds=1, session_id="origin")
+            return ExecutorResult(
+                success=False, duration_seconds=1, session_id="origin",
+                agent_session_id="provider-origin",
+                error=("provider timed out" if origin_outcome == "timeout" else "provider error"),
+                failure_category=("provider_timeout" if origin_outcome == "timeout" else "provider_nonzero"),
+            )
+
+    fake = FakeCodexExecutor()
+    try:
+        with patch.object(orchestrator, "_build_executor", return_value=fake):
+            orchestrator.run_step(task_id)
+
+        assert fake.calls == 1
+        assert orchestrator._db.execute(
+            "SELECT count(*) FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+        ).fetchone()[0] == 0
+        task = orchestrator._db.get_task(task_id)
+        assert task.status == (TaskStatus.CANCELLED if origin_outcome == "cancelled" else TaskStatus.FAILED)
+        assert cleanup_calls == [(task_id, (owned_id,))]
+        # Exercise the shipping termination helper: it signalled only the owned
+        # observable process, never the unrelated live control.
+        assert signals and {pid for pid, _sig in signals} == {101}
+        assert orchestrator._db.get_job(owned_id).reason == "task_ended"
+        assert orchestrator._db.get_job(unrelated_id).status == JobStatus.RUNNING
+        assert dict(orchestrator._db.get_latest_task_result(task_id, agent, "older-session")) == older_before
+        assert not orchestrator._db.admit_task_completion_callback(
+            task_id=task_id, agent=agent, session_id="origin", status="completed",
+            output_summary="late", decision_json=json.dumps({"action": "done"}), confidence_score=100,
+        )
+        assert jobs_runner._INFLIGHT[owned_id].returncode == -15
+        assert jobs_runner._INFLIGHT[unrelated_id].returncode is None
+    finally:
+        jobs_runner._INFLIGHT.clear()
+        jobs_runner._INFLIGHT.update(prior_inflight)
+        jobs_runner._KILL_REASON_OVERRIDE.clear()
+        jobs_runner._KILL_REASON_OVERRIDE.update(prior_overrides)
+
+
+def test_run_step_codex_recovery_cancellation_after_callback_wins(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """Use the real cancellation route after admission, before executor return."""
+    from runtime.daemon.event_bus import EventBus
+    from runtime.daemon.routes.tasks import CancelBody, cancel_task
+    from runtime.daemon.sessions import SessionTracker
+
+    agent = "engineering_head"
+    origin_runtime_id = "sess-runtime-origin"
+    recovery_runtime_id = "sess-runtime-recovery"
+    _setup_codex_workspace(test_runtime, agent)
+    tracker = SessionTracker()
+    orchestrator.attach_sessions(tracker)
+    task_id = orchestrator.create_task("cancel accepted recovery callback")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    session_ids = iter((origin_runtime_id, recovery_runtime_id))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(session_ids))
+    org = SimpleNamespace(
+        db=orchestrator._db, db_lock=asyncio.Lock(), sessions=tracker,
+        orchestrator=orchestrator, event_bus=EventBus(lambda _task_id: []),
+    )
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id=origin_runtime_id,
+                    agent_session_id="provider-origin",
+                )
+            assert len(self.calls) == 2
+            assert orchestrator._db.admit_task_completion_callback(
+                task_id=task_id, agent=agent, session_id=recovery_runtime_id,
+                status="completed", output_summary="accepted then cancelled",
+                decision_json=json.dumps({"action": "done", "summary": "must not run"}),
+                confidence_score=100,
+            )
+            asyncio.run(cancel_task(task_id, CancelBody(rationale="founder stop"), org))
+            return ExecutorResult(
+                success=False, duration_seconds=1, session_id=recovery_runtime_id,
+                agent_session_id="provider-origin", error="provider cancelled",
+                failure_category="provider_nonzero", provider_launched=True,
+            )
+
+    fake = FakeCodexExecutor()
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator.run_step(task_id)
+
+    assert len(fake.calls) == 2
+    task = orchestrator._db.get_task(task_id)
+    assert task.status == TaskStatus.CANCELLED
+    assert task.cancelled_at is not None
+    recovery = orchestrator._db.execute(
+        "SELECT accepted_result_id FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+    ).fetchone()
+    accepted = orchestrator._db.get_latest_task_result(task_id, agent, recovery_runtime_id)
+    assert recovery["accepted_result_id"] == accepted["id"]
+    assert accepted["decision_json"] == json.dumps({"action": "done", "summary": "must not run"})
+
+
+@pytest.mark.parametrize(
+    "event", ["unchanged", "cancelled", "replaced"],
+)
+def test_run_step_codex_recovery_observes_ownership_at_fallback_launch(
+    orchestrator, test_runtime, monkeypatch, event,
+):
+    """C1: only an unchanged recovery owner reaches the fallback boundary.
+
+    This exercises real ``run_step``/``_run_agent`` callback and claim
+    plumbing.  The fake is only the provider/process boundary: its launch
+    counter increments *after* the production per-attempt validator, which is
+    the same pre-Popen seam used by the actual Codex executor.
+    """
+    from runtime.daemon.event_bus import EventBus
+    from runtime.daemon.routes.tasks import CancelBody, cancel_task
+    from runtime.daemon.sessions import SessionTracker
+
+    agent = "engineering_head"
+    origin_id = "sess-origin"
+    recovery_id = "sess-recovery"
+    newer_id = "sess-newer"
+    _setup_codex_workspace(test_runtime, agent)
+    tracker = SessionTracker()
+    orchestrator.attach_sessions(tracker)
+    task_id = orchestrator.create_task("recovery prelaunch ownership")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    session_ids = iter((origin_id, recovery_id))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(session_ids))
+    org = SimpleNamespace(
+        db=orchestrator._db, db_lock=asyncio.Lock(), sessions=tracker,
+        orchestrator=orchestrator, event_bus=EventBus(lambda _task_id: []),
+    )
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls = []
+            self.recovery_provider_launches = 0
+
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id=origin_id,
+                    agent_session_id="provider-origin",
+                )
+            assert len(self.calls) == 2, "recovery cannot recursively launch"
+            if event == "cancelled":
+                # Exercise the shipping cancellation route, rather than
+                # mutating the task row or tracker in the test.
+                asyncio.run(cancel_task(task_id, CancelBody(rationale="founder stop"), org))
+            elif event == "replaced":
+                # Model ordinary newer-generation publication with both real
+                # ownership authorities, including its generation-owned PID,
+                # cancellation control, and accepted exact callback.
+                orchestrator._db.update_task(
+                    task_id, assigned_agent=agent, current_session_id=newer_id,
+                )
+                tracker.set_active(task_id, agent, newer_id, org_slug="test")
+                tracker.set_pid(task_id, agent, newer_id, 4242)
+                newer_cancel = MagicMock()
+                tracker.set_cancel_control(task_id, agent, newer_id, newer_cancel)
+                assert orchestrator._db.admit_task_completion_callback(
+                    task_id=task_id, agent=agent, session_id=newer_id,
+                    status="completed", output_summary="newer owner",
+                    decision_json=json.dumps({"action": "done", "summary": "newer"}),
+                    confidence_score=100,
+                )
+            if event != "unchanged":
+                with pytest.raises(RuntimeError, match="ownership lost"):
+                    kwargs["pre_launch_validator"]()
+                return ExecutorResult(
+                    success=False, duration_seconds=0, session_id=recovery_id,
+                    error="launch ownership lost", failure_category="prelaunch",
+                )
+
+            kwargs["pre_launch_validator"]()
+            self.recovery_provider_launches += 1
+            assert orchestrator._db.admit_task_completion_callback(
+                task_id=task_id, agent=agent, session_id=recovery_id,
+                status="completed", output_summary="recovery owner",
+                decision_json=json.dumps({"action": "done", "summary": "recovered"}),
+                confidence_score=100,
+            )
+            return ExecutorResult(
+                success=True, duration_seconds=1, session_id=recovery_id,
+                agent_session_id="provider-origin", provider_launched=True,
+            )
+
+    fake = FakeCodexExecutor()
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator.run_step(task_id)
+
+    assert len(fake.calls) == 2
+    assert fake.recovery_provider_launches == (1 if event == "unchanged" else 0)
+    recovery = orchestrator._db.execute(
+        "SELECT count(*) AS n, max(state) AS state FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+    ).fetchone()
+    assert recovery["n"] == 1
+    task = orchestrator._db.get_task(task_id)
+    assert len(fake.calls) == 2, "one origin plus at most one recovery; no third call"
+    if event == "replaced":
+        assert task.current_session_id == newer_id
+        assert tracker.get_active(task_id, agent) == newer_id
+        assert tracker.get_pid(task_id, agent) == 4242
+        assert tracker.get_cancel_control(task_id, agent) is not None
+        newer = orchestrator._db.get_latest_task_result(task_id, agent, newer_id)
+        assert newer is not None
+        assert newer["output_summary"] == "newer owner"
+        assert recovery["state"] == "superseded"
+        assert task.status == TaskStatus.IN_PROGRESS
+    elif event == "cancelled":
+        assert task.cancelled_at is not None
+        assert task.status == TaskStatus.CANCELLED
+    else:
+        accepted = orchestrator._db.get_latest_task_result(task_id, agent, recovery_id)
+        assert accepted is not None
+        assert accepted["output_summary"] == "recovery owner"
+        assert task.status == TaskStatus.COMPLETED
+
+
+@pytest.mark.parametrize("event", ["unchanged", "cancelled", "replaced"])
+def test_run_step_codex_recovery_observes_ownership_during_contained_prepare(
+    orchestrator, test_runtime, monkeypatch, event,
+):
+    """C1 contained path: preparation cannot launch a displaced recovery.
+
+    The real ``run_step -> _run_agent -> _run_agent_launch_contained`` chain
+    uses the lifecycle suite's fake containment backend.  Its recovery
+    ``prepare`` hook is the deliberate post-validator/pre-launch window: the
+    shipping cancellation route or ordinary newer-generation publication runs
+    there, after the recovery validator has accepted ownership.
+    """
+    from runtime.daemon.event_bus import EventBus
+    from runtime.daemon.routes.tasks import CancelBody, cancel_task
+    from runtime.daemon.sessions import SessionTracker
+    from runtime.platform.session_backend import LaunchSpec
+    from tests.test_host_supervisor_lifecycle import FakeBackend, make_supervisor
+
+    agent = "engineering_head"
+    origin_id, recovery_id, newer_id = "sess-origin", "sess-recovery", "sess-newer"
+    _setup_codex_workspace(test_runtime, agent)
+    tracker = SessionTracker()
+    orchestrator.attach_sessions(tracker)
+    task_id = orchestrator.create_task("contained recovery prelaunch ownership")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(session_ids))
+    session_ids = iter((origin_id, recovery_id))
+    org = SimpleNamespace(
+        db=orchestrator._db, db_lock=asyncio.Lock(), sessions=tracker,
+        orchestrator=orchestrator, event_bus=EventBus(lambda _task_id: []),
+    )
+
+    class PrepareWindowBackend(FakeBackend):
+        def prepare(self, request, policy):
+            pending = super().prepare(request, policy)
+            if self.calls["prepare"] != 2:
+                return pending
+            if event == "cancelled":
+                asyncio.run(cancel_task(task_id, CancelBody(rationale="founder stop"), org))
+            elif event == "replaced":
+                orchestrator._db.update_task(
+                    task_id, assigned_agent=agent, current_session_id=newer_id,
+                )
+                tracker.set_active(task_id, agent, newer_id, org_slug="test")
+                tracker.set_pid(task_id, agent, newer_id, 4242)
+                newer_cancel = MagicMock()
+                tracker.set_cancel_control(task_id, agent, newer_id, newer_cancel)
+                assert orchestrator._db.admit_task_completion_callback(
+                    task_id=task_id, agent=agent, session_id=newer_id,
+                    status="completed", output_summary="newer owner",
+                    decision_json=json.dumps({"action": "done", "summary": "newer"}),
+                    confidence_score=100,
+                )
+            return pending
+
+    backend = PrepareWindowBackend()
+    supervisor, _publisher = make_supervisor(backend=backend)
+    orchestrator.attach_host_supervisor(supervisor)
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def build_launch_spec(self, **_kwargs):
+            return LaunchSpec(argv=("fake-codex",))
+
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id=origin_id,
+                    agent_session_id="provider-origin",
+                )
+            assert len(self.calls) == 2, "recovery cannot recursively launch"
+            assert event == "unchanged"
+            assert orchestrator._db.admit_task_completion_callback(
+                task_id=task_id, agent=agent, session_id=recovery_id,
+                status="completed", output_summary="recovery owner",
+                decision_json=json.dumps({"action": "done", "summary": "recovered"}),
+                confidence_score=100,
+            )
+            return ExecutorResult(
+                success=True, duration_seconds=1, session_id=recovery_id,
+                agent_session_id="provider-origin", provider_launched=True,
+            )
+
+    fake = FakeCodexExecutor()
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator.run_step(task_id)
+
+    assert backend.calls["launch"] == (2 if event == "unchanged" else 1)
+    assert backend.calls["prepare"] == 2
+    assert backend.calls["abandon"] == (0 if event == "unchanged" else 1)
+    assert len(fake.calls) == (2 if event == "unchanged" else 1)
+    assert supervisor.active_count() == 0
+    assert supervisor._admission.admitted_total() == 2
+    assert supervisor._admission.released_total() == 2
+    recovery = orchestrator._db.execute(
+        "SELECT count(*) AS n, max(state) AS state FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+    ).fetchone()
+    assert recovery["n"] == 1
+    task = orchestrator._db.get_task(task_id)
+    if event == "unchanged":
+        assert task.status == TaskStatus.COMPLETED
+        assert recovery["state"] == "callback_consumed"
+    elif event == "cancelled":
+        assert task.status == TaskStatus.CANCELLED
+    else:
+        assert task.status == TaskStatus.IN_PROGRESS
+        assert task.current_session_id == newer_id
+        assert tracker.get_active(task_id, agent) == newer_id
+        assert tracker.get_pid(task_id, agent) == 4242
+        assert tracker.get_cancel_control(task_id, agent) is not None
+        newer = orchestrator._db.get_latest_task_result(task_id, agent, newer_id)
+        assert newer is not None
+        assert newer["output_summary"] == "newer owner"
+        assert recovery["state"] == "superseded"
+
+
+@pytest.mark.parametrize("launch_mode", ["contained", "passthrough", "fallback"])
+@pytest.mark.parametrize(
+    ("deadline_case", "advance"),
+    [
+        ("429", None),
+        ("setup_expired", 120.0),
+        ("setup_remainder", 0.25),
+        ("launch_expired", 120.0),
+        ("launch_remainder", 0.25),
+    ],
+)
+def test_run_step_codex_clean_omission_recovery_429_has_one_real_provider_launch(
+    orchestrator, test_runtime, monkeypatch, launch_mode, deadline_case, advance,
+):
+    """C2h: deadline behavior reaches each real recovery provider boundary.
+
+    This deliberately keeps the orchestration and Codex executor real.  Only
+    the OS process boundary is fake: a clean origin emits Codex's real JSONL
+    conversation identity, then its resumed recovery returns a 429 with no
+    callback.  The three forms observe their actual launch boundaries rather
+    than accepting a fake executor's recorded keyword arguments.
+    """
+    from runtime.daemon.sessions import SessionTracker
+    from runtime.orchestrator import executors as executors_mod
+    from runtime.orchestrator import orchestrator as orchestrator_mod
+    from runtime.orchestrator import run_step as run_step_mod
+    from runtime.orchestrator.executors import CodexExecutor
+    from runtime.orchestrator.throttle import ProviderThrottle, get_throttle, set_throttle
+    from runtime.platform.session_backend import RunningHandle
+    from tests.test_host_supervisor_lifecycle import FakeBackend, make_supervisor
+
+    agent = "engineering_head"
+    origin_id, recovery_id, provider_id = "sess-origin", "sess-recovery", "provider-origin"
+    _setup_codex_workspace(test_runtime, agent)
+    tracker = SessionTracker()
+    orchestrator.attach_sessions(tracker)
+    task_id = orchestrator.create_task("one recovery 429 across shipping launch forms")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    # The test runner itself may be nested in a task scratch environment; a
+    # daemon-launched agent correctly rejects inheriting those parent controls.
+    monkeypatch.delenv("HAPPYRANCH_TASK_TMP_ROOT", raising=False)
+    monkeypatch.delenv("HAPPYRANCH_TASK_SCRATCH_MANIFEST", raising=False)
+    session_ids = iter((origin_id, recovery_id))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(session_ids))
+    monkeypatch.setattr(executors_mod, "_resolve_binary", lambda _profile: "fake-codex")
+
+    class DeadlineClock:
+        now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+    # These are module-local replacements.  Patching ``time.monotonic`` would
+    # mutate the shared stdlib module and incorrectly freeze the real-time host
+    # supervisor's event/admission machinery.
+    clock = DeadlineClock()
+    monkeypatch.setattr(run_step_mod, "time", clock)
+    monkeypatch.setattr(orchestrator_mod, "time", clock)
+    monkeypatch.setattr(executors_mod, "time", clock)
+    launches: list[tuple[str, tuple[str, ...]]] = []
+    sleeps: list[float] = []
+    cleanup: list[str] = []
+
+    class Process:
+        def __init__(self, ordinal: int):
+            self.pid = 7000 + ordinal
+            self.returncode = 0 if ordinal == 1 else 1
+
+        def communicate(self, **_kwargs):
+            if self.returncode == 0:
+                return json.dumps({"type": "thread.started", "thread_id": provider_id}) + "\n", ""
+            if deadline_case.endswith("remainder"):
+                assert _kwargs["timeout"] == pytest.approx(120.0 - advance)
+                assert orchestrator._db.admit_task_completion_callback(
+                    task_id=task_id, agent=agent, session_id=recovery_id,
+                    status="completed", output_summary="recovery deadline callback",
+                    decision_json=json.dumps({"action": "done", "summary": "recovered"}),
+                    confidence_score=100,
+                )
+                return "", ""
+            return "", "HTTP 429 rate limit"
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            cleanup.append(f"kill-{self.pid}")
+            return None
+
+    class ContainedBackend(FakeBackend):
+        def prepare(self, request, policy):
+            pending = super().prepare(request, policy)
+            if self.calls["prepare"] == 2 and deadline_case.startswith("setup_"):
+                # The recovery's ordinary validator has already run; the
+                # supervisor final hook must fence the prepared handle before
+                # its launch commitment.
+                clock.now = advance
+            return pending
+
+        def launch(self, pending, spec):
+            ordinal = len(launches) + 1
+            launches.append(("backend.launch", tuple(spec.argv)))
+            with self.lock:
+                self.calls["launch"] += 1
+            running = RunningHandle(
+                backend=self.name, token=pending.token, request_id=pending.request_id,
+                root_pid=7000 + ordinal, start_identity="fake-start",
+                process=Process(ordinal),
+            )
+            if ordinal == 2 and deadline_case.startswith("launch_"):
+                # The backend has launched/owned the process before budget loss.
+                clock.now = advance
+            return running
+
+    def isolation_launch(cmd, **_kwargs):
+        ordinal = len(launches) + 1
+        launches.append(("isolation.launch_executor", tuple(cmd)))
+        proc = Process(ordinal)
+        if ordinal == 2 and deadline_case.startswith("launch_"):
+            clock.now = advance
+        return proc
+
+    original_callee_env = executors_mod._callee_env
+
+    def recovery_callee_env(**kwargs):
+        env = original_callee_env(**kwargs)
+        if (
+            launch_mode != "contained"
+            and len(launches) == 1
+            and deadline_case.startswith("setup_")
+        ):
+            # This runs after the old validator but before the actual
+            # uncontained provider Popen in both fallback paths.
+            clock.now = advance
+        return env
+
+    monkeypatch.setattr(executors_mod, "_callee_env", recovery_callee_env)
+
+    backend = None
+    supervisor = None
+    if launch_mode == "contained":
+        backend = ContainedBackend()
+        supervisor, _ = make_supervisor(backend=backend)
+        orchestrator.attach_host_supervisor(supervisor)
+    elif launch_mode == "passthrough":
+        from runtime.platform.passthrough_backend import PassthroughBackend
+        # The honest backend produces process=None, so Codex reaches its real
+        # uncontained isolation boundary inside the supervisor launch body.
+        supervisor, _ = make_supervisor(backend=PassthroughBackend())
+        orchestrator.attach_host_supervisor(supervisor)
+
+    monkeypatch.setattr(
+        executors_mod, "detect_platform_isolation",
+        lambda: SimpleNamespace(launch_executor=isolation_launch),
+    )
+    throttle = ProviderThrottle(
+        ceiling_default=1, spacing_seconds=0.0, backoff_seconds=(9.0,), sleep=sleeps.append,
+    )
+    old_throttle = get_throttle()
+    set_throttle(throttle)
+    try:
+        executor = CodexExecutor(codex_cli_path="fake-codex", sandbox_mode="workspace-write")
+        with patch.object(orchestrator, "_build_executor", return_value=executor):
+            orchestrator.run_step(task_id)
+    finally:
+        set_throttle(old_throttle)
+
+    expected_launches = 1 if deadline_case == "setup_expired" else 2
+    assert len(launches) == expected_launches, orchestrator._db.get_task(task_id).note
+    assert launches[0][1][:2] == ("fake-codex", "exec")
+    if expected_launches == 2:
+        assert provider_id in launches[1][1]
+    assert sleeps == [], "recovery never gets a second provider opportunity"
+    recovery = orchestrator._db.execute(
+        "SELECT origin_session_id, recovery_session_id, provider_session_id, state "
+        "FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+    ).fetchall()
+    assert [dict(row) for row in recovery] == [{
+        "origin_session_id": origin_id,
+        "recovery_session_id": recovery_id,
+        "provider_session_id": provider_id,
+        "state": "callback_consumed" if deadline_case.endswith("remainder") else "claimed",
+    }]
+    task = orchestrator._db.get_task(task_id)
+    if deadline_case.endswith("remainder"):
+        assert task.status == TaskStatus.COMPLETED
+    else:
+        assert task.status == TaskStatus.FAILED
+    if deadline_case == "launch_expired":
+        assert cleanup == ["kill-7002"], "the launched recovery is drained by its owner"
+    assert tracker.get_active(task_id, agent) is None
+    assert tracker.get_cancel_control(task_id, agent) is None
+    if supervisor is not None:
+        assert supervisor._admission.admitted_total() == 2
+        assert supervisor._admission.released_total() == 2
+        assert supervisor.active_count() == 0
+    if backend is not None:
+        assert backend.calls["prepare"] == 2
+        assert backend.calls["finish"] == (1 if deadline_case == "setup_expired" else 2)
+        assert backend.calls["abandon"] == (1 if deadline_case == "setup_expired" else 0)
 
 
 def test_run_agent_skips_session_registration_when_tracker_not_attached(
@@ -570,6 +2177,123 @@ def test_run_agent_skips_session_registration_when_tracker_not_attached(
     assert captured == [(task_id, "engineering_head", "sess-eh")]
 
 
+@pytest.mark.parametrize(
+    "preservation, expected_outcome",
+    [
+        (None, ("removed", "eligible")),
+        ("dirty", ("preserved", "worktree-dirty")),
+        ("open-pr", ("preserved", "unmerged-pull-request")),
+        ("live", ("preserved", "live-session")),
+        ("foreign", ("preserved", "agent-unregistered")),
+        ("probe-error", ("preserved", "probe-error")),
+        ("timeout", ("preserved", "probe-timeout")),
+    ],
+)
+def test_run_agent_integrity_refusal_persists_failed_then_reclaims_without_launch(
+    orchestrator, test_runtime, monkeypatch, preservation, expected_outcome,
+):
+    from runtime.daemon.sessions import SessionTracker
+    from runtime.orchestrator import run_step as run_step_module
+    from runtime.orchestrator.workspace_adapters import WorkspaceIntegrityError
+
+    agent = "engineering_head"
+    _setup_workspaces(test_runtime, [agent])
+    orchestrator._teams = TeamsRegistry._from_layout(
+        {"engineering": {"manager": agent, "workers": []}},
+        test_runtime.root,
+    )
+    task_id = orchestrator.create_task("integrity refusal")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    orchestrator.attach_sessions(SessionTracker())
+
+    primary = test_runtime.workspaces_dir / agent / "repos" / "happyranch"
+    primary.mkdir(parents=True)
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=primary, text=True,
+            capture_output=True, check=True,
+        )
+
+    git("init", "-b", "main")
+    git("config", "user.email", "tests@example.invalid")
+    git("config", "user.name", "HappyRanch tests")
+    (primary / "tracked.txt").write_text("base\n")
+    git("add", "tracked.txt")
+    git("commit", "-m", "test base")
+    git("update-ref", "refs/remotes/origin/main", "HEAD")
+    candidate = primary / ".claude" / "worktrees" / task_id
+    candidate.parent.mkdir(parents=True)
+    git("worktree", "add", "-b", f"task/{task_id}", str(candidate))
+    if preservation == "dirty":
+        (candidate / "tracked.txt").write_text("dirty\n")
+    elif preservation == "live":
+        orchestrator._sessions.set_active(task_id, agent, "sess-live")
+    elif preservation == "foreign":
+        orchestrator._db.update_task(task_id, assigned_agent="foreign_agent")
+
+    monkeypatch.setattr(
+        "runtime.orchestrator.orchestrator.materialize_workspace_skills",
+        lambda *args, **kwargs: [],
+    )
+
+    def refuse(*args, **kwargs):
+        raise WorkspaceIntegrityError("test-integrity", "refused")
+
+    monkeypatch.setattr(
+        "runtime.orchestrator.orchestrator.validate_workspace_skills_integrity",
+        refuse,
+    )
+    real_run = run_step_module._run_terminal_worktree_command
+
+    def fake_run(args, *, cwd, timeout):
+        if args[0] == "gh":
+            assert orchestrator._db.get_task(task_id).status is TaskStatus.FAILED
+            if preservation == "timeout":
+                raise subprocess.TimeoutExpired(args, timeout)
+            if preservation == "open-pr":
+                return subprocess.CompletedProcess(
+                    args, 0, '[{"number": 887, "state": "OPEN"}]\n', "",
+                )
+            return subprocess.CompletedProcess(args, 0, "[]\n", "")
+        return real_run(args, cwd=cwd, timeout=timeout)
+
+    monkeypatch.setattr(run_step_module, "_run_terminal_worktree_command", fake_run)
+    monkeypatch.setattr(
+        run_step_module,
+        "_terminal_worktree_process_reference",
+        (
+            lambda *_: (_ for _ in ()).throw(RuntimeError("probe failed"))
+            if preservation == "probe-error" else None
+        ),
+    )
+    original_reclaim = run_step_module._reclaim_terminal_task_worktree
+    outcomes = []
+
+    def observed_reclaim(*args, **kwargs):
+        outcome = original_reclaim(*args, **kwargs)
+        outcomes.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(
+        run_step_module, "_reclaim_terminal_task_worktree", observed_reclaim,
+    )
+    executor = MagicMock()
+
+    with patch.object(orchestrator, "_build_executor", return_value=executor):
+        result, report = orchestrator._run_agent(task_id, agent, "prompt")
+
+    assert result.success is False
+    assert report is None
+    assert orchestrator._db.get_task(task_id).status is TaskStatus.FAILED
+    executor.run.assert_not_called()
+    assert outcomes == [expected_outcome]
+    assert candidate.exists() is (preservation is not None)
+    if preservation is not None:
+        assert str(candidate) in git("worktree", "list", "--porcelain").stdout
+    assert git("show-ref", "--verify", f"refs/heads/task/{task_id}").returncode == 0
+
+
 def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_runtime, test_settings, monkeypatch):
     """TASK-2511: When workspace skill materialization fails, the failure
     propagates as a named error (SymlinkMaterializationError) before executor
@@ -590,7 +2314,7 @@ def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_ru
     # Create source skill dirs in runtime/skills/bundled/ for the project_root temp.
     proto_skills = test_settings.get_bundled_skills_dir()
     proto_skills.mkdir(parents=True, exist_ok=True)
-    for sid in ("start-task", "jobs", "make-worktree", "thread", "dream"):
+    for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "workspace-cleanup"):
         (proto_skills / sid).mkdir(parents=True, exist_ok=True)
         (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
 
@@ -693,6 +2417,133 @@ def test_run_agent_accepts_codex_readiness_marker(orchestrator, test_runtime, mo
 
     assert result.success is True
     assert report is None
+    assert mock_executor.run.call_count == 1
+
+
+def _setup_provider_workspace(runtime, agent: str, provider: str) -> None:
+    """Seed an active workspace + agent frontmatter for ``provider``."""
+    _setup_codex_workspace(runtime, agent)
+    ws = runtime.workspaces_dir / agent
+    _write_residual_agent_yaml(ws, provider)
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    ad = AgentDef(
+        name=agent, team="engineering", role="manager",
+        executor=provider, allow_rules=(), repos={},
+        enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+        system_prompt=f"You are {agent}.", description="", model=None,
+    )
+    (runtime.agents_dir / f"{agent}.md").write_text(render_agent_text(ad))
+
+
+def _disfigure_instruction_pair(ws: Path, form: str) -> None:
+    """Turn a valid canonical pair into exactly one refused pair shape."""
+    agents = ws / "AGENTS.md"
+    claude = ws / "CLAUDE.md"
+
+    def _unlink(path: Path) -> None:
+        if path.is_symlink() or path.exists():
+            path.unlink()
+
+    if form == "missing_agents":
+        _unlink(agents)
+    elif form == "missing_claude":
+        _unlink(claude)
+    elif form == "dangling":
+        _unlink(claude)
+        os.symlink("MISSING.md", claude)
+    elif form == "cyclic":
+        _unlink(claude)
+        os.symlink("CLAUDE.md", claude)
+    elif form == "reversed":
+        # ``AGENTS.md -> CLAUDE.md``: the reverse of the accepted topology.
+        _unlink(claude)
+        claude.write_text("reversed\n")
+        _unlink(agents)
+        os.symlink("CLAUDE.md", agents)
+    elif form == "absolute":
+        _unlink(claude)
+        os.symlink(str(agents), claude)
+    elif form == "foreign":
+        _unlink(claude)
+        os.symlink("/etc/hostname", claude)
+    elif form == "wrong_target":
+        _unlink(claude)
+        (ws / "OTHER.md").write_text("other\n")
+        os.symlink("OTHER.md", claude)
+    elif form == "non_link":
+        _unlink(claude)
+        claude.write_text("regular\n")
+    elif form == "claude_directory":
+        _unlink(claude)
+        claude.mkdir()
+    elif form == "agents_symlink":
+        (ws / "AGENTS-real.md").write_text("# Agent: engineering_head\n")
+        _unlink(agents)
+        os.symlink("AGENTS-real.md", agents)
+        _unlink(claude)
+        os.symlink("AGENTS.md", claude)
+    else:  # pragma: no cover - guard against a typo in the parametrization
+        raise AssertionError(f"unknown form {form}")
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+@pytest.mark.parametrize(
+    "form",
+    [
+        "missing_agents",
+        "missing_claude",
+        "dangling",
+        "cyclic",
+        "reversed",
+        "absolute",
+        "foreign",
+        "wrong_target",
+        "non_link",
+        "claude_directory",
+        "agents_symlink",
+    ],
+)
+def test_run_agent_refuses_non_canonical_pair_before_launch(
+    orchestrator, test_runtime, monkeypatch, provider, form,
+):
+    """THR-262 Slice B / founder seq59: every non-canonical or incomplete
+    instruction pair refuses for every provider through the existing
+    ``WorkspaceNotInitialized`` class naming ``init-agent``, and launches
+    no executor."""
+    _setup_provider_workspace(test_runtime, "engineering_head", provider)
+    ws = test_runtime.workspaces_dir / "engineering_head"
+    _disfigure_instruction_pair(ws, form)
+    task_id = orchestrator.create_task("ping")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
+
+    mock_executor = MagicMock()
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
+        with pytest.raises(WorkspaceNotInitialized) as excinfo:
+            orchestrator._run_agent(task_id, "engineering_head", "any prompt")
+
+    assert "init-agent" in str(excinfo.value)
+    assert "engineering_head" in str(excinfo.value)
+    mock_executor.run.assert_not_called()
+
+
+def test_run_agent_valid_canonical_pair_reaches_launch(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """Positive control: a valid canonical pair proceeds to launch."""
+    _setup_codex_workspace(test_runtime, "engineering_head")
+    task_id = orchestrator.create_task("ping")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
+
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="sess-eh",
+    )
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
+        result, _report = orchestrator._run_agent(
+            task_id, "engineering_head", "any prompt",
+        )
+
+    assert result.success is True
     assert mock_executor.run.call_count == 1
 
 
@@ -1119,23 +2970,6 @@ def test_read_completion_from_db_corrupt_local_ci(orchestrator):
     report = orchestrator._read_completion_from_db("TASK-001", "dev_agent", "sess-corrupt")
     assert report is not None
     assert report.local_ci is None
-
-
-def test_local_ci_column_migration_idempotent(orchestrator):
-    """The ALTER TABLE ADD COLUMN local_ci TEXT migration is idempotent.
-    Running it twice via the _ensure_schema path does not crash."""
-    # The column already exists after the first migration run during DB init.
-    # We can verify by re-running the ALTER and catching sqlite3.OperationalError.
-    import sqlite3
-    try:
-        orchestrator._db._conn.execute(
-            "ALTER TABLE task_results ADD COLUMN local_ci TEXT"
-        )
-        # If we get here, the column already exists (no error) or was added.
-        # Either way, the idempotent migration pattern works.
-    except sqlite3.OperationalError:
-        # Expected: column already exists.
-        pass
 
 
 def test_orchestrator_requires_teams() -> None:
@@ -1768,7 +3602,7 @@ class TestDecisionAttachments:
         store.put("da-key", b"data")
 
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         decision = NextStep(action="delegate", agent="dev_agent", prompt="build",
@@ -1802,7 +3636,7 @@ class TestDecisionAttachments:
             created_at=now, updated_at=now,
         ))
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         decision = NextStep(action="delegate", agent="dev_agent", prompt="build",
@@ -1830,7 +3664,7 @@ class TestDecisionAttachments:
             created_at=now, updated_at=now,
         ))
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         decision = NextStep(action="delegate", agent="dev_agent", prompt="build")
@@ -1872,16 +3706,17 @@ class TestDecisionAttachments:
         child = TaskRecord(id="T-ATOMIC-C", team="engineering", brief="child",
                            assigned_agent="dev_agent", parent_task_id=pid,
                            status=TaskStatus.PENDING, created_at=now, updated_at=now)
-        try:
+        expected_claim = _fixture_retry_claim(db, pid)
+        owned_parent_before = db.get_task(pid)
+        import sqlite3
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
             db.try_delegate(pid, child, parent_note="test",
                           attachments=[{"ordinal": 0, "storage_key": "atom-dup",
                                        "display_name": "x.png", "size_bytes": 1,
                                        "content_type": "image/png"}],
-                          uploaded_by="test")
-        except Exception:
-            pass
+                          uploaded_by="test", expected_claim=expected_claim)
         assert db.get_task("T-ATOMIC-C") is None, "Child must not exist after rollback"
-        assert db.get_task(pid).status == TaskStatus.PENDING
+        assert db.get_task(pid) == owned_parent_before
 
     def test_chain_leg_attachment_persists(self, test_settings, test_runtime):
         """Chain leg attachments persist when auto-advancing."""
@@ -1969,10 +3804,11 @@ class TestDecisionAttachments:
             {"agent": "qa_engineer", "prompt": "task B",
              "attachments": [{"storage_key": "fan-k2", "display_name": "b.png"}]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=2,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         children = db.get_children(pid)
         assert len(children) == 2
@@ -2007,10 +3843,11 @@ class TestDecisionAttachments:
             {"agent": "qa_engineer", "prompt": "task B",
              "attachments": [{"storage_key": "fan-dup-key", "display_name": "b.png"}]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=2,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         parent = db.get_task(pid)
         assert parent.status == TaskStatus.FAILED
@@ -2045,10 +3882,11 @@ class TestDecisionAttachments:
              "then": [{"agent": "qa_engineer", "prompt": "qa", "expect_verdict": "PASS"}],
              "attachments": [{"storage_key": "pipe-key", "display_name": "spec.md"}]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=1,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         children = db.get_children(pid)
         assert len(children) == 1
@@ -2110,7 +3948,7 @@ class TestDecisionAttachments:
             created_at=now, updated_at=now,
         ))
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         # Direct leg has NO attachments, but later chain leg references
@@ -2236,10 +4074,11 @@ class TestDecisionAttachments:
              "attachments": [{"storage_key": "pipe-carrier-key",
                               "display_name": "spec.md"}]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=1,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         children = db.get_children(pid)
         assert len(children) == 1
@@ -2298,10 +4137,11 @@ class TestDecisionAttachments:
                  {"storage_key": "fam-b3", "display_name": "b3.png"},
              ]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=2,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         parent_after = db.get_task(pid)
         assert parent_after.status == TaskStatus.IN_PROGRESS
@@ -2400,18 +4240,18 @@ class TestDecisionAttachments:
         # Call try_delegate_many — the first leg INSERT should collide and
         # the entire transaction should roll back.
         import sqlite3
+        expected_claim = _fixture_retry_claim(db, pid)
+        owned_parent_before = db.get_task(pid)
         with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint"):
             db.try_delegate_many(
                 pid, [child], parent_note="test",
                 children_attachments=[child_atts],
                 carrier_chains=carrier_chains,
-                uploaded_by="test",
-            )
+                uploaded_by="test", expected_claim=expected_claim)
 
         # Verify nothing was committed.
         parent_after = db.get_task(pid)
-        assert parent_after.status == TaskStatus.PENDING, \
-            f"Parent should still be PENDING, got {parent_after.status}"
+        assert db.get_task(pid) == owned_parent_before
         assert parent_after.active_fanout is None
         assert db.get_task(carrier_id) is None
         # Our pre-inserted row still exists (was committed before the test).
@@ -2446,7 +4286,7 @@ class TestDecisionAttachments:
         store.put("dup-key", b"data")
 
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         # Same key in both direct and later leg — must reject whole decision.
@@ -2485,7 +4325,7 @@ class TestDecisionAttachments:
         ))
 
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         decision = NextStep(
@@ -2524,7 +4364,7 @@ class TestDecisionAttachments:
         ))
 
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         decision = NextStep(
@@ -2573,7 +4413,7 @@ class TestDecisionAttachments:
                                    content_type="image/png", uploaded_by="founder")
 
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         # Later leg references an already-claimed key — must reject before child.
@@ -2624,10 +4464,11 @@ class TestDecisionAttachments:
                   "attachments": [{"storage_key": "nonexistent-pipe-nested"}]},
              ]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=1,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         parent = db.get_task(pid)
         assert parent.status == TaskStatus.FAILED
@@ -2675,10 +4516,11 @@ class TestDecisionAttachments:
                                    "display_name": "x.png"}]},
              ]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=1,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         parent = db.get_task(pid)
         assert parent.status == TaskStatus.FAILED
@@ -2720,10 +4562,11 @@ class TestDecisionAttachments:
                                    "display_name": "spec.md"}]},
              ]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=1,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         parent = db.get_task(pid)
         assert parent.status == TaskStatus.FAILED
@@ -2770,10 +4613,11 @@ class TestDecisionAttachments:
                                    "display_name": "x.png"}]},
              ]},
         ]
+        expected_claim = _fixture_retry_claim(db, pid)
         _spawn_fanout_children(orch, parent=db.get_task(pid),
                                task_id=pid, next_count=1,
                                children=children_payload, width=2,
-                               manager_agent="engineering_head")
+                               manager_agent="engineering_head", expected_claim=expected_claim)
 
         parent = db.get_task(pid)
         assert parent.status == TaskStatus.FAILED
@@ -2834,7 +4678,7 @@ class TestDecisionAttachments:
         )
 
         orch = _setup_orch(test_runtime, db, test_settings)
-        scripted = ScriptedRunAgent()
+        scripted = ScriptedRunAgent(db)
         orch._run_agent = scripted
 
         decision = NextStep(
@@ -2851,13 +4695,8 @@ class TestDecisionAttachments:
 
         # try_delegate catches the ABORT, rolls back, and re-raises.
         # The exception propagates out of run_step_impl → run_step.
-        error_raised = False
-        try:
+        with pytest.raises(sqlite3.IntegrityError, match="injected transaction failure"):
             run_task_to_completion(orch, task_id=pid)
-        except Exception:
-            error_raised = True
-        assert error_raised, \
-            "Expected db.try_delegate to raise after trigger ABORT"
 
         # Verify the trigger fired — proves the real DB write path was
         # reached (child + link INSERT happened before the abort).
@@ -3126,7 +4965,7 @@ def test_preflight_checks_all_contracts_before_any_canonical_build(
 
     # Compute trusted hashes for ALL contracts before failure.
     trusted_hashes_before: dict[str, str] = {}
-    for cid in ["start-task", "jobs", "make-worktree", "thread"]:
+    for cid in ["start-task", "jobs", "make-worktree", "thread", "workspace-cleanup"]:
         d = proto_skills / cid
         if d.exists():
             trusted_hashes_before[cid] = _compute_dir_hash(d)
@@ -3206,7 +5045,7 @@ def test_preflight_checks_all_contracts_before_any_canonical_build(
 
     # ── No canonical package was built for non-seeded contracts ──────────
     # "jobs" was seeded by us — it should have exactly the seeded entry.
-    for cid in ["start-task", "jobs", "make-worktree", "thread"]:
+    for cid in ["start-task", "jobs", "make-worktree", "thread", "workspace-cleanup"]:
         pkg_base = store.root / cid / "system"
         if cid == "jobs":
             # Only the seeded package should exist
@@ -3239,7 +5078,7 @@ def test_preflight_checks_all_contracts_before_any_canonical_build(
     )
 
     # ── Trusted source hashes unchanged ───────────────────────────────────
-    for cid in ["start-task", "jobs", "make-worktree"]:
+    for cid in ["start-task", "jobs", "make-worktree", "workspace-cleanup"]:
         if cid in trusted_hashes_before:
             current_hash = _compute_dir_hash(proto_skills / cid)
             assert current_hash == trusted_hashes_before[cid], (
@@ -3350,7 +5189,7 @@ def test_preflight_context_union_raises_on_missing_source_executor_switch(
 
     # Compute trusted hashes of surviving contracts
     trusted_hashes: dict[str, str] = {}
-    for cid in ["start-task", "jobs", "make-worktree", "thread"]:
+    for cid in ["start-task", "jobs", "make-worktree", "thread", "workspace-cleanup"]:
         d = proto_skills / cid
         if d.exists():
             trusted_hashes[cid] = _compute_dir_hash(d)
@@ -3670,3 +5509,185 @@ def test_wrong_root_task_scratch_manifest_preserves_agent_failure_note_and_audit
     failures = [row for row in audits if row["action"] == "task_scratch_containment_failed"]
     assert len(failures) == 1
     assert failures[0]["payload"] == {"error": "manifest is corrupt"}
+
+
+# ── Group 9: ordinary held-reporter teardown ordering (TASK-8399) ─────────
+
+
+def _hold_group9_teardown_reporter(monkeypatch, orchestrator, *, raise_on_report=False):
+    """Instrument the real ``_run_agent`` teardown tail seams.
+
+    Records the exact shipping call order (``reset_task_scratch`` ->
+    ``report_task_scratch`` -> ``log_session_end`` -> ``_read_completion_from_db``)
+    and lets the reporter be held on a ``threading.Event`` or made to raise.
+    ``_cleanup_session_attachments`` still runs for real between audit and read.
+    """
+    import threading
+
+    from runtime.orchestrator import orchestrator as orchestrator_module
+
+    order: list[str] = []
+    report_entered = threading.Event()
+    release = threading.Event()
+
+    # Record the shipping reset WITHOUT replacing its effect: the real
+    # ``reset_task_scratch`` must still clear the active task-scratch
+    # ContextVar, otherwise the activation leaks into every later test in the
+    # same xdist worker and unrelated ``_callee_env`` tests fail closed with
+    # ``TaskScratchError: inherited task containment override refused``.
+    real_reset_task_scratch = orchestrator_module.reset_task_scratch
+
+    def _reset(token):
+        order.append("reset")
+        real_reset_task_scratch(token)
+
+    monkeypatch.setattr(orchestrator_module, "reset_task_scratch", _reset)
+
+    def _report(**kwargs):
+        order.append("report")
+        report_entered.set()
+        if raise_on_report:
+            raise RuntimeError("group 9 held reporter raised")
+        assert release.wait(timeout=10.0), "group 9 reporter was never released"
+        return None
+
+    monkeypatch.setattr(orchestrator_module, "report_task_scratch", _report)
+    monkeypatch.setattr(
+        orchestrator._audit, "log_session_end", lambda **kwargs: order.append("audit"),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_read_completion_from_db",
+        lambda *args, **kwargs: order.append("read") or None,
+    )
+    return order, report_entered, release
+
+
+def test_run_agent_held_reporter_blocks_read_and_return_while_loop_advances(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """Group 9 (TASK-8399): in an ordinary orchestrator venue a held teardown
+    reporter blocks the worker's return and the completion read while the
+    asyncio event loop keeps advancing; releasing it preserves the shipping
+    ``reset -> report -> audit -> completion-read`` order."""
+    import asyncio
+
+    _setup_codex_workspace(test_runtime, "engineering_head")
+    task_id = orchestrator.create_task("ping")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-group9-held")
+
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="sess-group9-held",
+    )
+
+    order, report_entered, release = _hold_group9_teardown_reporter(
+        monkeypatch, orchestrator,
+    )
+
+    async def _drive():
+        loop = asyncio.get_running_loop()
+        ticks = 0
+
+        async def _ticker():
+            nonlocal ticks
+            while True:
+                ticks += 1
+                await asyncio.sleep(0.002)
+
+        ticker = asyncio.create_task(_ticker())
+        with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
+            future = loop.run_in_executor(
+                None,
+                lambda: orchestrator._run_agent(task_id, "engineering_head", "any prompt"),
+            )
+            for _ in range(500):
+                if report_entered.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert report_entered.is_set(), "teardown reporter was never reached"
+            # Held reporter: worker has not returned and the read has not run.
+            assert not future.done(), "worker returned while the reporter was held"
+            assert "read" not in order, "completion read ran while the reporter was held"
+            assert order == ["reset", "report"]
+            # The event loop itself is still advancing while held.
+            before = ticks
+            for _ in range(20):
+                await asyncio.sleep(0.01)
+            assert ticks > before, "event loop did not advance while the reporter was held"
+            assert not future.done()
+            assert "read" not in order
+            release.set()
+            result, report = await asyncio.wait_for(future, timeout=30.0)
+        ticker.cancel()
+        try:
+            await ticker
+        except asyncio.CancelledError:
+            pass
+        return result, report
+
+    result, report = asyncio.run(_drive())
+
+    assert result.success is True
+    assert report is None
+    assert order == ["reset", "report", "audit", "read"]
+
+
+def test_run_agent_caught_reporter_raise_keeps_reset_report_audit_read_order(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """Group 9 (TASK-8399): a raising teardown reporter is caught (logged) and
+    the ordinary tail still completes ``reset -> report -> audit -> read``
+    without failing the launch."""
+    _setup_codex_workspace(test_runtime, "engineering_head")
+    task_id = orchestrator.create_task("ping")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-group9-raise")
+
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="sess-group9-raise",
+    )
+
+    order, report_entered, _release = _hold_group9_teardown_reporter(
+        monkeypatch, orchestrator, raise_on_report=True,
+    )
+
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
+        result, report = orchestrator._run_agent(
+            task_id, "engineering_head", "any prompt",
+        )
+
+    assert result.success is True  # the caught reporter raise did not fail the launch
+    assert report is None
+    assert report_entered.is_set()
+    assert order == ["reset", "report", "audit", "read"]
+
+
+def test_prompt_time_line_shared_loader_config_failure_escapes(
+    orchestrator, test_runtime,
+):
+    """The prompt path shares the strict org-config loader: malformed YAML
+    raises OrgConfigError before an ordinary prompt/summary can be produced."""
+    from runtime.orchestrator.org_config import OrgConfigError
+
+    test_runtime.org_config_path.parent.mkdir(parents=True, exist_ok=True)
+    test_runtime.org_config_path.write_text("workspace_cleanup: {\n")
+    with pytest.raises(OrgConfigError):
+        orchestrator._current_time_line(None)
+
+
+from runtime.infrastructure.database import RetryClaim, Committed, LostClaim
+
+
+def _fixture_retry_claim(db, task_id):
+    """Establish the direct caller's owned fixture before entering the writer."""
+    from runtime.models import TaskRecord, TaskStatus
+    task = db.get_task(task_id)
+    if task is None:
+        return RetryClaim.from_task(TaskRecord(id=task_id, brief="missing claim",
+            assigned_agent="engineering_head", current_session_id="fixture-owner"))
+    if task.status == TaskStatus.PENDING:
+        db.update_task(task_id, status=TaskStatus.IN_PROGRESS, block_kind=None,
+                       assigned_agent=task.assigned_agent or "engineering_head",
+                       current_session_id="fixture-owner", orchestration_step_count=1)
+    return RetryClaim.from_task(db.get_task(task_id))

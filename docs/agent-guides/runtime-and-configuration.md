@@ -47,6 +47,21 @@ operators must reload and inspect them before retrying. The response reports
 temporary-artifact state as `absent`, `present`, or `unknown`; cleanup failure
 never fabricates absence or overrides publication. The writer never performs a
 second unaudited replacement as compensation.
+
+**Observed divergence from the "exactly one honest terminal row" description
+above — described, not resolved here.** When the terminal audit insert itself
+fails after a successful atomic replace, the shipped behaviour records the
+durable `daemon_capacity_config_write_authorized` row and *no* terminal row at
+all, returning `config_publication_uncertain`
+(`tests/daemon/test_routes_settings.py::test_daemon_capacity_terminal_success_audit_failure_is_publication_uncertain`
+asserts the audit rows are exactly `["daemon_capacity_config_write_authorized"]`).
+Terminal audit completion is therefore **not guaranteed**, and nothing may
+assert that a rationale "is recorded in the audit entry". This note records the
+divergence between the description and the tested behaviour; it does not change
+backend auditing and does not assert that the two agree. The browser capacity
+panel's copy is qualified accordingly: it states that the reason is *included
+in the save request* and that auditing is addressed org-locally and
+bearer-attributed with terminal completion not guaranteed.
 The shared daemon bearer is required; it proves possession only and cannot be
 attributed to a verified person. Save is next-restart-only and cannot resize
 the startup worker or HostSessionSupervisor snapshots.
@@ -55,6 +70,18 @@ envelope/components and capability-derived effective admission cap/reason.
 A host cap below the envelope remains valid and warns about intentional
 backpressure; a cap above it warns that unused admission capacity creates no
 additional producers.
+
+**Frontend numeric limitation (NOT a contract change).** The browser editor
+refuses operator input outside `Number.MAX_SAFE_INTEGER` and withholds any
+consumed server numeric that did not survive `JSON.parse` as a safe integer.
+The API contract remains an unbounded positive integer; the browser bound is an
+editor representation limit only. A residual blind spot is retained and
+explicitly not closed: the shared HTTP client parses the response body and
+discards the raw text, so a raw *fractional* token that `JSON.parse` rounds
+into a safe integer (for example `9007199254740990.5` -> `9007199254740990`, or
+`1.0000000000000001` -> `1`) passes the guard undetected. Closing that read
+site needs a raw-text/BigInt-aware parse in the shared transport or a new API
+representation, and is a separate decision.
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -90,6 +117,14 @@ Keyed by provider string (`claude | codex | opencode | pi | ...`), so saturating
 | `executor_rate_limit_backoff_seconds` | `[5, 15, 45]` | On a rate limit in a **failed** launch (the retry is gated on `rate_limited and not success`, so a successful session is never relaunched) the launch releases its slot, sleeps `backoff[attempt]`, re-acquires, and retries. After the schedule is exhausted the task is marked terminal FAILED under normal failure handling; no daemon successor is spawned. `[]` disables retries. |
 
 Rate-limit detection is normalized: `_run_command` sets `ExecutorResult.rate_limited` from `is_rate_limit_signature(...)` and the classifier prefers that field over its legacy string heuristic. Two additive audit actions surface the activity through the existing `insert_audit_log` (no schema change): `executor_slot_wait` (`{provider, wait_seconds, ceiling}`) when a launch waited for a slot, and `executor_rate_limit_backoff` (`{provider, attempt, backoff_seconds}`) per 429 retry.
+
+The configured schedule remains the default for ordinary invocations. The
+bounded THR-247 Codex completion-recovery path alone opts out per invocation
+at the host-supervisor seam: its first rate-limited provider result is
+finalized and receipted honestly without backoff or re-admission. This does
+not alter global throttle settings, ordinary invocation retries, admission, or
+rate-limit diagnostics; the honest-passthrough fallback likewise uses its
+existing empty executor-throttle backoff for that one provider execution.
 
 The list/dict-shaped keys (`executor_ceiling_overrides`, `executor_rate_limit_backoff_seconds`) are set via `config.yaml`; the scalar keys also accept `HAPPYRANCH_`-prefixed env vars.
 
@@ -281,6 +316,19 @@ self-registration) — then auto-configures with no separate approval.
 `happyranch assistant` tells the user to run `happyranch assistant init` when
 no assistant config exists.
 
+Register and repair also reconcile the canonical system-contract union into
+both `<workspace>/.agents/skills/` and `<workspace>/.claude/skills/`. The
+runtime-global assistant has no repository or org custom-skill context, so the
+exact set is `dream`, `jobs`, `start-task`, `thread`, `todos`, and
+`workspace-cleanup`. Repeated repair preserves the instruction pair, config,
+knowledge, learnings, logs, and other assistant workspace content. Existing
+corrupt canonical packages and unsafe, non-link, or wrong-target skill entries
+are detected by a read-only preflight before any workspace write. Refusal leaves
+both skill roots, instructions, metadata, knowledge, learnings, logs, and config
+unchanged. A later materializer-only failure removes only links and empty parent
+directories that were absent before that call; bootstrap never reconstructs a
+corrupt package or rewrites/removes pre-existing operator content on refusal.
+
 entry keyed by the profile name before launch (THR-107 seq155). Custom-adapter
 profiles (``command_adapter_id: custom-adapter:<id>``) are an exception — they
 use the exact founder-APPROVED, hash-verified absolute adapter executable as
@@ -336,6 +384,97 @@ before any `ZoneInfo()` call. (Pre-TASK-976 an omitted value defaulted to the
 literal `UTC`; orgs relying on that implicit default now schedule on
 machine-local time — host-local night, as intended.)
 
+## Org Config: Workspace Cleanup
+
+`workspace_cleanup.enabled` is a boolean scheduler switch that defaults to
+`true`; setting it to `false` disables the daemon-managed cleanup scheduler. When
+enabled, the scheduler evaluates the daily local 03:30 occurrence in the org
+timezone, comparing existing occurrences as UTC instants (skipping nonexistent
+spring-forward times and taking the first `fold=0` instance of ambiguous fall-back
+times), with exactly one post-warmup current-window catch-up, no historical backfill
+and no rolling 24-hour or seven-day trigger cooldown.
+`workspace_cleanup.reclamation_actions_enabled` is separately strictly boolean
+and defaults to `false`. When true, the bounded pre-agent reclamation hook may
+select and revalidate finite canonical targets before invoking the existing
+consumer; it acts only on a third-or-later cleanup ordinal whose preclaim owner
+is assigned to a registered in-memory `TeamsRegistry` agent and reconciles to
+the invocation's initial successful claim (the first two runs stay
+report-only), under one shared one-second deadline and at most 23 read/load
+admissions with at most five best-effort consumer calls and no refill or
+recovery. `false` prevents those action admissions and affects later admissions
+only; it cannot revoke an already admitted call. Malformed values retain the
+shared loader's existing error behavior.
+
+The daemon-composed daily brief and manual dispatch both follow the ONE shared
+`workspace-cleanup` TASK system contract (`requires_repo=false`; source
+`runtime/skills/bundled/workspace-cleanup/SKILL.md`), whose exact manual first
+line is `HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)` (an unmarked
+manual request is inventory-only). Its bundled read-only
+`scripts/check_path_use.py` applies the approved THR-259 seq171/seq185
+observation: an authoritative recorded terminal status plus a fresh complete
+same-user process scan replaces separate live-session/task-to-process identity,
+and a fixed login/session daemon (sshd-session, systemd --user, (sd-pam),
+ssh-agent, gpg-agent, gcr-ssh-agent) qualifies only by exact readable process
+name AND exact bounded cgroup role and is deliberately uninspected; any other
+unreadable same-user process is `unknown` and skips.
+
+The shared procedure executes that scanner only through a task-bound,
+host-visible HappyRanch job and validates a closed-schema, non-truncated receipt
+binding task/session, actual job, stored execution identity, terminal result,
+complete output totals, and scanner coverage; direct in-session fallback is
+forbidden. Candidate-related task and trigger evidence uses complete paging
+rather than an org-wide history cap. PR evidence is completely paginated and
+repeated, with every open, closed-unmerged, duplicate, changing, conflicting,
+or malformed result refusing. Preservation accepts the existing durable ref,
+an owning origin task branch whose head equals or descends from the candidate,
+an owning-task merged PR, or an any-task merged PR whose confirmed head
+contains the candidate. An existing owning branch is authoritative:
+non-containment or failed containment evidence refuses without merged-PR
+fallback. The last route requires complete stable double-read
+discovery, merged/default-branch confirmation, and a separate complete stable
+compare; discovery alone and other-task unmerged PRs never count, while an
+owning-branch unmerged PR still refuses. Merged integration may not preserve
+original commit topology. Dirty whole worktrees remain protected, with the sole narrow exception
+of a literal root `.venv`/`node_modules` cache whose removal leaves tracked
+source bytes and Git status unchanged.
+The containing worktree must be at the owning primary's exact registered
+`.claude/worktrees/<TASK>` location on `task/<TASK>`. A complete no-follow
+`lstat` walk before and at action time refuses nested mounts, cross-device or
+foreign-owned entries, protected descendants, incomplete evidence, and drift.
+Root-plus-descendant byte accounting precedes action; a success receipt requires
+literal absence and unchanged protected-path identities.
+
+## Terminal task-worktree reclamation
+
+Terminal task-worktree reclamation has no configuration key or cadence. On the
+approved ordinary `completed`, `failed`, and `cancelled` writer seams, after
+durable terminal state and applicable process/session/control/job teardown, the
+runtime makes one bounded attempt for only the assigned registered agent's
+literal `repos/happyranch/.claude/worktrees/<task-id>` candidate. It requires a
+canonical non-symlink same-device primary and worktree, exact Git registration
+and branch identity, clean status, durable remote containment, no open or
+closed-unmerged PR, no live session/control/PID or shared-scanner process reference, no recorded
+`worktree-deferred:` risk, and a shared deadline. Unknown, unavailable,
+malformed, timed-out, dirty, unpublished, live, foreign, or ambiguous evidence
+preserves the worktree.
+
+The process gate loads the bundled `workspace-cleanup` scanner by explicit file
+path, so its seq171/seq185 exact name-plus-expected-cgroup exception table is
+the single source for both paths. Root-owned processes are out of scope; any
+other unreadable same-user process is uncertain; a positive
+cwd/root/exe/maps/fd reference is live. `run_step` already executes in the
+queue's worker thread, and the terminal hook retains one five-second total
+deadline.
+
+Successful removal is literal non-force `git worktree remove`; no branch is
+deleted. A failed gate or removal is a typed/logged preservation outcome and
+never changes terminal semantics or schedules a retry. `superseded`,
+`blocked_on_job`, accepted/restart completion-recovery settlement, legacy
+normalization, and historical cleanup remain outside this mechanism. This is
+separate from `workspace_cleanup.enabled` and
+`workspace_cleanup.reclamation_actions_enabled`; neither switch expands or
+disables the terminal hook.
+
 ## Agent Configuration: Single Source of Truth (THR-095)
 
 **Founder-ratified invariant (THR-095 option B):** Every piece of agent
@@ -358,8 +497,8 @@ are now read and written **exclusively** through ``AgentDef``:
 The workspace ``agent.yaml`` file is **no longer read or written** by any
 org-agent path. A one-shot startup migration (``migrate_agent_yaml_to_frontmatter``,
 idempotent, runs on every daemon start) copies any residual ``agent.yaml``
-values into their owning ``.md`` exactly once, then the ``agent.yaml`` is
-left untouched. The system assistant (``runtime/system_assistant.py``) is a
+values into their owning ``.md`` exactly once, then deletes ``agent.yaml`` and
+writes the ``.agent_yaml_consumed`` sentinel. The system assistant (``runtime/system_assistant.py``) is a
 **separate subsystem** and writes its own ``agent.yaml`` directly — it has no
 ``org/agents/`` file and is unaffected.
 
@@ -475,10 +614,17 @@ Contract (founder-approved in THR-028, refined in THR-078):
    decision step. The failed subtask's reason (`note` + completion report /
    error context) is available so the task owner can author an updated brief.
 
-2. **Mechanical retry provenance (THR-078).** A manager may re-dispatch
-   unchanged work or direct revised work with a valid `revisit_of_task_id`
-   link to a FAILED same-parent predecessor. The link is historical
-   provenance, not semantic brief comparison or automatic root escalation.
+2. **Mechanical retry provenance (THR-078 / THR-091).** A manager may
+   re-dispatch unchanged work or direct revised work with a valid
+   `revisit_of_task_id` link to a same-agent FAILED child under the current
+   parent. A current successor root may also link the same-agent FAILED child
+   of a predecessor root when the bounded verifier authenticates every
+   intervening recorded supersession (at most 20 root records / 19 edges).
+   The final spawn transaction repeats claim and lineage validation after
+   `BEGIN IMMEDIATE`; an unresolved local failure cannot be bypassed by a
+   remote historical link. Original parent links and failed history remain
+   unchanged. The link is historical provenance, not semantic brief
+   comparison or automatic root escalation.
    A later COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors
    from causal selection (THR-183).
 
@@ -487,6 +633,13 @@ Contract (founder-approved in THR-028, refined in THR-078):
    escalation or upward cascade. Any later manager-proposed escalation follows
    the configured THR-181 hook; inactive/static policy is not evaluator
    CONTINUE, and committed escalations remain human-resolved.
+
+   Authority-v2 refusal follows the same structural split (THR-277): a
+   non-root writes `authority_v2_refusal_task_failed`, terminalizes as FAILED,
+   and wakes its parent through the fenced ordinary/recovery cleanup tail;
+   roots retain the existing founder escalation. Startup classification of an
+   `admitted` non-escalate causal result is read-only and does not fence the
+   task from ordinary recovery in that boot.
 
 4. **Chain-leg failure.** A failed chain leg clears the chain and returns a
    decision owner to bounded wake. Passive pipeline carriers instead fail
@@ -519,9 +672,20 @@ scripts/build_web.sh
 happyranch web [--no-open]
 ```
 
+`scripts/daemon.sh start` removes a stale port file, launches the daemon, and
+waits up to `HAPPYRANCH_DAEMON_START_TIMEOUT` seconds (default `30`, positive
+integers only) for `GET /api/v1/health` to answer on the configured bind host.
+Wildcard bind addresses are probed through their loopback equivalent. If the
+background process exits or readiness times out, startup exits 1 and prints
+the last 20 lines of `daemon.log`; if `curl` is unavailable, it announces a
+fallback to the fresh `daemon.port` file.
+
 The full founder-facing CLI is documented in `skills/happyranch/SKILL.md`.
 
 ## Running Tests
+
+For where new test files belong, see the forward-only
+[test-placement rule](project-layout.md#test-placement).
 
 ```bash
 uv run pytest tests/ -v -n 4              # unit tests only (default; -n 4 = pytest-xdist parallel)

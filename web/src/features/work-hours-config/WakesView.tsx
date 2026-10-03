@@ -56,21 +56,15 @@ import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { Button } from '@/design-system/primitives/Button';
 import { useWorkHoursList } from '@/hooks/schedule';
 import { useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from '@/hooks/i18n';
 import type { WorkHourRecord } from '@/lib/api/types';
+import { formatDateShapeFor, type Locale, type MessageKey } from '@/lib/i18n';
 import { WorkHoursTabs } from './components';
+import { classifyWorkHoursError, WAKE_STATUS_KEYS } from './strings';
 
 /* ------------------------------------------------------------------ */
 /*  Status helpers                                                     */
 /* ------------------------------------------------------------------ */
-
-const STATUS_LABEL: Record<string, string> = {
-  pending: 'Pending',
-  running: 'Running',
-  completed: 'Completed',
-  failed: 'Failed',
-  timeout: 'Timed out',
-  skipped: 'Skipped',
-};
 
 function statusPill(status: string): string {
   switch (status) {
@@ -87,18 +81,15 @@ function statusPill(status: string): string {
   }
 }
 
-function formatStatus(status: string): string {
-  return STATUS_LABEL[status] ?? status;
+/** Known status -> catalog copy; an unknown daemon token renders verbatim. */
+function formatStatus(status: string, t: (key: MessageKey) => string): string {
+  return Object.prototype.hasOwnProperty.call(WAKE_STATUS_KEYS, status)
+    ? t(WAKE_STATUS_KEYS[status])
+    : status;
 }
 
-function formatScheduledFor(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+function formatScheduledFor(iso: string, locale: Locale): string {
+  return formatDateShapeFor(locale, new Date(iso), 'dateTime');
 }
 
 /* ------------------------------------------------------------------ */
@@ -129,8 +120,9 @@ function groupByAgent(entries: WorkHourRecord[]): { agent: string; entries: Work
 /* ------------------------------------------------------------------ */
 
 function ScheduleSkeleton(): JSX.Element {
+  const { t } = useTranslation();
   return (
-    <div className="flex flex-col gap-4 p-4" aria-label="Loading scheduled wakes">
+    <div className="flex flex-col gap-4 p-4" aria-label={t('workHours.wakes.loadingLabel')}>
       {[1, 2].map((i) => (
         <div
           key={i}
@@ -156,6 +148,7 @@ function ScheduleSkeleton(): JSX.Element {
 /* ------------------------------------------------------------------ */
 
 function WakeRow({ entry, slug }: { entry: WorkHourRecord; slug: string }): JSX.Element {
+  const { t, locale } = useTranslation();
   return (
     <div className="hover:bg-surface-hover flex items-center gap-3 rounded px-2 py-1.5 text-sm transition-colors">
       {/* Status pill */}
@@ -165,7 +158,7 @@ function WakeRow({ entry, slug }: { entry: WorkHourRecord; slug: string }): JSX.
           statusPill(entry.status),
         ].join(' ')}
       >
-        {formatStatus(entry.status)}
+        {formatStatus(entry.status, t)}
       </span>
 
       {/* Local date */}
@@ -185,13 +178,13 @@ function WakeRow({ entry, slug }: { entry: WorkHourRecord; slug: string }): JSX.
 
       {/* Scheduled for */}
       <span className="text-text-muted shrink-0 font-mono text-xs tabular-nums">
-        {formatScheduledFor(entry.scheduled_for)}
+        {formatScheduledFor(entry.scheduled_for, locale)}
       </span>
 
       {/* Routine count */}
       {entry.routine_count > 0 && (
         <span className="text-text-muted shrink-0 font-mono text-xs tabular-nums">
-          {entry.routine_count} {entry.routine_count === 1 ? 'routine' : 'routines'}
+          {t('workHours.wakes.routines', { count: entry.routine_count })}
         </span>
       )}
 
@@ -248,6 +241,7 @@ function AgentGroupCard({
   entries: WorkHourRecord[];
   slug: string;
 }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <div className="bg-surface border-border-default shadow-pasture-sm overflow-hidden rounded-lg border">
       {/* Card header — agent name + count eyebrow */}
@@ -259,7 +253,7 @@ function AgentGroupCard({
           {agent}
         </Link>
         <span className="text-text-muted font-mono text-xs tabular-nums">
-          {entries.length} wake{entries.length !== 1 ? 's' : ''}
+          {t('workHours.wakes.cardCount', { count: entries.length })}
         </span>
       </div>
 
@@ -278,6 +272,7 @@ function AgentGroupCard({
 /* ------------------------------------------------------------------ */
 
 export function WakesView(): JSX.Element {
+  const { t, render } = useTranslation();
   const { slug: orgSlug } = useParams<{ slug: string }>();
   const query = useWorkHoursList({ limit: 100 });
   const queryClient = useQueryClient();
@@ -287,22 +282,28 @@ export function WakesView(): JSX.Element {
   // Group by agent
   const groups = useMemo(() => groupByAgent(entries), [entries]);
 
+  // Load-error diagnostic: only a daemon code/detail is appended after the
+  // localized heading; the synthetic 'API <status>' message never renders.
+  const errorView = query.isError
+    ? classifyWorkHoursError(query.error, 'workHours.wakes.error')
+    : null;
+
   return (
     <div className="flex h-full flex-col">
       {/* Header — SCHED-02: Direction-A uppercase eyebrow + Newsreader serif
           title (a-schedule reference), matching the Tasks/KB/Audit surfaces. */}
       <header className="border-border-default border-b p-4">
         <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
-          Working hours · When the org is awake
+          {t('workHours.wakes.eyebrow')}
         </p>
         <h1 className="font-display text-display text-text-primary mt-1 font-medium">
-          Give your agents a rhythm.
+          {t('workHours.wakes.title')}
         </h1>
         <p className="text-caption text-text-muted mt-1">
-          Per-agent working-hours wakes — when agents run and what they spawn.
+          {t('workHours.wakes.description')}
         </p>
         <p className="text-text-muted mt-2 text-xs">
-          View-only. Creating named recurring wakes is not available in this release.
+          {t('workHours.wakes.viewOnly')}
         </p>
       </header>
 
@@ -316,8 +317,8 @@ export function WakesView(): JSX.Element {
       {query.isError && (
         <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
           <p className="text-feedback-danger text-sm">
-            Could not load scheduled wakes.
-            {query.error?.message && <> {query.error.message}</>}
+            {t('workHours.wakes.error')}
+            {errorView?.kind === 'raw' && <> {errorView.text}</>}
           </p>
           <Button
             size="sm"
@@ -328,7 +329,7 @@ export function WakesView(): JSX.Element {
               })
             }
           >
-            Retry
+            {t('common.retry')}
           </Button>
         </div>
       )}
@@ -337,21 +338,30 @@ export function WakesView(): JSX.Element {
       {!query.isLoading && !query.isError && entries.length === 0 && (
         <div className="flex h-full items-center justify-center">
           <EmptyState
-            title="No scheduled wakes"
-            body="No working-hours wakes have been scheduled yet."
+            title={t('workHours.wakes.empty.title')}
+            body={t('workHours.wakes.empty.body')}
           />
         </div>
       )}
 
       {/* Wake list — agent cards */}
       {!query.isLoading && !query.isError && entries.length > 0 && (
-        <div className="flex-1 overflow-y-auto" aria-label="Scheduled wakes">
+        <div className="flex-1 overflow-y-auto" aria-label={t('workHours.wakes.listLabel')}>
           {/* a-schedule wrap on the work-hours surface: 1120 centered cap, NOT
               1180 (THR-099 Slice 8 — /schedule redirects here). */}
           <div className="max-w-content-wide mx-auto">
           {/* Count eyebrow */}
           <p className="text-overline text-text-secondary mx-4 mt-4 mb-2 tracking-wider uppercase">
-            <span className="font-mono tabular-nums">{entries.length}</span> wake{entries.length !== 1 ? 's' : ''} across <span className="font-mono tabular-nums">{groups.length}</span> agent{groups.length !== 1 ? 's' : ''}
+            {render('workHours.wakes.summary', {
+              wakes: render('workHours.wakes.summaryWakes', {
+                count: entries.length,
+                n: <span className="font-mono tabular-nums">{entries.length}</span>,
+              }),
+              agents: render('workHours.wakes.summaryAgents', {
+                count: groups.length,
+                n: <span className="font-mono tabular-nums">{groups.length}</span>,
+              }),
+            })}
           </p>
 
           <div className="space-y-4 p-4">
