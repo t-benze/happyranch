@@ -251,7 +251,12 @@ The inner container command remains bounded to 42 minutes. One 2,490-second
 inner deadline covers source hashing, package update/install, pip, frozen sync,
 probe, workload, capture, summary and shutdown; the outer 2,520-second wait
 retains 30 seconds margin. Setup command ceilings are 300 seconds for each apt
-operation and pip, 600 for frozen sync, and 15 for identity operations. Every
+operation, 600 for pip and frozen sync, and 15 for identity operations. Pip retains
+the 60-second capture/summary/shutdown reserve and the helper's 1.5-second
+owned-process teardown allowance. The same pinned 19.8 MB uv wheel took 339.128
+seconds to download and install in build 6, exceeding the previous 300-second
+pip ceiling; 600 seconds covers that observation without guaranteeing future
+transfer success or identifying the cause of the slow download. Every
 command uses the lesser of its ceiling and the same remaining deadline, including
 owned-process-group teardown. Pytest's 2,300 seconds is a maximum conditional on
 remaining time, reserving 30 seconds for capture and 30 for summary/shutdown;
