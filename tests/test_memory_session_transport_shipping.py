@@ -29,6 +29,7 @@ from runtime.runtime import RuntimeDir
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 from runtime.orchestrator.executor_binary_registry import set_binary
 from runtime.models import TaskRecord
+from runtime.platform.isolation import detect_platform_isolation as _shipping_platform_detector
 
 
 def _wait_for_server(server: uvicorn.Server) -> None:
@@ -52,6 +53,11 @@ def test_task_bootstrap_forwards_runtime_session_to_real_cli_and_audit(
     ``--session-id``; both requests are correlated through the existing route
     validation and audited against the bootstrap's digest impression.
     """
+    # Capture the production detector at collection time, then opt out of the
+    # suite's generic same-owner launch double for this shipping proof.
+    monkeypatch.setattr("runtime.platform.isolation.detect_platform_isolation", _shipping_platform_detector)
+    monkeypatch.setattr("runtime.orchestrator.executors.detect_platform_isolation", _shipping_platform_detector)
+    monkeypatch.setenv("HAPPYRANCH_TEST_REAL_PLATFORM", "1")
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon"))
     monkeypatch.delenv("HAPPYRANCH_TASK_TMP_ROOT", raising=False)
     monkeypatch.delenv("HAPPYRANCH_TASK_SCRATCH_MANIFEST", raising=False)
