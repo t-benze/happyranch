@@ -244,23 +244,20 @@ def test_memory_search_form_parses_and_dispatches(monkeypatch):
     assert captured["json"]["query"] == "rename gotchas"
 
 
+@pytest.mark.parametrize("verb,value", [("get", "MEM-001"), ("search", "needle")])
+@pytest.mark.parametrize("explicit,expected", [(None, "sess-runtime"), ("sess-explicit", "sess-explicit"), ("", "sess-runtime")])
 def test_memory_get_and_search_use_runtime_session_hint_with_explicit_precedence(
-    monkeypatch,
+    monkeypatch, verb, value, explicit, expected,
 ):
     captured = {}
     _install_fake_client(monkeypatch, captured)
     monkeypatch.setenv("HAPPYRANCH_RUNTIME_SESSION_ID", "sess-runtime")
-
-    get_args = _parse(["memory", "get", "--org", "o", "--agent", "a", "MEM-001"])
-    get_args.func(get_args)
-    assert captured["params"] == {"session_id": "sess-runtime"}
-
-    search_args = _parse([
-        "memory", "search", "--org", "o", "--agent", "a", "needle",
-        "--session-id", "sess-explicit",
-    ])
-    search_args.func(search_args)
-    assert captured["params"] == {"session_id": "sess-explicit"}
+    argv = ["memory", verb, "--org", "o", "--agent", "a", value]
+    if explicit is not None:
+        argv += ["--session-id", explicit]
+    args = _parse(argv)
+    args.func(args)
+    assert captured["params"] == {"session_id": expected}
 
 
 def test_learning_alias_get_form_parses_and_dispatches(monkeypatch, capsys):

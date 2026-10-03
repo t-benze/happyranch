@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
 import socket
 import sys
 import threading
 import time
+import textwrap
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -21,7 +24,6 @@ import uvicorn
 
 from runtime.daemon import paths
 from runtime.daemon.app import create_app
-from runtime.daemon.agent_config import write_default_agent_config
 from runtime.daemon.state import DaemonState
 from runtime.runtime import RuntimeDir
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
@@ -56,7 +58,7 @@ def test_task_bootstrap_forwards_runtime_session_to_real_cli_and_audit(
     paths.ensure_daemon_home()
     paths.ensure_token()
     runtime = RuntimeDir.init(tmp_path / "runtime")
-    for contract in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos"):
+    for contract in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "workspace-cleanup"):
         source = runtime.root / "skills" / "bundled" / contract
         source.mkdir(parents=True, exist_ok=True)
         (source / "SKILL.md").write_text(f"# {contract}\n")
@@ -71,9 +73,9 @@ def test_task_bootstrap_forwards_runtime_session_to_real_cli_and_audit(
     workspace = org.root / "workspaces" / agent
     workspace.mkdir(parents=True)
     (workspace / "task_history.md").write_text("# Task History: dev_agent\n")
-    write_default_agent_config(workspace)
-    # Codex uses AGENTS.md as its readiness marker; Claude uses its own root.
+    # Both profiles require the current canonical instruction pair.
     (workspace / "AGENTS.md").write_text("# shipping fixture\n")
+    (workspace / "CLAUDE.md").symlink_to("AGENTS.md")
     agent_def = AgentDef(
         name=agent, team="engineering", role="worker", executor=executor,
         allow_rules=(), repos={}, enrolled_by=None, enrolled_at_task=None,
@@ -93,26 +95,56 @@ def test_task_bootstrap_forwards_runtime_session_to_real_cli_and_audit(
         "provenance: experiential\nscope: agent\nlifecycle: valid\nsalience: 40\n---\n\nshipping follow up\n"
     )
 
-    # The provider is an actual executable child.  It ignores its provider
-    # resume argv and uses only the executor-supplied environment hint.
+    # Only the external provider is fake. CLI entry, imports, bootstrap,
+    # launch, SessionTracker validation and SQLite writes are real.
     provider = tmp_path / executor
-    provider.write_text(
-            "#!" + sys.executable + "\n"
-            "import os, subprocess, sys, time\n"
-            "barrier = os.getenv('TASK7910_BARRIER')\n"
-            "if barrier:\n"
-            " open(f'{barrier}/{os.environ[\"HAPPYRANCH_RUNTIME_SESSION_ID\"]}', 'w').close()\n"
-            " deadline = time.monotonic() + 5\n"
-            " while len(os.listdir(barrier)) < 2 and time.monotonic() < deadline: time.sleep(.01)\n"
-            " if len(os.listdir(barrier)) < 2: sys.exit(70)\n"
-            "cli = os.path.join(os.path.dirname(sys.executable), 'happyranch')\n"
-        "base = [cli, 'memory', 'get', '--org', 'alpha', '--agent', 'dev_agent', 'MEM-001', '--json']\n"
-        "one = subprocess.run(base, text=True, capture_output=True, env=os.environ)\n"
-        "two = subprocess.run([cli, 'memory', 'search', '--org', 'alpha', '--agent', 'dev_agent', 'shipping', '--json'], text=True, capture_output=True, env=os.environ)\n"
-        "three = subprocess.run(base[:-2] + ['MEM-002', '--json'], text=True, capture_output=True, env=os.environ)\n"
-        "print(one.stdout + two.stdout + three.stdout)\n"
-        "sys.exit(one.returncode or two.returncode or three.returncode)\n"
-    )
+    provider.write_text("#!" + sys.executable + "\n" + textwrap.dedent("""\
+        import json, os, subprocess, sys, time
+        from pathlib import Path
+        sid = os.environ['HAPPYRANCH_RUNTIME_SESSION_ID']
+        evidence = Path(os.environ['HAPPYRANCH_DAEMON_HOME']) / 'observations'
+        evidence.mkdir(exist_ok=True)
+        barrier = evidence / 'barriers'
+        cli = str(Path(sys.executable).parent / 'happyranch')
+        def wait_for(name):
+            deadline = time.monotonic() + 15
+            while not (barrier / name).exists():
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('operation barrier expired: ' + name)
+                time.sleep(.01)
+        probe = subprocess.run([sys.executable, '-c',
+            'import cli,runtime,importlib.metadata,json; print(json.dumps([cli.__file__,runtime.__file__,importlib.metadata.version("happyranch")]))'],
+            capture_output=True, text=True, check=True)
+        observation = {'argv': sys.argv[1:], 'sid': sid, 'cli': cli,
+                       'imports': json.loads(probe.stdout), 'operations': []}
+        commands = [('get', 'MEM-001', None), ('search', 'shipping', None), ('get', 'MEM-002', None)]
+        if not barrier.exists():
+            commands += [('get', 'MEM-001', sid), ('search', 'shipping', sid),
+                         ('get', 'MEM-001', ''), ('search', 'shipping', '')]
+        for index, (verb, value, explicit) in enumerate(commands):
+            if barrier.exists():
+                wait_for(sid + '.' + str(index) + '.go')
+            command = [cli, 'memory', verb, '--org', 'alpha',
+                       '--agent', 'dev_agent', value, '--json']
+            child_env = dict(os.environ)
+            if explicit is not None:
+                command += ['--session-id', explicit]
+                if explicit:
+                    child_env['HAPPYRANCH_RUNTIME_SESSION_ID'] = 'sess-poison-unregistered'
+            result = subprocess.run(command, env=child_env,
+                capture_output=True, text=True, timeout=10)
+            observation['operations'].append({'verb': verb, 'value': value,
+                'exit': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr})
+            (evidence / (sid + '.json')).write_text(json.dumps(observation))
+            if result.returncode:
+                print(result.stderr, file=sys.stderr)
+                sys.exit(result.returncode)
+            if barrier.exists():
+                (barrier / (sid + '.' + str(index) + '.done')).touch()
+        if barrier.exists():
+            wait_for(sid + '.exit')
+        print('provider completed')
+        """))
     provider.chmod(0o755)
     set_binary(executor, str(provider))
 
@@ -124,8 +156,73 @@ def test_task_bootstrap_forwards_runtime_session_to_real_cli_and_audit(
     thread.start()
     try:
         _wait_for_server(server)
-        session_ids = iter(("sess-runtime-shipping", "sess-overlap-root", "sess-overlap-child"))
-        monkeypatch.setattr(org.orchestrator, "_build_session_id", lambda: next(session_ids))
+        started = {}
+        started_lock = threading.Lock()
+
+        def registered(task, registered_agent, sid):
+            assert registered_agent == agent
+            assert org.sessions.get_context_by_session(sid) == ("alpha", task, agent)
+            with started_lock:
+                started[task] = sid
+
+        def run_task(task, resume=None):
+            return org.orchestrator._run_agent(
+                task, agent, "shipping transport", on_session_started=registered,
+                resume_session_id=resume,
+            )
+
+        def audit_operations(task, sid, with_flags=False):
+            rows = org.db.fetch_all_readonly(
+                "SELECT id, action, task_id, agent, payload FROM audit_log "
+                "WHERE action IN ('memory_digest_impression', 'memory_read', 'memory_search') "
+                "ORDER BY id"
+            )
+            own = [(row, json.loads(row["payload"])) for row in rows
+                   if json.loads(row["payload"]).get("session_id") == sid]
+            expected_actions = ["memory_digest_impression", "memory_read", "memory_search", "memory_read"]
+            if with_flags:
+                expected_actions += ["memory_read", "memory_search", "memory_read", "memory_search"]
+            assert [row["action"] for row, _ in own] == expected_actions, own
+            for row, payload in own:
+                assert row["agent"] == agent
+                assert row["task_id"] == (
+                    f"AGENT-{agent}" if row["action"] == "memory_read" else task
+                )
+                if row["action"] == "memory_digest_impression":
+                    assert payload == {"agent": agent, "session_id": sid,
+                        "digest_ids": ["MEM-001", "MEM-002"], "digest_count": 2, "budget": 1500}
+                else:
+                    assert payload["task_id"] == task
+                    assert payload["session_id"] == sid
+                if row["action"] == "memory_search":
+                    assert payload["agent"] == agent
+                    assert set(payload["memory_ids"]) == {"MEM-001", "MEM-002"}
+                    assert payload["hit_count"] == 2 and payload["kb_hit_count"] == 0
+                if row["action"] == "memory_read":
+                    assert payload["source"] == "digest"
+            assert [payload["id"] for row, payload in own
+                    if row["action"] == "memory_read"] == (
+                        ["MEM-001", "MEM-002", "MEM-001", "MEM-001"] if with_flags
+                        else ["MEM-001", "MEM-002"]
+                    )
+            return [row["id"] for row, _ in own[1:]]
+
+        def provider_evidence(sid, resume, operation_count=3):
+            observation = json.loads((paths.daemon_home() / "observations" / (sid + ".json")).read_text())
+            assert observation["sid"] == sid
+            candidate = Path(__file__).resolve().parents[1]
+            assert Path(observation["cli"]).parent == Path(sys.executable).parent
+            assert observation["imports"] == [str(candidate / "cli/__init__.py"),
+                str(candidate / "runtime/__init__.py"), "0.1.0"]
+            argv = observation["argv"]
+            if executor == "claude":
+                assert "--resume" in argv, argv
+                assert argv[argv.index("--resume") + 1] == resume
+            else:
+                assert argv[:3] == ["exec", "resume", resume]
+            assert resume != sid
+            assert [op["exit"] for op in observation["operations"]] == [0] * operation_count
+
         root_task_id = org.orchestrator.create_task("shipping memory digest root")
         if is_child:
             task_id = "TASK-SHIPPING-CHILD"
@@ -135,63 +232,103 @@ def test_task_bootstrap_forwards_runtime_session_to_real_cli_and_audit(
             ))
         else:
             task_id = root_task_id
-        result, _ = org.orchestrator._run_agent(task_id, agent, "provider resume=provider-resume")
+        resume = "provider-resume-distinct"
+        result, _ = run_task(task_id, resume)
         assert result.success, (result.error, result.stdout_tail, result.stderr_tail)
-        rows = org.db.fetch_all_readonly(
-            "SELECT action, task_id, payload FROM audit_log "
-            "WHERE action IN ('memory_digest_impression', 'memory_read', 'memory_search') ORDER BY id"
-        )
-        payloads = [(row["action"], row["task_id"], json.loads(row["payload"])) for row in rows]
-        assert payloads[0] == ("memory_digest_impression", task_id, {
-            "agent": agent, "session_id": "sess-runtime-shipping", "digest_ids": ["MEM-001", "MEM-002"],
-            "digest_count": 2, "budget": 1500,
-        })
-        reads = [payload for action, _, payload in payloads if action == "memory_read"]
-        read = reads[0]
-        search = next(payload for action, _, payload in payloads if action == "memory_search")
-        for payload in (read, search):
-            assert payload["task_id"] == task_id
-            assert payload["session_id"] == "sess-runtime-shipping"
-        assert read["source"] == "digest"
-        assert reads[1]["source"] == "digest"
+        sid = started[task_id]
+        assert result.session_id == sid
+        audit_operations(task_id, sid, with_flags=True)
+        provider_evidence(sid, resume, operation_count=7)
         assert org.db.get_task(task_id).parent_task_id == (root_task_id if is_child else None)
-        assert "provider-resume" not in result.stdout_tail
 
-        # The immediate bounded concurrency acceptance is exercised once with
-        # Claude: two real bootstrap sessions for the same agent are held at a
-        # child-process barrier, then each canonical get/search pair is audited
-        # only against its own registered task/session tuple.
+        # Same-agent sessions overlap with every operation explicitly ordered.
+        # End and retire the root binding before the child's final read.
         if executor == "claude" and not is_child:
-            barrier = tmp_path / "barrier"
+            barrier = paths.daemon_home() / "observations" / "barriers"
             barrier.mkdir()
-            monkeypatch.setenv("TASK7910_BARRIER", str(barrier))
             overlap_root = org.orchestrator.create_task("overlap root")
             overlap_child = "TASK-SHIPPING-OVERLAP-CHILD"
             org.db.insert_task(TaskRecord(
                 id=overlap_child, brief="overlap child", team="engineering",
                 parent_task_id=overlap_root, assigned_agent=agent,
             ))
+
+            def wait_until(predicate):
+                deadline = time.monotonic() + 15
+                while not predicate():
+                    assert time.monotonic() < deadline, "controller barrier expired"
+                    time.sleep(.01)
+
             with ThreadPoolExecutor(max_workers=2) as pool:
-                concurrent_results = list(pool.map(
-                    lambda candidate: org.orchestrator._run_agent(candidate, agent, "overlap"),
-                    (overlap_root, overlap_child),
-                ))
-            assert all(result.success for result, _ in concurrent_results)
-            expected = {
-                candidate: result.session_id
-                for candidate, (result, _) in zip(
-                    (overlap_root, overlap_child), concurrent_results, strict=True,
-                )
-            }
-            overlap_rows = org.db.fetch_all_readonly(
-                "SELECT action, payload FROM audit_log WHERE action IN ('memory_read', 'memory_search')"
-            )
-            observed = [(row["action"], json.loads(row["payload"])) for row in overlap_rows]
-            for expected_task, expected_session in expected.items():
-                own = [row for _, row in observed if row.get("task_id") == expected_task]
-                assert {row["session_id"] for row in own} == {expected_session}
-                reads = [row for action, row in observed if action == "memory_read" and row.get("task_id") == expected_task]
-                assert {row["source"] for row in reads} == {"digest"}
+                futures = {task: pool.submit(run_task, task, resume)
+                           for task in (overlap_root, overlap_child)}
+                try:
+                    wait_until(lambda: overlap_root in started and overlap_child in started)
+                    root_sid, child_sid = started[overlap_root], started[overlap_child]
+                    assert root_sid != child_sid
+                    # No-context launch in a separate parent process with a
+                    # poisoned ACTIVE SID: exercise the final platform overlay
+                    # without changing this process's global environment.
+                    before = org.db.fetch_all_readonly("SELECT max(id) AS id FROM audit_log")[0]["id"]
+                    no_context = subprocess.run([
+                        sys.executable, "-c", textwrap.dedent("""\
+                            import subprocess, sys
+                            from pathlib import Path
+                            from runtime.orchestrator.executors import _callee_env
+                            from runtime.platform.isolation import detect_platform_isolation
+                            cli = str(Path(sys.executable).parent / 'happyranch')
+                            for verb, value in [('get', 'MEM-001'), ('search', 'shipping')]:
+                                proc = detect_platform_isolation().launch_executor(
+                                    [cli, 'memory', verb, '--org', 'alpha', '--agent',
+                                     'dev_agent', value, '--json'], cwd=Path(sys.argv[1]),
+                                    env=_callee_env(workspace=Path(sys.argv[1])),
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                stdout, stderr = proc.communicate(timeout=10)
+                                assert proc.returncode == 0, (stdout, stderr)
+                            """), str(workspace),
+                    ], env={**os.environ, "HAPPYRANCH_RUNTIME_SESSION_ID": root_sid},
+                        capture_output=True, text=True, timeout=20)
+                    assert no_context.returncode == 0, no_context.stderr
+                    manual_rows = org.db.fetch_all_readonly(
+                        "SELECT action, agent, task_id, payload FROM audit_log WHERE id > ? "
+                        "AND action IN ('memory_read', 'memory_search') ORDER BY id", (before,),
+                    )
+                    assert [row["action"] for row in manual_rows] == ["memory_read", "memory_search"]
+                    for row in manual_rows:
+                        payload = json.loads(row["payload"])
+                        assert row["task_id"] == f"AGENT-{agent}" and row["agent"] == agent
+                        assert "session_id" not in payload and "task_id" not in payload, payload
+                        if row["action"] == "memory_read":
+                            assert payload.get("source", "explicit_or_other") == "explicit_or_other"
+
+                    for index in (0, 1):
+                        for active_sid in (root_sid, child_sid):
+                            (barrier / f"{active_sid}.{index}.go").touch()
+                            wait_until(lambda: (barrier / f"{active_sid}.{index}.done").exists())
+                    (barrier / f"{root_sid}.2.go").touch()
+                    wait_until(lambda: (barrier / f"{root_sid}.2.done").exists())
+                    (barrier / f"{root_sid}.exit").touch()
+                    root_result, _ = futures[overlap_root].result(timeout=10)
+                    assert root_result.success, root_result.error
+                    assert org.sessions.get_context_by_session(root_sid) is None
+                    assert org.sessions.get_context_by_session(child_sid) == ("alpha", overlap_child, agent)
+                    (barrier / f"{child_sid}.2.go").touch()
+                    wait_until(lambda: (barrier / f"{child_sid}.2.done").exists())
+                    (barrier / f"{child_sid}.exit").touch()
+                    child_result, _ = futures[overlap_child].result(timeout=10)
+                    assert child_result.success, child_result.error
+                    root_ids = audit_operations(overlap_root, root_sid)
+                    child_ids = audit_operations(overlap_child, child_sid)
+                    assert root_ids[0] < child_ids[0] < root_ids[1] < child_ids[1] < root_ids[2] < child_ids[2]
+                    provider_evidence(root_sid, resume)
+                    provider_evidence(child_sid, resume)
+                finally:
+                    # Release only this fixture's gates on a failure so children
+                    # exit before the disposable daemon/DB is closed.
+                    for active_sid in list(started.values()):
+                        for index in range(3):
+                            (barrier / f"{active_sid}.{index}.go").touch()
+                        (barrier / f"{active_sid}.exit").touch()
     finally:
         server.should_exit = True
         thread.join(timeout=5)

@@ -28,10 +28,18 @@ require independent review with transport before collection.
 TASK-7864 supplies only the bounded transport prerequisite: executor children
 forward their actual invocation session in a private environment hint consumed
 by canonical memory get/search when no explicit `--session-id` is supplied.
-No-context launches pass an explicit empty hint to defeat final environment
-overlays, and the hint never substitutes a provider
-resume id or server-side route validation; collection, reports, thresholds, and
-tuning remain unshipped.
+TASK-9561 recovers that published ancestry and the preserved F1/F2 checkpoint on
+a replacement branch under founder THR-091 seq220/219. Environment assembly with
+no runtime SID passes an explicit empty hint to defeat final overlays. Ordinary
+and custom execution forward their resolved invocation SID, including generated
+IDs, which remain uncredited unless registered. Nonempty explicit CLI flags win;
+empty flags preserve environment fallback. The hint never substitutes a provider
+resume ID or server-side route validation. Immediate shipping cases cover
+Claude/Codex root/child bootstrap, every read/search row tuple and scope, actual
+resume argv, and deterministic same-agent operation/end isolation. Codebuddy,
+additional contained/custom variants, forged-task nonoverride, thread/dream
+population and genuinely nonshown search follow-on remain OPEN manager-owned
+canary obligations. Collection, reporting, thresholds and tuning remain unshipped.
 
 A clean epoch begins only after deployed production-canary acceptance. Its
 earliest qualifying timestamp is the deterministic minimum, never input order.
