@@ -17,17 +17,17 @@ from scripts import jenkins_mac_guest as guest
 from runtime.infrastructure.database import Database
 
 
-def _owned_node(tmp_path: Path) -> tuple[Path, Path]:
+def _owned_node(tmp_path: Path, *, alpha_status: str = "failed", large_note: bool = False) -> tuple[Path, Path]:
     base = tmp_path / "happyranch-pytest"
     node = base / "test_two_orgs_run_tasks_concur0"
-    for org, status in (("alpha", "failed"), ("beta", "completed")):
+    for org, status in (("alpha", alpha_status), ("beta", "completed")):
         directory = node / "runtime/orgs" / org
         directory.mkdir(parents=True)
         db = Database(directory / "happyranch.db")
         db._conn.execute(
             "INSERT INTO tasks(id,status,brief,created_at,updated_at,note) VALUES (?,?,?,?,?,?)",
             ("TASK-001", status, "PRIVATE_PROMPT_CANARY", "now", "now",
-             "agent invocation failed: Authorization: Bearer SECRET_TOKEN_CANARY"),
+             "agent invocation failed: Authorization: Bearer SECRET_TOKEN_CANARY" + ("x" * 9000 if large_note else "")),
         )
         db._conn.execute(
             "INSERT INTO task_results(task_id,agent,session_id,created_at) VALUES (?,?,?,?)",
@@ -42,7 +42,7 @@ def _owned_node(tmp_path: Path) -> tuple[Path, Path]:
     (node / ".happyranch").mkdir()
     (node / ".happyranch/daemon.log").write_text(
         "WorkspaceNotInitialized: PRIVATE_KEY_CANARY\n"
-        "raw prompt SECRET_TOKEN_CANARY\n" * 40
+        "raw prompt SECRET_TOKEN_CANARY\n" * 400
     )
     (node / "credentials").write_text("UNRELATED_CREDENTIAL_CANARY")
     return base, node
@@ -54,21 +54,26 @@ def _file_facts(root: Path) -> dict[str, tuple[str, int]]:
             for path in root.rglob("*") if path.is_file() and not path.is_symlink()}
 
 
-def test_diagnostics_correlate_orgs_omit_secrets_and_leave_inputs_unchanged(tmp_path: Path) -> None:
-    base, _ = _owned_node(tmp_path)
+@pytest.mark.parametrize("alpha_status,large_note", [("failed", False), ("running", False), ("completed", False), ("failed", True)])
+def test_diagnostics_correlate_orgs_omit_secrets_and_leave_inputs_unchanged(
+    tmp_path: Path, alpha_status: str, large_note: bool,
+) -> None:
+    base, _ = _owned_node(tmp_path, alpha_status=alpha_status, large_note=large_note)
     before = _file_facts(base)
     receipt = guest.capture_diagnostics(base, deadline=time.monotonic() + 30)
     orgs = receipt["nodes"][0]["orgs"]
+    assert all("tasks" in row for row in orgs[:2]), orgs
     assert [(row["org"], row["tasks"][0]["task_id"], row["tasks"][0]["status"])
-            for row in orgs[:2]] == [("alpha", "TASK-001", "failed"), ("beta", "TASK-001", "completed")]
+            for row in orgs[:2]] == [("alpha", "TASK-001", alpha_status), ("beta", "TASK-001", "completed")]
     for row in orgs[:2]:
         assert row["tasks"][0] == {
             "task_id": "TASK-001", "status": row["tasks"][0]["status"],
-            "note_category": "agent_invocation_failed", "result_count": 1,
+            "note_category": "omitted" if large_note else "agent_invocation_failed", "result_count": 1,
             "session_start_count": 1, "executor_evidence": "unavailable",
         }
     assert receipt["cause"] == "unknown"
     assert receipt["nodes"][0]["event_categories"] == ["workspace_not_initialized"] * 32
+    assert receipt["nodes"][0]["log_truncated"] is True
     encoded = json.dumps(receipt)
     assert "CANARY" not in encoded
     assert "SECRET_SESSION" not in encoded
