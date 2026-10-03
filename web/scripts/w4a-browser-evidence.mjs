@@ -440,7 +440,9 @@ const VIEW_ROUTES = [
     id: 'kb-detail', route: 'kb detail', path: `/orgs/${ORG}/kb/raw-knowledge`, ready: () => bodyHas(W4D_KB.body),
     keys: ['kb.pageTitle', 'kb.sourceTaskLabel', ['kb.authoredBy', { agent: 'Raw_Agent' }]],
     verbatim: [W4D_KB.title, W4D_KB.body, 'Raw_Agent', 'TASK-0042'],
-    checks: () => [['drawer fits viewport', `(() => { const r = document.querySelector('[role="dialog"]').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; })()`, true]],
+    // The closed Assistant dock also stays mounted with role=dialog. Bind the
+    // bounds oracle to this open drawer and its verbatim authored title.
+    checks: () => [['drawer fits viewport', `(() => { const el = [...document.querySelectorAll('[role="dialog"][data-state="open"]')].find(d => d.querySelector('h2')?.textContent === ${JSON.stringify(W4D_KB.title)}); if (!el) return false; const r = el.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; })()`, true]],
   },
   {
     id: 'kb-candidates', route: 'kb candidates', path: `/orgs/${ORG}/kb`, ready: () => bodyHas(W4D_KB.title),
@@ -449,7 +451,7 @@ const VIEW_ROUTES = [
       await h.waitTrue(page, `Boolean(${SELECT})`, 'KB candidates count'); await h.clickSrc(page, SELECT);
       await h.waitTrue(page, bodyHas('Spanish after-hours routing'), 'KB candidate row');
       await h.clickSrc(page, `[...document.querySelectorAll('button')].find(b => b.textContent.includes('Spanish after-hours routing'))`);
-      await h.waitTrue(page, `Boolean(document.querySelector('[role="dialog"]'))`, 'KB candidate detail');
+      await h.waitTrue(page, `[...document.querySelectorAll('[role="dialog"][data-state="open"]')].some(d => d.querySelector('h2')?.textContent === 'Spanish after-hours routing')`, 'KB candidate detail');
     },
     keys: ['kb.acceptButton', 'kb.dismissButton', ['kb.candidatePendingLabel', { agent: 'product_lead' }]],
     verbatim: ['Spanish after-hours routing', 'spanish-after-hours', 'Seen three times this week.', 'product_lead'],
