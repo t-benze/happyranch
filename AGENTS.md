@@ -259,6 +259,17 @@ profile digest with the current global profile digest before readiness reopens.
 Direct-connect route/sweep retries take the same stable profile lease, re-read
 the durable projection terminal state before creating a U1A operation/fence,
 and only the winner records that existing durable claim and mutates/publishes.
+A genuinely empty default org remains attached with no agents and `teams=[]`
+when its initial authority publication is fenced by the missing default reviewer.
+Attachment proves absence of active and pending definitions and canonical/in-memory
+teams outside leases and transactions, brackets that discovery with the durable
+revision, and validates it under profile-then-org ownership. It preserves the
+initial fenced generation and publication journal; `verify_admission_ready()`
+still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
+operation evidence, unfinished canonical writers, and stale captures refuse this
+exception before synchronization. Reviewer policy and snapshot validation do not
+change; subsequent coherent canonical setup uses ordinary publication/recovery.
+
 U2B still wires no workflow
 admission, activation, or dispatch consumer; those remain later units.
 

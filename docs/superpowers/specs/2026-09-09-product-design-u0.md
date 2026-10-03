@@ -1566,3 +1566,14 @@ is **NOT RUN** and off the critical path; exhaustive Phase2 fanout, general
 fork/join, pipeline carriers and coding migration remain out of scope. Evidence
 remains **UNACCEPTED / D5 NOT READY** until independent gates and Founder
 disposition.
+
+A genuinely empty default org remains attached with no agents and `teams=[]`
+when its initial authority publication is fenced by the missing default reviewer.
+Attachment proves absence of active and pending definitions and canonical/in-memory
+teams outside leases and transactions, brackets that discovery with the durable
+revision, and validates it under profile-then-org ownership. It preserves the
+initial fenced generation and publication journal; `verify_admission_ready()`
+still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
+operation evidence, unfinished canonical writers, and stale captures refuse this
+exception before synchronization. Reviewer policy and snapshot validation do not
+change; subsequent coherent canonical setup uses ordinary publication/recovery.

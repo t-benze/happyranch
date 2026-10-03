@@ -364,6 +364,17 @@ shared-map insertion; its mirror
 digest must equal the current global digest before readiness is exposed.
 Startup does not dispatch, activate, or admit workflow work.
 
+A genuinely empty default org remains attached with no agents and `teams=[]`
+when its initial authority publication is fenced by the missing default reviewer.
+Attachment proves absence of active and pending definitions and canonical/in-memory
+teams outside leases and transactions, brackets that discovery with the durable
+revision, and validates it under profile-then-org ownership. It preserves the
+initial fenced generation and publication journal; `verify_admission_ready()`
+still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
+operation evidence, unfinished canonical writers, and stale captures refuse this
+exception before synchronization. Reviewer policy and snapshot validation do not
+change; subsequent coherent canonical setup uses ordinary publication/recovery.
+
 ## Org Config: Timezone and `current_time` Prompt Injection
 
 Top-level `timezone:` in `<runtime>/orgs/<slug>/org/config.yaml` is the org-wide

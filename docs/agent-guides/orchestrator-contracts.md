@@ -207,6 +207,17 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   the shared map before releasing them; closure also binds each local profile
   digest to the current global digest. No workflow admission consumer ships
   before its later unit.
+  A genuinely empty default org remains attached with no agents and `teams=[]`
+  when its initial authority publication is fenced by the missing default reviewer.
+  Attachment proves absence of active and pending definitions and canonical/in-memory
+  teams outside leases and transactions, brackets that discovery with the durable
+  revision, and validates it under profile-then-org ownership. It preserves the
+  initial fenced generation and publication journal; `verify_admission_ready()`
+  still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
+  operation evidence, unfinished canonical writers, and stale captures refuse this
+  exception before synchronization. Reviewer policy and snapshot validation do not
+  change; subsequent coherent canonical setup uses ordinary publication/recovery.
+
 - **Approval.** `POST /agents/{name}/approve` atomically moves the pending file to `org/agents/<name>.md`; when that promotion makes the registered manager eligible, it initializes the team's selector in the same workflow-authority canonical change. It then bootstraps the workspace under `workspaces/<name>/`. Approved agents appear in `GET /agents` and `GET /agents/enrollments?status=approved`.
 - **Termination.** `manage-agent terminate` archives an approved **non-manager worker** on the caller's team. It is refused if the agent is a manager, belongs to another team, or has live work. Live work includes non-terminal tasks assigned to the agent, already-started thread invocations, firing schedules, running work-hours wakes, running dreams, or pending/running jobs attributable to the agent. If the agent is quiescent, the route:
   - archives the active `org/agents/<name>.md` to `org/agents/_terminated/<name>.md`;

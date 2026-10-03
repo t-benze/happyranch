@@ -91,6 +91,29 @@ def test_init_org_creates_skeleton_and_loads(tmp_path: Path, auth) -> None:
     assert r.status_code == 200
     assert (rt.orgs_dir / "alpha" / "org" / "teams.yaml").is_file()
     assert "alpha" in state.orgs
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.workflows.authority import WorkflowAuthorityError
+
+    org = state.orgs["alpha"]
+    assert prompt_loader.list_agents(OrgPaths(root=org.root)) == []
+    assert prompt_loader.list_pending(OrgPaths(root=org.root)) == []
+    assert org.teams.teams() == []
+    assert client.get("/api/v1/orgs/alpha/teams", headers=auth).json() == {"teams": []}
+    with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+        org.workflow_authority.verify_admission_ready()
+    pointer = org.db.execute("SELECT current_generation,state FROM workflow_authority_pointers").fetchone()
+    assert tuple(pointer) == (0, "fenced")
+    org.close()
+    reloaded = DaemonState.from_runtime(rt, Settings())
+    try:
+        assert "alpha" in reloaded.orgs
+        assert reloaded.orgs["alpha"].teams.teams() == []
+        with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+            reloaded.orgs["alpha"].workflow_authority.verify_admission_ready()
+        assert tuple(reloaded.orgs["alpha"].db.execute("SELECT current_generation,state FROM workflow_authority_pointers").fetchone()) == (0, "fenced")
+    finally:
+        reloaded.orgs["alpha"].close()
 
 
 def test_init_org_invalid_slug_400(tmp_path: Path, auth) -> None:
@@ -193,6 +216,17 @@ async def test_init_org_pristine_skeleton_is_reclaimed_not_trapped(
     r = client.post("/api/v1/orgs", headers=auth, json={"slug": "trap"})
     assert r.status_code == 200
     assert "trap" in state.orgs
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.workflows.authority import WorkflowAuthorityError
+
+    org = state.orgs["trap"]
+    assert prompt_loader.list_agents(OrgPaths(root=org.root)) == []
+    assert prompt_loader.list_pending(OrgPaths(root=org.root)) == []
+    assert org.teams.teams() == []
+    assert client.get("/api/v1/orgs/trap/teams", headers=auth).json() == {"teams": []}
+    with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+        org.workflow_authority.verify_admission_ready()
 
 
 # PART 1 — transactional create: rollback on failure
@@ -238,6 +272,17 @@ async def test_init_org_transactional_create_leaves_valid_org_intact(
     assert r.status_code == 200
     assert (rt.orgs_dir / "alpha" / "org" / "teams.yaml").is_file()
     assert "alpha" in state.orgs
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.workflows.authority import WorkflowAuthorityError
+
+    org = state.orgs["alpha"]
+    assert prompt_loader.list_agents(OrgPaths(root=org.root)) == []
+    assert prompt_loader.list_pending(OrgPaths(root=org.root)) == []
+    assert org.teams.teams() == []
+    assert client.get("/api/v1/orgs/alpha/teams", headers=auth).json() == {"teams": []}
+    with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+        org.workflow_authority.verify_admission_ready()
 
 
 # PART 2a — recovery of a previously-stuck pristine slug
@@ -261,6 +306,17 @@ async def test_init_org_recovers_stuck_pristine_skeleton(
     # Recovery is transparent — create succeeds.
     assert r.status_code == 200, r.text
     assert "recoverable" in state.orgs
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.workflows.authority import WorkflowAuthorityError
+
+    org = state.orgs["recoverable"]
+    assert prompt_loader.list_agents(OrgPaths(root=org.root)) == []
+    assert prompt_loader.list_pending(OrgPaths(root=org.root)) == []
+    assert org.teams.teams() == []
+    assert client.get("/api/v1/orgs/recoverable/teams", headers=auth).json() == {"teams": []}
+    with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+        org.workflow_authority.verify_admission_ready()
     assert r.json()["slug"] == "recoverable"
 
 
@@ -431,6 +487,17 @@ async def test_init_org_dir_with_empty_db_is_reclaimable(
     r = client.post("/api/v1/orgs", headers=auth, json={"slug": "empty-db-org"})
     assert r.status_code == 200, r.text
     assert "empty-db-org" in state.orgs
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.workflows.authority import WorkflowAuthorityError
+
+    org = state.orgs["empty-db-org"]
+    assert prompt_loader.list_agents(OrgPaths(root=org.root)) == []
+    assert prompt_loader.list_pending(OrgPaths(root=org.root)) == []
+    assert org.teams.teams() == []
+    assert client.get("/api/v1/orgs/empty-db-org/teams", headers=auth).json() == {"teams": []}
+    with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+        org.workflow_authority.verify_admission_ready()
 
 
 # PART 2 — slug in state.orgs still 409s org_exists (healthy org guard)

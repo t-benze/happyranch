@@ -95,6 +95,17 @@ Dynamic org attachment takes all canonically ordered referenced profile leases
 through dependency synchronization and shared-map insertion. Readiness reopens
 only when each org-local profile digest equals the current global digest.
 
+A genuinely empty default org remains attached with no agents and `teams=[]`
+when its initial authority publication is fenced by the missing default reviewer.
+Attachment proves absence of active and pending definitions and canonical/in-memory
+teams outside leases and transactions, brackets that discovery with the durable
+revision, and validates it under profile-then-org ownership. It preserves the
+initial fenced generation and publication journal; `verify_admission_ready()`
+still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
+operation evidence, unfinished canonical writers, and stale captures refuse this
+exception before synchronization. Reviewer policy and snapshot validation do not
+change; subsequent coherent canonical setup uses ordinary publication/recovery.
+
 **Built-in profiles:**
 
 | Executor | Bootstrap doc | Skills dir | Permission surface |

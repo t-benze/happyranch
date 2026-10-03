@@ -33,6 +33,7 @@ from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.executor_registry import get_registry
 from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
+from runtime.orchestrator.teams import TeamsRegistry
 from runtime.workflows.authority import (
     ProfileFenceBinding,
     WorkflowAuthorityError,
@@ -76,6 +77,16 @@ class _ProfileOperation:
     target_generation: int
     prior: _EffectiveProfile
     recovery_state: str = "captured"
+
+
+@dataclass(frozen=True)
+class _OrgDependencyCapture:
+    desired: dict[str, str]
+    profile_names: tuple[str, ...]
+    revision: tuple
+    snapshot: bytes | None
+    empty_skeleton: bool = False
+    empty_canonical_inputs: bool = False
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -831,15 +842,25 @@ class ProfileCoordinator:
             ).fetchone()
             return pointer, None if active is None else tuple(active), lease is not None and _pid_is_live(int(lease["owner_pid"]))
 
-    def _capture_org_dependencies(self, org, *, completed_writer_invocation=None):
+    def _capture_org_dependencies(self, org, *, completed_writer_invocation=None, attachment=False):
         for _attempt in range(3):
             before = self._roster_revision(org)
             if org.workflow_authority._async_writer_lock.locked():
                 raise ProfileCoordinatorError("profile_consumer_changed")
-            definitions = list(prompt_loader.list_agents(OrgPaths(root=org.root)))
+            paths = OrgPaths(root=org.root)
+            definitions = list(prompt_loader.list_agents(paths))
+            # The default skeleton has no canonical consumers of either status.
+            # Discover both statuses and teams only outside every durable lease
+            # and transaction; empty dependency rows cannot establish this fact.
+            empty_inputs = attachment and not (
+                definitions or prompt_loader.list_pending(paths)
+                or TeamsRegistry.load(org.root).teams() or org.teams.teams()
+            )
+            capture_error = None
             try:
                 snapshot = org.workflow_authority.capture_canonical_snapshot()
-            except WorkflowAuthorityError:
+            except WorkflowAuthorityError as exc:
+                capture_error = exc.code
                 # Existing startup can expose an invalid legacy roster only
                 # with admission fenced. Dependency discovery still completes;
                 # an invalid canonical snapshot is never a ready publication.
@@ -869,11 +890,29 @@ class ProfileCoordinator:
                 # A prepared ordinary writer may be paused outside its durable
                 # lease. It still owns a canonical batch, so never reopen it.
                 raise ProfileCoordinatorError("profile_consumer_changed")
-            return desired, tuple(sorted(set(desired.values()) | outstanding)), after, snapshot
+            active = after[1]
+            initial_publication = active is None or (
+                active[5] == "org-startup"
+                and str(active[6]).startswith("workflow-writer:org-startup:")
+                and active[8] == "prepared"
+                and active[1:3] == (1, 0) and active[10] is None
+            )
+            empty_skeleton = bool(
+                empty_inputs and capture_error == "authority_reviewer_incoherent"
+                and after[0][:3] == (0, None, None) and after[0][3] == "fenced"
+                and initial_publication
+            )
+            return _OrgDependencyCapture(
+                desired, tuple(sorted(set(desired.values()) | outstanding)),
+                after, snapshot, empty_skeleton, bool(empty_inputs),
+            )
         raise ProfileCoordinatorError("profile_consumer_changed")
 
     def _validate_capture(self, org, revision):
-        if self._roster_revision(org)[:2] != revision[:2] or revision[2]:
+        if (
+            self._roster_revision(org)[:2] != revision[:2] or revision[2]
+            or org.workflow_authority._async_writer_lock.locked()
+        ):
             raise ProfileCoordinatorError("profile_consumer_changed")
 
     def _dependency_mirror_snapshot(self, org: OrgState) -> tuple[tuple[object, ...], ...]:
@@ -1014,12 +1053,13 @@ class ProfileCoordinator:
         raise ProfileCoordinatorError("profile_dependency_incoherent")
 
     def _synchronize_captured(self, captured, *, publish):
-        profile_names = sorted({name for _, _, (_, names, _, _) in captured for name in names})
+        profile_names = sorted({name for _, _, capture in captured for name in capture.profile_names})
         with self._profile_leases(profile_names, wait=True) as names:
             for name in names:
                 self._assert_no_active_operation(name)
             changed = set()
-            for slug, org, (desired, _, revision, snapshot) in captured:
+            for slug, org, capture in captured:
+                desired, revision, snapshot = capture.desired, capture.revision, capture.snapshot
                 with org.workflow_authority._publisher_lock:
                     owner = f"profile-dependency-validation:{uuid.uuid4().hex}"
                     org.workflow_authority._acquire_lease(owner)
@@ -1051,8 +1091,9 @@ class ProfileCoordinator:
     @contextmanager
     def dynamic_org_attachment(self, org: OrgState) -> Iterator[None]:
         """Synchronize and attach one org without escaping profile capture."""
-        desired, profile_names, revision, snapshot = self._capture_org_dependencies(org)
-        with self._profile_leases(profile_names, wait=True) as names:
+        capture = self._capture_org_dependencies(org, attachment=True)
+        desired, revision, snapshot = capture.desired, capture.revision, capture.snapshot
+        with self._profile_leases(capture.profile_names, wait=True) as names:
             for name in names:
                 self._assert_no_active_operation(name)
             with org.workflow_authority._publisher_lock:
@@ -1060,16 +1101,33 @@ class ProfileCoordinator:
                 org.workflow_authority._acquire_lease(owner)
                 try:
                     self._validate_capture(org, revision)
+                    if capture.empty_canonical_inputs and not capture.empty_skeleton:
+                        raise ProfileCoordinatorError("profile_dependency_incoherent")
+                    if capture.empty_skeleton:
+                        # Never discharge a surviving consumer/operation merely
+                        # because the canonical files are empty. Cold recovery
+                        # owns that evidence, including operations with no rows.
+                        with org.db._lock:
+                            unfinished = org.db._conn.execute(
+                                "SELECT 1 FROM workflow_profile_operations "
+                                "WHERE state NOT IN ('published','aborted') LIMIT 1"
+                            ).fetchone()
+                            outstanding = org.db._conn.execute(
+                                "SELECT 1 FROM workflow_profile_dependencies "
+                                "WHERE state IN ('active','unbound') LIMIT 1"
+                            ).fetchone()
+                        if unfinished is not None or outstanding is not None:
+                            raise ProfileCoordinatorError("profile_dependency_incoherent")
                     changed = self._sync_org_dependencies(org, desired)
                 finally:
                     org.workflow_authority._release_lease(owner)
-                if snapshot is None:
+                if snapshot is None and not capture.empty_skeleton:
                     org.workflow_authority.fence(reason="profile:canonical-incoherent")
                     raise ProfileCoordinatorError("profile_dependency_incoherent")
-                if changed or not self._authority_profile_projection_coherent(org):
+                if not capture.empty_skeleton and (changed or not self._authority_profile_projection_coherent(org)):
                     if not self._publish_dependency_change(org, canonical_snapshot=snapshot, expected_revision=revision[:2]):
                         raise ProfileCoordinatorError("profile_dependency_incoherent")
-                if (
+                if not capture.empty_skeleton and (
                     not self._closure_coherent(org)
                     or not self._authority_profile_projection_coherent(org)
                 ):

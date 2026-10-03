@@ -40,6 +40,224 @@ from runtime.workflows.profile_coordinator import (
 )
 
 
+def _empty_org(root: Path) -> OrgState:
+    from runtime.daemon.routes.orgs import _seed_skeleton
+
+    _seed_skeleton(root, from_example=None)
+    return OrgState.load(slug="empty", root=root, settings=Settings())
+
+
+def test_empty_attached_org_recovers_after_supported_canonical_setup(tmp_path, monkeypatch):
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon"))
+    runtime = RuntimeDir.init(tmp_path / "runtime")
+    state = DaemonState.from_runtime(runtime, Settings())
+    client = TestClient(create_app(state))
+    client.headers.update({"Authorization": f"Bearer {paths.ensure_token()}"})
+    response = client.post("/api/v1/orgs", json={"slug": "empty"})
+    assert response.status_code == 200, response.text
+    org = state.orgs["empty"]
+    try:
+        with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+            org.workflow_authority.verify_admission_ready()
+        for name, role in (("engineering_manager", "manager"), ("code_reviewer", "worker")):
+            response = client.post("/api/v1/orgs/empty/agents", json={
+                "name": name, "role": role, "executor": "claude",
+                **({"new_team": "engineering"} if role == "manager" else {"team": "engineering"}),
+                "description": "test", "system_prompt": "test",
+            })
+            assert response.status_code == 200, response.text
+        snapshot = json.loads(org.workflow_authority.verify_admission_ready().snapshot_bytes)
+        assert {agent["name"] for agent in snapshot["agents"]} == {"engineering_manager", "code_reviewer"}
+        assert snapshot["reviewer_agents"] == ["code_reviewer"]
+        assert snapshot["machine_global_profiles"] == []
+        assert state.profile_coordinator._dependency_mirror_snapshot(org) == ()
+    finally:
+        org.close()
+
+
+@pytest.mark.parametrize("boundary", ["pending", "missing_reviewer", "missing_profile", "teams_only"])
+def test_empty_attachment_refuses_pending_or_incoherent_rosters(tmp_path, monkeypatch, boundary):
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon"))
+    if boundary in {"missing_reviewer", "missing_profile"}:
+        org = _seed_org(tmp_path / "empty", "empty", {"worker": "absent-profile"} if boundary == "missing_profile" else {})
+        if boundary == "missing_reviewer":
+            (OrgPaths(root=org.root).agents_dir / "code_reviewer.md").unlink()
+    else:
+        org = _empty_org(tmp_path / "empty")
+        if boundary == "pending":
+            prompt_loader.write_pending_agent(OrgPaths(root=org.root), AgentDef(
+                name="pending_manager", team="engineering", role="manager", executor="absent-profile",
+                allow_rules=(), repos={}, enrolled_by="founder", enrolled_at_task=None,
+                enrolled_at=datetime(2026, 10, 4, tzinfo=timezone.utc), system_prompt="pending", description="pending",
+            ))
+        else:
+            (org.root / "org" / "teams.yaml").write_text("teams:\n  engineering:\n    manager: absent\n    workers: []\n")
+    coordinator = ProfileCoordinator(daemon_home=tmp_path / "daemon", orgs={})
+    try:
+        with pytest.raises((ProfileCoordinatorError, WorkflowAuthorityError), match="incoherent|in_progress"):
+            with coordinator.dynamic_org_attachment(org):
+                coordinator.orgs["empty"] = org
+        assert "empty" not in coordinator.orgs
+        with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+            org.workflow_authority.verify_admission_ready()
+        if boundary == "missing_profile":
+            assert _dependencies(org) == [("absent-profile", "worker", "unbound")]
+    finally:
+        org.close()
+
+
+@pytest.mark.parametrize("evidence", ["dependency", "profile_operation", "canonical_operation"])
+def test_empty_attachment_preserves_outstanding_recovery_evidence(tmp_path, monkeypatch, evidence):
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon"))
+    with _registered_profile("outstanding-profile"):
+        org = _empty_org(tmp_path / "empty")
+        coordinator = ProfileCoordinator(daemon_home=tmp_path / "daemon", orgs={"empty": org})
+        if evidence == "dependency":
+            with coordinator.dependency_writer(["outstanding-profile"]):
+                coordinator.rebind_consumer(org=org, consumer_identity="unfinished", from_profile=None, to_profile="outstanding-profile")
+        elif evidence == "profile_operation":
+            coordinator._insert_operation_rows(_ProfileOperation(
+                operation_id="WPO-unfinished", profile_name="outstanding-profile", operation_kind="rebind",
+                members=("empty",), target_generation=1, prior=coordinator._effective_profile("outstanding-profile"),
+            ), coordinator_invocation="unfinished")
+        else:
+            org.workflow_authority.fence(reason="unfinished-canonical-writer")
+        # The candidate is not in the shared map yet. Local operation evidence
+        # must still refuse, even when it has no dependency rows.
+        coordinator.orgs.pop("empty")
+        before = coordinator._dependency_mirror_snapshot(org)
+        operations = [tuple(row) for row in org.db.execute("SELECT * FROM workflow_profile_operations").fetchall()]
+        journal = coordinator._roster_revision(org)
+        try:
+            with pytest.raises((ProfileCoordinatorError, WorkflowAuthorityError), match="incoherent|in_progress"):
+                with coordinator.dynamic_org_attachment(org):
+                    coordinator.orgs["empty"] = org
+            assert "empty" not in coordinator.orgs
+            assert coordinator._dependency_mirror_snapshot(org) == before
+            assert [tuple(row) for row in org.db.execute("SELECT * FROM workflow_profile_operations").fetchall()] == operations
+            assert coordinator._roster_revision(org) == journal
+            with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+                org.workflow_authority.verify_admission_ready()
+        finally:
+            org.close()
+
+
+@pytest.mark.parametrize("boundary", ["discovery", "before_lease", "async_gate"])
+def test_empty_attachment_capture_retries_or_refuses_changes(tmp_path, monkeypatch, boundary):
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon"))
+    org = _empty_org(tmp_path / "empty")
+    coordinator = ProfileCoordinator(daemon_home=tmp_path / "daemon", orgs={})
+    won = False
+
+    def winner():
+        nonlocal won
+        if won:
+            return
+        won = True
+        if boundary == "async_gate":
+            import asyncio
+            asyncio.run(org.workflow_authority._async_writer_lock.acquire())
+            return
+        # A supported durable canonical fence brackets the actual pending file
+        # write, after the contender captured the previous empty inputs.
+        with org.workflow_authority.writer_interval(publisher="pending-setup") as interval:
+            with interval.canonical_change():
+                prompt_loader.write_pending_agent(OrgPaths(root=org.root), AgentDef(
+                    name="pending_manager", team="engineering", role="manager", executor="claude",
+                    allow_rules=(), repos={}, enrolled_by="founder", enrolled_at_task=None,
+                    enrolled_at=datetime(2026, 10, 4, tzinfo=timezone.utc), system_prompt="pending", description="pending",
+                ))
+
+    if boundary == "discovery":
+        original = prompt_loader.list_pending
+
+        def change_after_discovery(*args, **kwargs):
+            result = original(*args, **kwargs)
+            winner()
+            return result
+
+        monkeypatch.setattr(prompt_loader, "list_pending", change_after_discovery)
+    else:
+        original = coordinator._profile_leases
+
+        @contextmanager
+        def change_before_lease(*args, **kwargs):
+            winner()
+            with original(*args, **kwargs) as names:
+                yield names
+
+        monkeypatch.setattr(coordinator, "_profile_leases", change_before_lease)
+    try:
+        with pytest.raises((ProfileCoordinatorError, WorkflowAuthorityError), match="changed|incoherent|in_progress"):
+            with coordinator.dynamic_org_attachment(org):
+                coordinator.orgs["empty"] = org
+        assert won and "empty" not in coordinator.orgs
+        if boundary != "async_gate":
+            assert prompt_loader.load_pending_agent(OrgPaths(root=org.root), "pending_manager") is not None
+        with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+            org.workflow_authority.verify_admission_ready()
+    finally:
+        if org.workflow_authority._async_writer_lock.locked():
+            org.workflow_authority._async_writer_lock.release()
+        org.close()
+
+
+@pytest.mark.parametrize("outstanding", [False, True])
+def test_empty_attachment_scans_without_leases_or_transactions(tmp_path, monkeypatch, outstanding):
+    from runtime.orchestrator.teams import TeamsRegistry
+
+    daemon_home = tmp_path / "daemon"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home))
+    with _registered_profile("scan-empty"):
+        org = _empty_org(tmp_path / "empty")
+        coordinator = ProfileCoordinator(daemon_home=daemon_home, orgs={})
+        if outstanding:
+            with coordinator.dependency_writer(["scan-empty"]):
+                coordinator.rebind_consumer(org=org, consumer_identity="unfinished", from_profile=None, to_profile="scan-empty")
+        observed = set()
+        context = multiprocessing.get_context("spawn")
+
+        def observe(label, original):
+            def scan(*args, **kwargs):
+                assert not org.db._conn.in_transaction
+                assert org.db.execute("SELECT COUNT(*) FROM workflow_publication_leases").fetchone()[0] == 0
+                if label not in observed:
+                    ready = context.Event()
+                    contender = context.Process(target=_acquire_profile_lock_then_exit, args=(str(daemon_home), "scan-empty", ready))
+                    contender.start()
+                    try:
+                        assert ready.wait(5), "directory scan retained the real profile flock"
+                        contender.join(5)
+                        assert contender.exitcode == 0
+                    finally:
+                        if contender.is_alive():
+                            contender.terminate()
+                            contender.join(5)
+                    observed.add(label)
+                return original(*args, **kwargs)
+            return scan
+
+        monkeypatch.setattr(prompt_loader, "list_agents", observe("active", prompt_loader.list_agents))
+        monkeypatch.setattr(prompt_loader, "list_pending", observe("pending", prompt_loader.list_pending))
+        monkeypatch.setattr(TeamsRegistry, "load", observe("teams", TeamsRegistry.load))
+        mirror = coordinator._dependency_mirror_snapshot(org)
+        try:
+            if outstanding:
+                with pytest.raises(ProfileCoordinatorError, match="profile_dependency_incoherent"):
+                    with coordinator.dynamic_org_attachment(org):
+                        coordinator.orgs["empty"] = org
+                assert coordinator._dependency_mirror_snapshot(org) == mirror
+            else:
+                with coordinator.dynamic_org_attachment(org):
+                    coordinator.orgs["empty"] = org
+                assert coordinator.orgs["empty"] is org
+            assert observed == {"active", "pending", "teams"}
+            with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+                org.workflow_authority.verify_admission_ready()
+        finally:
+            org.close()
+
+
 def _seed_org(root: Path, slug: str, executors: dict[str, str]) -> OrgState:
     paths = OrgPaths(root=root)
     paths.agents_dir.mkdir(parents=True)
