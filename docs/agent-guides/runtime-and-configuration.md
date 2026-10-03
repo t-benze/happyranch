@@ -337,7 +337,11 @@ record keyed by the profile name. No ``shutil.which`` or PATH discovery is
 used for any profile. See
 [agent-executors-and-permissions.md](./agent-executors-and-permissions.md).
 
-At daemon state construction, U2B rebuilds exact per-agent custom-profile
+Supported active roster creation, approval, revision-CAS executor updates,
+dedicated executor updates and termination maintain exact per-agent profile
+requirements inside their canonical fence; pending enrollments do not bind.
+Their profile leases release before ordinary publication capture and awaited
+bootstrap, including compensation exits. At daemon state construction, U2B rebuilds exact per-agent custom-profile
 dependencies for every loaded org and reconciles any interrupted coordinated
 profile operation before the state is exposed to routes. It uses the U1A
 org-local profile relations plus an owner-only same-host `flock`; there is no
@@ -350,8 +354,13 @@ different profile leases cannot lose each other's entries. Direct-connect
 `planned` projections are production-sweep eligible after transient profile
 contention. Independent route/sweep contenders re-read the durable terminal row
 under the profile lease before any mutation or fence. Dynamic org attachment
-holds every canonically ordered referenced profile lease through dependency
-synchronization, coherent publication, and shared-map insertion; its mirror
+captures canonical authority/roster inputs outside profile/publication leases
+and SQLite transactions, brackets discovery with the existing durable authority
+revision, and validates that revision under profile-then-org mutation ownership.
+Changed captures retry boundedly or refuse; synchronization consumes the captured
+roster without another directory scan. It holds every canonically ordered
+referenced profile lease through coherent synchronization/publication and
+shared-map insertion; its mirror
 digest must equal the current global digest before readiness is exposed.
 Startup does not dispatch, activate, or admit workflow work.
 

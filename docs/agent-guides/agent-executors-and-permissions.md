@@ -65,7 +65,15 @@ approved/current custom-adapter eligibility check. The lock order is profile
 lease before org publication lease before existing writer locks; the shared
 `executor_profiles.yaml` mutation lock is the innermost leaf and covers only
 read/merge/atomic-replace. Multiple agents using one profile remain distinct
-consumer rows; removing one cannot erase another. A removed profile leaves its
+consumer rows; removing one cannot erase another. Pending enrollment and rejection
+create no active requirement. Each lifecycle canonical segment acquires source
+and target profile leases before the org publisher gate, maintains the exact
+consumer relation, and restores the prior profile mirrors on pre-commit failure.
+These leases release before publication discovery and awaited workspace work.
+Publication compares the dependency projection with the canonical active roster;
+an absent row cannot silently authorize a ready empty closure. Profile contenders
+refuse an unfinished ordinary canonical batch before their global operation claim;
+a later healthy publication/recovery permits the next action. A removed profile leaves its
 remaining consumers unbound and their org fenced until an explicit valid rebind
 or removal. Live contention returns `profile_coordinator_busy`; process death
 releases the kernel lease and startup resumes the durable operation exactly
@@ -74,8 +82,9 @@ or activation surface.
 
 Both adapter registration entry points (`register_adapter` and
 `submit_adapter`), approval/bind/removal, executor-profile removal,
-direct-connect projection/retry, agent executor rebinding, paired profile
-reads, and daemon startup participate at their existing mutation/read
+direct-connect projection/retry, active Founder creation and approval, manager
+revision-CAS executor update, dedicated executor update, explicit termination,
+whole-definition repo/model writes, paired profile reads, and daemon startup participate at their existing mutation/read
 boundaries. Conformance probes finish before profile leases. A direct-connect
 projection left durably `planned` by pre-mutation contention is retried by a
 later commit call or the production sweep; it is not treated as a terminal

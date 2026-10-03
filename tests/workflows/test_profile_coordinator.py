@@ -7,6 +7,7 @@ import os
 import queue
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1153,6 +1154,21 @@ def test_late_dynamic_org_waits_for_profile_operation_and_publishes_current_dige
 
         attached: list[OrgState] = []
         attach_errors: list[BaseException] = []
+        attachment_attempted = threading.Event()
+        contender = ProfileCoordinator(daemon_home=daemon_home, orgs={})
+        original_profile_lease = coordinator._profile_lease
+
+        @contextmanager
+        def observed_attachment_lease(name: str, *, wait: bool) -> Iterator[None]:
+            assert name == profile_name and wait
+            with pytest.raises(ProfileCoordinatorError, match="profile_coordinator_busy"):
+                with contender.profile_read(name):
+                    pass
+            attachment_attempted.set()
+            with original_profile_lease(name, wait=wait):
+                yield
+
+        monkeypatch.setattr(coordinator, "_profile_lease", observed_attachment_lease)
 
         def attach_beta() -> None:
             try:
@@ -1162,7 +1178,7 @@ def test_late_dynamic_org_waits_for_profile_operation_and_publishes_current_dige
 
         attachment = threading.Thread(target=attach_beta)
         attachment.start()
-        time.sleep(0.1)
+        assert attachment_attempted.wait(10)
         allow_mutation.set()
         operation.join(10)
         attachment.join(10)
@@ -1471,3 +1487,576 @@ def test_removed_profile_stays_fenced_until_explicit_consumer_rebind(
         ]
         assert rows == [(target, "active"), (source, "removed")]
         org.close()
+
+
+@contextmanager
+def _lifecycle_client(tmp_path, monkeypatch, executors=None):
+    """Authenticated shipping routes with canonical files and installed org DBs."""
+    import asyncio
+    from runtime.daemon.routes import auth
+    from runtime.orchestrator.context_builder import ContextBuilder
+
+    daemon_home = tmp_path / "daemon"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home))
+    paths.ensure_daemon_home()
+    paths.ensure_token()
+    monkeypatch.setattr(auth, "_LOCAL_HOSTS", auth._LOCAL_HOSTS | {"testclient"})
+    monkeypatch.setattr(ContextBuilder, "ensure_workspace_ready", lambda *a, **k: None)
+    monkeypatch.setattr(ContextBuilder, "create_agent_dirs", lambda *a, **k: None)
+    runtime = RuntimeDir.init(tmp_path / "runtime")
+    org = _seed_org(runtime.orgs_dir / "alpha", "alpha", executors or {"worker": "claude"})
+    other = _seed_org(runtime.orgs_dir / "gamma", "gamma", {"worker": "claude"})
+    state = DaemonState.idle(Settings())
+    state.runtime = runtime
+    state.orgs = {"alpha": org, "gamma": other}
+    coordinator = ProfileCoordinator(daemon_home=daemon_home, orgs=state.orgs)
+    state.profile_coordinator = coordinator
+    for item in state.orgs.values():
+        item._profile_coordinator = coordinator
+    coordinator.reconcile_startup()
+    client = TestClient(create_app(state))
+    client.headers.update({"Authorization": f"Bearer {paths.read_token()}"})
+    try:
+        yield client, org, other, coordinator
+    finally:
+        client.close()
+        asyncio.run(state.close_all())
+
+
+def _dependencies(org):
+    return [tuple(row) for row in org.db.execute(
+        "SELECT profile_name,consumer_identity,state FROM workflow_profile_dependencies "
+        "WHERE state IN ('active','unbound') ORDER BY profile_name,consumer_identity"
+    ).fetchall()]
+
+
+def test_founder_creation_is_captured_before_real_profile_delete(tmp_path, monkeypatch):
+    from runtime.daemon.routes import executors
+
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon"))
+    name = "lifecycle_profile"
+    save_runtime_profile(name, {"workspace_adapter_id": "pi", "command_adapter_id": f"custom-adapter:{name}-adapter"})
+    with _registered_profile(name), _lifecycle_client(tmp_path, monkeypatch) as (client, org, other, coordinator):
+        unaffected = _pointer(other)
+        created = client.post("/api/v1/orgs/alpha/agents", json={
+            "name": "new_worker", "role": "worker", "team": "engineering",
+            "executor": name, "description": "test", "system_prompt": "test",
+        })
+        assert created.status_code == 200, created.text
+        assert _dependencies(org) == [(name, "new_worker", "active")]
+        assert coordinator._required_members(name) == ("alpha",)
+        original_remove = executors.remove_runtime_profile
+        seen = []
+
+        def observed_remove(profile):
+            seen.append(_pointer(org))
+            assert _pointer(org)[1] == "fenced"
+            assert _pointer(other) == unaffected
+            return original_remove(profile)
+
+        monkeypatch.setattr(executors, "remove_runtime_profile", observed_remove)
+        removed = client.delete(f"/api/v1/executors/runtime/profiles/{name}")
+        assert removed.status_code == 200, removed.text
+        assert len(seen) == 1
+        assert _dependencies(org) == [(name, "new_worker", "unbound")]
+        assert prompt_loader.load_agent(OrgPaths(root=org.root), "new_worker").executor == name
+        with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+            org.workflow_authority.verify_admission_ready()
+        assert _pointer(other) == unaffected
+
+
+@pytest.mark.parametrize("entry", ["attachment", "synchronization", "startup"])
+def test_real_canonical_scans_are_outside_profile_and_publication_leases(tmp_path, monkeypatch, entry):
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon"))
+    name = "scan_profile"
+    with _registered_profile(name):
+        org = _seed_org(tmp_path / "alpha", "alpha", {"worker": name})
+        coordinator = ProfileCoordinator(daemon_home=tmp_path / "daemon", orgs={} if entry == "attachment" else {"alpha": org})
+        contender = ProfileCoordinator(daemon_home=tmp_path / "daemon", orgs={})
+        original = prompt_loader.list_agents
+        scans = []
+
+        def observed(*args, **kwargs):
+            # Real directory enumeration/parsing still executes. Observe the
+            # actual stable flock with a separate open-file description.
+            with contender.profile_read(name):
+                pass
+            assert org.db.execute("SELECT COUNT(*) FROM workflow_publication_leases").fetchone()[0] == 0
+            assert not org.db._conn.in_transaction
+            scans.append(entry)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(prompt_loader, "list_agents", observed)
+        try:
+            if entry == "attachment":
+                with coordinator.dynamic_org_attachment(org):
+                    coordinator.orgs["alpha"] = org
+            elif entry == "startup":
+                coordinator.reconcile_startup()
+            else:
+                coordinator.synchronize_all_dependencies()
+            assert scans
+            assert _dependencies(org) == [(name, "worker", "active")]
+            org.workflow_authority.verify_admission_ready()
+        finally:
+            org.close()
+
+
+def _manager_request(client, org, action, name, **fields):
+    org.sessions.set_active("TASK-9566-test", "engineering_manager", "lifecycle-session")
+    return client.post("/api/v1/orgs/alpha/agents/manage", json={
+        "action": action, "name": name, "task_id": "TASK-9566-test",
+        "session_id": "lifecycle-session", **fields,
+    })
+
+
+@pytest.mark.parametrize("outcome", ["approve", "reject", "dependency_failure", "profile_removed"])
+def test_pending_profile_membership_begins_only_at_successful_promotion(tmp_path, monkeypatch, outcome):
+    name = "promotion_profile"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon"))
+    save_runtime_profile(name, {"workspace_adapter_id": "pi", "command_adapter_id": f"custom-adapter:{name}-adapter"})
+    with _registered_profile(name), _lifecycle_client(tmp_path, monkeypatch) as (client, org, other, coordinator):
+        enrolled = _manager_request(client, org, "enroll", "rookie", executor=name, description="test", system_prompt="test")
+        assert enrolled.status_code == 200, enrolled.text
+        assert enrolled.json()["status"] == "pending"
+        assert _dependencies(org) == []
+        assert coordinator._required_members(name) == ()
+        canonical = OrgPaths(root=org.root)
+        pending_bytes = (canonical.pending_agents_dir / "rookie.md").read_bytes()
+        mirror = coordinator._dependency_mirror_snapshot(org)
+        if outcome == "reject":
+            response = client.post("/api/v1/orgs/alpha/agents/rookie/reject")
+            assert response.status_code == 200
+            assert prompt_loader.load_pending_agent(canonical, "rookie") is None
+            assert _dependencies(org) == []
+            org.workflow_authority.verify_admission_ready()
+            return
+        if outcome == "profile_removed":
+            assert client.delete(f"/api/v1/executors/runtime/profiles/{name}").status_code == 200
+        with monkeypatch.context() as fault:
+            if outcome == "dependency_failure":
+                original = coordinator.rebind_consumer
+                def fail_after_dependency_commit(**kwargs):
+                    original(**kwargs)
+                    raise RuntimeError("dependency mutation fault")
+                fault.setattr(coordinator, "rebind_consumer", fail_after_dependency_commit)
+                with pytest.raises(RuntimeError, match="dependency mutation fault"):
+                    client.post("/api/v1/orgs/alpha/agents/rookie/approve")
+            else:
+                response = client.post("/api/v1/orgs/alpha/agents/rookie/approve")
+                assert response.status_code == (409 if outcome == "profile_removed" else 200), response.text
+        if outcome != "approve":
+            assert prompt_loader.load_agent(canonical, "rookie") is None
+            assert (canonical.pending_agents_dir / "rookie.md").read_bytes() == pending_bytes
+            assert coordinator._dependency_mirror_snapshot(org) == mirror
+            if outcome == "profile_removed":
+                return
+            assert client.post("/api/v1/orgs/alpha/agents/rookie/approve").status_code == 200
+        assert _dependencies(org) == [(name, "rookie", "active")]
+        assert coordinator._required_members(name) == ("alpha",)
+        org.workflow_authority.verify_admission_ready()
+        unaffected = _pointer(other)
+        assert client.delete(f"/api/v1/executors/runtime/profiles/{name}").status_code == 200
+        assert _dependencies(org) == [(name, "rookie", "unbound")]
+        assert _pointer(org)[1] == "fenced"
+        assert _pointer(other) == unaffected
+
+
+@pytest.mark.parametrize("writer", ["manager", "dedicated"])
+def test_executor_writers_move_one_requirement_and_preserve_its_sibling(tmp_path, monkeypatch, writer):
+    names = ("source_profile", "target_profile")
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon"))
+    with _registered_profile(names[0]), _registered_profile(names[1]), _lifecycle_client(
+        tmp_path, monkeypatch, {"worker": "claude", "sibling": names[0]},
+    ) as (client, org, other, coordinator):
+        canonical = OrgPaths(root=org.root)
+        for target, expected in [
+            (names[0], [(names[0], "sibling", "active"), (names[0], "worker", "active")]),
+            (names[1], [(names[0], "sibling", "active"), (names[1], "worker", "active")]),
+            ("claude", [(names[0], "sibling", "active")]),
+        ]:
+            revision = prompt_loader.agent_revision(canonical, "worker")
+            if writer == "manager":
+                response = _manager_request(client, org, "update", "worker", expected_revision=revision, executor=target)
+            else:
+                response = client.put("/api/v1/orgs/alpha/agents/worker/executor", json={"executor": target})
+            assert response.status_code == 200, response.text
+            assert prompt_loader.load_agent(canonical, "worker").executor == target
+            assert _dependencies(org) == expected
+            assert coordinator._required_members(names[0]) == ("alpha",)
+            assert coordinator._required_members(names[1]) == (("alpha",) if target == names[1] else ())
+            org.workflow_authority.verify_admission_ready()
+            if writer == "manager":
+                before_bytes = (canonical.agents_dir / "worker.md").read_bytes()
+                mirror = coordinator._dependency_mirror_snapshot(org)
+                stale = _manager_request(client, org, "update", "worker", expected_revision=revision, executor=names[1])
+                assert stale.status_code == 409
+                assert stale.json()["detail"]["code"] == "stale_agent_revision"
+                assert (canonical.agents_dir / "worker.md").read_bytes() == before_bytes
+                assert coordinator._dependency_mirror_snapshot(org) == mirror
+                unchanged = _manager_request(client, org, "update", "worker", expected_revision=prompt_loader.agent_revision(canonical, "worker"), executor=target)
+                assert unchanged.status_code == 200
+                assert coordinator._dependency_mirror_snapshot(org) == mirror
+        unaffected = _pointer(other)
+        with coordinator.operation([names[1]], operation_kind="rebind", publisher="irrelevant-profile"):
+            assert _pointer(org)[1] == "ready"
+        assert _pointer(other) == unaffected
+
+
+@pytest.mark.parametrize("fault", ["none", "cleanup", "dependency"])
+def test_termination_discharges_only_its_consumer_and_compensates_failure(tmp_path, monkeypatch, fault):
+    name = "termination_profile"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon"))
+    with _registered_profile(name), _lifecycle_client(tmp_path, monkeypatch, {"worker": name, "sibling": name}) as (client, org, other, coordinator):
+        canonical = OrgPaths(root=org.root)
+        before = (canonical.agents_dir / "worker.md").read_bytes()
+        mirror = coordinator._dependency_mirror_snapshot(org)
+        with monkeypatch.context() as injected:
+            if fault == "cleanup":
+                def fail_cleanup(*args, **kwargs):
+                    raise RuntimeError("cleanup fault")
+                injected.setattr(org.db, "terminate_agent_cleanups", fail_cleanup)
+            elif fault == "dependency":
+                original = coordinator.rebind_consumer
+                def fail_dependency(**kwargs):
+                    original(**kwargs)
+                    raise RuntimeError("dependency fault")
+                injected.setattr(coordinator, "rebind_consumer", fail_dependency)
+            if fault != "none":
+                if fault == "cleanup":
+                    failed = _manager_request(client, org, "terminate", "worker")
+                    assert failed.status_code == 500
+                    assert failed.json()["detail"]["code"] == "terminate_cleanup_failed"
+                else:
+                    with pytest.raises(RuntimeError, match="fault"):
+                        _manager_request(client, org, "terminate", "worker")
+                assert (canonical.agents_dir / "worker.md").read_bytes() == before
+                assert coordinator._dependency_mirror_snapshot(org) == mirror
+                assert "worker" in org.teams.all_agents()
+                org.workflow_authority.verify_admission_ready()
+        for consumer, expected in [("worker", [(name, "sibling", "active")]), ("sibling", [])]:
+            response = _manager_request(client, org, "terminate", consumer)
+            assert response.status_code == 200, response.text
+            assert _dependencies(org) == expected
+            assert prompt_loader.load_agent(canonical, consumer) is None
+            assert prompt_loader.is_terminated(canonical, consumer)
+            assert coordinator._required_members(name) == (("alpha",) if expected else ())
+            org.workflow_authority.verify_admission_ready()
+        assert any(row["action"] == "agent_managed" for row in org.db.get_audit_logs("TASK-9566-test"))
+
+
+@pytest.mark.parametrize("writer", ["create", "manager", "dedicated", "approve"])
+@pytest.mark.parametrize("fault", ["canonical_replace", "dependency", "publication"])
+def test_lifecycle_faults_preserve_relation_or_truthfully_fence_committed_bytes(tmp_path, monkeypatch, writer, fault):
+    from runtime.daemon.routes import agents
+    name = "fault_profile"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon"))
+    with _registered_profile(name), _lifecycle_client(tmp_path, monkeypatch) as (client, org, other, coordinator):
+        canonical = OrgPaths(root=org.root)
+        consumer = "new_worker" if writer in {"create", "approve"} else "worker"
+        if writer == "approve":
+            assert _manager_request(client, org, "enroll", consumer, executor=name, description="test", system_prompt="test").status_code == 200
+        path = canonical.agents_dir / f"{consumer}.md"
+        before = path.read_bytes() if path.exists() else None
+        mirror = coordinator._dependency_mirror_snapshot(org)
+        def action():
+            if writer == "create":
+                return client.post("/api/v1/orgs/alpha/agents", json={"name": consumer, "role": "worker", "team": "engineering", "executor": name, "description": "test", "system_prompt": "test"})
+            if writer == "approve":
+                return client.post(f"/api/v1/orgs/alpha/agents/{consumer}/approve")
+            if writer == "manager":
+                return _manager_request(client, org, "update", consumer, expected_revision=prompt_loader.agent_revision(canonical, consumer), executor=name)
+            return client.put(f"/api/v1/orgs/alpha/agents/{consumer}/executor", json={"executor": name})
+        with monkeypatch.context() as injected:
+            if fault == "canonical_replace":
+                original = agents.os.replace
+                def fail_replace(source, target):
+                    if Path(target) == path:
+                        raise OSError("canonical replace fault")
+                    return original(source, target)
+                injected.setattr(agents.os, "replace", fail_replace)
+            elif fault == "dependency":
+                original = coordinator.rebind_consumer
+                def fail_dependency(**kwargs):
+                    original(**kwargs)
+                    raise RuntimeError("dependency fault")
+                injected.setattr(coordinator, "rebind_consumer", fail_dependency)
+            else:
+                def fail_publication(**kwargs):
+                    raise RuntimeError("publication fault")
+                injected.setattr(org.workflow_authority, "publish_current", fail_publication)
+            if fault != "publication":
+                with pytest.raises((OSError, RuntimeError), match="fault"):
+                    action()
+                assert (path.read_bytes() if path.exists() else None) == before
+                assert coordinator._dependency_mirror_snapshot(org) == mirror
+            else:
+                response = action()
+                assert response.status_code == 200, response.text
+                assert prompt_loader.load_agent(canonical, consumer).executor == name
+                assert _dependencies(org) == [(name, consumer, "active")]
+                with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+                    org.workflow_authority.verify_admission_ready()
+        if fault != "publication":
+            assert action().status_code == 200
+        else:
+            org.workflow_authority.recover_or_publish()
+        org.workflow_authority.verify_admission_ready()
+
+
+@pytest.mark.parametrize("writer", ["create", "approve", "manager", "dedicated", "terminate"])
+def test_lifecycle_publication_scans_run_after_real_profile_lease_release(tmp_path, monkeypatch, writer):
+    name = "writer_scan_profile"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon"))
+    with _registered_profile(name), _lifecycle_client(tmp_path, monkeypatch, {"worker": name}) as (client, org, other, coordinator):
+        if writer == "approve":
+            assert _manager_request(client, org, "enroll", "rookie", executor=name, description="test", system_prompt="test").status_code == 200
+        contender = ProfileCoordinator(daemon_home=tmp_path / "daemon", orgs={})
+        original = prompt_loader.list_agents
+        scans = []
+        def observed(*args, **kwargs):
+            with contender.profile_read(name):
+                pass
+            assert not org.db._conn.in_transaction
+            assert org.db.execute("SELECT COUNT(*) FROM workflow_publication_leases").fetchone()[0] == 0
+            scans.append(writer)
+            return original(*args, **kwargs)
+        monkeypatch.setattr(prompt_loader, "list_agents", observed)
+        if writer == "create":
+            response = client.post("/api/v1/orgs/alpha/agents", json={"name": "rookie", "role": "worker", "team": "engineering", "executor": name, "description": "test", "system_prompt": "test"})
+        elif writer == "approve":
+            response = client.post("/api/v1/orgs/alpha/agents/rookie/approve")
+        elif writer == "manager":
+            response = _manager_request(client, org, "update", "worker", executor="claude", expected_revision=prompt_loader.agent_revision(OrgPaths(root=org.root), "worker"))
+        elif writer == "dedicated":
+            response = client.put("/api/v1/orgs/alpha/agents/worker/executor", json={"executor": "claude"})
+        else:
+            response = _manager_request(client, org, "terminate", "worker")
+        assert response.status_code == 200, response.text
+        assert scans
+        org.workflow_authority.verify_admission_ready()
+
+
+@pytest.mark.parametrize("entry", ["synchronization", "attachment"])
+@pytest.mark.parametrize("boundary", ["discovery", "before_lease"])
+def test_roster_capture_race_retries_or_refuses_before_stale_ready_publication(tmp_path, monkeypatch, entry, boundary):
+    name = "capture_race_profile"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon"))
+    with _registered_profile(name), _lifecycle_client(tmp_path, monkeypatch) as (client, org, other, owner):
+        coordinator = owner if entry == "synchronization" else ProfileCoordinator(daemon_home=tmp_path / "daemon", orgs={})
+        won = False
+        def winner():
+            nonlocal won
+            if won:
+                return
+            won = True
+            response = client.post("/api/v1/orgs/alpha/agents", json={"name": "late_worker", "role": "worker", "team": "engineering", "executor": name, "description": "test", "system_prompt": "test"})
+            assert response.status_code == 200, response.text
+        with monkeypatch.context() as interposed:
+            if boundary == "discovery":
+                original = prompt_loader.list_agents
+                def capture_then_mutate(*args, **kwargs):
+                    result = original(*args, **kwargs)
+                    winner()
+                    return result
+                interposed.setattr(prompt_loader, "list_agents", capture_then_mutate)
+            else:
+                original = coordinator._profile_leases
+                @contextmanager
+                def mutate_then_lease(*args, **kwargs):
+                    winner()
+                    with original(*args, **kwargs) as names:
+                        yield names
+                interposed.setattr(coordinator, "_profile_leases", mutate_then_lease)
+            def synchronize():
+                if entry == "synchronization":
+                    coordinator.synchronize_all_dependencies()
+                else:
+                    with coordinator.dynamic_org_attachment(org):
+                        coordinator.orgs["alpha"] = org
+            if boundary == "before_lease":
+                with pytest.raises(ProfileCoordinatorError, match="profile_consumer_changed"):
+                    synchronize()
+                if entry == "attachment":
+                    assert "alpha" not in coordinator.orgs
+            else:
+                synchronize()
+        assert won
+        assert _dependencies(org) == [(name, "late_worker", "active")]
+        snapshot = json.loads(org.workflow_authority.verify_admission_ready().snapshot_bytes)
+        assert snapshot["machine_global_profiles"][0]["consumers"] == ["late_worker"]
+        if entry == "attachment" and "alpha" not in coordinator.orgs:
+            with coordinator.dynamic_org_attachment(org):
+                coordinator.orgs["alpha"] = org
+        else:
+            coordinator.synchronize_all_dependencies()
+        assert coordinator._required_members(name) == ("alpha",)
+
+
+def test_ready_publication_refuses_missing_rows_for_actual_canonical_consumers(tmp_path, monkeypatch):
+    name = "required_profile"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon"))
+    with _registered_profile(name), _lifecycle_client(tmp_path, monkeypatch, {"worker": name}) as (client, org, other, coordinator):
+        mirror = coordinator._dependency_mirror_snapshot(org)
+        with coordinator._transaction(org) as conn:
+            conn.execute("DELETE FROM workflow_profile_dependencies")
+        with pytest.raises(ProfileCoordinatorError, match="profile_dependency_incoherent"):
+            org.workflow_authority.publish_current(publisher="requirement-completeness-check")
+        with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+            org.workflow_authority.verify_admission_ready()
+        coordinator._restore_dependency_mirror(org, mirror)
+        org.workflow_authority.recover_or_publish()
+        org.workflow_authority.verify_admission_ready()
+
+
+@pytest.mark.parametrize("entry", ["synchronization", "attachment"])
+def test_profile_capture_race_refuses_stale_revision_and_then_uses_current_digest(tmp_path, monkeypatch, entry):
+    name = "profile_capture_race"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon"))
+    with _registered_profile(name), _lifecycle_client(tmp_path, monkeypatch, {"worker": name}) as (client, org, other, owner):
+        coordinator = owner if entry == "synchronization" else ProfileCoordinator(daemon_home=tmp_path / "daemon", orgs={})
+        original = coordinator._profile_leases
+        won = False
+        @contextmanager
+        def mutate_before_lease(*args, **kwargs):
+            nonlocal won
+            if not won:
+                won = True
+                with owner.operation([name], operation_kind="rebind", publisher="capture-race-winner"):
+                    save_runtime_profile(name, {"workspace_adapter_id": "pi", "command_adapter_id": f"custom-adapter:{name}-adapter", "revision": "new"})
+            with original(*args, **kwargs) as names:
+                yield names
+        with monkeypatch.context() as interposed:
+            interposed.setattr(coordinator, "_profile_leases", mutate_before_lease)
+            with pytest.raises(ProfileCoordinatorError, match="profile_consumer_changed"):
+                if entry == "synchronization":
+                    coordinator.synchronize_all_dependencies()
+                else:
+                    with coordinator.dynamic_org_attachment(org):
+                        coordinator.orgs["alpha"] = org
+        assert won
+        if entry == "attachment":
+            assert "alpha" not in coordinator.orgs
+            with coordinator.dynamic_org_attachment(org):
+                coordinator.orgs["alpha"] = org
+        else:
+            coordinator.synchronize_all_dependencies()
+        row = org.db.execute("SELECT profile_digest FROM workflow_profile_store WHERE profile_name=?", (name,)).fetchone()
+        assert row["profile_digest"] == coordinator.profile_digest(name)
+        org.workflow_authority.verify_admission_ready()
+        assert coordinator._required_members(name) == ("alpha",)
+
+
+def test_manager_executor_invalidation_failure_restores_canonical_and_dependency_mirrors(tmp_path, monkeypatch):
+    name = "invalidation_profile"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon"))
+    with _registered_profile(name), _lifecycle_client(tmp_path, monkeypatch) as (client, org, other, coordinator):
+        canonical = OrgPaths(root=org.root)
+        before = (canonical.agents_dir / "worker.md").read_bytes()
+        mirror = coordinator._dependency_mirror_snapshot(org)
+        with monkeypatch.context() as injected:
+            def fail_invalidation(*args, **kwargs):
+                raise RuntimeError("session invalidation fault")
+            injected.setattr(org.db, "reset_thread_sessions_for_agent", fail_invalidation)
+            with pytest.raises(RuntimeError, match="session invalidation fault"):
+                _manager_request(client, org, "update", "worker", expected_revision=prompt_loader.agent_revision(canonical, "worker"), executor=name)
+            assert (canonical.agents_dir / "worker.md").read_bytes() == before
+            assert coordinator._dependency_mirror_snapshot(org) == mirror
+            org.workflow_authority.verify_admission_ready()
+        response = _manager_request(client, org, "update", "worker", expected_revision=prompt_loader.agent_revision(canonical, "worker"), executor=name)
+        assert response.status_code == 200, response.text
+        assert _dependencies(org) == [(name, "worker", "active")]
+        org.workflow_authority.verify_admission_ready()
+
+
+def test_profile_operation_refuses_paused_roster_batch_then_succeeds_after_publication(tmp_path, monkeypatch):
+    import asyncio
+    from runtime.daemon.routes import agents
+    from runtime.orchestrator.context_builder import ContextBuilder
+
+    name = "paused_roster_profile"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon"))
+    with _registered_profile(name), _lifecycle_client(tmp_path, monkeypatch) as (client, org, other, coordinator):
+        workspace = OrgPaths(root=org.root).workspaces_dir / "worker"
+        workspace.mkdir(parents=True)
+        original_to_thread = agents.asyncio.to_thread
+        bootstrap = ContextBuilder.ensure_workspace_ready
+        arrived, release = asyncio.Event(), asyncio.Event()
+        async def controlled_to_thread(func, *args, **kwargs):
+            if getattr(func, "__func__", None) is bootstrap:
+                arrived.set()
+                await release.wait()
+                return None
+            return await original_to_thread(func, *args, **kwargs)
+        monkeypatch.setattr(agents.asyncio, "to_thread", controlled_to_thread)
+        org.sessions.set_active("TASK-9566-test", "engineering_manager", "lifecycle-session")
+        async def exercise():
+            task = asyncio.create_task(agents.manage_agent("alpha", agents.ManageAgentBody(
+                action="update", name="worker", task_id="TASK-9566-test", session_id="lifecycle-session",
+                expected_revision=prompt_loader.agent_revision(OrgPaths(root=org.root), "worker"), executor=name,
+            ), org))
+            try:
+                await asyncio.wait_for(arrived.wait(), timeout=5)
+                # No profile lease spans the real awaited workspace boundary.
+                with ProfileCoordinator(daemon_home=tmp_path / "daemon", orgs={}).profile_read(name):
+                    pass
+                assert _dependencies(org) == [(name, "worker", "active")]
+                assert _pointer(org)[1] == "fenced"
+                with pytest.raises(ProfileCoordinatorError, match="profile_consumer_changed"):
+                    with coordinator.operation([name], operation_kind="rebind", publisher="paused-contender"):
+                        pytest.fail("an unfinished canonical batch cannot be republished from its predecessor")
+                assert org.db.execute("SELECT COUNT(*) FROM workflow_profile_operations").fetchone()[0] == 0
+            finally:
+                release.set()
+                await task
+            org.workflow_authority.verify_admission_ready()
+            with coordinator.operation([name], operation_kind="rebind", publisher="healthy-contender"):
+                assert _pointer(org)[1] == "fenced"
+            org.workflow_authority.verify_admission_ready()
+        asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("transition", ["builtin_to_custom", "custom_to_builtin", "replace_failure"])
+def test_supported_legacy_frontmatter_migration_reconciles_profile_membership_after_its_batch(tmp_path, monkeypatch, transition):
+    from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
+
+    name = "migration_profile"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon"))
+    source = name if transition == "custom_to_builtin" else "claude"
+    target = "claude" if transition == "custom_to_builtin" else name
+    with _registered_profile(name), _lifecycle_client(tmp_path, monkeypatch, {"worker": source}) as (client, org, other, coordinator):
+        canonical = OrgPaths(root=org.root)
+        workspace = canonical.workspaces_dir / "worker"
+        workspace.mkdir(parents=True)
+        yaml_path = workspace / "agent.yaml"
+        yaml_path.write_text(f"executor: {target}\nrepos: {{}}\n")
+        active = canonical.agents_dir / "worker.md"
+        before = active.read_bytes()
+        mirror = coordinator._dependency_mirror_snapshot(org)
+        with monkeypatch.context() as injected:
+            if transition == "replace_failure":
+                original = os.replace
+                def fail_replace(source_path, target_path):
+                    if Path(target_path) == active:
+                        raise OSError("migration replace fault")
+                    return original(source_path, target_path)
+                injected.setattr(os, "replace", fail_replace)
+            result = migrate_agent_yaml_to_frontmatter(canonical, workflow_authority=org.workflow_authority)
+        if transition == "replace_failure":
+            assert "error" in result["worker"]
+            assert active.read_bytes() == before
+            assert yaml_path.exists()
+            assert not (workspace / ".agent_yaml_consumed").exists()
+            assert coordinator._dependency_mirror_snapshot(org) == mirror
+            result = migrate_agent_yaml_to_frontmatter(canonical, workflow_authority=org.workflow_authority)
+        assert result["worker"].startswith("migrated")
+        assert prompt_loader.load_agent(canonical, "worker").executor == target
+        expected = [(name, "worker", "active")] if target == name else []
+        assert _dependencies(org) == expected
+        assert coordinator._required_members(name) == (("alpha",) if expected else ())
+        org.workflow_authority.verify_admission_ready()
+        assert not yaml_path.exists()
+        assert (workspace / ".agent_yaml_consumed").exists()
+        pointer = _pointer(org)
+        assert migrate_agent_yaml_to_frontmatter(canonical, workflow_authority=org.workflow_authority)["worker"] == "skipped (already migrated)"
+        assert _pointer(org) == pointer

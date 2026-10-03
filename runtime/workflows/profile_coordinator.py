@@ -23,7 +23,7 @@ import stat
 import time
 import uuid
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,7 +33,12 @@ from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.executor_registry import get_registry
 from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
-from runtime.workflows.authority import ProfileFenceBinding
+from runtime.workflows.authority import (
+    ProfileFenceBinding,
+    WorkflowAuthorityError,
+    _SupportedWriterInterval,
+    _pid_is_live,
+)
 
 if TYPE_CHECKING:
     from runtime.daemon.org_state import OrgState
@@ -87,6 +92,90 @@ def _digest(value: object) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
 
 
+def _dependency_profile(executor: str) -> str | None:
+    profile = get_registry().get_profile(executor)
+    return None if profile is not None and profile.kind == "builtin" else executor.lower()
+
+
+class _ConsumerWriterInterval(_SupportedWriterInterval):
+    """Own lifecycle dependency changes alongside the existing canonical fence."""
+
+    def __init__(self, coordinator, *, org, publisher, consumer, executor, preserve):
+        super().__init__(org.workflow_authority, publisher=publisher)
+        self.profiles = coordinator
+        self.org = org
+        self.consumer = consumer
+        self.executor = executor
+        self.preserve = preserve
+        self.owned_profiles: set[str] = set()
+        self.initial_mirror = None
+        self.initial_bytes = None
+        self.initial_profiles = {}
+
+    @contextmanager
+    def canonical_change(self):
+        paths = OrgPaths(root=self.org.root)
+        # Bounded single-identity capture, before any profile/publication lease.
+        before = prompt_loader.load_agent_snapshot(paths, self.consumer)
+        pending = prompt_loader.load_pending_agent(paths, self.consumer) if before is None else None
+        source = _dependency_profile(before[0].executor) if before is not None else None
+        executor = (
+            before[0].executor if self.preserve and before is not None
+            else pending.executor if self.preserve and pending is not None
+            else self.executor
+        )
+        target = _dependency_profile(executor) if executor is not None else None
+        self.owned_profiles.update(name for name in (source, target) if name is not None)
+        with self.profiles.dependency_writer(sorted(self.owned_profiles)):
+            with self.org.workflow_authority._publisher_lock:
+                fresh = prompt_loader.load_agent_snapshot(paths, self.consumer)
+                fresh_pending = prompt_loader.load_pending_agent(paths, self.consumer) if before is None else None
+                if fresh_pending != pending:
+                    raise ProfileCoordinatorError("profile_consumer_changed")
+                if (None if fresh is None else fresh[1]) != (None if before is None else before[1]):
+                    raise ProfileCoordinatorError("profile_consumer_changed")
+                mirror = self.profiles._dependency_mirror_snapshot(self.org)
+                if self.initial_mirror is None:
+                    self.initial_mirror = mirror
+                    self.initial_bytes = None if before is None else before[2]
+                    self.initial_profiles = {
+                        name: (self.profiles.profile_digest(name), max(1, self.profiles._max_generation(name)))
+                        for name in self.owned_profiles
+                    }
+                with super().canonical_change():
+                    try:
+                        if source != target:
+                            self.profiles.rebind_consumer(
+                                org=self.org, consumer_identity=self.consumer,
+                                from_profile=source, to_profile=target,
+                            )
+                        yield
+                        after = prompt_loader.load_agent_snapshot(paths, self.consumer)
+                        actual = _dependency_profile(after[0].executor) if after is not None else None
+                        if actual != target:
+                            if actual is not None and actual not in self.owned_profiles:
+                                raise ProfileCoordinatorError("profile_consumer_changed")
+                            restored = (None if after is None else after[2]) == self.initial_bytes
+                            globals_unchanged = all(
+                                self.profiles.profile_digest(name) == digest
+                                and self.profiles._max_generation(name) <= generation
+                                for name, (digest, generation) in self.initial_profiles.items()
+                            )
+                            if restored and globals_unchanged:
+                                self.profiles._restore_dependency_mirror(
+                                    self.org, self.initial_mirror,
+                                    profile_names=self.owned_profiles,
+                                )
+                            else:
+                                self.profiles.rebind_consumer(
+                                    org=self.org, consumer_identity=self.consumer,
+                                    from_profile=target, to_profile=actual,
+                                )
+                    except BaseException:
+                        self.profiles._restore_dependency_mirror(self.org, mirror)
+                        raise
+
+
 class ProfileCoordinator:
     """Coordinate global profile writers with all dependent organizations."""
 
@@ -123,6 +212,7 @@ class ProfileCoordinator:
         path = self._lock_path(profile_name)
         flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
         fd: int | None = None
+        handed_off = False
         try:
             fd = os.open(path, flags, _LOCK_FILE_MODE)
             st = os.fstat(fd)
@@ -140,10 +230,13 @@ class ProfileCoordinator:
                             "profile_coordinator_busy"
                         ) from exc
                     time.sleep(_LOCK_POLL_SECONDS)
+            handed_off = True
             yield
         except ProfileCoordinatorError:
             raise
         except OSError as exc:
+            if handed_off:
+                raise
             raise ProfileCoordinatorError("profile_coordinator_unavailable") from exc
         finally:
             if fd is not None:
@@ -175,6 +268,51 @@ class ProfileCoordinator:
             for name in names:
                 self._assert_no_active_operation(name)
             yield
+
+    @asynccontextmanager
+    async def consumer_writer(self, *, org, publisher, consumer, executor=None, preserve=False):
+        """Serialize async roster writers without leasing scans or awaited work.
+
+        The coroutine serialization lock is never acquired by global profile
+        operations. Each synchronous canonical segment separately takes profile
+        leases before the org publisher gate. Publication/compensation capture
+        runs only after that segment has released all profile leases.
+        """
+        org.workflow_authority._profile_coordinator = self
+        async with org.workflow_authority._async_writer_lock:
+            interval = _ConsumerWriterInterval(
+                self, org=org, publisher=publisher, consumer=consumer,
+                executor=executor, preserve=preserve,
+            )
+            try:
+                yield interval
+            except BaseException:
+                if interval.fenced:
+                    org.workflow_authority.publish_after_supported_change(
+                        publisher=f"{publisher}:compensation",
+                        fence_journal_id=interval.fence_journal_id,
+                        publisher_invocation=interval.publisher_invocation,
+                    )
+                raise
+            else:
+                if interval.fenced:
+                    org.workflow_authority.publish_after_supported_change(
+                        publisher=publisher, fence_journal_id=interval.fence_journal_id,
+                        publisher_invocation=interval.publisher_invocation,
+                    )
+
+    def validate_requirements(self, definitions, projection) -> None:
+        desired = {
+            definition["name"]: profile
+            for definition in definitions if definition["status"] == "active"
+            if (profile := _dependency_profile(definition["executor"])) is not None
+        }
+        actual = {
+            consumer: entry["profile_name"]
+            for entry in projection for consumer in entry["consumers"]
+        }
+        if desired != actual:
+            raise ProfileCoordinatorError("profile_dependency_incoherent")
 
     def _effective_profile(self, profile_name: str) -> _EffectiveProfile:
         profiles = load_runtime_profiles()
@@ -559,13 +697,19 @@ class ProfileCoordinator:
             )
             for name in names
         )
+        members = sorted({slug for op in operations for slug in op.members})
+        for slug in members:
+            org = self.orgs[slug]
+            with org.db._lock:
+                active = org.workflow_authority._active_journal(org.db._conn, org.workflow_authority.namespace)
+            if active is not None and not str(active["publisher_invocation"]).startswith("profile-coordinator:"):
+                raise ProfileCoordinatorError("profile_consumer_changed")
         for operation in operations:
             self._insert_operation_rows(
                 operation,
                 coordinator_invocation=coordinator_invocation,
             )
         bindings: dict[str, ProfileFenceBinding] = {}
-        members = sorted({slug for op in operations for slug in op.members})
         with ExitStack() as org_stack:
             for slug in members:
                 bindings[slug] = org_stack.enter_context(
@@ -673,28 +817,64 @@ class ProfileCoordinator:
             ):
                 yield True
 
-    def _dependency_profiles_for_org(self, org: OrgState) -> tuple[str, ...]:
-        """Return canonical desired and outstanding profile names for one org."""
-        definitions = list(prompt_loader.list_agents(OrgPaths(root=org.root)))
-        registry = get_registry()
-        desired = {
-            definition.name: definition.executor.lower()
-            for definition in definitions
-            if (
-                (profile := registry.get_profile(definition.executor)) is None
-                or profile.kind != "builtin"
-            )
-        }
+    @staticmethod
+    def _roster_revision(org):
+        # Every supported canonical writer changes this existing durable fence
+        # before file replacement. No new persisted revision/store is needed.
+        authority = org.workflow_authority
         with org.db._lock:
-            outstanding = {
-                str(row["profile_name"])
-                for row in org.db._conn.execute(
-                    "SELECT DISTINCT profile_name FROM workflow_profile_dependencies "
-                    "WHERE org_namespace=? AND state IN ('active','unbound')",
-                    (org.workflow_authority.namespace,),
-                ).fetchall()
+            pointer = authority._pointer(org.db._conn, authority.namespace)
+            active = authority._active_journal(org.db._conn, authority.namespace)
+            lease = org.db._conn.execute(
+                "SELECT owner_pid FROM workflow_publication_leases WHERE namespace=?",
+                (authority.namespace,),
+            ).fetchone()
+            return pointer, None if active is None else tuple(active), lease is not None and _pid_is_live(int(lease["owner_pid"]))
+
+    def _capture_org_dependencies(self, org, *, completed_writer_invocation=None):
+        for _attempt in range(3):
+            before = self._roster_revision(org)
+            if org.workflow_authority._async_writer_lock.locked():
+                raise ProfileCoordinatorError("profile_consumer_changed")
+            definitions = list(prompt_loader.list_agents(OrgPaths(root=org.root)))
+            try:
+                snapshot = org.workflow_authority.capture_canonical_snapshot()
+            except WorkflowAuthorityError:
+                # Existing startup can expose an invalid legacy roster only
+                # with admission fenced. Dependency discovery still completes;
+                # an invalid canonical snapshot is never a ready publication.
+                snapshot = None
+            after = self._roster_revision(org)
+            if before != after or after[2]:
+                continue
+            desired = {
+                definition.name: profile
+                for definition in definitions
+                if (profile := _dependency_profile(definition.executor)) is not None
             }
-        return tuple(sorted(set(desired.values()) | outstanding))
+            with org.db._lock:
+                outstanding = {
+                    str(row["profile_name"])
+                    for row in org.db._conn.execute(
+                        "SELECT DISTINCT profile_name FROM workflow_profile_dependencies "
+                        "WHERE org_namespace=? AND state IN ('active','unbound')",
+                        (org.workflow_authority.namespace,),
+                    ).fetchall()
+                }
+            if (
+                snapshot is not None and after[1] is not None
+                and not str(after[1][6]).startswith("profile-coordinator:")
+                and str(after[1][6]) != completed_writer_invocation
+            ):
+                # A prepared ordinary writer may be paused outside its durable
+                # lease. It still owns a canonical batch, so never reopen it.
+                raise ProfileCoordinatorError("profile_consumer_changed")
+            return desired, tuple(sorted(set(desired.values()) | outstanding)), after, snapshot
+        raise ProfileCoordinatorError("profile_consumer_changed")
+
+    def _validate_capture(self, org, revision):
+        if self._roster_revision(org)[:2] != revision[:2] or revision[2]:
+            raise ProfileCoordinatorError("profile_consumer_changed")
 
     def _dependency_mirror_snapshot(self, org: OrgState) -> tuple[tuple[object, ...], ...]:
         """Capture every local relation that determines the profile projection."""
@@ -718,18 +898,30 @@ class ProfileCoordinator:
             + [("registry", *tuple(row)) for row in registry]
         )
 
-    def _sync_org_dependencies(self, org: OrgState) -> bool:
-        """Mirror canonical active-agent profile requirements into one org DB."""
-        definitions = list(prompt_loader.list_agents(OrgPaths(root=org.root)))
-        registry = get_registry()
-        desired = {
-            definition.name: definition.executor.lower()
-            for definition in definitions
-            if (
-                (profile := registry.get_profile(definition.executor)) is None
-                or profile.kind != "builtin"
-            )
-        }
+    def _restore_dependency_mirror(self, org, mirror, *, profile_names=None):
+        names = None if profile_names is None else tuple(sorted(profile_names))
+        if names == ():
+            return
+        with self._transaction(org) as conn:
+            for table in ("workflow_profile_dependencies", "workflow_profile_registry", "workflow_profile_store"):
+                if names is None:
+                    conn.execute(f"DELETE FROM {table}")
+                else:
+                    conn.execute(f"DELETE FROM {table} WHERE profile_name IN ({','.join('?' for _ in names)})", names)
+            for kind, *row in mirror:
+                profile_name = row[1] if kind == "dependency" else row[0]
+                if names is not None and profile_name not in names:
+                    continue
+                table, count = {
+                    "dependency": ("workflow_profile_dependencies", 5),
+                    "store": ("workflow_profile_store", 4),
+                    "registry": ("workflow_profile_registry", 2),
+                }[kind]
+                conn.execute(f"INSERT INTO {table} VALUES ({','.join('?' for _ in range(count))})", row)
+
+    def _sync_org_dependencies(self, org: OrgState, desired: dict[str, str]) -> bool:
+        """Consume validated canonical discovery; never scan under leases."""
+        org.workflow_authority._profile_coordinator = self
         # Resolve the machine-global YAML/registry view before opening the
         # org transaction.  No SQLite transaction spans filesystem I/O.
         effective_profiles = {
@@ -795,32 +987,53 @@ class ProfileCoordinator:
                         profile_name,
                         consumer,
                         generation,
-                        "active" if effective.state == "active" else "unbound",
+                        "active" if effective.state == "active" and effective.resolvable else "unbound",
                     ),
                 )
         after = self._dependency_mirror_snapshot(org)
         return before != after
 
     def synchronize_all_dependencies(self, *, publish: bool = True) -> set[str]:
-        """Mirror all consumers while holding canonical profile leases."""
-        profile_names = sorted(
-            {
-                profile_name
-                for org in self.orgs.values()
-                for profile_name in self._dependency_profiles_for_org(org)
-            }
-        )
+        """Capture outside leases, then validate and synchronize each closure."""
+        captured = [(slug, org, self._capture_org_dependencies(org)) for slug, org in sorted(self.orgs.items())]
+        return self._synchronize_captured(captured, publish=publish)
+
+    def reconcile_supported_roster_batch(self, authority, *, completed_writer_invocation):
+        """Close the existing one-shot migration after its canonical batch exits.
+
+        The writer supplies its own completed invocation, never another live
+        writer's journal. This exit owns no publisher/profile lease or scan
+        transaction; legacy mutation/consumption/response semantics stay intact.
+        """
+        for slug, org in self.orgs.items():
+            if org.workflow_authority is authority:
+                capture = self._capture_org_dependencies(
+                    org, completed_writer_invocation=completed_writer_invocation,
+                )
+                return self._synchronize_captured([(slug, org, capture)], publish=True)
+        raise ProfileCoordinatorError("profile_dependency_incoherent")
+
+    def _synchronize_captured(self, captured, *, publish):
+        profile_names = sorted({name for _, _, (_, names, _, _) in captured for name in names})
         with self._profile_leases(profile_names, wait=True) as names:
             for name in names:
                 self._assert_no_active_operation(name)
-            changed = {
-                slug
-                for slug, org in sorted(self.orgs.items())
-                if self._sync_org_dependencies(org)
-            }
-            if publish:
-                for slug in sorted(changed):
-                    self._publish_dependency_change(self.orgs[slug])
+            changed = set()
+            for slug, org, (desired, _, revision, snapshot) in captured:
+                with org.workflow_authority._publisher_lock:
+                    owner = f"profile-dependency-validation:{uuid.uuid4().hex}"
+                    org.workflow_authority._acquire_lease(owner)
+                    try:
+                        self._validate_capture(org, revision)
+                        if self._sync_org_dependencies(org, desired):
+                            changed.add(slug)
+                    finally:
+                        org.workflow_authority._release_lease(owner)
+                    if publish and slug in changed:
+                        if snapshot is None:
+                            org.workflow_authority.fence(reason="profile:canonical-incoherent")
+                        else:
+                            self._publish_dependency_change(org, canonical_snapshot=snapshot, expected_revision=revision[:2])
             return changed
 
     def _authority_profile_projection_coherent(self, org: OrgState) -> bool:
@@ -838,33 +1051,47 @@ class ProfileCoordinator:
     @contextmanager
     def dynamic_org_attachment(self, org: OrgState) -> Iterator[None]:
         """Synchronize and attach one org without escaping profile capture."""
-        profile_names = self._dependency_profiles_for_org(org)
+        desired, profile_names, revision, snapshot = self._capture_org_dependencies(org)
         with self._profile_leases(profile_names, wait=True) as names:
             for name in names:
                 self._assert_no_active_operation(name)
-            changed = self._sync_org_dependencies(org)
-            if changed or not self._authority_profile_projection_coherent(org):
-                if not self._publish_dependency_change(org):
+            with org.workflow_authority._publisher_lock:
+                owner = f"profile-dependency-validation:{uuid.uuid4().hex}"
+                org.workflow_authority._acquire_lease(owner)
+                try:
+                    self._validate_capture(org, revision)
+                    changed = self._sync_org_dependencies(org, desired)
+                finally:
+                    org.workflow_authority._release_lease(owner)
+                if snapshot is None:
+                    org.workflow_authority.fence(reason="profile:canonical-incoherent")
                     raise ProfileCoordinatorError("profile_dependency_incoherent")
-            if (
-                not self._closure_coherent(org)
-                or not self._authority_profile_projection_coherent(org)
-            ):
-                raise ProfileCoordinatorError("profile_dependency_incoherent")
+                if changed or not self._authority_profile_projection_coherent(org):
+                    if not self._publish_dependency_change(org, canonical_snapshot=snapshot, expected_revision=revision[:2]):
+                        raise ProfileCoordinatorError("profile_dependency_incoherent")
+                if (
+                    not self._closure_coherent(org)
+                    or not self._authority_profile_projection_coherent(org)
+                ):
+                    raise ProfileCoordinatorError("profile_dependency_incoherent")
             # The caller inserts the org into the shared mapping before these
             # profile leases are released, so the next writer must capture it.
             yield
 
-    def _publish_dependency_change(self, org: OrgState) -> bool:
+    def _publish_dependency_change(
+        self, org: OrgState, *, canonical_snapshot: bytes | None = None, expected_revision=None,
+    ) -> bool:
         invocation = f"dependency-sync-{uuid.uuid4().hex}"
         with org.workflow_authority.profile_change_interval(
             reason="profile:dependency-sync",
             coordinator_invocation=invocation,
+            expected_revision=expected_revision,
         ) as binding:
             if self._closure_coherent(org):
                 org.workflow_authority.publish_profile_change(
                     publisher="profile-dependency-sync",
                     binding=binding,
+                    canonical_snapshot=canonical_snapshot,
                 )
                 return True
         return False

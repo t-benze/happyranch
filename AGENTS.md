@@ -232,14 +232,27 @@ holds that stable mode-0600 `flock` only around its read/merge/`os.replace`
 critical section; the store-lock holder never acquires another lease, writer
 lock, or SQLite transaction. Publication paths never acquire a profile or
 store lease, and no profile/publication lease or SQLite transaction spans
-filesystem scanning, network, host launch, or callbacks. Multiple consumers remain separate dependency rows. Removal leaves
+filesystem scanning, network, host launch, or callbacks. Active Founder creation,
+Founder approval, manager revision-CAS executor update, dedicated executor
+update, and explicit termination maintain distinct per-agent dependency rows
+inside the canonical fence. Pending enrollment/rejection has no active profile
+membership. Whole-definition repo/model writers also preserve this relation.
+Lifecycle profile leases cover only synchronous canonical mutation and its
+compensation, and release before publication capture or awaited bootstrap.
+Missing dependency rows are never proof of an empty canonical requirement set.
+A profile contender refuses an unfinished ordinary canonical batch before its
+global operation claim; startup authority recovery owns interrupted batches. Removal leaves
 an outstanding consumer unbound and the org fenced until an explicit coherent
 rebind/removal. Cold startup completes interrupted operations once; a
 post-commit republish failure preserves the writer's established response while
 leaving a machine-readable fenced recovery state. Direct same-UID file/DB edits
 remain outside the cooperative guarantee. Dynamic org attachment scans its
-canonical profile requirements before taking the corresponding profile leases,
-synchronizes and publishes beneath those leases, and joins the shared org map
+canonical profile requirements and authority inputs before taking the corresponding
+profile leases. Discovery is bracketed by the existing durable authority revision
+and revalidated under the profile-then-org mutation lease; changed captures
+retry boundedly or refuse. Synchronization consumes that captured roster without
+rescanning, publishes only a validated canonical snapshot and current profile
+digest, and joins the shared org map
 before releasing them; a non-terminal operation is therefore retried boundedly
 or refused and cannot be escaped. Closure coherence compares every org mirror's
 profile digest with the current global profile digest before readiness reopens.

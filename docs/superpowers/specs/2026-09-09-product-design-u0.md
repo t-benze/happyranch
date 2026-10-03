@@ -837,7 +837,21 @@ relations above.
 
 The org-local placement replaces the isolated model's single-transaction
 machine-global capture mechanically without weakening fence-before-write: exact
-agent consumers are mirrored at startup and supported executor rebinding, the
+agent consumers are mirrored at startup and maintained by active Founder
+creation, Founder approval, manager revision-CAS executor update, the dedicated
+executor route and explicit termination. Pending enrollment/rejection is not
+active membership; whole-definition repo/model writers preserve the canonical
+relation as well. Lifecycle leases cover only synchronous canonical changes and
+compensation, releasing before discovery/publication capture or awaited work.
+Startup/dynamic attachment capture canonical roster and authority inputs outside
+leases/transactions, bracket discovery with the existing durable authority
+revision, and revalidate under profile-then-org mutation ownership. Changed
+captures retry boundedly or refuse; synchronization consumes captured inputs
+without rescanning. Publication verifies the complete active requirement set
+against its captured canonical snapshot rather than treating absent dependency
+rows as proof of no requirements. An unfinished ordinary roster batch is refused
+before a global profile claim rather than republished from its predecessor;
+startup authority recovery owns interrupted ordinary batches. The
 `flock` serializes membership
 capture for the selected profile, the same immutable member list and operation
 identity are installed in every captured org before the first fence, and no

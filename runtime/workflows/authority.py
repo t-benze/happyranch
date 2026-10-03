@@ -165,6 +165,7 @@ class WorkflowAuthorityCoordinator:
         # durable lease or SQLite transaction spanning those awaits.
         self._publisher_lock = threading.RLock()
         self._async_writer_lock = asyncio.Lock()
+        self._profile_coordinator = None
 
     @property
     def namespace(self) -> str:
@@ -174,8 +175,8 @@ class WorkflowAuthorityCoordinator:
     def canonical_path(self) -> Path:
         return self._root / "org" / ".workflow-authority.json"
 
-    def capture_snapshot(self) -> bytes:
-        """Capture the complete selected org authority outside a DB transaction."""
+    def capture_canonical_snapshot(self) -> bytes:
+        """Discover canonical org inputs without profile/publication leases."""
         paths = OrgPaths(root=self._root)
         fresh_teams = TeamsRegistry.load(self._root)
         validate_team_membership(paths, fresh_teams)
@@ -259,12 +260,21 @@ class WorkflowAuthorityCoordinator:
         return _canonical_json({
             "active_policy_selectors": selectors,
             "agents": [projected[name] for name in sorted(projected)],
-            "machine_global_profiles": self._profile_projection(),
+            "machine_global_profiles": [],
             "org_slug": self._org_slug,
             "reviewer_agents": list(reviewer_agents),
             "schema_version": 1,
             "teams": teams,
         })
+
+    def capture_snapshot(self) -> bytes:
+        """Compose canonical discovery with its complete profile closure."""
+        snapshot = json.loads(self.capture_canonical_snapshot())
+        profiles = self._profile_projection()
+        if self._profile_coordinator is not None:
+            self._profile_coordinator.validate_requirements(snapshot["agents"], profiles)
+        snapshot["machine_global_profiles"] = profiles
+        return _canonical_json(snapshot)
 
     def _profile_projection(self) -> list[dict[str, object]]:
         """Return the coherent machine-profile requirements for this org.
@@ -540,6 +550,7 @@ class WorkflowAuthorityCoordinator:
         reason: str,
         coordinator_invocation: str,
         resume: bool = False,
+        expected_revision: tuple | None = None,
     ) -> Iterator[ProfileFenceBinding]:
         """Hold the org publisher gate for one machine-profile operation.
 
@@ -573,6 +584,18 @@ class WorkflowAuthorityCoordinator:
             owner = f"{publisher_invocation}:{uuid.uuid4().hex}"
             self._acquire_lease(owner)
             try:
+                if expected_revision is None:
+                    with self._db._lock:
+                        active = self._active_journal(self._db._conn, self.namespace)
+                    if active is not None and not str(active["publisher_invocation"]).startswith("profile-coordinator:"):
+                        raise WorkflowAuthorityError("authority_publication_in_progress")
+                if expected_revision is not None:
+                    with self._db._lock:
+                        pointer = self._pointer(self._db._conn, self.namespace)
+                        active = self._active_journal(self._db._conn, self.namespace)
+                        current = (pointer, None if active is None else tuple(active))
+                    if current != expected_revision:
+                        raise WorkflowAuthorityError("authority_capture_changed")
                 journal_id = self._fence_under_lease(
                     reason=reason,
                     publisher_invocation=publisher_invocation,
@@ -596,6 +619,7 @@ class WorkflowAuthorityCoordinator:
         *,
         publisher: str,
         binding: ProfileFenceBinding,
+        canonical_snapshot: bytes | None = None,
     ) -> int:
         """Publish a profile-only generation without rescanning org files.
 
@@ -616,7 +640,12 @@ class WorkflowAuthorityCoordinator:
             predecessor = json.loads(bytes(active["snapshot_bytes"]))
         if not isinstance(predecessor, dict):
             raise WorkflowAuthorityError("authority_snapshot_not_canonical")
-        predecessor["machine_global_profiles"] = self._profile_projection()
+        if canonical_snapshot is not None:
+            predecessor = json.loads(canonical_snapshot)
+        profiles = self._profile_projection()
+        if self._profile_coordinator is not None:
+            self._profile_coordinator.validate_requirements(predecessor["agents"], profiles)
+        predecessor["machine_global_profiles"] = profiles
         snapshot = _canonical_json(predecessor)
         return self._publish_current_locked(
             publisher=publisher,
@@ -676,6 +705,24 @@ class WorkflowAuthorityCoordinator:
                         fence_journal_id=interval.fence_journal_id,
                         publisher_invocation=interval.publisher_invocation,
                     )
+
+        # The one-shot compatibility writer discovers workspace YAML while
+        # owning only its process gate. Reconcile its completed canonical batch
+        # after that gate releases, so profile acquisition never reverses the
+        # profile -> org publisher order and discovery never runs under leases.
+        if (
+            publisher == "agent_yaml_frontmatter_migration"
+            and interval.fenced and self._profile_coordinator is not None
+        ):
+            try:
+                self._profile_coordinator.reconcile_supported_roster_batch(
+                    self, completed_writer_invocation=interval.publisher_invocation,
+                )
+            except Exception:
+                logger.exception(
+                    "profile closure remains fenced after supported roster batch org=%s",
+                    self._org_slug,
+                )
 
     @asynccontextmanager
     async def async_writer_interval(

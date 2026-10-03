@@ -191,7 +191,15 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   supported machine-global executor-profile and adapter writers through
   `ProfileCoordinator`: dependent orgs are pre-fenced, the existing durable
   writer commits, and only a complete profile-and-approved-adapter closure is
-  republished. Startup settles interrupted operations before returning
+  republished. Every supported active consumer creation, promotion, executor
+  update and termination maintains its distinct requirement inside the same
+  canonical fence; pending-only enrollment/rejection has no active membership.
+  Dependency publication checks the actual captured active roster, so missing
+  rows cannot prove zero requirements. Canonical discovery is outside all
+  profile/publication leases and transactions, bracketed by the durable
+  authority revision, and revalidated before synchronization/publication.
+  Lifecycle source/target leases release before publication capture and awaited
+  workspace work, including compensation. Startup settles interrupted operations before returning
   `DaemonState`; direct-connect `planned` rows remain retryable by both the
   commit route and production sweep, with a terminal re-read under the shared
   profile lease before any U1A fence or adapter/profile mutation. Dynamic org
