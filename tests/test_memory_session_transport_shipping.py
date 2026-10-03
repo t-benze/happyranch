@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+import httpx
 import uvicorn
 
 from runtime.daemon import paths
@@ -39,12 +40,13 @@ def _wait_for_server(server: uvicorn.Server) -> None:
     assert server.started
 
 
+@pytest.mark.parametrize("exposure", ("pointers", "fit", "fallback"))
 @pytest.mark.parametrize(
     ("executor", "is_child"),
     (("claude", False), ("claude", True), ("codex", False), ("codex", True)),
 )
 def test_task_bootstrap_forwards_runtime_session_to_real_cli_and_audit(
-    test_settings, monkeypatch, tmp_path, executor, is_child,
+    test_settings, monkeypatch, tmp_path, executor, is_child, exposure,
 ):
     """A task bootstrap gives its actual runtime SID to a provider child.
 
@@ -101,12 +103,30 @@ def test_task_bootstrap_forwards_runtime_session_to_real_cli_and_audit(
         "provenance: experiential\nscope: agent\nlifecycle: valid\nsalience: 40\n---\n\nshipping follow up\n"
     )
 
+    if exposure != "pointers":
+        # R11b/c fixture, exactly 216 chars, without timestamp/brief boosts.
+        (memory / "MEM-001-shipping.md").write_text(
+            "---\nid: MEM-001\nslug: bounded-directive\ntitle: Bounded directive\ntopic: memory\n"
+            "provenance: directive\nscope: agent\nlifecycle: valid\nsalience: 50\n---\n"
+            "Keep task credit scoped. Mention MEM-999 without exposing that item."
+        )
+        (memory / "MEM-002-follow-up.md").unlink()
+        org.orchestrator._paths.org_config_path.write_text(
+            f"memory_digest_budget: {255 if exposure == 'fit' else 172}\n"
+        )
+    provider_plan = {
+        "search": "shipping" if exposure == "pointers" else "scoped",
+        "follow_on": "MEM-002" if exposure == "pointers" else "MEM-999",
+    }
+
     # Only the external provider is fake. CLI entry, imports, bootstrap,
     # launch, SessionTracker validation and SQLite writes are real.
     provider = tmp_path / executor
     provider.write_text("#!" + sys.executable + "\n" + textwrap.dedent("""\
         import json, os, subprocess, sys, time
         from pathlib import Path
+        prompt = sys.stdin.read()
+        plan = json.loads(Path(sys.argv[0] + '.plan.json').read_text())
         sid = os.environ['HAPPYRANCH_RUNTIME_SESSION_ID']
         evidence = Path(os.environ['HAPPYRANCH_DAEMON_HOME']) / 'observations'
         evidence.mkdir(exist_ok=True)
@@ -122,11 +142,11 @@ def test_task_bootstrap_forwards_runtime_session_to_real_cli_and_audit(
             'import cli,runtime,importlib.metadata,json; print(json.dumps([cli.__file__,runtime.__file__,importlib.metadata.version("happyranch")]))'],
             capture_output=True, text=True, check=True)
         observation = {'argv': sys.argv[1:], 'sid': sid, 'cli': cli,
-                       'imports': json.loads(probe.stdout), 'operations': []}
-        commands = [('get', 'MEM-001', None), ('search', 'shipping', None), ('get', 'MEM-002', None)]
+                       'imports': json.loads(probe.stdout), 'prompt': prompt, 'operations': []}
+        commands = [('get', 'MEM-001', None), ('search', plan['search'], None), ('get', plan['follow_on'], None)]
         if not barrier.exists():
-            commands += [('get', 'MEM-001', sid), ('search', 'shipping', sid),
-                         ('get', 'MEM-001', ''), ('search', 'shipping', '')]
+            commands += [('get', 'MEM-001', sid), ('search', plan['search'], sid),
+                         ('get', 'MEM-001', ''), ('search', plan['search'], '')]
         for index, (verb, value, explicit) in enumerate(commands):
             if barrier.exists():
                 wait_for(sid + '.' + str(index) + '.go')
@@ -151,6 +171,7 @@ def test_task_bootstrap_forwards_runtime_session_to_real_cli_and_audit(
             wait_for(sid + '.exit')
         print('provider completed')
         """))
+    Path(str(provider) + ".plan.json").write_text(json.dumps(provider_plan))
     provider.chmod(0o755)
     set_binary(executor, str(provider))
 
@@ -168,6 +189,15 @@ def test_task_bootstrap_forwards_runtime_session_to_real_cli_and_audit(
         def registered(task, registered_agent, sid):
             assert registered_agent == agent
             assert org.sessions.get_context_by_session(sid) == ("alpha", task, agent)
+            if exposure != "pointers":
+                # Create a real nonshown entry after render, before impression
+                # emission. Metadata must retain the actual injected pass even
+                # when the file-backed store changes at this existing callback.
+                (memory / "MEM-999-nonshown.md").write_text(
+                    "---\nid: MEM-999\nslug: nonshown\ntitle: Nonshown\ntopic: memory\n"
+                    "provenance: experiential\nscope: agent\nlifecycle: valid\nsalience: 1\n---\n"
+                    "A genuinely nonshown scoped memory."
+                )
             with started_lock:
                 started[task] = sid
 
@@ -195,27 +225,78 @@ def test_task_bootstrap_forwards_runtime_session_to_real_cli_and_audit(
                     f"AGENT-{agent}" if row["action"] == "memory_read" else task
                 )
                 if row["action"] == "memory_digest_impression":
+                    shown = ["MEM-001", "MEM-002"] if exposure == "pointers" else ["MEM-001"]
+                    # Assert the phantom-ID defect first, before new metadata.
+                    assert payload["digest_ids"] == shown, payload
                     assert payload == {"agent": agent, "session_id": sid,
-                        "digest_ids": ["MEM-001", "MEM-002"], "digest_count": 2, "budget": 1500}
+                        "digest_ids": shown, "digest_count": len(shown),
+                        "budget": 1500 if exposure == "pointers" else (255 if exposure == "fit" else 172),
+                        "memory_telemetry_version": 1,
+                        "pointer_ids": [] if exposure == "fit" else shown,
+                        "full_body_ids": ["MEM-001"] if exposure == "fit" else []}
+                    response = httpx.get(
+                        f"http://127.0.0.1:{sock.getsockname()[1]}/api/v1/orgs/alpha/audit",
+                        params={"task_id": task, "action": "memory_digest_impression"},
+                        headers={"Authorization": f"Bearer {paths.token_file().read_text().strip()}"},
+                    )
+                    assert response.status_code == 200, response.text
+                    entries = response.json()["entries"]
+                    assert len(entries) == 1 and entries[0]["payload"] == payload
+                    assert entries[0]["task_id"] == task and entries[0]["agent"] == agent
+                    assert set(payload) == {"agent", "session_id", "digest_ids", "digest_count",
+                        "budget", "memory_telemetry_version", "pointer_ids", "full_body_ids"}
+                    starts = org.db.fetch_all_readonly(
+                        "SELECT id FROM audit_log WHERE task_id=? AND action='session_start'",
+                        (task,),
+                    )
+                    assert len(starts) == 1 and row["id"] < starts[0]["id"]
                 else:
                     assert payload["task_id"] == task
                     assert payload["session_id"] == sid
                 if row["action"] == "memory_search":
                     assert payload["agent"] == agent
-                    assert set(payload["memory_ids"]) == {"MEM-001", "MEM-002"}
+                    assert set(payload["memory_ids"]) == {"MEM-001", provider_plan["follow_on"]}
                     assert payload["hit_count"] == 2 and payload["kb_hit_count"] == 0
                 if row["action"] == "memory_read":
-                    assert payload["source"] == "digest"
+                    assert payload["source"] == (
+                        "search" if exposure != "pointers" and payload["id"] == "MEM-999" else "digest"
+                    )
             assert [payload["id"] for row, payload in own
                     if row["action"] == "memory_read"] == (
-                        ["MEM-001", "MEM-002", "MEM-001", "MEM-001"] if with_flags
-                        else ["MEM-001", "MEM-002"]
+                        ["MEM-001", provider_plan["follow_on"], "MEM-001", "MEM-001"] if with_flags
+                        else ["MEM-001", provider_plan["follow_on"]]
                     )
+            print(json.dumps({
+                "producer_receipt": "rendered-memory-exposure", "executor": executor,
+                "case": exposure, "org": "alpha", "task": task, "agent": agent,
+                "runtime_session_id": sid,
+                "rows": [{"id": row["id"], "action": row["action"],
+                          "row_scope": row["task_id"], "payload": payload}
+                         for row, payload in own],
+            }))
             return [row["id"] for row, _ in own[1:]]
 
         def provider_evidence(sid, resume, operation_count=3):
             observation = json.loads((paths.daemon_home() / "observations" / (sid + ".json")).read_text())
             assert observation["sid"] == sid
+            if exposure != "pointers":
+                header = "=== MEMORY-DIGEST (system) ===\nRelevant memory (pointers only — fetch bodies with `happyranch memory get <id>`):\n\n"
+                block = (
+                    "**Directive:** `MEM-001` — Bounded directive  (directive, salience 60)\n"
+                    "Keep task credit scoped. Mention MEM-999 without exposing that item.\n\n"
+                    if exposure == "fit" else
+                    "- `MEM-001` — Bounded directive  (directive, salience 60)\n"
+                )
+                expected_digest = header + block
+                assert len(expected_digest) == (255 if exposure == "fit" else 172)
+                assert len(expected_digest.encode()) == (259 if exposure == "fit" else 176)
+                assert expected_digest in observation["prompt"], observation["prompt"]
+                assert "- `MEM-999`" not in observation["prompt"]
+                assert "A genuinely nonshown scoped memory." not in observation["prompt"]
+                results = json.loads(observation["operations"][1]["stdout"])
+                assert {entry["id"] for entry in results["hits"]} == {"MEM-001", "MEM-999"}
+                read = json.loads(observation["operations"][2]["stdout"])
+                assert read["id"] == "MEM-999"
             candidate = Path(__file__).resolve().parents[1]
             assert Path(observation["cli"]).parent == Path(sys.executable).parent
             assert observation["imports"] == [str(candidate / "cli/__init__.py"),
@@ -229,11 +310,11 @@ def test_task_bootstrap_forwards_runtime_session_to_real_cli_and_audit(
             assert resume != sid
             assert [op["exit"] for op in observation["operations"]] == [0] * operation_count
 
-        root_task_id = org.orchestrator.create_task("shipping memory digest root")
+        root_task_id = org.orchestrator.create_task("shipping memory digest root" if exposure == "pointers" else "Unrelated")
         if is_child:
             task_id = "TASK-SHIPPING-CHILD"
             org.db.insert_task(TaskRecord(
-                id=task_id, brief="shipping memory digest child", team="engineering",
+                id=task_id, brief="shipping memory digest child" if exposure == "pointers" else "Unrelated", team="engineering",
                 parent_task_id=root_task_id, assigned_agent=agent,
             ))
         else:
@@ -243,13 +324,36 @@ def test_task_bootstrap_forwards_runtime_session_to_real_cli_and_audit(
         assert result.success, (result.error, result.stdout_tail, result.stderr_tail)
         sid = started[task_id]
         assert result.session_id == sid
+        persisted = org.db.get_task(task_id)
+        assert (persisted.current_session_id, persisted.assigned_agent) == (sid, agent)
         audit_operations(task_id, sid, with_flags=True)
         provider_evidence(sid, resume, operation_count=7)
         assert org.db.get_task(task_id).parent_task_id == (root_task_id if is_child else None)
 
+        if exposure != "pointers":
+            before = org.db.fetch_all_readonly("SELECT max(id) AS id FROM audit_log")[0]["id"]
+            for verb, value in (("get", "MEM-999"), ("search", "scoped")):
+                manual = subprocess.run([
+                    str(Path(sys.executable).parent / "happyranch"), "memory", verb,
+                    "--org", "alpha", "--agent", agent, value, "--json",
+                ], env={**os.environ, "HAPPYRANCH_RUNTIME_SESSION_ID": ""},
+                    capture_output=True, text=True, timeout=10)
+                assert manual.returncode == 0, manual.stderr
+            manual_rows = org.db.fetch_all_readonly(
+                "SELECT action, task_id, agent, payload FROM audit_log WHERE id > ? "
+                "AND action IN ('memory_read', 'memory_search') ORDER BY id", (before,),
+            )
+            assert [row["action"] for row in manual_rows] == ["memory_read", "memory_search"]
+            for row in manual_rows:
+                payload = json.loads(row["payload"])
+                assert (row["task_id"], row["agent"]) == (f"AGENT-{agent}", agent)
+                assert "session_id" not in payload and "task_id" not in payload
+                if row["action"] == "memory_read":
+                    assert payload.get("source", "explicit_or_other") == "explicit_or_other"
+
         # Same-agent sessions overlap with every operation explicitly ordered.
         # End and retire the root binding before the child's final read.
-        if executor == "claude" and not is_child:
+        if executor == "claude" and not is_child and exposure == "pointers":
             barrier = paths.daemon_home() / "observations" / "barriers"
             barrier.mkdir()
             overlap_root = org.orchestrator.create_task("overlap root")

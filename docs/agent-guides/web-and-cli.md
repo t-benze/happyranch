@@ -659,6 +659,18 @@ Full founder-facing CLI docs: `skills/happyranch/SKILL.md`.
 
 ### Memory report guard
 
+The existing `/audit` read surface returns render-observed impression JSON with
+`memory_telemetry_version=1`, `pointer_ids` and `full_body_ids` alongside the old
+agent/session/digest/count/budget fields and unchanged actual task row scope.
+Fit directives are full-body exposure; fallback directives are pointers; IDs
+mentioned only in item text are excluded. No content is logged. Old writer
+calls remain byte-equivalent and unversioned. Read/search routes and CLI hint
+precedence stay unchanged; digest-first source resolution uses accurate item
+IDs, allowing a genuinely nonshown search-result read to be search-sourced.
+A version is exposure metadata, never epoch authority or task eligibility.
+G1 independent canary/epoch acceptance, G3 complete launch/expectation census,
+G4 consistent acquisition and full reporting/installed health remain OPEN.
+
 `happyranch memory report` paginates the existing audit read surface but is
 currently fail-closed: JSON and text both return `insufficient_instrumentation`.
 There is no CLI flag or input that can override the invalid current/unversioned

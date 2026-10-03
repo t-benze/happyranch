@@ -942,6 +942,7 @@ class Orchestrator:
         # MemoryStore. Ancestor task ids boost memories authored in the same
         # task lineage. Budget is org-configurable; 0 disables the digest.
         memory_digest: str | None = None
+        memory_render = None
         org_config = load_org_config(self._paths)
         budget = org_config.memory_digest_budget
         if budget > 0:
@@ -955,12 +956,13 @@ class Orchestrator:
                 except Exception:
                     ancestors = []
                 ancestor_ids = {a.id for a in ancestors} if ancestors else None
-                memory_digest = store.build_memory_digest(
+                memory_render = store.render_memory_digest(
                     brief=brief,
                     budget=budget,
                     ancestor_task_ids=ancestor_ids,
                     scope="agent",
                 )
+                memory_digest = memory_render.text
 
         managed_skills_index = resolve_managed_skills_index(
             paths=self._paths, agent_name=agent_name,
@@ -1077,8 +1079,8 @@ class Orchestrator:
         # The impression carries the shown digest's memory IDs plus agent,
         # task_id, and session_id.  No digest text, titles, or bodies.
         # Empty/None digest => no impression event.
-        if memory_digest:
-            digest_ids = AuditLogger._extract_digest_ids(memory_digest)
+        if memory_digest and memory_render is not None:
+            digest_ids = list(memory_render.digest_ids)
             if digest_ids:
                 self._audit.log_memory_digest_impression(
                     agent=agent_name,
@@ -1086,6 +1088,9 @@ class Orchestrator:
                     session_id=session_id,
                     digest_ids=digest_ids,
                     budget=budget,
+                    memory_telemetry_version=1,
+                    pointer_ids=list(memory_render.pointer_ids),
+                    full_body_ids=list(memory_render.full_body_ids),
                 )
 
         if recovery:

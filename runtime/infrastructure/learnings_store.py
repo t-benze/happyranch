@@ -17,6 +17,24 @@ from typing import Optional
 import yaml
 
 
+@dataclass(frozen=True)
+class MemoryDigestRender:
+    """Text and item exposure captured by one memory render pass.
+
+    IDs come only from appended item blocks, never text extraction. Empty
+    item lists can accompany a header/nudge-only render; that is not exposure.
+    """
+
+    text: str | None
+    pointer_ids: tuple[str, ...] = ()
+    full_body_ids: tuple[str, ...] = ()
+
+    @property
+    def digest_ids(self) -> tuple[str, ...]:
+        """Rendered item order: full blocks first, then pointer lines."""
+        return self.full_body_ids + self.pointer_ids
+
+
 # THR-032 Phase R (thorough rename): ids move LRN-NNN -> MEM-NNN. New items
 # allocate the canonical MEM- prefix; the legacy LRN- prefix stays a permanent,
 # never-removed resolution alias (§3.3, §7.2(b)) so any old LRN- reference —
@@ -744,11 +762,24 @@ class MemoryStore:
         ancestor_task_ids: set[str] | None = None,
         scope: str = "agent",
     ) -> str | None:
+        """Compatible text-only API for the single structured render pass."""
+        return self.render_memory_digest(
+            brief, budget=budget, ancestor_task_ids=ancestor_task_ids, scope=scope,
+        ).text
+
+    def render_memory_digest(
+        self,
+        brief: str,
+        *,
+        budget: int | None = None,
+        ancestor_task_ids: set[str] | None = None,
+        scope: str = "agent",
+    ) -> MemoryDigestRender:
         """Build a salience-ranked, budgeted push digest.
 
-        Returns the ``=== MEMORY-DIGEST (system) ===`` block as a string,
-        or ``None`` when no candidate memories exist or the budget is too
-        small to fit any valid digest content.
+        Returns the ``=== MEMORY-DIGEST (system) ===`` text with exact item
+        exposure from this pass. Text is ``None`` when no candidate memories
+        exist or the budget is too small to fit any valid digest content.
 
         Candidate set: ``lifecycle == valid`` AND ``promoted_to is None``.
         Ranking: effective salience (base - age decay + boosts) descending,
@@ -792,7 +823,7 @@ class MemoryStore:
             candidates.append((score, entry.title.lower(), entry))
 
         if not candidates:
-            return None
+            return MemoryDigestRender(None)
 
         # Sort: effective salience descending, then title ascending for
         # deterministic tie-breaking.
@@ -804,7 +835,7 @@ class MemoryStore:
 
         # If budget can't even fit the header, return None cleanly.
         if budget < header_len:
-            return None
+            return MemoryDigestRender(None)
 
         nudge_line = f"{self._DIGEST_NUDGE}\n"
         nudge_len = len(nudge_line)
@@ -822,6 +853,8 @@ class MemoryStore:
         # Build the digest: directive full-body blocks first, then pointer
         # lines, then nudge. Track exact length.
         result_parts: list[str] = [header]
+        pointer_ids: list[str] = []
+        full_body_ids: list[str] = []
         used = header_len
         nudged = False
 
@@ -835,6 +868,8 @@ class MemoryStore:
             full_len = len(full_block)
             if used + full_len <= budget:
                 result_parts.append(full_block)
+                if entry.id not in full_body_ids:
+                    full_body_ids.append(entry.id)
                 used += full_len
             else:
                 # Full body doesn't fit — fall back to pointer line.
@@ -859,6 +894,8 @@ class MemoryStore:
                 # Last item or nudge already emitted — just check line fit.
                 if used + line_len <= budget:
                     result_parts.append(line)
+                    if entry.id not in pointer_ids and entry.id not in full_body_ids:
+                        pointer_ids.append(entry.id)
                     used += line_len
                 else:
                     break
@@ -867,6 +904,8 @@ class MemoryStore:
                 if used + line_len + nudge_len <= budget:
                     # Both line + future nudge fit — add line, continue.
                     result_parts.append(line)
+                    if entry.id not in pointer_ids and entry.id not in full_body_ids:
+                        pointer_ids.append(entry.id)
                     used += line_len
                 elif used + nudge_len <= budget:
                     # Line + nudge don't fit, but nudge alone fits — emit nudge.
@@ -877,6 +916,8 @@ class MemoryStore:
                     # Even nudge alone doesn't fit, but the line does — add it
                     # and stop (no nudge will be emitted).
                     result_parts.append(line)
+                    if entry.id not in pointer_ids and entry.id not in full_body_ids:
+                        pointer_ids.append(entry.id)
                     used += line_len
                     break
                 else:
@@ -896,13 +937,13 @@ class MemoryStore:
 
         # If output is header-only (no pointer lines or nudge), return None.
         if len(result_parts) <= 1:
-            return None
+            return MemoryDigestRender(None)
 
         # Final safety: result must never exceed budget.
         if len(result) > budget:
-            return None
+            return MemoryDigestRender(None)
 
-        return result
+        return MemoryDigestRender(result, tuple(pointer_ids), tuple(full_body_ids))
 
     def _atomic_write(self, target: Path, content: str) -> None:
         fd, tmp_path = tempfile.mkstemp(

@@ -274,10 +274,16 @@ class TestRunAgentMemoryDigest:
             success=True, duration_seconds=1, session_id="sess-test",
         )
         with patch.object(orch, "_build_executor", return_value=mock_executor):
-            orch._run_agent(task_id, "dev_agent", "")
+            result, _ = orch._run_agent(task_id, "dev_agent", "")
         prompt = mock_executor.run.call_args.kwargs["prompt"]
 
+        assert result.success
         assert "MEMORY-DIGEST" not in prompt
+        rows = orch._db.fetch_all_readonly(
+            "SELECT action FROM audit_log WHERE task_id=? "
+            "AND action IN ('memory_digest_impression', 'session_start')", (task_id,),
+        )
+        assert [row["action"] for row in rows] == ["session_start"]
         assert "Test memory digest budget=0" in prompt
 
     def test_missing_memory_dir_omits_digest(self, orch, test_runtime, monkeypatch):
@@ -293,10 +299,16 @@ class TestRunAgentMemoryDigest:
             success=True, duration_seconds=1, session_id="sess-test",
         )
         with patch.object(orch, "_build_executor", return_value=mock_executor):
-            orch._run_agent(task_id, "dev_agent", "")
+            result, _ = orch._run_agent(task_id, "dev_agent", "")
         prompt = mock_executor.run.call_args.kwargs["prompt"]
 
+        assert result.success
         assert "MEMORY-DIGEST" not in prompt
+        rows = orch._db.fetch_all_readonly(
+            "SELECT action FROM audit_log WHERE task_id=? "
+            "AND action IN ('memory_digest_impression', 'session_start')", (task_id,),
+        )
+        assert [row["action"] for row in rows] == ["session_start"]
 
     def test_digest_injected_with_seeded_memory(self, orch, test_runtime, monkeypatch):
         """When memory/ dir exists with valid items and budget > 0,

@@ -739,6 +739,9 @@ class AuditLogger:
         session_id: str,
         digest_ids: list[str],
         budget: int,
+        memory_telemetry_version: int | None = None,
+        pointer_ids: list[str] | None = None,
+        full_body_ids: list[str] | None = None,
     ) -> None:
         """THR-091 Slice 2: log a digest impression at agent spawn.
 
@@ -749,19 +752,49 @@ class AuditLogger:
 
         Row shape: ``task_id=<task_id>``, ``action="memory_digest_impression"``,
         ``payload`` includes ``agent``, ``session_id``, ``digest_ids``,
-        ``digest_count``, ``budget``.
+        ``digest_count``, ``budget``. New observed renders additionally carry
+        exactly ``memory_telemetry_version=1``, ``pointer_ids``, ``full_body_ids``.
+        Modes are disjoint/unique and their union equals digest IDs/count.
+        Calls without metadata retain the exact legacy unversioned payload.
+        Version records exposure only, never task eligibility or epoch authority.
         """
+        payload = {
+            "agent": agent,
+            "session_id": session_id,
+            "digest_ids": digest_ids,
+            "digest_count": len(digest_ids),
+            "budget": budget,
+        }
+        if any(value is not None for value in (
+            memory_telemetry_version, pointer_ids, full_body_ids,
+        )):
+            from runtime.infrastructure.learnings_store import ID_RE
+
+            # All-or-nothing metadata. Validate before the existing insert so
+            # programmer errors cannot leave partial or upgraded legacy rows.
+            if type(memory_telemetry_version) is not int or memory_telemetry_version != 1:
+                raise ValueError("invalid memory exposure version")
+            for ids in (digest_ids, pointer_ids, full_body_ids):
+                if not isinstance(ids, list) or any(
+                    not isinstance(mid, str) or ID_RE.fullmatch(mid) is None for mid in ids
+                ):
+                    raise ValueError("memory exposure IDs must be lists of memory identifiers")
+                if len(ids) != len(set(ids)):
+                    raise ValueError("duplicate memory exposure IDs")
+            if set(pointer_ids) & set(full_body_ids):
+                raise ValueError("overlapping memory exposure modes")
+            if set(pointer_ids) | set(full_body_ids) != set(digest_ids):
+                raise ValueError("memory exposure does not match digest IDs/count")
+            payload.update(
+                memory_telemetry_version=memory_telemetry_version,
+                pointer_ids=pointer_ids,
+                full_body_ids=full_body_ids,
+            )
         self._db.insert_audit_log(
             task_id=task_id,
             agent=agent,
             action="memory_digest_impression",
-            payload={
-                "agent": agent,
-                "session_id": session_id,
-                "digest_ids": digest_ids,
-                "digest_count": len(digest_ids),
-                "budget": budget,
-            },
+            payload=payload,
         )
 
     def log_memory_search(

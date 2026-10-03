@@ -48,6 +48,12 @@ def test_impression_logged_with_correct_ids(db):
     assert payload["digest_ids"] == ["MEM-001", "MEM-002", "MEM-003"]
     assert payload["digest_count"] == 3
     assert payload["budget"] == 1500
+    # The no-metadata call preserves the old serialized payload byte-for-byte.
+    assert row["payload"] == json.dumps({
+        "agent": "dev_agent", "session_id": "sess-aaa",
+        "digest_ids": ["MEM-001", "MEM-002", "MEM-003"],
+        "digest_count": 3, "budget": 1500,
+    })
 
 
 def test_impression_is_additive_not_replacing_read_rows(db):
