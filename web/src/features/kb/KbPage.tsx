@@ -33,7 +33,8 @@ import { cn } from '@/lib/utils';
 import { KbEntryCard } from './KbEntryCard';
 import { KbEntryDetailPane } from './KbEntryDetailPane';
 import { ComposeKbEntryDialog } from './ComposeKbEntryDialog';
-import { KB_STRINGS } from './strings';
+import { useTranslation } from '@/hooks/i18n';
+import { formatCountFor } from '@/lib/i18n';
 import type { DreamKbCandidate } from '@/hooks/dreams';
 
 const COMPOSE_ENABLED = import.meta.env.VITE_ENABLE_KB_COMPOSE === 'true';
@@ -134,6 +135,7 @@ function GroupedFolderRail({
   selectedTag: string | null;
   onSelectTag: (tag: string | null) => void;
 }): JSX.Element {
+  const { t, locale } = useTranslation();
   const rowClass = (active: boolean) =>
     cn(
       'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm',
@@ -156,7 +158,7 @@ function GroupedFolderRail({
           folded into a single design-matching section (was Library + Folders). */}
       <section>
         <h3 className="text-text-muted font-display mb-1.5 px-2.5 text-2xs font-medium tracking-wider uppercase">
-          {KB_STRINGS.railTypeSection}
+          {t('kb.railTypeSection')}
         </h3>
         <button
           type="button"
@@ -164,8 +166,8 @@ function GroupedFolderRail({
           className={rowClass(selected == null && !candidatesActive)}
         >
           <LibraryIcon />
-          <span>{KB_STRINGS.railAllEntries}</span>
-          <span className={countClass}>{total}</span>
+          <span>{t('kb.railAllEntries')}</span>
+          <span className={countClass}>{formatCountFor(locale, total)}</span>
         </button>
         {folders.length > 0 && (
           <ul className="mt-0.5 space-y-0.5">
@@ -178,7 +180,7 @@ function GroupedFolderRail({
                 >
                   <FolderIcon />
                   <span className="truncate">{f}</span>
-                  <span className={countClass}>{counts.get(f) ?? 0}</span>
+                  <span className={countClass}>{formatCountFor(locale, counts.get(f) ?? 0)}</span>
                 </button>
               </li>
             ))}
@@ -198,8 +200,8 @@ function GroupedFolderRail({
             className={rowClass(candidatesActive)}
           >
             <CrescentMoonBadge className="h-4 w-4" />
-            <span>{KB_STRINGS.railCandidates}</span>
-            <span className={countClass}>{candidatesCount}</span>
+            <span>{t('kb.railCandidates')}</span>
+            <span className={countClass}>{formatCountFor(locale, candidatesCount)}</span>
           </button>
         </section>
       )}
@@ -209,7 +211,7 @@ function GroupedFolderRail({
       {tags.length > 0 && (
         <section>
           <h3 className="text-text-muted font-display mb-1.5 px-2.5 text-2xs font-medium tracking-wider uppercase">
-            {KB_STRINGS.railTagsSection}
+            {t('kb.railTagsSection')}
           </h3>
           <div className="flex flex-wrap gap-1.5 px-2.5">
             {tags.map((t) => {
@@ -238,8 +240,9 @@ function GroupedFolderRail({
 /* ------------------------------------------------------------------ */
 
 function LoadingSkeleton(): JSX.Element {
+  const { t } = useTranslation();
   return (
-    <div className="animate-pulse space-y-4">
+    <div role="status" aria-label={t('kb.loading')} className="animate-pulse space-y-4">
       {[1, 2, 3, 4].map((i) => (
         <div key={i} className="space-y-2">
           <div className="flex items-center gap-2">
@@ -276,6 +279,7 @@ function DreamCandidateRow({
    */
   visible: boolean;
 }): JSX.Element | null {
+  const { t } = useTranslation();
   const dreamQ = useDream(dreamId);
 
   // Derive pending candidates from fetched statuses (not kb_candidate_count total).
@@ -314,14 +318,14 @@ function DreamCandidateRow({
                 {c.slug}
               </span>
               <span className="text-2xs px-1 rounded-full font-medium bg-accent/10 text-accent ml-auto">
-                pending review
+                {t('kb.pendingReview')}
               </span>
             </div>
             <p className="text-sm text-text-primary font-medium line-clamp-1">
               {c.title}
             </p>
             <p className="text-xs text-text-muted mt-0.5">
-              from dream · proposed by {c.agent_name}
+              {t('kb.proposedBy', { agent: c.agent_name })}
             </p>
           </button>
         </li>
@@ -335,6 +339,7 @@ function DreamCandidateRow({
 /* ------------------------------------------------------------------ */
 
 export function KbPage(): JSX.Element {
+  const { t, locale } = useTranslation();
   // Read only this route's explicit entry segment. App mounts AppRoutes below
   // an outer `*` route, whose inherited splat is the complete location even
   // on the KB index; using it here would open a bogus detail drawer.
@@ -543,13 +548,13 @@ export function KbPage(): JSX.Element {
     <div className="flex h-full">
       {/* Folder rail */}
       <aside
-        aria-label="KB folders"
+        aria-label={t('kb.filterLabel')}
         className="w-rail shrink-0 overflow-y-auto border-r border-border-default bg-surface-sunken p-3"
       >
         <div className="mb-3">
           <Input
-            aria-label="Search KB entries"
-            placeholder={KB_STRINGS.searchPlaceholder}
+            aria-label={t('kb.searchLabel')}
+            placeholder={t('kb.searchPlaceholder')}
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
           />
@@ -591,10 +596,10 @@ export function KbPage(): JSX.Element {
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
               <p className="text-text-muted text-xs font-medium uppercase tracking-wide">
-                {KB_STRINGS.headerEyebrow(liveEntries.length)}
+                {t('kb.headerEyebrow', { count: liveEntries.length, number: formatCountFor(locale, liveEntries.length) })}
               </p>
               <h1 className="font-display text-display text-text-primary mt-1 font-medium">
-                {KB_STRINGS.pageTitle}
+                {t('kb.pageTitle')}
               </h1>
             </div>
             <div className="flex shrink-0 items-center gap-2">
@@ -604,12 +609,12 @@ export function KbPage(): JSX.Element {
                   onClick={() => setCandidatesView(true)}
                   className="text-xs font-medium text-feedback-warning bg-feedback-warning/10 px-2.5 py-1 rounded-full hover:bg-feedback-warning/20 transition-colors"
                 >
-                  {KB_STRINGS.pendingCandidatesTag(candidatePendingCount)}
+                  {t('kb.pendingCandidatesTag', { count: candidatePendingCount, number: formatCountFor(locale, candidatePendingCount) })}
                 </button>
               )}
               {COMPOSE_ENABLED && (
                 <Button size="sm" onClick={() => setComposeOpen(true)}>
-                  {KB_STRINGS.composeButton}
+                  {t('kb.composeButton')}
                 </Button>
               )}
             </div>
@@ -628,7 +633,7 @@ export function KbPage(): JSX.Element {
         ) : (isSearching ? searchFailed : listQuery.isError) ? (
           <div className="text-center space-y-3">
             <p className="text-feedback-danger text-sm">
-              Could not load Knowledge
+              {t('kb.loadError')}
             </p>
             <Button
               size="sm"
@@ -639,7 +644,7 @@ export function KbPage(): JSX.Element {
                 queryClient.invalidateQueries({ queryKey: ['dreams-list'] });
               }}
             >
-              {KB_STRINGS.retry}
+              {t('kb.retry')}
             </Button>
           </div>
         ) : (
@@ -651,7 +656,7 @@ export function KbPage(): JSX.Element {
                 default/folder feed the rows return null → the list is empty and
                 collapses (no padding), so candidates never touch the feed. */}
             {!isSearching && dreamsWithCandidates.length > 0 && (
-              <ul aria-label="Candidate entries" className="space-y-2">
+              <ul aria-label={t('kb.candidateEntries')} className="space-y-2">
                 {dreamsWithCandidates.map((d) => (
                   <DreamCandidateRow
                     key={d.dream_id}
@@ -668,20 +673,20 @@ export function KbPage(): JSX.Element {
             {showCandidatesView ? (
               candidatePendingCount === 0 ? (
                 <EmptyState
-                  title={KB_STRINGS.emptyCandidatesTitle}
-                  body={KB_STRINGS.emptyCandidatesBody}
+                  title={t('kb.emptyCandidatesTitle')}
+                  body={t('kb.emptyCandidatesBody')}
                 />
               ) : null
             ) : isListEmpty ? (
               isSearching ? (
                 <EmptyState
-                  title={KB_STRINGS.emptySearchTitle}
-                  body={KB_STRINGS.emptySearchBody}
+                  title={t('kb.emptySearchTitle')}
+                  body={t('kb.emptySearchBody')}
                 />
               ) : (
                 <EmptyState
-                  title={KB_STRINGS.emptyListTitle}
-                  body={KB_STRINGS.emptyListBody}
+                  title={t('kb.emptyListTitle')}
+                  body={t('kb.emptyListBody')}
                 />
               )
             ) : (

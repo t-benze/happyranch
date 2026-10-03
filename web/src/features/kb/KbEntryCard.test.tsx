@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
+import { I18nTestBoundary } from '@/test/render';
 import { KbEntryCard } from './KbEntryCard';
 
 // KB types are freeform. Prove the actual card consumes shared vocabulary,
@@ -25,13 +26,13 @@ describe('KbEntryCard shared type colours', () => {
     [' FAILED ', 'text-attention-text', 'bg-attention-soft'],
   ])('renders freeform type %s using its shared tone', (type, foreground, fill) => {
     render(
-      <MemoryRouter>
+      <MemoryRouter><I18nTestBoundary>
         <KbEntryCard to="/orgs/happyranch/kb/example" entry={{
           slug: 'example', title: 'Example entry', type, topic: 'testing',
           tags: [], body: '', updated_at: '2026-09-09T00:00:00Z',
           authored_by: 'frontend_engineer', source_task: null,
         }} />
-      </MemoryRouter>,
+      </I18nTestBoundary></MemoryRouter>,
     );
     const badge = screen.getByText(type.trim());
     expect(badge.textContent).toBe(type);

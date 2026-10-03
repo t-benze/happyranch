@@ -11,6 +11,7 @@
  * display output is localized.
  */
 import { formatCount, formatTokens } from '@/lib/format';
+import { formatAttachmentSize } from '@/lib/threadAttachments';
 import type { Locale } from './locale';
 
 function trimCompact(value: number): string {
@@ -110,4 +111,9 @@ export function formatDateShapeFor(
     ...DATE_SHAPES[shape],
     ...(timeZone ? { timeZone } : {}),
   }).format(date);
+}
+
+/** Binary byte units and canonical rounding; only number display receives the locale. */
+export function formatAttachmentSizeFor(locale: Locale, sizeBytes: number | null | undefined): string | null {
+  return formatAttachmentSize(sizeBytes, locale);
 }

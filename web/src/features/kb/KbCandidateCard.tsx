@@ -12,7 +12,8 @@ import { useState } from 'react';
 import { useAcceptCandidate, useDismissCandidate } from '@/hooks/dreams';
 import { Button } from '@/design-system/primitives/Button';
 import { cn } from '@/lib/utils';
-import { KB_STRINGS } from './strings';
+import { useTranslation } from '@/hooks/i18n';
+import { classifyKbError, renderKbError, type KbErrorView } from './strings';
 import type { DreamKbCandidate } from '@/hooks/dreams';
 
 /* ------------------------------------------------------------------ */
@@ -55,7 +56,8 @@ export function KbCandidateCard({
   candidate,
   onResolved,
 }: KbCandidateCardProps): JSX.Element {
-  const [mutationError, setMutationError] = useState<string | null>(null);
+  const { t } = useTranslation();
+  const [mutationError, setMutationError] = useState<KbErrorView | null>(null);
   const acceptMutation = useAcceptCandidate();
   const dismissMutation = useDismissCandidate();
   const anyPending = acceptMutation.isPending || dismissMutation.isPending;
@@ -65,11 +67,11 @@ export function KbCandidateCard({
   const isRejected = candidate.status === 'rejected';
 
   const label = isPending
-    ? KB_STRINGS.candidatePendingLabel(candidate.agent_name)
+    ? t('kb.candidatePendingLabel', { agent: candidate.agent_name })
     : isPromoted
-      ? KB_STRINGS.candidateAcceptedLabel(candidate.agent_name)
+      ? t('kb.candidateAcceptedLabel', { agent: candidate.agent_name })
       : isRejected
-        ? KB_STRINGS.candidateRejectedLabel(candidate.agent_name)
+        ? t('kb.candidateRejectedLabel', { agent: candidate.agent_name })
         : candidate.status;
 
   const handleAccept = async () => {
@@ -80,8 +82,8 @@ export function KbCandidateCard({
         status: result.status,
         promotedKbSlug: result.promoted_kb_slug,
       });
-    } catch {
-      setMutationError('Accept failed — retry');
+    } catch (err) {
+      setMutationError(classifyKbError(err, 'kb.error.accept'));
     }
   };
 
@@ -93,8 +95,8 @@ export function KbCandidateCard({
         status: result.status,
         promotedKbSlug: result.promoted_kb_slug,
       });
-    } catch {
-      setMutationError('Dismiss failed — retry');
+    } catch (err) {
+      setMutationError(classifyKbError(err, 'kb.error.dismiss'));
     }
   };
 
@@ -134,13 +136,13 @@ export function KbCandidateCard({
       {/* Error */}
       {mutationError && (
         <div className="rounded border border-feedback-danger/30 bg-feedback-danger/5 p-3 mb-2">
-          <p className="text-feedback-danger text-xs">{mutationError}</p>
+          <p className="text-feedback-danger text-xs">{renderKbError(mutationError, t)}</p>
           <div className="flex gap-2 mt-2">
             <Button size="sm" onClick={handleAccept} disabled={anyPending}>
-              {KB_STRINGS.acceptButton}
+              {t('kb.acceptButton')}
             </Button>
             <Button size="sm" variant="ghost" onClick={handleDismiss} disabled={anyPending}>
-              {KB_STRINGS.dismissButton}
+              {t('kb.dismissButton')}
             </Button>
           </div>
         </div>
@@ -151,22 +153,22 @@ export function KbCandidateCard({
         <div className="flex gap-2 mt-3">
           <Button
             size="sm"
-            aria-label={KB_STRINGS.acceptButton}
+            aria-label={t('kb.acceptButton')}
             disabled={anyPending}
             tabIndex={0}
             onClick={handleAccept}
           >
-            {KB_STRINGS.acceptButton}
+            {t('kb.acceptButton')}
           </Button>
           <Button
             size="sm"
             variant="ghost"
-            aria-label={KB_STRINGS.dismissButton}
+            aria-label={t('kb.dismissButton')}
             disabled={anyPending}
             tabIndex={0}
             onClick={handleDismiss}
           >
-            {KB_STRINGS.dismissButton}
+            {t('kb.dismissButton')}
           </Button>
         </div>
       )}
@@ -174,12 +176,12 @@ export function KbCandidateCard({
       {/* Resolved indicator */}
       {isPromoted && (
         <p className="text-xs text-feedback-success mt-2">
-          Promoted to KB
+          {t('kb.promoted')}
           {candidate.promoted_kb_slug ? ` — ${candidate.promoted_kb_slug}` : ''}
         </p>
       )}
       {isRejected && (
-        <p className="text-xs text-text-muted mt-2">Dismissed</p>
+        <p className="text-xs text-text-muted mt-2">{t('kb.dismissed')}</p>
       )}
     </div>
   );
