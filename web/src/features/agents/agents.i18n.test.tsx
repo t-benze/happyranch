@@ -257,7 +257,7 @@ describe('Team escalation policy page i18n', () => {
 
     mountPolicy(locale);
     await screen.findByRole('textbox', { name: translate(locale, 'agents.policy.whatTo') });
-    expect(screen.getByRole('link', { name: translate(locale, 'agents.policy.backTo', { name: 'engineering_manager' }), exact: true })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: translate(locale, 'agents.policy.backTo', { name: 'engineering_manager' }) })).toBeInTheDocument();
     expect(screen.getByText('engineering · engineering_manager', { exact: true }).textContent).toBe('engineering · engineering_manager');
     expect(screen.getByText(translate(locale, 'agents.policy.ownedBy', { team: 'engineering' }), { exact: true })).toBeInTheDocument();
   });
