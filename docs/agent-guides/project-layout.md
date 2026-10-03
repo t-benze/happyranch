@@ -100,11 +100,14 @@ facade from its original module.
 
 `db/tasks.py` owns `TasksMixin`: task core CRUD, query filtering/pagination,
 subtree severity, ancestor/revisit walks and recall, including `_SEVERITY_RANK`
-and `LineageTooDeep`. The exception remains identity-re-exported from
-`database.py`. Task transitions, retry/delegation, completion/recovery/results
-and cross-domain writers remain in the facade, including
-`try_fail_nonroot_manager_supersede` from PR #955. The exact S8a method inventory
-and remaining collision holds are recorded in
+and `LineageTooDeep`, plus verified retry lineage, atomic single/fanout child
+spawning and retry feedback/admission. `LineageTooDeep`, `VerifiedRetry`,
+`InvalidLineage`, `RetryClaim`, `Committed`, `LostClaim`, `SpawnOutcome`,
+`PendingRetry` and `_RetryEvidenceRefusal` remain identity-re-exported from
+`database.py`. Task transitions, completion/recovery/results and cross-domain
+writers remain in the facade, including `try_fail_nonroot_manager_supersede`
+from PR #955. The exact S8a/S8b method inventories and remaining collision holds
+are recorded in
 `docs/superpowers/plans/2026-10-01-backend-decomposition.md`.
 
 ## Test placement
