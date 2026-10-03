@@ -94,8 +94,12 @@ def test_diagnostics_refuse_unsafe_or_changed_inputs(
         (tmp_path / "outside-wal").write_text("OUTSIDE_SECRET_CANARY")
         db.with_name("happyranch.db-wal").symlink_to(tmp_path / "outside-wal")
     elif hazard == "unknown_schema":
-        with sqlite3.connect(db) as connection:
+        connection = sqlite3.connect(db)
+        try:
             connection.execute("ALTER TABLE tasks RENAME COLUMN note TO mystery")
+            connection.commit()
+        finally:
+            connection.close()
     else:
         original = guest.sqlite3.connect
         def replace_before_query(*args: object, **kwargs: object) -> sqlite3.Connection:
