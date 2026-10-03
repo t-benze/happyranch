@@ -98,6 +98,14 @@ _preflight_uv() {
 }
 
 cmd_start() {
+    local start_timeout="${HAPPYRANCH_DAEMON_START_TIMEOUT-30}"
+    local bind_host probe_host bg_pid port deadline
+
+    if [[ ! "$start_timeout" =~ ^[1-9][0-9]*$ ]]; then
+        echo "ERROR: HAPPYRANCH_DAEMON_START_TIMEOUT must be a positive integer (got '$start_timeout')." >&2
+        exit 1
+    fi
+
     _preflight_uv || exit 1
     cd "$SCRIPT_DIR"
     mkdir -p "$HAPPYRANCH_HOME"
@@ -109,18 +117,52 @@ cmd_start() {
         fi
         rm -f "$PID_FILE"
     fi
+
+    if ! bind_host="$(uv run python -c 'from runtime.config import Settings; print(Settings().daemon_bind_host)')"; then
+        echo "ERROR: could not resolve daemon_bind_host from HappyRanch settings." >&2
+        exit 1
+    fi
+    case "$bind_host" in
+        ""|"*"|"0.0.0.0") probe_host="127.0.0.1" ;;
+        "::"|"[::]") probe_host="[::1]" ;;
+        \[*\]) probe_host="$bind_host" ;;
+        *:*) probe_host="[$bind_host]" ;;
+        *) probe_host="$bind_host" ;;
+    esac
+
+    # No live PID remains, so an old port file cannot describe this launch.
+    rm -f "$PORT_FILE"
     nohup uv run python -m runtime.daemon >> "$LOG_FILE" 2>&1 &
     bg_pid=$!
-    # Wait up to 5s for port file to materialize
-    for _ in 1 2 3 4 5; do
+
+    # uv currently remains as $bg_pid and waits for its Python child. If that
+    # child dies, uv exits too, so wrapper liveness covers the daemon process.
+    deadline=$((SECONDS + start_timeout))
+    while (( SECONDS < deadline )); do
+        if ! kill -0 "$bg_pid" 2>/dev/null; then
+            echo "daemon exited during startup — see $LOG_FILE" >&2
+            tail -n 20 "$LOG_FILE" >&2 || true
+            wait "$bg_pid" 2>/dev/null || true
+            exit 1
+        fi
         if [[ -f "$PORT_FILE" ]]; then
             port=$(cat "$PORT_FILE")
-            echo "daemon started (pid $bg_pid, port $port)"
-            exit 0
+            if command -v curl >/dev/null 2>&1; then
+                if curl --max-time 0.2 -fsS \
+                    "http://${probe_host}:${port}/api/v1/health" >/dev/null 2>&1; then
+                    echo "daemon started (pid $bg_pid, port $port)"
+                    exit 0
+                fi
+            else
+                echo "curl not found; falling back to daemon.port readiness check" >&2
+                echo "daemon started (pid $bg_pid, port $port)"
+                exit 0
+            fi
         fi
-        sleep 1
+        sleep 0.25
     done
-    echo "daemon failed to start within 5s — see $LOG_FILE"
+    echo "daemon failed to start within ${start_timeout}s — see $LOG_FILE" >&2
+    tail -n 20 "$LOG_FILE" >&2 || true
     exit 1
 }
 

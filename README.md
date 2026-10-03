@@ -387,6 +387,13 @@ scripts/daemon.sh stop --force     # graceful shutdown (default daemon needs --f
 ```
 
 The daemon binds to port **8765** by default. Override with `HAPPYRANCH_DAEMON_PORT=<n>` before starting if that port is taken.
+`scripts/daemon.sh start` waits up to 30 seconds for the daemon's public
+`GET /api/v1/health` endpoint to answer. Set
+`HAPPYRANCH_DAEMON_START_TIMEOUT=<seconds>` to another positive integer for a
+slower host. If the daemon process exits during startup, the command fails
+immediately; process-exit and timeout failures print the last 20 log lines.
+When `curl` is unavailable, the script reports that it is falling back to the
+fresh `daemon.port` file as its readiness signal.
 
 > **Offline org relocation:** for the founder-operated manual procedure to move
 > an org between runtimes, see

@@ -672,6 +672,14 @@ scripts/build_web.sh
 happyranch web [--no-open]
 ```
 
+`scripts/daemon.sh start` removes a stale port file, launches the daemon, and
+waits up to `HAPPYRANCH_DAEMON_START_TIMEOUT` seconds (default `30`, positive
+integers only) for `GET /api/v1/health` to answer on the configured bind host.
+Wildcard bind addresses are probed through their loopback equivalent. If the
+background process exits or readiness times out, startup exits 1 and prints
+the last 20 lines of `daemon.log`; if `curl` is unavailable, it announces a
+fallback to the fresh `daemon.port` file.
+
 The full founder-facing CLI is documented in `skills/happyranch/SKILL.md`.
 
 ## Running Tests
